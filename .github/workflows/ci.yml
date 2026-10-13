@@ -1,0 +1,212 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x64
+          - os: windows-latest
+            name: windows-x64
+          - os: macos-latest
+            name: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cache Freedoom WADs
+        uses: actions/cache@v4
+        with:
+          path: testdata/freedoom
+          key: freedoom-0.13.0
+      - name: fetch Freedoom
+        shell: bash
+        run: bash scripts/fetch-freedoom.sh
+      - name: pack ferrite.pk3
+        shell: bash
+        run: bash scripts/pack-ferrite-pk3.sh
+      - run: cargo test --workspace
+      - name: engine data from packed pk3
+        shell: bash
+        run: cargo test -p ferrite-game --lib engine_data::tests::load_packed_ferrite_pk3_engine_data -- --exact --nocapture
+      - name: engine data from embedded pk3
+        shell: bash
+        run: cargo test -p ferrite-game --lib engine_data::tests::load_embedded_ferrite_pk3_engine_data -- --exact --nocapture
+      - name: dmath sample hash
+        run: cargo test -p ferrite-core dmath::tests::dmath_sample_hash_matches_golden -- --exact --nocapture
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --target wasm32-unknown-unknown -p ferrite-web --features browser
+      - run: cargo build --target wasm32-unknown-unknown -p ferrite-core -p ferrite-script-abi -p ferrite-script-sdk
+
+  web-browser-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: browser-actions/setup-firefox@v1
+      - name: install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --locked --version 0.2.129
+      - name: geckodriver
+        run: |
+          curl -fsSL -o geckodriver.tgz \
+            https://github.com/mozilla/geckodriver/releases/download/v0.35.0/geckodriver-v0.35.0-linux64.tar.gz
+          tar -xzf geckodriver.tgz
+          chmod +x geckodriver
+          echo "$PWD" >> "$GITHUB_PATH"
+      - name: wasm-bindgen-test (Firefox)
+        env:
+          WASM_BINDGEN_TEST_TIMEOUT: "120"
+          GECKODRIVER: geckodriver
+        run: >
+          cargo test -p ferrite-web --test browser_smoke
+          --target wasm32-unknown-unknown --features browser -- --nocapture
+
+  dmath-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasmtime
+      - name: build dmath hash for wasi
+        env:
+          CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime
+        run: cargo test -p ferrite-core --target wasm32-wasip1 dmath::tests::dmath_sample_hash_matches_golden -- --exact
+
+  determinism:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasmtime
+      - name: cache Freedoom WADs
+        uses: actions/cache@v4
+        with:
+          path: testdata/freedoom
+          key: freedoom-0.13.0
+      - name: fetch Freedoom
+        run: bash scripts/fetch-freedoom.sh
+      - name: native demo / bundle verify
+        run: cargo test -p ferrite-game --test freedoom_smoke committed -- --nocapture
+      - name: wasm32-wasip1 demo fingerprint parity
+        env:
+          CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime
+        run: >
+          cargo test -p ferrite-game --target wasm32-wasip1 --lib
+          fingerprint_stable -- --nocapture
+
+  render-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: lavapipe / Vulkan ICD
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+      - name: offscreen smoke
+        run: cargo test -p ferrite-render --test offscreen_smoke -- --nocapture
+      - name: golden room SSIM (lavapipe)
+        run: cargo test -p ferrite-render --test golden_room -- --nocapture
+      - name: cache Freedoom WADs
+        uses: actions/cache@v4
+        with:
+          path: testdata/freedoom
+          key: freedoom-0.13.0
+      - name: fetch Freedoom
+        run: bash scripts/fetch-freedoom.sh
+      - name: Freedoom MAP01 offscreen + fps floor
+        run: cargo test -p ferrite-render --test freedoom_map01 -- --nocapture
+
+  doc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: fuzz wad_directory 60s
+        run: cargo +nightly fuzz run wad_directory --fuzz-dir fuzz -- -max_total_time=60
+      - name: fuzz zip_central_directory 60s
+        run: cargo +nightly fuzz run zip_central_directory --fuzz-dir fuzz -- -max_total_time=60
+      - name: fuzz sevenz_header 60s
+        run: cargo +nightly fuzz run sevenz_header --fuzz-dir fuzz -- -max_total_time=60
+      - name: fuzz mapinfo 60s
+        run: cargo +nightly fuzz run mapinfo --fuzz-dir fuzz -- -max_total_time=60
+      - name: fuzz mus_to_midi 60s
+        run: cargo +nightly fuzz run mus_to_midi --fuzz-dir fuzz -- -max_total_time=60
+      - name: fuzz image_lumps 60s
+        run: cargo +nightly fuzz run image_lumps --fuzz-dir fuzz -- -max_total_time=60
+      - name: fuzz save_info 60s
+        run: cargo +nightly fuzz run save_info --fuzz-dir fuzz -- -max_total_time=60
+      - name: fuzz save_world_bin 60s
+        run: cargo +nightly fuzz run save_world_bin --fuzz-dir fuzz -- -max_total_time=60

@@ -1,0 +1,14 @@
+[package]
+name = "ferrite-script-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Guest-side Rust SDK (#![no_std] + alloc) for WASM modules."
+
+[lints]
+workspace = true
+
+[dependencies]
+ferrite-script-abi = { path = "../ferrite-script-abi" }
+ferrite-script-sdk-macros = { path = "../ferrite-script-sdk-macros" }

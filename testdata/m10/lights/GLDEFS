@@ -1,0 +1,31 @@
+pointlight TestExtraLight
+{
+    color 1.0 0.5 0.2
+    size 64
+}
+
+pulselight TestPulseLight
+{
+    color 0.2 0.4 1.0
+    size 48
+    secondarySize 72
+    interval 0.5
+}
+
+flickerlight TestFlickerLight
+{
+    color 1.0 0.8 0.3
+    size 32
+    secondarySize 48
+    chance 0.4
+}
+
+object DoomImp
+{
+    frame TROOE { light TestExtraLight }
+}
+
+object ZombieMan
+{
+    frame POSSF { light TestFlickerLight }
+}

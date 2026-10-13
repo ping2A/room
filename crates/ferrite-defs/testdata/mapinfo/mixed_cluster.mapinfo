@@ -1,0 +1,21 @@
+map E1M1 "Hangar"
+{
+    next = "E1M2"
+    sky1 = "SKY1"
+    music = "D_E1M1"
+    cluster = 1
+}
+
+map E1M2 "Nuclear Plant"
+{
+    next = "E1M3"
+    sky1 = "SKY1"
+}
+
+clusterdef 1
+{
+    entertext = "Welcome"
+    exittext = "Goodbye"
+    music = "D_VICTOR"
+    flat = "FLOOR4_8"
+}

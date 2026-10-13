@@ -1,0 +1,48 @@
+//! 2D draw lists, fonts, menus, status bars, HUD, automap, intermission, finale.
+//!
+//! No GPU dependency — produces [`UiDrawList`] for the renderer.
+
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+
+mod automap;
+mod canvas_bridge;
+mod doom_text;
+mod draw;
+mod finale;
+mod font;
+mod hud;
+mod i18n;
+mod intermission;
+mod menu;
+mod menudef_runtime;
+mod messages;
+mod patches;
+mod sbarinfo_draw;
+mod statusbar;
+mod title;
+mod weapon;
+
+pub use automap::{AutomapView, draw_automap};
+pub use canvas_bridge::{
+    CanvasSink, blit_draw_list, blit_draw_list_full, blit_draw_list_with_fonts,
+};
+pub use doom_text::{
+    draw_stcfn_string, draw_stt_percent, draw_stt_string, draw_stt_string_right,
+    measure_stcfn_string, measure_stt_string,
+};
+pub use draw::{DrawCmd, Rect, Rgba, UiDrawList, Vec2};
+pub use finale::draw_finale;
+pub use font::{FontId, FontRegistry, SoftFont};
+pub use hud::HudState;
+pub use i18n::{StringTable, localize};
+pub use intermission::{IntermissionStats, draw_intermission};
+pub use menu::{ListMenu, MenuCommand, MenuItem, MenuSfx, MenuStack, parse_menu_action};
+pub use menudef_runtime::{
+    MenuBuildOpts, MenuGame, any_menu_from_def, list_menu_from_def, option_menu_from_def,
+};
+pub use messages::MessageQueue;
+pub use patches::{PatchCache, SoftPatch};
+pub use sbarinfo_draw::SbarInfoBar;
+pub use statusbar::{DoomStatusBar, StatusBar};
+pub use title::draw_title;
+pub use weapon::{draw_weapon, weapon_ready_patch};

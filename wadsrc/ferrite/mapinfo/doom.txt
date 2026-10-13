@@ -1,0 +1,8 @@
+// Minimal Doom MAPINFO stub (episode/map list filled as IWAD support lands).
+gameinfo
+{
+  titlepage = "TITLEPIC"
+  creditpage = "CREDIT"
+  titlemusic = "D_INTRO"
+  intermissionmusic = "D_DM2INT"
+}

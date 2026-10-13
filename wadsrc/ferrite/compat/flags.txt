@@ -1,0 +1,17 @@
+// Per-map compatibility flags (GZDoom compatibility.txt syntax).
+// See docs/19-compatibility.md §3. Bootstrap corpus — expand from upstream.
+
+// Synthetic unit-test MD5 for `hello` (md5_hex(b"hello")).
+5D41402ABC4B2A76B9719D911017C592
+{
+	trace
+	useblocking
+}
+
+// Eternal Doom MAP25 (upstream sample)
+6DA6FCBA8089161BDEC6A1D3F6C8D60F
+{
+	stairs
+	maskedmidtex
+	vileghosts
+}

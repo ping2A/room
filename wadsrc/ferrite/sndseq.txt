@@ -1,0 +1,11 @@
+// Minimal door sound sequence (slot 0 = normal Doom door).
+:DoorOpenNormal
+	play		doors/open
+	nostopcutoff
+	door 0
+end
+
+:DoorCloseNormal
+	play		doors/close
+	nostopcutoff
+end

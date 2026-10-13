@@ -1,0 +1,20 @@
+[package]
+name = "ferrite-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "2D draw lists, fonts, menus, status bars, HUD, automap, intermission."
+
+[lints]
+workspace = true
+
+[dependencies]
+ferrite-defs = { path = "../ferrite-defs" }
+ferrite-formats = { path = "../ferrite-formats" }
+ferrite-map = { path = "../ferrite-map" }
+ferrite-vfs = { path = "../ferrite-vfs" }
+
+[dev-dependencies]
+ferrite-nodebuild = { path = "../ferrite-nodebuild" }
+ferrite-testkit = { path = "../ferrite-testkit" }

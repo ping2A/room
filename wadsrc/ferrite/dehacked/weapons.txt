@@ -1,0 +1,10 @@
+# vanilla weapon index → class
+0 Fist
+1 Pistol
+2 Shotgun
+3 Chaingun
+4 RocketLauncher
+5 PlasmaRifle
+6 BFG9000
+7 Chainsaw
+8 SuperShotgun

@@ -1,0 +1,568 @@
+//! Lockstep netcode and transports (`docs/17-netplay-demos-saves.md` §1).
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+
+mod desync;
+mod frame;
+mod http_signal;
+mod lobby;
+#[cfg(feature = "noise")]
+mod noise_wrap;
+mod signal_mesh;
+mod tcp;
+mod tcp_server;
+mod udp;
+#[cfg(feature = "webrtc")]
+mod webrtc;
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+pub use desync::{DesyncCollector, PeerChecksum};
+pub use frame::{MAX_FRAME, encode_frame, try_decode_frame};
+pub use http_signal::HttpSignalBus;
+pub use lobby::{
+    ABI_MAJOR, ENGINE_VERSION, Hello, LobbyHost, LobbyMsg, Reject, Start, Welcome, validate_hello,
+};
+#[cfg(feature = "noise")]
+pub use noise_wrap::{NOISE_PATTERN, NoiseKeys, NoiseTransport};
+pub use signal_mesh::{InMemorySignalBus, SharedSignalBus, SignalBus, SignalMeshTransport};
+pub use tcp::TcpTransport;
+pub use tcp_server::{TcpRelayClient, TcpRelayServer};
+pub use udp::UdpTransport;
+#[cfg(feature = "webrtc")]
+pub use webrtc::{MatchboxTransport, connect_unreliable};
+
+/// Opaque peer identifier (stable for a session).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PeerId(pub u8);
+
+/// Compact per-tic input exchanged between peers (mirrors playsim `TicCmd`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NetTicCmd {
+    /// Button mask.
+    pub buttons: u32,
+    /// Pitch delta.
+    pub pitch: i16,
+    /// Yaw delta.
+    pub yaw: i16,
+    /// Roll delta.
+    pub roll: i16,
+    /// Forward move.
+    pub forward_move: i16,
+    /// Side move.
+    pub side_move: i16,
+    /// Up move.
+    pub up_move: i16,
+    /// Weapon select (`0` = none).
+    pub weapon_select: u8,
+}
+
+/// One peer's command for a specific tic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimedCmd {
+    /// Simulation tic.
+    pub tic: u32,
+    /// Peer that produced the command.
+    pub peer: PeerId,
+    /// Command payload.
+    pub cmd: NetTicCmd,
+}
+
+/// Unreliable byte transport (`docs/17` §1.3).
+pub trait Transport {
+    /// Queue bytes to `peer`.
+    fn send(&mut self, peer: PeerId, bytes: &[u8]);
+    /// Drain inbound packets into `out`.
+    fn poll(&mut self, out: &mut Vec<(PeerId, Vec<u8>)>);
+    /// Connected peers (excluding self).
+    fn peers(&self) -> &[PeerId];
+}
+
+/// In-process full-mesh transport (tests / single-process multi-seat).
+#[derive(Debug, Default)]
+pub struct LoopbackMesh {
+    peers: Vec<PeerId>,
+    /// `inbox[recv][send]` queues.
+    inboxes: BTreeMap<PeerId, VecDeque<(PeerId, Vec<u8>)>>,
+}
+
+impl LoopbackMesh {
+    /// Create a mesh for `peers` (must include every seat).
+    #[must_use]
+    pub fn new(peers: impl IntoIterator<Item = PeerId>) -> Self {
+        let peers: Vec<PeerId> = peers.into_iter().collect();
+        let mut inboxes = BTreeMap::new();
+        for &p in &peers {
+            inboxes.insert(p, VecDeque::new());
+        }
+        Self { peers, inboxes }
+    }
+
+    /// Mutable endpoint for one peer.
+    pub fn endpoint_mut(&mut self, self_id: PeerId) -> LoopbackEndpointMut<'_> {
+        LoopbackEndpointMut {
+            self_id,
+            mesh: self,
+        }
+    }
+}
+
+/// Mutable [`Transport`] handle into a [`LoopbackMesh`].
+pub struct LoopbackEndpointMut<'a> {
+    self_id: PeerId,
+    mesh: &'a mut LoopbackMesh,
+}
+
+impl Transport for LoopbackEndpointMut<'_> {
+    fn send(&mut self, peer: PeerId, bytes: &[u8]) {
+        if peer == self.self_id {
+            return;
+        }
+        if let Some(q) = self.mesh.inboxes.get_mut(&peer) {
+            q.push_back((self.self_id, bytes.to_vec()));
+        }
+    }
+
+    fn poll(&mut self, out: &mut Vec<(PeerId, Vec<u8>)>) {
+        if let Some(q) = self.mesh.inboxes.get_mut(&self.self_id) {
+            while let Some(p) = q.pop_front() {
+                out.push(p);
+            }
+        }
+    }
+
+    fn peers(&self) -> &[PeerId] {
+        // Filter self out for callers that iterate remotes.
+        // Stored list includes self; expose all and let session skip.
+        &self.mesh.peers
+    }
+}
+
+/// Lossy wrapper: drops packets with probability `drop_permille` / 1000 (deterministic LCG).
+pub struct LossyTransport<T> {
+    inner: T,
+    drop_permille: u32,
+    rng: u32,
+}
+
+impl<T> LossyTransport<T> {
+    /// Wrap `inner`; `drop_permille` in `0..=1000`.
+    #[must_use]
+    pub fn new(inner: T, drop_permille: u32, seed: u32) -> Self {
+        Self {
+            inner,
+            drop_permille: drop_permille.min(1000),
+            rng: seed | 1,
+        }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        // LCG (Numerical Recipes)
+        self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223);
+        self.rng
+    }
+
+    fn should_drop(&mut self) -> bool {
+        if self.drop_permille == 0 {
+            return false;
+        }
+        (self.next_u32() % 1000) < self.drop_permille
+    }
+}
+
+impl<T: Transport> Transport for LossyTransport<T> {
+    fn send(&mut self, peer: PeerId, bytes: &[u8]) {
+        if self.should_drop() {
+            return;
+        }
+        self.inner.send(peer, bytes);
+    }
+
+    fn poll(&mut self, out: &mut Vec<(PeerId, Vec<u8>)>) {
+        self.inner.poll(out);
+    }
+
+    fn peers(&self) -> &[PeerId] {
+        self.inner.peers()
+    }
+}
+
+/// Encode a [`TimedCmd`] to wire bytes (v1, little-endian, fixed layout).
+#[must_use]
+pub fn encode_timed_cmd(t: &TimedCmd) -> Vec<u8> {
+    let mut v = Vec::with_capacity(23);
+    v.push(1); // version
+    v.push(t.peer.0);
+    v.extend_from_slice(&t.tic.to_le_bytes());
+    v.extend_from_slice(&t.cmd.buttons.to_le_bytes());
+    v.extend_from_slice(&t.cmd.pitch.to_le_bytes());
+    v.extend_from_slice(&t.cmd.yaw.to_le_bytes());
+    v.extend_from_slice(&t.cmd.roll.to_le_bytes());
+    v.extend_from_slice(&t.cmd.forward_move.to_le_bytes());
+    v.extend_from_slice(&t.cmd.side_move.to_le_bytes());
+    v.extend_from_slice(&t.cmd.up_move.to_le_bytes());
+    v.push(t.cmd.weapon_select);
+    v
+}
+
+/// Decode wire bytes to [`TimedCmd`].
+///
+/// # Errors
+///
+/// Truncated / bad version.
+pub fn decode_timed_cmd(bytes: &[u8]) -> Result<TimedCmd, NetError> {
+    if bytes.len() < 23 || bytes[0] != 1 {
+        return Err(NetError::BadPacket);
+    }
+    let peer = PeerId(bytes[1]);
+    let tic = u32::from_le_bytes(bytes[2..6].try_into().map_err(|_| NetError::BadPacket)?);
+    let buttons = u32::from_le_bytes(bytes[6..10].try_into().map_err(|_| NetError::BadPacket)?);
+    let pitch = i16::from_le_bytes(bytes[10..12].try_into().map_err(|_| NetError::BadPacket)?);
+    let yaw = i16::from_le_bytes(bytes[12..14].try_into().map_err(|_| NetError::BadPacket)?);
+    let roll = i16::from_le_bytes(bytes[14..16].try_into().map_err(|_| NetError::BadPacket)?);
+    let forward_move =
+        i16::from_le_bytes(bytes[16..18].try_into().map_err(|_| NetError::BadPacket)?);
+    let side_move = i16::from_le_bytes(bytes[18..20].try_into().map_err(|_| NetError::BadPacket)?);
+    let up_move = i16::from_le_bytes(bytes[20..22].try_into().map_err(|_| NetError::BadPacket)?);
+    let weapon_select = bytes[22];
+    Ok(TimedCmd {
+        tic,
+        peer,
+        cmd: NetTicCmd {
+            buttons,
+            pitch,
+            yaw,
+            roll,
+            forward_move,
+            side_move,
+            up_move,
+            weapon_select,
+        },
+    })
+}
+
+/// Netplay errors.
+#[derive(Debug, thiserror::Error)]
+pub enum NetError {
+    /// Malformed packet.
+    #[error("bad packet")]
+    BadPacket,
+    /// Consistency check failed.
+    #[error("desync at tic {tic}")]
+    Desync {
+        /// Tic where checksums disagreed.
+        tic: u32,
+    },
+    /// Lobby rejected the peer.
+    #[error("rejected: {0}")]
+    Reject(String),
+    /// I/O failure (UDP bind/send).
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+impl NetError {
+    pub(crate) fn from_io(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl PartialEq for NetError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::BadPacket, Self::BadPacket) => true,
+            (Self::Desync { tic: a }, Self::Desync { tic: b }) => a == b,
+            (Self::Reject(a), Self::Reject(b)) => a == b,
+            (Self::Io(a), Self::Io(b)) => a.kind() == b.kind(),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for NetError {}
+
+/// Deterministic lockstep scheduler: advances only when every peer has a cmd for `next_tic`.
+#[derive(Debug)]
+pub struct LockstepSession {
+    local: PeerId,
+    peers: BTreeSet<PeerId>,
+    /// Input delay in tics (local cmd submitted for `sim_tic + delay`).
+    delay: u32,
+    /// Next simulation tic to release.
+    next_tic: u32,
+    /// Local wall tic counter (increments on each [`Self::submit_local`]).
+    local_tic: u32,
+    /// `(tic, peer) → cmd`.
+    buffer: BTreeMap<(u32, PeerId), NetTicCmd>,
+    /// Last checksum reported per peer for a tic.
+    checksums: BTreeMap<(u32, PeerId), u64>,
+}
+
+impl LockstepSession {
+    /// New session. `peers` must include `local`.
+    #[must_use]
+    pub fn new(local: PeerId, peers: impl IntoIterator<Item = PeerId>, delay: u32) -> Self {
+        let peers: BTreeSet<PeerId> = peers.into_iter().collect();
+        Self {
+            local,
+            peers,
+            delay: delay.max(1),
+            next_tic: 0,
+            local_tic: 0,
+            buffer: BTreeMap::new(),
+            checksums: BTreeMap::new(),
+        }
+    }
+
+    /// Local peer id.
+    #[must_use]
+    pub fn local(&self) -> PeerId {
+        self.local
+    }
+
+    /// Next sim tic awaiting a full command set.
+    #[must_use]
+    pub fn next_tic(&self) -> u32 {
+        self.next_tic
+    }
+
+    /// Submit local input for the current local tic (stored at `local_tic + delay`).
+    pub fn submit_local(&mut self, cmd: NetTicCmd) -> TimedCmd {
+        let tic = self.local_tic.saturating_add(self.delay);
+        self.local_tic = self.local_tic.saturating_add(1);
+        let t = TimedCmd {
+            tic,
+            peer: self.local,
+            cmd,
+        };
+        self.buffer.insert((t.tic, t.peer), t.cmd);
+        t
+    }
+
+    /// Ingest a remote (or replayed) timed command.
+    pub fn push_remote(&mut self, t: TimedCmd) {
+        self.buffer.insert((t.tic, t.peer), t.cmd);
+    }
+
+    /// Broadcast `timed` on `transport` to every other peer.
+    pub fn broadcast<T: Transport + ?Sized>(&self, transport: &mut T, timed: &TimedCmd) {
+        let bytes = encode_timed_cmd(timed);
+        let peers: Vec<PeerId> = transport.peers().to_vec();
+        for p in peers {
+            if p != self.local {
+                transport.send(p, &bytes);
+            }
+        }
+    }
+
+    /// Poll transport and decode into the buffer.
+    pub fn recv<T: Transport + ?Sized>(&mut self, transport: &mut T) {
+        let mut pkts = Vec::new();
+        transport.poll(&mut pkts);
+        for (_from, bytes) in pkts {
+            if let Ok(t) = decode_timed_cmd(&bytes) {
+                self.push_remote(t);
+            }
+        }
+    }
+
+    /// If every peer has a command for [`Self::next_tic`], pop and advance.
+    pub fn try_advance(&mut self) -> Option<BTreeMap<PeerId, NetTicCmd>> {
+        let tic = self.next_tic;
+        for &p in &self.peers {
+            if !self.buffer.contains_key(&(tic, p)) {
+                return None;
+            }
+        }
+        let mut frame = BTreeMap::new();
+        for &p in &self.peers {
+            if let Some(cmd) = self.buffer.remove(&(tic, p)) {
+                frame.insert(p, cmd);
+            }
+        }
+        self.next_tic = self.next_tic.saturating_add(1);
+        Some(frame)
+    }
+
+    /// Record a world checksum for desync detection.
+    pub fn report_checksum(&mut self, tic: u32, peer: PeerId, checksum: u64) {
+        self.checksums.insert((tic, peer), checksum);
+    }
+
+    /// Compare checksums for `tic` across all peers that reported.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::Desync`] when two peers disagree.
+    pub fn check_desync(&self, tic: u32) -> Result<(), NetError> {
+        let mut iter = self
+            .checksums
+            .iter()
+            .filter(|((t, _), _)| *t == tic)
+            .map(|(_, c)| *c);
+        let Some(first) = iter.next() else {
+            return Ok(());
+        };
+        for c in iter {
+            if c != first {
+                return Err(NetError::Desync { tic });
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lockstep_does_not_advance_until_all_peers_present() {
+        let p0 = PeerId(0);
+        let p1 = PeerId(1);
+        let mut s0 = LockstepSession::new(p0, [p0, p1], 1);
+        s0.push_remote(TimedCmd {
+            tic: 0,
+            peer: p0,
+            cmd: NetTicCmd::default(),
+        });
+        // Missing peer 1 for tic 0.
+        assert!(s0.try_advance().is_none());
+        s0.push_remote(TimedCmd {
+            tic: 0,
+            peer: p1,
+            cmd: NetTicCmd {
+                forward_move: 5,
+                ..Default::default()
+            },
+        });
+        let frame = s0.try_advance().expect("full frame");
+        assert_eq!(frame[&p1].forward_move, 5);
+    }
+
+    #[test]
+    fn two_peer_lockstep_advances_in_order() {
+        let p0 = PeerId(0);
+        let p1 = PeerId(1);
+        let mut mesh = LoopbackMesh::new([p0, p1]);
+        let mut s0 = LockstepSession::new(p0, [p0, p1], 1);
+        let mut s1 = LockstepSession::new(p1, [p0, p1], 1);
+
+        let c0 = NetTicCmd {
+            forward_move: 10,
+            ..Default::default()
+        };
+        let c1 = NetTicCmd {
+            forward_move: 20,
+            ..Default::default()
+        };
+
+        // Local tic 0 → stored at tic 1 (delay 1). Need tic 0 filled first.
+        // Seed tic 0 with empty cmds for both (sim start).
+        s0.push_remote(TimedCmd {
+            tic: 0,
+            peer: p0,
+            cmd: NetTicCmd::default(),
+        });
+        s0.push_remote(TimedCmd {
+            tic: 0,
+            peer: p1,
+            cmd: NetTicCmd::default(),
+        });
+        s1.push_remote(TimedCmd {
+            tic: 0,
+            peer: p0,
+            cmd: NetTicCmd::default(),
+        });
+        s1.push_remote(TimedCmd {
+            tic: 0,
+            peer: p1,
+            cmd: NetTicCmd::default(),
+        });
+
+        let t0 = s0.submit_local(c0);
+        {
+            let mut ep = mesh.endpoint_mut(p0);
+            s0.broadcast(&mut ep, &t0);
+        }
+        let t1 = s1.submit_local(c1);
+        {
+            let mut ep = mesh.endpoint_mut(p1);
+            s1.broadcast(&mut ep, &t1);
+        }
+        {
+            let mut ep = mesh.endpoint_mut(p0);
+            s0.recv(&mut ep);
+        }
+        {
+            let mut ep = mesh.endpoint_mut(p1);
+            s1.recv(&mut ep);
+        }
+
+        let f0 = s0.try_advance().expect("tic 0");
+        let f1 = s1.try_advance().expect("tic 0");
+        assert_eq!(f0, f1);
+        assert_eq!(f0.get(&p0), Some(&NetTicCmd::default()));
+
+        let f0 = s0.try_advance().expect("tic 1");
+        let f1 = s1.try_advance().expect("tic 1");
+        assert_eq!(f0, f1);
+        assert_eq!(f0[&p0].forward_move, 10);
+        assert_eq!(f0[&p1].forward_move, 20);
+    }
+
+    #[test]
+    fn desync_detected() {
+        let mut s = LockstepSession::new(PeerId(0), [PeerId(0), PeerId(1)], 1);
+        s.report_checksum(5, PeerId(0), 111);
+        s.report_checksum(5, PeerId(1), 222);
+        assert!(matches!(
+            s.check_desync(5),
+            Err(NetError::Desync { tic: 5 })
+        ));
+    }
+
+    #[test]
+    fn lossy_drops_some_packets() {
+        let p0 = PeerId(0);
+        let p1 = PeerId(1);
+        let mut mesh = LoopbackMesh::new([p0, p1]);
+        let mut sent = 0u32;
+        let mut got = 0u32;
+        for i in 0..200u32 {
+            let mut ep = LossyTransport::new(mesh.endpoint_mut(p0), 500, i.wrapping_mul(17));
+            let bytes = encode_timed_cmd(&TimedCmd {
+                tic: i,
+                peer: p0,
+                cmd: NetTicCmd::default(),
+            });
+            ep.send(p1, &bytes);
+            sent += 1;
+        }
+        let mut out = Vec::new();
+        mesh.endpoint_mut(p1).poll(&mut out);
+        got += out.len() as u32;
+        assert!(got < sent);
+        assert!(got > 0);
+    }
+
+    #[test]
+    fn codec_roundtrip() {
+        let t = TimedCmd {
+            tic: 42,
+            peer: PeerId(3),
+            cmd: NetTicCmd {
+                buttons: 7,
+                pitch: -1,
+                yaw: 2,
+                roll: 3,
+                forward_move: 4,
+                side_move: 5,
+                up_move: 6,
+                weapon_select: 2,
+            },
+        };
+        let bytes = encode_timed_cmd(&t);
+        assert_eq!(decode_timed_cmd(&bytes).unwrap(), t);
+    }
+}

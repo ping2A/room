@@ -1,0 +1,2 @@
+# wasm32-wasip1 tests in CI set CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime.
+# Native `cargo test` is unaffected.

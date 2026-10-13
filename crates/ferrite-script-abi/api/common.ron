@@ -1,0 +1,57 @@
+// Common (play + ui) host imports — seed for ferrite-abi-gen (`docs/12` §5.3).
+[
+  (
+    name: "log",
+    scope: "common",
+    params: [("level", "i32"), ("msg_ptr", "i32"), ("msg_len", "i32")],
+    results: [],
+    doc: "Host log line (UTF-8 in guest memory).",
+  ),
+  (
+    name: "level_time",
+    scope: "common",
+    params: [],
+    results: ["i32"],
+    doc: "Current level maptime in tics.",
+  ),
+  (
+    name: "actor_exists",
+    scope: "common",
+    params: [("actor", "i64")],
+    results: ["i32"],
+    doc: "Non-zero if ActorRef is live.",
+  ),
+  (
+    name: "player_count",
+    scope: "common",
+    params: [],
+    results: ["i32"],
+    doc: "Number of occupied player slots.",
+  ),
+  (
+    name: "name_intern",
+    scope: "common",
+    params: [("ptr", "i32"), ("len", "i32")],
+    results: ["i32"],
+    doc: "Intern UTF-8 bytes → NameRef (0 = empty).",
+  ),
+  (
+    name: "class_find",
+    scope: "common",
+    params: [("ptr", "i32"), ("len", "i32")],
+    results: ["i32"],
+    doc: "Lookup class by name → ClassRef (0 = missing).",
+  ),
+  (
+    name: "acs_execute",
+    scope: "common",
+    params: [
+      ("script", "i32"),
+      ("map", "i32"),
+      ("args_ptr", "i32"),
+      ("n", "i32"),
+    ],
+    results: ["i32"],
+    doc: "Queue/start ACS script (args = n×i32 at ptr). Same-map only in v1.",
+  ),
+]

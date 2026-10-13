@@ -1,0 +1,138 @@
+---
+source: crates/ferrite-defs/src/builder.rs
+expression: "crate::dump_debug(&defs)"
+---
+Definitions {
+    gameinfo: None,
+    mapinfo: MapInfo {
+        maps: {
+            "MAP01": MapDef {
+                name: "MAP01",
+                title: Some(
+                    "Snap",
+                ),
+                next: Some(
+                    "MAP02",
+                ),
+                secret_next: None,
+                sky1: None,
+                skybox: None,
+                music: Some(
+                    "D_RUNNIN",
+                ),
+                par_seconds: None,
+                cluster: None,
+                falling_damage: None,
+                clip_midtextures: None,
+                wrap_midtextures: None,
+                extras: {},
+            },
+        },
+        episodes: [],
+        clusters: {},
+    },
+    sounds: SoundRegistry {
+        sounds: {
+            "weapons/pistol": Lump(
+                "DSPISTOL",
+            ),
+        },
+        limits: {
+            "weapons/pistol": 1,
+        },
+        volumes: {},
+        map_music: {},
+        rolloffs: {},
+        pitchshifts: {},
+        warnings: [],
+    },
+    sndseq: SoundSeqRegistry {
+        sequences: {},
+        door_slots: {},
+        platform_slots: {},
+        environment_slots: {},
+        named_slots: {},
+        warnings: [],
+    },
+    language: Language {
+        tables: {},
+    },
+    textures: TextureRegistry {
+        by_name: {},
+    },
+    pnames: [],
+    animdefs: AnimDefs {
+        anims: [],
+        switches: [],
+        warps: [],
+        camera_textures: [],
+        warnings: [],
+    },
+    cvars: [
+        CvarDecl {
+            flags: CvarFlags {
+                server: true,
+                user: false,
+                nosave: false,
+                noarchive: false,
+                cheat: false,
+                latch: false,
+            },
+            ty: Int,
+            name: "my_cvar",
+            default: Some(
+                "3",
+            ),
+        },
+    ],
+    fonts: {},
+    sbarinfo: None,
+    terrain: TerrainInfo {
+        splashes: {},
+        terrains: {},
+        floors: {},
+        default_terrain: None,
+    },
+    decaldef: DecalInfo {
+        decals: {},
+        groups: {},
+        animators: {},
+        generators: {},
+    },
+    lockdefs: LockDefs {
+        locks: [],
+    },
+    keyconf: KeyConf {
+        commands: [],
+        warnings: [],
+    },
+    menudef: MenuDef {
+        blocks: [],
+        by_name: {},
+    },
+    loadacs: LoadAcs {
+        libraries: [],
+    },
+    gldefs: GlDefs {
+        skyboxes: {},
+        lights: {},
+        object_lights: [],
+        brightmaps: {},
+        glow_textures: [],
+        glow_flats: [],
+        glow_walls: [],
+        materials: {},
+    },
+    modeldefs: ModelDefs {
+        by_actor: {},
+    },
+    voxeldefs: VoxelDefs {
+        by_name: {},
+    },
+    playpal: None,
+    colormap: None,
+    tranmap: None,
+    switches: [],
+    complevel: Default,
+    warnings: [],
+}

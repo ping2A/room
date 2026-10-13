@@ -1,0 +1,209 @@
+// Minimal Doom SNDINFO (logical → IWAD lump). Extend toward full gzdoom sndinfo.doom.
+weapons/pistol		dspistol
+weapons/shotgf		dsshotgn
+weapons/shotgr		dsdshtgn
+weapons/chngun		dspistol
+weapons/rocklf		dsrlaunc
+weapons/rocklx		dsbarexp
+weapons/plasmaf		dsplasma
+weapons/plasmax		dsfirxpl
+weapons/bfgf		dsbfg
+weapons/bfgx		dsrxplod
+weapons/sawup		dssawup
+weapons/sawidle		dssawidl
+weapons/sawfull		dssawful
+weapons/sawhit		dssawhit
+weapons/sshotf		dsdshtgn
+weapons/sshoto		dsdbopn
+weapons/sshotl		dsdbload
+weapons/sshotc		dsdbcls
+switches/normbutn	dsswtchn
+switches/exitbutn	dsswtchx
+menu/cursor		dspistol
+menu/activate		dsswtchn
+menu/backup		dsswtchx
+menu/prompt		dsswtchn
+menu/dismiss		dsswtchx
+menu/invalid		dsoof
+menu/quit1		dspldeth
+$alias menu/choose menu/activate
+doors/open		dsdoropn
+doors/close		dsdorcls
+platforms/start		dspstart
+platforms/stop		dspstop
+floors/move		dsstnmov
+misc/teleport		dstelept
+misc/awakening		dsposit1
+misc/i_pkup		dsitemup
+misc/w_pkup		dswpnup
+misc/p_pkup		dsgetpow
+misc/k_pkup		dsitemup
+// PlayerPawn DECORATE short names + GZDoom logical paths.
+pl_pain			dsplpain
+pl_death		dspldeth
+pl_xdeath		dspdiehi
+player/male/pain	dsplpain
+player/male/death	dspldeth
+player/male/xdeath	dspdiehi
+player/male/gibbed	dsslop
+misc/gibbed		dsslop
+player/male/fist	dspunch
+player/male/jump	dsjump
+player/male/land	dsoof
+player/male/grunt	dsoof
+*noway			dsoof
+world/quake		dsrocklx
+world/barrelx		dsbarexp
+misc/secret		dsgetpow
+
+$random grunt/sight { grunt/sight1 grunt/sight2 grunt/sight3 }
+$random grunt/death { grunt/death1 grunt/death2 grunt/death3 }
+grunt/sight1		dsposit1
+grunt/sight2		dsposit2
+grunt/sight3		dsposit3
+grunt/attack		dspistol
+grunt/pain		dspopain
+grunt/death1		dspodth1
+grunt/death2		dspodth2
+grunt/death3		dspodth3
+grunt/active		dsposact
+shotguy/sight		dsdshtgn
+shotguy/attack		dsshotgn
+shotguy/pain		dspopain
+shotguy/death		dspodth2
+shotguy/active		dsposact
+$random imp/sight { imp/sight1 imp/sight2 }
+$random imp/death { imp/death1 imp/death2 }
+imp/sight1		dsbgsit1
+imp/sight2		dsbgsit2
+imp/active		dsbgact
+imp/pain		dsbgpain
+imp/death1		dsbgdth1
+imp/death2		dsbgdth2
+imp/attack		dsfirsht
+imp/shotx		dsfirxpl
+imp/melee		dsclaw
+demon/sight		dssgtsit
+demon/active		dssgtact
+demon/pain		dsdmpain
+demon/death		dssgtdth
+demon/melee		dssgtatk
+spectre/sight		dssgtsit
+spectre/active		dssgtact
+spectre/pain		dsdmpain
+spectre/death		dssgtdth
+spectre/melee		dssgtatk
+// MBF helper dog — IWAD may lack DSDG*; alias to demon until dog lumps present.
+dog/sight		dssgtsit
+dog/active		dssgtact
+dog/pain		dsdmpain
+dog/death		dssgtdth
+dog/attack		dssgtatk
+
+$random chainguy/sight { chainguy/sight1 chainguy/sight2 chainguy/sight3 }
+$random chainguy/death { chainguy/death1 chainguy/death2 chainguy/death3 }
+chainguy/sight1		dsposit1
+chainguy/sight2		dsposit2
+chainguy/sight3		dsposit3
+chainguy/active		dsposact
+chainguy/pain		dspopain
+chainguy/death1		dspodth1
+chainguy/death2		dspodth2
+chainguy/death3		dspodth3
+chainguy/attack		dsshotgn
+
+wolfss/sight		dssssit
+wolfss/active		dsposact
+wolfss/pain		dspopain
+wolfss/death		dsssdth
+wolfss/attack		dsshotgn
+
+caco/sight		dscacsit
+caco/active		dsdmact
+caco/pain		dsdmpain
+caco/death		dscacdth
+caco/attack		dsfirsht
+caco/shotx		dsfirxpl
+
+baron/sight		dsbrssit
+baron/active		dsdmact
+baron/pain		dsdmpain
+baron/melee		dsclaw
+baron/death		dsbrsdth
+baron/attack		dsfirsht
+baron/shotx		dsfirxpl
+
+knight/sight		dskntsit
+knight/active		dsdmact
+knight/pain		dsdmpain
+knight/death		dskntdth
+
+skull/sight		dssklatk
+skull/active		dsdmact
+skull/pain		dsdmpain
+skull/melee		dssklatk
+skull/death		dsfirxpl
+skull/howl		dssklatk
+
+spider/sight		dsspisit
+spider/active		dsdmact
+spider/pain		dsdmpain
+spider/attack		dsshotgn
+spider/death		dsspidth
+spider/walk		dsmetal
+
+baby/sight		dsbspsit
+baby/active		dsbspact
+baby/pain		dsdmpain
+baby/death		dsbspdth
+baby/walk		dsbspwlk
+baby/attack		dsplasma
+baby/shotx		dsfirxpl
+
+cyber/sight		dscybsit
+cyber/active		dsdmact
+cyber/pain		dsdmpain
+cyber/death		dscybdth
+cyber/hoof		dshoof
+
+skeleton/sight		dsskesit
+skeleton/active		dsskeact
+skeleton/pain		dspopain
+skeleton/melee		dsskepch
+skeleton/swing		dsskeswg
+skeleton/death		dsskedth
+skeleton/attack		dsskeatk
+skeleton/tracex		dsbarexp
+skeleton/tracerex	dsbarexp
+
+fatso/sight		dsmansit
+fatso/active		dsposact
+fatso/pain		dsmnpain
+fatso/raiseguns		dsmanatk
+fatso/death		dsmandth
+fatso/attack		dsfirsht
+fatso/shotx		dsfirxpl
+
+pain/sight		dspesit
+pain/active		dsdmact
+pain/pain		dspepain
+pain/death		dspedth
+
+vile/sight		dsvilsit
+vile/active		dsvilact
+vile/pain		dsvipain
+vile/death		dsvildth
+vile/raise		dsslop
+vile/start		dsvilatk
+vile/stop		dsbarexp
+vile/firestrt		dsflamst
+vile/firecrkl		dsflame
+
+brain/sight		dsbossit
+brain/pain		dsbospn
+brain/death		dsbosdth
+brain/spit		dsbospit
+brain/cube		dsboscub
+brain/spawn		dstelept
+brain/cubeboom		dsbarexp
+misc/brainexplode	dsbarexp

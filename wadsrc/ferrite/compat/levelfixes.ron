@@ -1,0 +1,7 @@
+// Per-map geometry / special fixes (`docs/19-compatibility.md` §3).
+// Keys are map lump MD5 (lowercase hex). Ops mirror GZDoom LevelPostProcessor.
+// Bootstrap corpus — expand from wadsrc/static/zscript/level_compatibility.zs.
+{
+    // Synthetic / unit-test placeholder (all-zero MD5 never matches real maps).
+    "00000000000000000000000000000000": [],
+}

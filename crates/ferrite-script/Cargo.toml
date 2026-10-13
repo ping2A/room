@@ -1,0 +1,25 @@
+[package]
+name = "ferrite-script"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "WASM host runtime (wasmtime / wasmi / browser backends)."
+
+[lints]
+workspace = true
+
+[features]
+default = ["wasmi"]
+wasmi = ["dep:wasmi"]
+wasmtime = ["dep:wasmtime"]
+
+[dependencies]
+ferrite-script-abi = { path = "../ferrite-script-abi" }
+thiserror = { workspace = true }
+wasmi = { workspace = true, optional = true }
+wasmparser = { workspace = true }
+wasmtime = { workspace = true, optional = true }
+
+[dev-dependencies]
+wat = { workspace = true }

@@ -1,0 +1,24 @@
+// New ZDoom brace MAPINFO
+map MAP01 "Entryway"
+{
+    next = MAP02
+    secretnext = MAP03
+    sky1 = SKY1
+    music = D_RUNNIN
+}
+
+map MAP02 "Underhalls"
+{
+    next = MAP03
+    sky1 = SKY1
+}
+
+episode MAP01
+{
+    name = "Knee-Deep in the Dead"
+}
+
+defaultmap
+{
+    sucktime = 1
+}

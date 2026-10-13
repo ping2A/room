@@ -1,0 +1,60 @@
+// M10 bootstrap — hitscan / imp attack muzzle lights (object-frame binds).
+pointlight ZombieShot
+{
+	color 1.0 0.85 0.4
+	size 56
+	offset 0 0 40
+}
+pointlight ShotgunShot
+{
+	color 1.0 0.8 0.35
+	size 72
+	offset 0 0 40
+}
+pointlight ChaingunShot
+{
+	color 1.0 0.9 0.45
+	size 48
+	offset 0 0 40
+}
+pointlight ImpFire
+{
+	color 1.0 0.45 0.15
+	size 64
+	offset 0 0 40
+}
+object ZombieMan
+{
+	frame F light ZombieShot
+}
+object ShotgunGuy
+{
+	frame F light ShotgunShot
+}
+object ChaingunGuy
+{
+	frame F light ChaingunShot
+	frame E light ChaingunShot
+}
+object DoomImp
+{
+	frame G light ImpFire
+}
+
+// Glow bootstrap — nukage / lava flats draw fullbright.
+Glow
+{
+	Flats
+	{
+		NUKAGE1
+		NUKAGE2
+		NUKAGE3
+		LAVA1
+		LAVA2
+		LAVA3
+		LAVA4
+		BLOOD1
+		BLOOD2
+		BLOOD3
+	}
+}

@@ -1,0 +1,17 @@
+[package]
+name = "ferrite-nodebuild"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Internal BSP and GL node builder (ZDBSP-equivalent)."
+
+[lints]
+workspace = true
+
+[dependencies]
+ferrite-core = { path = "../ferrite-core" }
+ferrite-map = { path = "../ferrite-map" }
+
+[dev-dependencies]
+ferrite-testkit = { path = "../ferrite-testkit" }

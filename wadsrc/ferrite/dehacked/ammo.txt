@@ -1,0 +1,13 @@
+# vanilla ammo index → class (NULL = none)
+0 Clip
+1 Shell
+2 Cell
+3 RocketAmmo
+4 GoldWandAmmo
+5 NULL
+6 BlasterAmmo
+7 SkullRodAmmo
+8 PhoenixRodAmmo
+9 MaceAmmo
+10 Mana1
+11 Mana2

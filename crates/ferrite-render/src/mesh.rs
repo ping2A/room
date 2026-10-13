@@ -1,0 +1,130 @@
+//! GPU vertex layouts (bytemuck-castable).
+
+use bytemuck::{Pod, Zeroable};
+use glam::{Vec2, Vec3};
+
+/// Wall quad corner (streamed every frame).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct WallVertex {
+    /// XYZ map units (Z up).
+    pub pos: [f32; 3],
+    /// UV.
+    pub uv: [f32; 2],
+    /// Light level 0–255 as 0–1.
+    pub light: f32,
+    /// `x` = alpha; `y` = style: `0` solid (holes→black), `0.5` masked discard, `1` fuzz.
+    pub _pad: [f32; 2],
+    /// Lightmap atlas UV (ZDRay / FLMP surface).
+    pub lm_uv: [f32; 2],
+}
+
+impl WallVertex {
+    /// Construct (`alpha` = 1, solid / no mask, `lm_uv` = 0).
+    #[must_use]
+    pub fn new(pos: Vec3, uv: Vec2, light: f32) -> Self {
+        Self {
+            pos: pos.to_array(),
+            uv: uv.to_array(),
+            light,
+            _pad: [1.0, 0.0],
+            lm_uv: [0.0, 0.0],
+        }
+    }
+
+    /// Set opacity in `_pad[0]` (shader `@location(3).x`).
+    #[must_use]
+    pub fn with_alpha(mut self, alpha: f32) -> Self {
+        self._pad[0] = alpha.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Discard transparent texels (sprites, two-sided midtextures / grates).
+    ///
+    /// Solid one-sided / upper / lower walls stay at `0` so TEXTUREX holes are
+    /// filled black instead of showing the room behind.
+    #[must_use]
+    pub fn with_masked(mut self) -> Self {
+        if self._pad[1] < 0.45 {
+            self._pad[1] = 0.5;
+        }
+        self
+    }
+
+    /// Spectre fuzz (`_pad[1] = 1`); also implies masked holes.
+    #[must_use]
+    pub fn with_fuzz(mut self, enabled: bool) -> Self {
+        if enabled {
+            self._pad[1] = 1.0;
+        }
+        self
+    }
+
+    /// Set lightmap atlas UV.
+    #[must_use]
+    pub fn with_lm_uv(mut self, lm: Vec2) -> Self {
+        self.lm_uv = lm.to_array();
+        self
+    }
+}
+
+/// Flat triangle vertex.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct FlatVertex {
+    /// XYZ.
+    pub pos: [f32; 3],
+    /// UV (world XY / 64 for Doom flats).
+    pub uv: [f32; 2],
+    /// Light 0–1.
+    pub light: f32,
+    /// `x` = alpha; `y` = same style codes as [`WallVertex`] (`0` = solid fill).
+    pub _pad: [f32; 2],
+    /// Lightmap atlas UV.
+    pub lm_uv: [f32; 2],
+}
+
+impl FlatVertex {
+    /// Construct (`alpha` = 1, solid fill, `lm_uv` = 0).
+    #[must_use]
+    pub fn new(pos: Vec3, uv: Vec2, light: f32) -> Self {
+        Self {
+            pos: pos.to_array(),
+            uv: uv.to_array(),
+            light,
+            _pad: [1.0, 0.0],
+            lm_uv: [0.0, 0.0],
+        }
+    }
+
+    /// Set opacity in `_pad[0]` (shader `@location(3)`).
+    #[must_use]
+    pub fn with_alpha(mut self, alpha: f32) -> Self {
+        self._pad[0] = alpha.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set lightmap atlas UV.
+    #[must_use]
+    pub fn with_lm_uv(mut self, lm: Vec2) -> Self {
+        self.lm_uv = lm.to_array();
+        self
+    }
+}
+
+/// Shared view uniforms (std140-ish packing for wgpu).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct ViewUniforms {
+    /// Column-major view-projection.
+    pub view_proj: [[f32; 4]; 4],
+    /// Eye XYZ + pad.
+    pub eye: [f32; 4],
+    /// `x` = [`crate::LightMode`] as u8, `y` = globVis, `z` = fog density,
+    /// `w` = [`crate::FuzzType`] as u8 (`gl_fuzztype`).
+    pub light_params: [f32; 4],
+    /// World clip plane `nx,ny,nz,d` (`n·p + d > 0` discarded). Zero xyz = off.
+    pub clip_plane: [f32; 4],
+    /// `x` = lightmap blend strength (0 = off); `yzw` reserved.
+    pub lightmap_params: [f32; 4],
+}

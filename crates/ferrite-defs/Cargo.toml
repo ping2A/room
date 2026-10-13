@@ -1,0 +1,20 @@
+[package]
+name = "ferrite-defs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Compiles text lumps into immutable Definitions registries."
+
+[lints]
+workspace = true
+
+[dependencies]
+ferrite-core = { path = "../ferrite-core" }
+ferrite-formats = { path = "../ferrite-formats" }
+ferrite-sc = { path = "../ferrite-sc" }
+ferrite-vfs = { path = "../ferrite-vfs" }
+thiserror.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

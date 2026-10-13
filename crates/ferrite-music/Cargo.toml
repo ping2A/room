@@ -1,0 +1,16 @@
+[package]
+name = "ferrite-music"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "MUS/MIDI sequencer, SoundFont, OPL3, trackers, and streams."
+
+[lints]
+workspace = true
+
+[dependencies]
+ferrite-formats = { path = "../ferrite-formats" }
+nuked-opl3.workspace = true
+rustysynth.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,17 @@
+; Old Hexen-style MAPINFO
+map 1 "Winnowing Hall"
+next 2
+secretnext 9
+sky1 SKY2 0
+cluster 1
+lightning
+music chess
+
+map 2 "Seven Portals"
+next 3
+sky1 SKY2 0
+cluster 1
+music foo
+
+episode 1
+name "Hexen Hub"

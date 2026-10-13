@@ -1,0 +1,17 @@
+---
+description: Keep docs/21-milestone-progress.md updated as milestone work lands
+alwaysApply: true
+---
+
+# Milestone progress tracker
+
+When implementing Ferrite milestones:
+
+1. Read `docs/21-milestone-progress.md` for current Status / active focus before starting work.
+2. Prefer the earliest incomplete milestone’s open acceptance items (see also `docs/20-roadmap-testing.md`).
+3. After landing work (code + tests), update `docs/21-milestone-progress.md` in the same change:
+   - Flip completed checklist items `[ ]` → `[x]`.
+   - Adjust the §0 dashboard Status / Approx % / Active focus.
+   - Prepend a short dated line under **Log**.
+4. Only set a milestone Status to `done` when **all** of its Acceptance boxes are `[x]` and CI evidence exists — never from chat summary alone.
+5. Do not invent parallel progress docs; this file is the single living checklist.

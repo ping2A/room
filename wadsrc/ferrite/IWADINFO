@@ -1,0 +1,49 @@
+// Minimal IWADINFO for M5 Freedoom / Doom detection (expand toward GZDoom parity).
+
+IWad
+{
+    Name = "Freedoom: Phase 2"
+    Autoname = "doom.freedoom.phase2"
+    Game = "Doom"
+    Config = "Doom"
+    MustContain = "MAP01", "MAP02", "PLAYPAL", "TITLEPIC"
+}
+Names { "freedoom2.wad", "freedoom2.WAD" }
+
+IWad
+{
+    Name = "Freedoom: Phase 1"
+    Autoname = "doom.freedoom.phase1"
+    Game = "Doom"
+    Config = "Doom"
+    MustContain = "E1M1", "E1M2", "PLAYPAL", "TITLEPIC"
+}
+Names { "freedoom1.wad", "freedoom1.WAD" }
+
+IWad
+{
+    Name = "FreeDM"
+    Autoname = "doom.freedoom.freedm"
+    Game = "Doom"
+    Config = "Doom"
+    MustContain = "MAP01", "PLAYPAL", "TITLEPIC"
+}
+Names { "freedm.wad", "freedm.WAD" }
+
+IWad
+{
+    Name = "DOOM 2: Hell on Earth"
+    Autoname = "doom.id.doom2.commercial"
+    Game = "Doom"
+    Config = "Doom"
+    MustContain = "MAP01", "MAP02", "PLAYPAL", "TITLEPIC"
+}
+Names { "doom2.wad", "Doom2.wad", "DOOM2.WAD" }
+
+Order
+{
+    "doom.freedoom.phase2"
+    "doom.freedoom.phase1"
+    "doom.freedoom.freedm"
+    "doom.id.doom2.commercial"
+}

@@ -1,0 +1,6 @@
+# Misc 0 field targets (M5)
+# Initial Health → DoomPlayer Health
+# Initial Bullets → DoomPlayer StartBullets
+# Max Health → DoomPlayer Inventory.MaxAmount
+# Green Armor Class / Blue Armor Class / Max Soulsphere / God mode health:
+#   deferred until armor/inventory class wiring is complete
