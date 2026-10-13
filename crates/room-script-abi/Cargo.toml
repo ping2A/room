@@ -1,0 +1,10 @@
+[package]
+name = "room-script-abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "#![no_std] ABI types shared between host and WASM guests."
+
+[lints]
+workspace = true

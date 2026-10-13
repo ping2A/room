@@ -11,5 +11,5 @@ fuzz_target!(|data: &[u8]| {
     } else {
         bytes.extend_from_slice(data);
     }
-    let _ = ferrite_vfs::VfsBuilder::new().mount_memory("fuzz.pk7", bytes);
+    let _ = room_vfs::VfsBuilder::new().mount_memory("fuzz.pk7", bytes);
 });

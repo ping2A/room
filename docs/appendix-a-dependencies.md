@@ -2,7 +2,7 @@
 
 ## 1. Policy
 
-"Pure Rust" means: **no C/C++/assembly compiled as part of the Ferrite build**, except in the explicit allowlist below. Linking against **operating-system APIs** (graphics drivers, audio servers, windowing, udev) is allowed because it's unavoidable and doesn't vendor foreign code.
+"Pure Rust" means: **no C/C++/assembly compiled as part of the Room build**, except in the explicit allowlist below. Linking against **operating-system APIs** (graphics drivers, audio servers, windowing, udev) is allowed because it's unavoidable and doesn't vendor foreign code.
 
 Enforcement: `cargo deny` with a `[bans]` section listing crates that pull `cc`/`cmake`/`bindgen`-built native code; CI fails on any new one. Licences allowed: MIT, Apache-2.0, BSD-2/3, Zlib, ISC, Unicode, MPL-2.0, LGPL-2.1+ (only for ported emulators, see audio), GPL-2.0+/GPL-3.0+ (project is GPL-3.0-or-later). Any new dependency requires a line in this file with its purpose.
 
@@ -13,7 +13,7 @@ Before adding a crate, verify its current maintenance state and that the version
 | Area | Crate | Purpose / notes |
 |---|---|---|
 | core | `bitflags`, `thiserror`, `smallvec`, `arrayvec`, `indexmap`, `foldhash` (or `ahash` with fixed seed), `bytes`, `serde`, `ron` (compat `levelfixes.ron`), `postcard`, `xxhash-rust`, `crc32fast`, `tracing`, `tracing-subscriber`, `libm` | general |
-| cli | `clap`, `anyhow` | `ferrite-cli` / tool binaries |
+| cli | `clap`, `anyhow` | `room-cli` / tool binaries |
 | hashing | `md-5`, `sha2` | MD5 for compat DB/fingerprints, SHA-256 for module identity |
 | vfs | `zip` 8.x (default features off; `deflate` + `bzip2` + `lzma` — pure Rust via `libbz2-rs-sys` / `lzma-rust2`; never enable `bzip2-rs`/`xz` which pull C), `sevenz-rust2` (7z) | archives |
 | images | `png`, `gif` (encode screenshots / in-game GIF capture), `zune-jpeg`, hand-rolled TGA/BMP/PCX (M2); `image` (default-features off; golden tests + later decode), `image-webp`, `ddsfile`, `texture2ddecoder` | decoding / capture |
@@ -22,8 +22,8 @@ Before adding a crate, verify its current maintenance state and that the version
 | platform | `winit`, `pollster` (block on wgpu futures in native shells), `raw-window-handle`, `directories`, `arboard`, `rfd`, `gilrs` (feature `gamepad`), `midir` (optional hardware MIDI) | native shell |
 | audio | `lewton` (Vorbis), `claxon` (FLAC), `cpal` (native device I/O; OS `-sys` only), `symphonia`, `rustysynth`; later `rtrb`, `rubato`, `xmrs` + `xmrsplayer`, `assert_no_alloc` | sound & music |
 | scripting | `wasmparser`, `wasm-encoder`, `wasmi`, `wasmtime` (native only; Cranelift is pure Rust) | WASM host |
-| net | `matchbox_socket` (WebRTC, web + native); `snow` (Noise Protocol Framework; feature `noise`, pure-Rust resolver) | transport / encryption |
-| web | `wasm-bindgen`, `wasm-bindgen-futures`, `js-sys`, `web-sys`, `console_error_panic_hook`, `wasm-bindgen-test` | browser (`ferrite-web` feature `browser`) |
+| net | `matchbox_socket` (WebRTC, web + native); `snow` (Noise Protocol Framework; feature `noise`, pure-Rust resolver); `tungstenite` (`handshake` only, plain `ws://`) in `room-ws` | transport / encryption / WS relay |
+| web | `wasm-bindgen`, `wasm-bindgen-futures`, `js-sys`, `web-sys` (incl. `WebSocket`), `console_error_panic_hook`, `wasm-bindgen-test` | browser (`room-web` feature `browser`) |
 | parallel | `rayon` (native only paths) | loading, scene build |
 | config | `toml`, `toml_edit` (preserve user comments), `rust-ini` (gzdoom.ini import) | |
 | guest SDK | `talc` or `dlmalloc`, `libm` | WASM guest |

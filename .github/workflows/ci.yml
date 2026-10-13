@@ -52,18 +52,18 @@ jobs:
       - name: fetch Freedoom
         shell: bash
         run: bash scripts/fetch-freedoom.sh
-      - name: pack ferrite.pk3
+      - name: pack room.pk3
         shell: bash
-        run: bash scripts/pack-ferrite-pk3.sh
+        run: bash scripts/pack-room-pk3.sh
       - run: cargo test --workspace
       - name: engine data from packed pk3
         shell: bash
-        run: cargo test -p ferrite-game --lib engine_data::tests::load_packed_ferrite_pk3_engine_data -- --exact --nocapture
+        run: cargo test -p room-game --lib engine_data::tests::load_packed_room_pk3_engine_data -- --exact --nocapture
       - name: engine data from embedded pk3
         shell: bash
-        run: cargo test -p ferrite-game --lib engine_data::tests::load_embedded_ferrite_pk3_engine_data -- --exact --nocapture
+        run: cargo test -p room-game --lib engine_data::tests::load_embedded_room_pk3_engine_data -- --exact --nocapture
       - name: dmath sample hash
-        run: cargo test -p ferrite-core dmath::tests::dmath_sample_hash_matches_golden -- --exact --nocapture
+        run: cargo test -p room-core dmath::tests::dmath_sample_hash_matches_golden -- --exact --nocapture
 
   wasm:
     runs-on: ubuntu-latest
@@ -73,8 +73,8 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --target wasm32-unknown-unknown -p ferrite-web --features browser
-      - run: cargo build --target wasm32-unknown-unknown -p ferrite-core -p ferrite-script-abi -p ferrite-script-sdk
+      - run: cargo build --target wasm32-unknown-unknown -p room-web --features browser
+      - run: cargo build --target wasm32-unknown-unknown -p room-core -p room-script-abi -p room-script-sdk
 
   web-browser-tests:
     runs-on: ubuntu-latest
@@ -99,7 +99,7 @@ jobs:
           WASM_BINDGEN_TEST_TIMEOUT: "120"
           GECKODRIVER: geckodriver
         run: >
-          cargo test -p ferrite-web --test browser_smoke
+          cargo test -p room-web --test browser_smoke
           --target wasm32-unknown-unknown --features browser -- --nocapture
 
   dmath-wasm:
@@ -116,7 +116,7 @@ jobs:
       - name: build dmath hash for wasi
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime
-        run: cargo test -p ferrite-core --target wasm32-wasip1 dmath::tests::dmath_sample_hash_matches_golden -- --exact
+        run: cargo test -p room-core --target wasm32-wasip1 dmath::tests::dmath_sample_hash_matches_golden -- --exact
 
   determinism:
     runs-on: ubuntu-latest
@@ -137,12 +137,12 @@ jobs:
       - name: fetch Freedoom
         run: bash scripts/fetch-freedoom.sh
       - name: native demo / bundle verify
-        run: cargo test -p ferrite-game --test freedoom_smoke committed -- --nocapture
+        run: cargo test -p room-game --test freedoom_smoke committed -- --nocapture
       - name: wasm32-wasip1 demo fingerprint parity
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime
         run: >
-          cargo test -p ferrite-game --target wasm32-wasip1 --lib
+          cargo test -p room-game --target wasm32-wasip1 --lib
           fingerprint_stable -- --nocapture
 
   render-smoke:
@@ -154,9 +154,9 @@ jobs:
       - name: lavapipe / Vulkan ICD
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
       - name: offscreen smoke
-        run: cargo test -p ferrite-render --test offscreen_smoke -- --nocapture
+        run: cargo test -p room-render --test offscreen_smoke -- --nocapture
       - name: golden room SSIM (lavapipe)
-        run: cargo test -p ferrite-render --test golden_room -- --nocapture
+        run: cargo test -p room-render --test golden_room -- --nocapture
       - name: cache Freedoom WADs
         uses: actions/cache@v4
         with:
@@ -165,7 +165,7 @@ jobs:
       - name: fetch Freedoom
         run: bash scripts/fetch-freedoom.sh
       - name: Freedoom MAP01 offscreen + fps floor
-        run: cargo test -p ferrite-render --test freedoom_map01 -- --nocapture
+        run: cargo test -p room-render --test freedoom_map01 -- --nocapture
 
   doc:
     runs-on: ubuntu-latest

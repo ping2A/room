@@ -1,6 +1,6 @@
 # AGENTS.md — Implementation guide for coding agents
 
-You are implementing **Ferrite**, a pure-Rust, modern re-implementation of the
+You are implementing **Room**, a pure-Rust, modern re-implementation of the
 ZDoom/GZDoom family of Doom source ports. This file is your entry point. Read it
 fully before writing code, then read the documents listed under *Reading order*.
 
@@ -33,7 +33,7 @@ with the same behaviour, while:
 1. **Determinism of the playsim.** Everything that runs inside a game tic must
    be bit-for-bit reproducible across platforms (x86-64, aarch64, wasm32) given
    the same inputs. Read `docs/02-conventions.md §Determinism` before touching
-   `ferrite-sim`, `ferrite-acs` or `ferrite-script`. No `HashMap` iteration in
+   `room-sim`, `room-acs` or `room-script`. No `HashMap` iteration in
    sim code, no `f32`/`f64` transcendental functions from `std`, no wall-clock
    reads, no threads.
 2. **The renderer never mutates game state.** It reads an immutable snapshot
@@ -41,7 +41,7 @@ with the same behaviour, while:
 3. **Pure Rust.** Do not add a dependency that compiles C/C++ (`cc`, `cmake`
    build scripts) without it being listed as allowed in Appendix A. System API
    bindings (graphics drivers via wgpu, ALSA/CoreAudio/WASAPI via cpal) are allowed.
-4. **Library first.** No crate except `ferrite-app` may assume a window, a
+4. **Library first.** No crate except `room-app` may assume a window, a
    filesystem, a GPU, or an audio device exists. Inject them via traits.
 5. **Compatibility is a feature, not an afterthought.** When documentation and
    GZDoom behaviour disagree, GZDoom behaviour wins for content compatibility,
@@ -49,8 +49,8 @@ with the same behaviour, while:
 6. **Every parser is fuzzable.** Every function that takes untrusted bytes or
    text returns `Result` and never panics. Add a `cargo fuzz` target per parser.
 7. **No `unsafe`** outside crates explicitly allowed to use it
-   (`ferrite-render` for buffer casting via `bytemuck` only, `ferrite-script`
-   for host↔guest memory access, `ferrite-script-sdk` for WASM import/export
+   (`room-render` for buffer casting via `bytemuck` only, `room-script`
+   for host↔guest memory access, `room-script-sdk` for WASM import/export
    stubs). Each `unsafe` block carries a `// SAFETY:` comment.
 
 ## 4. Licensing guidance (read before porting any code)
@@ -58,7 +58,7 @@ with the same behaviour, while:
 GZDoom is GPL-3.0-or-later (with parts under other compatible licences: id's
 Doom source GPL-2.0-or-later, Raven sources, BSD-licensed parts). If you
 **translate GZDoom/ZDoom source code** into Rust — even loosely — the result is
-a derivative work and the Ferrite workspace must be distributed under
+a derivative work and the Room workspace must be distributed under
 **GPL-3.0-or-later**. The default project licence is therefore
 **GPL-3.0-or-later**. Behavioural tables that are facts (state tables from
 `info.c`, line special numbers, sprite names) are taken as data. Keep a
@@ -89,7 +89,7 @@ that clean-room implementation is possible.
   integration. Golden files under `testdata/` (never commit commercial IWAD
   content; use Freedoom and generated fixtures — see roadmap doc §Test assets).
 - Run `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  and `cargo build --target wasm32-unknown-unknown -p ferrite-web` before
+  and `cargo build --target wasm32-unknown-unknown -p room-web` before
   considering a task done.
 
 ## 6. Document index
@@ -119,6 +119,6 @@ docs/
   20-roadmap-testing.md        milestones, acceptance tests, test assets, CI
   21-milestone-progress.md     living progress checklists for M0–M14 (update often)
   appendix-a-dependencies.md   allowed crates and policy
-  appendix-b-gzdoom-source-map.md  GZDoom source → Ferrite crate mapping
+  appendix-b-gzdoom-source-map.md  GZDoom source → Room crate mapping
   appendix-c-glossary.md       terms
 ```

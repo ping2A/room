@@ -13,35 +13,35 @@ hardening). **M8** when Heretic/Hexen IWADs available; M9 deferred (see `21`).
 
 ### M0 — Workspace and core
 - Workspace skeleton with all crates (empty `lib.rs` + README), lints, CI pipeline (§4).
-- `ferrite-core`: `Name`/`NameTable`, typed IDs, generational arena, `DVec2/3`, `Angle`, `Fixed`, `BAM`, `dmath` (deterministic sin/cos/tan/atan2/sqrt-wrappers/pow/exp/log), `conv` helpers, SFMT-607 + `FRandom`-compatible named RNG set, vanilla `rndtable`.
+- `room-core`: `Name`/`NameTable`, typed IDs, generational arena, `DVec2/3`, `Angle`, `Fixed`, `BAM`, `dmath` (deterministic sin/cos/tan/atan2/sqrt-wrappers/pow/exp/log), `conv` helpers, SFMT-607 + `FRandom`-compatible named RNG set, vanilla `rndtable`.
 - **Accept:** SFMT reference vectors; `dmath` results bit-identical on x86-64, aarch64, wasm32 (CI job compares hashes of 1M sampled outputs); arena property tests.
 
 ### M1 — Resources
-- `ferrite-vfs` (WAD, ZIP incl. deflate/bzip2/lzma, 7z, directories, nested WADs, filters, single-root stripping), IWAD detection with IWADINFO, load order & autoload.
-- `ferrite-cli wad ls|extract|info`.
+- `room-vfs` (WAD, ZIP incl. deflate/bzip2/lzma, 7z, directories, nested WADs, filters, single-root stripping), IWAD detection with IWADINFO, load order & autoload.
+- `room-cli wad ls|extract|info`.
 - **Accept:** VFS unit/integration tests (`03 §9`); detection of every IWAD kind using *synthetic* WADs that contain only the `MustContain` lump names; fuzz targets run 60 s in CI without crash.
 
 ### M2 — Formats and definitions bootstrap
-- `ferrite-formats`: patches, flats, PNG (+grAb/alPh), JPEG, TGA/PCX/BMP, PLAYPAL/COLORMAP, DMX/WAV/OGG/FLAC/MP3 decoding, MUS→MIDI, fonts.
-- `ferrite-sc` scanner; `ferrite-defs` phases 0–6 and 9: GAMEINFO, LANGUAGE, CVARINFO, TEXTURES/TEXTUREx/PNAMES, ANIMATED/ANIMDEFS/SWITCHES, FONTDEFS, MAPINFO (all syntaxes) + UMAPINFO, SNDINFO, SNDSEQ.
-- `ferrite-cli defs dump`.
+- `room-formats`: patches, flats, PNG (+grAb/alPh), JPEG, TGA/PCX/BMP, PLAYPAL/COLORMAP, DMX/WAV/OGG/FLAC/MP3 decoding, MUS→MIDI, fonts.
+- `room-sc` scanner; `room-defs` phases 0–6 and 9: GAMEINFO, LANGUAGE, CVARINFO, TEXTURES/TEXTUREx/PNAMES, ANIMATED/ANIMDEFS/SWITCHES, FONTDEFS, MAPINFO (all syntaxes) + UMAPINFO, SNDINFO, SNDSEQ.
+- `room-cli defs dump`.
 - **Accept:** golden dumps (insta) for Freedoom Phase 1/2 definitions; MAPINFO parser accepts every MAPINFO in a corpus of test files (§3) with zero errors.
 
 ### M3 — Maps
-- Doom/Hexen/UDMF loaders, validation, XLAT translation, node loading (all formats), `ferrite-nodebuild`, blockmap build, reject, slopes, 3D floor & portal setup data, polyobject setup.
-- `ferrite-testkit` crate: a UDMF **map builder DSL** for tests (rooms, doors, slopes, portals in a few lines of Rust).
-- `ferrite-cli map info|render2d|nodebuild` (2D SVG/PNG of lines/subsectors).
+- Doom/Hexen/UDMF loaders, validation, XLAT translation, node loading (all formats), `room-nodebuild`, blockmap build, reject, slopes, 3D floor & portal setup data, polyobject setup.
+- `room-testkit` crate: a UDMF **map builder DSL** for tests (rooms, doors, slopes, portals in a few lines of Rust).
+- `room-cli map info|render2d|nodebuild` (2D SVG/PNG of lines/subsectors).
 - **Accept:** all Freedoom maps load; node builder convexity/closure checks; point-in-sector parity vs original nodes on a grid; UDMF lexer ≥ 100 MB/s benchmark.
 
 ### M4 — Renderer foundation + shells
-- `ferrite-render`: device setup (full + downlevel tiers), texture manager, BSP walk + clipper, walls/flats/sprites (static), classic sky, sector lighting modes incl. `DoomSoftware` and `ClassicPalette`, fog, 2D canvas, fonts, screenshots, offscreen API.
-- `ferrite-app` (window, free-fly camera "map viewer" mode), `ferrite-web` (same viewer in browser, WebGPU + WebGL2).
+- `room-render`: device setup (full + downlevel tiers), texture manager, BSP walk + clipper, walls/flats/sprites (static), classic sky, sector lighting modes incl. `DoomSoftware` and `ClassicPalette`, fog, 2D canvas, fonts, screenshots, offscreen API.
+- `room-app` (window, free-fly camera "map viewer" mode), `room-web` (same viewer in browser, WebGPU + WebGL2).
 - **Accept:** golden images for test maps; viewer runs Freedoom MAP01 at target fps on desktop and in Chrome/Firefox.
 
 ### M5 — Doom playsim
-- `ferrite-decorate` (full parser; built-in Doom actors in `ferrite.pk3` as DECORATE); `ferrite-dehacked` (vanilla + BEX); `ferrite-sim` core: world, thinkers, movement/collision, sight, hitscan, damage, inventory/weapons, player, Doom AI, Doom specials via XLAT, sector specials, movers, lights, switches, teleports, level flow, intermission/finale, title loop.
-- `ferrite-audio` SFX + `ferrite-music` (MUS/MIDI → SoundFont; OPL3), `ferrite-input`, `ferrite-console` (core commands, CVars, binds, config), `ferrite-ui` (Doom menus, Doom status bar, fullscreen HUD, automap, messages).
-- Ferrite demo recording/playback + checksums.
+- `room-decorate` (full parser; built-in Doom actors in `room.pk3` as DECORATE); `room-dehacked` (vanilla + BEX); `room-sim` core: world, thinkers, movement/collision, sight, hitscan, damage, inventory/weapons, player, Doom AI, Doom specials via XLAT, sector specials, movers, lights, switches, teleports, level flow, intermission/finale, title loop.
+- `room-audio` SFX + `room-music` (MUS/MIDI → SoundFont; OPL3), `room-input`, `room-console` (core commands, CVars, binds, config), `room-ui` (Doom menus, Doom status bar, fullscreen HUD, automap, messages).
+- Room demo recording/playback + checksums.
 - **Accept:** Freedoom Phase 1 & 2 fully playable start→finish (manual checklist + automated "speedrun" demos recorded by maintainers, verified in CI); cross-platform determinism job green (demo recorded on Linux verifies on macOS arm64 and wasm32).
 
 ### M6 — Boom, MBF, MBF21, vanilla strict
@@ -67,11 +67,11 @@ hardening). **M8** when Heretic/Hexen IWADs available; M9 deferred (see `21`).
 - **Accept:** golden images per feature; `lights.pk3`/`brightmaps.pk3` content renders; performance targets (`13 §14`).
 
 ### M11 — WASM modules (ZScript replacement)
-- ABI v1 IDL + `ferrite-abi-gen`; `ferrite-script` with `wasmi` backend first, then `wasmtime`; validation; registration; classes/states/fields/virtuals/actions; events; thinkers; ACS interop; UI modules (status bars, menus, overlays, network events); saves/hot reload; Rust SDK + macros + `cargo ferrite`; C header + example.
+- ABI v1 IDL + `room-abi-gen`; `room-script` with `wasmi` backend first, then `wasmtime`; validation; registration; classes/states/fields/virtuals/actions; events; thinkers; ACS interop; UI modules (status bars, menus, overlays, network events); saves/hot reload; Rust SDK + macros + `cargo room`; C header + example.
 - **Accept:** conformance suite green on both backends with identical checksums; sample mods: (a) "FireImp" replacement, (b) custom weapon with overlays & alt-fire, (c) event-handler gameplay mod (e.g. "monsters drop health bonuses"), (d) custom fullscreen HUD, (e) custom options menu; save/load mid-game with modules; benchmark targets (`12 §14`).
 
 ### M12 — Netplay
-- `ferrite-net` lockstep, UDP + WebRTC (`matchbox`), lobby/handshake, desync detection & dump tooling, `ferrite-signal`.
+- `room-net` lockstep, UDP + WebRTC (`matchbox`), lobby/handshake, desync detection & dump tooling, `room-signal`.
 - **Accept:** in-process lossy-network simulation tests; 4-player coop across native + web peers for 30 minutes without desync (manual); automated 2-peer smoke test in CI over loopback.
 
 ### M13 — Product polish
@@ -92,7 +92,7 @@ Classic software renderer · ZScript→Rust/WASM transpiler · bots · rollback 
 | Property | `proptest` | math, arena, parsers round-trips, node builder invariants |
 | Fuzz | `cargo fuzz` (libFuzzer) — run natively in CI for short durations | `fuzz/` |
 | Snapshot | `insta` (RON/YAML dumps) | definitions, translations, map dumps |
-| Scenario | `ferrite-testkit` map DSL + headless world + assertions | sim, specials, actions, ACS, modules |
+| Scenario | `room-testkit` map DSL + headless world + assertions | sim, specials, actions, ACS, modules |
 | Determinism | demo record/verify across targets | CI matrix |
 | Golden image | offscreen wgpu on lavapipe (Linux CI), SSIM compare | renderer, UI |
 | Browser | `wasm-bindgen-test` + headless Chrome/Firefox | web shell |
@@ -122,14 +122,14 @@ fn door_raise_opens_and_closes() {
 
 ### 3.1 Always available (committable)
 - **Freedoom** Phase 1, Phase 2, FreeDM (BSD-3-Clause) — downloaded by a pinned-version script into `testdata/freedoom/` (cached in CI), not committed if size is an issue.
-- Synthetic content generated by `ferrite-testkit` (maps, WADs, PK3s, DECORATE snippets, ACS objects compiled offline and committed with sources).
+- Synthetic content generated by `room-testkit` (maps, WADs, PK3s, DECORATE snippets, ACS objects compiled offline and committed with sources).
 - Small hand-made fixtures for each binary format.
 
 ### 3.2 Compatibility corpus (not committed; fetched by script with licences checked per item)
 Lists maintained in `testdata/corpus.toml` with URL, sha256, expected engine features and expected result (`loads`, `smoke-playthrough`). Categories: vanilla/limit-removing megawads, Boom megawads, MBF/MBF21 megawads, UMAPINFO projects, ZDoom-format/ACS maps, DECORATE gameplay mods, GZDoom-feature (GLDEFS/MODELDEF) mods, Hexen/Heretic PWADs. Examples of well-known community releases to include when their licences allow automated download: Sigil (vanilla), Valiant (MBF), Sunlust and Ancient Aliens (Boom), Eviternity (MBF), Back to Saturn X (limit-removing). Mods that require ZScript are tracked separately as "expected unsupported".
 
 ### 3.3 Gated (commercial IWADs)
-Tests behind `FERRITE_IWAD_DIR`: vanilla demo sync suite (Doom 1.9 demos from the IWADs themselves, DEMO1–4; curated community demo archives for Boom/MBF complevels), Heretic/Hexen/Strife playthroughs. Never upload IWADs to CI caches of public repos.
+Tests behind `ROOM_IWAD_DIR`: vanilla demo sync suite (Doom 1.9 demos from the IWADs themselves, DEMO1–4; curated community demo archives for Boom/MBF complevels), Heretic/Hexen/Strife playthroughs. Never upload IWADs to CI caches of public repos.
 
 ## 4. CI
 

@@ -1,4 +1,4 @@
-# 14 — Audio (`ferrite-audio`, `ferrite-music`)
+# 14 — Audio (`room-audio`, `room-music`)
 
 GZDoom references: `src/common/audio/sound/` (`s_sound.cpp`, `oalsound.cpp`),
 `src/sound/s_doomsound.cpp`, `s_advsound.cpp` (SNDINFO), `s_sndseq.cpp` (sound sequences),
@@ -7,12 +7,12 @@ GZDoom references: `src/common/audio/sound/` (`s_sound.cpp`, `oalsound.cpp`),
 ## 1. Architecture
 
 ```
-ferrite-sim ──SoundEvent──► ferrite-game ──AudioCommand──► [lock-free ring] ──► mixer thread (ferrite-audio)
+room-sim ──SoundEvent──► room-game ──AudioCommand──► [lock-free ring] ──► mixer thread (room-audio)
                      SimView (positions each frame) ──listener/source updates──►        │
-ferrite-music (decoders/synths) ──► music stream ─────────────────────────────────► mixer ──► device (cpal / WebAudio)
+room-music (decoders/synths) ──► music stream ─────────────────────────────────► mixer ──► device (cpal / WebAudio)
 ```
 
-- `ferrite-audio` is device-agnostic: `trait AudioOutput { fn start(&mut self, render: Box<dyn FnMut(&mut [f32]) + Send>) }` implemented by `ferrite-app` (cpal) and `ferrite-web` (AudioWorklet).
+- `room-audio` is device-agnostic: `trait AudioOutput { fn start(&mut self, render: Box<dyn FnMut(&mut [f32]) + Send>) }` implemented by `room-app` (cpal) and `room-web` (AudioWorklet).
 - The mixer runs in the device callback (native) at the device rate (resample all sources with a high-quality polyphase/sinc resampler; `rubato` crate or hand-written windowed-sinc; linear for `snd_resampler 0`).
 - Commands are passed through an SPSC ring (`rtrb`); the mixer never allocates or locks. Decoded sample buffers are `Arc<[f32]>` shared immutable data, pre-decoded on the main thread (on demand with a cache; precache level sounds at load).
 
@@ -27,14 +27,14 @@ pub enum SoundEvent {
     SetVolume { origin, channel, volume }, SetPitch { origin, channel, pitch },
     Relink { from: SoundOrigin, to: SoundOrigin },        // actor destroyed → sound continues at a fixed point (S_RelinkSound)
     MusicChange { name: Name, order: i32, looping: bool, force: bool },
-    Announcer / LocalSound { player: u8, sound, … },      // 2D sounds only heard by one player (local player filtering in ferrite-game)
+    Announcer / LocalSound { player: u8, sound, … },      // 2D sounds only heard by one player (local player filtering in room-game)
 }
 pub enum SoundOrigin { None, Actor(ActorId), Sector(SectorId, SectorSoundPart), Polyobj(PolyId), Point(DVec3), Listener }
 ```
 
 - The sim never knows whether audio exists. Events are drained each tic (`World::drain_sound_events`).
-- Per frame, `ferrite-game` resolves origin positions from the interpolated `SimView` and sends `UpdateSources` with positions/velocities and the listener transform (+ underwater flag, current reverb environment).
-- **Sound sequences** (SNDSEQ, `DSeqNode`) run inside the sim as thinkers (they are saved by GZDoom) and emit `SoundEvent`s. Port `s_sndseq.cpp` into `ferrite-sim::sndseq`.
+- Per frame, `room-game` resolves origin positions from the interpolated `SimView` and sends `UpdateSources` with positions/velocities and the listener transform (+ underwater flag, current reverb environment).
+- **Sound sequences** (SNDSEQ, `DSeqNode`) run inside the sim as thinkers (they are saved by GZDoom) and emit `SoundEvent`s. Port `s_sndseq.cpp` into `room-sim::sndseq`.
 - Ambient sounds (`$ambient`, things 14001–14064 / `AmbientSound` actors) are sim actors. Their random intervals use the sim RNG `pr_ambient`, as in GZDoom, so save/restore stays faithful.
 
 ## 3. SFX semantics (port `s_sound.cpp`)
@@ -49,15 +49,15 @@ pub enum SoundOrigin { None, Actor(ActorId), Sector(SectorId, SectorSoundPart), 
 - **Underwater filter** (`snd_waterlp`): one-pole low-pass when listener is in a swimmable 3D floor / Boom deep-water fake sector.
 - **Reverb**: environments from REVERBS (EAX 2.0-like parameter sets: Generic, PaddedCell, Room, Bathroom, …, user-defined). Implement an FDN reverb (8-line feedback delay network with HF damping), parameter mapping from EAX fields (DecayTime, DecayHFRatio, Reflections, ReflectionsDelay, Reverb gain, ReverbDelay, Diffusion, Density, RoomHF…). Zones: sectors get environments from `SoundEnvironment` things (zone flood fill by sound-blocking lines `ML_ZONEBOUNDARY`, as GZDoom `P_InitZones`); the listener's zone selects the active environment with crossfade. `snd_reverb` toggles.
 - **Pause**: sounds without `CHANF_NOPAUSE` pause with the game; menu sounds are UI sounds (`CHANF_UI`).
-- **Save/restore**: GZDoom saves playing looping sounds (`S_SerializeSounds`). Ferrite saves: active looping/sequence sounds with origin and offset, current music (name, order, position). Non-looping one-shots are not saved.
+- **Save/restore**: GZDoom saves playing looping sounds (`S_SerializeSounds`). Room saves: active looping/sequence sounds with origin and offset, current music (name, order, position). Non-looping one-shots are not saved.
 
-## 4. Music (`ferrite-music`)
+## 4. Music (`room-music`)
 
 ### 4.1 Selection logic
 
 - Map music from MAPINFO `music` (with optional `:order` for modules / track), `$map`/`$musicalias` (SNDINFO), `MUSINFO` changers (`MusicChanger` things, `changemus` console command, ACS `SetMusic`/`LocalSetMusic`), intermission/finale/title music from MAPINFO/GAMEINFO, `D_`-prefixed lump name conventions (Doom), `MUS_` (Heretic), Hexen `$map` numbers.
 - `snd_musicvolume`, per-song `$musicvolume`, `relative_volume` metadata, looping (`loop` flag; non-looping for finales/intermissions as GZDoom).
-- Device selection CVar `snd_mididevice` mapping: `-5` = FluidSynth-equivalent (SoundFont), `-2` = OPL, `-3` = Timidity, `-4` = GUS, `-6`/`-7` = ADL/OPN MIDI, etc. Ferrite supports `sf2` (default), `opl`; others map to `sf2` with a console note.
+- Device selection CVar `snd_mididevice` mapping: `-5` = FluidSynth-equivalent (SoundFont), `-2` = OPL, `-3` = Timidity, `-4` = GUS, `-6`/`-7` = ADL/OPN MIDI, etc. Room supports `sf2` (default), `opl`; others map to `sf2` with a console note.
 
 ### 4.2 MIDI pipeline
 
@@ -68,7 +68,7 @@ HMI/HMP/XMI readers ────┘
 MidiSynth impls: SoundFontSynth (rustysynth — pure Rust SF2/SF3), Opl3Synth (DMX-faithful instrument handling with GENMIDI)
 ```
 
-- **SoundFont**: `rustysynth` (pure Rust) with chorus/reverb. Ship a small, freely licensed GM SoundFont next to `ferrite.pk3` (GZDoom ships `gzdoom.sf2` for the same reason); check its licence before bundling and record it in `THIRD_PARTY.md`. Search order: `soundfonts/` dirs, config path list, `fluid_patchset` CVar equivalent `snd_soundfont`.
+- **SoundFont**: `rustysynth` (pure Rust) with chorus/reverb. Ship a small, freely licensed GM SoundFont next to `room.pk3` (GZDoom ships `gzdoom.sf2` for the same reason); check its licence before bundling and record it in `THIRD_PARTY.md`. Search order: `soundfonts/` dirs, config path list, `fluid_patchset` CVar equivalent `snd_soundfont`.
 - **OPL3**: pure-Rust port of the **Nuked OPL3** emulator (LGPL-2.1+; compatible with GPL-3 project licence) — or of DOSBox's `dbopl` (GPL-2+). Driver logic emulates DMX's OPL driver (GENMIDI patches, voice allocation, double-voice instruments, the "OPL2 vs OPL3 mode" `opl_numchips`, `opl_core` selection). Also plays raw OPL streams (IMF, RAW, DRO).
 - Timidity/GUS (`DMXGUS`), WildMidi, ADLMIDI, OPNMIDI: **C priority**; would require large ports.
 - Hardware MIDI out (`midir` crate; native only): S.

@@ -2,7 +2,7 @@
 
 ## Context
 
-Appendix B maps GZDoom source paths to Ferrite crates. Ports and behavioural questions need a pinned upstream revision so two agents do not mix APIs from different years.
+Appendix B maps GZDoom source paths to Room crates. Ports and behavioural questions need a pinned upstream revision so two agents do not mix APIs from different years.
 
 ## Decision
 

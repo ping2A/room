@@ -1,10 +1,10 @@
-# 05 — Text definition lumps (`ferrite-sc`, `ferrite-defs`)
+# 05 — Text definition lumps (`room-sc`, `room-defs`)
 
 All ZDoom text lumps share one tokenizer (GZDoom `FScanner`, `sc_man.cpp`).
-`ferrite-defs` contains one parser module per lump type and a pipeline that
+`room-defs` contains one parser module per lump type and a pipeline that
 compiles everything into `Definitions` (see `01-architecture.md §3`).
 
-## 1. The scanner (`ferrite-sc`)
+## 1. The scanner (`room-sc`)
 
 ### 1.1 Tokens
 
@@ -55,7 +55,7 @@ lumps are processed in VFS load order (`find_all`) unless "last wins".
 | 4 | `PNAMES` + `TEXTURE1/2`, `TEXTURES`, flats/patches/sprites/hires namespaces, `ANIMATED`, `SWITCHES`, `ANIMDEFS` | `TextureRegistry`, `AnimDefs` |
 | 5 | `FONTDEFS`, font directories | `FontDefs` |
 | 6 | `MAPINFO`/`ZMAPINFO`/`UMAPINFO` (all formats, §4) including `DoomEdNums`, `SpawnNums`, `DamageType`, `GameInfo` section | `MapInfo` (class names unresolved) |
-| 7 | **Actor classes**: built-in DECORATE (`ferrite.pk3`), mod DECORATE, WASM module class registrations, then `DEHACKED` lumps / `-deh` files (applied last, in load order) | `ClassRegistry`, `StateTable`, `SpriteRegistry` |
+| 7 | **Actor classes**: built-in DECORATE (`room.pk3`), mod DECORATE, WASM module class registrations, then `DEHACKED` lumps / `-deh` files (applied last, in load order) | `ClassRegistry`, `StateTable`, `SpriteRegistry` |
 | 8 | Resolve MAPINFO class references (DoomEdNums, `PlayerClasses`, intermission actors, `EventHandlers`) | |
 | 9 | `SNDINFO`, `SNDSEQ`, `REVERBS`, `MUSINFO` | `SoundRegistry`, sequences, environments |
 | 10 | `TERRAIN`, `DECALDEF`, `LOCKDEFS`, `SECRETS`, `ALTHUDCF`, `TEAMINFO`, `S_SKIN` | |
@@ -89,7 +89,7 @@ minimum checklist and the non-obvious semantics.
 | VOXELDEF | `VOXELDEF` | additive | warn | no |
 | KEYCONF | `KEYCONF` | additive, executed as console commands in a restricted context | warn | no |
 | CVARINFO | `CVARINFO` | additive; redeclaring an engine CVar is an error | warn | no |
-| DEFCVARS | `DEFCVARS` | additive (Ferrite and GZDoom ≥4.11 semantics: `set`/`seta` defaults for existing CVars; mods may not change `noset` ones) | warn | no |
+| DEFCVARS | `DEFCVARS` | additive (Room and GZDoom ≥4.11 semantics: `set`/`seta` defaults for existing CVars; mods may not change `noset` ones) | warn | no |
 | MENUDEF | `MENUDEF` | additive; `DefaultListMenu`, `DefaultOptionMenu`, `OptionValue` etc. | fatal | yes |
 | SBARINFO | `SBARINFO` | last wins (only one status bar) — `base` loads a built-in | fatal | yes |
 | LOCKDEFS | `LOCKDEFS` | additive; `ClearLocks` resets | warn | no |
@@ -189,10 +189,10 @@ Custom shaders are **GLSL** in GZDoom; see `13-renderer.md §Custom shaders` for
 - **TERRAIN**: `splash name { smallclass, smallclip, smallsound, baseclass, chunkclass, chunkxvelshift, chunkyvelshift, chunkzvelshift, chunkbasezvel, sound, noalert }`, `terrain name { splash, footclip, liquid, friction, damageamount, damagetype, damagetimemask, allowprotection, leftstepsounds, rightstepsounds, stepvolume, walkingsteptime, runningsteptime, stepdistance, stepdistanceminvel, damageonland }`, `floor flatname terrainname`, `ifdoom/ifheretic/ifhexen/ifstrife/endif`, `defaultterrain`.
 - **DECALDEF**: `decal name [id] { pic, add, shade, translucent, solid, x-scale, y-scale, randomflipx, randomflipy, fullbright, fuzzy, lowerdecal, animator, opaqueblood }`, `decalgroup name { decal weight }`, `fader`, `stretcher`, `slider`, `colorchanger`, `combiner`, `generator class decal`.
 - **SNDSEQ**: `:Name` … `end`, `[Name ... ]` slot syntax, commands `play, playuntildone, playtime, playrepeat, playloop, delay, delayrand, volume, volumerel, volumerand, attenuation, stopsound, nostopcutoff, door n, platform n, environment n, slot`.
-- **REVERBS**: `Name id1 id2 { property value ... }` (EAX 2.0-style fields: `Environment, EnvironmentSize, EnvironmentDiffusion, Room, RoomHF, RoomLF, DecayTime, DecayHFRatio, DecayLFRatio, Reflections, ReflectionsDelay, Reverb, ReverbDelay, EchoTime, EchoDepth, ModulationTime, ModulationDepth, AirAbsorptionHF, HFReference, LFReference, RoomRolloffFactor, …, bDecayTimeScale…`). Mapped to Ferrite's reverb model (`14-audio.md`).
+- **REVERBS**: `Name id1 id2 { property value ... }` (EAX 2.0-style fields: `Environment, EnvironmentSize, EnvironmentDiffusion, Room, RoomHF, RoomLF, DecayTime, DecayHFRatio, DecayLFRatio, Reflections, ReflectionsDelay, Reverb, ReverbDelay, EchoTime, EchoDepth, ModulationTime, ModulationDepth, AirAbsorptionHF, HFReference, LFReference, RoomRolloffFactor, …, bDecayTimeScale…`). Mapped to Room's reverb model (`14-audio.md`).
 - **TRNSLATE**: `Name = "range", "range", …` with GZDoom translation-string syntax (`a:b=c:d`, `a:b=[r,g,b]:[r,g,b]`, `%[…]` desaturated, `#[r,g,b]` colourise, `@amount[r,g,b]` tint).
 - **XLAT**: line-special translation for Doom/Heretic/Strife-format maps (see `09-specials.md §Translation`). Syntax: `define`, `enum`, `<num> = <flags>, <special> (<args>)`, `[num1, num2] = …` for generalized ranges (`lineid`/`tag` placeholders), `sector bitmask`, `lineflag`, `maxlinespecial`.
 
 ## 4. Diagnostics and dumping
 
-Every compiled registry implements `Dump` (RON output) used by golden tests and by `ferrite-cli defs dump <wads…> --registry mapinfo`. This is the main tool for comparing against GZDoom behaviour (GZDoom has `dumpmapinfo`, `dumpclasses`, `dumpactions` console commands — implement the same names).
+Every compiled registry implements `Dump` (RON output) used by golden tests and by `room-cli defs dump <wads…> --registry mapinfo`. This is the main tool for comparing against GZDoom behaviour (GZDoom has `dumpmapinfo`, `dumpclasses`, `dumpactions` console commands — implement the same names).

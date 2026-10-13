@@ -1,0 +1,20 @@
+[package]
+name = "room-defs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Compiles text lumps into immutable Definitions registries."
+
+[lints]
+workspace = true
+
+[dependencies]
+room-core = { path = "../room-core" }
+room-formats = { path = "../room-formats" }
+room-sc = { path = "../room-sc" }
+room-vfs = { path = "../room-vfs" }
+thiserror.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

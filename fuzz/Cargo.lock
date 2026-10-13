@@ -216,23 +216,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "ferrite-acs"
+name = "room-acs"
 version = "0.1.0"
 dependencies = [
- "ferrite-core",
+ "room-core",
  "thiserror",
 ]
 
 [[package]]
-name = "ferrite-audio"
+name = "room-audio"
 version = "0.1.0"
 dependencies = [
- "ferrite-core",
+ "room-core",
  "thiserror",
 ]
 
 [[package]]
-name = "ferrite-core"
+name = "room-core"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
@@ -242,26 +242,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "ferrite-decorate"
+name = "room-decorate"
 version = "0.1.0"
 dependencies = [
- "ferrite-sc",
+ "room-sc",
  "thiserror",
 ]
 
 [[package]]
-name = "ferrite-defs"
+name = "room-defs"
 version = "0.1.0"
 dependencies = [
- "ferrite-core",
- "ferrite-formats",
- "ferrite-sc",
- "ferrite-vfs",
+ "room-core",
+ "room-formats",
+ "room-sc",
+ "room-vfs",
  "thiserror",
 ]
 
 [[package]]
-name = "ferrite-formats"
+name = "room-formats"
 version = "0.1.0"
 dependencies = [
  "claxon",
@@ -274,43 +274,43 @@ dependencies = [
 ]
 
 [[package]]
-name = "ferrite-fuzz"
+name = "room-fuzz"
 version = "0.0.0"
 dependencies = [
- "ferrite-defs",
- "ferrite-formats",
- "ferrite-game",
- "ferrite-vfs",
+ "room-defs",
+ "room-formats",
+ "room-game",
+ "room-vfs",
  "libfuzzer-sys",
 ]
 
 [[package]]
-name = "ferrite-game"
+name = "room-game"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "ferrite-audio",
- "ferrite-core",
- "ferrite-decorate",
- "ferrite-defs",
- "ferrite-formats",
- "ferrite-map",
- "ferrite-music",
- "ferrite-sim",
- "ferrite-ui",
- "ferrite-vfs",
+ "room-audio",
+ "room-core",
+ "room-decorate",
+ "room-defs",
+ "room-formats",
+ "room-map",
+ "room-music",
+ "room-sim",
+ "room-ui",
+ "room-vfs",
  "thiserror",
  "xxhash-rust",
  "zip",
 ]
 
 [[package]]
-name = "ferrite-map"
+name = "room-map"
 version = "0.1.0"
 dependencies = [
- "ferrite-core",
- "ferrite-formats",
- "ferrite-vfs",
+ "room-core",
+ "room-formats",
+ "room-vfs",
  "flate2",
  "md-5",
  "ron",
@@ -320,71 +320,71 @@ dependencies = [
 ]
 
 [[package]]
-name = "ferrite-music"
+name = "room-music"
 version = "0.1.0"
 dependencies = [
- "ferrite-formats",
+ "room-formats",
  "nuked-opl3",
  "rustysynth",
  "thiserror",
 ]
 
 [[package]]
-name = "ferrite-nodebuild"
+name = "room-nodebuild"
 version = "0.1.0"
 dependencies = [
- "ferrite-core",
- "ferrite-map",
+ "room-core",
+ "room-map",
 ]
 
 [[package]]
-name = "ferrite-sc"
+name = "room-sc"
 version = "0.1.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
-name = "ferrite-script"
+name = "room-script"
 version = "0.1.0"
 dependencies = [
- "ferrite-script-abi",
+ "room-script-abi",
  "thiserror",
  "wasmi",
  "wasmparser 0.224.1",
 ]
 
 [[package]]
-name = "ferrite-script-abi"
+name = "room-script-abi"
 version = "0.1.0"
 
 [[package]]
-name = "ferrite-sim"
+name = "room-sim"
 version = "0.1.0"
 dependencies = [
- "ferrite-acs",
- "ferrite-core",
- "ferrite-decorate",
- "ferrite-map",
- "ferrite-nodebuild",
- "ferrite-script",
- "ferrite-script-abi",
+ "room-acs",
+ "room-core",
+ "room-decorate",
+ "room-map",
+ "room-nodebuild",
+ "room-script",
+ "room-script-abi",
  "thiserror",
  "xxhash-rust",
 ]
 
 [[package]]
-name = "ferrite-ui"
+name = "room-ui"
 version = "0.1.0"
 dependencies = [
- "ferrite-defs",
- "ferrite-formats",
- "ferrite-map",
- "ferrite-vfs",
+ "room-defs",
+ "room-formats",
+ "room-map",
+ "room-vfs",
 ]
 
 [[package]]
-name = "ferrite-vfs"
+name = "room-vfs"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",

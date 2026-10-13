@@ -1,0 +1,37 @@
+[package]
+name = "room-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "wgpu renderer: 3D scene plus 2D canvas backend."
+
+[lints]
+workspace = true
+
+[build-dependencies]
+naga = { workspace = true, features = ["wgsl-in"] }
+
+[dependencies]
+bytemuck.workspace = true
+naga = { workspace = true, features = ["glsl-in", "wgsl-out"] }
+room-core = { path = "../room-core" }
+room-defs = { path = "../room-defs" }
+room-formats = { path = "../room-formats" }
+room-map = { path = "../room-map" }
+room-nodebuild = { path = "../room-nodebuild" }
+room-vfs = { path = "../room-vfs" }
+glam.workspace = true
+libm.workspace = true
+gif.workspace = true
+png.workspace = true
+thiserror.workspace = true
+wgpu.workspace = true
+
+[dev-dependencies]
+room-decorate = { path = "../room-decorate" }
+room-sim = { path = "../room-sim" }
+room-testkit = { path = "../room-testkit" }
+image.workspace = true
+image-compare.workspace = true
+pollster.workspace = true

@@ -1,5 +1,5 @@
 [package]
-name = "ferrite-fuzz"
+name = "room-fuzz"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -10,10 +10,10 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 # `7z` required by `sevenz_header`; other targets ignore unused archive kinds.
-ferrite-vfs = { path = "../crates/ferrite-vfs", default-features = false, features = ["7z"] }
-ferrite-defs = { path = "../crates/ferrite-defs" }
-ferrite-formats = { path = "../crates/ferrite-formats" }
-ferrite-game = { path = "../crates/ferrite-game" }
+room-vfs = { path = "../crates/room-vfs", default-features = false, features = ["7z"] }
+room-defs = { path = "../crates/room-defs" }
+room-formats = { path = "../crates/room-formats" }
+room-game = { path = "../crates/room-game" }
 
 [[bin]]
 name = "wad_directory"

@@ -1,0 +1,26 @@
+[package]
+name = "room-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Playsim: World, thinkers, actors, physics, and specials."
+
+[lints]
+workspace = true
+
+[dependencies]
+room-acs = { path = "../room-acs" }
+room-core = { path = "../room-core" }
+room-decorate = { path = "../room-decorate" }
+room-map = { path = "../room-map" }
+room-nodebuild = { path = "../room-nodebuild" }
+room-script = { path = "../room-script" }
+room-script-abi = { path = "../room-script-abi" }
+thiserror.workspace = true
+xxhash-rust.workspace = true
+
+[dev-dependencies]
+room-dehacked = { path = "../room-dehacked" }
+room-testkit = { path = "../room-testkit" }
+wat = { workspace = true }

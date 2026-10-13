@@ -1,4 +1,4 @@
-# 13 — Renderer (`ferrite-render`)
+# 13 — Renderer (`room-render`)
 
 GZDoom references: `src/rendering/hwrenderer/scene/*` (`hw_bsp.cpp`, `hw_clipper.cpp`,
 `hw_walls.cpp`, `hw_flats.cpp`, `hw_sprites.cpp`, `hw_drawlist.cpp`, `hw_portal.cpp`,
@@ -84,7 +84,7 @@ Implement the GZDoom light modes in shader, selected by `lightmode` (MAPINFO `li
 | `Doom` (2) | GZDoom "Dark": emulates Doom's diminishing with distance |
 | `DoomSoftware` (8) | Software-renderer equation: `R_DoomLightingEquation` (shade = 64 − (light/4 ⋯) with `globVis` depth factor), 32 colormap bands, exact vanilla curves; `r_visibility` |
 | `Build` (16) | Build-engine-like visibility (GZDoom 4.x) |
-| `ClassicPalette` (Ferrite) | `DoomSoftware` + paletted textures sampled through the actual `COLORMAP` LUT (index → shaded index → PLAYPAL), giving pixel-faithful vanilla banding and colours; true-colour textures fall back to computed shade |
+| `ClassicPalette` (Room) | `DoomSoftware` + paletted textures sampled through the actual `COLORMAP` LUT (index → shaded index → PLAYPAL), giving pixel-faithful vanilla banding and colours; true-colour textures fall back to computed shade |
 
 Port the shader equations from `wadsrc/static/shaders/glsl/main.fp` (`R_DoomLightingEquation`, `getLightLevel`, fog functions) so outputs match GZDoom for modes 0/1/2/8/16.
 
@@ -93,7 +93,7 @@ Additional inputs: `extralight` (gun flash), fixed colormaps (invulnerability in
 ### 5.2 Dynamic lights
 
 - Sources: GLDEFS lights attached to actor frames, light things (9800–9885 range), `A_AttachLight` from modules/DECORATE (GZDoom 4.x), muzzle-flash lights, sector lights.
-- Types: point (with optional `attenuate`), spot (inner/outer angle, direction from actor angle/pitch), pulse, flicker, random flicker. GZDoom ticks dynamic lights in the playsim, but they never affect gameplay. Ferrite animates them in the renderer from `SimView` data (light definition + spawn time + level time), so they stay out of the deterministic sim.
+- Types: point (with optional `attenuate`), spot (inner/outer angle, direction from actor angle/pitch), pulse, flicker, random flicker. GZDoom ticks dynamic lights in the playsim, but they never affect gameplay. Room animates them in the renderer from `SimView` data (light definition + spawn time + level time), so they stay out of the deterministic sim.
 - Additive/subtractive/attenuated lights; `dontlightself`, `dontlightactors`, `dontlightmap`.
 - **Full tier**: clustered forward shading (16×9×24 clusters, compute assignment, max 256 lights per cluster), plus GZDoom-compatible **1D shadowmaps**: for each shadow-casting light, a compute pass ray-casts 1024 directions in 2D against a GPU line BVH of solid walls (exactly GZDoom's approach, `gl_light_shadowmap`, `gl_shadowmap_quality`, `gl_shadowmap_filter`); fragments sample the 1D map by angle.
 - **Downlevel tier**: per-surface light lists computed on CPU (GZDoom's original method), max 16 lights per draw.
@@ -127,7 +127,7 @@ Port `hw_portal.cpp` concepts:
 - **Models** (MODELDEF): MD2/MD3 vertex lerp between frames (interpolate on state duration), OBJ static, IQM GPU skinning (bones buffer, animations by frame), UE1; per-frame skins and surface skins, `Scale`, `Offset`, `ZOffset`, `AngleOffset/PitchOffset/RollOffset`, `Rotation-Speed/Vector/Center`, flags (`PITCHFROMMOMENTUM`, `IGNORETRANSLATION`, `INTERPOLATEDOUBLEDFRAMES`, `NOINTERPOLATION`, `USEACTORPITCH/ROLL`, `INHERITACTORPITCH/ROLL`, `ROTATING`, `DONTCULLBACKFACES`, `USEROTATIONCENTER`, `CORRECTPIXELSTRETCH`, `SCALEWEAPONFOV`), weapon models (psprite replaced by model), voxel replacement for sprites.
 - **Voxels** (VOXELDEF/KVX): meshed at load into triangles (greedy meshing per slab), palette-indexed colours through the game palette, `Spin`, `PlacedSpin`, `DroppedSpin`, `AngleOffset`, `Scale`, `OverridePalette`.
 - **Particles**: GPU instanced quads (round or square: `gl_particles_style`), additive/translucent, sizes, `SPF_*` flags (fullbright, relative pos/vel/accel, rolling, `SPF_NO_XY_BILLBOARD`…), textured particles.
-- **Decals**: renderer-owned list per side (max `cl_maxdecals`, default 1024), created from `FxEvent::Decal` (DECALDEF lookup, translation, alpha, render style, animators: faders, stretchers, sliders, colour changers, combiners — animated in renderer using level time from SimView), clipped to wall parts; `SprayDecal` also. Decals are serialized in saves (requested by `ferrite-game` via `Renderer::export_decals()` / `import_decals()`).
+- **Decals**: renderer-owned list per side (max `cl_maxdecals`, default 1024), created from `FxEvent::Decal` (DECALDEF lookup, translation, alpha, render style, animators: faders, stretchers, sliders, colour changers, combiners — animated in renderer using level time from SimView), clipped to wall parts; `SprayDecal` also. Decals are serialized in saves (requested by `room-game` via `Renderer::export_decals()` / `import_decals()`).
 
 ## 9. Post-processing
 
@@ -141,7 +141,7 @@ Plan:
 1. Wrap the user GLSL snippet in a GLSL 450 template that defines GZDoom's documented built-ins (`getTexel`, `vTexCoord`, `uObjectColor`, `timer`, `normal`, …) and emits the result in a fixed interface.
 2. Translate with **naga's GLSL frontend** → naga IR → WGSL backend (or directly use the IR with wgpu). This runs at load time; translation failures log a warning and fall back to the default material.
 3. Uniforms declared in GLDEFS (`uniform float foo`) map to a per-material uniform block; updated from `Shader.SetUniform*` equivalents in UI modules (ZScript has `Shader.SetUniform1f(player, name, uniform, value)` for post shaders) → ui API `shader_set_uniform`.
-4. Ferrite-native alternative: materials may provide WGSL snippets directly (`HardwareShader … { wgsl "shaders/foo.wgsl" }`) — documented Ferrite extension.
+4. Room-native alternative: materials may provide WGSL snippets directly (`HardwareShader … { wgsl "shaders/foo.wgsl" }`) — documented Room extension.
 
 ## 11. 2D canvas
 
@@ -152,12 +152,12 @@ The UI produces a `UiDrawList` (`16-ui.md`) of commands in virtual coordinates; 
 
 ## 12. Classic software renderer (C priority)
 
-Separate crate `ferrite-render-soft` implementing the vanilla column/span renderer (visplanes → drawsegs → masked) with ZDoom extensions (slopes via `R_DrawTiltedSpan`, 3D floors, portals, sprites clipping), outputting an 8-bit or 32-bit framebuffer uploaded as a texture each frame. Reference: GZDoom's `swrenderer` (the "zdoom" software renderer). Multi-threaded slices on native. Not required for 1.0.
+Separate crate `room-render-soft` implementing the vanilla column/span renderer (visplanes → drawsegs → masked) with ZDoom extensions (slopes via `R_DrawTiltedSpan`, 3D floors, portals, sprites clipping), outputting an 8-bit or 32-bit framebuffer uploaded as a texture each frame. Reference: GZDoom's `swrenderer` (the "zdoom" software renderer). Multi-threaded slices on native. Not required for 1.0.
 
 ## 13. Other features
 
 - Screenshots (`screenshot` command): PNG of the final image (`png` crate), path per config.
-- Offscreen API (`ferrite_render::offscreen`) for tests and tools: render a `SimView` to an `Rgba8` image with a headless wgpu device (`wgpu` with `Backends::all()` + fallback adapter; in CI, use a software adapter: lavapipe/WARP/SwiftShader — or skip GPU tests when none is available).
+- Offscreen API (`room_render::offscreen`) for tests and tools: render a `SimView` to an `Rgba8` image with a headless wgpu device (`wgpu` with `Backends::all()` + fallback adapter; in CI, use a software adapter: lavapipe/WARP/SwiftShader — or skip GPU tests when none is available).
 - Precache: textures/sprites/models referenced by the level (MAPINFO precache lists + sector/side textures + spawned classes' sprites) uploaded during level load with a progress callback.
 - Stereo/VR: out of scope.
 - Automap: drawn by the UI layer using 2D line primitives (`16-ui.md §Automap`), including textured automap (`am_textured`) which needs flat polygons → expose `Renderer::draw_automap_textured(params)` that rasterizes sector triangles in 2D.

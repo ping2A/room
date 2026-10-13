@@ -1,8 +1,8 @@
 # 12 — WebAssembly modules: the ZScript replacement
 
-Crates: `ferrite-script-abi` (shared, `no_std`), `ferrite-script` (host),
-`ferrite-script-sdk` + `ferrite-script-sdk-macros` (guest, Rust),
-`ferrite-abi-gen` (tool: generates bindings for other languages).
+Crates: `room-script-abi` (shared, `no_std`), `room-script` (host),
+`room-script-sdk` + `room-script-sdk-macros` (guest, Rust),
+`room-abi-gen` (tool: generates bindings for other languages).
 
 ## 1. Goals and constraints
 
@@ -21,7 +21,7 @@ Crates: `ferrite-script-abi` (shared, `no_std`), `ferrite-script` (host),
 A mod declares modules with a manifest at the root of its archive:
 
 ```toml
-# ferrite.toml
+# room.toml
 [mod]
 id = "org.example.betterimps"        # reverse-DNS, unique
 name = "Better Imps"
@@ -70,7 +70,7 @@ Mirrors ZScript's `play` / `ui` / `clearscope` separation, enforced at link time
 A module importing a function outside its scope is rejected at load with a
 message listing the offending imports.
 
-## 4. Runtime backends (`ferrite-script`)
+## 4. Runtime backends (`room-script`)
 
 ```rust
 pub trait WasmBackend {
@@ -92,7 +92,7 @@ pub trait WasmInstance {
 | `wasmi` | `wasmi` | all (incl. wasm32) | interpreter; deterministic by construction; fuel metering; reference backend for tests |
 | `web` | `web-native` (S) | wasm32 + browser | compile with `WebAssembly.Module`, host imports provided as JS functions forwarding into the engine's exports; memory accessed via `Uint8Array` views. NaN canonicalization is not configurable → validate that play modules pass the deterministic-float lint (§8) or fall back to `wasmi` in netplay |
 
-All backends must pass the same conformance suite (`ferrite-script/tests/conformance/`).
+All backends must pass the same conformance suite (`room-script/tests/conformance/`).
 
 ### 4.1 Validation (all backends, before compile)
 
@@ -100,7 +100,7 @@ Using `wasmparser`:
 - Allowed proposals: MVP, mutable-globals, sign-ext, non-trapping float-to-int, multi-value, bulk-memory, reference-types (no `table.set/grow` on tables containing funcrefs in play modules), SIMD128 (non-relaxed), tail-call, extended-const.
 - Rejected: threads/shared memory/atomics, relaxed-simd, memory64, exception-handling (v1), GC (v1), multi-memory (v1).
 - Exactly one exported memory named `memory`; max pages ≤ `script_max_memory` (default 4096 pages = 256 MiB play, 1024 ui).
-- Imports only from module `"ferrite"` and only functions present in the scope's import set, with exactly matching signatures.
+- Imports only from module `"room"` and only functions present in the scope's import set, with exactly matching signatures.
 - Required exports present (§5.1).
 
 ### 4.2 Budgets and traps
@@ -117,15 +117,15 @@ All values little-endian. Pointers are `u32` offsets into the guest's `memory`.
 ### 5.1 Required guest exports
 
 ```
-ferrite_abi_version() -> i32                       // must return 1
-ferrite_alloc(size: i32, align: i32) -> i32        // host-requested allocations (string/event buffers)
-ferrite_free(ptr: i32, size: i32, align: i32)
-ferrite_register() -> i32                          // registration phase (§6). 0 = ok
-ferrite_init(session_kind: i32) -> i32             // new instance for a session (play) / engine (ui). session_kind: NewGame | LoadGame | HotReload
-ferrite_dispatch(callback_id: i32, payload_ptr: i32, payload_len: i32) -> i64   // generic callback entry (§5.4)
+room_abi_version() -> i32                       // must return 1
+room_alloc(size: i32, align: i32) -> i32        // host-requested allocations (string/event buffers)
+room_free(ptr: i32, size: i32, align: i32)
+room_register() -> i32                          // registration phase (§6). 0 = ok
+room_init(session_kind: i32) -> i32             // new instance for a session (play) / engine (ui). session_kind: NewGame | LoadGame | HotReload
+room_dispatch(callback_id: i32, payload_ptr: i32, payload_len: i32) -> i64   // generic callback entry (§5.4)
 ```
 
-Optional exports: `ferrite_on_save(buf_ptr) -> i32` / `ferrite_on_load()` hooks (§10), `ferrite_panic_info() -> i32` (pointer to last panic message).
+Optional exports: `room_on_save(buf_ptr) -> i32` / `room_on_load()` hooks (§10), `room_panic_info() -> i32` (pointer to last panic message).
 
 ### 5.2 Handle types
 
@@ -139,9 +139,9 @@ Optional exports: `ferrite_on_save(buf_ptr) -> i32` / `ferrite_on_load()` hooks 
 
 Stale `ActorRef`s resolve to "null" on the host: getters return defaults, setters are no-ops, and `actor_exists(ref)` returns 0. This matches ZScript's null-on-destroy pointers.
 
-### 5.3 Host imports (module `"ferrite"`)
+### 5.3 Host imports (module `"room"`)
 
-The API is **defined once** in `ferrite-script-abi/api/*.ron` (function name, scope, params, results, doc, ZScript equivalent). `ferrite-abi-gen` generates from it: the host linker table, the Rust guest bindings (`ferrite-script-sdk/src/sys.rs`), `ferrite.h` (C/C++), `ferrite.zig`, AssemblyScript `ferrite.ts`, and `api.json` (for the ZScript transpiler and docs). Naming: `<area>_<verb>[_<noun>]`.
+The API is **defined once** in `room-script-abi/api/*.ron` (function name, scope, params, results, doc, ZScript equivalent). `room-abi-gen` generates from it: the host linker table, the Rust guest bindings (`room-script-sdk/src/sys.rs`), `room.h` (C/C++), `room.zig`, AssemblyScript `room.ts`, and `api.json` (for the ZScript transpiler and docs). Naming: `<area>_<verb>[_<noun>]`.
 
 Representative subset (the full v1 list must cover everything in the table of §9):
 
@@ -219,10 +219,10 @@ sound_play_ui(SoundRef, volume, flags)
 
 During registration the guest associates **callback ids** with its own code
 (e.g. an action function, a virtual override, an event handler method). At run
-time the host calls `ferrite_dispatch(callback_id, payload_ptr, payload_len)`.
+time the host calls `room_dispatch(callback_id, payload_ptr, payload_len)`.
 
-- `payload` is a `#[repr(C)]` struct defined in `ferrite-script-abi::payload` (e.g. `ActionPayload { self_: ActorRef, invoker: ActorRef, state: StateRef, caller_kind: u32, args: [ArgVal; 8] }`, `DamagePayload { this, inflictor, source, damage, dmg_type: NameRef, flags, angle: f64 }`, `WorldEventPayload { … }`).
-- The host writes the payload into a per-instance scratch region obtained once from `ferrite_alloc` (grown as needed; re-entrant calls use a stack of scratch frames).
+- `payload` is a `#[repr(C)]` struct defined in `room-script-abi::payload` (e.g. `ActionPayload { self_: ActorRef, invoker: ActorRef, state: StateRef, caller_kind: u32, args: [ArgVal; 8] }`, `DamagePayload { this, inflictor, source, damage, dmg_type: NameRef, flags, angle: f64 }`, `WorldEventPayload { … }`).
+- The host writes the payload into a per-instance scratch region obtained once from `room_alloc` (grown as needed; re-entrant calls use a stack of scratch frames).
 - The `i64` return value carries the result (e.g. damage amount, state jump target as `StateRef`, bool).
 
 Callbacks never receive host pointers; only handles and plain data.
@@ -232,7 +232,7 @@ Callbacks never receive host pointers; only handles and plain data.
 When `Definitions` are built (pipeline phase 7, `05-text-lumps.md §2`), each play
 module is instantiated in **registration mode** (imports restricted to the
 `reg_*` set + `common` lookups of already-registered content) and
-`ferrite_register()` is called. The instance is then dropped; registration has
+`room_register()` is called. The instance is then dropped; registration has
 no runtime state. UI modules register their UI elements the same way.
 
 ```
@@ -269,15 +269,15 @@ Two complementary mechanisms:
 
 ## 8. Determinism rules for play modules
 
-1. Only `ferrite` imports; no clocks, no I/O, no host randomness except `rng_*` (World RNG).
-2. Floats: WASM float semantics are deterministic except NaN payloads; the backends canonicalize NaNs (wasmtime option; wasmi canonical by design). The `web-native` backend can't, so play modules running there must pass `ferrite-abi-gen lint --deterministic` (rejects modules where NaN bits can be observed, e.g. `i64.reinterpret_f64` on values not proven non-NaN — conservative: reject any `reinterpret` of float results) or the engine uses `wasmi` for them.
-3. Math functions (`sin`, `atan2`, …) are compiled into the guest (Rust `libm` crate; the SDK provides `ferrite_sdk::math` which re-exports a deterministic pure-Rust libm). Host also provides `math_*` imports with deterministic implementations (`ferrite_core::dmath`) for languages without a libm.
+1. Only `room` imports; no clocks, no I/O, no host randomness except `rng_*` (World RNG).
+2. Floats: WASM float semantics are deterministic except NaN payloads; the backends canonicalize NaNs (wasmtime option; wasmi canonical by design). The `web-native` backend can't, so play modules running there must pass `room-abi-gen lint --deterministic` (rejects modules where NaN bits can be observed, e.g. `i64.reinterpret_f64` on values not proven non-NaN — conservative: reject any `reinterpret` of float results) or the engine uses `wasmi` for them.
+3. Math functions (`sin`, `atan2`, …) are compiled into the guest (Rust `libm` crate; the SDK provides `room_sdk::math` which re-exports a deterministic pure-Rust libm). Host also provides `math_*` imports with deterministic implementations (`room_core::dmath`) for languages without a libm.
 4. Iteration order of anything returned by host batch APIs is deterministic (documented per API).
 5. No dependence on memory addresses (e.g. hashing pointers) across save/load — the snapshot restores the exact same layout, so this is safe within a session, but hot reload resets memory.
 
 ## 9. Feature parity map (ZScript → WASM API)
 
-| ZScript | Ferrite module |
+| ZScript | Room module |
 |---|---|
 | `class Foo : Actor replaces Bar { Default { … } States { … } }` | `reg_class_begin` + `reg_class_property/flag` + `reg_state*` (SDK: `#[derive(Actor)]` + `states!{}`) |
 | member variables | declared fields (§7) |
@@ -315,20 +315,20 @@ Handler order: by `order` value, then registration order. `IsUiProcessor`/`Requi
 
 ## 10. Save games and hot reload
 
-**Save:** for each play module instance: `{ identity, memory: compressed bytes (deflate), mutable globals, scratch-stack depth == 0 asserted, optional ferrite_on_save blob }`. Host-side fields are part of actor data. Saving happens between tics only (no guest frames active).
+**Save:** for each play module instance: `{ identity, memory: compressed bytes (deflate), mutable globals, scratch-stack depth == 0 asserted, optional room_on_save blob }`. Host-side fields are part of actor data. Saving happens between tics only (no guest frames active).
 
-**Load:** instantiate fresh, call `ferrite_init(LoadGame)`… then **overwrite** memory & globals from the snapshot, then call `ferrite_on_load()` if exported. Data segments are applied by instantiation before overwrite (harmless).
+**Load:** instantiate fresh, call `room_init(LoadGame)`… then **overwrite** memory & globals from the snapshot, then call `room_on_load()` if exported. Data segments are applied by instantiation before overwrite (harmless).
 
-If a module's sha256 differs from the save's, refuse to load unless `save_allow_module_mismatch` is set, in which case memory is **not** restored (`ferrite_init(LoadGame)` gets a flag) and only host-side fields are kept — modules wanting cross-version saves should rely on declared fields.
+If a module's sha256 differs from the save's, refuse to load unless `save_allow_module_mismatch` is set, in which case memory is **not** restored (`room_init(LoadGame)` gets a flag) and only host-side fields are kept — modules wanting cross-version saves should rely on declared fields.
 
-**Hot reload** (dev only, `script_hot_reload 1`, directory mounts only): on file change → re-run registration in a scratch `Definitions` overlay; if the class layout (fields/states) is compatible, swap instance (fresh memory, `ferrite_init(HotReload)`), keep host-side data; else report and keep the old module.
+**Hot reload** (dev only, `script_hot_reload 1`, directory mounts only): on file change → re-run registration in a scratch `Definitions` overlay; if the class layout (fields/states) is compatible, swap instance (fresh memory, `room_init(HotReload)`), keep host-side data; else report and keep the old module.
 
-## 11. Rust SDK (`ferrite-script-sdk`)
+## 11. Rust SDK (`room-script-sdk`)
 
-Target: `wasm32-unknown-unknown`, `#![no_std]` + `alloc` (a small allocator, e.g. `talc` or `dlmalloc`, bundled). Panics: abort with message exported via `ferrite_panic_info`.
+Target: `wasm32-unknown-unknown`, `#![no_std]` + `alloc` (a small allocator, e.g. `talc` or `dlmalloc`, bundled). Panics: abort with message exported via `room_panic_info`.
 
 ```rust
-use ferrite_sdk::prelude::*;
+use room_sdk::prelude::*;
 
 #[derive(Actor)]
 #[actor(name = "FireImp", parent = "DoomImp", replaces = "DoomImp")]
@@ -380,23 +380,23 @@ impl PlayEvents for ImpTracker {
     }
 }
 
-ferrite_sdk::export_module!(classes = [FireImp], handlers = [ImpTracker]);
+room_sdk::export_module!(classes = [FireImp], handlers = [ImpTracker]);
 ```
 
 Design notes for the SDK implementer:
 - `Actor<T>` is a `Copy` handle (`ActorRef` + `PhantomData<T>`); accessors generated by the derive call `actor_field_*` with `FieldId`s captured at registration in a `static` table.
 - `Play` / `Ui` context types are zero-sized tokens proving scope; mutating methods require `&mut Play`. UI methods require `&mut Ui`. This mirrors scope rules at compile time.
 - Re-entrancy: host calls can re-enter the guest (e.g. `spawn` triggers `PostBeginPlay` of another class in the same module). The SDK must not hold `RefCell` borrows across host calls; event handler `&mut self` is obtained from a slot table with a re-entrancy guard that panics with a clear message on aliasing.
-- `class!("Name")`, `name!("Fire")`, `sound!("imp/attack")` cache lookups in statics (resolved in `ferrite_init`).
-- Provide `ferrite_sdk::testing` (native target, links `ferrite-script` + `ferrite-sim` in-process) so modders can unit test modules with `cargo test` against synthetic maps.
+- `class!("Name")`, `name!("Fire")`, `sound!("imp/attack")` cache lookups in statics (resolved in `room_init`).
+- Provide `room_sdk::testing` (native target, links `room-script` + `room-sim` in-process) so modders can unit test modules with `cargo test` against synthetic maps.
 
-`cargo ferrite` subcommand (in `ferrite-cli`): `cargo ferrite new`, `build` (wasm32 release + `wasm-opt`-free size optimizations via `wasm-encoder`-based stripping, keeps `name` section), `pack` (produces `.pk3` with manifest), `run` (launch engine with the mod, hot reload enabled).
+`cargo room` subcommand (in `room-cli`): `cargo room new`, `build` (wasm32 release + `wasm-opt`-free size optimizations via `wasm-encoder`-based stripping, keeps `name` section), `pack` (produces `.pk3` with manifest), `run` (launch engine with the mod, hot reload enabled).
 
 ## 12. Other languages
 
-`ferrite-abi-gen` emits:
-- `ferrite.h` + `ferrite_sdk.c` (C/C++ via `clang --target=wasm32`): raw imports + helper macros for registration.
-- `ferrite.zig` (Zig), `ferrite.ts` (AssemblyScript), `api.json` (any other tooling).
+`room-abi-gen` emits:
+- `room.h` + `room_sdk.c` (C/C++ via `clang --target=wasm32`): raw imports + helper macros for registration.
+- `room.zig` (Zig), `room.ts` (AssemblyScript), `api.json` (any other tooling).
 Each generated SDK ships an "Imp replacement" example that passes the conformance test.
 
 ## 13. ADR: core modules instead of the Component Model

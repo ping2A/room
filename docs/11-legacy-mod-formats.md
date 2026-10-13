@@ -1,6 +1,6 @@
 # 11 — Legacy modding formats: DECORATE, DeHackEd, ZScript policy
 
-## 1. DECORATE (`ferrite-decorate`)
+## 1. DECORATE (`room-decorate`)
 
 GZDoom references: `src/scripting/decorate/thingdef_parse.cpp`, `thingdef_states.cpp`,
 `thingdef_exp.cpp`, `src/scripting/thingdef_properties.cpp` (property table),
@@ -9,8 +9,8 @@ GZDoom references: `src/scripting/decorate/thingdef_parse.cpp`, `thingdef_states
 
 ### 1.1 Output
 
-DECORATE compiles to a `ClassDefIr` list that `ferrite-defs` merges into the
-`ClassRegistry`. Built-in classes (`ferrite.pk3`) use the same path.
+DECORATE compiles to a `ClassDefIr` list that `room-defs` merges into the
+`ClassRegistry`. Built-in classes (`room.pk3`) use the same path.
 
 ### 1.2 Grammar (summary)
 
@@ -21,7 +21,7 @@ const_decl    := 'const' ('int'|'float') IDENT '=' expr ';'
 enum_decl     := 'enum' '{' IDENT ('=' expr)? (',' IDENT ('=' expr)?)* ','? '}' ';'?
 actor_def     := 'actor' NAME (':' NAME)? ('replaces' NAME)? INT? 'native'? '{' actor_body* '}'
 actor_body    := property | flag | 'states' states_block | var_decl | const_decl | enum_decl
-               | action_decl /* only 'action native' in ferrite.pk3 */
+               | action_decl /* only 'action native' in room.pk3 */
                | 'skip_super' | 'clearflags' | 'monster' | 'projectile' | 'game' NAME | 'spawnid' INT | 'conversationid' INT (',' INT ',' INT)?
 flag          := ('+'|'-') FLAGNAME            // FLAGNAME may be qualified: INVENTORY.AUTOACTIVATE, WEAPON.NOAUTOFIRE
 property      := PROPNAME args                 // PROPNAME may be qualified: Inventory.Amount, Player.ColorRange …
@@ -41,13 +41,13 @@ label_ref     := ('Super' '::' | CLASSNAME '::')? label
 - Flags: table ported from `thingdef_data.cpp` (`ActorFlagDefs`, `InventoryFlagDefs`, `WeaponFlagDefs`, `PlayerPawnFlagDefs`, deprecated aliases like `+LOWGRAVITY`, `+FIREDAMAGE`, `+ICEDAMAGE`, `+QUARTERGRAVITY`, `+SHORTMISSILERANGE`, `+LONGMELEERANGE`, `+NONETID` – deprecated flags must still be accepted and mapped as GZDoom does).
 - Expressions: C-like precedence, int/float/bool/string/name/state/class/sound/color types, built-in variables (`x, y, z, angle, pitch, roll, alpha, args[], health, velx/vely/velz, momx/momy/momz, scalex/scaley, mass, accuracy, stamina, height, radius, reactiontime, meleerange, speed, special, tid, tidtohate, waterlevel, threshold, damage, floorz, ceilingz, user_*`), functions (`random, random2, frandom, randompick, frandompick, sin, cos, sqrt, abs, min, max, clamp, CallACS, CountInv, GetDistance, GetAngle, GetZAt, GetCrouchFactor, GetCVar, GetPlayerInput, CheckClass, IsPointerEqual, GetSpawnHealth, GetGibHealth, GetMissileDamage, OverlayID, OverlayX, OverlayY, …`).
 - Constant folding at compile time; non-constant expressions become `DecoExpr` trees (see `08 §4.1`).
-- `action native` and `native` class declarations are **only permitted in `ferrite.pk3`**; in user mods they're errors (as in GZDoom DECORATE).
+- `action native` and `native` class declarations are **only permitted in `room.pk3`**; in user mods they're errors (as in GZDoom DECORATE).
 
 ### 1.3 Errors
 
 Collect all errors in all DECORATE lumps, then abort startup with a report if any (GZDoom: "Script error" list then fatal). Warnings (unknown sprite, missing state label targets) are non-fatal.
 
-## 2. DeHackEd / BEX / MBF21 (`ferrite-dehacked`)
+## 2. DeHackEd / BEX / MBF21 (`room-dehacked`)
 
 GZDoom reference: `src/gamedata/d_dehacked.cpp`; specs: Doom Wiki *DeHackEd*, *BEX*, *MBF21* spec (`mbf21.md` in DSDA repo), *DSDHacked*.
 
@@ -55,7 +55,7 @@ GZDoom reference: `src/gamedata/d_dehacked.cpp`; specs: Doom Wiki *DeHackEd*, *B
 
 `DEHACKED` lumps (every container, load order), `-deh`/`-bex` files, `.deh`/`.bex` loose files passed with `-file`. Applied **after** all DECORATE and module class registration so patches override.
 
-### 2.2 Mapping data (`ferrite.pk3/dehacked/`)
+### 2.2 Mapping data (`room.pk3/dehacked/`)
 
 DeHackEd addresses things/frames/sounds/sprites by vanilla index. Ship mapping tables as data files:
 
@@ -86,17 +86,17 @@ Semantics to replicate:
 
 ### 3.1 Decision
 
-ZScript source is **not executed** by Ferrite. Rationale: ZScript is a large, GZDoom-internal language tightly coupled to C++ class layouts; reproducing its VM and ~3000 native bindings would duplicate GZDoom without improving the modding experience. WASM modules replace it with a smaller, versioned, language-agnostic API.
+ZScript source is **not executed** by Room. Rationale: ZScript is a large, GZDoom-internal language tightly coupled to C++ class layouts; reproducing its VM and ~3000 native bindings would duplicate GZDoom without improving the modding experience. WASM modules replace it with a smaller, versioned, language-agnostic API.
 
 ### 3.2 Behaviour on load
 
 - A `ZSCRIPT` lump (or `zscript.*` file at archive root) in a mod produces a single clear diagnostic:
-  `"<mod.pk3> contains ZScript, which Ferrite does not run. The mod may not work. See https://<docs>/migrating-from-zscript"`.
-- If the same container also provides a Ferrite module manifest (`ferrite.toml` / `modules/`), the ZScript is silently ignored (dual-target mods).
+  `"<mod.pk3> contains ZScript, which Room does not run. The mod may not work. See https://<docs>/migrating-from-zscript"`.
+- If the same container also provides a Room module manifest (`room.toml` / `modules/`), the ZScript is silently ignored (dual-target mods).
 - Engine option `zscript_policy = warn | error | ignore` (default `warn`).
 
 ### 3.3 Migration support
 
 1. **Migration guide** (`docs/guides/migrating-from-zscript.md`, written alongside the SDK): side-by-side table of ZScript constructs → SDK equivalents (see `12 §9`).
 2. **API name parity**: the WASM host API mirrors ZScript's names (`A_SpawnItemEx`, `Actor.Spawn`, `FindInventory`, `CountInv`, `LevelLocals` → `level()`, `players[]` → `players()`, `EventHandler` → `#[event_handler]`), so translations are mechanical.
-3. **Stretch (C): `ferrite-zsc` transpiler** — a separate tool that parses ZScript (grammar reference: GZDoom `src/common/scripting/frontend/zcc-parse.lemon`), type-checks against an API description generated from Ferrite's ABI (`ferrite-script-abi` exports a machine-readable API manifest), and emits Rust source using `ferrite-script-sdk`, which is then compiled to WASM. Unsupported features (direct native class field access with no ABI equivalent, `ui`/`play` scope violations, `Object` reflection) produce diagnostics. This is a separate repository/milestone; nothing in the engine depends on it.
+3. **Stretch (C): `room-zsc` transpiler** — a separate tool that parses ZScript (grammar reference: GZDoom `src/common/scripting/frontend/zcc-parse.lemon`), type-checks against an API description generated from Room's ABI (`room-script-abi` exports a machine-readable API manifest), and emits Rust source using `room-script-sdk`, which is then compiled to WASM. Unsupported features (direct native class field access with no ABI equivalent, `ui`/`play` scope violations, `Object` reflection) produce diagnostics. This is a separate repository/milestone; nothing in the engine depends on it.

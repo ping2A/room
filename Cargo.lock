@@ -430,7 +430,7 @@ checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -447,7 +447,7 @@ dependencies = [
  "futures-task",
  "log",
  "pin-project-lite",
- "tungstenite",
+ "tungstenite 0.28.0",
 ]
 
 [[package]]
@@ -521,7 +521,16 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
 dependencies = [
- "bit-vec",
+ "bit-vec 0.8.0",
+]
+
+[[package]]
+name = "bit-set"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56d87354e4229f54a44f7bf2435906a4656dba36026ab6eaca629a2c436a691c"
+dependencies = [
+ "bit-vec 0.10.1",
 ]
 
 [[package]]
@@ -529,6 +538,16 @@ name = "bit-vec"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+
+[[package]]
+name = "bit-vec"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5727b15fa97d4f4fee0a3b7c3d550ed0269f54329207b86388de918604e31269"
+dependencies = [
+ "borsh",
+ "serde",
+]
 
 [[package]]
 name = "bitflags"
@@ -610,6 +629,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "borsh"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "553c5d846a6ba5150c65e3b1b8ec073bcf1abc20f9b7220de384a4443ea4e20a"
+dependencies = [
+ "borsh-derive",
+ "bytes",
+ "cfg_aliases",
+]
+
+[[package]]
+name = "borsh-derive"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12cdfe656708a01f89b451a7d36466e6fe6c414de0aa18fc54f864f6f9ca9f56"
+dependencies = [
+ "once_cell",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -635,7 +678,7 @@ checksum = "46d07918caa9eeaaf06b7873925c53a61daac173539b4f7715090745e44e4e69"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -655,7 +698,7 @@ checksum = "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -728,9 +771,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.6.0"
+version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f74872d07caf508b30a21f6836e7d7016a2eaf7d9ff4f48deaa58cd8a0407630"
+checksum = "6651c9ed80effdc7db0ff72512157f901af5e3549e341e24b1dd4887d836d838"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -789,13 +832,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "chacha20"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.1",
+ "rand_core 0.10.1",
+]
+
+[[package]]
 name = "chacha20poly1305"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10cd79432192d1c0f4e1a0fef9527696cc039165d729fb41b3f4f4f354c2dc35"
 dependencies = [
  "aead",
- "chacha20",
+ "chacha20 0.9.1",
  "cipher",
  "poly1305",
  "zeroize",
@@ -854,7 +908,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -1342,9 +1396,9 @@ dependencies = [
 
 [[package]]
 name = "deranged"
-version = "0.5.8"
+version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 
 [[package]]
 name = "derive_more"
@@ -1406,7 +1460,7 @@ checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -1459,7 +1513,7 @@ dependencies = [
  "p256",
  "p384",
  "portable-atomic",
- "rand",
+ "rand 0.9.5",
  "rand_core 0.6.4",
  "rcgen",
  "ring",
@@ -1612,365 +1666,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ferrite-abi-gen"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ron",
- "serde",
-]
-
-[[package]]
-name = "ferrite-acs"
-version = "0.1.0"
-dependencies = [
- "ferrite-core",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "ferrite-app"
-version = "0.1.0"
-dependencies = [
- "clap",
- "cpal",
- "ferrite-audio",
- "ferrite-console",
- "ferrite-decorate",
- "ferrite-defs",
- "ferrite-game",
- "ferrite-input",
- "ferrite-map",
- "ferrite-music",
- "ferrite-net",
- "ferrite-nodebuild",
- "ferrite-render",
- "ferrite-sim",
- "ferrite-testkit",
- "ferrite-ui",
- "ferrite-vfs",
- "glam",
- "pollster",
- "wgpu",
- "winit",
-]
-
-[[package]]
-name = "ferrite-audio"
-version = "0.1.0"
-dependencies = [
- "ferrite-core",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "ferrite-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "ferrite-decorate",
- "ferrite-defs",
- "ferrite-game",
- "ferrite-map",
- "ferrite-nodebuild",
- "ferrite-sim",
- "ferrite-vfs",
-]
-
-[[package]]
-name = "ferrite-console"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "ferrite-core"
-version = "0.1.0"
-dependencies = [
- "crc32fast",
- "libm",
- "proptest",
- "thiserror 2.0.21",
- "xxhash-rust",
-]
-
-[[package]]
-name = "ferrite-decorate"
-version = "0.1.0"
-dependencies = [
- "ferrite-sc",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "ferrite-defs"
-version = "0.1.0"
-dependencies = [
- "ferrite-core",
- "ferrite-formats",
- "ferrite-sc",
- "ferrite-vfs",
- "insta",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "ferrite-dehacked"
-version = "0.1.0"
-dependencies = [
- "ferrite-decorate",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "ferrite-formats"
-version = "0.1.0"
-dependencies = [
- "claxon",
- "flate2",
- "lewton",
- "png 0.17.16",
- "proptest",
- "symphonia",
- "thiserror 2.0.21",
- "zune-jpeg",
-]
-
-[[package]]
-name = "ferrite-game"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "ferrite-audio",
- "ferrite-core",
- "ferrite-decorate",
- "ferrite-defs",
- "ferrite-formats",
- "ferrite-map",
- "ferrite-music",
- "ferrite-net",
- "ferrite-nodebuild",
- "ferrite-sim",
- "ferrite-testkit",
- "ferrite-ui",
- "ferrite-vfs",
- "thiserror 2.0.21",
- "wat",
- "xxhash-rust",
- "zip",
-]
-
-[[package]]
-name = "ferrite-input"
-version = "0.1.0"
-
-[[package]]
-name = "ferrite-map"
-version = "0.1.0"
-dependencies = [
- "ferrite-core",
- "ferrite-formats",
- "ferrite-nodebuild",
- "ferrite-testkit",
- "ferrite-vfs",
- "flate2",
- "md-5",
- "proptest",
- "ron",
- "serde",
- "smallvec",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "ferrite-music"
-version = "0.1.0"
-dependencies = [
- "ferrite-formats",
- "nuked-opl3",
- "rustysynth",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "ferrite-net"
-version = "0.1.0"
-dependencies = [
- "ferrite-signal",
- "matchbox_socket",
- "snow",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "ferrite-nodebuild"
-version = "0.1.0"
-dependencies = [
- "ferrite-core",
- "ferrite-map",
- "ferrite-testkit",
-]
-
-[[package]]
-name = "ferrite-render"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "ferrite-core",
- "ferrite-decorate",
- "ferrite-defs",
- "ferrite-formats",
- "ferrite-map",
- "ferrite-nodebuild",
- "ferrite-sim",
- "ferrite-testkit",
- "ferrite-vfs",
- "gif",
- "glam",
- "image",
- "image-compare",
- "libm",
- "naga",
- "png 0.17.16",
- "pollster",
- "thiserror 2.0.21",
- "wgpu",
-]
-
-[[package]]
-name = "ferrite-render-soft"
-version = "0.1.0"
-
-[[package]]
-name = "ferrite-sc"
-version = "0.1.0"
-dependencies = [
- "proptest",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "ferrite-script"
-version = "0.1.0"
-dependencies = [
- "ferrite-script-abi",
- "thiserror 2.0.21",
- "wasmi",
- "wasmparser 0.224.1",
- "wasmtime",
- "wat",
-]
-
-[[package]]
-name = "ferrite-script-abi"
-version = "0.1.0"
-
-[[package]]
-name = "ferrite-script-sdk"
-version = "0.1.0"
-dependencies = [
- "ferrite-script-abi",
- "ferrite-script-sdk-macros",
-]
-
-[[package]]
-name = "ferrite-script-sdk-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "ferrite-signal"
-version = "0.1.0"
-
-[[package]]
-name = "ferrite-sim"
-version = "0.1.0"
-dependencies = [
- "ferrite-acs",
- "ferrite-core",
- "ferrite-decorate",
- "ferrite-dehacked",
- "ferrite-map",
- "ferrite-nodebuild",
- "ferrite-script",
- "ferrite-script-abi",
- "ferrite-testkit",
- "thiserror 2.0.21",
- "wat",
- "xxhash-rust",
-]
-
-[[package]]
-name = "ferrite-testkit"
-version = "0.1.0"
-dependencies = [
- "ferrite-map",
- "ferrite-vfs",
-]
-
-[[package]]
-name = "ferrite-ui"
-version = "0.1.0"
-dependencies = [
- "ferrite-defs",
- "ferrite-formats",
- "ferrite-map",
- "ferrite-nodebuild",
- "ferrite-testkit",
- "ferrite-vfs",
-]
-
-[[package]]
-name = "ferrite-vfs"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.2",
- "bytes",
- "flate2",
- "indexmap",
- "md-5",
- "proptest",
- "sevenz-rust2",
- "smallvec",
- "tempfile",
- "thiserror 2.0.21",
- "zip",
-]
-
-[[package]]
-name = "ferrite-web"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "console_error_panic_hook",
- "ferrite-audio",
- "ferrite-defs",
- "ferrite-game",
- "ferrite-input",
- "ferrite-map",
- "ferrite-music",
- "ferrite-nodebuild",
- "ferrite-render",
- "ferrite-sim",
- "ferrite-ui",
- "ferrite-vfs",
- "glam",
- "js-sys",
- "libm",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
- "web-sys",
- "wgpu",
-]
-
-[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2033,7 +1728,7 @@ checksum = "ea5190182e6915eb873ddbc16e23b711b6eb1f9c00a0d0a3a91b5f6228475225"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -2120,7 +1815,7 @@ checksum = "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -2215,6 +1910,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi 6.0.0",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -2663,7 +2359,7 @@ dependencies = [
  "futures",
  "log",
  "portable-atomic",
- "rand",
+ "rand 0.9.5",
  "rtcp",
  "rtp",
  "thiserror 1.0.69",
@@ -2928,9 +2624,9 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "litrs"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
 name = "lock_api"
@@ -2962,7 +2658,7 @@ version = "0.16.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca93e534d1142d1d0dcca6d25fe302508a5dfb40b302802904577725ea0b695b"
 dependencies = [
- "sha2 0.11.0",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -3181,7 +2877,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b977c445f26e49757f9aca3631c3b8b836942cb278d69a92e7b80d3b24da632"
 dependencies = [
  "arrayvec",
- "bit-set",
+ "bit-set 0.8.0",
  "bitflags 2.13.2",
  "cfg_aliases",
  "codespan-reporting",
@@ -4005,16 +3701,17 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "proptest"
-version = "1.11.0"
+version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b45fcc2344c680f5025fe57779faef368840d0bd1f42f216291f0dc4ace4744"
+checksum = "b8530004ccb15eae51c7e40009fbe317f341f804db54dc033eec1c50be28cfa0"
 dependencies = [
- "bit-set",
- "bit-vec",
+ "bit-set 0.11.1",
+ "bit-vec 0.10.1",
  "bitflags 2.13.2",
+ "chacha20 0.10.2",
+ "core_detect",
  "num-traits",
- "rand",
- "rand_chacha",
+ "rand 0.10.3",
  "rand_xorshift",
  "regex-syntax",
  "rusty-fork",
@@ -4049,7 +3746,7 @@ checksum = "1c8d9ca532f185d5d4db7a7c9d51420b452168ea1c2b913953281bd6fe1fcbd0"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -4125,6 +3822,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
+dependencies = [
+ "getrandom 0.4.3",
+ "rand_core 0.10.1",
+]
+
+[[package]]
 name = "rand_chacha"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4153,12 +3860,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "rand_xorshift"
-version = "0.4.0"
+name = "rand_core"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
+checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "rand_xorshift"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60aa6af80be32871323012e02e6e65f8a7cc7890931ae421d217ad8fe0df2ccf"
 dependencies = [
- "rand_core 0.9.5",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -4342,7 +4055,7 @@ checksum = "1c25ef604ac7dd839d44d64648952ea23c97866f124ff671b0ed2cf3ad9bb06e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -4357,6 +4070,374 @@ dependencies = [
  "serde_derive",
  "typeid",
  "unicode-ident",
+]
+
+[[package]]
+name = "room-abi-gen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ron",
+ "serde",
+]
+
+[[package]]
+name = "room-acs"
+version = "0.1.0"
+dependencies = [
+ "room-core",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "room-app"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "cpal",
+ "glam",
+ "pollster",
+ "room-audio",
+ "room-console",
+ "room-decorate",
+ "room-defs",
+ "room-game",
+ "room-input",
+ "room-map",
+ "room-music",
+ "room-net",
+ "room-nodebuild",
+ "room-render",
+ "room-sim",
+ "room-testkit",
+ "room-ui",
+ "room-vfs",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "room-audio"
+version = "0.1.0"
+dependencies = [
+ "room-core",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "room-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "room-decorate",
+ "room-defs",
+ "room-game",
+ "room-map",
+ "room-nodebuild",
+ "room-sim",
+ "room-vfs",
+]
+
+[[package]]
+name = "room-console"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "room-core"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "libm",
+ "proptest",
+ "thiserror 2.0.21",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "room-decorate"
+version = "0.1.0"
+dependencies = [
+ "room-sc",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "room-defs"
+version = "0.1.0"
+dependencies = [
+ "insta",
+ "room-core",
+ "room-formats",
+ "room-sc",
+ "room-vfs",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "room-dehacked"
+version = "0.1.0"
+dependencies = [
+ "room-decorate",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "room-formats"
+version = "0.1.0"
+dependencies = [
+ "claxon",
+ "flate2",
+ "lewton",
+ "png 0.17.16",
+ "proptest",
+ "symphonia",
+ "thiserror 2.0.21",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "room-game"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "room-audio",
+ "room-core",
+ "room-decorate",
+ "room-defs",
+ "room-formats",
+ "room-map",
+ "room-music",
+ "room-net",
+ "room-nodebuild",
+ "room-sim",
+ "room-testkit",
+ "room-ui",
+ "room-vfs",
+ "thiserror 2.0.21",
+ "wat",
+ "xxhash-rust",
+ "zip",
+]
+
+[[package]]
+name = "room-input"
+version = "0.1.0"
+
+[[package]]
+name = "room-map"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "md-5",
+ "proptest",
+ "ron",
+ "room-core",
+ "room-formats",
+ "room-nodebuild",
+ "room-testkit",
+ "room-vfs",
+ "serde",
+ "smallvec",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "room-music"
+version = "0.1.0"
+dependencies = [
+ "nuked-opl3",
+ "room-formats",
+ "rustysynth",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "room-net"
+version = "0.1.0"
+dependencies = [
+ "matchbox_socket",
+ "room-signal",
+ "snow",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "room-nodebuild"
+version = "0.1.0"
+dependencies = [
+ "room-core",
+ "room-map",
+ "room-testkit",
+]
+
+[[package]]
+name = "room-render"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "gif",
+ "glam",
+ "image",
+ "image-compare",
+ "libm",
+ "naga",
+ "png 0.17.16",
+ "pollster",
+ "room-core",
+ "room-decorate",
+ "room-defs",
+ "room-formats",
+ "room-map",
+ "room-nodebuild",
+ "room-sim",
+ "room-testkit",
+ "room-vfs",
+ "thiserror 2.0.21",
+ "wgpu",
+]
+
+[[package]]
+name = "room-render-soft"
+version = "0.1.0"
+
+[[package]]
+name = "room-sc"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "room-script"
+version = "0.1.0"
+dependencies = [
+ "room-script-abi",
+ "thiserror 2.0.21",
+ "wasmi",
+ "wasmparser 0.224.1",
+ "wasmtime",
+ "wat",
+]
+
+[[package]]
+name = "room-script-abi"
+version = "0.1.0"
+
+[[package]]
+name = "room-script-sdk"
+version = "0.1.0"
+dependencies = [
+ "room-script-abi",
+ "room-script-sdk-macros",
+]
+
+[[package]]
+name = "room-script-sdk-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "room-signal"
+version = "0.1.0"
+
+[[package]]
+name = "room-sim"
+version = "0.1.0"
+dependencies = [
+ "room-acs",
+ "room-core",
+ "room-decorate",
+ "room-dehacked",
+ "room-map",
+ "room-nodebuild",
+ "room-script",
+ "room-script-abi",
+ "room-testkit",
+ "thiserror 2.0.21",
+ "wat",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "room-testkit"
+version = "0.1.0"
+dependencies = [
+ "room-map",
+ "room-vfs",
+]
+
+[[package]]
+name = "room-ui"
+version = "0.1.0"
+dependencies = [
+ "room-defs",
+ "room-formats",
+ "room-map",
+ "room-nodebuild",
+ "room-testkit",
+ "room-vfs",
+]
+
+[[package]]
+name = "room-vfs"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytes",
+ "flate2",
+ "indexmap",
+ "md-5",
+ "proptest",
+ "sevenz-rust2",
+ "smallvec",
+ "tempfile",
+ "thiserror 2.0.21",
+ "zip",
+]
+
+[[package]]
+name = "room-web"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "console_error_panic_hook",
+ "glam",
+ "js-sys",
+ "libm",
+ "room-audio",
+ "room-defs",
+ "room-game",
+ "room-input",
+ "room-map",
+ "room-music",
+ "room-net",
+ "room-nodebuild",
+ "room-render",
+ "room-sim",
+ "room-ui",
+ "room-vfs",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+ "wgpu",
+]
+
+[[package]]
+name = "room-ws"
+version = "0.1.0"
+dependencies = [
+ "room-net",
+ "tungstenite 0.26.2",
 ]
 
 [[package]]
@@ -4379,7 +4460,7 @@ dependencies = [
  "bytes",
  "memchr",
  "portable-atomic",
- "rand",
+ "rand 0.9.5",
  "serde",
  "thiserror 1.0.69",
  "webrtc-util",
@@ -4580,7 +4661,7 @@ version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b6eecfa5151edef84d544ff3885dff98e5b5fe97586757a4b5118bde51c958"
 dependencies = [
- "rand",
+ "rand 0.9.5",
  "substring",
  "thiserror 1.0.69",
  "url",
@@ -4650,14 +4731,14 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
 name = "serde_json"
-version = "1.0.151"
+version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
  "itoa",
  "memchr",
@@ -4702,9 +4783,9 @@ dependencies = [
 
 [[package]]
 name = "sha2"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
+checksum = "47d7069beb7d6ac7b9acd1039986e73443f24234f41074da099d6f994ac9ad19"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.1",
@@ -4794,9 +4875,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.16.2"
+version = "1.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
+checksum = "5b3dc8af474f516a851ff4bd12db780f948b9250ad37211e4eec0bccea54e01b"
 dependencies = [
  "serde",
 ]
@@ -4969,7 +5050,7 @@ dependencies = [
  "crc",
  "lazy_static",
  "md-5",
- "rand",
+ "rand 0.9.5",
  "ring",
  "subtle",
  "thiserror 1.0.69",
@@ -5055,9 +5136,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.6"
+version = "3.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8593e8e72159ed2257d083c7a454a85cbf854f37a0966d8d483aff8c8a3ebcee"
+checksum = "d78c8dee4c7bf0e14673097256fed6142ce9d3b85a408189d07482442145823b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5083,7 +5164,7 @@ checksum = "901704edd0dfe137f1987838ee4f259e4e063c31371bdb423f7ae38ec6f77f02"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -5151,7 +5232,7 @@ checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -5250,7 +5331,7 @@ checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -5278,9 +5359,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.25.16+spec-1.1.0"
+version = "0.25.17+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88f38f3af8bf71841c67a990f4e2b52143b2d0a1a994c72513ff4c14977fc722"
+checksum = "e3641d5bbb5349a79e1020a242d251efbc546ad8048d133958323ce9c40a9c9c"
 dependencies = [
  "indexmap",
  "toml_datetime",
@@ -5290,9 +5371,9 @@ dependencies = [
 
 [[package]]
 name = "toml_parser"
-version = "1.1.4+spec-1.1.0"
+version = "1.1.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bed810ee007d8e7f9cf20b4774e7198142fa27186e0f805871da7f3c39eaf333"
+checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
 dependencies = [
  "winnow",
 ]
@@ -5321,6 +5402,23 @@ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
 name = "tungstenite"
+version = "0.26.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4793cb5e56680ecbb1d843515b23b6de9a75eb04b66643e256a396d43be33c13"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand 0.9.5",
+ "sha1",
+ "thiserror 2.0.21",
+ "utf-8",
+]
+
+[[package]]
+name = "tungstenite"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8628dcc84e5a09eb3d8423d6cb682965dea9133204e8fb3efee74c2a0c259442"
@@ -5330,7 +5428,7 @@ dependencies = [
  "http",
  "httparse",
  "log",
- "rand",
+ "rand 0.9.5",
  "sha1",
  "thiserror 2.0.21",
  "utf-8",
@@ -5348,7 +5446,7 @@ dependencies = [
  "log",
  "md-5",
  "portable-atomic",
- "rand",
+ "rand 0.9.5",
  "ring",
  "stun",
  "thiserror 1.0.69",
@@ -5389,9 +5487,9 @@ checksum = "357cc3acc6a036009fd6c973ed009037c732d60d0b4f6c673e9041497482a28f"
 
 [[package]]
 name = "unicode-ident"
-version = "1.0.26"
+version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
+checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
 name = "unicode-segmentation"
@@ -5567,7 +5665,7 @@ dependencies = [
  "bumpalo",
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
  "wasm-bindgen-shared",
 ]
 
@@ -5610,7 +5708,7 @@ checksum = "3b84b5ac638bfb168196a1a461fcc8f46a294a18b1b6be52133b4e0db122cc9f"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -6083,7 +6181,7 @@ dependencies = [
  "lazy_static",
  "log",
  "portable-atomic",
- "rand",
+ "rand 0.9.5",
  "rcgen",
  "regex",
  "ring",
@@ -6136,7 +6234,7 @@ dependencies = [
  "crc",
  "log",
  "portable-atomic",
- "rand",
+ "rand 0.9.5",
  "serde",
  "serde_json",
  "stun",
@@ -6171,7 +6269,7 @@ checksum = "26a6c7335bdd03dc023cb9a3bd7966866d969c92c86987b73aa16dfa39c7ca29"
 dependencies = [
  "byteorder",
  "bytes",
- "rand",
+ "rand 0.9.5",
  "rtp",
  "thiserror 1.0.69",
 ]
@@ -6188,7 +6286,7 @@ dependencies = [
  "crc",
  "log",
  "portable-atomic",
- "rand",
+ "rand 0.9.5",
  "thiserror 1.0.69",
  "tokio",
  "webrtc-util",
@@ -6231,7 +6329,7 @@ dependencies = [
  "log",
  "nix",
  "portable-atomic",
- "rand",
+ "rand 0.9.5",
  "thiserror 1.0.69",
  "tokio",
  "winapi",
@@ -6278,8 +6376,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f7b882196f8368511d613c6aeec80655160db6646aebddf8328879a88d54e500"
 dependencies = [
  "arrayvec",
- "bit-set",
- "bit-vec",
+ "bit-set 0.8.0",
+ "bit-vec 0.8.0",
  "bitflags 2.13.2",
  "cfg_aliases",
  "document-features",
@@ -6338,7 +6436,7 @@ dependencies = [
  "android_system_properties",
  "arrayvec",
  "ash",
- "bit-set",
+ "bit-set 0.8.0",
  "bitflags 2.13.2",
  "block",
  "bytemuck",
@@ -6914,24 +7012,24 @@ checksum = "ec8ebde2db3681e8c9980cc27822030e68752690ddfa9473e739aeb4dbde6d71"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
  "synstructure 0.14.0",
 ]
 
 [[package]]
 name = "zerocopy"
-version = "0.8.61"
+version = "0.8.62"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "879fb705ce98c32e41ebdb970fbe1204f8492423b314c6ab0354c3e7b5542866"
+checksum = "86502bf56ac7c77571a32e2647bb2a15894565e981fb2a48d7bde2d91c965a9d"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.61"
+version = "0.8.62"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "708882a28301d604fa039cc7727607a98d04c4b86dc76ec9cc683f805d709759"
+checksum = "5457206954b06561e2608c7e19cf58b1926586d999c246eebe4502f7e2039d1a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6955,7 +7053,7 @@ checksum = "f75b4683f6c7f45248d4d64056a24298c6281e0993356d7d1b4a1a962ef10d4a"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
  "synstructure 0.14.0",
 ]
 
@@ -7009,7 +7107,7 @@ checksum = "34df6fc39dbd26ddc9c10e6a2984476e13acce22e64e4487636ef494369225da"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -7042,9 +7140,9 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zopfli"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f05cd8797d63865425ff89b5c4a48804f35ba0ce8d125800027ad6017d2b5249"
+checksum = "aaf7fc5d30c28483d93805c4a5e12b05bbb52407fa67c5f8bd552374cd01fb11"
 dependencies = [
  "bumpalo",
  "crc32fast",

@@ -1,4 +1,4 @@
-# 03 — Virtual filesystem (`ferrite-vfs`)
+# 03 — Virtual filesystem (`room-vfs`)
 
 Equivalent of GZDoom's `FileSystem` / `FResourceFile` (`src/common/filesystem/`).
 
@@ -114,7 +114,7 @@ Indices: build `IndexMap<(Namespace, ShortName), SmallVec<[LumpId; 2]>>` and a f
 
 ### 5.1 Startup sequence
 
-1. **Engine resource** `ferrite.pk3` (embedded in the binary with `include_bytes!` and also loadable from disk for development). Contains IWADINFO, per-game base definitions (DECORATE for built-in actors, MAPINFO, SNDINFO, LANGUAGE, MENUDEF, fonts, shaders, …).
+1. **Engine resource** `room.pk3` (embedded in the binary with `include_bytes!` and also loadable from disk for development). Contains IWADINFO, per-game base definitions (DECORATE for built-in actors, MAPINFO, SNDINFO, LANGUAGE, MENUDEF, fonts, shaders, …).
 2. **Optional engine extras** if present and enabled: `lights.pk3`, `brightmaps.pk3`, `game_support.pk3`, `game_widescreen_gfx.pk3` (compatible with GZDoom's files; users may supply them).
 3. **IWAD** (selected per §6), plus any `Load` entries from its IWADINFO record.
 4. **Autoload**: config sections in order `global.autoload`, `<game>.autoload`, `<game>.<iwad-family>.autoload`, `<autoname>.autoload` (mirrors GZDoom's `[doom.Autoload]`, `[doom.doom2.Autoload]`, …). Also `autoload/` directories next to the executable and in the user data dir with the same naming.
@@ -145,7 +145,7 @@ More specific filters are applied after less specific ones (so they override).
 
 ## 6. IWAD detection
 
-Data comes from the `IWADINFO` lump in `ferrite.pk3` (same syntax as GZDoom's `wadsrc/static/iwadinfo.txt`):
+Data comes from the `IWADINFO` lump in `room.pk3` (same syntax as GZDoom's `wadsrc/static/iwadinfo.txt`):
 
 ```
 IWad
@@ -166,7 +166,7 @@ Order { "...", ... }      // preference order shown in the picker
 ```
 
 Algorithm:
-1. Collect candidate files from search paths (`DOOMWADDIR`, `DOOMWADPATH`, config paths, exe dir, cwd, platform data dirs, known Steam/GOG/Microsoft Store install paths — list maintained in `ferrite-app/src/iwad_paths.rs`; also check `.ipk3`/`.iwad` files).
+1. Collect candidate files from search paths (`DOOMWADDIR`, `DOOMWADPATH`, config paths, exe dir, cwd, platform data dirs, known Steam/GOG/Microsoft Store install paths — list maintained in `room-app/src/iwad_paths.rs`; also check `.ipk3`/`.iwad` files).
 2. For each candidate, open its directory only and test every IWADINFO record's `MustContain` list; choose the **most specific** match (the record with the most `MustContain` entries satisfied — GZDoom iterates records in file order and picks the first full match, so order IWADINFO from most to least specific).
 3. `-iwad` forces a file. If several IWADs are found and none forced, show the picker (native: in-engine picker UI before the main window if `queryiwad` is true; web: file picker / OPFS library screen).
 4. Store chosen IWAD's `Autoname`, `Game`, `Config` and the derived filter list on `GameInfo`.
@@ -180,11 +180,11 @@ pub trait ContainerSource: Send + Sync {
 }
 ```
 
-Implementations: `FileSource` (std::fs, positioned reads), `MemorySource` (`Bytes`; used on web and for embedded `ferrite.pk3`), `DirSource` per-file. Decoded/decompressed lump data is cached in an LRU keyed by `LumpId` with a byte budget (default 256 MiB native, 64 MiB web). `Bytes` returned from `read` keeps data alive independent of eviction.
+Implementations: `FileSource` (std::fs, positioned reads), `MemorySource` (`Bytes`; used on web and for embedded `room.pk3`), `DirSource` per-file. Decoded/decompressed lump data is cached in an LRU keyed by `LumpId` with a byte budget (default 256 MiB native, 64 MiB web). `Bytes` returned from `read` keeps data alive independent of eviction.
 
 ## 8. Writing (tools only)
 
-`ferrite-vfs::write` provides a `WadWriter` and `ZipWriter` wrapper for tools (`ferrite-cli` extract/repack, savegame containers). Never used by the engine at runtime except for saves.
+`room-vfs::write` provides a `WadWriter` and `ZipWriter` wrapper for tools (`room-cli` extract/repack, savegame containers). Never used by the engine at runtime except for saves.
 
 ## 9. Tests
 

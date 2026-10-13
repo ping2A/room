@@ -7,18 +7,18 @@ committed `.fdem` / headless smoke exists.
 
 | Check | Command |
 |-------|---------|
-| Engine data has helper dog | `cargo test -p ferrite-game load_wadsrc_ferrite_engine_data` |
-| Complevel → CompatFlags | `cargo test -p ferrite-sim` (compat / complevel tests) |
-| MBF / MBF21 `A_*` | `cargo test -p ferrite-sim action::` |
-| Boom gen height / SPAC | `cargo test -p ferrite-map` |
-| Freedoom Complevel Vanilla/Boom demo | `cargo test -p ferrite-game --test freedoom_smoke freedoom2_map01_complevel_vanilla_and_boom_demo_verifies` |
-| Freedoom DEMO1 `.lmp` parse | `cargo test -p ferrite-game --test freedoom_smoke freedoom2_demo1_lmp_parses` |
-| Freedoom DEMO1 VanillaFixed smoke | `cargo test -p ferrite-game --test freedoom_smoke freedoom2_demo1_vanilla_smoke_ticks` |
+| Engine data has helper dog | `cargo test -p room-game load_wadsrc_room_engine_data` |
+| Complevel → CompatFlags | `cargo test -p room-sim` (compat / complevel tests) |
+| MBF / MBF21 `A_*` | `cargo test -p room-sim action::` |
+| Boom gen height / SPAC | `cargo test -p room-map` |
+| Freedoom Complevel Vanilla/Boom demo | `cargo test -p room-game --test freedoom_smoke freedoom2_map01_complevel_vanilla_and_boom_demo_verifies` |
+| Freedoom DEMO1 `.lmp` parse | `cargo test -p room-game --test freedoom_smoke freedoom2_demo1_lmp_parses` |
+| Freedoom DEMO1 VanillaFixed smoke | `cargo test -p room-game --test freedoom_smoke freedoom2_demo1_vanilla_smoke_ticks` |
 | Chocolate Doom DEMO1 timedemo (local) | `scripts/demo1-chocolate-timedemo.sh` (expects ~2664 gametics) |
-| DEMO1@70 vs Chocolate pos | Smoke golden ~(527.958, 989.147) ±0.5; Ferrite ~±0.03 after slide/floorz fixes |
+| DEMO1@70 vs Chocolate pos | Smoke golden ~(527.958, 989.147) ±0.5; Room ~±0.03 after slide/floorz fixes |
 | DEMO1@66–200 mom/pos | Matches patched Chocolate `P_Ticker` dump (incl. MAXMOVE/2 step split) |
-| Freedoom demos (compat stamp) | `cargo test -p ferrite-game --test freedoom_smoke` |
-| Helper dogs `-dogs` | `cargo test -p ferrite-sim spawn_helper_dogs_at_player_starts` |
+| Freedoom demos (compat stamp) | `cargo test -p room-game --test freedoom_smoke` |
+| Helper dogs `-dogs` | `cargo test -p room-sim spawn_helper_dogs_at_player_starts` |
 
 ## Manual / external WADs
 

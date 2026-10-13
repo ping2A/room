@@ -1,0 +1,10 @@
+# room-script-sdk-macros
+
+Proc-macros for the Room WASM guest SDK (`docs/12` §11).
+
+## Status (M11)
+
+- `#[actor]` — placeholder (keeps the item; full derive later)
+- `#[register_stub]` — adds `__room_register() -> i32` for `export_module!(classes = […])`
+
+Re-exported from `room-script-sdk`.

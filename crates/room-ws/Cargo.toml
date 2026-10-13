@@ -1,0 +1,20 @@
+[package]
+name = "room-ws"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "WebSocket packet-server relay for web / cross-play netplay."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "room-ws"
+path = "src/main.rs"
+
+[dependencies]
+room-net = { path = "../room-net", default-features = false }
+# Pure-Rust WebSocket (no tokio required for accept loop).
+# Handshake only (plain `ws://`); no native-tls / rustls for local relay.
+tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }

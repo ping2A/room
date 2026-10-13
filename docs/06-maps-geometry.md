@@ -1,4 +1,4 @@
-# 06 — Maps and geometry (`ferrite-map`, `ferrite-nodebuild`)
+# 06 — Maps and geometry (`room-map`, `room-nodebuild`)
 
 GZDoom references: `src/maploader/*.cpp` (`MapLoader`), `src/maploader/udmf.cpp`,
 `src/maploader/slopes.cpp`, `src/maploader/polyobjects.cpp`, `src/playsim/p_3dfloors.cpp`,
@@ -114,7 +114,7 @@ Use GZDoom's exact formulas (`secplane_t` in `r_defs.h`) to keep collision ident
 - Things outside map: spawn, will fall into nearest subsector by point lookup.
 - Doom-format sidedef textures with names that are numbers on special lines (e.g. 242 colormaps, 260 translucency, 213 transfers) are interpreted contextually — keep raw names on `Side` until §4 resolves them.
 
-## 3. Node building (`ferrite-nodebuild`)
+## 3. Node building (`room-nodebuild`)
 
 Port of ZDBSP's algorithm (GZDoom embeds it as `FNodeBuilder`). Requirements:
 

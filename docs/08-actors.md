@@ -1,4 +1,4 @@
-# 08 — Actors (`ferrite-sim::actor`, `ferrite-defs::classes`)
+# 08 — Actors (`room-sim::actor`, `room-defs::classes`)
 
 GZDoom references: `src/playsim/actor.h`, `p_mobj.cpp`, `p_actionfunctions.cpp`,
 `p_enemy.cpp`, `wadsrc/static/zscript/actors/**` (ZScript sources of every
@@ -8,13 +8,13 @@ ZDoom wiki pages *Actor properties*, *Actor flags*, *Actor states*,
 
 ## 1. Where built-in actors come from
 
-GZDoom implements built-in classes in ZScript inside `gzdoom.pk3`. Ferrite has
+GZDoom implements built-in classes in ZScript inside `gzdoom.pk3`. Room has
 no ZScript, so built-ins are split into:
 
-1. **Declarations in DECORATE** inside `ferrite.pk3` (`actors/shared/*.txt`,
+1. **Declarations in DECORATE** inside `room.pk3` (`actors/shared/*.txt`,
    `actors/doom/*.txt`, `actors/heretic/*`, `actors/hexen/*`, `actors/strife/*`,
    `actors/chex/*`): properties, flags, states, DoomEdNums — written in DECORATE
-   with Ferrite's `native` extensions:
+   with Room's `native` extensions:
    ```
    ACTOR Inventory native                      // behaviour implemented in Rust
    {
@@ -32,7 +32,7 @@ no ZScript, so built-ins are split into:
    }
    ```
    This is exactly how ZDoom 2.x shipped its actors (`wadsrc/static/actors/` in ZDoom 2.8 history) — use those files as a structural reference, updated to match current GZDoom ZScript defaults.
-2. **Behaviour in Rust** (`ferrite_sim::builtins`): native base classes (§5) and
+2. **Behaviour in Rust** (`room_sim::builtins`): native base classes (§5) and
    native action functions (§4). The registry validates at load that every
    `native` class and `action native` declaration has a Rust implementation,
    and vice versa (unit test).
@@ -227,5 +227,5 @@ Port `p_enemy.cpp` (+ ZScript `actors/attacks.zs`, `actors/actor_*.zs`):
 ## 10. Tests
 
 - Each native action function has a micro-scenario test (synthetic UDMF map + spawn + N tics + assertions).
-- Golden behaviour tests: record Ferrite demos on Freedoom maps; checksums per tic snapshotted; any change in behaviour must update goldens deliberately.
+- Golden behaviour tests: record Room demos on Freedoom maps; checksums per tic snapshotted; any change in behaviour must update goldens deliberately.
 - Cross-check scripts (manual, documented in `20`): play the same input in GZDoom with `-record` and compare high-level outcomes (kills, health over time) — not bit-exact.

@@ -1,7 +1,7 @@
-# 04 — Binary formats (`ferrite-formats`)
+# 04 — Binary formats (`room-formats`)
 
-`ferrite-formats` contains pure parsers: `&[u8] → Result<T>`. No VFS, no
-engine types beyond `ferrite-core`. All integers are little-endian unless
+`room-formats` contains pure parsers: `&[u8] → Result<T>`. No VFS, no
+engine types beyond `room-core`. All integers are little-endian unless
 stated. Every parser has a fuzz target.
 
 ## 1. Map lumps
@@ -147,7 +147,7 @@ Associated lumps: `GENMIDI` (OPL instrument bank, `#OPL_II#` header, 175 instrum
 
 ## 5. Text-mode screens
 
-`ENDOOM`, `ENDTEXT` (Heretic), `ENDSTRF` (Strife): 4000 bytes = 80×25 × (char, attr) in CP437. Rendered via a built-in VGA 8×16 font (bundled in `ferrite.pk3`) on exit if `showendoom` is on (GZDoom shows it in a separate window; Ferrite shows it fullscreen in-window before quitting).
+`ENDOOM`, `ENDTEXT` (Heretic), `ENDSTRF` (Strife): 4000 bytes = 80×25 × (char, attr) in CP437. Rendered via a built-in VGA 8×16 font (bundled in `room.pk3`) on exit if `showendoom` is on (GZDoom shows it in a separate window; Room shows it fullscreen in-window before quitting).
 
 ## 6. Fonts
 
@@ -158,7 +158,7 @@ Associated lumps: `GENMIDI` (OPL instrument bank, `#OPL_II#` header, 175 instrum
 | BMF (ByteMap Font) | `\xE1\xE6\xD5\x1A` | |
 | Per-glyph directory | `fonts/<FontName>/<hex codepoint>.png|lmp` | e.g. `0041.lmp`; also Doom's `STCFN065` naming |
 | Unifont HEX | `.hex` text | GZDoom uses `newconsolefont.hex`/`newsmallfont` for Unicode fallbacks |
-| TrueType/OpenType | `.ttf`/`.otf` | **Ferrite extension** (S): rasterized via `ab_glyph`/`fontdue` into a glyph atlas; declared in FONTDEFS with `TrueType "path" Size n` |
+| TrueType/OpenType | `.ttf`/`.otf` | **Room extension** (S): rasterized via `ab_glyph`/`fontdue` into a glyph atlas; declared in FONTDEFS with `TrueType "path" Size n` |
 
 ## 7. Voxels and models (parsing only; rendering in `13`)
 
@@ -214,4 +214,4 @@ IFF container: `FORM` + type `ZDEM`, chunks:
 | `NETD` | netplay marker |
 | `WEAP` | weapon slot info |
 
-Ferrite records its own variant `FDEM` (same IFF shape, chunk `FDHD` includes the load-order fingerprint and module hashes) and plays back `ZDEM` demos best-effort (they depend on GZDoom version-specific behaviour; only guaranteed for content without ZScript, and even then not bit-exact — document as "S, best effort").
+Room records its own variant `FDEM` (same IFF shape, chunk `FDHD` includes the load-order fingerprint and module hashes) and plays back `ZDEM` demos best-effort (they depend on GZDoom version-specific behaviour; only guaranteed for content without ZScript, and even then not bit-exact — document as "S, best effort").

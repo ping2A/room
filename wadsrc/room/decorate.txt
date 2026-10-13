@@ -1,0 +1,2 @@
+// Room built-in actors (M5 Doom subset).
+#include "actors/doom.txt"

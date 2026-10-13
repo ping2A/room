@@ -1,6 +1,6 @@
 # 17 — Netplay, demos, save games
 
-Crates: `ferrite-net`, `ferrite-game::{demo, save}`. GZDoom references: `src/d_net.cpp`,
+Crates: `room-net`, `room-game::{demo, save}`. GZDoom references: `src/d_net.cpp`,
 `src/d_protocol.cpp`, `src/g_game.cpp` (demo record/playback), `src/serializer*.cpp`,
 `src/g_level.cpp` (`G_SnapshotLevel`, hubs).
 
@@ -34,13 +34,13 @@ Join-in-progress is not supported (same as GZDoom).
 pub trait Transport { fn send(&mut self, peer: PeerId, bytes: &[u8]); fn poll(&mut self, out: &mut Vec<(PeerId, Bytes)>); fn peers(&self) -> &[PeerId]; }
 ```
 
-- Native transports (`ferrite-app --transport`):
+- Native transports (`room-app --transport`):
   - **`udp`** (default): `UdpTransport` — non-blocking UDP, peer-to-peer (≤ 4). NAT traversal not provided (port forwarding / direct IP, like GZDoom).
   - **`tcp`**: `TcpTransport` — length-prefixed TCP mesh, peer-to-peer.
   - **`tcp-server`**: `TcpRelayServer` / `TcpRelayClient` — host packet-server relay (GZDoom `-netmode 1`); one reachable address; up to 8 seats.
 - Optional **`--noise`**: `NoiseTransport` wraps any of the above after lobby with `Noise_XX_25519_ChaChaPoly_BLAKE2s` (`snow`, pure-Rust resolver).
 - Optional: WebRTC via `matchbox_socket` for native↔web cross-play (feature `webrtc`).
-- Web: WebRTC data channels (unordered, unreliable) via `matchbox_socket` + a small signalling server binary `ferrite-signal` (separate crate, can be self-hosted).
+- Web: WebRTC data channels (unordered, unreliable) via `matchbox_socket` + a small signalling server binary `room-signal` (separate crate, can be self-hosted).
 - Packet format: versioned header, varint tics, delta-encoded `TicCmd` (port GZDoom's `UnpackUserCmd`/`WriteUserCmdMessage` delta idea), `NetCommand`s encoded with `postcard`.
 
 ### 1.4 What is synchronized
@@ -49,7 +49,7 @@ Only inputs. User CVars (`name`, `color`, `skin`, `autoaim`, …) change via `Ne
 
 ## 2. Demos
 
-### 2.1 Ferrite demo format (`.fdem`)
+### 2.1 Room demo format (`.fdem`)
 
 IFF-like container (chunk = 4-byte id + u32 length):
 
@@ -64,7 +64,7 @@ IFF-like container (chunk = 4-byte id + u32 length):
 
 - Record: `-record name`, `record` command; stop with `stop` or level/game end per `demo_*` options.
 - Playback: `-playdemo`, `playdemo`; `-timedemo` (no frame limiter, reports fps); fast-forward/skip-to-tic (re-simulate quickly; with periodic in-memory snapshots for seeking backwards — S); view other players (`spynext`).
-- Verification mode (`ferrite-cli demo verify file.fdem --wads ...`): runs headless, compares `CSUM`s, exits non-zero on mismatch — used in CI.
+- Verification mode (`room-cli demo verify file.fdem --wads ...`): runs headless, compares `CSUM`s, exits non-zero on mismatch — used in CI.
 
 ### 2.2 Foreign demos
 
@@ -94,7 +94,7 @@ audio.bin          looping/ambient sounds & music position
 - Save only between tics (`G_DoSaveGame` runs from `GameAction`).
 - Serialization uses IDs (`02 §6`). `Definitions` are not saved; the load checks `defs_hash` and module identities. On mismatch: refuse with a dialog listing differences; `save_force_load` allows trying (only host-side state for mismatched modules, see `12 §10`).
 - `format_version` is a single integer bumped on any breaking change; keep migration functions for previous versions after 1.0.
-- Autosaves (`Autosave` special, `autosave` on level start with `disableautosave` MAPINFO, `autosavecount`, `autosavenum` rotation), quicksave (`quicksaverotation`, `quicksaverotationcount`), `save` / `load` commands, savegame directory per game (`save_dir`), names `ferrite-save-NN.fsave`, `auto-NN`, `quick-NN`.
+- Autosaves (`Autosave` special, `autosave` on level start with `disableautosave` MAPINFO, `autosavecount`, `autosavenum` rotation), quicksave (`quicksaverotation`, `quicksaverotationcount`), `save` / `load` commands, savegame directory per game (`save_dir`), names `room-save-NN.fsave`, `auto-NN`, `quick-NN`.
 - After load: re-link actors (blockmap, sectors), rebuild render interpolation state (no interpolation on first frame), restore sounds/music, run `WorldLoaded(is_save_game=true)` events. ACS scripts simply resume from their saved state; no script type fires on load.
 - GZDoom saves (`.zds`) are **not** loadable (different internal model) — non-goal.
 

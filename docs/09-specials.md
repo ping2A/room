@@ -1,4 +1,4 @@
-# 09 — Action specials (`ferrite-sim::specials`)
+# 09 — Action specials (`room-sim::specials`)
 
 GZDoom references: `src/playsim/actionspecials.h` (authoritative number→name→arg-count table),
 `p_lnspec.cpp` (implementations), `p_spec.cpp` (activation, sector specials),
@@ -50,7 +50,7 @@ list). Keep GZDoom names — ACS, DECORATE and UDMF refer to specials by name.
 | Lines (runtime) | `Line_SetTextureOffset`, `Line_SetTextureScale`, `Line_SetBlocking`, `Line_SetPortalTarget`, `Line_SetHealth`, `Sector_SetHealth` (destructible geometry), `ForceField`, `ClearForceField`, `GlassBreak` |
 | Misc | `Autosave`, `ChangeCamera`, `ChangeSkill`, `SetPlayerProperty`, `UsePuzzleItem`, `StartConversation`, `SendToCommunicator`, `Team_Score/GivePoints`, `Player_SetTeam` |
 
-Rule: if a special's name appears in GZDoom's `actionspecials.h` it must be in Ferrite's table with identical number and argument count.
+Rule: if a special's name appears in GZDoom's `actionspecials.h` it must be in Room's table with identical number and argument count.
 
 ## 2. Activation
 
@@ -81,9 +81,9 @@ In Hexen-format maps the activation is encoded in linedef flags bits 10–12
 
 ## 3. Translation of Doom-format specials (XLAT)
 
-Doom, Heretic and Strife format maps (and UDMF `doom`/`heretic`/`strife` namespaces) store game-specific line types. GZDoom translates them on load to Hexen-style specials using **XLAT** tables (`wadsrc/static/xlat/doom.txt`, `heretic.txt`, `strife.txt`, `base.txt`, `defines.i`). Ferrite does the same:
+Doom, Heretic and Strife format maps (and UDMF `doom`/`heretic`/`strife` namespaces) store game-specific line types. GZDoom translates them on load to Hexen-style specials using **XLAT** tables (`wadsrc/static/xlat/doom.txt`, `heretic.txt`, `strife.txt`, `base.txt`, `defines.i`). Room does the same:
 
-- `ferrite.pk3/xlat/*.txt` = copies of GZDoom's xlat tables (GPL data).
+- `room.pk3/xlat/*.txt` = copies of GZDoom's xlat tables (GPL data).
 - Translator grammar (§`05-text-lumps.md §3.6`): fixed line type entries
   `1 = USE|REP|MONST, Door_Raise (0, D_SLOW, VDOORWAIT)`, tag placeholder `tag`, flags `WALK, USE, SHOOT, REP, MONST, PUSH, FIRSTSIDE …`, generalized ranges with bitfield decoding (Boom generalized lines: crushers 0x2F80, stairs 0x3000, lifts 0x3400, locked doors 0x3800, doors 0x3C00, ceilings 0x4000, floors 0x6000), sector type translation (`sector` bitmask rules mapping Boom bits: damage 0x60, secret 0x80, friction 0x100, push 0x200, MBF21 0x400/0x800), thing flag translation.
 - MAPINFO `translator` key overrides per map/game.

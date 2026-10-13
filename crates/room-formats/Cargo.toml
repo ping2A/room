@@ -1,0 +1,22 @@
+[package]
+name = "room-formats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Binary lump parsers with no engine knowledge."
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+flate2.workspace = true
+png.workspace = true
+zune-jpeg.workspace = true
+lewton.workspace = true
+claxon.workspace = true
+symphonia.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

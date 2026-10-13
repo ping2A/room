@@ -1,13 +1,13 @@
-// Synthetic KEYCONF fixture for Ferrite parser tests (not from GZDoom).
-weaponsection FerriteTest
+// Synthetic KEYCONF fixture for Room parser tests (not from GZDoom).
+weaponsection RoomTest
 setslot 1 Fist Pistol
 setslot 2 Shotgun
 addslotdefault 3 RocketLauncher
 addslot 4 PlasmaRifle
-alias +ferritezoom "centerview"
-defaultbind f "+ferritezoom"
-addkeysection "Ferrite Test" FerriteTest
-addmenukey "Zoom" "+ferritezoom"
+alias +roomzoom "centerview"
+defaultbind f "+roomzoom"
+addkeysection "Room Test" RoomTest
+addmenukey "Zoom" "+roomzoom"
 clearplayerclasses
 addplayerclass DoomPlayer
 addplayerclass Marine nomenu

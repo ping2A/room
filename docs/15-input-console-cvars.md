@@ -1,6 +1,6 @@
 # 15 — Input, console, commands, CVars, configuration
 
-Crates: `ferrite-input`, `ferrite-console`. GZDoom references: `src/common/console/`
+Crates: `room-input`, `room-console`. GZDoom references: `src/common/console/`
 (`c_cvars.cpp`, `c_dispatch.cpp`, `c_bind.cpp`, `c_console.cpp`), `src/g_game.cpp` (`G_BuildTiccmd`),
 `src/d_main.cpp` (`D_ProcessEvents`, responder chain), `src/m_misc.cpp` (config), ZDoom wiki
 *Console*, *CVARs*, *Console commands*, *KEYCONF*.
@@ -26,8 +26,8 @@ Responder order (port `D_ProcessEvents`): console (when open / toggle key) → m
 
 - Three bind tables like GZDoom: `bind` (normal), `doublebind`, `mapbind` (automap); plus per-gamepad axis config (`joy_*` CVars).
 - Bound strings are console command lines, e.g. `+forward`, `+attack`, `weapnext`, `use ArtiTeleport`, `+user1`.
-- `+cmd`/`-cmd` button commands set button state; `ferrite-input` keeps `ButtonState` (down, went-down-this-tic, went-up) — port `FButtonStatus`.
-- Defaults: `DEFBINDS` lump in `ferrite.pk3` (per game sections) + `KEYCONF` `defaultbind`, `addkeysection`, `addmenukey`.
+- `+cmd`/`-cmd` button commands set button state; `room-input` keeps `ButtonState` (down, went-down-this-tic, went-up) — port `FButtonStatus`.
+- Defaults: `DEFBINDS` lump in `room.pk3` (per game sections) + `KEYCONF` `defaultbind`, `addkeysection`, `addmenukey`.
 
 ## 3. TicCmd building (`G_BuildTiccmd`)
 
@@ -39,7 +39,7 @@ The renderer may apply not-yet-sent mouse deltas for zero-latency view (see `01 
 
 - Text console (toggle with `~`), scrollback (`con_buffersize`), command history (persisted), tab completion (commands, CVars, aliases, map names after `map`), colour codes (`\c` + letter/`[name]`), notify lines (`con_notifylines`, `con_notifytime`), centered messages (`C_MidPrint` used by ACS `Print`), pickup messages, obituaries, chat.
 - Console font: GZDoom-style console font (bundled), scalable (`con_scale`).
-- Output API: `ferrite_console::printf(level, args)` where level is `PRINT_LOW, MEDIUM, HIGH, CHAT, TEAMCHAT, LOG, BOLD, NONOTIFY, NOLOG` (`msglevel` filter).
+- Output API: `room_console::printf(level, args)` where level is `PRINT_LOW, MEDIUM, HIGH, CHAT, TEAMCHAT, LOG, BOLD, NONOTIFY, NOLOG` (`msglevel` filter).
 - Log file (`logfile` command).
 
 ## 5. Command system
@@ -73,12 +73,12 @@ bitflags! { CvarFlags: ARCHIVE, USERINFO, SERVERINFO, NOSET, LATCH, UNSETTABLE, 
 
 ### 6.2 Declared by content
 
-- `CVARINFO` (see `05`) and module manifests/registration produce `MOD`-flagged CVars; archived ones persist in `[<game>.ModCVars]`-equivalent config section (`ferrite.toml` `[mod_cvars."<mod id>"]`).
+- `CVARINFO` (see `05`) and module manifests/registration produce `MOD`-flagged CVars; archived ones persist in `[<game>.ModCVars]`-equivalent config section (`room.toml` `[mod_cvars."<mod id>"]`).
 - `DEFCVARS` lump can change defaults of engine CVars that aren't `NOSET`/`CHEAT`.
 
 ## 7. Configuration file
 
-`ferrite.toml` (platform config dir; `-config <path>` override):
+`room.toml` (platform config dir; `-config <path>` override):
 
 ```toml
 [paths]
@@ -111,7 +111,7 @@ betterimps_fireball_speed = 14.0
 iwad = "doom2.wad"
 ```
 
-- **Import from GZDoom**: on first run, if no `ferrite.toml` exists and a `gzdoom.ini` is found (platform-specific locations), offer to import: paths, autoload sections, bindings, archived CVars (mapping table for renamed CVars; unknown ones preserved under `[cvars.unmapped]`).
+- **Import from GZDoom**: on first run, if no `room.toml` exists and a `gzdoom.ini` is found (platform-specific locations), offer to import: paths, autoload sections, bindings, archived CVars (mapping table for renamed CVars; unknown ones preserved under `[cvars.unmapped]`).
 - Writes are atomic (write temp + rename). Web: stored in OPFS / IndexedDB (`18`).
 - `autoexec.cfg` (per game) executed after config load; `-exec file` and `+cmd args` on the command line.
 

@@ -1,0 +1,17 @@
+[package]
+name = "room-nodebuild"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Internal BSP and GL node builder (ZDBSP-equivalent)."
+
+[lints]
+workspace = true
+
+[dependencies]
+room-core = { path = "../room-core" }
+room-map = { path = "../room-map" }
+
+[dev-dependencies]
+room-testkit = { path = "../room-testkit" }

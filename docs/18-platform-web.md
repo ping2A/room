@@ -1,14 +1,14 @@
 # 18 — Platform shells: desktop, web, headless
 
-Crates: `ferrite-app` (native binary), `ferrite-web` (wasm32 binary), `ferrite-game::Headless`.
+Crates: `room-app` (native binary), `room-web` (wasm32 binary), `room-game::Headless`.
 
 ## 1. Platform abstraction
 
-`ferrite-game` depends only on these traits, implemented by each shell:
+`room-game` depends only on these traits, implemented by each shell:
 
 ```rust
 pub trait Platform {
-    fn config_store(&self) -> &dyn KvStore;              // ferrite.toml text, autoexec, history
+    fn config_store(&self) -> &dyn KvStore;              // room.toml text, autoexec, history
     fn save_store(&self) -> &dyn FileStore;              // save games, screenshots, demos, node cache
     fn resource_sources(&self) -> &dyn ResourceProvider; // IWAD search, user files → ContainerSource
     fn clipboard(&self) -> Option<&dyn Clipboard>;
@@ -20,7 +20,7 @@ pub trait Platform {
 }
 ```
 
-## 2. Native desktop (`ferrite-app`)
+## 2. Native desktop (`room-app`)
 
 | Concern | Choice |
 |---|---|
@@ -28,7 +28,7 @@ pub trait Platform {
 | GPU | `wgpu` surface from the window; present modes: `vid_vsync` → Fifo / Mailbox / Immediate; `vid_maxfps` limiter (sleep + spin) |
 | Audio | `cpal` default device (WASAPI/CoreAudio/ALSA/PipeWire via ALSA or PulseAudio backends); device selection by name |
 | Gamepad | `gilrs` (feature `gamepad`) |
-| Paths | `directories` crate: config (`~/.config/ferrite`, `%APPDATA%\ferrite`, `~/Library/Application Support/ferrite`), data (saves, screenshots, autoload/), cache (node cache, compiled WASM cache) |
+| Paths | `directories` crate: config (`~/.config/room`, `%APPDATA%\room`, `~/Library/Application Support/room`), data (saves, screenshots, autoload/), cache (node cache, compiled WASM cache) |
 | Clipboard | `arboard` |
 | File dialogs | `rfd` (for "Add IWAD…" in the launcher) |
 | Fullscreen | borderless fullscreen default; exclusive fullscreen `vid_fullscreen 2` (S) |
@@ -36,13 +36,13 @@ pub trait Platform {
 | Crash reporting | panic hook writing `crash-<time>.txt` with backtrace, engine version, load order, last 200 console lines; shows a native message box (`rfd::MessageDialog`) |
 | Launcher | in-engine IWAD/mod picker (when `queryiwad` or multiple IWADs): list detected IWADs, drag & drop mods, autoload toggles, remembers last selection |
 
-Platforms: Windows 10+ (x86-64, aarch64), macOS 11+ (aarch64, x86-64), Linux (x86-64, aarch64; X11 & Wayland). Packaging: zip/tarball with binary + `ferrite.pk3` (also embedded) + optional extras; AppImage/Flatpak manifests (S).
+Platforms: Windows 10+ (x86-64, aarch64), macOS 11+ (aarch64, x86-64), Linux (x86-64, aarch64; X11 & Wayland). Packaging: zip/tarball with binary + `room.pk3` (also embedded) + optional extras; AppImage/Flatpak manifests (S).
 
-## 3. Web (`ferrite-web`)
+## 3. Web (`room-web`)
 
 ### 3.1 Build & deploy
 
-- Target `wasm32-unknown-unknown`, `wasm-bindgen` + `web-sys` + `js-sys`. Build via a small `xtask` (`cargo xtask web`) that runs `wasm-bindgen` CLI, copies `index.html`, `ferrite.js` loader, `audio-worklet.js`, and `ferrite.pk3`.
+- Target `wasm32-unknown-unknown`, `wasm-bindgen` + `web-sys` + `js-sys`. Build via a small `xtask` (`cargo xtask web`) that runs `wasm-bindgen` CLI, copies `index.html`, `room.js` loader, `audio-worklet.js`, and `room.pk3`.
 - Size budget: engine `.wasm` ≤ 12 MiB uncompressed release (`opt-level = "z"` for the web profile is *not* used; use `opt-level = 3`, `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`), served with brotli.
 - Hosting requirements documented: for threads/`SharedArrayBuffer` the page must be cross-origin isolated (`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`). The engine must also work **without** isolation (single-threaded audio path).
 
@@ -78,13 +78,13 @@ Platforms: Windows 10+ (x86-64, aarch64), macOS 11+ (aarch64, x86-64), Linux (x8
 
 ### 3.7 URL & embedding API
 
-`index.html?iwad=freedoom2.wad&file=mod.pk3&warp=1&skill=3&+sv_cheats=1` maps to command-line semantics. A small JS API (`window.ferrite.start({ args, files })`) allows embedding Ferrite in other pages (e.g. mod showcase sites).
+`index.html?iwad=freedoom2.wad&file=mod.pk3&warp=1&skill=3&+sv_cheats=1` maps to command-line semantics. A small JS API (`window.room.start({ args, files })`) allows embedding Room in other pages (e.g. mod showcase sites).
 
-## 4. Headless (`ferrite-game::Headless`)
+## 4. Headless (`room-game::Headless`)
 
-No window/GPU/audio: `NullAudio`, no renderer, in-memory stores. Used by tests, demo verification, bots/AI research, and a future dedicated packet-server relay (`ferrite-cli serve` — S). Must compile on `wasm32-unknown-unknown` too (used by the determinism CI on Node).
+No window/GPU/audio: `NullAudio`, no renderer, in-memory stores. Used by tests, demo verification, bots/AI research, and a future dedicated packet-server relay (`room-cli serve` — S). Must compile on `wasm32-unknown-unknown` too (used by the determinism CI on Node).
 
 ## 5. Tests
 
 - `wasm-bindgen-test` headless browser tests (Chrome + Firefox via webdriver) for: start-up with Freedoom from fixture URL, render one frame (WebGPU and WebGL2 paths), audio context creation, OPFS read/write round-trip.
-- Native smoke test in CI on all three OSes: `ferrite-app --headless-smoke` runs 350 tics of a demo with an offscreen surface.
+- Native smoke test in CI on all three OSes: `room-app --headless-smoke` runs 350 tics of a demo with an offscreen surface.

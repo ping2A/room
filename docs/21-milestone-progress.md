@@ -42,6 +42,9 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 
 ### Log
 
+- `2026-10-13` — **Coop gun + walk anim** — `give_starting_loadout` sets `ready_weapon` on the owning seat (P2 had no gun); PlayerPawn `See`/`Missile` + `P_MovePlayer`-style body sprite.
+- `2026-10-13` — **Project rename to Room** — crates `room-*`, `wadsrc/room`, `room.pk3`, scripts/env/docs/CI; JS `roomStartIwad` / `room_web.js`.
+- `2026-10-13` — **WebSocket coop** — `room-ws` FTRL relay (`tungstenite`); `room-web` `WsTransport` + lobby/lockstep (`?ws=`); `scripts/play-web-coop.sh`.
 - `2026-10-13` — **Web HUD brightness** — `CanvasGpu` overlay uses `Rgba8Unorm` on non-sRGB WebGPU canvases (was `Rgba8UnormSrgb` → linear sample, un-encoded present = dark STBAR/gun).
 - `2026-10-13` — **Web STBAR HUD** — classic `DoomStatusBar` (ammo/health/armor/keys/mugshot) + weapon on `CanvasGpu`; HTML tip hidden while playing.
 - `2026-10-13` — **Web weapon + sprite scale** — bottom-align psprite HUD (was centered over floor); SoftPatch width/height/topoffset for billboards (was actor radius/height); desktop FOV 58.715 + full-window aspect.
@@ -54,10 +57,10 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 - `2026-10-13` — **Web music + brightness** — OPL/`GENMIDI` map music into Web Audio; `UnlitPass::output_gain` + GLDEFS brightmaps/dyn lights.
 - `2026-10-13` — **Web look / light / gun** — mouse yaw matches desktop (−dx); `DoomSoftware`+`glob_vis=512`; weapon psprite overlay via `CanvasGpu`.
 - `2026-10-13` — **Web textures + SFX** — load PLAYPAL/TEXTUREX before material upload (was greyscale/white albedo); Web Audio `ScriptProcessor` mixer + SNDINFO on canvas click.
-- `2026-10-13` — **Web Doom1 play** — `ferrite-web` mounts IWAD bytes (`ferriteStartIwad` / auto-fetch `/doom1.wad` / file picker), runs `Headless` + materials + keyboard/mouse; `play-web.sh` copies local `testdata/doom/doom1.wad` into the serve dir.
-- `2026-10-13` — **Web MRT attach** — `ferrite-web` map pass binds the dummy R8 stencil-aux colour target so it matches `UnlitPass` dual-MRT pipelines (fixes Chrome attachment-state mismatch).
+- `2026-10-13` — **Web Doom1 play** — `room-web` mounts IWAD bytes (`roomStartIwad` / auto-fetch `/doom1.wad` / file picker), runs `Headless` + materials + keyboard/mouse; `play-web.sh` copies local `testdata/doom/doom1.wad` into the serve dir.
+- `2026-10-13` — **Web MRT attach** — `room-web` map pass binds the dummy R8 stencil-aux colour target so it matches `UnlitPass` dual-MRT pipelines (fixes Chrome attachment-state mismatch).
 - `2026-10-13` — **WebGPU unlit shader** — hoist all `textureSample` calls in `unlit.wgsl` ahead of non-uniform control flow (cluster light mask / discards); fixes Chrome WGSL validate error on `tex_metal_rough`.
-- `2026-10-13` — **`scripts/play-web.sh`** — build `ferrite-web` for wasm32, `wasm-bindgen --target web`, serve `target/ferrite-web` (opens browser); wired `index.html` module loader.
+- `2026-10-13` — **`scripts/play-web.sh`** — build `room-web` for wasm32, `wasm-bindgen --target web`, serve `target/room-web` (opens browser); wired `index.html` module loader.
 - `2026-10-13` — **Automap zoom + fog** — `=`/`-`/wheel zoom; play mode hides unexplored linedefs until the player enters their sector (`ML_MAPPED`); `iddt`/allmap still reveals all.
 - `2026-10-13` — **Tab automap** — line blit was an AABB blob (diagonals solid); stroke real segments; classic red/brown/yellow/gray/blue colours + floor/ceil diffs + grid; opaque black follow view.
 - `2026-10-13` — **Intermission map preview** — Doom `WIMAP*` / `INTERPIC` background + `WI*` stats/splat/`WILV` patches (replacing chunky SoftFont on black); skip 3D world draw on Title/Intermission/Finale so letterbox sides are not the last camera frame; SoftPatch allows non-uniform scale for full-screen pics.
@@ -69,11 +72,11 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 - `2026-10-13` — **Forward walked left of look** — mouse look preview used float yaw while ticcmd rounded counts; camera drifted vs `actor.angle`. Lock yaw/pitch to sim after each tic; preview only rounded mouse counts.
 - `2026-10-13` — **Weapon holes (palette 0)** — SoftPatch now uses post alpha mask; ~11% of Doom1 `PISGA0` posts are colour 0 (metal) and were punched transparent → noisy/seam gun.
 - `2026-10-13` — **Floor holes + gun height** — ear-clip fan fallback + majority ownership (was dropping E1M1 floor tris → sky stripes); weapon Y shifts up 32 when STBAR shown (offsets are view-relative).
-- `2026-10-13` — **Screenshot + GIF** — F12 / `screenshot` saves PNG; F11 / `gifrecord` toggles GIF (≤640px, ~10fps, 30s cap); capturable frame buffer + `gif` crate; files under `…/ferrite/screenshots/`.
+- `2026-10-13` — **Screenshot + GIF** — F12 / `screenshot` saves PNG; F11 / `gifrecord` toggles GIF (≤640px, ~10fps, 30s cap); capturable frame buffer + `gif` crate; files under `…/room/screenshots/`.
 - `2026-10-13` — **Stairs feel + outdoor sky** — Double `P_SlideMove` (wall clip + full-mom stairstep); eye bob + camera XYZ tic-lerp; sky shell taller (8192) with top/bottom caps (old ±7° FOV fell into clear colour outdoors).
 - `2026-10-13` — **Opaque wall holes** — patch decode writes explicit alpha (colour 0 ≠ hole); TEXTUREX blit skips holes (no punch/erase); solid walls fill clear texels black in shader; masked mids still discard.
-- `2026-10-12` — **Stairs slide + switch LED** — Double `xy_movement` stairstep (Y then X) instead of hard-stop/*noway; lower+`DONTPEGBOTTOM` uses TexBottom UV so SW1COMP→SW2COMP LED is visible; `ferrite: USE`/`SPECIAL`/`SWITCH` stderr on line activation.
-- `2026-10-12` — **SHOOT debug + switch UV + imp aim** — always-on `ferrite: SHOOT` stderr (player↔AI hitscan/missile); Doom sidedef x/y_offset copied to top/bottom tiers; wall UV uses TEXTUREX size (SW1COMP 64-wide); `P_SpawnMissile` aims at target under Double math (elevated imps); switch flip writes SW2* onto map lower.
+- `2026-10-12` — **Stairs slide + switch LED** — Double `xy_movement` stairstep (Y then X) instead of hard-stop/*noway; lower+`DONTPEGBOTTOM` uses TexBottom UV so SW1COMP→SW2COMP LED is visible; `room: USE`/`SPECIAL`/`SWITCH` stderr on line activation.
+- `2026-10-12` — **SHOOT debug + switch UV + imp aim** — always-on `room: SHOOT` stderr (player↔AI hitscan/missile); Doom sidedef x/y_offset copied to top/bottom tiers; wall UV uses TEXTUREX size (SW1COMP 64-wide); `P_SpawnMissile` aims at target under Double math (elevated imps); switch flip writes SW2* onto map lower.
 - `2026-10-12` — **E1M1 switch + lift** — `player->usedown` edge so held E does not reverse Door_Raise; WR lifts use lowest surrounding floor + lip and refuse to stack; load-time SCROLL lines clear special after init.
 - `2026-10-12` — **Doom1 door reopen** — XLAT `base.txt` USE/WALK/SHOOT/REP/MONST for types 0–141 (DR type 1 keeps special); `spawn_door` re-trigger reverses waiting/closing doors like vanilla.
 - `2026-10-12` — **Invisible crush + shot traces** — `crush_sector_actors` only hits actors in the moving sector (was map-wide 10hp/4tics when any door closed); HIT dump lists recent hitscan/missile from→to; `last_damage.cause` tags crush.
@@ -118,7 +121,7 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 - `2026-10-12` — **M10** — MODELDEF parse (`Model`/`FrameIndex`/`Frame`/skins/flags) into `Definitions.modeldefs`.
 - `2026-10-12` — **M10** — CPU 16×9×24 cluster assignment + RGBA8 mask texture; FS only tests lights in cluster bitmask.
 - `2026-10-12` — **M10** — GPU `LightUniforms` (32 lights) in unlit pass; pulse/flicker radius anim; CPU dyn-light boost retired from play path.
-- `2026-10-12` — **M10** — GLDEFS `brightmap`/`material`/`Glow` parse; shader brightmap mix; glow fullbright ranges; nukage/lava glow list in ferrite.pk3.
+- `2026-10-12` — **M10** — GLDEFS `brightmap`/`material`/`Glow` parse; shader brightmap mix; glow fullbright ranges; nukage/lava glow list in room.pk3.
 - `2026-10-12` — **M10 start** — GLDEFS `pointlight`/`pulselight`/`flicker*`/`object` parse; attack-frame defaults; CPU `apply_dyn_lights`; Bright sprites skip lightmode atten; oversized monster muzzle puff; `two_clients_same_map` example.
 - `2026-10-12` — Enemy attack visibility: Missile wind-up Bright (zombie/shotgun/chaingun/imp); fullbright shader path for `light≥0.999`.
 - `2026-10-12` — Doom1 props/enemies: floor sprites sit on feet+1 (depth bias −8/−2, no z-fight bury); Spectre Fuzzy→translucent stand-in; add RealGibs/BloodPool + coop/DM starts; E1M1 all DoomEd types resolve.
@@ -134,7 +137,7 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 - `2026-10-12` — Bullet impacts: resolve `BulletChip`→`pic` (PUFFB0 fallback); never reuse prior sprite bind for missing textures; weapon DECALDEF generator.
 - `2026-10-12` — Acquire mouselook on window `resumed`/`focus` (startup set the flag before any window existed and skipped hide/recenter).
 - `2026-10-12` — macOS LMB: drop Locked grab (hide+edge-recenter); fire on psprite enter + 0-tic loop; pistol A4/B6; chaingun muzzle flash; same-tic chaingun hitscan test.
-- `2026-10-12` — macOS LMB: `AttackLatch` in ferrite-input (window/device/key bits independent; device id 0 only); warp-then-Locked grab so clicks hit the client.
+- `2026-10-12` — macOS LMB: `AttackLatch` in room-input (window/device/key bits independent; device id 0 only); warp-then-Locked grab so clicks hit the client.
 - `2026-10-12` — Restart clears bullet chips/particles and restores map lights (End Game / New Game / `map`); FX not drawn on the title screen.
 - `2026-10-12` — Restore classic STBAR HUD (no overlay plate); psprite `x=-leftoffset` so Freedoom fire/flash stay on the barrel.
 - `2026-10-11` — HUD/menu: draw via `STTNUM*` / `STCFN###` patches (SoftFont path was invisible); fullscreen plate + 2× digits; pause STCFN ×2 + highlight; blit pixel tests.
@@ -144,10 +147,10 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 - `2026-10-11` — Combat demo floors: sector-outline flats (BSP slivers left void); unlit cull off for horizontal look; macOS LMB = device button 0 only (1 is RMB).
 - `2026-10-11` — Combat demo: floor flats were missing (BSP leaf marked sector done before a ≥3-seg ring); GL/outline flat emit + tighter arena; pause panel centred/blackout.
 - `2026-10-11` — Combat demo playability: opaque pause panel + STCFN text; mouse yaw scale 8→256 (preview matched); weapon HUD centred (ignore bad Freedoom left offsets).
-- `2026-10-11` — **M13 done** — menus+options CVars; launcher; ferrite/gzdoom.ini; web URL/storage API; package.sh; crash logs; StringTable i18n; QA checklist. Play: float strafe fix, macOS Confined grab + LMB/F fire. Deferral: full multi-OS/browser manual matrix.
+- `2026-10-11` — **M13 done** — menus+options CVars; launcher; room/gzdoom.ini; web URL/storage API; package.sh; crash logs; StringTable i18n; QA checklist. Play: float strafe fix, macOS Confined grab + LMB/F fire. Deferral: full multi-OS/browser manual matrix.
 - `2026-10-11` — **M13 start** — Doom menus: TITLEPIC, skull selector, patch items, pause/quit/end-game confirms, mouse hover/click, Options stub; dim only when overlaying play. Combat-demo fire/render polish carried from play shell backlog.
-- `2026-10-10` — **M12 done** — lockstep + UDP + lobby + desync + `ferrite-signal` + signal mesh/HTTP + optional `webrtc`/`MatchboxTransport`. Freedoom MAP01 2-peer lockstep smoke. Deferrals: live 4-player native+web 30 min soak; matchbox signalling server swap.
-- `2026-10-10` — M12: **desync dump + ferrite-signal** — `DesyncCollector`; in-memory HTTP room relay.
+- `2026-10-10` — **M12 done** — lockstep + UDP + lobby + desync + `room-signal` + signal mesh/HTTP + optional `webrtc`/`MatchboxTransport`. Freedoom MAP01 2-peer lockstep smoke. Deferrals: live 4-player native+web 30 min soak; matchbox signalling server swap.
+- `2026-10-10` — M12: **desync dump + room-signal** — `DesyncCollector`; in-memory HTTP room relay.
 - `2026-10-10` — M12: **UDP + lobby** — `UdpTransport`; `LobbyMsg`/`LobbyHost` Hello/Welcome/Reject/Start.
 - `2026-10-10` — **M11 done** — WASM host/SDK/reg/events/ACS/UI/saves. Deferrals: Actor derive/`states!`/C header; HUD draw; hot reload; samples (b)–(e); benchmarks.
 - `2026-10-10` — M12: **lockstep bootstrap** — `LockstepSession`, loopback + lossy transport, codec, desync tests.
@@ -158,14 +161,14 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 - `2026-10-10` — M11: **ClassRegistry merge + fingerprint** — `import_script_class` / `apply_script_classes`; wasmi≡wasmtime reg fingerprint.
 - `2026-10-10` — M11: **reg_class_*** — RegistrationSession + host imports; `fireimp_reg.wat`; SDK `reg` module; `api/reg.ron`.
 - `2026-10-10` — M11: **name_intern + class_find** — HostLinker/backends/SDK; ScriptHost tables; `testdata/hello_mod.wat` sample.
-- `2026-10-10` — M11: **SDK alloc + macros** — bump `ferrite_alloc`; `export_module!`; `#[actor]` / `#[register_stub]`.
-- `2026-10-10` — M11: **Rust SDK wrappers** — `ferrite-script-sdk` log/level_time/player_count/actor_exists + abi_version export.
+- `2026-10-10` — M11: **SDK alloc + macros** — bump `room_alloc`; `export_module!`; `#[actor]` / `#[register_stub]`.
+- `2026-10-10` — M11: **Rust SDK wrappers** — `room-script-sdk` log/level_time/player_count/actor_exists + abi_version export.
 - `2026-10-10` — M11: **player_count** — host import + ScriptHost sync from occupied slots.
 - `2026-10-10` — M11: **ScriptHost in sim** — `World.scripts`; sync maptime/player actors each tic; load stub module test.
 - `2026-10-10` — M11: **wasmtime backend** — Cranelift fuel/NaN-canon; shared lifecycle test vs wasmi (`--features wasmtime`).
-- `2026-10-10` — M11: **level_time + actor_exists** — HostLinker + wasmi imports; `api/common.ron` + `ferrite-abi-gen list`.
-- `2026-10-10` — M11: **guest lifecycle + ferrite::log** — required exports; HostLinker log import; register/init/dispatch helpers.
-- `2026-10-10` — M11: **wasmi bootstrap** — `ferrite-script-abi` types; validate_module; `WasmiBackend` + `ferrite_abi_version` test.
+- `2026-10-10` — M11: **level_time + actor_exists** — HostLinker + wasmi imports; `api/common.ron` + `room-abi-gen list`.
+- `2026-10-10` — M11: **guest lifecycle + room::log** — required exports; HostLinker log import; register/init/dispatch helpers.
+- `2026-10-10` — M11: **wasmi bootstrap** — `room-script-abi` types; validate_module; `WasmiBackend` + `room_abi_version` test.
 - `2026-10-10` — **Priority:** M7 closed → active **M11** then **M12**; M8–M10/M13–M14 deferred. Freedoom demo verify script + MAP01 real-play smoke.
 - `2026-10-10` — **M7 done** — acceptance via `m7_feature_smoke` + UDMF/ACS/DECORATE/portal/ffloor coverage. Intentional deferrals: Equal-only Metal stencil mask; remaining DECORATE/ACSF edge corpus; external ZDoom mod corpus fetch.
 - `2026-10-10` — M7: **UDMF sector alphafloor/alphaceiling/renderstyle** — parse (+ `alpha` both); seed SectorStatic/Dynamic; GetSectorUDMF* int/fixed; Add → STYLE_Add.
@@ -352,7 +355,7 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 - `2026-10-10` — M7: **UDMF `user_*` → ACS Get\*UDMF\*** — `UdmfUserStore` on parse/`MapGeometry`; int/bool/fixed bags; host lookup for line/thing/sector/side.
 - `2026-10-10` — M7: **DecoBlock pitch if + Get/SetTeamScore** — `A_SkipUnlessPitch`; ACSF 19620–19621.
 - `2026-10-10` — M7: **DecoBlock angle if + ffloor/slope smoke** — `A_SkipUnlessAngle`; `m7_ffloor_slope_setup_smoke` accept.
-- `2026-10-10` — M7: **M7 feature smoke accept** — `ferrite-game/tests/m7_feature_smoke.rs` (portal map + SNDSEQ door-slot + Pillar_Build + fog); door/platform slot lookup on `SndSeqTable`.
+- `2026-10-10` — M7: **M7 feature smoke accept** — `room-game/tests/m7_feature_smoke.rs` (portal map + SNDSEQ door-slot + Pillar_Build + fog); door/platform slot lookup on `SndSeqTable`.
 - `2026-10-10` — M7: **SNDSEQ stream bootstrap** — `SndSeqTable` + tic runner (`play`/`delay`/`volume`); ACS `SoundSequence*` starts instances; Headless `set_sndseq`.
 - `2026-10-10` — M7: **ACS SetSubtitle / GetNetID / SetSectorGlow / SetFogDensity** — ACSF 214–216/400–401; plane glow + fog→`UnlitPass`; net-id = actor raw.
 - `2026-10-10` — M7: **DecoBlock speed / user_* if** — `A_SkipUnlessSpeed` / `A_SkipUnlessUserVar`; ACSF `GetLineX`/`GetLineY` (300–301).
@@ -445,7 +448,7 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 - `2026-10-10` — M7: **ACSE loader** — pure `ACSE`/`ACSe` + hybrid ACS0+chunks; `SPTR` (8/12-byte), `STRL`/`STRE` decrypt; `AcsFormat` on module.
 
 - `2026-10-10` — M7: **Thing_*/Pillar_*** — `Thing_Spawn(NoFog)`/`Projectile(Gravity)`/`Activate`/`Deactivate`/`Remove`/`Destroy`; `Pillar_Build(AndCrush)`/`Open`. Fixed `Floor_RaiseByTexture` Hexen num 29→240 (was colliding with Pillar_Build). Spawn type = DoomEdNum until `spawnnums`.
-- `2026-10-10` — M7: **ACS0 bootstrap** — `MapGeometry.behavior`; `ferrite-acs` ACS0 loader + Hexen PCD subset VM (`DELAY`/`LSPEC*`/vars/arith/print); `World.acs`; specials 80–85 (`ACS_Execute*`/`Suspend`/`Terminate`); OPEN scripts on map enter + tic thinker. ACSE/ACSe, ACSF, libraries, hubs still open.
+- `2026-10-10` — M7: **ACS0 bootstrap** — `MapGeometry.behavior`; `room-acs` ACS0 loader + Hexen PCD subset VM (`DELAY`/`LSPEC*`/vars/arith/print); `World.acs`; specials 80–85 (`ACS_Execute*`/`Suspend`/`Terminate`); OPEN scripts on map enter + tic thinker. ACSE/ACSe, ACSF, libraries, hubs still open.
 - `2026-10-10` — M7: **Hexen specials** — `Teleport_NewMap`/`EndGame` (`next_map_override`), `Radius_Quake`, `ThrustThing`, poly `OR_Move`/`OR_Rotate*` (busy reject vs override). Pillar / Thing_* still open.
 - `2026-10-10` — M7: **polyobj DoorSwing/DoorSlide + mirror** — open→wait→close; mirror gets opposite rotate / 180° slide. Render segs / OR_* / MoveTo still open.
 - `2026-10-10` — M7: **polyobj collide** — after Move/Rotate, solid AABB×seg test; non-crush undoes step + stops; crush deals 10 dmg and continues. Mirror polys / DoorSwing args / render segs still open.
@@ -523,7 +526,7 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 - `2026-10-09` — M5: DeHackEd Frame apply via `states.txt` (label/offset).
 - `2026-10-09` — M5: `A_Chase` 8-dir `P_NewChaseDir` + blocked repath.
 - `2026-10-09` — M5: corpse queue + player bodyque + `A_QueueCorpse`.
-- `2026-10-09` — M5: DeHackEd `ferrite.pk3/dehacked/` sound/sprite/thing tables +
+- `2026-10-09` — M5: DeHackEd `room.pk3/dehacked/` sound/sprite/thing tables +
   `[SOUNDS]`/`[SPRITES]` apply.
 - `2026-10-09` — M5: committed `freedoom2_map21_30.fdbn` (P2 MAP01–30 automated).
 - `2026-10-09` — M5: committed `freedoom2_map11_20.fdbn`.
@@ -544,7 +547,7 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 - `2026-10-09` — M5: DeHackEd Frame/Pointer/`[CODEPTR]` apply (ZombieMan
   bootstrap frame map).
 - `2026-10-09` — M5: committed `testdata/demos/freedoom2_map01_smoke.fdem` +
-  verify test (`FERRITE_WRITE_DEMO=1` to regenerate).
+  verify test (`ROOM_WRITE_DEMO=1` to regenerate).
 - `2026-10-09` — M4 **done**: web UnlitPass viewer, golden+fps CI, `web-browser-tests`
   (Firefox/`wasm-bindgen-test`). Active focus → M5 accept (demos/determinism).
 - `2026-10-09` — M4: MAP01 offscreen fps floor (≥15 CI / ~500+ native); web
@@ -578,7 +581,7 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 
 1. Workspace skeleton (all crates, READMEs, lints).
 2. CI baseline (`fmt`, `clippy`, `test`, `doc`, `deny`, wasm build).
-3. `ferrite-core`: names, IDs, arena, math, dmath, SFMT + vanilla RNG.
+3. `room-core`: names, IDs, arena, math, dmath, SFMT + vanilla RNG.
 4. Acceptance: SFMT vectors, dmath 1M-sample hash across native + wasm, arena props.
 
 ### Checklist
@@ -593,7 +596,7 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 
 **Acceptance**
 
-- [x] SFMT reference vectors (`ferrite-core` RNG tests)
+- [x] SFMT reference vectors (`room-core` RNG tests)
 - [x] dmath bit-identical hash (native matrix + `dmath-wasm`)
 - [x] Arena property tests (proptest)
 
@@ -622,7 +625,7 @@ milestones; their absence does not reopen M0.
 - [x] WAD + directory mounts, nested WAD, filters, single-root strip
 - [x] ZIP deflate + 7z (feature)
 - [x] ZIP bzip2 + lzma (`zip` 8.6, pure Rust)
-- [x] IWADINFO parse + `detect_iwad` (`wadsrc/ferrite/IWADINFO`)
+- [x] IWADINFO parse + `detect_iwad` (`wadsrc/room/IWADINFO`)
 - [x] Autoload / search-path autoload (`autoload_sections` + `collect_autoload_paths`)
 - [x] CLI `wad ls|extract|info`
 - [x] Fuzz: `wad_directory`, `zip_central_directory` in CI
@@ -637,8 +640,8 @@ milestones; their absence does not reopen M0.
 ### How to verify
 
 ```bash
-cargo test -p ferrite-vfs
-cargo run -p ferrite-cli -- wad info testdata/freedoom/freedoom2.wad
+cargo test -p room-vfs
+cargo run -p room-cli -- wad info testdata/freedoom/freedoom2.wad
 ```
 
 ---
@@ -650,7 +653,7 @@ cargo run -p ferrite-cli -- wad info testdata/freedoom/freedoom2.wad
 ### Plan
 
 1. Binary formats (graphics, palette, sound, MUS→MIDI, fonts).
-2. `ferrite-sc` + `ferrite-defs` phases 0–6 and 9.
+2. `room-sc` + `room-defs` phases 0–6 and 9.
 3. CLI `defs dump`; Freedoom insta goldens; MAPINFO corpus.
 
 ### Checklist
@@ -676,8 +679,8 @@ cargo run -p ferrite-cli -- wad info testdata/freedoom/freedoom2.wad
 
 ```bash
 ./scripts/fetch-freedoom.sh
-cargo test -p ferrite-defs
-cargo run -p ferrite-cli -- defs dump testdata/freedoom/freedoom2.wad
+cargo test -p room-defs
+cargo run -p room-cli -- defs dump testdata/freedoom/freedoom2.wad
 ```
 
 ---
@@ -690,7 +693,7 @@ cargo run -p ferrite-cli -- defs dump testdata/freedoom/freedoom2.wad
 
 1. Doom/Hexen/UDMF loaders, XLAT, node formats, nodebuild, blockmap, reject.
 2. Slopes / 3D floors / portals / polyobjects setup data.
-3. `ferrite-testkit` UDMF DSL; CLI `map info|render2d|nodebuild`.
+3. `room-testkit` UDMF DSL; CLI `map info|render2d|nodebuild`.
 4. Accept: all Freedoom maps, convexity, point-in-sector parity, UDMF ≥100 MB/s.
 
 ### Checklist
@@ -699,7 +702,7 @@ cargo run -p ferrite-cli -- defs dump testdata/freedoom/freedoom2.wad
 
 - [x] Doom / Hexen / UDMF loaders + validation + XLAT
 - [x] Node loading (classic + compressed/GL variants)
-- [x] `ferrite-nodebuild` + blockmap build
+- [x] `room-nodebuild` + blockmap build
 - [x] Reject **parse**
 - [x] Reject **builder** (`build_reject` connectivity + `build_reject_zero`)
 - [x] Slopes / 3D floors / portals / polyobj **setup data** (UDMF planes,
@@ -719,8 +722,8 @@ cargo run -p ferrite-cli -- defs dump testdata/freedoom/freedoom2.wad
 
 ```bash
 ./scripts/fetch-freedoom.sh
-cargo test -p ferrite-map
-cargo run -p ferrite-cli -- map info testdata/freedoom/freedoom2.wad MAP01
+cargo test -p room-map
+cargo run -p room-cli -- map info testdata/freedoom/freedoom2.wad MAP01
 ```
 
 ---
@@ -732,7 +735,7 @@ cargo run -p ferrite-cli -- map info testdata/freedoom/freedoom2.wad MAP01
 ### Plan
 
 1. wgpu device, textures, BSP walk, walls/flats/sprites, sky, lighting modes, 2D.
-2. Desktop `ferrite-app` map viewer; `ferrite-web` same viewer (WebGPU + WebGL2).
+2. Desktop `room-app` map viewer; `room-web` same viewer (WebGPU + WebGL2).
 3. Golden images + Freedoom MAP01 target fps on desktop and browsers.
 
 ### Checklist
@@ -743,8 +746,8 @@ cargo run -p ferrite-cli -- map info testdata/freedoom/freedoom2.wad MAP01
 - [x] Walls/flats/sprites (static), classic sky
 - [x] `DoomSoftware` / `ClassicPalette` light modes, fog fields
 - [x] 2D canvas, fonts, screenshots, offscreen API
-- [x] `ferrite-app` free-fly viewer
-- [x] `ferrite-web` map viewer + IWAD play (`ferriteStartIwad` / `/doom1.wad` / file picker)
+- [x] `room-app` free-fly viewer
+- [x] `room-web` map viewer + IWAD play (`roomStartIwad` / `/doom1.wad` / file picker)
 - [x] Offscreen smoke + lavapipe `render-smoke` CI
 - [x] Local `golden_room` SSIM fixture
 
@@ -758,9 +761,9 @@ cargo run -p ferrite-cli -- map info testdata/freedoom/freedoom2.wad MAP01
 ### How to verify
 
 ```bash
-cargo run -p ferrite-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01
-cargo test -p ferrite-render
-cargo build --target wasm32-unknown-unknown -p ferrite-web
+cargo run -p room-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01
+cargo test -p room-render
+cargo build --target wasm32-unknown-unknown -p room-web
 ```
 
 ---
@@ -777,20 +780,20 @@ cargo build --target wasm32-unknown-unknown -p ferrite-web
 4. **World** — Doom specials via XLAT, sector specials, movers, lights, switches, teleports.
 5. **Level flow** — exits, secrets, intermission, finale, title loop.
 6. **Shell systems** — audio SFX, music (SoftFont/OPL), input, console/CVars, Doom UI.
-7. **Persistence** — save/load, Ferrite demo record/verify + checksums.
+7. **Persistence** — save/load, Room demo record/verify + checksums.
 8. **Accept** — Freedoom P1/P2 start→finish demos + cross-platform determinism CI.
 
 ### Checklist
 
 **Deliverables — content / mod formats**
 
-- [x] `ferrite-decorate` parser + Doom actor bootstrap
-- [x] `ferrite-dehacked` Thing/Weapon/Ammo/Misc/Frame/Pointer parse
+- [x] `room-decorate` parser + Doom actor bootstrap
+- [x] `room-dehacked` Thing/Weapon/Ammo/Misc/Frame/Pointer parse
 - [x] BEX `[STRINGS]` → pickup messages; `[CODEPTR]` parse
 - [x] Frame / Pointer / `[CODEPTR]` **apply** via `states.txt` class/label/offset
   (compressed multi-letter DECORATE lines share one target; true 1:1 needs
   expanded built-in actor states)
-- [x] Full DeHackEd sound/sprite tables with `ferrite.pk3/dehacked/`
+- [x] Full DeHackEd sound/sprite tables with `room.pk3/dehacked/`
   (`things.txt` / `sprites.txt` / `sounds.txt` / `weapons.txt` / `ammo.txt` /
   `codepointers.txt`; `[SOUNDS]` / `[SPRITES]` apply)
 
@@ -815,17 +818,17 @@ cargo build --target wasm32-unknown-unknown -p ferrite-web
 
 **Deliverables — audio / input / UI / console**
 
-- [x] `ferrite-audio` SFX mixer + SNDINFO resolve bootstrap
-- [x] `ferrite-music` SoftFont + OPL path
-- [x] `ferrite-input`, `ferrite-console` core commands/CVars
-- [x] `ferrite-ui` menus, status bar, HUD, automap, messages (Doom bootstrap)
+- [x] `room-audio` SFX mixer + SNDINFO resolve bootstrap
+- [x] `room-music` SoftFont + OPL path
+- [x] `room-input`, `room-console` core commands/CVars
+- [x] `room-ui` menus, status bar, HUD, automap, messages (Doom bootstrap)
 - [x] Doom UI bootstrap; full option menus / config parity → M13
 
 **Deliverables — demos / saves / app**
 
 - [x] `.fdem` record/verify + CLI `demo`
 - [x] Save v2 (inventory/armor/pitch/weapon)
-- [x] `ferrite-app --play` WASD headless drive
+- [x] `room-app --play` WASD headless drive
 - [x] MAP01 smoke: tick, door, teleport, exit→intermission, secret
 - [x] Committed maintainer smoke `.fdem` (`testdata/demos/freedoom2_map01_smoke.fdem`)
 - [x] Multi-map `.fdbn` bundles (P2 MAP01–30; P1 E1–E4)
@@ -845,9 +848,9 @@ cargo build --target wasm32-unknown-unknown -p ferrite-web
 
 ```bash
 ./scripts/fetch-freedoom.sh
-cargo test -p ferrite-sim
-cargo test -p ferrite-game --test freedoom_smoke
-cargo run -p ferrite-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01 --play
+cargo test -p room-sim
+cargo test -p room-game --test freedoom_smoke
+cargo run -p room-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01 --play
 ```
 
 ### Near-term backlog (update as closed)
@@ -1023,7 +1026,7 @@ cargo run -p ferrite-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01 -
 - [x] IQM v2 bind-pose parse + `parse_model_bytes` auto-detect
 - [x] IQM CPU skinning (`parse_iqm_full` / `IqmModel::skin_cpu` / bind-pose identity)
 - [x] MODELDEF actor wiring (`ModelCatalog` / `append_actor_models`)
-- [x] Play-path MODELDEF draw (`collect_model_poses` in ferrite-app)
+- [x] Play-path MODELDEF draw (`collect_model_poses` in room-app)
 - [x] Model offscreen smoke (`tests/model_offscreen_smoke.rs`)
 - [x] Dyn-lights soft golden (`tests/golden_dyn_lights.rs` mean-luma)
 - [x] Dyn-lights SSIM PNG (`testdata/goldens/dyn_lights_320x200.png`)
@@ -1045,7 +1048,7 @@ cargo run -p ferrite-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01 -
 - [x] Multi-scale bloom (Kawase 4-radius × 8-tap) in PostPass
 - [x] True bloom mip downsample chain (`BloomPass` 4-level half-res pyramid)
 - [x] Palette tonemap (`TonemapMode::Palette` + PLAYPAL upload)
-- [x] naga WGSL validation at build (`ferrite-render/build.rs`)
+- [x] naga WGSL validation at build (`room-render/build.rs`)
 - [x] Lightmap header bootstrap (`FLMP` / `parse_lightmap_header`)
 - [x] Particles GPU instancing (`ParticleInstancedPass` + `particles.wgsl` + smoke)
 - [x] Obscure render styles fill path (`apply_fill_color` / `uses_fill_modulate` for stencil/shaded/soul/shadow)
@@ -1115,20 +1118,20 @@ cargo run -p ferrite-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01 -
 
 **Status:** `done` · Spec: `20` §M11 · Docs: `12`
 
-**Intentional deferrals:** `#[derive(Actor)]` / `states!` / C header & `cargo ferrite`; UI draw/`send_network_event` imports; hot reload; full sample mods (b)–(e); ABI benchmarks.
+**Intentional deferrals:** `#[derive(Actor)]` / `states!` / C header & `cargo room`; UI draw/`send_network_event` imports; hot reload; full sample mods (b)–(e); ABI benchmarks.
 
 ### Plan
 
-1. ABI v1 IDL + `ferrite-abi-gen`; `wasmi` then `wasmtime`.
+1. ABI v1 IDL + `room-abi-gen`; `wasmi` then `wasmtime`.
 2. Classes/states/fields/virtuals/actions/events/thinkers; ACS interop; UI modules.
-3. Saves/hot reload; Rust SDK + macros + `cargo ferrite`; C header example.
+3. Saves/hot reload; Rust SDK + macros + `cargo room`; C header example.
 
 ### Checklist
 
 **Deliverables**
 
-- [x] ABI v1 + codegen (bootstrap: `api/common.ron` + `ferrite-abi-gen list`)
-- [x] `ferrite-script` wasmi backend (validate + required exports + `ferrite::log` + lifecycle)
+- [x] ABI v1 + codegen (bootstrap: `api/common.ron` + `room-abi-gen list`)
+- [x] `room-script` wasmi backend (validate + required exports + `room::log` + lifecycle)
 - [x] `wasmtime` backend (fuel + NaN canon; same stub lifecycle as wasmi)
 - [x] Validation + registration/init lifecycle
 - [x] Class/state registration ABI bootstrap (`reg_class_*` / `reg_state*` + ClassRegistry merge)
@@ -1155,20 +1158,21 @@ cargo run -p ferrite-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01 -
 ### Plan
 
 1. Lockstep netcode; UDP + WebRTC (`matchbox`); lobby/handshake.
-2. Desync detection + dump tooling; `ferrite-signal`.
+2. Desync detection + dump tooling; `room-signal`.
 
 ### Checklist
 
 **Deliverables**
 
-- [x] `ferrite-net` lockstep bootstrap (`LockstepSession` + loopback mesh)
+- [x] `room-net` lockstep bootstrap (`LockstepSession` + loopback mesh)
 - [x] UDP transport bootstrap (`UdpTransport`)
 - [x] TCP mesh (`TcpTransport`) + packet-server relay (`TcpRelayServer` / `TcpRelayClient`)
+- [x] WebSocket packet-server relay (`room-ws` + `room-web` `WsTransport` / `?ws=` lobby)
 - [x] Noise_XX encryption wrapper (`NoiseTransport` / `snow`, feature `noise`)
 - [x] WebRTC (`matchbox_socket` behind `--features webrtc` + `MatchboxTransport`; signal mesh/HTTP for CI)
 - [x] Lobby / handshake bootstrap (`LobbyHost`)
 - [x] Desync detection + dump text (`DesyncCollector`)
-- [x] `ferrite-signal` signalling helper (HTTP room relay)
+- [x] `room-signal` signalling helper (HTTP room relay)
 
 **Acceptance**
 
@@ -1181,7 +1185,7 @@ cargo run -p ferrite-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01 -
 ### Intentional deferrals
 
 - Live 4-player native+web 30 min soak without desync.
-- Drop-in `matchbox_server` / WebSocket signalling (HTTP `ferrite-signal` covers rooms today).
+- Drop-in `matchbox_server` swap (HTTP `room-signal` + `room-ws` cover rooms / web relay today).
 
 ---
 
@@ -1202,9 +1206,9 @@ cargo run -p ferrite-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01 -
 
 - [x] Doom menu shell polish (TITLEPIC, skull, patch items, pause/quit/end-game, mouse)
 - [x] Launcher + IWAD/mod picker (`--launcher`, auto-discover Freedoom/Doom2)
-- [x] gzdoom.ini / ferrite.ini import + `writeconfig`/`exec`
+- [x] gzdoom.ini / room.ini import + `writeconfig`/`exec`
 - [x] Option menus wired to CVars (`invertmouse`, `cl_run`, `m_sensitivity`, …)
-- [x] Web URL params + storage embed API (`ferriteUrlParam` / `ferriteOpfs*`)
+- [x] Web URL params + storage embed API (`roomUrlParam` / `roomOpfs*`)
 - [x] Packaging script (`scripts/package.sh` host/web/all)
 - [x] Crash reporter (panic → platform log dir)
 - [x] Engine string localization (`StringTable` / LANGUAGE bootstrap)
@@ -1256,7 +1260,7 @@ cargo run -p ferrite-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01 -
 
 Track opportunistically; do not block 1.0.
 
-- [ ] Classic software renderer (`ferrite-render-soft`)
+- [ ] Classic software renderer (`room-render-soft`)
 - [ ] ZScript→Rust/WASM transpiler
 - [ ] Bots
 - [ ] Rollback netcode

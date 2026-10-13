@@ -33,4 +33,4 @@
 | **TID** | Thing ID used by ACS/specials to address actors. |
 | **UDMF** | Universal Doom Map Format, a text map format (`06 §2.1`). |
 | **XLAT** | Translation tables turning Doom-format line types into ZDoom specials (`09 §3`). |
-| **ZScript** | GZDoom's scripting language; not supported by Ferrite (`11 §3`). |
+| **ZScript** | GZDoom's scripting language; not supported by Room (`11 §3`). |

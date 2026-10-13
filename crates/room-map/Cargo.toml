@@ -1,0 +1,26 @@
+[package]
+name = "room-map"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Map model, Doom/Hexen/UDMF loaders, validation, blockmap, reject."
+
+[lints]
+workspace = true
+
+[dependencies]
+room-core = { path = "../room-core" }
+room-formats = { path = "../room-formats" }
+room-vfs = { path = "../room-vfs" }
+flate2.workspace = true
+md-5.workspace = true
+ron.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+smallvec.workspace = true
+
+[dev-dependencies]
+room-nodebuild = { path = "../room-nodebuild" }
+room-testkit = { path = "../room-testkit" }
+proptest.workspace = true

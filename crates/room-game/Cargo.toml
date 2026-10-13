@@ -1,0 +1,36 @@
+[package]
+name = "room-game"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Game state machine: startup, levels, hubs, intermission, saves, demos."
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes.workspace = true
+room-audio = { path = "../room-audio" }
+room-core = { path = "../room-core" }
+room-decorate = { path = "../room-decorate" }
+room-defs = { path = "../room-defs" }
+room-formats = { path = "../room-formats" }
+room-map = { path = "../room-map" }
+room-music = { path = "../room-music" }
+room-sim = { path = "../room-sim" }
+room-ui = { path = "../room-ui" }
+room-vfs = { path = "../room-vfs" }
+thiserror.workspace = true
+xxhash-rust.workspace = true
+zip.workspace = true
+
+[build-dependencies]
+zip.workspace = true
+
+[dev-dependencies]
+room-map = { path = "../room-map" }
+room-net = { path = "../room-net" }
+room-nodebuild = { path = "../room-nodebuild" }
+room-testkit = { path = "../room-testkit" }
+wat = { workspace = true }

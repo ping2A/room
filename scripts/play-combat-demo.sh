@@ -4,15 +4,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-IWAD="${FERRITE_IWAD:-testdata/freedoom/freedoom2.wad}"
+IWAD="${ROOM_IWAD:-testdata/freedoom/freedoom2.wad}"
 if [[ ! -f "$IWAD" ]]; then
   echo "fetching Freedoom…"
   ./scripts/fetch-freedoom.sh
   IWAD="testdata/freedoom/freedoom2.wad"
 fi
 
-exec cargo run -p ferrite-app --release -- \
+exec cargo run -p room-app --release -- \
   --iwad "$IWAD" \
   --combat-demo \
-  --skill "${FERRITE_SKILL:-3}" \
+  --skill "${ROOM_SKILL:-3}" \
   "$@"

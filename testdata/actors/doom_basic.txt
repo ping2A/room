@@ -1,4 +1,4 @@
-// Minimal Doom actor set for M5 bootstrap (subset of ferrite.pk3 actors).
+// Minimal Doom actor set for M5 bootstrap (subset of room.pk3 actors).
 // Full tables land with the real pk3.
 
 // World looks up `PlayerPawn` for player starts (GZDoom default).
@@ -19,6 +19,12 @@ actor PlayerPawn : Actor 0
   Spawn:
     PLAY A -1
     Stop
+  See:
+    PLAY ABCD 4
+    Loop
+  Missile:
+    PLAY E 12
+    Goto Spawn
   Pain:
     PLAY G 4 A_Pain
     PLAY G 4

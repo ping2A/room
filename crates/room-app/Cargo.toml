@@ -1,0 +1,37 @@
+[package]
+name = "room-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Native desktop binary (winit + wgpu + cpal)."
+
+[[bin]]
+name = "room"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap.workspace = true
+cpal.workspace = true
+room-audio = { path = "../room-audio" }
+room-console = { path = "../room-console" }
+room-decorate = { path = "../room-decorate" }
+room-defs = { path = "../room-defs" }
+room-game = { path = "../room-game" }
+room-input = { path = "../room-input" }
+room-map = { path = "../room-map" }
+room-music = { path = "../room-music" }
+room-net = { path = "../room-net", features = ["noise"] }
+room-nodebuild = { path = "../room-nodebuild" }
+room-render = { path = "../room-render" }
+room-sim = { path = "../room-sim" }
+room-testkit = { path = "../room-testkit" }
+room-ui = { path = "../room-ui" }
+room-vfs = { path = "../room-vfs" }
+glam.workspace = true
+pollster.workspace = true
+wgpu.workspace = true
+winit.workspace = true

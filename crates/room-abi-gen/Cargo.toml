@@ -1,0 +1,19 @@
+[package]
+name = "room-abi-gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Generates host glue and guest bindings from the scripting IDL."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "room-abi-gen"
+path = "src/main.rs"
+
+[dependencies]
+ron = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+anyhow = { workspace = true }

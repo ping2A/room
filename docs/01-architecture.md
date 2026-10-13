@@ -2,43 +2,43 @@
 
 ## 1. Workspace layout
 
-A single Cargo workspace. Crate names use the `ferrite-` prefix (Rust module
-names `ferrite_*`). The edition is 2024; MSRV is the latest stable at project start, bumped deliberately.
+A single Cargo workspace. Crate names use the `room-` prefix (Rust module
+names `room_*`). The edition is 2024; MSRV is the latest stable at project start, bumped deliberately.
 
 ```
-ferrite/
+room/
   Cargo.toml                 # [workspace], shared lints, profiles
   crates/
-    ferrite-core/            # math, fixed point, angles, Name interning, RNG, errors, ids
-    ferrite-vfs/             # archives, load order, namespaces, lump lookup
-    ferrite-formats/         # binary parsers (no engine knowledge): WAD dir, patches, PNG, MUS, DMX, nodes…
-    ferrite-sc/              # ZDoom-style text scanner shared by all text lump parsers
-    ferrite-defs/            # compiles text lumps into immutable registries ("Definitions")
-    ferrite-decorate/        # DECORATE parser → ClassDef IR
-    ferrite-dehacked/        # DeHackEd/BEX/MBF21 patcher → applies to ClassDef IR
-    ferrite-map/             # map model, loaders (Doom/Hexen/UDMF), validation, blockmap, reject
-    ferrite-nodebuild/       # internal BSP + GL node builder (ZDBSP-equivalent)
-    ferrite-sim/             # the playsim: World, thinkers, actors, physics, specials
-    ferrite-acs/             # ACS loader + VM
-    ferrite-script-abi/      # #![no_std] shared ABI types/constants between host and guests
-    ferrite-script/          # WASM host runtime (wasmtime / wasmi / browser backends)
-    ferrite-script-sdk/      # guest-side Rust SDK (#![no_std] + alloc), proc-macros in -sdk-macros
-    ferrite-script-sdk-macros/
-    ferrite-render/          # wgpu renderer (3D scene + 2D canvas backend)
-    ferrite-audio/           # mixer, SFX, 3D audio, reverb, output backends
-    ferrite-music/           # MUS/MIDI sequencer, SoundFont synth, OPL3, tracker modules, streams
-    ferrite-ui/              # 2D draw list API, fonts, menus, status bars, HUD, automap, intermission
-    ferrite-input/           # device abstraction, bindings, ticcmd building
-    ferrite-console/         # console, commands, CVars, config persistence
-    ferrite-net/             # lockstep netcode, transports
-    ferrite-game/            # game state machine: startup, levels, hubs, intermission, saves, demos
-    ferrite-app/             # native desktop binary (winit + wgpu + cpal)
-    ferrite-web/             # wasm32 binary (wasm-bindgen + web-sys)
-    ferrite-cli/             # tools: wad ls/extract, map dump, nodebuild, demo verify, render-to-png
-    ferrite-testkit/         # test-only: UDMF map builder DSL, headless scenario helpers
-    ferrite-abi-gen/         # tool: generates host glue + guest bindings (Rust, C, Zig, AssemblyScript) from the scripting IDL
-    ferrite-signal/          # tiny WebRTC signalling server for netplay (optional)
-    ferrite-render-soft/     # stretch: classic CPU software renderer
+    room-core/            # math, fixed point, angles, Name interning, RNG, errors, ids
+    room-vfs/             # archives, load order, namespaces, lump lookup
+    room-formats/         # binary parsers (no engine knowledge): WAD dir, patches, PNG, MUS, DMX, nodes…
+    room-sc/              # ZDoom-style text scanner shared by all text lump parsers
+    room-defs/            # compiles text lumps into immutable registries ("Definitions")
+    room-decorate/        # DECORATE parser → ClassDef IR
+    room-dehacked/        # DeHackEd/BEX/MBF21 patcher → applies to ClassDef IR
+    room-map/             # map model, loaders (Doom/Hexen/UDMF), validation, blockmap, reject
+    room-nodebuild/       # internal BSP + GL node builder (ZDBSP-equivalent)
+    room-sim/             # the playsim: World, thinkers, actors, physics, specials
+    room-acs/             # ACS loader + VM
+    room-script-abi/      # #![no_std] shared ABI types/constants between host and guests
+    room-script/          # WASM host runtime (wasmtime / wasmi / browser backends)
+    room-script-sdk/      # guest-side Rust SDK (#![no_std] + alloc), proc-macros in -sdk-macros
+    room-script-sdk-macros/
+    room-render/          # wgpu renderer (3D scene + 2D canvas backend)
+    room-audio/           # mixer, SFX, 3D audio, reverb, output backends
+    room-music/           # MUS/MIDI sequencer, SoundFont synth, OPL3, tracker modules, streams
+    room-ui/              # 2D draw list API, fonts, menus, status bars, HUD, automap, intermission
+    room-input/           # device abstraction, bindings, ticcmd building
+    room-console/         # console, commands, CVars, config persistence
+    room-net/             # lockstep netcode, transports
+    room-game/            # game state machine: startup, levels, hubs, intermission, saves, demos
+    room-app/             # native desktop binary (winit + wgpu + cpal)
+    room-web/             # wasm32 binary (wasm-bindgen + web-sys)
+    room-cli/             # tools: wad ls/extract, map dump, nodebuild, demo verify, render-to-png
+    room-testkit/         # test-only: UDMF map builder DSL, headless scenario helpers
+    room-abi-gen/         # tool: generates host glue + guest bindings (Rust, C, Zig, AssemblyScript) from the scripting IDL
+    room-signal/          # tiny WebRTC signalling server for netplay (optional)
+    room-render-soft/     # stretch: classic CPU software renderer
   fuzz/                      # cargo-fuzz targets
   testdata/                  # generated fixtures, Freedoom-derived goldens
   docs/                      # these documents + ADRs in docs/decisions/
@@ -47,41 +47,41 @@ ferrite/
 ## 2. Dependency graph (allowed edges only)
 
 ```
-                 ferrite-core
+                 room-core
                       │
       ┌───────────────┼──────────────────────────┐
-  ferrite-vfs   ferrite-formats   ferrite-sc   ferrite-script-abi
+  room-vfs   room-formats   room-sc   room-script-abi
       │               │              │                │
       └──────┬────────┴──────┬───────┘                │
-             │         ferrite-decorate               │
-             │         ferrite-dehacked               │
+             │         room-decorate               │
+             │         room-dehacked               │
              ▼               ▼                        │
-          ferrite-defs ◄─────┘                        │
+          room-defs ◄─────┘                        │
              │                                        │
      ┌───────┼───────────────┐                        │
- ferrite-map │          ferrite-nodebuild             │
+ room-map │          room-nodebuild             │
      │  ◄────┼───────────────┘                        │
      ▼       ▼                                        │
-  ferrite-acs   ferrite-script ◄──────────────────────┘
+  room-acs   room-script ◄──────────────────────┘
      │            │
-     └──► ferrite-sim ◄──┘   (sim depends on acs + script via traits defined in sim; see §5)
+     └──► room-sim ◄──┘   (sim depends on acs + script via traits defined in sim; see §5)
               │
    ┌──────────┼──────────────┬──────────────┬─────────────┐
-ferrite-render ferrite-audio ferrite-ui  ferrite-net  ferrite-console/input
+room-render room-audio room-ui  room-net  room-console/input
    (reads SimView)  (reads SoundEvents)  (reads SimView + UI state)
               │
-         ferrite-game  (owns everything, drives the loop)
+         room-game  (owns everything, drives the loop)
               │
-      ferrite-app / ferrite-web / ferrite-cli
+      room-app / room-web / room-cli
 ```
 
 Rules:
 
-- `ferrite-sim` **must not** depend on render/audio/ui/input/net/game.
-- `ferrite-render` **must not** depend on `ferrite-sim` internals; it consumes
-  `ferrite_sim::view::SimView` (a public, read-only snapshot type) and `Definitions`.
-- Only `ferrite-app` and `ferrite-web` know about winit/web-sys/cpal device creation.
-- `ferrite-script-abi` and `ferrite-script-sdk` must compile for `wasm32-unknown-unknown`
+- `room-sim` **must not** depend on render/audio/ui/input/net/game.
+- `room-render` **must not** depend on `room-sim` internals; it consumes
+  `room_sim::view::SimView` (a public, read-only snapshot type) and `Definitions`.
+- Only `room-app` and `room-web` know about winit/web-sys/cpal device creation.
+- `room-script-abi` and `room-script-sdk` must compile for `wasm32-unknown-unknown`
   with `#![no_std]` (+ `alloc` for the SDK).
 
 ## 3. Core runtime objects
@@ -122,12 +122,12 @@ pub struct World { /* see 07-playsim.md */ }
 pub struct SimView<'w> { /* borrowed view, see §6 */ }
 ```
 
-`Definitions` is built by `ferrite_defs::DefinitionsBuilder` from a mounted
+`Definitions` is built by `room_defs::DefinitionsBuilder` from a mounted
 `Vfs`. Building is deterministic: same load order ⇒ same IDs.
 
 ## 4. The main loop
 
-The loop is owned by `ferrite_game::Engine` and driven by the platform shell,
+The loop is owned by `room_game::Engine` and driven by the platform shell,
 which calls `Engine::frame(now: Instant-like, input_events)` once per display frame.
 
 ```
@@ -154,12 +154,12 @@ frame(now):
 
 ## 5. Breaking cycles: sim ↔ scripting
 
-`ferrite-sim` defines traits; `ferrite-acs` and `ferrite-script` implement
-them; `ferrite-game` wires them together. This keeps the sim testable without a
+`room-sim` defines traits; `room-acs` and `room-script` implement
+them; `room-game` wires them together. This keeps the sim testable without a
 WASM runtime.
 
 ```rust
-// in ferrite-sim
+// in room-sim
 pub trait ScriptHost {
     /// Called for actor action functions implemented by modules.
     fn call_action(&mut self, w: &mut WorldCtx, func: ActionFnId, actor: ActorId, args: &ActionArgs) -> ActionResult;
@@ -209,21 +209,21 @@ The sim is single-threaded by design (determinism). Parallelism inside the sim i
 - Load-time: errors are collected, not fatal, wherever GZDoom is lenient
   (e.g. an unknown SNDINFO command prints a warning and is skipped). Where GZDoom
   is strict (DECORATE syntax errors abort startup after reporting all errors in
-  the lump), Ferrite is strict too. The per-lump policy is listed in `05` and `11`.
+  the lump), Room is strict too. The per-lump policy is listed in `05` and `11`.
   Each error carries a `SourceSpan { lump: LumpId, line, col }`.
-- Fatal errors bubble to `ferrite-game`, which shows them in a startup error screen (native) or overlay (web) — never `panic!`.
+- Fatal errors bubble to `room-game`, which shows them in a startup error screen (native) or overlay (web) — never `panic!`.
 - Runtime script traps (WASM trap, ACS runaway script) are contained: the
   offending script/actor is disabled, a console error is logged, the game continues. Configurable `script_trap_policy = log | pause | abort`.
 
 ## 9. Configuration and paths
 
-- Config file: `ferrite.toml` (TOML) in the platform config dir (`directories` crate), with an importer for `gzdoom.ini` (`15-input-console-cvars.md §Config`).
+- Config file: `room.toml` (TOML) in the platform config dir (`directories` crate), with an importer for `gzdoom.ini` (`15-input-console-cvars.md §Config`).
 - Search paths for IWADs/PWADs: config `[paths] iwad = [...]`, `DOOMWADDIR`, `DOOMWADPATH`, executable dir, platform data dirs, Steam/GOG install locations (detection list in `03-vfs.md §IWAD search`).
 - Web: virtual filesystem backed by OPFS (`18-platform-web.md`).
 
 ## 10. Public API surface (library users)
 
-The library must support these external use cases with no `ferrite-app` dependency:
+The library must support these external use cases with no `room-app` dependency:
 
 ```rust
 // 1. Inspect archives
@@ -232,14 +232,14 @@ for lump in vfs.lumps() { println!("{} {}", lump.full_name(), lump.size()); }
 
 // 2. Load and analyze a map without running it
 let defs = DefinitionsBuilder::new(&vfs).build()?;
-let map = ferrite_map::load(&vfs, &defs, "MAP01")?;
+let map = room_map::load(&vfs, &defs, "MAP01")?;
 
 // 3. Run a headless simulation (bots/AI research, demo verification)
-let mut game = ferrite_game::Headless::new(vfs, GameOptions::default())?;
+let mut game = room_game::Headless::new(vfs, GameOptions::default())?;
 game.start_map("MAP01", Skill::new(3))?;
 for _ in 0..350 { game.tick(&[TicCmd::default()]); }
 let hash = game.world().checksum();
 
 // 4. Render a map to an image offscreen
-let png = ferrite_render::offscreen::render_view(&game.world().view(0.0), 1280, 720)?;
+let png = room_render::offscreen::render_view(&game.world().view(0.0), 1280, 720)?;
 ```

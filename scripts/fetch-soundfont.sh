@@ -29,4 +29,4 @@ rm -f "$TMP"
 # Drop any empty extract dirs
 find "$OUT" -mindepth 1 -type d -empty -delete 2>/dev/null || true
 ls -la "$DEST"
-echo "SoftFont ready — ferrite will pick it up from soundfonts/TimGM6mb.sf2"
+echo "SoftFont ready — room will pick it up from soundfonts/TimGM6mb.sf2"

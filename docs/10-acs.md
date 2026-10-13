@@ -1,11 +1,11 @@
-# 10 — ACS virtual machine (`ferrite-acs`)
+# 10 — ACS virtual machine (`room-acs`)
 
 GZDoom references: `src/playsim/p_acs.cpp` (≈ 10k lines; VM, loader, ACSF functions),
 `p_acs.h`, ZDoom wiki *ACS*, *Built-in ACS functions*, ACC source (`acc` repo:
 `pcdefs.c`, `pcdefs.h` for p-code numbering), ZDoom wiki *ACS Script types*.
 
 ACS is compiled bytecode (`BEHAVIOR` lumps in maps, libraries in the `A_START/A_END`
-namespace / `acs/` directory loaded via `LOADACS` or `#import`). Ferrite runs
+namespace / `acs/` directory loaded via `LOADACS` or `#import`). Room runs
 existing bytecode; it does not need an ACS compiler (ACC/GDCC remain external tools).
 
 ## 1. Object formats

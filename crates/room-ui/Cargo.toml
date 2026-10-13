@@ -1,0 +1,20 @@
+[package]
+name = "room-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "2D draw lists, fonts, menus, status bars, HUD, automap, intermission."
+
+[lints]
+workspace = true
+
+[dependencies]
+room-defs = { path = "../room-defs" }
+room-formats = { path = "../room-formats" }
+room-map = { path = "../room-map" }
+room-vfs = { path = "../room-vfs" }
+
+[dev-dependencies]
+room-nodebuild = { path = "../room-nodebuild" }
+room-testkit = { path = "../room-testkit" }

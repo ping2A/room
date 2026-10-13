@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Milestone progress tracker
 
-When implementing Ferrite milestones:
+When implementing Room milestones:
 
 1. Read `docs/21-milestone-progress.md` for current Status / active focus before starting work.
 2. Prefer the earliest incomplete milestone’s open acceptance items (see also `docs/20-roadmap-testing.md`).

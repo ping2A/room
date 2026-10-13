@@ -2,7 +2,7 @@
 # Local DEMO1 timedemo vs Chocolate Doom 1.9 (requires `brew install chocolate-doom`).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IWAD="${FERRITE_IWAD:-$ROOT/testdata/freedoom/freedoom2.wad}"
+IWAD="${ROOM_IWAD:-$ROOT/testdata/freedoom/freedoom2.wad}"
 if [[ ! -f "$IWAD" ]]; then
   echo "missing IWAD: $IWAD (run scripts/fetch-freedoom.sh)" >&2
   exit 1

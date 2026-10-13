@@ -1,0 +1,98 @@
+[package]
+name = "room-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Browser shell (wasm-bindgen + web-sys)."
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bytes = { workspace = true, optional = true }
+room-audio = { path = "../room-audio", optional = true }
+room-defs = { path = "../room-defs", optional = true }
+room-game = { path = "../room-game", optional = true }
+room-input = { path = "../room-input", optional = true }
+room-map = { path = "../room-map", optional = true }
+room-music = { path = "../room-music", optional = true }
+room-net = { path = "../room-net", default-features = false, optional = true }
+room-nodebuild = { path = "../room-nodebuild", optional = true }
+room-render = { path = "../room-render", optional = true }
+room-sim = { path = "../room-sim", optional = true }
+room-ui = { path = "../room-ui", optional = true }
+room-vfs = { path = "../room-vfs", optional = true }
+glam = { workspace = true, optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "CssStyleDeclaration",
+    "Location",
+    "Storage",
+    "console",
+    "Performance",
+    "KeyboardEvent",
+    "MouseEvent",
+    "Event",
+    "EventTarget",
+    "AddEventListenerOptions",
+    "AudioContext",
+    "AudioContextOptions",
+    "AudioBuffer",
+    "AudioDestinationNode",
+    "AudioNode",
+    "AudioProcessingEvent",
+    "BaseAudioContext",
+    "ScriptProcessorNode",
+    "BinaryType",
+    "Blob",
+    "MessageEvent",
+    "WebSocket",
+] }
+console_error_panic_hook = { version = "0.1", optional = true }
+wgpu = { workspace = true, optional = true }
+libm = { workspace = true, optional = true }
+
+[features]
+default = []
+# Enabled for wasm32 builds / CI.
+browser = [
+    "dep:bytes",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:web-sys",
+    "dep:js-sys",
+    "dep:console_error_panic_hook",
+    "dep:room-audio",
+    "dep:room-defs",
+    "dep:room-game",
+    "dep:room-input",
+    "dep:room-map",
+    "dep:room-music",
+    "dep:room-net",
+    "dep:room-nodebuild",
+    "dep:room-render",
+    "dep:room-sim",
+    "dep:room-ui",
+    "dep:room-vfs",
+    "dep:glam",
+    "dep:wgpu",
+    "dep:libm",
+]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[[test]]
+name = "browser_smoke"
+required-features = ["browser"]

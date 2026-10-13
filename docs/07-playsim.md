@@ -1,4 +1,4 @@
-# 07 — Playsim (`ferrite-sim`)
+# 07 — Playsim (`room-sim`)
 
 GZDoom references: `src/playsim/` (`p_tick.cpp`, `p_mobj.cpp`, `p_map.cpp`,
 `p_maputl.cpp`, `p_sight.cpp`, `p_interaction.cpp`, `p_enemy.cpp`, `p_user.cpp`,
@@ -123,9 +123,9 @@ Sector movers store `SectorId` and are registered in the sector's `floor_data/ce
 
 ## 5. Movement, collision, and interaction
 
-Port these GZDoom functions faithfully. The table is the implementation checklist; each becomes a Rust function in `ferrite_sim::physics`.
+Port these GZDoom functions faithfully. The table is the implementation checklist; each becomes a Rust function in `room_sim::physics`.
 
-| GZDoom | Ferrite | Notes |
+| GZDoom | Room | Notes |
 |---|---|---|
 | `P_CheckPosition` + `PIT_CheckLine` + `PIT_CheckThing` | `check_position(actor, pos) -> CheckResult` | outputs floorz, ceilingz, dropoffz, floorsector, floorpic, floorterrain, ceilingline, blocking line/thing, portal info, 3D floor aware (`P_LineOpening` with ffloors), `MF2_PASSMOBJ` vertical checks, `MF3_ISMONSTER`… |
 | `P_TryMove` | `try_move(actor, newpos, dropoff, &mut tm) -> bool` | step height, `MaxDropOffHeight`, dropoff rules (`compat_dropoff`), crossing special lines (`SPAC_Cross/MCross/PCross/AnyCross`), portal crossing (linked & teleporting), `PushLine` |
@@ -165,10 +165,10 @@ GZDoom's `FRandom` (`m_random.cpp`):
 - Named generators (`pr_chase`, `pr_damagemobj`, … ~300 names). Each is an **SFMT** (SIMD-oriented Fast Mersenne Twister, MEXP 607) instance. Port SFMT-607 to pure scalar Rust (the SIMD version is just an optimization; output is identical).
 - Seeding: all generators seeded from the global `rngseed` combined with the CRC32 of the generator's name (verify the exact combination in `FRandom::Init`/`StaticClearRandom`). Same seed + same names ⇒ same streams.
 - API: `rng.random(name) -> u8` (0..=255, `operator()`), `random2(mask)` (difference of two calls), `hit_dice(count)`, `gen_rand32`, `gen_rand_real1/2`.
-- Vanilla compat: the classic `rndtable[256]` with `prndindex`/`rndindex` used by `M_Random`/`P_Random`, active only in the strict vanilla mode used for vanilla demo playback. GZDoom has no such mode; it's a Ferrite addition (see `19`).
+- Vanilla compat: the classic `rndtable[256]` with `prndindex`/`rndindex` used by `M_Random`/`P_Random`, active only in the strict vanilla mode used for vanilla demo playback. GZDoom has no such mode; it's a Room addition (see `19`).
 - Modules and ACS get their own named generators (`pr_acs`, `pr_script_<module>`); a module may create named generators which are added to the set deterministically by name.
 - Save: every generator's full state. Net checksum: includes RNG indices.
-- Non-sim randomness (menu effects, UI, audio pitch variation for non-sim sounds) uses `ferrite_core::rng::UiRng`, never `World::rng`.
+- Non-sim randomness (menu effects, UI, audio pitch variation for non-sim sounds) uses `room_core::rng::UiRng`, never `World::rng`.
 
 ## 7. Players
 
@@ -195,7 +195,7 @@ pub struct Player {
 }
 ```
 
-`player_think` ports `P_PlayerThink` + `PlayerPawn::PlayerThink` (which in GZDoom is ZScript in `player.zs` — port its logic to Rust in `ferrite_sim::player`): crouching, `MovePlayer` (forward/side scaling with `ForwardMove1/2`, `SideMove1/2`, `run`), jump, fly (`MF_FLY` via inventory), `CalcHeight` (bob, `MoveBob`, `StillBob`), `CheckUse`, `CheckWeaponChange`, `TickPSprites`, `CheckPoison`, `CheckDegeneration`, `CheckAirSupply`, `CheckEnvironment` (sector damage/specials), `CheckUndoMorph`, death think (`DeathThink`: view lowering, look at killer, respawn on use), `CheckFOV`, cheat effects.
+`player_think` ports `P_PlayerThink` + `PlayerPawn::PlayerThink` (which in GZDoom is ZScript in `player.zs` — port its logic to Rust in `room_sim::player`): crouching, `MovePlayer` (forward/side scaling with `ForwardMove1/2`, `SideMove1/2`, `run`), jump, fly (`MF_FLY` via inventory), `CalcHeight` (bob, `MoveBob`, `StillBob`), `CheckUse`, `CheckWeaponChange`, `TickPSprites`, `CheckPoison`, `CheckDegeneration`, `CheckAirSupply`, `CheckEnvironment` (sector damage/specials), `CheckUndoMorph`, death think (`DeathThink`: view lowering, look at killer, respawn on use), `CheckFOV`, cheat effects.
 
 ### 7.1 TicCmd
 
@@ -221,7 +221,7 @@ pub enum NetCommand { SelectWeapon(ClassId), UseInventory(ActorRef), DropInvento
 
 ## 9. Level flow
 
-- `start_map(name, skill, flags)`: load MapGeometry (cached), create World, spawn things (`P_SpawnMapThing` semantics: skill bits, mode flags (single/coop/dm), class filter, `MTF_*`, DoomEdNum → class (MAPINFO `DoomEdNums` + game defaults), `filterstarts`, player starts 1–8 + deathmatch starts 11 + Hexen "player start N" args, polyobject spots skipped, ambient sound things 14001–14064, sound sequence overrides 1400–1409/1411, 9001 map spots, 9024 patrol points, 9025 security camera, 9026 spark, 9027–9033 particle fountains, 9070 interpolation points, 9048 sound environment, 9045 water zone, 9046 secret trigger, … — the authoritative list is GZDoom's `mapinfo/doomednums` engine data and the ZDoom wiki "Editor number" page; reproduce it in `ferrite.pk3` MAPINFO `DoomEdNums`), run `OPEN` ACS scripts and `WorldLoaded` events, `PostBeginPlay` for every actor on first tic.
+- `start_map(name, skill, flags)`: load MapGeometry (cached), create World, spawn things (`P_SpawnMapThing` semantics: skill bits, mode flags (single/coop/dm), class filter, `MTF_*`, DoomEdNum → class (MAPINFO `DoomEdNums` + game defaults), `filterstarts`, player starts 1–8 + deathmatch starts 11 + Hexen "player start N" args, polyobject spots skipped, ambient sound things 14001–14064, sound sequence overrides 1400–1409/1411, 9001 map spots, 9024 patrol points, 9025 security camera, 9026 spark, 9027–9033 particle fountains, 9070 interpolation points, 9048 sound environment, 9045 water zone, 9046 secret trigger, … — the authoritative list is GZDoom's `mapinfo/doomednums` engine data and the ZDoom wiki "Editor number" page; reproduce it in `room.pk3` MAPINFO `DoomEdNums`), run `OPEN` ACS scripts and `WorldLoaded` events, `PostBeginPlay` for every actor on first tic.
 - Exit: `G_ExitLevel(position, keep_facing)` semantics, secret exit, `Teleport_NewMap`, `Teleport_EndGame`, `Exit_Normal/Secret`, MAPINFO `next` resolution (`EndSequence`, `endgame1`…, `EndTitle`), cluster texts, intermission.
 - **Hubs**: when leaving a map inside a hub cluster, serialize the World (minus players) into an in-memory "hub snapshot" keyed by map name; on return, restore it and run `RETURN` ACS scripts. Players travel with inventory (`STAT_TRAVELLING`). Hub snapshots are included in save games.
 - `resethealth`, `resetinventory`, `keepfullinventory`, pistol start logic (`pistolstart` CVar), `ClearInventory` on death in single player (`sv_*`).
@@ -229,7 +229,7 @@ pub enum NetCommand { SelectWeapon(ClassId), UseInventory(ActorRef), DropInvento
 ## 10. Visual-only effects inside the sim
 
 - Particles (GZDoom `particle_t`, `P_ThinkParticles`) live in `World` because some are spawned by sim logic (`A_SpawnParticle`), but they never affect gameplay. They are stored in a bounded pool (`r_maxparticles`) and **excluded from `World::checksum()` and from saves** (GZDoom does not save particles). They use their own RNG `pr_particles` which is also excluded.
-- Decals: the sim emits `FxEvent::Decal { … }`; the renderer owns decal storage. Decals **are** saved (GZDoom saves `DBaseDecal` thinkers) — the renderer's decal list is passed into the save system through `ferrite-game`.
+- Decals: the sim emits `FxEvent::Decal { … }`; the renderer owns decal storage. Decals **are** saved (GZDoom saves `DBaseDecal` thinkers) — the renderer's decal list is passed into the save system through `room-game`.
 - Screen-shake quakes (`DEarthquake`) are sim thinkers (they can damage); the view offset is computed from them in `SimView`.
 
 ## 11. Performance targets

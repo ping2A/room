@@ -1,4 +1,4 @@
-# Ferrite
+# Room
 
 A pure-Rust, library-first re-implementation of the ZDoom/GZDoom engine family:
 wgpu rendering (desktop + web), and WebAssembly modules in place of ZScript.
@@ -11,7 +11,7 @@ Build order: [`docs/20-roadmap-testing.md`](docs/20-roadmap-testing.md)
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
 cargo test --workspace
-cargo build --target wasm32-unknown-unknown -p ferrite-web
+cargo build --target wasm32-unknown-unknown -p room-web
 ```
 
 ## Play
@@ -21,9 +21,9 @@ cargo build --target wasm32-unknown-unknown -p ferrite-web
 ./scripts/fetch-soundfont.sh   # once — SoftFont music (optional but recommended)
 ./scripts/play-doom1.sh
 # Title menu instead of jumping into E1M1:
-FERRITE_TITLE=1 ./scripts/play-doom1.sh
+ROOM_TITLE=1 ./scripts/play-doom1.sh
 # Force OPL (GENMIDI) instead of SoftFont:
-cargo run -p ferrite-app --release -- --iwad testdata/doom/doom1.wad --map E1M1 --play --mididevice opl
+cargo run -p room-app --release -- --iwad testdata/doom/doom1.wad --map E1M1 --play --mididevice opl
 
 ./scripts/fetch-freedoom.sh
 # Headless demos (MAP01 walk/fire + committed episode bundles):
@@ -31,16 +31,18 @@ cargo run -p ferrite-app --release -- --iwad testdata/doom/doom1.wad --map E1M1 
 # Combat arena (monsters + weapons; WASD / mouse / Ctrl fire / 1–7 guns):
 ./scripts/play-combat-demo.sh
 # Interactive Freedoom MAP01:
-cargo run -p ferrite-app --release -- \
+cargo run -p room-app --release -- \
   --iwad testdata/freedoom/freedoom2.wad --map MAP01 --play
 
 # 2-player coop (Doom E1M1). Transports: udp (default), tcp, tcp-server. Optional Noise:
 ./scripts/play-doom1-coop.sh
-FERRITE_TRANSPORT=tcp-server FERRITE_NOISE=1 ./scripts/play-doom1-coop.sh
+ROOM_TRANSPORT=tcp-server ROOM_NOISE=1 ./scripts/play-doom1-coop.sh
 
-# Browser shell (wasm32 + local server; embedded demo map today):
+# Browser shell (wasm32 + local server; IWAD auto-load when present):
 ./scripts/play-web.sh
-# PORT=9090 FERRITE_WEB_NO_OPEN=1 ./scripts/play-web.sh
+# PORT=9090 ROOM_WEB_NO_OPEN=1 ./scripts/play-web.sh
+# Browser 2-player coop (WebSocket relay + two tabs):
+./scripts/play-web-coop.sh
 ```
 
 Upstream references: [GZDoom](https://github.com/ZDoom/gzdoom), [ZDoom wiki](https://zdoom.org/wiki/Main_Page).

@@ -1,0 +1,25 @@
+[package]
+name = "room-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "CLI tools: wad ls/extract, map dump, nodebuild, demo verify, render-to-png."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "room"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+room-decorate = { path = "../room-decorate" }
+room-defs = { path = "../room-defs" }
+room-game = { path = "../room-game" }
+room-map = { path = "../room-map" }
+room-nodebuild = { path = "../room-nodebuild" }
+room-sim = { path = "../room-sim" }
+room-vfs = { path = "../room-vfs" }
