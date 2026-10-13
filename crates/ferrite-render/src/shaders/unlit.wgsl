@@ -196,6 +196,18 @@ fn apply_lightmode(sector_light: f32, world_pos: vec3<f32>) -> f32 {
 }
 
 fn shade(v: VsOut) -> vec4<f32> {
+    // All `textureSample` calls must run in uniform control flow (WebGPU / WGSL).
+    // Sample before clip/alpha discard and before the clustered-light loop.
+    let texel = textureSample(tex_albedo, samp_albedo, v.uv);
+    let bm = textureSample(tex_bright, samp_albedo, v.uv).rgb;
+    let n_samp = textureSample(tex_normal, samp_albedo, v.uv).xyz;
+    let mr_samp = textureSample(tex_metal_rough, samp_albedo, v.uv);
+    let lm_str = view.lightmap_params.x;
+    let lm_fallback = (v.lm_uv.x == 0.0 && v.lm_uv.y == 0.0);
+    let lm_uv = select(v.lm_uv, fract(v.world_pos.xy / 256.0), lm_fallback);
+    // Always sample; strength scales the contribution (avoids sample-after-branch).
+    let lm = textureSample(tex_lightmap, samp_lightmap, lm_uv).rgb;
+
     let cn = view.clip_plane.xyz;
     if (dot(cn, cn) > 1e-12) {
         let s = dot(cn, v.world_pos) + view.clip_plane.w;
@@ -203,7 +215,6 @@ fn shade(v: VsOut) -> vec4<f32> {
             discard;
         }
     }
-    let texel = textureSample(tex_albedo, samp_albedo, v.uv);
     // Masked midtextures / sprites (`style.y` ≥ 0.45): cut out transparent texels.
     // Solid walls/flats (`style.y` ≈ 0): TEXTUREX holes become opaque black so you
     // never see through one-sided / upper / lower faces (Doom1 incomplete composites).
@@ -219,10 +230,12 @@ fn shade(v: VsOut) -> vec4<f32> {
     // DECORATE `Bright` / fullbright: vertex light ≥ 0.999 skips Doom diminishing
     // so Missile attack poses and muzzle flashes stay readable in dark sectors.
     let lit = select(apply_lightmode(v.light, v.world_pos), 1.0, v.light >= 0.999);
-    let bm = textureSample(tex_bright, samp_albedo, v.uv).rgb;
     let bm_w = clamp(max(bm.r, max(bm.g, bm.b)), 0.0, 1.0);
     // Brightmap: mix sector-lit albedo toward fullbright albedo (GZDoom-style).
     var color = mix(albedo * lit, albedo, bm_w);
+    let n_ts = n_samp * 2.0 - 1.0;
+    let metallic = clamp(mr_samp.b, 0.0, 1.0);
+    let roughness = clamp(mr_samp.g, 0.04, 1.0);
     // GPU dyn lights — clustered (16×9×24 bitmasks) or full list fallback.
     let n = min(dyn_lights.count.x, 32u);
     var dyn_add = vec3<f32>(0.0);
@@ -250,11 +263,6 @@ fn shade(v: VsOut) -> vec4<f32> {
                 fall = fall * spot * spot;
             }
             // Normal-map Lambert + metal-rough GGX specular bootstrap (M10).
-            let n_samp = textureSample(tex_normal, samp_albedo, v.uv).xyz;
-            let n_ts = n_samp * 2.0 - 1.0;
-            let mr_samp = textureSample(tex_metal_rough, samp_albedo, v.uv);
-            let metallic = clamp(mr_samp.b, 0.0, 1.0);
-            let roughness = clamp(mr_samp.g, 0.04, 1.0);
             // Flat map (≈0.5,0.5,1) → identity; else modulate by N·L / GGX.
             let is_flat = length(n_ts - vec3<f32>(0.0, 0.0, 1.0)) < 0.05;
             var spec_rgb = vec3<f32>(0.0);
@@ -298,16 +306,8 @@ fn shade(v: VsOut) -> vec4<f32> {
         }
     }
     color = color + albedo * dyn_add;
-    // Lightmap: per-vertex atlas UV (surface rect); fallback world-XY if unset.
-    let lm_str = view.lightmap_params.x;
-    if (lm_str > 0.0) {
-        var lm_uv = v.lm_uv;
-        if (lm_uv.x == 0.0 && lm_uv.y == 0.0) {
-            lm_uv = fract(v.world_pos.xy / 256.0);
-        }
-        let lm = textureSample(tex_lightmap, samp_lightmap, lm_uv).rgb;
-        color = color + lm * lm_str;
-    }
+    // Lightmap: per-vertex atlas UV (sampled above); strength may be 0.
+    color = color + lm * lm_str;
     var out_a = v.alpha * texel_a;
     if (v.fuzz > 0.5) {
         let kind = i32(view.light_params.w + 0.5);
@@ -323,6 +323,20 @@ fn shade(v: VsOut) -> vec4<f32> {
         let fog_factor = clamp(1.0 - exp(-fog_density * dist * 0.001), 0.0, 1.0);
         let fog_color = vec3<f32>(0.05, 0.05, 0.08);
         color = mix(color, fog_color, fog_factor);
+    }
+    // `lightmap_params.y` = output gain (1.0 = identity; web shell may lift).
+    color = color * max(view.lightmap_params.y, 0.01);
+    // `lightmap_params.z` = 1 → present on a non-sRGB WebGPU canvas.
+    // Textures are sampled linear (sRGB uploads) while Doom lighting is a
+    // gamma-space multiply — convert lighting result to display-referred bytes
+    // and apply a mild toe lift so midtones match a native sRGB window.
+    if (view.lightmap_params.z > 0.5) {
+        let c = max(color, vec3<f32>(0.0));
+        let lo = c * 12.92;
+        let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
+        color = select(lo, hi, c > vec3<f32>(0.0031308));
+        // Soft toe: keep FLOOR4_8 / dark sectors readable on laptop panels.
+        color = color * (0.65 + 0.35 / (color + vec3<f32>(0.35)));
     }
     return vec4<f32>(color, out_a);
 }

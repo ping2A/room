@@ -42,6 +42,23 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 
 ### Log
 
+- `2026-10-13` — **Web HUD brightness** — `CanvasGpu` overlay uses `Rgba8Unorm` on non-sRGB WebGPU canvases (was `Rgba8UnormSrgb` → linear sample, un-encoded present = dark STBAR/gun).
+- `2026-10-13` — **Web STBAR HUD** — classic `DoomStatusBar` (ammo/health/armor/keys/mugshot) + weapon on `CanvasGpu`; HTML tip hidden while playing.
+- `2026-10-13` — **Web weapon + sprite scale** — bottom-align psprite HUD (was centered over floor); SoftPatch width/height/topoffset for billboards (was actor radius/height); desktop FOV 58.715 + full-window aspect.
+- `2026-10-13` — **WebGPU present encode** — non-sRGB canvas + shader linear→sRGB (`encode_srgb`) + toe lift; Bright+gain; classic 4:3 playfield with matched buffer/CSS/`camera.aspect`.
+- `2026-10-13` — **WebGPU sRGB view** — canvas configured as `Bgra8Unorm` + `viewFormats` sRGB; pipelines/`create_view` use sRGB (was writing linear→non-sRGB = crushed dark). Desktop FOV/DoomSoftware + mild gain.
+- `2026-10-13` — **Web match desktop view** — full-window buffer (drop 4:3 letterbox); `fov_y=58.715` + `aspect=w/h`; Bright midtone lift + gain ~3.2 (canvas was still crushed dark).
+- `2026-10-13` — **Web stretch root-cause** — never force `camera.aspect=4:3` while buffer is wide; size CSS+buffer from window to exact 4:3; aspect = w/h; Bright + higher gain every frame.
+- `2026-10-13` — **Web 4:3 + Bright** — CSS letterbox 4:3 playfield (no stretch); `LightMode::Bright` + gain; FOV ~90° horizontal at 4:3.
+- `2026-10-13` — **Web aspect + brightness** — canvas buffer tracks CSS box×DPR (was fixed 1280×720 stretched).
+- `2026-10-13` — **Web music + brightness** — OPL/`GENMIDI` map music into Web Audio; `UnlitPass::output_gain` + GLDEFS brightmaps/dyn lights.
+- `2026-10-13` — **Web look / light / gun** — mouse yaw matches desktop (−dx); `DoomSoftware`+`glob_vis=512`; weapon psprite overlay via `CanvasGpu`.
+- `2026-10-13` — **Web textures + SFX** — load PLAYPAL/TEXTUREX before material upload (was greyscale/white albedo); Web Audio `ScriptProcessor` mixer + SNDINFO on canvas click.
+- `2026-10-13` — **Web Doom1 play** — `ferrite-web` mounts IWAD bytes (`ferriteStartIwad` / auto-fetch `/doom1.wad` / file picker), runs `Headless` + materials + keyboard/mouse; `play-web.sh` copies local `testdata/doom/doom1.wad` into the serve dir.
+- `2026-10-13` — **Web MRT attach** — `ferrite-web` map pass binds the dummy R8 stencil-aux colour target so it matches `UnlitPass` dual-MRT pipelines (fixes Chrome attachment-state mismatch).
+- `2026-10-13` — **WebGPU unlit shader** — hoist all `textureSample` calls in `unlit.wgsl` ahead of non-uniform control flow (cluster light mask / discards); fixes Chrome WGSL validate error on `tex_metal_rough`.
+- `2026-10-13` — **`scripts/play-web.sh`** — build `ferrite-web` for wasm32, `wasm-bindgen --target web`, serve `target/ferrite-web` (opens browser); wired `index.html` module loader.
+- `2026-10-13` — **Automap zoom + fog** — `=`/`-`/wheel zoom; play mode hides unexplored linedefs until the player enters their sector (`ML_MAPPED`); `iddt`/allmap still reveals all.
 - `2026-10-13` — **Tab automap** — line blit was an AABB blob (diagonals solid); stroke real segments; classic red/brown/yellow/gray/blue colours + floor/ceil diffs + grid; opaque black follow view.
 - `2026-10-13` — **Intermission map preview** — Doom `WIMAP*` / `INTERPIC` background + `WI*` stats/splat/`WILV` patches (replacing chunky SoftFont on black); skip 3D world draw on Title/Intermission/Finale so letterbox sides are not the last camera frame; SoftPatch allows non-uniform scale for full-screen pics.
 - `2026-10-13` — **Exit switch SW1STRTN stuck red** — `player_think` takes the player out of `world.players`, so `activate_line` treated Use as a monster and refused Exit_Normal (doors still worked via the monster whitelist). Park the in-hand player for `use_lines` (same pattern as pickups); E1M1 line 326 flips SW1STRTN→SW2STRTN via `World::tick`.
@@ -727,7 +744,7 @@ cargo run -p ferrite-cli -- map info testdata/freedoom/freedoom2.wad MAP01
 - [x] `DoomSoftware` / `ClassicPalette` light modes, fog fields
 - [x] 2D canvas, fonts, screenshots, offscreen API
 - [x] `ferrite-app` free-fly viewer
-- [x] `ferrite-web` map viewer (embedded UDMF room + orbit; IWAD/MAP01 fetch TBD)
+- [x] `ferrite-web` map viewer + IWAD play (`ferriteStartIwad` / `/doom1.wad` / file picker)
 - [x] Offscreen smoke + lavapipe `render-smoke` CI
 - [x] Local `golden_room` SSIM fixture
 

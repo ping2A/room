@@ -2259,6 +2259,42 @@ impl World {
         on
     }
 
+    /// Mark linedefs of the actor's current sector as automap-explored (`ML_MAPPED`).
+    ///
+    /// Vanilla sets this when the software renderer draws a wall; Ferrite approximates
+    /// by revealing every linedef bounding the sector the player stands in.
+    pub fn mark_automap_at(&mut self, mo: ActorId) {
+        let Some(a) = self.actors.get(mo) else {
+            return;
+        };
+        let Some(sid) = ferrite_nodebuild::point_in_sector(&self.map, a.pos.x(), a.pos.y())
+            .or_else(|| {
+                ferrite_nodebuild::point_in_sector_vanilla(&self.map, a.pos.x(), a.pos.y())
+            })
+        else {
+            return;
+        };
+        let mut touched = Vec::new();
+        for (i, line) in self.map.lines.iter().enumerate() {
+            if line.front_sector == Some(sid) || line.back_sector == Some(sid) {
+                if (i32::from(line.flags) & ML_MAPPED) == 0 {
+                    touched.push(i as u32);
+                }
+            }
+        }
+        if touched.is_empty() {
+            return;
+        }
+        let map = std::sync::Arc::make_mut(&mut self.map);
+        for idx in touched {
+            if let Some(line) = map.lines.get_mut(idx as usize) {
+                line.flags |= ML_MAPPED as i16;
+            }
+            let base = self.line_flags.get(&idx).copied().unwrap_or(0);
+            self.line_flags.insert(idx, base | ML_MAPPED);
+        }
+    }
+
     /// Toggle Computer Area Map (`iddt` bootstrap — full automap reveal).
     pub fn toggle_iddt(&mut self, p: usize) -> bool {
         let Some(player) = self.players.get_mut(p).and_then(|s| s.as_mut()) else {

@@ -2,14 +2,120 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Ferrite</title>
   <style>
-    html, body { margin: 0; height: 100%; background: #0d0d14; }
-    #ferrite { width: 100%; height: 100%; display: block; }
+    html, body { margin: 0; height: 100%; background: #000; color: #c8c8d0; font-family: system-ui, sans-serif; overflow: hidden; }
+    /* Center playfield; WASM sizes #ferrite to ≤16:9 (desktop FOV). */
+    #stage {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: #000;
+    }
+    #ferrite {
+      display: block;
+      cursor: crosshair;
+      background: #0d0d14;
+    }
+    #status {
+      position: fixed; left: 12px; bottom: 12px; margin: 0;
+      padding: 6px 10px; background: rgba(0,0,0,0.55); border-radius: 4px;
+      font-size: 13px; pointer-events: none; transition: opacity 0.4s; z-index: 3;
+    }
+    #boot {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: rgba(8, 8, 14, 0.72); z-index: 2;
+    }
+    #boot .panel {
+      max-width: 28rem; padding: 1.5rem 1.75rem;
+      background: #16161f; border: 1px solid #2a2a38; border-radius: 8px;
+    }
+    #boot h1 { margin: 0 0 0.5rem; font-size: 1.35rem; font-weight: 650; color: #eee; }
+    #boot p { margin: 0 0 1rem; line-height: 1.45; font-size: 0.95rem; color: #a8a8b8; }
+    #boot label {
+      display: inline-block; padding: 0.55rem 1rem; background: #3a5a2a; color: #e8ffe0;
+      border-radius: 4px; cursor: pointer; font-size: 0.95rem;
+    }
+    #boot label:hover { background: #4a6e36; }
+    #boot input { display: none; }
+    #boot .hint { margin-top: 0.85rem; font-size: 0.8rem; color: #787888; }
+    #boot.error .panel { border-color: #833; }
   </style>
 </head>
 <body>
-  <canvas id="ferrite" width="1280" height="720"></canvas>
-  <!-- After `wasm-bindgen`: <script type="module" src="./ferrite.js"></script> -->
+  <div id="stage">
+    <canvas id="ferrite" width="1" height="1" tabindex="0"></canvas>
+  </div>
+  <div id="boot">
+    <div class="panel">
+      <h1>Ferrite</h1>
+      <p>Load a Doom / Freedoom IWAD to play in the browser (E1M1 or MAP01).</p>
+      <label>
+        Choose IWAD…
+        <input id="iwad" type="file" accept=".wad,application/octet-stream" />
+      </label>
+      <p class="hint">Or run <code>./scripts/play-web.sh</code> with <code>testdata/doom/doom1.wad</code> present — it will be served as <code>/doom1.wad</code> and load automatically. Click the canvas to unlock audio + mouse look.</p>
+    </div>
+  </div>
+  <p id="status">Loading Ferrite…</p>
+  <script type="module">
+    const status = document.getElementById("status");
+    const boot = document.getElementById("boot");
+    const fileInput = document.getElementById("iwad");
+
+    try {
+      const mod = await import("./ferrite_web.js");
+      await mod.default();
+
+      const startWithBytes = (bytes, label) => {
+        status.textContent = `Loading ${label}…`;
+        mod.ferriteStartIwad(bytes);
+        status.textContent = `Playing ${label}`;
+      };
+
+      status.textContent = "Ferrite web ready — load an IWAD to play";
+
+      const tryUrls = [];
+      const params = new URLSearchParams(location.search);
+      if (params.get("iwad")) tryUrls.push(params.get("iwad"));
+      tryUrls.push("doom1.wad", "freedoom1.wad");
+
+      let loaded = false;
+      for (const url of tryUrls) {
+        try {
+          const res = await fetch(url, { cache: "no-cache" });
+          if (!res.ok) continue;
+          const buf = new Uint8Array(await res.arrayBuffer());
+          if (buf.byteLength < 16) continue;
+          startWithBytes(buf, url);
+          loaded = true;
+          break;
+        } catch (_) {
+          /* try next */
+        }
+      }
+      if (!loaded) {
+        status.textContent = "Choose an IWAD to play Doom in the browser";
+      }
+
+      fileInput.addEventListener("change", async () => {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        try {
+          const buf = new Uint8Array(await file.arrayBuffer());
+          startWithBytes(buf, file.name);
+        } catch (err) {
+          console.error(err);
+          status.textContent = "Failed to load IWAD: " + (err && err.message ? err.message : err);
+          status.style.color = "#f66";
+          boot.classList.add("error");
+        }
+      });
+    } catch (err) {
+      console.error(err);
+      status.textContent = "Failed to start: " + (err && err.message ? err.message : err);
+      status.style.color = "#f66";
+    }
+  </script>
 </body>
 </html>

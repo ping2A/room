@@ -24,6 +24,8 @@ pub struct AutomapView {
     pub angle_deg: f32,
     /// Computer Area Map — treat all lines as explored (shell sets from player).
     pub allmap: bool,
+    /// Hide linedefs that lack Doom `ML_MAPPED` (explored fog-of-war).
+    pub fog: bool,
 }
 
 impl Default for AutomapView {
@@ -38,6 +40,7 @@ impl Default for AutomapView {
             height: 168.0,
             angle_deg: 0.0,
             allmap: false,
+            fog: true,
         }
     }
 }
@@ -102,6 +105,8 @@ const COLOR_GRID: Rgba = Rgba {
 
 /// Doom `ML_SECRET`.
 const ML_SECRET: i16 = 32;
+/// Doom `ML_MAPPED` — linedef has been seen / revealed on the automap.
+const ML_MAPPED: i16 = 0x0100;
 
 /// UDMF / `Line_SetAutomapStyle` `AML_*` (GZDoom `am_map.h` subset).
 const AML_ONE_SIDED: i32 = 1;
@@ -139,6 +144,10 @@ pub fn draw_automap(map: &MapGeometry, view: &AutomapView, list: &mut UiDrawList
             continue;
         };
         if line.automap_style == AML_NOT_MAPPED {
+            continue;
+        }
+        // Fog of war: only explored linedefs (unless Computer Area Map / iddt).
+        if view.fog && !view.allmap && (line.flags & ML_MAPPED) == 0 {
             continue;
         }
         let ml_secret = (line.flags & ML_SECRET) != 0;
@@ -319,6 +328,7 @@ mod tests {
         let view = AutomapView {
             center_x: 128.0,
             center_y: 128.0,
+            fog: false,
             ..AutomapView::default()
         };
         draw_automap(&map, &view, &mut list);
@@ -352,6 +362,7 @@ mod tests {
         let view = AutomapView {
             center_x: 128.0,
             center_y: 128.0,
+            fog: false,
             ..AutomapView::default()
         };
         let mut list = UiDrawList::new();
@@ -379,6 +390,7 @@ mod tests {
             center_x: 128.0,
             center_y: 128.0,
             allmap: false,
+            fog: false,
             ..AutomapView::default()
         };
         let mut hidden = UiDrawList::new();
@@ -409,6 +421,53 @@ mod tests {
     }
 
     #[test]
+    fn fog_hides_unmapped_lines() {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(128.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let view = AutomapView {
+            center_x: 128.0,
+            center_y: 128.0,
+            fog: true,
+            allmap: false,
+            ..AutomapView::default()
+        };
+        let mut fogged = UiDrawList::new();
+        draw_automap(&map, &view, &mut fogged);
+        let walls_fog = fogged
+            .cmds
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    DrawCmd::Line { color, .. } if color != &COLOR_PLAYER && color != &COLOR_GRID
+                )
+            })
+            .count();
+        assert_eq!(walls_fog, 0, "unexplored map must show no walls");
+
+        for line in &mut map.lines {
+            line.flags |= ML_MAPPED;
+        }
+        let mut revealed = UiDrawList::new();
+        draw_automap(&map, &view, &mut revealed);
+        let walls_ok = revealed
+            .cmds
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    DrawCmd::Line { color, .. } if color != &COLOR_PLAYER && color != &COLOR_GRID
+                )
+            })
+            .count();
+        assert!(walls_ok > 0, "ML_MAPPED walls must draw");
+    }
+
+    #[test]
     fn floor_diff_uses_brown() {
         let mut map = MapBuilder::new()
             .room("a", rect(0.0, 0.0, 256.0, 128.0), 0.0, 128.0)
@@ -421,6 +480,7 @@ mod tests {
             center_x: 128.0,
             center_y: 128.0,
             scale: 0.5,
+            fog: false,
             ..AutomapView::default()
         };
         let mut list = UiDrawList::new();

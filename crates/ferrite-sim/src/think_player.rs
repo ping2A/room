@@ -125,6 +125,8 @@ pub fn player_think(world: &mut World, player: &mut Player) {
         player.camera_revert = false;
     }
     move_player(world, mo, &cmd);
+    // Automap fog-of-war: reveal linedefs of the sector we stand in (`ML_MAPPED`).
+    world.mark_automap_at(mo);
     // Pickups: Doom `PIT_CheckThing` during `P_TryMove`. Ferrite runs
     // `touch_specials` after `xy_movement` in `World::tick` (not here — that
     // was pre-move and delayed DEMO1 healthbonus @64 by one tic).

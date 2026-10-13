@@ -92,6 +92,13 @@ pub struct UnlitPass {
     pub clip_plane: [f32; 4],
     /// Lightmap blend strength (`0` = off).
     pub lightmap_strength: f32,
+    /// Final colour gain before present (`1.0` = unchanged). Web canvases often
+    /// need a mild lift to match desktop window colour management.
+    pub output_gain: f32,
+    /// When true, the fragment shader applies a linear→sRGB encode before store.
+    /// Use on non-sRGB targets that still need display-referred bytes (fallback
+    /// if an sRGB texture view is unavailable).
+    pub encode_srgb: bool,
 }
 
 impl UnlitPass {
@@ -698,6 +705,8 @@ impl UnlitPass {
             time: 0.0,
             clip_plane: [0.0; 4],
             lightmap_strength: 0.0,
+            output_gain: 1.0,
+            encode_srgb: false,
         }
     }
 
@@ -873,7 +882,12 @@ impl UnlitPass {
                 f32::from(self.fuzz_type as u8),
             ],
             clip_plane: self.clip_plane,
-            lightmap_params: [self.lightmap_strength, 0.0, 0.0, 0.0],
+            lightmap_params: [
+                self.lightmap_strength,
+                self.output_gain.max(0.01),
+                if self.encode_srgb { 1.0 } else { 0.0 },
+                0.0,
+            ],
         };
         gpu.queue
             .write_buffer(&self.view_buf, 0, bytes_of(&uniforms));

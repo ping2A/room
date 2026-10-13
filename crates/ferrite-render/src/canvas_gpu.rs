@@ -62,6 +62,15 @@ impl CanvasGpu {
     /// Create an overlay matching the swapchain size.
     pub fn new(gpu: &GpuContext, format: wgpu::TextureFormat, width: u32, height: u32) -> Self {
         let device = &gpu.device;
+        // Doom PLAYPAL bytes are display-referred. On an sRGB swapchain, store the
+        // overlay as sRGB so sample→linear→encode round-trips. On a non-sRGB
+        // WebGPU canvas (`Bgra8Unorm`), an sRGB overlay texture would decode to
+        // linear and be shown un-encoded (STBAR / weapon look crushed-dark).
+        let overlay_format = if format.is_srgb() {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        } else {
+            wgpu::TextureFormat::Rgba8Unorm
+        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("canvas"),
             size: wgpu::Extent3d {
@@ -72,7 +81,7 @@ impl CanvasGpu {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: overlay_format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });

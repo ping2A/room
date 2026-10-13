@@ -37,6 +37,10 @@ cargo run -p ferrite-app --release -- \
 # 2-player coop (Doom E1M1). Transports: udp (default), tcp, tcp-server. Optional Noise:
 ./scripts/play-doom1-coop.sh
 FERRITE_TRANSPORT=tcp-server FERRITE_NOISE=1 ./scripts/play-doom1-coop.sh
+
+# Browser shell (wasm32 + local server; embedded demo map today):
+./scripts/play-web.sh
+# PORT=9090 FERRITE_WEB_NO_OPEN=1 ./scripts/play-web.sh
 ```
 
 Upstream references: [GZDoom](https://github.com/ZDoom/gzdoom), [ZDoom wiki](https://zdoom.org/wiki/Main_Page).

@@ -1947,10 +1947,18 @@ dependencies = [
 name = "ferrite-web"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "console_error_panic_hook",
+ "ferrite-audio",
+ "ferrite-defs",
+ "ferrite-game",
+ "ferrite-input",
  "ferrite-map",
+ "ferrite-music",
  "ferrite-nodebuild",
  "ferrite-render",
+ "ferrite-sim",
+ "ferrite-ui",
  "ferrite-vfs",
  "glam",
  "js-sys",

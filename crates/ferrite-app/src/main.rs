@@ -422,6 +422,7 @@ fn main() {
         fps_window: std::time::Instant::now(),
         fps_count: 0,
         automap: false,
+        automap_scale: 0.35,
         hud: HudState::doom_default(),
         play,
         net,
@@ -849,6 +850,8 @@ struct ViewerApp {
     fps_count: u32,
     /// Tab toggles classic automap overlay.
     automap: bool,
+    /// Automap zoom: screen pixels per map unit (`=`/`-` / mouse wheel).
+    automap_scale: f32,
     /// Status bar numbers (viewer stub).
     hud: HudState,
     /// Optional Headless playsim session (`--play`).
@@ -1121,7 +1124,7 @@ fn start_play_session(
     }
     game.set_pending_map(map.clone());
     eprintln!(
-        "ferrite: play mode — WASD move, ←→/Q turn, mouse look, E use, Ctrl/LMB attack, Tab automap, Esc pause, F6–F9 cheats, F12 screenshot, F11 GIF"
+        "ferrite: play mode — WASD move, ←→/Q turn, mouse look, E use, Ctrl/LMB attack, Tab automap (=/- / wheel zoom), Esc pause, F6–F9 cheats, F12 screenshot, F11 GIF"
     );
     (game, decaldef)
 }
@@ -1443,6 +1446,14 @@ impl ApplicationHandler for ViewerApp {
                     KeyCode::BracketRight if down && !menu_open => self.keys.next_weapon = true,
                     KeyCode::BracketLeft if down && !menu_open => self.keys.prev_weapon = true,
                     KeyCode::Tab if down && !menu_open => self.automap = !self.automap,
+                    KeyCode::Equal | KeyCode::NumpadAdd if down && self.automap && !menu_open => {
+                        self.zoom_automap(1.25);
+                    }
+                    KeyCode::Minus | KeyCode::NumpadSubtract
+                        if down && self.automap && !menu_open =>
+                    {
+                        self.zoom_automap(1.0 / 1.25);
+                    }
                     KeyCode::KeyP if down && self.play.is_some() => self.toggle_pause(),
                     KeyCode::F5 if down => {
                         self.hud.fullscreen = !self.hud.fullscreen;
@@ -1588,6 +1599,17 @@ impl ApplicationHandler for ViewerApp {
                     self.keys.attack.set_key(false);
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } if self.automap && self.menu.is_none() => {
+                let steps = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
+                };
+                if steps > 0.0 {
+                    self.zoom_automap(1.0 + 0.15 * steps);
+                } else if steps < 0.0 {
+                    self.zoom_automap(1.0 / (1.0 + 0.15 * (-steps)));
+                }
+            }
             WindowEvent::RedrawRequested => self.frame(),
             _ => {}
         }
@@ -1662,6 +1684,10 @@ impl ApplicationHandler for ViewerApp {
 }
 
 impl ViewerApp {
+    fn zoom_automap(&mut self, factor: f32) {
+        self.automap_scale = (self.automap_scale * factor).clamp(0.06, 4.0);
+    }
+
     /// Drop hitscan chips / particles and restore sector lights from the loaded map.
     fn reset_impact_fx(&mut self) {
         self.decals.clear();
@@ -2007,19 +2033,25 @@ impl ViewerApp {
                         .and_then(|g| g.world())
                         .and_then(|w| w.players.get(seat).and_then(|p| p.as_ref()))
                         .is_some_and(|p| p.allmap);
-                    // Classic follow-mode zoom (~64 mu across half-width ≈ Doom default feel).
                     let view = AutomapView {
                         center_x: f64::from(self.camera.eye.x),
                         center_y: f64::from(self.camera.eye.y),
-                        scale: 0.35,
+                        scale: self.automap_scale,
                         screen_x: 0.0,
                         screen_y: 0.0,
                         width: 320.0,
                         height: 168.0,
                         angle_deg: self.yaw.to_degrees(),
                         allmap,
+                        // Play mode: only show linedefs the player has walked near.
+                        fog: self.play.is_some(),
                     };
-                    draw_automap(&self.map, &view, &mut ui);
+                    // Live world map carries `ML_MAPPED` exploration bits.
+                    if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
+                        draw_automap(&world.map, &view, &mut ui);
+                    } else {
+                        draw_automap(&self.map, &view, &mut ui);
+                    }
                 } else {
                     if let Some(vfs) = self.vfs.as_ref() {
                         if !self.hud.weapon_patch.is_empty() {
