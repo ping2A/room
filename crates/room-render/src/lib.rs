@@ -85,7 +85,7 @@ pub use lights::{
     MAX_GPU_LIGHTS, SHADOWMAP_RES, ShadowOccluder, bake_1d_shadowmaps, cluster_tex_dims,
     pack_cluster_rgba, pack_shadowmap_r32, shadowmap_tex_dims,
 };
-pub use materials::{MaterialCatalog, MaterialMaps};
+pub use materials::{MaterialCatalog, MaterialMaps, lump_preview_rgba};
 pub use mesh::{FlatVertex, ViewUniforms, WallVertex};
 pub use model_catalog::{ModelActorPose, ModelCatalog, append_actor_models, join_model_path};
 pub use models::{
@@ -110,9 +110,9 @@ pub use scene::{
     DynLightInstance, LinkedPortalSurface, MaterialRange, MirrorSurface, PlaneReflectSurface,
     SceneLists, append_sprites, apply_dyn_lights, apply_glow_fullbright, build_scene,
     build_scene_from_visible, build_scene_from_visible_ex, build_scene_with_sky,
-    build_scene_with_sky_ex, build_scene_with_sky_ex_sized,
-    clip_scene_to_mirror_line, collect_shadow_occluders, is_sky_flat, mirror_clip_plane,
-    mirror_tex_name, plane_reflect_tex_name, portal_tex_name, portal_view_strips_portals,
+    build_scene_with_sky_ex, build_scene_with_sky_ex_sized, clip_scene_to_mirror_line,
+    collect_shadow_occluders, is_sky_flat, mirror_clip_plane, mirror_tex_name,
+    plane_reflect_tex_name, portal_tex_name, portal_view_strips_portals,
 };
 pub use skinning::{
     BoneUniforms, MAX_BONES, SkinnedPass, SkinnedVertex, iqm_to_skinned_vertices, skin_matrices,

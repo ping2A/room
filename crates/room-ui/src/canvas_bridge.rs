@@ -366,14 +366,7 @@ mod tests {
             }
         }
         let mut sink = CountSink { fills: 0, texts: 0 };
-        blit_draw_list_full(
-            &list,
-            640.0,
-            400.0,
-            Some(&fonts),
-            Some(&patches),
-            &mut sink,
-        );
+        blit_draw_list_full(&list, 640.0, 400.0, Some(&fonts), Some(&patches), &mut sink);
         assert!(
             sink.fills > 200,
             "pause menu must paint BigFont glyphs + dim, got {} fills",

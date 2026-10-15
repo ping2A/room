@@ -2,11 +2,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use glam::{Mat4, Quat, Vec3};
 use room_render::{
     Camera, GpuContext, IqmJoint, IqmModel, ModelMesh, ModelVertex, OffscreenTarget, SkinnedPass,
     iqm_to_skinned_vertices, read_rgba, skin_matrices,
 };
-use glam::{Mat4, Quat, Vec3};
 
 #[test]
 fn skinned_iqm_translates_on_gpu() {

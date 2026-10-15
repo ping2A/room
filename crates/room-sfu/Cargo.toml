@@ -1,0 +1,31 @@
+[package]
+name = "room-sfu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "WebRTC selective forwarding unit for Room voice/video (docs/22 §8)."
+
+[lints]
+workspace = true
+
+[features]
+default = []
+## UDP SFU demux loop (sans-IO str0m with rust-crypto; no aws-lc C).
+rtp = ["dep:str0m"]
+## Built-in Lightcall STUN + TURN relay (`turn` / webrtc-rs; pulls `ring` asm via allowlist).
+builtin-turn = ["dep:turn", "dep:webrtc-util", "dep:dashmap"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+str0m = { version = "0.24", default-features = false, features = ["rust-crypto"], optional = true }
+turn = { version = "0.17", optional = true }
+webrtc-util = { version = "0.17", optional = true }
+dashmap = { workspace = true, optional = true }
+
+[dev-dependencies]

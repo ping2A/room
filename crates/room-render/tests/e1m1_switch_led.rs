@@ -3,6 +3,7 @@
 //! Doom1 COMP LEDs stay red (dim → brighter); they do not turn green.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use glam::Vec3;
 use room_map::load_map;
 use room_nodebuild::ensure_nodes;
 use room_render::{
@@ -10,7 +11,6 @@ use room_render::{
     encode_png, read_rgba,
 };
 use room_vfs::VfsBuilder;
-use glam::Vec3;
 use std::path::PathBuf;
 
 fn doom1() -> Option<PathBuf> {
@@ -18,11 +18,7 @@ fn doom1() -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
-fn render_switch(
-    map: &room_map::MapGeometry,
-    vfs: &room_vfs::Vfs,
-    gpu: &GpuContext,
-) -> Vec<u8> {
+fn render_switch(map: &room_map::MapGeometry, vfs: &room_vfs::Vfs, gpu: &GpuContext) -> Vec<u8> {
     let mut mats = MaterialCatalog::new();
     mats.load_playpal(vfs);
     mats.load_texturex(vfs);
@@ -111,11 +107,7 @@ fn mean_red(rgba: &[u8]) -> f32 {
             n += 1;
         }
     }
-    if n == 0 {
-        0.0
-    } else {
-        sum as f32 / n as f32
-    }
+    if n == 0 { 0.0 } else { sum as f32 / n as f32 }
 }
 
 #[test]
@@ -153,9 +145,7 @@ fn e1m1_switch_led_pixels_change_on_flip() {
     }
     let red0 = mean_red(&before);
     let red1 = mean_red(&after);
-    eprintln!(
-        "SW1→SW2 differing pixels={diff} max_delta={max_delta} mean_red {red0:.1}→{red1:.1}"
-    );
+    eprintln!("SW1→SW2 differing pixels={diff} max_delta={max_delta} mean_red {red0:.1}→{red1:.1}");
 
     if std::env::var_os("ROOM_DUMP_SWITCH").is_some() {
         let mut a = Vec::new();

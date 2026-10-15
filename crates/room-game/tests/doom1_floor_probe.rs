@@ -362,17 +362,12 @@ fn e1m1_solo_first_damage_attacker_is_drawable() {
         World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
     let mo = world.players[0].as_ref().unwrap().mo.unwrap();
     // Place player facing a skill-3 ZombieMan near the zig-zag approach.
-    let zombie = world
-        .thinkers
-        .default
-        .iter()
-        .copied()
-        .find(|&id| {
-            world
-                .classes
-                .get(world.actors.get(id).map(|a| a.class).unwrap_or_default())
-                .is_some_and(|c| c.name == "ZombieMan")
-        });
+    let zombie = world.thinkers.default.iter().copied().find(|&id| {
+        world
+            .classes
+            .get(world.actors.get(id).map(|a| a.class).unwrap_or_default())
+            .is_some_and(|c| c.name == "ZombieMan")
+    });
     let Some(zid) = zombie else {
         eprintln!("no ZombieMan on map");
         return;
@@ -396,7 +391,12 @@ fn e1m1_solo_first_damage_attacker_is_drawable() {
     let mut first_hit: Option<(u32, f64, f64, i32)> = None;
     for tic in 0..35 * 10 {
         let cmd = TicCmd::default();
-        world.set_ticcmds(&[cmd, Default::default(), Default::default(), Default::default()]);
+        world.set_ticcmds(&[
+            cmd,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        ]);
         world.tick();
         let hp = world.actors.get(mo).map(|a| a.health).unwrap_or(0);
         if hp < start_hp {

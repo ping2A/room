@@ -16,17 +16,20 @@ crate-type = ["cdylib", "rlib"]
 bytes = { workspace = true, optional = true }
 room-audio = { path = "../room-audio", optional = true }
 room-defs = { path = "../room-defs", optional = true }
+room-formats = { path = "../room-formats", optional = true }
 room-game = { path = "../room-game", optional = true }
 room-input = { path = "../room-input", optional = true }
 room-map = { path = "../room-map", optional = true }
 room-music = { path = "../room-music", optional = true }
 room-net = { path = "../room-net", default-features = false, optional = true }
+room-proto = { path = "../room-proto", optional = true }
 room-nodebuild = { path = "../room-nodebuild", optional = true }
 room-render = { path = "../room-render", optional = true }
 room-sim = { path = "../room-sim", optional = true }
 room-ui = { path = "../room-ui", optional = true }
 room-vfs = { path = "../room-vfs", optional = true }
 glam = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 js-sys = { version = "0.3", optional = true }
@@ -35,6 +38,7 @@ web-sys = { version = "0.3", optional = true, features = [
     "Document",
     "Element",
     "HtmlCanvasElement",
+    "HtmlInputElement",
     "HtmlElement",
     "CssStyleDeclaration",
     "Location",
@@ -48,15 +52,26 @@ web-sys = { version = "0.3", optional = true, features = [
     "AddEventListenerOptions",
     "AudioContext",
     "AudioContextOptions",
+    "AudioContextState",
     "AudioBuffer",
     "AudioDestinationNode",
     "AudioNode",
+    "AudioParam",
     "AudioProcessingEvent",
+    "AudioWorklet",
+    "AudioWorkletNode",
+    "AudioWorkletNodeOptions",
     "BaseAudioContext",
-    "ScriptProcessorNode",
-    "BinaryType",
     "Blob",
+    "BlobPropertyBag",
+    "GainNode",
     "MessageEvent",
+    "MessagePort",
+    "ScriptProcessorNode",
+    "Url",
+    "HtmlTextAreaElement",
+    "BinaryType",
+    "CloseEvent",
     "WebSocket",
 ] }
 console_error_panic_hook = { version = "0.1", optional = true }
@@ -75,11 +90,14 @@ browser = [
     "dep:console_error_panic_hook",
     "dep:room-audio",
     "dep:room-defs",
+    "dep:room-formats",
+    "dep:serde_json",
     "dep:room-game",
     "dep:room-input",
     "dep:room-map",
     "dep:room-music",
     "dep:room-net",
+    "dep:room-proto",
     "dep:room-nodebuild",
     "dep:room-render",
     "dep:room-sim",
@@ -92,6 +110,7 @@ browser = [
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
+room-testkit = { path = "../room-testkit" }
 
 [[test]]
 name = "browser_smoke"

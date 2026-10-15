@@ -203,7 +203,9 @@ mod tests {
 
     #[test]
     fn encode_gif_one_frame() {
-        let mut frames = vec![vec![255u8, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 0, 255]];
+        let mut frames = vec![vec![
+            255u8, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 0, 255,
+        ]];
         let mut out = Vec::new();
         encode_gif(2, 2, &mut frames, 10, &mut out).unwrap();
         assert!(out.starts_with(b"GIF"));

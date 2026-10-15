@@ -2,13 +2,13 @@
 
 #![allow(clippy::unwrap_used)]
 
+use glam::Vec3;
 use room_nodebuild::apply_nodes;
 use room_render::{
     Camera, GpuContext, LIGHTMAP_MAGIC, LightmapAtlas, LightmapSurface, OffscreenTarget, UnlitPass,
     build_scene, read_rgba, render_offscreen, world_xy_to_surface_uv,
 };
 use room_testkit::{MapBuilder, rect};
-use glam::Vec3;
 
 #[test]
 fn unlit_lightmap_brightens() {

@@ -2,6 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use glam::Vec3;
 use room_map::load_map;
 use room_nodebuild::apply_nodes;
 use room_render::{
@@ -9,7 +10,6 @@ use room_render::{
     encode_png, read_rgba,
 };
 use room_vfs::VfsBuilder;
-use glam::Vec3;
 use std::path::PathBuf;
 use std::time::Instant;
 

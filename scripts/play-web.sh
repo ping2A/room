@@ -59,6 +59,35 @@ mkdir -p "$OUT"
 echo "room: wasm-bindgen → $OUT"
 wasm-bindgen "$WASM" --out-dir "$OUT" --target web --no-typescript
 cp crates/room-web/index.html "$OUT/index.html"
+cp crates/room-web/voice.js "$OUT/voice.js"
+cp crates/room-web/rtc.js "$OUT/rtc.js"
+cp crates/room-web/netgraph.js "$OUT/netgraph.js"
+cp crates/room-web/mixer-worklet.js "$OUT/mixer-worklet.js"
+cp crates/room-web/editor.html "$OUT/editor.html"
+cp crates/room-web/editor.js "$OUT/editor.js"
+cp crates/room-web/editor-tools.js "$OUT/editor-tools.js"
+cp crates/room-web/editor.css "$OUT/editor.css"
+# GM SoundFont for web music (same search order as the desktop shell).
+for sf in soundfonts/room.sf2 soundfonts/TimGM6mb.sf2 soundfonts/default.sf2 soundfonts/gzdoom.sf2 soundfonts/FluidR3_GM.sf2; do
+  if [[ -f "$sf" ]]; then
+    cp "$sf" "$OUT/soundfont.sf2"
+    break
+  fi
+done
+CACHE_TS="$(date +%s)"
+if [[ "$(uname)" == Darwin ]]; then
+  sed -i '' "s|./room_web.js|./room_web.js?v=${CACHE_TS}|g" "$OUT/index.html"
+  sed -i '' "s|./voice.js|./voice.js?v=${CACHE_TS}|g" "$OUT/index.html"
+  sed -i '' "s|room_web_bg.wasm|room_web_bg.wasm?v=${CACHE_TS}|g" "$OUT/room_web.js"
+  sed -i '' -e "s|./room_web.js|./room_web.js?v=${CACHE_TS}|g" -e "s|./editor-tools.js|./editor-tools.js?v=${CACHE_TS}|g" "$OUT/editor.js"
+  sed -i '' -e "s|./editor.js|./editor.js?v=${CACHE_TS}|g" -e "s|./editor.css|./editor.css?v=${CACHE_TS}|g" "$OUT/editor.html"
+else
+  sed -i "s|./room_web.js|./room_web.js?v=${CACHE_TS}|g" "$OUT/index.html"
+  sed -i "s|./voice.js|./voice.js?v=${CACHE_TS}|g" "$OUT/index.html"
+  sed -i "s|room_web_bg.wasm|room_web_bg.wasm?v=${CACHE_TS}|g" "$OUT/room_web.js"
+  sed -i -e "s|./room_web.js|./room_web.js?v=${CACHE_TS}|g" -e "s|./editor-tools.js|./editor-tools.js?v=${CACHE_TS}|g" "$OUT/editor.js"
+  sed -i -e "s|./editor.js|./editor.js?v=${CACHE_TS}|g" -e "s|./editor.css|./editor.css?v=${CACHE_TS}|g" "$OUT/editor.html"
+fi
 
 # Serve a local Doom / Freedoom IWAD when present (never commit commercial IWADs).
 copy_iwad() {

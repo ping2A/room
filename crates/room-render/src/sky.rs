@@ -232,9 +232,10 @@ mod tests {
         assert!((max_z - radius).abs() < 1.0);
         assert!((min_z + radius).abs() < 1.0);
         // Cap centre verts exist.
-        assert!(v.iter().any(|p| {
-            p.pos[0].abs() < 1e-3 && p.pos[1].abs() < 1e-3 && p.pos[2] > 0.0
-        }));
+        assert!(
+            v.iter()
+                .any(|p| { p.pos[0].abs() < 1e-3 && p.pos[1].abs() < 1e-3 && p.pos[2] > 0.0 })
+        );
     }
 
     #[test]

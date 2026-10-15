@@ -90,7 +90,12 @@ fn e1m1_after_computer_door_attacker_is_drawable_and_in_sight() {
     {
         let mut cmd = TicCmd::default();
         cmd.buttons = room_sim::Buttons(room_sim::Buttons::ATTACK);
-        world.set_ticcmds(&[cmd, Default::default(), Default::default(), Default::default()]);
+        world.set_ticcmds(&[
+            cmd,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        ]);
         world.tick();
     }
 
@@ -276,7 +281,12 @@ fn e1m1_embedded_decorate_zombies_drawable() {
     {
         let mut cmd = TicCmd::default();
         cmd.buttons = room_sim::Buttons(room_sim::Buttons::ATTACK);
-        world.set_ticcmds(&[cmd, Default::default(), Default::default(), Default::default()]);
+        world.set_ticcmds(&[
+            cmd,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        ]);
         world.tick();
     }
     let start_hp = world.actors.get(mo).unwrap().health;
@@ -327,7 +337,10 @@ fn e1m1_embedded_decorate_zombies_drawable() {
             bad.push(name.to_string());
         }
     }
-    assert!(bad.is_empty(), "bad attackers with embedded DECORATE: {bad:?}");
+    assert!(
+        bad.is_empty(),
+        "bad attackers with embedded DECORATE: {bad:?}"
+    );
 }
 
 #[test]
@@ -369,9 +382,7 @@ fn e1m1_outdoor_zombie_cannot_shoot_through_start_hallway_walls() {
         .expect("outdoor zigzag zombie");
 
     let sees = check_sight(&world, zid, mo);
-    eprintln!(
-        "outdoor zombie→player sight={sees} (player @1500,-3456, zombie @2912,-2816)"
-    );
+    eprintln!("outdoor zombie→player sight={sees} (player @1500,-3456, zombie @2912,-2816)");
     assert!(
         !sees,
         "outdoor zombie must not see player through start-hallway walls"

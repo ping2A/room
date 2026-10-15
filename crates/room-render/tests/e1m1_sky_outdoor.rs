@@ -1,6 +1,7 @@
 //! E1M1 outdoor sky: elevated floor undersides must not cover SKY1.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use glam::Vec3;
 use room_map::load_map;
 use room_nodebuild::ensure_nodes;
 use room_render::{
@@ -8,7 +9,6 @@ use room_render::{
     is_sky_flat, read_rgba,
 };
 use room_vfs::VfsBuilder;
-use glam::Vec3;
 use std::path::PathBuf;
 
 fn wad() -> Option<PathBuf> {
@@ -76,12 +76,13 @@ fn e1m1_outdoor_no_fsky_flats() {
     let bad: u32 = scene
         .flat_ranges
         .iter()
-        .filter(|r| {
-            r.name.eq_ignore_ascii_case("F_SKY1") || r.name.eq_ignore_ascii_case("SKY1")
-        })
+        .filter(|r| r.name.eq_ignore_ascii_case("F_SKY1") || r.name.eq_ignore_ascii_case("SKY1"))
         .map(|r| r.count)
         .sum();
-    assert_eq!(bad, 0, "sky flats must not be drawn as planes (verts={bad})");
+    assert_eq!(
+        bad, 0,
+        "sky flats must not be drawn as planes (verts={bad})"
+    );
 }
 
 #[test]
@@ -103,9 +104,10 @@ fn e1m1_outdoor_sky_visible_over_floors() {
     mats.load_playpal(&vfs);
     mats.load_texturex(&vfs);
     mats.ensure_sampler(&gpu.device);
-    assert!(mats
-        .get_or_upload(&gpu.device, &gpu.queue, &vfs, "SKY1")
-        .is_some());
+    assert!(
+        mats.get_or_upload(&gpu.device, &gpu.queue, &vfs, "SKY1")
+            .is_some()
+    );
     for r in scene
         .flat_ranges
         .iter()

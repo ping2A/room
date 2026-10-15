@@ -4,12 +4,12 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use glam::Vec3;
+use image::{ImageBuffer, RgbaImage};
 use room_render::{
     Camera, GpuContext, OffscreenTarget, ParticleInstancedPass, ParticleStore, ParticleStyle,
     encode_png, read_rgba,
 };
-use glam::Vec3;
-use image::{ImageBuffer, RgbaImage};
 use std::path::PathBuf;
 
 fn golden_path() -> PathBuf {

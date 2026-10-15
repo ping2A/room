@@ -118,6 +118,7 @@ docs/
   19-compatibility.md          games, compat flags, complevels, quirks database
   20-roadmap-testing.md        milestones, acceptance tests, test assets, CI
   21-milestone-progress.md     living progress checklists for M0–M14 (update often)
+  22-room-server.md            multi-room web server (room-proto / room-server)
   appendix-a-dependencies.md   allowed crates and policy
   appendix-b-gzdoom-source-map.md  GZDoom source → Room crate mapping
   appendix-c-glossary.md       terms

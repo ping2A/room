@@ -483,13 +483,12 @@ impl ClassRegistry {
             return Err(ClassError::Message(format!("duplicate class {}", def.name)));
         }
         if let Some(dn) = def.doomednum {
-            if self.by_doomednum.contains_key(&dn) {
-                return Err(ClassError::Message(format!(
-                    "duplicate doomednum {dn} for {}",
-                    def.name
-                )));
+            // GZDoom: a later definition takes over the editor number.
+            if let Some(old) = self.by_doomednum.insert(dn, id) {
+                if let Some(prev) = self.classes.get_mut(old.raw() as usize) {
+                    prev.doomednum = None;
+                }
             }
-            self.by_doomednum.insert(dn, id);
         }
         self.by_name.insert(key, id);
         self.classes.push(def);
@@ -1177,6 +1176,21 @@ impl ClassRegistry {
             push_sound,
             use_sound,
         })
+        .inspect(|&id| self.apply_replaces(id, def.replaces.as_deref()))
+    }
+
+    /// `replaces X`: map things placed as `X` now spawn `id` instead.
+    fn apply_replaces(&mut self, id: ClassId, target: Option<&str>) {
+        let Some(old) = target.and_then(|t| self.find_name(t)) else {
+            return;
+        };
+        let Some(dn) = self.classes[old.raw() as usize].doomednum else {
+            return;
+        };
+        if self.classes[id.raw() as usize].doomednum.is_none() {
+            self.classes[id.raw() as usize].doomednum = Some(dn);
+            self.by_doomednum.insert(dn, id);
+        }
     }
 
     /// Case-insensitive name lookup.
@@ -1195,6 +1209,11 @@ impl ClassRegistry {
     #[must_use]
     pub fn get(&self, id: ClassId) -> Option<&ClassDef> {
         self.classes.get(id.raw() as usize)
+    }
+
+    /// Mutable class access (editor value overrides; not used during a tic).
+    pub fn get_mut(&mut self, id: ClassId) -> Option<&mut ClassDef> {
+        self.classes.get_mut(id.raw() as usize)
     }
 
     /// All classes in id order.
@@ -1451,6 +1470,24 @@ actor ZombieMan : Actor 3004
         assert_eq!(c.flags & FLAG_SOLID, FLAG_SOLID);
         assert_eq!(c.flags & FLAG_FLOORCLIP, FLAG_FLOORCLIP);
         assert_eq!(c.display_name(), "ZombieMan");
+    }
+
+    #[test]
+    fn later_doomednum_and_replaces_take_over_spawns() {
+        let ir = parse_decorate(
+            "actor ZombieMan 3004 { Health 20 }\n\
+             actor Imp 3001 { Health 60 }\n\
+             actor FastZombie : ZombieMan 3004 { Health 5 }\n\
+             actor BigImp : Imp replaces Imp { Health 600 }\n",
+        )
+        .unwrap();
+        let reg = ClassRegistry::from_decorate(&ir).unwrap();
+        let z = reg.get(reg.find_doomednum(3004).unwrap()).unwrap();
+        assert_eq!(z.name, "FastZombie");
+        assert_eq!(z.health, 5);
+        let imp = reg.get(reg.find_doomednum(3001).unwrap()).unwrap();
+        assert_eq!(imp.name, "BigImp");
+        assert_eq!(imp.health, 600);
     }
 
     #[test]

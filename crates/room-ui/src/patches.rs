@@ -53,11 +53,7 @@ impl SoftPatch {
     ) {
         let w = usize::from(self.width);
         let h = usize::from(self.height);
-        if w == 0
-            || h == 0
-            || self.indices.len() < w * h
-            || self.alpha.len() < w * h
-        {
+        if w == 0 || h == 0 || self.indices.len() < w * h || self.alpha.len() < w * h {
             return;
         }
         // Near-uniform (weapon / font) keeps Doom aspect under letterbox.

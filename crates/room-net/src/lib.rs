@@ -26,13 +26,16 @@ pub use frame::{MAX_FRAME, encode_frame, try_decode_frame};
 #[cfg(not(target_arch = "wasm32"))]
 pub use http_signal::HttpSignalBus;
 pub use lobby::{
-    ABI_MAJOR, ENGINE_VERSION, Hello, LobbyHost, LobbyMsg, Reject, Start, Welcome, validate_hello,
+    ABI_MAJOR, ENGINE_VERSION, Hello, LobbyHost, LobbyMsg, Ready, Reject, Start, Welcome,
+    validate_hello,
 };
 #[cfg(all(feature = "noise", not(target_arch = "wasm32")))]
 pub use noise_wrap::{NOISE_PATTERN, NoiseKeys, NoiseTransport};
 pub use relay::{
-    MAGIC as RELAY_MAGIC, MSG_DATA, MSG_HELLO, MSG_REJECT, MSG_WELCOME, pack_client_data,
-    pack_hello, pack_reject, pack_server_data, pack_welcome, parse_relay,
+    MAGIC as RELAY_MAGIC, MSG_DATA, MSG_HELLO, MSG_PEER_JOIN, MSG_PEER_LEAVE, MSG_REJECT,
+    MSG_VOICE, MSG_WELCOME, pack_client_data, pack_client_voice, pack_hello, pack_peer_join,
+    pack_peer_leave, pack_reject, pack_server_data, pack_server_voice, pack_welcome,
+    parse_peer_join, parse_peer_leave, parse_relay,
 };
 pub use signal_mesh::{InMemorySignalBus, SharedSignalBus, SignalBus, SignalMeshTransport};
 #[cfg(not(target_arch = "wasm32"))]
@@ -313,13 +316,16 @@ pub struct LockstepSession {
 
 impl LockstepSession {
     /// New session. `peers` must include `local`.
+    ///
+    /// `delay` is input delay in tics (`0` = submit for the current `next_tic`;
+    /// web coop uses `0` to avoid a seeded tic-0 / outstanding-submit race).
     #[must_use]
     pub fn new(local: PeerId, peers: impl IntoIterator<Item = PeerId>, delay: u32) -> Self {
         let peers: BTreeSet<PeerId> = peers.into_iter().collect();
         Self {
             local,
             peers,
-            delay: delay.max(1),
+            delay,
             next_tic: 0,
             local_tic: 0,
             buffer: BTreeMap::new(),
@@ -395,6 +401,23 @@ impl LockstepSession {
         }
         self.next_tic = self.next_tic.saturating_add(1);
         Some(frame)
+    }
+
+    /// Insert default cmds for any peer missing [`Self::next_tic`] (web stall recovery).
+    pub fn fill_defaults_for_next_tic(&mut self) {
+        let tic = self.next_tic;
+        for &p in &self.peers {
+            self.buffer.entry((tic, p)).or_default();
+        }
+    }
+
+    /// Whether every peer already has a cmd buffered for [`Self::next_tic`].
+    #[must_use]
+    pub fn next_tic_ready(&self) -> bool {
+        let tic = self.next_tic;
+        self.peers
+            .iter()
+            .all(|&p| self.buffer.contains_key(&(tic, p)))
     }
 
     /// Record a world checksum for desync detection.
@@ -578,5 +601,51 @@ mod tests {
         };
         let bytes = encode_timed_cmd(&t);
         assert_eq!(decode_timed_cmd(&bytes).unwrap(), t);
+    }
+
+    /// Web coop uses delay=0: one submit per tic, both peers required.
+    #[test]
+    fn web_delay0_lockstep_applies_forward() {
+        let peers = [PeerId(0), PeerId(1)];
+        let mut s0 = LockstepSession::new(PeerId(0), peers, 0);
+        let mut s1 = LockstepSession::new(PeerId(1), peers, 0);
+        let mut pending0: Option<TimedCmd> = None;
+        let mut pending1: Option<TimedCmd> = None;
+        let mut moved = false;
+        for _ in 0..8 {
+            if pending0.is_none() {
+                let mut cmd = NetTicCmd::default();
+                cmd.forward_move = 50 << 8;
+                let msg = s0.submit_local(cmd);
+                pending0 = Some(msg);
+                s1.push_remote(msg);
+            }
+            if pending1.is_none() {
+                let msg = s1.submit_local(NetTicCmd::default());
+                pending1 = Some(msg);
+                s0.push_remote(msg);
+            }
+            let a0 = s0.try_advance();
+            let _a1 = s1.try_advance();
+            if a0.is_some() {
+                pending0 = None;
+            }
+            if _a1.is_some() {
+                pending1 = None;
+            }
+            if let Some(frame) = a0 {
+                if frame
+                    .get(&PeerId(0))
+                    .is_some_and(|c| c.forward_move == 50 << 8)
+                {
+                    moved = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            moved,
+            "player0 forward_move never applied — lockstep stalled"
+        );
     }
 }

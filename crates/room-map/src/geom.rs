@@ -8,9 +8,10 @@ use room_core::{DVec2, LineId, SectorId, SideId, VertexId};
 use smallvec::SmallVec;
 
 /// Map binary / text format.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MapFormat {
     /// Doom format (no BEHAVIOR).
+    #[default]
     Doom,
     /// Hexen format (BEHAVIOR present).
     Hexen,

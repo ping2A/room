@@ -34,7 +34,9 @@ confidence-threshold = 0.8
 multiple-versions = "warn"
 wildcards = "deny"
 deny = [
-    { name = "cc" },
+    # `ring` (via webrtc-rs `turn` for Lightcall builtin TURN) builds asm with `cc`.
+    # Allowed in appendix-a for native WebRTC; wasm never links this path.
+    { name = "cc", wrappers = ["ring"] },
     { name = "cmake" },
     { name = "bindgen" },
 ]

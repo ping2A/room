@@ -11,8 +11,8 @@ use crate::geom::{MapFormat, MapGeometry, link_geometry};
 use crate::nodes::{ExtendedNodes, gl_nodes_to_game, load_extended_nodes_lump, load_game_nodes};
 use crate::reject::{build_reject, parse_reject};
 use crate::udmf::parse_udmf;
-use room_vfs::{LumpId, Namespace, Vfs};
 use md5::{Digest, Md5};
+use room_vfs::{LumpId, Namespace, Vfs};
 
 /// Load a named map marker from `vfs` (Doom, Hexen, or UDMF).
 pub fn load_map(vfs: &Vfs, name: &str) -> Result<MapGeometry, MapError> {
@@ -185,7 +185,10 @@ fn require_lump<'a>(lumps: &'a [(String, Vec<u8>)], name: &str) -> Result<&'a [u
         .ok_or_else(|| MapError::NotFound(name.to_owned()))
 }
 
-fn collect_map_lumps(vfs: &Vfs, marker: LumpId) -> Result<Vec<(String, Vec<u8>)>, MapError> {
+pub(crate) fn collect_map_lumps(
+    vfs: &Vfs,
+    marker: LumpId,
+) -> Result<Vec<(String, Vec<u8>)>, MapError> {
     let start = marker.0 as usize;
     if start >= vfs.lump_count() {
         return Err(MapError::Message("marker out of range".into()));

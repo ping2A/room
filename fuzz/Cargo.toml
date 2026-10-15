@@ -14,6 +14,7 @@ room-vfs = { path = "../crates/room-vfs", default-features = false, features = [
 room-defs = { path = "../crates/room-defs" }
 room-formats = { path = "../crates/room-formats" }
 room-game = { path = "../crates/room-game" }
+room-proto = { path = "../crates/room-proto" }
 
 [[bin]]
 name = "wad_directory"
@@ -67,6 +68,13 @@ bench = false
 [[bin]]
 name = "save_world_bin"
 path = "fuzz_targets/save_world_bin.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "room_proto_binary"
+path = "fuzz_targets/room_proto_binary.rs"
 test = false
 doc = false
 bench = false

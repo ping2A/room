@@ -307,11 +307,7 @@ pub fn damage_mobj(
         .and_then(|a| world.classes.get(a.class))
         .map(|c| c.name.clone())
         .unwrap_or_default();
-    let is_player_pawn = world
-        .players
-        .iter()
-        .flatten()
-        .any(|p| p.mo == Some(target));
+    let is_player_pawn = world.players.iter().flatten().any(|p| p.mo == Some(target));
     let health = {
         let Some(actor) = world.actors.get_mut(target) else {
             return 0;
@@ -401,6 +397,38 @@ pub fn damage_mobj(
     health_damage
 }
 
+fn record_kill_event(
+    world: &mut World,
+    target: ActorId,
+    class: room_core::ClassId,
+    countkill: bool,
+    source: Option<ActorId>,
+) {
+    let victim_player = world.player_seat_of(target);
+    if victim_player.is_none() && !countkill {
+        return;
+    }
+    let class_name = |w: &World, c: room_core::ClassId| {
+        w.classes.get(c).map(|d| d.name.clone()).unwrap_or_default()
+    };
+    let victim_class = class_name(world, class);
+    let killer_player = source.and_then(|s| world.player_seat_of(s));
+    let killer_class = source
+        .and_then(|s| world.actors.get(s).map(|a| a.class))
+        .map(|c| class_name(world, c))
+        .unwrap_or_default();
+    if world.kill_events.len() >= crate::world::MAX_KILL_EVENTS {
+        world.kill_events.remove(0);
+    }
+    world.kill_events.push(crate::world::KillEvent {
+        victim_player,
+        victim_class,
+        victim_countkill: countkill,
+        killer_player,
+        killer_class,
+    });
+}
+
 /// Enter Death / XDeath (or destroy if neither label).
 pub(crate) fn die(
     world: &mut World,
@@ -417,6 +445,7 @@ pub(crate) fn die(
     if countkill {
         world.level.found_kills = world.level.found_kills.saturating_add(1);
     }
+    record_kill_event(world, target, class, countkill, source);
     // Player death: mark Dead (blocks `player_think` input), show killer obituary.
     let is_player = world.players.iter().flatten().any(|p| p.mo == Some(target));
     let mut drop_player_weapon = None;
@@ -1213,6 +1242,12 @@ actor MeanImp : Actor 9940
                 .iter()
                 .any(|m| m == "%o was burned by an imp.")
         );
+        let events = w.drain_kill_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].victim_player, Some(0));
+        assert_eq!(events[0].killer_player, None);
+        assert_eq!(events[0].killer_class, "MeanImp");
+        assert!(w.drain_kill_events().is_empty());
     }
 
     #[test]

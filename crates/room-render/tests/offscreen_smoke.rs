@@ -2,13 +2,13 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use glam::Vec3;
 use room_nodebuild::apply_nodes;
 use room_render::{
     Camera, GpuContext, OffscreenTarget, UnlitPass, build_scene, encode_png, read_rgba,
     render_offscreen, render_offscreen_stenciled,
 };
 use room_testkit::{MapBuilder, rect};
-use glam::Vec3;
 
 #[test]
 fn offscreen_room_png() {

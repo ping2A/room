@@ -2,11 +2,11 @@
 
 #![allow(clippy::unwrap_used)]
 
+use glam::Vec3;
 use room_render::{
     Camera, GpuContext, OffscreenTarget, ParticleInstancedPass, ParticleStore, ParticleStyle,
     read_rgba,
 };
-use glam::Vec3;
 
 #[test]
 fn particle_instanced_draws_pixels() {

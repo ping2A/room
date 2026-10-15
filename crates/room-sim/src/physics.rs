@@ -767,7 +767,12 @@ fn hit_slide_line_double(
 }
 
 /// Double-math `P_SlideMove`: clip against walls, then stairstep with full mom.
-fn slide_move_double(world: &mut World, actor_id: ActorId, mut dx: f64, mut dy: f64) -> (bool, bool) {
+fn slide_move_double(
+    world: &mut World,
+    actor_id: ActorId,
+    mut dx: f64,
+    mut dy: f64,
+) -> (bool, bool) {
     for _ in 0..3 {
         let Some(actor) = world.actors.get(actor_id).cloned() else {
             return (false, false);
@@ -991,9 +996,10 @@ pub(crate) fn try_falling_damage(world: &mut World, actor_id: ActorId, impact_ve
     if !is_player {
         return;
     }
-    let sid = room_nodebuild::point_in_sector(&world.map, actor.pos.x(), actor.pos.y()).or_else(
-        || room_nodebuild::point_in_sector_vanilla(&world.map, actor.pos.x(), actor.pos.y()),
-    );
+    let sid =
+        room_nodebuild::point_in_sector(&world.map, actor.pos.x(), actor.pos.y()).or_else(|| {
+            room_nodebuild::point_in_sector_vanilla(&world.map, actor.pos.x(), actor.pos.y())
+        });
     if let Some(sid) = sid {
         if world
             .map
@@ -1285,11 +1291,10 @@ pub fn xy_movement(world: &mut World, actor_id: ActorId) {
                 .map(|c| c.friction)
                 .unwrap_or(1.0)
         };
-        let sector_fric =
-            room_nodebuild::point_in_sector(&world.map, actor.pos.x(), actor.pos.y())
-                .and_then(|sid| world.sectors.get(sid.raw() as usize))
-                .map(|s| s.friction)
-                .unwrap_or(ORIG_FRICTION);
+        let sector_fric = room_nodebuild::point_in_sector(&world.map, actor.pos.x(), actor.pos.y())
+            .and_then(|sid| world.sectors.get(sid.raw() as usize))
+            .map(|s| s.friction)
+            .unwrap_or(ORIG_FRICTION);
         let factor = (sector_fric * class_fric).clamp(0.0, 1.0);
         if let Some(a) = world.actors.get_mut(actor_id) {
             let (mut vx, mut vy) = if world.math_mode == crate::vanilla::SimMathMode::VanillaFixed {
@@ -1460,25 +1465,13 @@ actor RipFlagShot : Actor 9942
         let dummy = classes.find_name("Dummy").unwrap();
         let shot = classes.find_name("RipShot").unwrap();
         let v1 = w
-            .spawn_at(
-                dummy,
-                DVec3::new(160.0, 64.0, 0.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(dummy, DVec3::new(160.0, 64.0, 0.0), room_core::Angle::ZERO)
             .unwrap();
         let v2 = w
-            .spawn_at(
-                dummy,
-                DVec3::new(220.0, 64.0, 0.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(dummy, DVec3::new(220.0, 64.0, 0.0), room_core::Angle::ZERO)
             .unwrap();
         let missile = w
-            .spawn_at(
-                shot,
-                DVec3::new(100.0, 64.0, 32.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(shot, DVec3::new(100.0, 64.0, 32.0), room_core::Angle::ZERO)
             .unwrap();
         if let Some(a) = w.actors.get_mut(missile) {
             a.flags |= FLAG_MISSILE;
@@ -1506,18 +1499,10 @@ actor RipFlagShot : Actor 9942
 
         // +RIPPER alone (no RipperLevel) also rips through.
         let v3 = w
-            .spawn_at(
-                dummy,
-                DVec3::new(160.0, 160.0, 0.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(dummy, DVec3::new(160.0, 160.0, 0.0), room_core::Angle::ZERO)
             .unwrap();
         let v4 = w
-            .spawn_at(
-                dummy,
-                DVec3::new(220.0, 160.0, 0.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(dummy, DVec3::new(220.0, 160.0, 0.0), room_core::Angle::ZERO)
             .unwrap();
         let flag_shot = classes.find_name("RipFlagShot").unwrap();
         let missile2 = w
@@ -1592,19 +1577,11 @@ actor PackShot : Actor 9921
         let shot = classes.find_name("PackShot").unwrap();
         assert_eq!(classes.get(mate).unwrap().species, "Pack");
         let victim = w
-            .spawn_at(
-                mate,
-                DVec3::new(200.0, 64.0, 0.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(mate, DVec3::new(200.0, 64.0, 0.0), room_core::Angle::ZERO)
             .unwrap();
         let hp0 = w.actors.get(victim).unwrap().health;
         let mid = w
-            .spawn_at(
-                shot,
-                DVec3::new(160.0, 64.0, 32.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(shot, DVec3::new(160.0, 64.0, 32.0), room_core::Angle::ZERO)
             .unwrap();
         if let Some(a) = w.actors.get_mut(mid) {
             a.vel = DVec3::new(20.0, 0.0, 0.0);
@@ -1633,19 +1610,11 @@ actor PackShot : Actor 9921
         let zombie = classes.find_name("ZombieMan").unwrap();
         let ball = classes.find_name("DoomImpBall").unwrap();
         let victim = w
-            .spawn_at(
-                zombie,
-                DVec3::new(200.0, 64.0, 0.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(zombie, DVec3::new(200.0, 64.0, 0.0), room_core::Angle::ZERO)
             .unwrap();
         let hp_before = w.actors.get(victim).unwrap().health;
         let missile = w
-            .spawn_at(
-                ball,
-                DVec3::new(160.0, 64.0, 32.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(ball, DVec3::new(160.0, 64.0, 32.0), room_core::Angle::ZERO)
             .unwrap();
         if let Some(a) = w.actors.get_mut(missile) {
             a.flags |= FLAG_MISSILE;
@@ -1688,11 +1657,7 @@ actor PackShot : Actor 9921
         let base = classes.get(ball).unwrap().damage;
         assert!(base > 0);
         let victim = w
-            .spawn_at(
-                zombie,
-                DVec3::new(200.0, 64.0, 0.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(zombie, DVec3::new(200.0, 64.0, 0.0), room_core::Angle::ZERO)
             .unwrap();
         // Keep the zombie alive through one hit so we can measure damage.
         if let Some(a) = w.actors.get_mut(victim) {
@@ -1700,11 +1665,7 @@ actor PackShot : Actor 9921
         }
         let hp_before = w.actors.get(victim).unwrap().health;
         let missile = w
-            .spawn_at(
-                ball,
-                DVec3::new(160.0, 64.0, 32.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(ball, DVec3::new(160.0, 64.0, 32.0), room_core::Angle::ZERO)
             .unwrap();
         if let Some(a) = w.actors.get_mut(missile) {
             a.flags |= FLAG_MISSILE;
@@ -1741,11 +1702,7 @@ actor PackShot : Actor 9921
         let ball = classes.find_name("DoomImpBall").unwrap();
         // Radius 6: start just outside the wall-contact band so one step enters it.
         let id = w
-            .spawn_at(
-                ball,
-                DVec3::new(15.0, 128.0, 32.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(ball, DVec3::new(15.0, 128.0, 32.0), room_core::Angle::ZERO)
             .unwrap();
         if let Some(a) = w.actors.get_mut(id) {
             a.flags |= FLAG_MISSILE;
@@ -1779,11 +1736,7 @@ actor PackShot : Actor 9921
             World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
         let ball = classes.find_name("DoomImpBall").unwrap();
         let id = w
-            .spawn_at(
-                ball,
-                DVec3::new(128.0, 128.0, 8.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(ball, DVec3::new(128.0, 128.0, 8.0), room_core::Angle::ZERO)
             .unwrap();
         if let Some(a) = w.actors.get_mut(id) {
             a.flags |= FLAG_MISSILE | crate::class::FLAG_NOGRAVITY;
@@ -2072,11 +2025,7 @@ actor ShortLegs : Actor 9910
         let short = classes.find_name("ShortLegs").unwrap();
         assert!((classes.get(short).unwrap().max_step_height - 8.0).abs() < 1e-9);
         let id = w
-            .spawn_at(
-                short,
-                DVec3::new(200.0, 128.0, 0.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(short, DVec3::new(200.0, 128.0, 0.0), room_core::Angle::ZERO)
             .unwrap();
         assert!(!try_move(&mut w, id, DVec3::new(300.0, 128.0, 0.0)));
         assert!((w.actors.get(id).unwrap().pos.x() - 200.0).abs() < 1e-6);
@@ -2225,11 +2174,7 @@ actor ShortLegs : Actor 9910
             0
         );
         let id = w
-            .spawn_at(
-                ball,
-                DVec3::new(64.0, 64.0, 40.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(ball, DVec3::new(64.0, 64.0, 40.0), room_core::Angle::ZERO)
             .unwrap();
         z_movement(&mut w, id);
         let a = w.actors.get(id).unwrap();
@@ -2296,11 +2241,7 @@ actor Icy : Actor 9302
         let cls = classes.find_name("Icy").unwrap();
         assert!((classes.get(cls).unwrap().friction - 0.5).abs() < 1e-9);
         let id = w
-            .spawn_at(
-                cls,
-                DVec3::new(128.0, 128.0, 0.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(cls, DVec3::new(128.0, 128.0, 0.0), room_core::Angle::ZERO)
             .unwrap();
         if let Some(a) = w.actors.get_mut(id) {
             a.vel = DVec3::new(16.0, 0.0, 0.0);
@@ -2343,11 +2284,7 @@ actor IcyFixed : Actor 9303
         w.math_mode = crate::vanilla::SimMathMode::VanillaFixed;
         let cls = classes.find_name("IcyFixed").unwrap();
         let id = w
-            .spawn_at(
-                cls,
-                DVec3::new(128.0, 128.0, 0.0),
-                room_core::Angle::ZERO,
-            )
+            .spawn_at(cls, DVec3::new(128.0, 128.0, 0.0), room_core::Angle::ZERO)
             .unwrap();
         if let Some(a) = w.actors.get_mut(id) {
             a.vel = DVec3::new(16.0, 0.0, 0.0);

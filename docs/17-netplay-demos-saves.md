@@ -21,10 +21,11 @@ Deterministic **lockstep**, like GZDoom: every peer runs the full simulation; on
 
 1. **Lobby/handshake**: host (`-host N`) listens; joiners (`-join addr`) connect. Handshake exchanges: engine version, ABI version, load-order fingerprint (ordered list of container MD5s + `Definitions` hash), module identities (sha256), player userinfo. Mismatch → refuse with a readable diff.
 2. **Arbitrator** (host) chooses game settings (map, skill, `dmflags`, server CVars), broadcasts them, and assigns player numbers. All peers start the game on the same tic with the same RNG seed (`rngseed` chosen by arbitrator).
-3. **In game**: per tic, each peer sends `{tic, cmd, netcmds[]}` with redundancy (last K unacknowledged tics in every packet) over unreliable transport; acks piggyback.
-4. **Consistency**: every 35 tics, each peer sends `World::checksum()` of tic N−delay−1; mismatch → "Desync detected at tic N" message; optionally dump both peers' world states (`net_desync_dump`) for debugging (critical tooling for determinism bugs).
-5. **Leave/drop**: peer timeout (`net_timeout`, default 10 s) → `PlayerDisconnected` event, player removed on all peers at an agreed tic (arbitrator broadcasts drop tic). Host migration: S.
-6. Pause (`pause` command broadcast as net command), chat, `kick`, `say`, `say_team`. Voting is out of scope (C).
+3. **Load gate (web coop)**: after `Start`, each peer loads the map then broadcasts `LobbyMsg::Ready`; lockstep tic 0 begins only when every seat is Ready (avoids host fill/advance while a joiner is still loading).
+4. **In game**: per tic, each peer sends `{tic, cmd, netcmds[]}` with redundancy (last K unacknowledged tics in every packet) over unreliable transport; acks piggyback.
+5. **Consistency**: every 35 tics, each peer sends `World::checksum()` of tic N−delay−1; mismatch → "Desync detected at tic N" message; optionally dump both peers' world states (`net_desync_dump`) for debugging (critical tooling for determinism bugs).
+6. **Leave/drop**: peer timeout (`net_timeout`, default 10 s) → `PlayerDisconnected` event, player removed on all peers at an agreed tic (arbitrator broadcasts drop tic). Host migration: S.
+7. Pause (`pause` command broadcast as net command), chat, `kick`, `say`, `say_team`. Voting is out of scope (C).
 
 Join-in-progress is not supported (same as GZDoom).
 
@@ -41,6 +42,7 @@ pub trait Transport { fn send(&mut self, peer: PeerId, bytes: &[u8]); fn poll(&m
 - Optional **`--noise`**: `NoiseTransport` wraps any of the above after lobby with `Noise_XX_25519_ChaChaPoly_BLAKE2s` (`snow`, pure-Rust resolver).
 - Optional: WebRTC via `matchbox_socket` for native↔web cross-play (feature `webrtc`).
 - Web: WebRTC data channels (unordered, unreliable) via `matchbox_socket` + a small signalling server binary `room-signal` (separate crate, can be self-hosted).
+- Web coop (browser): `room-ws` WebSocket packet-server speaking `FTRL` (`MSG_HELLO` / `WELCOME` / `DATA` / `REJECT` / `VOICE` / `PEER_JOIN` / `PEER_LEAVE`); `room-web` lockstep on `MSG_DATA`, live mic PCM on `MSG_VOICE` (out-of-band), and console presence on join/leave.
 - Packet format: versioned header, varint tics, delta-encoded `TicCmd` (port GZDoom's `UnpackUserCmd`/`WriteUserCmdMessage` delta idea), `NetCommand`s encoded with `postcard`.
 
 ### 1.4 What is synchronized

@@ -18,6 +18,7 @@ pub mod setup;
 pub mod spac;
 pub mod svg;
 pub mod udmf;
+pub mod write;
 pub mod xlat;
 
 pub use blockmap::{Blockmap, build_blockmap, parse_blockmap};
@@ -45,6 +46,7 @@ pub use setup::{
 };
 pub use svg::map_to_svg;
 pub use udmf::{UdmfLexer, UdmfMap, UdmfTok, UdmfUserBag, UdmfUserStore, parse_udmf};
+pub use write::{NO_SIDE, RawMap, write_textmap};
 pub use xlat::{TranslatedSpecial, translate_doom_linedef};
 
 #[cfg(test)]

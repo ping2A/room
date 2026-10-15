@@ -49,7 +49,12 @@ fn net_to_tic(n: NetTicCmd) -> TicCmd {
     }
 }
 
-fn start_game(wad: &PathBuf, classes: Arc<ClassRegistry>, states: Arc<StateTable>, seed: u32) -> Headless {
+fn start_game(
+    wad: &PathBuf,
+    classes: Arc<ClassRegistry>,
+    states: Arc<StateTable>,
+    seed: u32,
+) -> Headless {
     let vfs = VfsBuilder::new().mount_path(wad).unwrap().build().unwrap();
     let mut map = load_map(&vfs, "E1M1").unwrap();
     ensure_nodes(&mut map);
@@ -151,7 +156,10 @@ fn main() {
             });
         }
         let mut game = start_game(&wad_j, classes_j, states_j, rng_seed);
-        assert!(game.world().unwrap().players[1].is_some(), "coop p2 missing");
+        assert!(
+            game.world().unwrap().players[1].is_some(),
+            "coop p2 missing"
+        );
         ready_tx.send(()).unwrap();
 
         for tic in 0..70u32 {
@@ -166,7 +174,11 @@ fn main() {
             let cmds = advance(&mut session, &mut tr, local);
             game.tick(&cmds);
         }
-        let mo = game.world().unwrap().players[1].as_ref().unwrap().mo.unwrap();
+        let mo = game.world().unwrap().players[1]
+            .as_ref()
+            .unwrap()
+            .mo
+            .unwrap();
         let pos = game.world().unwrap().actors.get(mo).unwrap().pos;
         (game.checksum().unwrap(), pos.x(), pos.y())
     });
@@ -210,7 +222,9 @@ fn main() {
     let mut game = start_game(&wad, classes, states, rng_seed);
     assert!(game.world().unwrap().players[0].is_some());
     assert!(game.world().unwrap().players[1].is_some());
-    ready_rx.recv_timeout(Duration::from_secs(10)).expect("joiner ready");
+    ready_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("joiner ready");
 
     println!("room: UDP coop Doom E1M1 — 70 lockstep tics");
     for tic in 0..70u32 {
@@ -232,9 +246,16 @@ fn main() {
 
     let (join_sum, jx, jy) = join_thread.join().unwrap();
     let host_sum = game.checksum().unwrap();
-    assert_eq!(host_sum, join_sum, "desync host={host_sum:x} join={join_sum:x}");
+    assert_eq!(
+        host_sum, join_sum,
+        "desync host={host_sum:x} join={join_sum:x}"
+    );
     assert_eq!(game.state, GameState::Level);
-    let mo0 = game.world().unwrap().players[0].as_ref().unwrap().mo.unwrap();
+    let mo0 = game.world().unwrap().players[0]
+        .as_ref()
+        .unwrap()
+        .mo
+        .unwrap();
     let p0 = game.world().unwrap().actors.get(mo0).unwrap().pos;
     println!(
         "ok: UDP coop synced on E1M1 checksum={host_sum:x} p0=({:.0},{:.0}) p1=({jx:.0},{jy:.0})",

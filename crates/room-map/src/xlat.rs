@@ -303,10 +303,7 @@ pub fn translate_doom_linedef(line: &RawLinedef) -> TranslatedSpecial {
         // Remaining Boom generalized / Hexen+: identity with tag in arg0.
         other => (other as i16, [tag, 0, 0, 0, 0]),
     };
-    let act = DOOM_XLAT_ACT
-        .get(usize::from(raw))
-        .copied()
-        .unwrap_or(0);
+    let act = DOOM_XLAT_ACT.get(usize::from(raw)).copied().unwrap_or(0);
     let (flags, activation) = apply_doom_xlat_act(line.flags, act);
     TranslatedSpecial {
         special,

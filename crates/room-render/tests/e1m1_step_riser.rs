@@ -1,6 +1,7 @@
 //! E1M1 courtyard step: STEP6 riser must cover the ledge when looking down.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use glam::Vec3;
 use room_map::load_map;
 use room_nodebuild::ensure_nodes;
 use room_render::{
@@ -8,7 +9,6 @@ use room_render::{
     encode_png, read_rgba,
 };
 use room_vfs::VfsBuilder;
-use glam::Vec3;
 use std::path::PathBuf;
 
 #[test]

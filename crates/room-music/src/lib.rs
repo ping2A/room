@@ -110,6 +110,12 @@ impl MusicPlayer {
         self.resync_sequencer();
     }
 
+    /// True once [`Self::set_softfont`] has installed a bank.
+    #[must_use]
+    pub fn has_softfont(&self) -> bool {
+        self.softfont.is_some()
+    }
+
     /// Install a Doom `GENMIDI` bank for the OPL device.
     pub fn set_genmidi(&mut self, bank: GenMidiBank) {
         self.genmidi = Some(bank);

@@ -12,8 +12,8 @@ use crate::materials::MaterialCatalog;
 use crate::mesh::{FlatVertex, ViewUniforms, WallVertex};
 use crate::scene::{MaterialRange, SceneLists};
 use bytemuck::{Pod, bytes_of, cast_slice};
-use room_vfs::Vfs;
 use glam::Mat4;
+use room_vfs::Vfs;
 
 const UNLIT_WGSL: &str = include_str!("shaders/unlit.wgsl");
 

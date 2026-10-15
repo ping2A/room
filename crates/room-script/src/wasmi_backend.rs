@@ -111,11 +111,9 @@ impl WasmBackend for WasmiBackend {
             )
             .map_err(|e| ScriptError::Backend(e.to_string()))?;
         linker
-            .func_wrap(
-                "room",
-                "player_count",
-                |caller: Caller<'_, HostState>| (caller.data().player_count)(),
-            )
+            .func_wrap("room", "player_count", |caller: Caller<'_, HostState>| {
+                (caller.data().player_count)()
+            })
             .map_err(|e| ScriptError::Backend(e.to_string()))?;
         linker
             .func_wrap(
@@ -281,15 +279,11 @@ fn link_reg_imports(linker: &mut Linker<HostState>) -> Result<(), ScriptError> {
         )
         .map_err(|e| ScriptError::Backend(e.to_string()))?;
     linker
-        .func_wrap(
-            "room",
-            "reg_class_end",
-            |caller: Caller<'_, HostState>| {
-                if let Ok(mut g) = caller.data().reg.lock() {
-                    g.class_end();
-                }
-            },
-        )
+        .func_wrap("room", "reg_class_end", |caller: Caller<'_, HostState>| {
+            if let Ok(mut g) = caller.data().reg.lock() {
+                g.class_end();
+            }
+        })
         .map_err(|e| ScriptError::Backend(e.to_string()))?;
     linker
         .func_wrap(

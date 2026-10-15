@@ -1,11 +1,11 @@
 //! Offscreen E1M1: wall/flat Z parity and floor coverage (IWAD nodes).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use glam::Vec3;
 use room_map::load_map;
 use room_nodebuild::ensure_nodes;
 use room_render::{Camera, VisibleSet, build_scene, build_scene_from_visible};
 use room_vfs::VfsBuilder;
-use glam::Vec3;
 use std::path::PathBuf;
 
 fn doom1() -> Option<PathBuf> {

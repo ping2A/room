@@ -229,10 +229,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(
-            !ammo_right_edges.is_empty(),
-            "expected ammo digits"
-        );
+        assert!(!ammo_right_edges.is_empty(), "expected ammo digits");
         let right = ammo_right_edges
             .iter()
             .cloned()

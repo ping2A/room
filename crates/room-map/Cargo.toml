@@ -21,6 +21,8 @@ thiserror.workspace = true
 smallvec.workspace = true
 
 [dev-dependencies]
+bytes.workspace = true
+serde_json.workspace = true
 room-nodebuild = { path = "../room-nodebuild" }
 room-testkit = { path = "../room-testkit" }
 proptest.workspace = true

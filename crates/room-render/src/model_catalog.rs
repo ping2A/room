@@ -3,9 +3,9 @@
 use crate::models::{ModelError, ModelMesh, append_model, parse_model_bytes};
 use crate::scene::SceneLists;
 use crate::ue1::parse_ue1;
+use glam::Vec3;
 use room_defs::ModelDefs;
 use room_vfs::{Namespace, Vfs};
-use glam::Vec3;
 use std::collections::BTreeMap;
 
 /// Cached meshes keyed by resolved path (lowercase).

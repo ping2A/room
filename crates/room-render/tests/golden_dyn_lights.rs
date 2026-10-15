@@ -4,14 +4,14 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use glam::Vec3;
+use image::{ImageBuffer, RgbaImage};
 use room_nodebuild::apply_nodes;
 use room_render::{
     Camera, DynLightInstance, GpuContext, OffscreenTarget, UnlitPass, build_scene, encode_png,
     read_rgba, render_offscreen,
 };
 use room_testkit::{MapBuilder, rect};
-use glam::Vec3;
-use image::{ImageBuffer, RgbaImage};
 use std::path::PathBuf;
 
 fn golden_path() -> PathBuf {

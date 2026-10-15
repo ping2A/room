@@ -340,13 +340,21 @@ fn coop_udp_lobby_lockstep_dual_seat_stays_synced() {
                 if Instant::now() > deadline {
                     session.broadcast(&mut tr, &msg);
                 }
-                assert!(Instant::now() <= deadline + Duration::from_secs(2), "stall {tic}");
+                assert!(
+                    Instant::now() <= deadline + Duration::from_secs(2),
+                    "stall {tic}"
+                );
                 thread::sleep(Duration::from_millis(1));
             };
             apply_dual(&mut game, &frame);
             last_xy1 = player_xy(&game, 1);
         }
-        (game.checksum().unwrap(), last_xy1, player_hp(&game, 0), player_hp(&game, 1))
+        (
+            game.checksum().unwrap(),
+            last_xy1,
+            player_hp(&game, 0),
+            player_hp(&game, 1),
+        )
     });
 
     let mut lobby = LobbyHost::new(fingerprint, 2, 1, rng_seed, map_name, 3);
@@ -398,7 +406,10 @@ fn coop_udp_lobby_lockstep_dual_seat_stays_synced() {
             if Instant::now() > deadline {
                 session.broadcast(&mut host_tr, &msg);
             }
-            assert!(Instant::now() <= deadline + Duration::from_secs(2), "host stall {tic}");
+            assert!(
+                Instant::now() <= deadline + Duration::from_secs(2),
+                "host stall {tic}"
+            );
             thread::sleep(Duration::from_millis(1));
         };
         apply_dual(&mut game, &frame);
@@ -410,7 +421,10 @@ fn coop_udp_lobby_lockstep_dual_seat_stays_synced() {
 
     let (join_sum, join_xy1, join_hp0, join_hp1) = join_thread.join().unwrap();
     let host_sum = game.checksum().unwrap();
-    assert_eq!(host_sum, join_sum, "UDP desync host={host_sum:x} join={join_sum:x}");
+    assert_eq!(
+        host_sum, join_sum,
+        "UDP desync host={host_sum:x} join={join_sum:x}"
+    );
     let end0 = player_xy(&game, 0);
     let end1 = player_xy(&game, 1);
     assert!(

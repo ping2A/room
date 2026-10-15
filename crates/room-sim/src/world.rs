@@ -214,6 +214,24 @@ pub struct SectorPlaneGlow {
     pub height: f32,
 }
 
+/// One death for shell kill feeds / scoreboards (never read by the sim).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KillEvent {
+    /// Player seat of the victim (`None` = monster / object).
+    pub victim_player: Option<u8>,
+    /// Victim class name.
+    pub victim_class: String,
+    /// Victim had `COUNTKILL` (counts toward kill %).
+    pub victim_countkill: bool,
+    /// Player seat credited with the kill.
+    pub killer_player: Option<u8>,
+    /// Killer class name (empty = world / unknown).
+    pub killer_class: String,
+}
+
+/// Cap on undrained [`KillEvent`]s (shells that never drain stay bounded).
+pub const MAX_KILL_EVENTS: usize = 64;
+
 /// Playsim world (GZDoom `FLevelLocals` + thinkers subset).
 pub struct World {
     /// Class registry (DECORATE / builtins).
@@ -400,6 +418,8 @@ pub struct World {
     pub sky_mist_speed: f64,
     /// HUD messages produced this tic (drained by the shell).
     pub messages: Vec<String>,
+    /// Deaths since the last [`World::drain_kill_events`] (shell-only).
+    pub kill_events: Vec<KillEvent>,
     /// Pause flag (menu / pause key).
     pub paused: bool,
     /// Doom skill 1..=5 (filters map things).
@@ -1049,6 +1069,7 @@ impl World {
             sky_speed2: 0.0,
             sky_mist_speed: 0.0,
             messages: Vec::new(),
+            kill_events: Vec::new(),
             paused: false,
             skill: skill.clamp(1, 5),
             fast_monsters: skill >= 5,
@@ -2070,6 +2091,20 @@ impl World {
         std::mem::take(&mut self.messages)
     }
 
+    /// Drain deaths recorded since the last call.
+    pub fn drain_kill_events(&mut self) -> Vec<KillEvent> {
+        std::mem::take(&mut self.kill_events)
+    }
+
+    /// Seat whose player body is `actor`.
+    #[must_use]
+    pub fn player_seat_of(&self, actor: ActorId) -> Option<u8> {
+        self.players
+            .iter()
+            .position(|p| p.as_ref().is_some_and(|p| p.mo == Some(actor)))
+            .and_then(|i| u8::try_from(i).ok())
+    }
+
     /// Take ACS `StartSlideshow` request (shell shows / plays later).
     pub fn take_slideshow_request(&mut self) -> Option<String> {
         self.slideshow_request.take()
@@ -2271,9 +2306,7 @@ impl World {
             return;
         };
         let Some(sid) = room_nodebuild::point_in_sector(&self.map, a.pos.x(), a.pos.y())
-            .or_else(|| {
-                room_nodebuild::point_in_sector_vanilla(&self.map, a.pos.x(), a.pos.y())
-            })
+            .or_else(|| room_nodebuild::point_in_sector_vanilla(&self.map, a.pos.x(), a.pos.y()))
         else {
             return;
         };
@@ -2516,12 +2549,7 @@ impl World {
     }
 
     /// Enter a state, optionally running its action (`AActor::SetState`).
-    pub fn set_state(
-        &mut self,
-        id: ActorId,
-        state: Option<room_core::StateId>,
-        call_action: bool,
-    ) {
+    pub fn set_state(&mut self, id: ActorId, state: Option<room_core::StateId>, call_action: bool) {
         let Some(sid) = state else {
             if let Some(a) = self.actors.get_mut(id) {
                 a.state = None;

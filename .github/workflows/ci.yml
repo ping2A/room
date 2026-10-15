@@ -210,3 +210,5 @@ jobs:
         run: cargo +nightly fuzz run save_info --fuzz-dir fuzz -- -max_total_time=60
       - name: fuzz save_world_bin 60s
         run: cargo +nightly fuzz run save_world_bin --fuzz-dir fuzz -- -max_total_time=60
+      - name: fuzz room_proto_binary 60s
+        run: cargo +nightly fuzz run room_proto_binary --fuzz-dir fuzz -- -max_total_time=60

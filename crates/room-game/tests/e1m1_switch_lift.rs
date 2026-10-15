@@ -89,12 +89,12 @@ fn e1m1_player_use_switch_from_in_front() {
     // SW1COMP is on the *lower* tier (front floor -8 → back floor 40).
     let side = world.map.sides.get(184).expect("switch sidedef");
     assert_eq!(side.lower.to_ascii_uppercase(), "SW1COMP");
-    assert_eq!(side.y_offset_bottom, side.y_offset, "Doom y_offset applies to lower");
-    assert!(use_lines(&mut world, mo), "use ray must find the switch");
-    assert!(
-        !world.doors.is_empty(),
-        "use should start the door thinker"
+    assert_eq!(
+        side.y_offset_bottom, side.y_offset,
+        "Doom y_offset applies to lower"
     );
+    assert!(use_lines(&mut world, mo), "use ray must find the switch");
+    assert!(!world.doors.is_empty(), "use should start the door thinker");
     let side = world.map.sides.get(184).expect("switch sidedef");
     assert_eq!(
         side.lower.to_ascii_uppercase(),
@@ -146,10 +146,7 @@ fn e1m1_exit_switch_flips_sw1strtn() {
     let line = world.map.lines.get(326).expect("line 326");
     assert_eq!(line.special, 243, "Doom type 11 → Exit_Normal");
     assert_ne!(line.activation & room_map::spac::USE, 0);
-    assert_eq!(
-        world.map.sides[449].middle.to_ascii_uppercase(),
-        "SW1STRTN"
-    );
+    assert_eq!(world.map.sides[449].middle.to_ascii_uppercase(), "SW1STRTN");
 
     let mo = world.players[0].as_ref().unwrap().mo.unwrap();
     let v1 = world.map.vertices[line.v1.raw() as usize].pos;

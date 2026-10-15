@@ -9,13 +9,7 @@ use room_core::math::{bam_to_fine, finecosine, finesine};
 use room_core::{Angle, DVec2, DVec3};
 
 /// Push a hitscan into [`World::recent_shots`] and tag [`World::last_damage`].
-fn record_hitscan(
-    world: &mut World,
-    source: ActorId,
-    origin: DVec3,
-    hit: &TraceHit,
-    damage: i32,
-) {
+fn record_hitscan(world: &mut World, source: ActorId, origin: DVec3, hit: &TraceHit, damage: i32) {
     let source_class = world
         .actors
         .get(source)

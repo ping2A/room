@@ -121,8 +121,7 @@ impl NetPlay {
         skill: u8,
         noise: bool,
     ) -> Result<Self, String> {
-        let mut transport =
-            UdpTransport::bind(PeerId(0), bind_addr).map_err(|e| e.to_string())?;
+        let mut transport = UdpTransport::bind(PeerId(0), bind_addr).map_err(|e| e.to_string())?;
         let local_addr = transport.local_addr().map_err(|e| e.to_string())?;
         eprintln!(
             "room: hosting {max_players}-player UDP coop on {local_addr} (map={map} skill={skill})"
@@ -192,8 +191,7 @@ impl NetPlay {
         noise: bool,
     ) -> Result<(Self, String), String> {
         let bind = SocketAddr::from(([0, 0, 0, 0], 0));
-        let mut transport =
-            UdpTransport::bind(PeerId(254), bind).map_err(|e| e.to_string())?;
+        let mut transport = UdpTransport::bind(PeerId(254), bind).map_err(|e| e.to_string())?;
         let local_addr = transport.local_addr().map_err(|e| e.to_string())?;
         let hello = LobbyMsg::Hello(Hello {
             engine_version: ENGINE_VERSION.into(),
@@ -413,8 +411,7 @@ impl NetPlay {
         skill: u8,
         noise: bool,
     ) -> Result<Self, String> {
-        let mut server =
-            TcpRelayServer::bind(bind_addr, max_players).map_err(|e| e.to_string())?;
+        let mut server = TcpRelayServer::bind(bind_addr, max_players).map_err(|e| e.to_string())?;
         let local_addr = server.local_addr().map_err(|e| e.to_string())?;
         eprintln!(
             "room: hosting {max_players}-player TCP packet-server on {local_addr} (map={map} skill={skill})"
@@ -481,8 +478,8 @@ impl NetPlay {
     ) -> Result<(Self, String), String> {
         let max_players = max_players.clamp(2, 8);
         // Relay handshake needs the host pumping; spawn a short retry loop.
-        let mut client = TcpRelayClient::connect(host_addr, name, max_players)
-            .map_err(|e| e.to_string())?;
+        let mut client =
+            TcpRelayClient::connect(host_addr, name, max_players).map_err(|e| e.to_string())?;
         eprintln!(
             "room: joined TCP relay as seat {} at {host_addr}",
             client.self_id().0
@@ -572,10 +569,7 @@ impl NetPlay {
                 last_rebroadcast = Instant::now();
             }
             if Instant::now() > deadline {
-                return Err(format!(
-                    "lockstep stall at tic {}",
-                    self.session.next_tic()
-                ));
+                return Err(format!("lockstep stall at tic {}", self.session.next_tic()));
             }
             std::thread::sleep(Duration::from_millis(1));
         }

@@ -54,6 +54,13 @@ pub struct Start {
     pub rng_seed: u32,
 }
 
+/// Peer finished local load and is ready for tic 0 (web coop gate).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ready {
+    /// Seat that is ready.
+    pub peer_id: PeerId,
+}
+
 /// Lobby packet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LobbyMsg {
@@ -65,6 +72,8 @@ pub enum LobbyMsg {
     Reject(Reject),
     /// Host → all.
     Start(Start),
+    /// Peer → all: map/sim loaded; lockstep may begin when every seat has Ready.
+    Ready(Ready),
 }
 
 impl LobbyMsg {
@@ -97,6 +106,10 @@ impl LobbyMsg {
             Self::Start(s) => {
                 v.push(4);
                 v.extend_from_slice(&s.rng_seed.to_le_bytes());
+            }
+            Self::Ready(r) => {
+                v.push(5);
+                v.push(r.peer_id.0);
             }
         }
         v
@@ -146,6 +159,9 @@ impl LobbyMsg {
             })),
             4 => Ok(Self::Start(Start {
                 rng_seed: take_u32(bytes, &mut o)?,
+            })),
+            5 => Ok(Self::Ready(Ready {
+                peer_id: PeerId(take_u8(bytes, &mut o)?),
             })),
             _ => Err(NetError::BadPacket),
         }
@@ -234,6 +250,9 @@ impl LobbyHost {
 
     /// Like [`Self::on_hello`], but binds the joiner to an already-assigned `seat`
     /// (TCP accept / relay connection id).
+    ///
+    /// Duplicate Hellos for an occupied seat re-send [`Welcome`] (joiners retry
+    /// until they see Welcome; a Reject would kill the match).
     pub fn on_hello_at(&mut self, seat: PeerId, hello: Hello) -> LobbyMsg {
         if let Err(NetError::Reject(reason)) = validate_hello(&hello, self.fingerprint) {
             return LobbyMsg::Reject(Reject { reason });
@@ -243,10 +262,9 @@ impl LobbyHost {
                 reason: "seat 0 is host".into(),
             });
         }
-        if self.seats.iter().any(|(id, _)| *id == seat) {
-            return LobbyMsg::Reject(Reject {
-                reason: "seat taken".into(),
-            });
+        if let Some((_, name)) = self.seats.iter_mut().find(|(id, _)| *id == seat) {
+            *name = hello.name;
+            return self.welcome_for(seat);
         }
         if self.seats.len() as u8 >= self.max_players {
             return LobbyMsg::Reject(Reject {
@@ -349,6 +367,9 @@ mod tests {
         let bytes = hello.encode();
         assert_eq!(LobbyMsg::decode(&bytes).unwrap(), hello);
 
+        let ready = LobbyMsg::Ready(Ready { peer_id: PeerId(1) });
+        assert_eq!(LobbyMsg::decode(&ready.encode()).unwrap(), ready);
+
         let mut host = LobbyHost::new(0xdead_beef, 4, 2, 99, "MAP01", 3);
         let LobbyMsg::Hello(h) = hello else {
             panic!("hello");
@@ -412,5 +433,33 @@ mod tests {
             name: "x".into(),
         });
         assert!(matches!(msg, LobbyMsg::Reject(_)));
+    }
+
+    #[test]
+    fn on_hello_at_idempotent_for_same_seat() {
+        let mut host = LobbyHost::new(0xabc, 2, 1, 7, "E1M1", 3);
+        let hello = Hello {
+            engine_version: ENGINE_VERSION.into(),
+            abi_major: ABI_MAJOR,
+            fingerprint: 0xabc,
+            name: "p2".into(),
+        };
+        let first = host.on_hello_at(PeerId(1), hello.clone());
+        let second = host.on_hello_at(
+            PeerId(1),
+            Hello {
+                name: "p2-retry".into(),
+                ..hello
+            },
+        );
+        assert!(matches!(first, LobbyMsg::Welcome(_)));
+        match second {
+            LobbyMsg::Welcome(w) => {
+                assert_eq!(w.peer_id, PeerId(1));
+                assert_eq!(host.seats().len(), 2);
+                assert_eq!(host.seats()[1].1, "p2-retry");
+            }
+            other => panic!("expected Welcome on retry, got {other:?}"),
+        }
     }
 }

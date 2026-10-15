@@ -36,12 +36,66 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 | **M12** | Netplay | `done` | 100% | — (see intentional deferrals) |
 | **M13** | Product polish | `done` | 100% | — (see intentional deferrals) |
 | **M14** | 1.0 hardening | `in_progress` | 10% | `save_world_bin` fuzz; next corpus scaffolding / docs stubs |
+| **S1** | room-server M1 | `done` | 100% | smoke script + 1k soak; browser optional |
+| **S2** | room-server M2 | `done` | 100% | 1h room_proto fuzz clean; security + limits |
+| **S3** | room-server M3 | `done` | 100% | bans enforced; kick/ban UI; WebAuthn/RBAC deferred |
+| **S4** | room-server M4 | `done` | 100% | SFU + budget; PCM legacy fallback only |
+| **S5** | room-server M5 | `done` | 100% | §6 relay + welcome budgets; daemon script |
 
 **Priority override (2026-10-12):** M7 + M10–M13 done. Active **M14** (1.0 hardening).
 **M8** when Heretic/Hexen IWADs available; M9 remains deferred.
+**Server track:** `docs/22-room-server.md` S1–S5 (parallel to M14).
 
 ### Log
 
+- `2026-10-15` — **web audio + pro editor tools** — web mixer feed is now audio-clock driven (worklet reports every ~10 ms, adaptive 25–160 ms target, `roomAudioStats()`), removing rAF-hitch underruns vs desktop; editor gains `editor-tools.js`: live play-test panel (`roomEditorCheat`/`roomEditorPlayerState`: god/noclip/freeze/give/kill/summon/HP/armor), Ctrl+C/X/V/D clipboard with sector remap, R/H rotate & mirror, F8 map checker with fixes, J auto-align, TEXTURE1/2+PNAMES composer applied live, Hexen/ZDoom special names, `window.roomEditor` console hook. Sim: `give armor`/`idkfa` now sets 200 points / class 2.
+- `2026-10-14` — **web HUD + spectators** — sim `KillEvent` stream → bottom-left STCFN kill feed + Tab scoreboard (kills/deaths/frags/HP/armor/status); callsign modal on every join-existing path (lobby + `/play` without `name`); v2 `watch`/`watching` + `TIC_BATCH` replay-from-tic-0 spectators with multi-view split screen (G grid/follow, 1-4/click pick).
+- `2026-10-14` — **web netcode latency** — server releases v2 frames on a 35 Hz clock (immediately when complete, 30 ms jitter grace, repeat-then-neutral fill); web client pipelines input `ceil((RTT+15)/T)` tics ahead (ping/pong RTT), takes its own cmd from the server frame, catches up backlog; camera lerp between tics + unapplied-look preview; dedicated TIC_CMD rate bucket.
+- `2026-10-14` — **server bans + callsigns** — lobby requires pseudo; sanitize names; ban scopes (ip/name/glob/fp/ticket/TURN/auth_key/resume) enforced on join+WS hello; admin ban-from-seat + DELETE; shared AdminStore across registry clones.
+- `2026-10-14` — **web coop no-move fix** — hidden lobby invite `<input>` kept focus after Play, so WASD was treated as typing; blur + canvas focus on lobby hide / play start; ignore non-visible text fields.
+- `2026-10-14` — **web coop HUD/input** — voice bar on rtc.js load (mic on first PTT); WASD recorded in lobby; lockstep mouse kept across waits; v2 always uplinks TIC_CMD; net graph sparkline; worklet-first audio (no ScriptProcessor warn).
+- `2026-10-14` — **lobby/admin gore UI** — blood/bone slaughterhouse palette; brand-first ROOM hero; shared arterial accent on ops console.
+- `2026-10-14` — **web audio hardening** — AudioWorklet PCM playback (ScriptProcessor fallback); unlock on key/pointer/touch; tab-focus resume; ACS SetMusic; feed ring each frame.
+- `2026-10-14` — **coop lobby + admin minimap** — v2 Ready after map prepare (fixes no-move); waiting-room overlay; admin room inspect with IP/ticket/resume keys + automap outline/poses.
+- `2026-10-14` — **room-server CSP** — `/play/*` allows inline script/style + `wasm-unsafe-eval` so `room-web` boots under the server CSP.
+- `2026-10-14` — **room-server join fix** — same-tab Play (no popup); `--web-root` serves `/play/`; ticket TTL 600s; clearer v2 lobby wait status.
+- `2026-10-13` — **room-server public lobby** — `/` + `GET /api/rooms` directory; create/join/play/watch; `--play-base`; README updated.
+- `2026-10-13` — **room-server admin UI** — operator console SPA (dashboard/rooms/bans/audit/settings); external CSS/JS for CSP; create-room API.
+- `2026-10-13` — **room-server admin plane** — `--admin-bind` separate listener; script defaults game `:8765` + admin `:8766/admin`.
+- `2026-10-13` — **room-server S5 done** — §6 is server `relay` (not client RTT); `create_to_welcome_us` in `room-load`; `scripts/room-server.sh` start/stop/restart/status.
+- `2026-10-13` — **room-server M5** — dropped 24 h soak acceptance item; stopped soak run.
+- `2026-10-13` — **room-server M5** — `TCP_NODELAY` via axum `tap_io` on accept (docs/22 §6).
+- `2026-10-13` — **room-server M5 soak** — 1 h memory soak clean (32 rooms, RSS +20 MiB < cap).
+- `2026-10-13` — **room-server S2 done** — 1 h `room_proto_binary` fuzz clean (`fuzz-room-proto.sh --seconds 3600`).
+- `2026-10-13` — **room-server M2** — handshake/idle timeouts (`--handshake-timeout-secs` / `--idle-timeout-secs`).
+- `2026-10-14` — **Lightcall STUN/TURN + web ICE** — vendored Lightcall Binding STUN + TURN relay (`room-sfu` `builtin-turn`); `--stun-bind`/`--turn-bind`; `welcome.media` → `rtc.js` + PTT; wasm `rtc_bridge`.
+- `2026-10-13` — **room-server README** — full CLI/features/scripts; status S1–S5.
+- `2026-10-13` — **room-server M5 latency** — server relay avg≈28 µs, 99.9% ≤300 µs @512 conn (`room-load` prints `server_relay_us`).
+- `2026-10-13` — **room-server M5** — server-side `relay_latency_us` histogram (first TicCmd→TIC_FRAME) on `/metrics`.
+- `2026-10-13` — **room-server M2/M3** — byte + chat rate limits; richer `/metrics` (ws msgs/bytes, violations, tic frames).
+- `2026-10-13` — **room-server S1 smoke** — `scripts/smoke-room-server.sh` (health/create/join/v2); `play-web-coop.sh` uses `--bin room-server`.
+- `2026-10-13` — **room-server M5 load** — last-input latency timing; p99≈1.9 ms @512 conn; 10k-conn scale; 1h soak started (`soak-room-server.sh --hours 1`).
+- `2026-10-13` — **room-server M5/M4/M2** — feature `verifier` + `--iwad` Headless ticks; `room-sfu` 8-seat bandwidth budget test; `scripts/fuzz-room-proto.sh --seconds`; CI `room_proto_binary` 60s.
+- `2026-10-13` — **room-server M5** — CHECKSUM collect + `desync` broadcast; v2 skips PCM when `rtc.js` loads.
+- `2026-10-13` — **room-server M5 start** — `--node-id`/`--enable-verifier`/`--drain-grace-secs`; `POST /admin/api/v1/maintenance` drain; `/readyz` 503; `room_location`; `room-load --soak-secs` + latency p50/p99.
+- `2026-10-13` — **room-server M4** — str0m `UdpSfu` MediaData selective forward + mute gate; `--sfu-udp` + feature `rtp`; `should_forward` unit test.
+- `2026-10-13` — **room-server M4** — TURN REST creds (`--turn-host`/`--turn-secret`); `IceServerEntry`; `rtc.js`; `room-sfu` feature `rtp` (str0m rust-crypto UDP demux).
+- `2026-10-13` — **room-server M4 start** — crate `room-sfu` (signalling/mute); ADR 0003; `rtc` routed from room actor.
+- `2026-10-13` — **room-server M3 done** — `--data-dir` audit.jsonl + bans.json; SPA/kick/mute/Docker already landed.
+- `2026-10-13` — **room-server M3** — embedded `/admin` SPA; kick/mute/notice; `--admin-token`; `deploy/{Dockerfile,docker-compose.yml,room-server.service}`.
+- `2026-10-13` — **room-server M3 bootstrap** — `/admin/api/v1/*`, `/metrics`, `/readyz`; in-memory audit/bans.
+- `2026-10-13` — **room-server M2 security** — security headers; `deploy/Caddyfile` TLS; `--max-conn-per-ip`; `tests/security.rs`.
+- `2026-10-13` — **room-server M1→M2** — 1k soak; `room-load` CLI; tickets/Origin/resume; token-bucket; `room-web` v2 (`--v2`); play-web-coop `--server` (CLI args).
+- `2026-10-13` — **room-server M1 bootstrap** — crates `room-proto` + `room-server` (axum/tokio); multi-room legacy FTRL with seat stamp; v2 TIC_FRAME; play-web-coop `--server`; ADR 0002; fuzz stub `room_proto_binary`.
+- `2026-10-13` — **Web coop console + presence** — `MSG_PEER_JOIN`/`LEAVE` from `room-ws`; browser logs connect/disconnect, Ready, lockstep tics, DATA rx/tx; faster idle fill when a peer drops.
+- `2026-10-13` — **Web coop desync (P2 idle / missing hits)** — gate lockstep on `LobbyMsg::Ready` after map load; stash early TimedCmds in lobby; immutable cmds; fill only after ~30s stall (was ~1s → host advanced alone).
+- `2026-10-13` — **Web move fixed (verified)** — lockstep `delay=0` + refresh pending WASD + fill missing peers after 2 polls; input hub; cache-bust wasm/js in play-web scripts. Browser test: pos moves on KeyW.
+- `2026-10-13` — **Web input hub** — WASD via separate `input_hub` (rAF held `FrameState` so `try_borrow_mut` keydown dropped moves); lockstep pending fix kept.
+- `2026-10-13` — **Web coop move freeze** — lockstep cleared pending on seeded tic-0 advance (lost tic-1 broadcast → stall); keep pending until its tic commits.
+- `2026-10-13` — **No-mic voice graceful** — cache mic `NotFound` (no getUserMedia retry); hear-only UI; pointer-lock SecurityError swallowed + delayed re-lock.
+- `2026-10-13` — **Voice PTT + input focus** — hold `V` / pad to talk; voice UI non-focusable; canvas re-focus so WASD not stolen by mute buttons.
+- `2026-10-13` — **Coop lobby + voice fixes** — idempotent `on_hello_at` (HELLO retry no longer Reject/`seat taken`); voice.js soft mic fallback + Unmute retry.
+- `2026-10-13` — **Web coop live voice** — `MSG_VOICE` on FTRL relay; `room-web` voice hub + Lightcall AudioWorklet PCM (`voice.js`); mute UI when `?ws=`.
 - `2026-10-13` — **Coop gun + walk anim** — `give_starting_loadout` sets `ready_weapon` on the owning seat (P2 had no gun); PlayerPawn `See`/`Missile` + `P_MovePlayer`-style body sprite.
 - `2026-10-13` — **Project rename to Room** — crates `room-*`, `wadsrc/room`, `room.pk3`, scripts/env/docs/CI; JS `roomStartIwad` / `room_web.js`.
 - `2026-10-13` — **WebSocket coop** — `room-ws` FTRL relay (`tungstenite`); `room-web` `WsTransport` + lobby/lockstep (`?ws=`); `scripts/play-web-coop.sh`.
@@ -1168,6 +1222,7 @@ cargo run -p room-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01 --pl
 - [x] UDP transport bootstrap (`UdpTransport`)
 - [x] TCP mesh (`TcpTransport`) + packet-server relay (`TcpRelayServer` / `TcpRelayClient`)
 - [x] WebSocket packet-server relay (`room-ws` + `room-web` `WsTransport` / `?ws=` lobby)
+- [x] Web coop live voice (`MSG_VOICE` + Lightcall AudioWorklet PCM / `voice.js`)
 - [x] Noise_XX encryption wrapper (`NoiseTransport` / `snow`, feature `noise`)
 - [x] WebRTC (`matchbox_socket` behind `--features webrtc` + `MatchboxTransport`; signal mesh/HTTP for CI)
 - [x] Lobby / handshake bootstrap (`LobbyHost`)
@@ -1269,6 +1324,107 @@ Track opportunistically; do not block 1.0.
 - [ ] Component-model ABI v2
 - [ ] Mobile (Android/iOS) shells
 - [ ] Join-in-progress netplay
+
+---
+
+## S1 — room-server M1 (multi-room relay)
+
+**Status:** `done` · Spec: `22` §9 M1 · ADR: `0002-room-server-stack`
+
+### Acceptance
+
+- [x] `room-proto` crate (FTR2 + JSON control codecs, unit tests)
+- [x] `room-server` skeleton (tokio/axum, registry, room actor)
+- [x] Multi-room legacy FTRL gateway with seat stamping (`/ws/{id}`)
+- [x] v2 TIC_CMD → TIC_FRAME path (`/v2/rooms/{id}/ws`)
+- [x] `POST /api/rooms` + `./scripts/play-web-coop.sh --server`
+- [x] Integration: legacy stamp, v2 frame, many-room create (64)
+- [x] 1,000 rooms parallel soak (`soak_1000_rooms_v2_tic_frames` + `room-load --rooms 1000`)
+- [x] `--server` smoke (`scripts/smoke-room-server.sh`; browser tabs optional)
+
+### Notes
+
+Legacy clients still arbitrate Start in the browser; M2 moves arbitration + tickets to the server.
+
+---
+
+## S2 — room-server M2 (auth, limits, v2 client)
+
+**Status:** `done` · Spec: `22` §9 M2 · ADR: `0002-room-server-stack`
+
+### Acceptance
+
+- [x] HMAC join tickets (`POST /api/rooms/{id}/join`, one-time consume, `--ticket-secret`, `--require-tickets`)
+- [x] Origin allowlist on WS upgrade (`--origin`, empty = allow any)
+- [x] Resume tokens + 60s lobby grace (reconnect with `resume_token`)
+- [x] TLS via reverse proxy (`deploy/Caddyfile`) + in-process security headers
+- [x] §5 message + byte token-buckets + chat 1/s burst 5 + violation kick + `--max-conn-per-ip`
+- [x] Handshake / idle timeouts (5 s / 30 s defaults; CLI overridable)
+- [x] `room-web` v2 client (`ws_v2` + `CoopSocket`; `play-web-coop.sh --v2`); stall fill still client-side on legacy path
+- [x] Security tests: forged seat N/A on v2 (no peer byte), replayed ticket, bad Origin, flood, seat hijack
+- [x] Fuzz harness: `scripts/fuzz-room-proto.sh --seconds N` + CI `room_proto_binary` 60s
+- [x] Recorded 1 h clean soak (`./scripts/fuzz-room-proto.sh --seconds 3600` — clean 2026-10-13)
+
+### Notes
+
+CLI args preferred over env for server and scripts (`--bind`, `--server`, `--rooms`, …).
+
+---
+
+## S3 — room-server M3 (admin, metrics, deploy)
+
+**Status:** `done` · Spec: `22` §9 M3
+
+### Acceptance
+
+- [x] Admin REST skeleton: summary, rooms list, close, audit, bans (in-memory)
+- [x] Prometheus `/metrics` + `/readyz`
+- [x] Admin SPA (operator console at `/admin` + `/admin/assets/*`; live WS deferred)
+- [x] Admin bearer token (`--admin-token`; CSRF/RBAC/WebAuthn deferred)
+- [x] Kick / mute / notice room actions
+- [x] Docker / systemd / compose under `deploy/`
+- [x] Persist audit/bans (`--data-dir` → `audit.jsonl` + `bans.json`; Postgres later)
+- [x] Ban enforcement (join mint + WS IP + hello/resume) for ip/name/name_regex/fingerprint/ticket/TURN/auth_key/resume
+- [x] Admin UI: ban form scopes + ban-from-seat + remove; lobby callsign required
+
+---
+
+## S4 — room-server M4 (WebRTC SFU)
+
+**Status:** `done` · Spec: `22` §9 M4 · ADR: `0003-room-sfu-str0m`
+
+### Acceptance
+
+- [x] `room-sfu` crate + signalling / mute roster
+- [x] `rtc` control routed through room actor; `welcome.media.enabled`
+- [x] str0m UDP SFU (`UdpSfu`): demux + MediaData fan-out with server mute gate (`feature = "rtp"`)
+- [x] Browser `rtc.js` (Opus PTT over RTCPeerConnection); PCM `voice.js` still fallback
+- [x] TURN credential issue in welcome (`--turn-host` / `--turn-secret`)
+- [x] Server mute gate unit-tested (`should_forward` / `set_mute`); live packet-capture soak deferred
+- [x] v2 default = WebRTC (`rtc.js`); PCM `voice.js` only for legacy `/ws` or RTC init failure
+- [x] 8-seat voice+camera middle-layer bandwidth budget (`room-sfu` `subscriber_egress_kbps` ≤ 1300 kbps)
+
+---
+
+## S5 — room-server M5 (load, drain, multi-node, verifier)
+
+**Status:** `done` · Spec: `22` §9 M5
+
+### Acceptance
+
+- [x] Graceful drain (`POST /admin/api/v1/maintenance`, `/readyz` 503, notice + delayed close); CLI `--drain-grace-secs`
+- [x] `room_location` table + `--node-id`; join returns `node_id`; foreign owner → 421
+- [x] Optional verifier flag (`--enable-verifier`, `--max-verified-rooms`, create `enable_verifier`); resume-after-start when on
+- [x] `room-load` latency p50/p99 + `--soak-secs` / `--sample-rss` / `--max-p99-us` / `--players 2..=8`
+- [x] CHECKSUM aggregation + `desync` notice (compares to Headless when feature on)
+- [x] Headless verifier (`--features verifier --enable-verifier --iwad PATH`); feeds TIC_FRAME → checksum every 35 tics
+- [x] 10k-connection scale (`room-load --rooms 5000 --players 2`); ≈30 KiB/conn RSS amortised
+- [x] Soak harness (`scripts/soak-room-server.sh --hours N`); 30 s parallel soak clean
+- [x] §6 added relay latency (server `relay_latency_us`: avg≈9–28 µs, share_le_300us≈1.0; p99 ≪ 2 ms)
+- [x] §6 memory < 48 KiB/conn at 10k (≈31 KiB/conn amortised on laptop)
+- [x] §6 create→welcome p99 < 50 ms (`room-load` `create_to_welcome_us` p99≈11 ms @256 rooms)
+- [x] 1 h soak with bounded RSS growth (`soak-room-server.sh --hours 1`, +20 MiB / 32 rooms)
+- [x] Local daemon helper (`scripts/room-server.sh` start/stop/restart/status)
 
 ---
 

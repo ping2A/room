@@ -4,8 +4,8 @@ use crate::camera::Camera;
 use crate::mesh::WallVertex;
 use crate::scene::{MaterialRange, SceneLists};
 use crate::sprites::{SpriteInstance, emit_sprite_quad};
-use room_map::MapGeometry;
 use glam::{Vec2, Vec3};
+use room_map::MapGeometry;
 
 /// One placed decal in world space.
 #[derive(Clone, Debug, PartialEq)]

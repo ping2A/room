@@ -1,18 +1,18 @@
 //! Solo E1M1: a ZombieMan billboard must upload POSS and appear in the framebuffer.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use glam::Vec3;
 use room_map::load_map;
 use room_nodebuild::ensure_nodes;
 use room_render::{
-    Camera, GpuContext, MaterialCatalog, OffscreenTarget, SpriteInstance, UnlitPass, append_sprites,
-    build_scene, read_rgba, sprite_lump_candidates_rot, sprite_rotation_digit,
+    Camera, GpuContext, MaterialCatalog, OffscreenTarget, SpriteInstance, UnlitPass,
+    append_sprites, build_scene, read_rgba, sprite_lump_candidates_rot, sprite_rotation_digit,
 };
 use room_sim::{
     ActivationType, ActorId, ClassRegistry, StateTable, TicCmd, World, activate_line, check_sight,
     floor_at_xy,
 };
 use room_vfs::VfsBuilder;
-use glam::Vec3;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -212,7 +212,8 @@ fn e1m1_zombie_visible_through_open_computer_door() {
     let ir = room_decorate::parse_decorate(src).unwrap();
     let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
     let states = Arc::new(StateTable::from_decorate(&ir, &classes));
-    let mut world = World::from_map_with_classes(map.clone(), Arc::clone(&classes), states).unwrap();
+    let mut world =
+        World::from_map_with_classes(map.clone(), Arc::clone(&classes), states).unwrap();
     let mo = world.players[0].as_ref().unwrap().mo.unwrap();
 
     // Raise tag-4 computer door.
@@ -245,7 +246,12 @@ fn e1m1_zombie_visible_through_open_computer_door() {
     {
         let mut cmd = TicCmd::default();
         cmd.buttons = room_sim::Buttons(room_sim::Buttons::ATTACK);
-        world.set_ticcmds(&[cmd, Default::default(), Default::default(), Default::default()]);
+        world.set_ticcmds(&[
+            cmd,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        ]);
         world.tick();
     }
     let start_hp = world.actors.get(mo).unwrap().health;
@@ -331,9 +337,7 @@ fn e1m1_zombie_visible_through_open_computer_door() {
 
     // Dump door-line mid/upper textures around sector 2.
     for (li, line) in map.lines.iter().enumerate() {
-        let touches = line
-            .front_sector
-            .is_some_and(|s| s.raw() == 2)
+        let touches = line.front_sector.is_some_and(|s| s.raw() == 2)
             || line.back_sector.is_some_and(|s| s.raw() == 2);
         if !touches {
             continue;

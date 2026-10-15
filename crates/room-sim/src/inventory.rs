@@ -226,7 +226,18 @@ pub fn cheat_give(world: &mut World, owner: ActorId, what: &str) -> u32 {
             ],
             1,
         ),
-        "armor" => give_named(world, owner, &["BlueArmor"], 1),
+        "armor" => {
+            let n = give_named(world, owner, &["BlueArmor"], 1);
+            // Vanilla `idkfa` / `give armor`: armorpoints = 200, armortype = 2.
+            for p in world.players.iter_mut().flatten() {
+                if p.mo == Some(owner) {
+                    p.armor = 200;
+                    p.armor_class = 2;
+                    break;
+                }
+            }
+            n
+        }
         "idchoppers" => {
             let n = give_named(world, owner, &["Chainsaw"], 1);
             // Vanilla also sets `pw_invulnerability` (force on, don't toggle).
@@ -404,6 +415,8 @@ mod tests {
         assert!(cheat_give(&mut w, mo, "idkfa") >= 3);
         let armor = classes.find_name("BlueArmor").unwrap();
         assert!(count_inventory(&w, mo, armor) >= 1);
+        let p = w.players[0].as_ref().unwrap();
+        assert_eq!((p.armor, p.armor_class), (200, 2));
         let bfg = classes.find_name("BFG9000").unwrap();
         assert!(count_inventory(&w, mo, bfg) >= 1);
     }

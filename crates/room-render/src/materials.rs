@@ -177,12 +177,7 @@ impl MaterialCatalog {
     pub fn wall_texel_size(&self, name: &str) -> (f32, f32) {
         self.texturex
             .get(&normalize(name))
-            .map(|d| {
-                (
-                    f32::from(d.width.max(1)),
-                    f32::from(d.height.max(1)),
-                )
-            })
+            .map(|d| (f32::from(d.width.max(1)), f32::from(d.height.max(1))))
             .unwrap_or((128.0, 128.0))
     }
 
@@ -245,6 +240,31 @@ impl MaterialCatalog {
             .upload_image(device, queue, &image, self.playpal.as_ref());
         self.by_name.insert(key, id);
         Some(id)
+    }
+
+    /// CPU RGBA8 preview of a wall texture, flat, patch or sprite (editor
+    /// thumbnails). Returns `(width, height, rgba)`.
+    #[must_use]
+    pub fn preview_rgba(&self, vfs: &Vfs, name: &str) -> Option<(u32, u32, Vec<u8>)> {
+        let key = normalize(name);
+        if key.is_empty() || key == "-" {
+            return None;
+        }
+        let image = self
+            .compose_texturex(vfs, &key)
+            .or_else(|| load_named_image(vfs, &key))?;
+        Some(image_to_rgba(&image, self.playpal.as_ref()))
+    }
+
+    /// Composite `TEXTURE1`/`TEXTURE2` names (sorted).
+    pub fn texture_names(&self) -> impl Iterator<Item = &str> {
+        self.texturex.keys().map(String::as_str)
+    }
+
+    /// Loaded `PLAYPAL` (for raw lump previews).
+    #[must_use]
+    pub fn playpal(&self) -> Option<&Playpal> {
+        self.playpal.as_ref()
     }
 
     fn compose_texturex(&self, vfs: &Vfs, name: &str) -> Option<Image> {
@@ -396,8 +416,7 @@ mod tests {
     #[test]
     fn doom1_solid_wall_textures_mostly_opaque() {
         use std::path::PathBuf;
-        let wad = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../testdata/doom/doom1.wad");
+        let wad = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/doom/doom1.wad");
         if !wad.is_file() {
             return;
         }
@@ -463,6 +482,53 @@ mod tests {
     }
 }
 
+/// Decode any picture lump (patch / PNG / raw flat) to RGBA8 `(w, h, rgba)`.
+#[must_use]
+pub fn lump_preview_rgba(data: &[u8], playpal: Option<&Playpal>) -> Option<(u32, u32, Vec<u8>)> {
+    let image = decode_image(data).ok().or_else(|| {
+        let dims = flat_dimensions(data.len())?;
+        Some(Image {
+            left_offset: 0,
+            top_offset: 0,
+            has_translucency: false,
+            pixels: room_formats::ImagePixels::Paletted(room_formats::PalettedImage {
+                width: dims.width,
+                height: dims.height,
+                indices: data.to_vec(),
+                alpha: Vec::new(),
+            }),
+        })
+    })?;
+    Some(image_to_rgba(&image, playpal))
+}
+
+fn image_to_rgba(image: &Image, playpal: Option<&Playpal>) -> (u32, u32, Vec<u8>) {
+    match &image.pixels {
+        ImagePixels::Rgba8(rgba) => (rgba.width, rgba.height, rgba.pixels.clone()),
+        ImagePixels::Paletted(p) => {
+            let pal = playpal.and_then(|pp| pp.palettes.first());
+            let mut out = Vec::with_capacity(p.indices.len() * 4);
+            let hole0 = image.has_translucency && p.alpha.is_empty();
+            for (i, &idx) in p.indices.iter().enumerate() {
+                let (r, g, b) = match pal {
+                    Some(pal) => {
+                        let o = usize::from(idx) * 3;
+                        (pal.rgb[o], pal.rgb[o + 1], pal.rgb[o + 2])
+                    }
+                    None => (idx, idx, idx),
+                };
+                let a = match p.alpha.get(i) {
+                    Some(&a) => a,
+                    None if hole0 && idx == 0 => 0,
+                    None => 255,
+                };
+                out.extend_from_slice(&[r, g, b, a]);
+            }
+            (p.width, p.height, out)
+        }
+    }
+}
+
 fn load_named_image(vfs: &Vfs, name: &str) -> Option<Image> {
     // Prefer sprites / TX_ / patches / flats, then global.
     let lump = vfs
@@ -490,4 +556,3 @@ fn load_named_image(vfs: &Vfs, name: &str) -> Option<Image> {
         }),
     })
 }
-

@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="color-scheme" content="dark"/>
+  <title>ROOM — Ops Pit</title>
+  <link rel="stylesheet" href="/admin/assets/app.css"/>
+</head>
+<body>
+  <div id="auth-gate" class="gate hidden" aria-live="polite">
+    <div class="gate-panel">
+      <p class="brand-mark">ROOM</p>
+      <h1>Ops pit</h1>
+      <p class="lede">Enter the admin bearer token to unlock this node. Leave blank if none is configured.</p>
+      <label class="field">
+        <span>Bearer token</span>
+        <input id="gate-token" type="password" autocomplete="current-password" placeholder="optional"/>
+      </label>
+      <button type="button" id="gate-enter" class="btn primary">Enter console</button>
+      <p id="gate-error" class="err hidden"></p>
+    </div>
+  </div>
+
+  <div id="shell" class="shell hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">ROOM</span>
+        <span class="brand-sub">ops pit</span>
+      </div>
+      <nav class="nav" aria-label="Sections">
+        <button type="button" class="nav-item active" data-view="dashboard">Dashboard</button>
+        <button type="button" class="nav-item" data-view="rooms">Rooms</button>
+        <button type="button" class="nav-item" data-view="bans">Bans</button>
+        <button type="button" class="nav-item" data-view="audit">Audit</button>
+        <button type="button" class="nav-item" data-view="settings">Settings</button>
+      </nav>
+      <div class="sidebar-foot">
+        <div id="node-chip" class="chip">node —</div>
+        <div id="live-chip" class="chip live">live</div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="view-title">Dashboard</h1>
+          <p id="view-sub" class="muted">Cluster pulse for this node</p>
+        </div>
+        <div class="top-actions">
+          <label class="token-field">
+            <span>Token</span>
+            <input id="token" type="password" autocomplete="off" placeholder="bearer"/>
+          </label>
+          <button type="button" id="refresh" class="btn">Refresh</button>
+        </div>
+      </header>
+
+      <div id="flash" class="flash hidden" role="status"></div>
+
+      <section id="view-dashboard" class="view">
+        <div class="stat-row">
+          <article class="stat">
+            <h2>Rooms</h2>
+            <p class="stat-value" id="stat-rooms">—</p>
+            <p class="stat-hint">live on this node</p>
+          </article>
+          <article class="stat">
+            <h2>Verified</h2>
+            <p class="stat-value" id="stat-verified">—</p>
+            <p class="stat-hint">headless verifier on</p>
+          </article>
+          <article class="stat">
+            <h2>Drain</h2>
+            <p class="stat-value" id="stat-drain">—</p>
+            <p class="stat-hint">maintenance mode</p>
+          </article>
+          <article class="stat">
+            <h2>WS msgs</h2>
+            <p class="stat-value" id="stat-msgs">—</p>
+            <p class="stat-hint">inbound total</p>
+          </article>
+          <article class="stat">
+            <h2>Tic frames</h2>
+            <p class="stat-value" id="stat-frames">—</p>
+            <p class="stat-hint">relay fan-outs</p>
+          </article>
+          <article class="stat">
+            <h2>Violations</h2>
+            <p class="stat-value" id="stat-violations">—</p>
+            <p class="stat-hint">rate / size rejects</p>
+          </article>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Relay latency</h2>
+            <span class="muted" id="relay-summary">from /metrics</span>
+          </div>
+          <div class="bars" id="relay-bars" aria-hidden="true"></div>
+        </div>
+      </section>
+
+      <section id="view-rooms" class="view hidden">
+        <div class="toolbar">
+          <input id="room-filter" type="search" placeholder="Filter by id, map, node…"/>
+          <button type="button" id="room-create-open" class="btn primary">Create room</button>
+        </div>
+        <div class="panel table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>Room</th>
+                <th>Map</th>
+                <th>Skill</th>
+                <th>Seats</th>
+                <th>Node</th>
+                <th>Flags</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="rooms-body"></tbody>
+          </table>
+          <p id="rooms-empty" class="empty hidden">No rooms match.</p>
+        </div>
+        <div id="room-detail" class="panel room-detail hidden">
+          <div class="panel-head">
+            <h2 id="room-detail-title">Room detail</h2>
+            <button type="button" id="room-detail-close" class="btn small ghost">Close</button>
+          </div>
+          <p id="room-detail-meta" class="muted"></p>
+          <div class="detail-grid">
+            <canvas id="room-minimap" width="280" height="200" aria-label="Player minimap"></canvas>
+            <div class="table-wrap grow">
+              <table class="data compact">
+                <thead>
+                  <tr>
+                    <th>Seat</th>
+                    <th>Name</th>
+                    <th>State</th>
+                    <th>IP</th>
+                    <th>Ticket</th>
+                    <th>Resume</th>
+                    <th>IWAD fp</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="room-seats-body"></tbody>
+              </table>
+              <p id="room-seats-empty" class="empty hidden">No seats occupied.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-bans" class="view hidden">
+        <div class="panel">
+          <div class="panel-head"><h2>Add ban</h2></div>
+          <form id="ban-form" class="form-grid">
+            <label class="field">
+              <span>Scope</span>
+              <select id="ban-scope">
+                <option value="name">name (exact)</option>
+                <option value="name_regex">name pattern (* ?)</option>
+                <option value="ip">ip</option>
+                <option value="fingerprint">iwad fingerprint</option>
+                <option value="ticket_id">ticket id</option>
+                <option value="turn_user">TURN user</option>
+                <option value="auth_key">auth key (ticket/TURN/fp)</option>
+                <option value="resume_token">resume token</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Value</span>
+              <input id="ban-value" required placeholder="pseudo, IP, key, or bot*"/>
+            </label>
+            <label class="field grow">
+              <span>Reason</span>
+              <input id="ban-reason" required placeholder="why"/>
+            </label>
+            <label class="field">
+              <span>Expires</span>
+              <select id="ban-exp">
+                <option value="0">never</option>
+                <option value="3600">1 hour</option>
+                <option value="86400">1 day</option>
+                <option value="604800">7 days</option>
+                <option value="2592000">30 days</option>
+              </select>
+            </label>
+            <div class="field actions">
+              <span>&nbsp;</span>
+              <button type="submit" class="btn primary">Add ban</button>
+            </div>
+          </form>
+          <p class="muted" style="margin:0.5rem 1rem 0;font-size:0.8rem">
+            Patterns use <code>*</code> / <code>?</code> (case-insensitive). Bans are enforced on join ticket mint and WebSocket hello.
+          </p>
+        </div>
+        <div class="panel table-wrap">
+          <table class="data">
+            <thead>
+              <tr><th>Scope</th><th>Value</th><th>Reason</th><th>Expires</th><th>Id</th><th></th></tr>
+            </thead>
+            <tbody id="bans-body"></tbody>
+          </table>
+          <p id="bans-empty" class="empty hidden">No bans.</p>
+        </div>
+      </section>
+
+      <section id="view-audit" class="view hidden">
+        <div class="toolbar">
+          <input id="audit-filter" type="search" placeholder="Filter audit…"/>
+        </div>
+        <div class="panel table-wrap">
+          <table class="data compact">
+            <thead>
+              <tr><th>When</th><th>Action</th><th>Target</th><th>Detail</th><th>Actor</th></tr>
+            </thead>
+            <tbody id="audit-body"></tbody>
+          </table>
+          <p id="audit-empty" class="empty hidden">No audit entries.</p>
+        </div>
+      </section>
+
+      <section id="view-settings" class="view hidden">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Maintenance / drain</h2>
+            <span class="muted">Stops new rooms, warns players, closes after grace</span>
+          </div>
+          <form id="drain-form" class="form-stack">
+            <label class="field">
+              <span>Message to players</span>
+              <input id="drain-message" placeholder="Node draining for deploy"/>
+            </label>
+            <div class="row">
+              <button type="submit" class="btn warn">Begin drain</button>
+              <p class="muted" id="drain-status">Status unknown</p>
+            </div>
+          </form>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Session</h2></div>
+          <p class="muted">Token is stored in localStorage for this browser only.</p>
+          <button type="button" id="lock-console" class="btn">Lock console</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <dialog id="modal" class="modal">
+    <form method="dialog" id="modal-form">
+      <header>
+        <h2 id="modal-title">Action</h2>
+        <button type="submit" value="cancel" class="icon-btn" aria-label="Close">×</button>
+      </header>
+      <div id="modal-body" class="modal-body"></div>
+      <footer>
+        <button type="submit" value="cancel" class="btn">Cancel</button>
+        <button type="submit" value="confirm" class="btn primary" id="modal-confirm">Confirm</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <script src="/admin/assets/app.js" defer></script>
+</body>
+</html>

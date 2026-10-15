@@ -60,13 +60,19 @@ fn e1m1_closed_door_blocks_sight_to_computer_room_zombie() {
         room_core::Angle::from_radians(dy.atan2(dx))
     };
     let hit = line_attack(&mut world, zid, ang, 4096.0, 10);
-    eprintln!("hitscan through map: actor={:?} dist={:.0}", hit.actor, hit.distance);
+    eprintln!(
+        "hitscan through map: actor={:?} dist={:.0}",
+        hit.actor, hit.distance
+    );
     if let Some(id) = hit.actor {
         let name = world
             .classes
             .get(world.actors.get(id).unwrap().class)
             .map(|c| c.name.as_str())
             .unwrap_or("?");
-        assert_ne!(id, mo, "hitscan must not hit player through walls (hit {name})");
+        assert_ne!(
+            id, mo,
+            "hitscan must not hit player through walls (hit {name})"
+        );
     }
 }

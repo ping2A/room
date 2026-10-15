@@ -1,17 +1,17 @@
 //! Outdoor flats must stay near floor Z — not climb into the sky band.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use glam::Vec3;
 use room_map::load_map;
 use room_nodebuild::ensure_nodes;
 use room_render::{Camera, build_scene_with_sky_ex, is_sky_flat};
 use room_vfs::VfsBuilder;
-use glam::Vec3;
 use std::path::PathBuf;
 
 #[test]
 fn outdoor_flat_verts_stay_near_floor() {
-    let wad = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../testdata/freedoom/freedoom1.wad");
+    let wad =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/freedoom/freedoom1.wad");
     if !wad.is_file() {
         return;
     }

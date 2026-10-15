@@ -9,13 +9,13 @@ use std::sync::Arc;
 
 mod registration;
 
-pub use room_script_abi::{
-    ABI_VERSION, ActorRef, ExportId, ModuleConfig, ModuleScope, SessionKind,
-};
 pub use registration::{
     PropId, RegCall, RegisteredClass, RegisteredEventHandler, RegisteredStaticFunction,
     RegisteredThinkerClass, RegistrationSession, SharedRegistration, VirtualSlot,
     event_handler_flags, event_mask, shared_registration,
+};
+pub use room_script_abi::{
+    ABI_VERSION, ActorRef, ExportId, ModuleConfig, ModuleScope, SessionKind,
 };
 
 /// Errors from compile / instantiate / call.
@@ -230,12 +230,7 @@ pub trait GuestLifecycle: WasmInstance {
     /// Call trap / missing export.
     fn init(&mut self, kind: SessionKind, budget: &mut Budget) -> Result<i32, ScriptError> {
         let mut results = [Val::I32(-1)];
-        self.call(
-            "room_init",
-            &[Val::I32(kind as i32)],
-            &mut results,
-            budget,
-        )?;
+        self.call("room_init", &[Val::I32(kind as i32)], &mut results, budget)?;
         match results[0] {
             Val::I32(v) => Ok(v),
             _ => Err(ScriptError::Backend("init type".into())),
@@ -252,12 +247,7 @@ pub trait GuestLifecycle: WasmInstance {
             return Ok(None);
         }
         let mut results = [Val::I32(0)];
-        self.call(
-            "room_on_save",
-            &[Val::I32(buf_ptr)],
-            &mut results,
-            budget,
-        )?;
+        self.call("room_on_save", &[Val::I32(buf_ptr)], &mut results, budget)?;
         match results[0] {
             Val::I32(v) => Ok(Some(v)),
             _ => Err(ScriptError::Backend("on_save type".into())),

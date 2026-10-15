@@ -2,8 +2,8 @@
 
 #![allow(clippy::unwrap_used)]
 
-use room_render::{ClusterAssignment, DynLightInstance};
 use glam::Vec3;
+use room_render::{ClusterAssignment, DynLightInstance};
 use std::time::Instant;
 
 #[test]

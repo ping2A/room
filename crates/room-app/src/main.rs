@@ -12,6 +12,8 @@ mod soundfont;
 
 use audio_out::AudioOut;
 use clap::Parser;
+use glam::Vec3;
+use midi_device::{MidiBackend, load_genmidi, resolve_midi_device};
 use room_console::{Console, HostCommand};
 use room_decorate::parse_decorate;
 use room_defs::{DefinitionsBuilder, DynLightKind, GlDefs, ModelDefs};
@@ -44,8 +46,6 @@ use room_ui::{
     blit_draw_list_full, draw_automap, draw_finale, draw_intermission, draw_title, draw_weapon,
 };
 use room_vfs::{Namespace, Vfs, VfsBuilder};
-use glam::Vec3;
-use midi_device::{MidiBackend, load_genmidi, resolve_midi_device};
 use screen_capture::GifRecorder;
 use soundfont::load_first_soundfont;
 use std::path::PathBuf;
@@ -126,7 +126,8 @@ fn main() {
         args.play = true;
         args.title = false;
         if args.iwad.is_none() {
-            let doom1 = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/doom/doom1.wad");
+            let doom1 =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/doom/doom1.wad");
             if doom1.is_file() {
                 args.iwad = Some(doom1);
                 if args.map == "MAP01" {
@@ -200,8 +201,7 @@ fn main() {
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "builtin".into());
-    let fingerprint =
-        netplay::session_fingerprint(&iwad_label, &args.map, skill.0);
+    let fingerprint = netplay::session_fingerprint(&iwad_label, &args.map, skill.0);
     let mut net: Option<netplay::NetPlay> = None;
     let mut local_seat: u8 = 0;
     let mut coop_players: u8 = 1;
@@ -654,10 +654,7 @@ fn load_viewer_map(args: &Args) -> Result<(MapGeometry, Option<Vfs>), String> {
         // Doom 1 / Freedoom Phase 1 use ExMy; Doom II uses MAPxx.
         let map_name = resolve_start_map(&vfs, &args.map);
         if map_name != args.map {
-            eprintln!(
-                "room: map {} not in IWAD — starting {}",
-                args.map, map_name
-            );
+            eprintln!("room: map {} not in IWAD — starting {}", args.map, map_name);
         }
         let mut map = load_map(&vfs, &map_name).map_err(|e| e.to_string())?;
         ensure_nodes(&mut map);
@@ -1638,9 +1635,7 @@ impl ApplicationHandler for ViewerApp {
                             Some(room_console::CvarValue::Bool(true))
                         );
                         let sens = match self.console.cvars.get("m_sensitivity") {
-                            Some(room_console::CvarValue::Float(f)) => {
-                                (*f).clamp(0.1, 5.0) as f32
-                            }
+                            Some(room_console::CvarValue::Float(f)) => (*f).clamp(0.1, 5.0) as f32,
                             _ => 1.0,
                         };
                         // Preview uses the same rounded counts as `build_ticcmd`
@@ -1945,350 +1940,350 @@ impl ViewerApp {
         let want_shot = self.pending_screenshot;
         let want_gif = self.gif_recorder.is_some();
         let capture_rgba = {
-        let (
-            Some(surface),
-            Some(gpu),
-            Some(pass),
-            Some(depth),
-            Some(stencil_aux),
-            Some(frame_color),
-            Some(canvas_gpu),
-            materials,
-            vfs,
-        ) = (
-            &self.surface,
-            &self.gpu,
-            &mut self.pass,
-            &self.depth,
-            &self.stencil_aux,
-            &self.frame_color,
-            &mut self.canvas_gpu,
-            &mut self.materials,
-            self.vfs.as_ref(),
-        )
-        else {
-            return;
-        };
-        pass.set_fog_density(fog_density);
-        pass.time += dt; // fuzz animation clock
-        pass.prepare(gpu, &self.camera, &scene);
+            let (
+                Some(surface),
+                Some(gpu),
+                Some(pass),
+                Some(depth),
+                Some(stencil_aux),
+                Some(frame_color),
+                Some(canvas_gpu),
+                materials,
+                vfs,
+            ) = (
+                &self.surface,
+                &self.gpu,
+                &mut self.pass,
+                &self.depth,
+                &self.stencil_aux,
+                &self.frame_color,
+                &mut self.canvas_gpu,
+                &mut self.materials,
+                self.vfs.as_ref(),
+            )
+            else {
+                return;
+            };
+            pass.set_fog_density(fog_density);
+            pass.time += dt; // fuzz animation clock
+            pass.prepare(gpu, &self.camera, &scene);
 
-        let ui_only = matches!(
-            self.play.as_ref().map(|g| g.state),
-            Some(GameState::Title | GameState::Intermission | GameState::Finale) | None
-        );
+            let ui_only = matches!(
+                self.play.as_ref().map(|g| g.state),
+                Some(GameState::Title | GameState::Intermission | GameState::Finale) | None
+            );
 
-        let mut hud = Canvas::new();
-        hud.clear([0.0, 0.0, 0.0, 0.0]);
-        // Build UI draw list (status bar + optional automap) then blit to canvas.
-        let mut ui = UiDrawList::new();
-        match self.play.as_ref().map(|g| g.state) {
-            Some(GameState::Title) => {
-                let has_titlepic = self.vfs.as_ref().is_some_and(|v| {
-                    v.find("TITLEPIC", Namespace::Global).is_some()
-                        || v.find_any_ns("TITLEPIC").is_some()
-                });
-                draw_title(&mut ui, 320.0, 200.0, has_titlepic);
-                if let Some(menu) = &self.menu {
-                    let tic = self
-                        .play
-                        .as_ref()
-                        .and_then(|g| g.world())
-                        .map(|w| w.level.maptime)
-                        .unwrap_or(self.frames as u32);
-                    menu.draw(&mut ui, tic, Some(&self.fonts));
+            let mut hud = Canvas::new();
+            hud.clear([0.0, 0.0, 0.0, 0.0]);
+            // Build UI draw list (status bar + optional automap) then blit to canvas.
+            let mut ui = UiDrawList::new();
+            match self.play.as_ref().map(|g| g.state) {
+                Some(GameState::Title) => {
+                    let has_titlepic = self.vfs.as_ref().is_some_and(|v| {
+                        v.find("TITLEPIC", Namespace::Global).is_some()
+                            || v.find_any_ns("TITLEPIC").is_some()
+                    });
+                    draw_title(&mut ui, 320.0, 200.0, has_titlepic);
+                    if let Some(menu) = &self.menu {
+                        let tic = self
+                            .play
+                            .as_ref()
+                            .and_then(|g| g.world())
+                            .map(|w| w.level.maptime)
+                            .unwrap_or(self.frames as u32);
+                        menu.draw(&mut ui, tic, Some(&self.fonts));
+                    }
                 }
-            }
-            Some(GameState::Intermission) => {
-                let stats = self
-                    .play
-                    .as_ref()
-                    .and_then(|g| g.intermission.as_ref())
-                    .map(|t| IntermissionStats {
-                        map_name: t.map_name.clone(),
-                        kills: t.kills,
-                        items: t.items,
-                        secrets: t.secrets,
-                        time_tics: t.time_tics,
-                        par_tics: t.par_tics,
-                    })
-                    .unwrap_or_default();
-                draw_intermission(&mut ui, &stats, 320.0, 200.0);
-            }
-            Some(GameState::Finale) => {
-                let map_name = self
-                    .play
-                    .as_ref()
-                    .and_then(|g| g.intermission.as_ref())
-                    .map(|t| t.map_name.as_str())
-                    .unwrap_or("");
-                draw_finale(&mut ui, map_name, 320.0, 200.0);
-            }
-            _ => {
-                if self.automap {
-                    let seat = usize::from(self.local_seat);
-                    let allmap = self
+                Some(GameState::Intermission) => {
+                    let stats = self
                         .play
                         .as_ref()
-                        .and_then(|g| g.world())
-                        .and_then(|w| w.players.get(seat).and_then(|p| p.as_ref()))
-                        .is_some_and(|p| p.allmap);
-                    let view = AutomapView {
-                        center_x: f64::from(self.camera.eye.x),
-                        center_y: f64::from(self.camera.eye.y),
-                        scale: self.automap_scale,
-                        screen_x: 0.0,
-                        screen_y: 0.0,
-                        width: 320.0,
-                        height: 168.0,
-                        angle_deg: self.yaw.to_degrees(),
-                        allmap,
-                        // Play mode: only show linedefs the player has walked near.
-                        fog: self.play.is_some(),
-                    };
-                    // Live world map carries `ML_MAPPED` exploration bits.
-                    if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
-                        draw_automap(&world.map, &view, &mut ui);
+                        .and_then(|g| g.intermission.as_ref())
+                        .map(|t| IntermissionStats {
+                            map_name: t.map_name.clone(),
+                            kills: t.kills,
+                            items: t.items,
+                            secrets: t.secrets,
+                            time_tics: t.time_tics,
+                            par_tics: t.par_tics,
+                        })
+                        .unwrap_or_default();
+                    draw_intermission(&mut ui, &stats, 320.0, 200.0);
+                }
+                Some(GameState::Finale) => {
+                    let map_name = self
+                        .play
+                        .as_ref()
+                        .and_then(|g| g.intermission.as_ref())
+                        .map(|t| t.map_name.as_str())
+                        .unwrap_or("");
+                    draw_finale(&mut ui, map_name, 320.0, 200.0);
+                }
+                _ => {
+                    if self.automap {
+                        let seat = usize::from(self.local_seat);
+                        let allmap = self
+                            .play
+                            .as_ref()
+                            .and_then(|g| g.world())
+                            .and_then(|w| w.players.get(seat).and_then(|p| p.as_ref()))
+                            .is_some_and(|p| p.allmap);
+                        let view = AutomapView {
+                            center_x: f64::from(self.camera.eye.x),
+                            center_y: f64::from(self.camera.eye.y),
+                            scale: self.automap_scale,
+                            screen_x: 0.0,
+                            screen_y: 0.0,
+                            width: 320.0,
+                            height: 168.0,
+                            angle_deg: self.yaw.to_degrees(),
+                            allmap,
+                            // Play mode: only show linedefs the player has walked near.
+                            fog: self.play.is_some(),
+                        };
+                        // Live world map carries `ML_MAPPED` exploration bits.
+                        if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
+                            draw_automap(&world.map, &view, &mut ui);
+                        } else {
+                            draw_automap(&self.map, &view, &mut ui);
+                        }
                     } else {
-                        draw_automap(&self.map, &view, &mut ui);
-                    }
-                } else {
-                    if let Some(vfs) = self.vfs.as_ref() {
-                        if !self.hud.weapon_patch.is_empty() {
-                            let _ = self.patches.ensure(vfs, &self.hud.weapon_patch);
+                        if let Some(vfs) = self.vfs.as_ref() {
+                            if !self.hud.weapon_patch.is_empty() {
+                                let _ = self.patches.ensure(vfs, &self.hud.weapon_patch);
+                            }
+                            if !self.hud.flash_patch.is_empty() {
+                                let _ = self.patches.ensure(vfs, &self.hud.flash_patch);
+                            }
                         }
-                        if !self.hud.flash_patch.is_empty() {
-                            let _ = self.patches.ensure(vfs, &self.hud.flash_patch);
-                        }
-                    }
-                    let soft = self.patches.get(&self.hud.weapon_patch);
-                    draw_weapon(
-                        &mut ui,
-                        &self.hud.weapon_patch,
-                        self.hud.fullscreen,
-                        soft,
-                        self.hud.bob_x,
-                        self.hud.bob_y,
-                    );
-                    if !self.hud.flash_patch.is_empty() {
-                        let soft_flash = self.patches.get(&self.hud.flash_patch);
+                        let soft = self.patches.get(&self.hud.weapon_patch);
                         draw_weapon(
                             &mut ui,
-                            &self.hud.flash_patch,
+                            &self.hud.weapon_patch,
                             self.hud.fullscreen,
-                            soft_flash,
+                            soft,
                             self.hud.bob_x,
                             self.hud.bob_y,
                         );
+                        if !self.hud.flash_patch.is_empty() {
+                            let soft_flash = self.patches.get(&self.hud.flash_patch);
+                            draw_weapon(
+                                &mut ui,
+                                &self.hud.flash_patch,
+                                self.hud.fullscreen,
+                                soft_flash,
+                                self.hud.bob_x,
+                                self.hud.bob_y,
+                            );
+                        }
                     }
-                }
-                DoomStatusBar.draw(&self.hud, &mut ui);
-                self.messages.draw(&mut ui, 8.0, 8.0);
-                if let Some(menu) = &self.menu {
-                    let tic = self
+                    DoomStatusBar.draw(&self.hud, &mut ui);
+                    self.messages.draw(&mut ui, 8.0, 8.0);
+                    if let Some(menu) = &self.menu {
+                        let tic = self
+                            .play
+                            .as_ref()
+                            .and_then(|g| g.world())
+                            .map(|w| w.level.maptime)
+                            .unwrap_or(self.frames as u32);
+                        menu.draw(&mut ui, tic, Some(&self.fonts));
+                    }
+                    if let Some(fade) = self
                         .play
                         .as_ref()
                         .and_then(|g| g.world())
-                        .map(|w| w.level.maptime)
-                        .unwrap_or(self.frames as u32);
-                    menu.draw(&mut ui, tic, Some(&self.fonts));
-                }
-                if let Some(fade) = self
-                    .play
-                    .as_ref()
-                    .and_then(|g| g.world())
-                    .map(|w| w.screen_fade)
-                {
-                    if fade.a > 0.001 {
-                        ui.fill(
-                            Rect::new(0.0, 0.0, 320.0, 200.0),
-                            Rgba {
-                                r: fade.r,
-                                g: fade.g,
-                                b: fade.b,
-                                a: fade.a,
-                            },
-                        );
+                        .map(|w| w.screen_fade)
+                    {
+                        if fade.a > 0.001 {
+                            ui.fill(
+                                Rect::new(0.0, 0.0, 320.0, 200.0),
+                                Rgba {
+                                    r: fade.r,
+                                    g: fade.g,
+                                    b: fade.b,
+                                    a: fade.a,
+                                },
+                            );
+                        }
                     }
                 }
             }
-        }
-        if self.console_open {
-            draw_console_overlay(&mut ui, &self.console, &self.console_line);
-        }
-        struct Sink<'a>(&'a mut Canvas);
-        impl CanvasSink for Sink<'_> {
-            fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
-                self.0.fill_rect(x, y, w, h, color);
+            if self.console_open {
+                draw_console_overlay(&mut ui, &self.console, &self.console_line);
             }
-            fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]) {
-                self.0.text(x, y, text, color);
-            }
-        }
-        let (fb_w, fb_h) = self
-            .config
-            .as_ref()
-            .map(|c| (c.width as f32, c.height as f32))
-            .unwrap_or((1280.0, 720.0));
-        // Fit 320×200 virtual UI into the framebuffer while preserving aspect,
-        // letterboxed to the centre (matches menu mouse hit-testing).
-        let scale = (fb_w / 320.0).min(fb_h / 200.0);
-        let ox = (fb_w - 320.0 * scale) * 0.5;
-        let oy = (fb_h - 200.0 * scale) * 0.5;
-        if let Some(vfs) = self.vfs.as_ref() {
-            for cmd in &ui.cmds {
-                if let DrawCmd::Patch { name, .. } = cmd {
-                    let _ = self.patches.ensure(vfs, name);
+            struct Sink<'a>(&'a mut Canvas);
+            impl CanvasSink for Sink<'_> {
+                fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+                    self.0.fill_rect(x, y, w, h, color);
+                }
+                fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]) {
+                    self.0.text(x, y, text, color);
                 }
             }
-        }
-        struct OffsetSink<'a> {
-            inner: Sink<'a>,
-            ox: f32,
-            oy: f32,
-        }
-        impl CanvasSink for OffsetSink<'_> {
-            fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
-                self.inner.fill_rect(x + self.ox, y + self.oy, w, h, color);
+            let (fb_w, fb_h) = self
+                .config
+                .as_ref()
+                .map(|c| (c.width as f32, c.height as f32))
+                .unwrap_or((1280.0, 720.0));
+            // Fit 320×200 virtual UI into the framebuffer while preserving aspect,
+            // letterboxed to the centre (matches menu mouse hit-testing).
+            let scale = (fb_w / 320.0).min(fb_h / 200.0);
+            let ox = (fb_w - 320.0 * scale) * 0.5;
+            let oy = (fb_h - 200.0 * scale) * 0.5;
+            if let Some(vfs) = self.vfs.as_ref() {
+                for cmd in &ui.cmds {
+                    if let DrawCmd::Patch { name, .. } = cmd {
+                        let _ = self.patches.ensure(vfs, name);
+                    }
+                }
             }
-            fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]) {
-                self.inner.text(x + self.ox, y + self.oy, text, color);
+            struct OffsetSink<'a> {
+                inner: Sink<'a>,
+                ox: f32,
+                oy: f32,
             }
-        }
-        blit_draw_list_full(
-            &ui,
-            320.0 * scale,
-            200.0 * scale,
-            Some(&self.fonts),
-            Some(&self.patches),
-            &mut OffsetSink {
-                inner: Sink(&mut hud),
-                ox,
-                oy,
-            },
-        );
+            impl CanvasSink for OffsetSink<'_> {
+                fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+                    self.inner.fill_rect(x + self.ox, y + self.oy, w, h, color);
+                }
+                fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]) {
+                    self.inner.text(x + self.ox, y + self.oy, text, color);
+                }
+            }
+            blit_draw_list_full(
+                &ui,
+                320.0 * scale,
+                200.0 * scale,
+                Some(&self.fonts),
+                Some(&self.patches),
+                &mut OffsetSink {
+                    inner: Sink(&mut hud),
+                    ox,
+                    oy,
+                },
+            );
 
-        let Ok(frame) = surface.get_current_texture() else {
-            return;
-        };
-        // Draw into a COPY_SRC colour buffer, then blit to the swapchain.
-        let color_view = &frame_color.1;
-        let mut encoder = gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("frame"),
-            });
-        {
-            let clear = if ui_only {
-                wgpu::Color::BLACK
-            } else {
-                wgpu::Color {
-                    r: 0.05,
-                    g: 0.05,
-                    b: 0.08,
-                    a: 1.0,
-                }
+            let Ok(frame) = surface.get_current_texture() else {
+                return;
             };
-            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("main"),
-                color_attachments: &[
-                    Some(wgpu::RenderPassColorAttachment {
+            // Draw into a COPY_SRC colour buffer, then blit to the swapchain.
+            let color_view = &frame_color.1;
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("frame"),
+                });
+            {
+                let clear = if ui_only {
+                    wgpu::Color::BLACK
+                } else {
+                    wgpu::Color {
+                        r: 0.05,
+                        g: 0.05,
+                        b: 0.08,
+                        a: 1.0,
+                    }
+                };
+                let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("main"),
+                    color_attachments: &[
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: color_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(clear),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        }),
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: &stencil_aux.1,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Discard,
+                            },
+                        }),
+                    ],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &depth.1,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                // Title / intermission / finale are full-screen UI — do not keep drawing
+                // the last level camera (letterbox sides were showing the 3D world).
+                if !ui_only {
+                    if let Some(vfs) = vfs {
+                        pass.draw_materials(gpu, &mut rp, &scene, materials, vfs);
+                    } else {
+                        pass.draw(&mut rp, &scene);
+                    }
+                }
+            }
+            {
+                canvas_gpu.rasterize(&hud, None);
+                let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("hud"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: color_view,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(clear),
+                            load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
                         },
-                    }),
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: &stencil_aux.1,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Discard,
-                        },
-                    }),
-                ],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth.1,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            // Title / intermission / finale are full-screen UI — do not keep drawing
-            // the last level camera (letterbox sides were showing the 3D world).
-            if !ui_only {
-                if let Some(vfs) = vfs {
-                    pass.draw_materials(gpu, &mut rp, &scene, materials, vfs);
-                } else {
-                    pass.draw(&mut rp, &scene);
-                }
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                canvas_gpu.blit(gpu, &mut rp);
             }
-        }
-        {
-            canvas_gpu.rasterize(&hud, None);
-            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("hud"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: color_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            canvas_gpu.blit(gpu, &mut rp);
-        }
-        let (cap_w, cap_h) = self
-            .config
-            .as_ref()
-            .map(|c| (c.width, c.height))
-            .unwrap_or((1, 1));
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &frame_color.0,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: &frame.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-                width: cap_w,
-                height: cap_h,
-                depth_or_array_layers: 1,
-            },
-        );
-        gpu.queue.submit(Some(encoder.finish()));
-        let captured = if want_shot || want_gif {
-            match read_texture_rgba(gpu, &frame_color.0, cap_w, cap_h) {
-                Ok(rgba) => Some((rgba, cap_w, cap_h)),
-                Err(e) => {
-                    eprintln!("room: capture failed: {e}");
-                    Some((Vec::new(), 0, 0)) // signal error via empty
+            let (cap_w, cap_h) = self
+                .config
+                .as_ref()
+                .map(|c| (c.width, c.height))
+                .unwrap_or((1, 1));
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &frame_color.0,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &frame.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: cap_w,
+                    height: cap_h,
+                    depth_or_array_layers: 1,
+                },
+            );
+            gpu.queue.submit(Some(encoder.finish()));
+            let captured = if want_shot || want_gif {
+                match read_texture_rgba(gpu, &frame_color.0, cap_w, cap_h) {
+                    Ok(rgba) => Some((rgba, cap_w, cap_h)),
+                    Err(e) => {
+                        eprintln!("room: capture failed: {e}");
+                        Some((Vec::new(), 0, 0)) // signal error via empty
+                    }
                 }
-            }
-        } else {
-            None
-        };
-        frame.present();
-        captured
+            } else {
+                None
+            };
+            frame.present();
+            captured
         };
         if let Some((rgba, w, h)) = capture_rgba {
             if rgba.is_empty() {
@@ -2301,9 +2296,7 @@ impl ViewerApp {
                 }
                 if let Some(rec) = self.gif_recorder.as_mut() {
                     let n = rec.frames.len();
-                    if rec.push_rgba(&rgba, w, h)
-                        && n + 1 >= screen_capture::GIF_MAX_FRAMES
-                    {
+                    if rec.push_rgba(&rgba, w, h) && n + 1 >= screen_capture::GIF_MAX_FRAMES {
                         self.finish_gif_record();
                     }
                 }
@@ -2404,7 +2397,10 @@ impl ViewerApp {
                             }
                             shared.mixer.apply(&events);
                             let seat = usize::from(self.local_seat);
-                            if let Some(p) = game.world().and_then(|w| w.players.get(seat).and_then(|p| p.as_ref())) {
+                            if let Some(p) = game
+                                .world()
+                                .and_then(|w| w.players.get(seat).and_then(|p| p.as_ref()))
+                            {
                                 if let Some(mo) = p.mo {
                                     if let Some(a) = game.world().and_then(|w| w.actors.get(mo)) {
                                         shared.mixer.listener = a.pos;
@@ -2763,10 +2759,7 @@ impl ViewerApp {
                     let seat = usize::from(self.local_seat);
                     let drop = self.last_player_hp - h.health;
                     let (who, detail) = self.format_hit_debug(seat, drop);
-                    let msg = format!(
-                        "HIT {}→{} by {who}",
-                        self.last_player_hp, h.health
-                    );
+                    let msg = format!("HIT {}→{} by {who}", self.last_player_hp, h.health);
                     eprintln!("room: {msg}");
                     for line in detail {
                         eprintln!("room:   {line}");
@@ -2890,9 +2883,7 @@ impl ViewerApp {
                 continue;
             };
             let class_flags = world.classes.get(a.class).map(|c| c.flags).unwrap_or(0);
-            if a.destroyed
-                || Some(id) == local_mo
-                || ((a.flags | class_flags) & FLAG_DONTDRAW) != 0
+            if a.destroyed || Some(id) == local_mo || ((a.flags | class_flags) & FLAG_DONTDRAW) != 0
             {
                 continue;
             }
@@ -3018,15 +3009,14 @@ impl ViewerApp {
             who = if !hit.cause.is_empty() && hit.source_class.is_empty() {
                 hit.cause.clone()
             } else if !hit.source_class.is_empty() {
-                let infl = if !hit.inflictor_class.is_empty()
-                    && hit.inflictor_class != hit.source_class
-                {
-                    format!(" via {}", hit.inflictor_class)
-                } else if hit.inflictor.is_some() && hit.inflictor != hit.source {
-                    format!(" via {}", fmt_actor_id(hit.inflictor))
-                } else {
-                    String::new()
-                };
+                let infl =
+                    if !hit.inflictor_class.is_empty() && hit.inflictor_class != hit.source_class {
+                        format!(" via {}", hit.inflictor_class)
+                    } else if hit.inflictor.is_some() && hit.inflictor != hit.source {
+                        format!(" via {}", fmt_actor_id(hit.inflictor))
+                    } else {
+                        String::new()
+                    };
                 format!("{}{infl}", hit.source_class)
             } else if !hit.inflictor_class.is_empty() {
                 hit.inflictor_class.clone()
@@ -3053,9 +3043,7 @@ impl ViewerApp {
             ));
             for &id in &[hit.source, hit.inflictor] {
                 let Some(id) = id else { continue };
-                if let Some(line) =
-                    self.describe_hit_actor(world, mo, id, px, py, yaw, half_fov)
-                {
+                if let Some(line) = self.describe_hit_actor(world, mo, id, px, py, yaw, half_fov) {
                     detail.push(line);
                 }
             }
@@ -3146,14 +3134,10 @@ impl ViewerApp {
             }
             hunters += 1;
             if hunters <= 8 {
-                if let Some(line) =
-                    self.describe_hit_actor(world, mo, id, px, py, yaw, half_fov)
-                {
+                if let Some(line) = self.describe_hit_actor(world, mo, id, px, py, yaw, half_fov) {
                     detail.push(format!("hunter {line}"));
                 }
-                if who == "unknown"
-                    || who.starts_with("sector ")
-                {
+                if who == "unknown" || who.starts_with("sector ") {
                     if let Some(c) = world.classes.get(a.class) {
                         who = format!(
                             "{} sprite={}{}",
@@ -3187,9 +3171,7 @@ impl ViewerApp {
             }
             missiles += 1;
             if missiles <= 6 {
-                if let Some(line) =
-                    self.describe_hit_actor(world, mo, id, px, py, yaw, half_fov)
-                {
+                if let Some(line) = self.describe_hit_actor(world, mo, id, px, py, yaw, half_fov) {
                     detail.push(format!("missile {line}"));
                 }
             }
@@ -3244,14 +3226,11 @@ impl ViewerApp {
         if let Some((name, _)) = candidates.first() {
             lump = name.clone();
             patch_ok = self.patches.get(name).is_some()
-                || self
-                    .vfs
-                    .as_ref()
-                    .is_some_and(|v| {
-                        v.find(name, Namespace::Sprites).is_some()
-                            || v.find(name, Namespace::Global).is_some()
-                            || v.find_any_ns(name).is_some()
-                    });
+                || self.vfs.as_ref().is_some_and(|v| {
+                    v.find(name, Namespace::Sprites).is_some()
+                        || v.find(name, Namespace::Global).is_some()
+                        || v.find_any_ns(name).is_some()
+                });
             gpu_ok = self.materials.get(name).is_some();
         }
         Some(format!(
@@ -3270,7 +3249,11 @@ impl ViewerApp {
             if in_fov { "Y" } else { "N" },
             if sight { "Y" } else { "N" },
             if dontdraw { "Y" } else { "N" },
-            if (flags & FLAG_MISSILE) != 0 { "Y" } else { "N" },
+            if (flags & FLAG_MISSILE) != 0 {
+                "Y"
+            } else {
+                "N"
+            },
             if (flags & FLAG_CORPSE) != 0 || a.health <= 0 {
                 "Y"
             } else {
@@ -3301,10 +3284,7 @@ impl ViewerApp {
                 let a = world.actors.get(id)?;
                 let class_flags = world.classes.get(a.class).map(|c| c.flags).unwrap_or(0);
                 let flags = a.flags | class_flags;
-                if a.destroyed
-                    || Some(id) == local_mo
-                    || (flags & FLAG_DONTDRAW) != 0
-                {
+                if a.destroyed || Some(id) == local_mo || (flags & FLAG_DONTDRAW) != 0 {
                     return None;
                 }
                 let is_other_player = world
@@ -3937,7 +3917,8 @@ impl ViewerApp {
                 }
             },
             Err(e) => {
-                self.messages.push(format!("Screenshot dir failed: {e}"), 70);
+                self.messages
+                    .push(format!("Screenshot dir failed: {e}"), 70);
                 eprintln!("room: screenshot dir failed: {e}");
             }
         }

@@ -7,8 +7,8 @@ use crate::lights::ShadowOccluder;
 use crate::mesh::{FlatVertex, WallVertex};
 use crate::sky::{CubemapFaces, cubemap_sky, cylinder_sky};
 use crate::sprites::{SpriteInstance, emit_sprite_quad};
-use room_map::{GameNodes, GlNodes, MapGeometry, Seg};
 use glam::{Vec2, Vec3};
+use room_map::{GameNodes, GlNodes, MapGeometry, Seg};
 
 /// Contiguous draw range sharing one material name.
 #[derive(Clone, Debug)]
@@ -2813,9 +2813,7 @@ mod tests {
     fn lower_dontpegbottom_shows_texture_bottom() {
         // E1M1 SW1COMP: 48mu step, 128-tall tex, y_offset=8 → LED near V=0.56.
         let mut lists = SceneLists::default();
-        lists
-            .wall_tex_sizes
-            .insert("SW1COMP".into(), (64.0, 128.0));
+        lists.wall_tex_sizes.insert("SW1COMP".into(), (64.0, 128.0));
         push_wall_quad(
             &mut lists,
             "SW1COMP",

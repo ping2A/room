@@ -2,13 +2,13 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use glam::Vec3;
 use room_nodebuild::apply_nodes;
 use room_render::{
     Camera, GpuContext, ModelMesh, ModelVertex, OffscreenTarget, UnlitPass, append_model,
     build_scene, read_rgba, render_offscreen,
 };
 use room_testkit::{MapBuilder, rect};
-use glam::Vec3;
 
 #[test]
 fn offscreen_append_model_visible() {

@@ -41,8 +41,11 @@ mod world;
 pub use action::{ActionResult, call_action, call_action_args};
 pub use actor::{Actor, ActorArena, ActorId};
 pub use class::{
-    ClassDef, ClassError, ClassRegistry, FLAG_CORPSE, FLAG_COUNTITEM, FLAG_COUNTKILL, FLAG_DONTDRAW,
-    FLAG_FLOAT, FLAG_MISSILE, FLAG_NOGRAVITY, FLAG_SPAWNCEILING, RenderStyle,
+    ClassDef, ClassError, ClassRegistry, FLAG_AMBUSH, FLAG_BOSS, FLAG_CORPSE, FLAG_COUNTITEM,
+    FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_DONTTHRUST, FLAG_DROPOFF, FLAG_FLOAT, FLAG_FLOATBOB,
+    FLAG_FLOORCLIP, FLAG_FRIENDLY, FLAG_INVULNERABLE, FLAG_MISSILE, FLAG_NOBLOCKMAP, FLAG_NOBLOOD,
+    FLAG_NODAMAGE, FLAG_NOGRAVITY, FLAG_NORADIUSDMG, FLAG_NOTARGET, FLAG_RIPPER, FLAG_SHOOTABLE,
+    FLAG_SOLID, FLAG_SPAWNCEILING, RenderStyle,
 };
 pub use compat::{
     COMPATF_BOOMSCROLL, COMPATF_MBFMONSTERMOVE, COMPATF_TRACE, COMPATF2_NOMBF21, CompatFlags,
@@ -83,6 +86,6 @@ pub use vanilla::{
 pub use weapon_slots::{PlayerClassEntry, WeaponSlots, default_slot_weapons};
 pub use world::{
     BossAction, CameraTextureBind, DEFAULT_BODY_QUEUE_SIZE, DEFAULT_CORPSE_QUEUE_SIZE, HudClipRect,
-    LastDamageInfo, PlayerHud, Quake, ScreenFade, SectorDynamic, ShotKind, ShotTrace, SimDecalEvent,
-    SimError, SimParticleEvent, SimSoundEvent, World,
+    KillEvent, LastDamageInfo, MAX_KILL_EVENTS, PlayerHud, Quake, ScreenFade, SectorDynamic,
+    ShotKind, ShotTrace, SimDecalEvent, SimError, SimParticleEvent, SimSoundEvent, World,
 };

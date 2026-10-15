@@ -1,31 +1,33 @@
 //! Browser Doom / Freedoom play session (Headless + materials).
 
+use crate::feed::{EventFeed, Scores, kill_line, stcfn_safe};
 use crate::netplay::NetPlay;
 use crate::web_audio::WebAudio;
 use bytes::Bytes;
+use glam::Vec3;
 use room_audio::ENGINE_SAMPLE_RATE;
 use room_defs::{DefinitionsBuilder, GlDefs};
 use room_game::{
-    GameOptions, GameState, Headless, Skill, SoundSystem, load_embedded_engine_data,
-    mount_embedded_engine, play_map_music,
+    EngineData, GameOptions, GameState, Headless, Skill, SoundSystem,
+    intermission_music_candidates, load_embedded_engine_data, mount_embedded_engine,
+    play_first_music_lump, play_map_music, play_music_lump,
 };
 use room_input::{InputSample, Key, build_ticcmd};
 use room_map::{MapGeometry, load_map};
 use room_music::{GenMidiBank, MidiDevice};
 use room_nodebuild::ensure_nodes;
 use room_render::{
-    Camera, Canvas, DynLightInstance, MaterialCatalog, SpriteInstance,
-    sprite_lump_candidates_rot, sprite_rotation_digit,
+    Camera, Canvas, DynLightInstance, MaterialCatalog, SpriteInstance, sprite_lump_candidates_rot,
+    sprite_rotation_digit,
 };
 use room_sim::{
     Buttons, FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_FLOAT, FLAG_NOGRAVITY, FLAG_SPAWNCEILING, TicCmd,
 };
 use room_ui::{
-    CanvasSink, DoomStatusBar, DrawCmd, HudState, PatchCache, StatusBar, UiDrawList,
-    blit_draw_list_full, draw_weapon,
+    CanvasSink, DoomStatusBar, DrawCmd, HudState, PatchCache, Rect, Rgba, StatusBar, UiDrawList,
+    blit_draw_list_full, draw_stcfn_string, draw_weapon, measure_stcfn_string,
 };
 use room_vfs::{Namespace, Vfs, VfsBuilder};
-use glam::Vec3;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -45,16 +47,16 @@ pub struct PlaySession {
     pub patches: PatchCache,
     /// GLDEFS (brightmaps / object lights) from the mounted VFS.
     gldefs: GlDefs,
-    /// Held movement / action keys.
-    held: BTreeSet<&'static str>,
+    /// Held movement / action keys (`pub(crate)` for [`crate::input_hub`]).
+    pub(crate) held: BTreeSet<&'static str>,
     /// One-shot weapon slot `1..=7`.
-    weapon: u8,
+    pub(crate) weapon: u8,
     /// Mouse yaw counts this tic (public for mid-tic look preview).
     pub mouse_yaw: i32,
     /// Mouse pitch counts this tic (public for mid-tic look preview).
     pub mouse_pitch: i32,
     /// Attack held (LMB / Ctrl).
-    attack: bool,
+    pub(crate) attack: bool,
     /// Fractional tic accumulator (seconds).
     pub tic_accum: f32,
     /// Timestamp of last frame (ms).
@@ -71,6 +73,75 @@ pub struct PlaySession {
     net: Option<NetPlay>,
     /// Local player seat (camera / HUD / input).
     local_seat: u8,
+    /// Per-seat eye after the previous / latest tic (render interpolation).
+    prev_eyes: [Option<Vec3>; VIEW_SEATS],
+    cur_eyes: [Option<Vec3>; VIEW_SEATS],
+    /// Kills / deaths / frags per seat.
+    scores: Scores,
+    /// Bottom-left event lines.
+    feed: EventFeed,
+    /// One-shot "toggle spectator grid" (from [`crate::input_hub`]).
+    pub(crate) view_grid_toggle: bool,
+    /// Spectator: all players at once vs. following `local_seat`.
+    spectator_grid: bool,
+    /// Attack state last frame (spectator click = next player).
+    prev_attack: bool,
+    /// Spectator is fast-forwarding through the match history.
+    catching_up: bool,
+    /// Editor free-fly camera; while set the sim is frozen.
+    pub edit_cam: Option<EditCam>,
+    /// Skill the level was started with (editor restarts).
+    skill: Skill,
+}
+
+/// Editor fly camera (map units / radians).
+#[derive(Clone, Copy, Debug)]
+pub struct EditCam {
+    /// Eye position.
+    pub pos: Vec3,
+    /// Yaw (0 = east, counter-clockwise).
+    pub yaw: f64,
+    /// Pitch (positive = up).
+    pub pitch: f64,
+}
+
+/// Editor fly speed (map units per second; Shift = ×3).
+const EDIT_FLY_SPEED: f32 = 320.0;
+
+/// One spectator grid viewport.
+pub struct SpectatorPane {
+    /// Seat shown in this pane.
+    pub seat: u8,
+    /// Interpolated eye.
+    pub eye: Vec3,
+    /// Look direction.
+    pub forward: Vec3,
+    /// `[x, y, w, h]` in framebuffer pixels.
+    pub rect: [f32; 4],
+}
+
+/// Eye jumps larger than this between tics are teleports (no interpolation).
+const TELEPORT_DIST: f32 = 64.0;
+
+/// Seats the sim supports (and the spectator grid shows).
+const VIEW_SEATS: usize = 4;
+
+/// Spectators fast-forward while this many frames are queued.
+const CATCHUP_BACKLOG: u32 = 35;
+
+/// Wall-clock budget per frame for spectator fast-forward.
+const CATCHUP_BUDGET_MS: f64 = 10.0;
+
+/// Gap between spectator panes (pixels).
+const PANE_GAP: f32 = 2.0;
+
+/// `STCFN` scale for feed / scoreboard / pane labels (virtual 200-line units).
+const SMALL_TEXT: f32 = 0.6;
+
+fn now_ms() -> f64 {
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map_or(0.0, |p| p.now())
 }
 
 /// Coop / skill overrides when starting a play session.
@@ -127,7 +198,17 @@ impl PlaySession {
         let map_name = resolve_start_map(&vfs, requested);
         let mut map = load_map(&vfs, &map_name).map_err(|e| e.to_string())?;
         ensure_nodes(&mut map);
+        let data = load_embedded_engine_data().map_err(|e| e.to_string())?;
+        Self::from_parts(vfs, map, opts, data)
+    }
 
+    /// Start `map` (nodes already built) on an already-mounted `vfs`.
+    pub fn from_parts(
+        vfs: Vfs,
+        map: MapGeometry,
+        opts: PlayStartOpts,
+        data: EngineData,
+    ) -> Result<Self, String> {
         let skill = Skill::new(opts.skill);
         let coop = opts.coop_players.clamp(1, 4);
         let mut game = Headless::new(GameOptions {
@@ -165,7 +246,6 @@ impl PlaySession {
             }
         }
 
-        let data = load_embedded_engine_data().map_err(|e| e.to_string())?;
         game.set_defs(data.classes, data.states);
         if let Some(db) = data.compat_db {
             game.set_compat_db(db);
@@ -199,7 +279,7 @@ impl PlaySession {
             }
             materials.set_brightmaps(bm);
         }
-        Ok(Self {
+        let mut session = Self {
             vfs,
             game,
             map_base: map.clone(),
@@ -220,13 +300,66 @@ impl PlaySession {
             audio: None,
             net: opts.net,
             local_seat: opts.local_seat.min(coop.saturating_sub(1)),
-        })
+            prev_eyes: [None; VIEW_SEATS],
+            cur_eyes: [None; VIEW_SEATS],
+            scores: Scores::default(),
+            feed: EventFeed::default(),
+            view_grid_toggle: false,
+            spectator_grid: true,
+            prev_attack: false,
+            catching_up: false,
+            edit_cam: None,
+            skill,
+        };
+        session.sync_camera_from_player();
+        Ok(session)
     }
 
     /// Whether this session is lockstep coop.
     #[must_use]
     pub fn is_net(&self) -> bool {
         self.net.is_some()
+    }
+
+    /// Attach lockstep after a solo map prepare (v2 lobby).
+    pub fn attach_net(&mut self, net: NetPlay) {
+        self.net = Some(net);
+    }
+
+    /// Coarse map outline as flat i16 segments `[x1,y1,x2,y2,…]` for admin minimap.
+    #[must_use]
+    pub fn map_outline_i16(&self) -> Vec<i16> {
+        // Keep well under the 4 KiB JSON control frame limit.
+        const MAX_SEGS: usize = 96;
+        let lines = &self.map.lines;
+        let verts = &self.map.vertices;
+        let mut out = Vec::with_capacity(MAX_SEGS.saturating_mul(4));
+        for line in lines.iter().take(MAX_SEGS) {
+            let Some(v1) = verts.get(line.v1.raw() as usize) else {
+                continue;
+            };
+            let Some(v2) = verts.get(line.v2.raw() as usize) else {
+                continue;
+            };
+            out.push(clamp_i16(v1.pos.x()));
+            out.push(clamp_i16(v1.pos.y()));
+            out.push(clamp_i16(v2.pos.x()));
+            out.push(clamp_i16(v2.pos.y()));
+        }
+        out
+    }
+
+    /// Local player pose in map units / degrees, if spawned.
+    #[must_use]
+    pub fn local_pose_i16(&self) -> Option<(i32, i32, i16)> {
+        let world = self.game.world()?;
+        let p = world.players.get(usize::from(self.local_seat))?.as_ref()?;
+        let mo = p.mo.and_then(|id| world.actors.get(id))?;
+        Some((
+            mo.pos.x().round() as i32,
+            mo.pos.y().round() as i32,
+            mo.angle.degrees().round() as i16,
+        ))
     }
 
     /// Start Web Audio on a user gesture (autoplay policy).
@@ -246,28 +379,32 @@ impl PlaySession {
                         let _ = sounds.load_sndinfo_from_vfs(&self.vfs);
                     }
                 }
-                // OPL + IWAD GENMIDI (no SoftFont fetch required).
-                if let Some(bank) = load_genmidi(&self.vfs) {
-                    if let Ok(mut music) = audio.music.try_borrow_mut() {
-                        music.set_sample_rate(rate);
+                // GM SoundFont when `roomSetSoundfont` delivered one, else OPL + GENMIDI.
+                if let Ok(mut music) = audio.music.try_borrow_mut() {
+                    music.set_sample_rate(rate);
+                    let genmidi = load_genmidi(&self.vfs);
+                    let has_genmidi = genmidi.is_some();
+                    if let Some(bank) = genmidi {
                         music.set_genmidi(bank);
-                        music.set_mididevice(MidiDevice::Opl);
-                        let map = self.game.map_name().to_owned();
-                        match play_map_music(&mut music, &self.vfs, &map, None) {
-                            Ok(lump) => {
-                                web_sys::console::log_1(
-                                    &format!("room-web: music {lump} (OPL)").into(),
-                                );
-                            }
-                            Err(e) => {
-                                web_sys::console::warn_1(
-                                    &format!("room-web: music: {e}").into(),
-                                );
-                            }
+                    }
+                    let device = crate::web_audio::preferred_midi_device(&music);
+                    if device == MidiDevice::Opl && !has_genmidi {
+                        web_sys::console::warn_1(
+                            &"room-web: no SoundFont and no GENMIDI — music silent".into(),
+                        );
+                    }
+                    music.set_mididevice(device);
+                    let map = self.game.map_name().to_owned();
+                    match play_map_music(&mut music, &self.vfs, &map, None) {
+                        Ok(lump) => {
+                            web_sys::console::log_1(
+                                &format!("room-web: music {lump} ({device:?})").into(),
+                            );
+                        }
+                        Err(e) => {
+                            web_sys::console::warn_1(&format!("room-web: music: {e}").into());
                         }
                     }
-                } else {
-                    web_sys::console::warn_1(&"room-web: no GENMIDI — music silent".into());
                 }
                 self.audio = Some(audio);
             }
@@ -366,112 +503,133 @@ impl PlaySession {
         }
     }
 
-    /// Key down/up from `KeyboardEvent.code` (e.g. `KeyW`).
-    pub fn set_key(&mut self, code: &str, down: bool) {
-        let token: Option<&'static str> = match code {
-            "KeyW" | "ArrowUp" => Some("w"),
-            "KeyS" | "ArrowDown" => Some("s"),
-            "KeyA" => Some("a"),
-            "KeyD" => Some("d"),
-            "ArrowLeft" => Some("left"),
-            "ArrowRight" => Some("right"),
-            "ShiftLeft" | "ShiftRight" => Some("shift"),
-            "KeyE" | "Space" => Some("use"),
-            "ControlLeft" | "ControlRight" => Some("attack"),
-            "Digit1" | "Numpad1" => {
-                if down {
-                    self.weapon = 1;
-                }
-                None
-            }
-            "Digit2" | "Numpad2" => {
-                if down {
-                    self.weapon = 2;
-                }
-                None
-            }
-            "Digit3" | "Numpad3" => {
-                if down {
-                    self.weapon = 3;
-                }
-                None
-            }
-            "Digit4" | "Numpad4" => {
-                if down {
-                    self.weapon = 4;
-                }
-                None
-            }
-            "Digit5" | "Numpad5" => {
-                if down {
-                    self.weapon = 5;
-                }
-                None
-            }
-            "Digit6" | "Numpad6" => {
-                if down {
-                    self.weapon = 6;
-                }
-                None
-            }
-            "Digit7" | "Numpad7" => {
-                if down {
-                    self.weapon = 7;
-                }
-                None
-            }
-            _ => None,
+    /// Local seat (debug).
+    #[must_use]
+    pub fn local_seat_debug(&self) -> u8 {
+        self.local_seat
+    }
+
+    /// Lockstep wait info (`tic/pending` or `None` if solo).
+    #[must_use]
+    pub fn net_debug(&self) -> Option<String> {
+        let net = self.net.as_ref()?;
+        let (rx, tx) = net.data_stats();
+        let gone = net.gone_peers();
+        Some(format!(
+            "tic={} pend={} wait={} ready={} gone={gone:?} rx={rx} tx={tx}",
+            net.waiting_tic(),
+            net.has_pending(),
+            net.frames_waiting(),
+            net.peers_ready()
+        ))
+    }
+
+    /// Structured net stats for the HUD graph (`None` if solo).
+    #[must_use]
+    pub fn net_stats_js(&self) -> Option<js_sys::Object> {
+        let net = self.net.as_ref()?;
+        let (rx, tx) = net.data_stats();
+        let obj = js_sys::Object::new();
+        let set = |k: &str, v: wasm_bindgen::JsValue| {
+            let _ = js_sys::Reflect::set(&obj, &wasm_bindgen::JsValue::from_str(k), &v);
         };
-        if let Some(t) = token {
-            if down {
-                self.held.insert(t);
-            } else {
-                self.held.remove(t);
-            }
-            if t == "attack" {
-                self.attack = down || self.held.contains("attack");
-            }
+        set(
+            "tic",
+            wasm_bindgen::JsValue::from(f64::from(net.waiting_tic())),
+        );
+        set(
+            "pending",
+            wasm_bindgen::JsValue::from_bool(net.has_pending()),
+        );
+        set(
+            "waitFrames",
+            wasm_bindgen::JsValue::from(f64::from(net.frames_waiting())),
+        );
+        set("ready", wasm_bindgen::JsValue::from_bool(net.peers_ready()));
+        if let Some(rtt) = net.rtt_ms() {
+            set("rttMs", wasm_bindgen::JsValue::from(rtt));
         }
+        set(
+            "backlog",
+            wasm_bindgen::JsValue::from(f64::from(net.backlog())),
+        );
+        set("rx", wasm_bindgen::JsValue::from(f64::from(rx)));
+        set("tx", wasm_bindgen::JsValue::from(f64::from(tx)));
+        set(
+            "peers",
+            wasm_bindgen::JsValue::from(f64::from(net.peer_count)),
+        );
+        set("v2", wasm_bindgen::JsValue::from_bool(net.is_v2()));
+        set(
+            "seat",
+            wasm_bindgen::JsValue::from(f64::from(self.local_seat)),
+        );
+        set(
+            "held",
+            wasm_bindgen::JsValue::from_str(&crate::input_hub::debug_held()),
+        );
+        set("pos", wasm_bindgen::JsValue::from_str(&self.pos_debug()));
+        Some(obj)
     }
 
-    /// Mouse button (0 = primary).
-    pub fn set_mouse_button(&mut self, button: i16, down: bool) {
-        if button == 0 {
-            self.attack = down;
-        }
-    }
-
-    /// Accumulate pointer-lock mouse motion (CSS pixels).
-    pub fn add_mouse_delta(&mut self, dx: f64, dy: f64) {
-        // Match desktop (`room-app`): mouse right → look right ⇒ −dx yaw;
-        // mouse up → look up ⇒ −dy pitch (unless invertmouse).
-        self.mouse_yaw += (-dx).round() as i32;
-        self.mouse_pitch += (-dy).round() as i32;
+    /// Player XY for debug.
+    #[must_use]
+    pub fn pos_debug(&self) -> String {
+        let Some(world) = self.game.world() else {
+            return "?".into();
+        };
+        let seat = usize::from(self.local_seat);
+        let Some(p) = world.players.get(seat).and_then(|p| p.as_ref()) else {
+            return "?".into();
+        };
+        let Some(mo) = p.mo.and_then(|id| world.actors.get(id)) else {
+            return "?".into();
+        };
+        format!("{:.1},{:.1}", mo.pos.x(), mo.pos.y())
     }
 
     /// Advance sim at 35 Hz; returns `true` if at least one tic ran.
     pub fn tick_play(&mut self, dt: f32) -> bool {
         const TIC: f32 = 1.0 / 35.0;
+        if self.edit_cam.is_some() {
+            self.fly_edit_cam(dt);
+            return false;
+        }
+        let now = now_ms();
+        self.feed.prune(now);
+        if let Some(net) = self.net.as_mut() {
+            for line in net.take_feed() {
+                self.feed.push(line, now);
+            }
+        }
+        let spectator = self.is_spectator();
+        if spectator {
+            self.spectator_input();
+        }
+        let backlog = self.net.as_ref().map_or(0, NetPlay::backlog);
+        if spectator && backlog > CATCHUP_BACKLOG && matches!(self.game.state, GameState::Level) {
+            return self.fast_forward(now);
+        }
+        self.catching_up = false;
         self.tic_accum = (self.tic_accum + dt).min(TIC * 3.0);
+        // Drain a jitter backlog gradually instead of staying behind forever.
+        if backlog > 2 {
+            self.tic_accum += TIC * (backlog - 2).min(3) as f32;
+        }
         let mut stepped = false;
         while self.tic_accum >= TIC {
             match self.game.state {
                 GameState::Level => {
                     let cmds = if let Some(net) = self.net.as_mut() {
-                        let yaw = self.mouse_yaw;
-                        let pitch = self.mouse_pitch;
                         let Some(cmds) = net.try_advance(
                             &self.held,
                             self.attack,
-                            self.weapon,
-                            yaw,
-                            pitch,
+                            &mut self.weapon,
+                            &mut self.mouse_yaw,
+                            &mut self.mouse_pitch,
                         ) else {
                             break;
                         };
-                        self.mouse_yaw = 0;
-                        self.mouse_pitch = 0;
-                        self.weapon = 0;
                         cmds
                     } else {
                         let sample = self.sample_input();
@@ -490,9 +648,17 @@ impl PlaySession {
                     self.tic_accum -= TIC;
                     stepped = true;
                     self.game.tick(&cmds);
+                    self.process_tic_events(false);
                     self.pump_audio();
+                    if matches!(self.game.state, GameState::Intermission) {
+                        self.start_intermission_music();
+                    }
                     self.sync_map_from_world();
                     self.sync_camera_from_player();
+                    let pose = self.local_pose_i16().filter(|_| !spectator);
+                    if let (Some(net), Some((x, y, angle))) = (self.net.as_mut(), pose) {
+                        net.maybe_send_pose(x, y, angle);
+                    }
                 }
                 GameState::Intermission => {
                     self.tic_accum -= TIC;
@@ -510,6 +676,157 @@ impl PlaySession {
             }
         }
         stepped
+    }
+
+    /// Spectator replay of buffered history: many tics per frame, no audio.
+    fn fast_forward(&mut self, start: f64) -> bool {
+        self.catching_up = true;
+        let mut ran = 0_u32;
+        while ran < 4096 && now_ms() - start < CATCHUP_BUDGET_MS {
+            if !matches!(self.game.state, GameState::Level) {
+                break;
+            }
+            let Some(net) = self.net.as_mut() else {
+                break;
+            };
+            let Some(cmds) = net.try_advance(
+                &self.held,
+                false,
+                &mut self.weapon,
+                &mut self.mouse_yaw,
+                &mut self.mouse_pitch,
+            ) else {
+                break;
+            };
+            self.game.tick(&cmds);
+            self.process_tic_events(true);
+            ran += 1;
+        }
+        if ran > 0 {
+            self.sync_map_from_world();
+            self.sync_camera_from_player();
+            self.prev_eyes = self.cur_eyes;
+        }
+        self.tic_accum = 0.0;
+        ran > 0
+    }
+
+    /// Fold this tic's deaths into scores / feed; route sim messages.
+    fn process_tic_events(&mut self, quiet: bool) {
+        let Some(world) = self.game.world_mut() else {
+            return;
+        };
+        let kills = world.drain_kill_events();
+        let msgs = world.drain_messages();
+        for ev in &kills {
+            self.scores.apply(ev);
+        }
+        if quiet {
+            return;
+        }
+        let now = now_ms();
+        for ev in &kills {
+            if let Some(line) = kill_line(ev, |s| self.seat_name(s)) {
+                self.feed.push(line, now);
+            }
+        }
+        // Pickup / ACS messages are not per-player in the sim; only solo shows them.
+        if self.net.is_none() {
+            for m in msgs {
+                self.feed.push(m, now);
+            }
+        }
+    }
+
+    /// Spectator keys: 1-4 follow a player, G/0 toggles the grid, click = next.
+    fn spectator_input(&mut self) {
+        self.mouse_yaw = 0;
+        self.mouse_pitch = 0;
+        let seats = self.seats_in_game();
+        if (1..=VIEW_SEATS as u8).contains(&self.weapon) {
+            let seat = self.weapon - 1;
+            if seats.contains(&seat) {
+                self.local_seat = seat;
+                self.spectator_grid = false;
+            }
+        }
+        self.weapon = 0;
+        if std::mem::take(&mut self.view_grid_toggle) {
+            self.spectator_grid = !self.spectator_grid;
+        }
+        let click = self.attack && !self.prev_attack;
+        self.prev_attack = self.attack;
+        if click && !seats.is_empty() {
+            if self.spectator_grid {
+                self.spectator_grid = false;
+            } else {
+                let next = seats
+                    .iter()
+                    .copied()
+                    .find(|&s| s > self.local_seat)
+                    .unwrap_or(seats[0]);
+                self.local_seat = next;
+            }
+        }
+    }
+
+    /// Seats with a spawned player body.
+    fn seats_in_game(&self) -> Vec<u8> {
+        let Some(world) = self.game.world() else {
+            return Vec::new();
+        };
+        world
+            .players
+            .iter()
+            .take(VIEW_SEATS)
+            .enumerate()
+            .filter(|(_, p)| p.as_ref().is_some_and(|p| p.mo.is_some()))
+            .map(|(i, _)| i as u8)
+            .collect()
+    }
+
+    /// Roster name for `seat` (falls back to "player N").
+    fn seat_name(&self, seat: u8) -> String {
+        match self.net.as_ref() {
+            Some(net) => net
+                .peer_name(seat)
+                .map_or_else(|| format!("player {}", seat + 1), str::to_owned),
+            None => "you".into(),
+        }
+    }
+
+    /// Spectating a networked match (no input is sent).
+    #[must_use]
+    pub fn is_spectator(&self) -> bool {
+        self.net.as_ref().is_some_and(NetPlay::is_spectator)
+    }
+
+    /// Spectator grid panes as `(seat, eye, forward, [x, y, w, h])` in framebuffer
+    /// pixels, or `None` when a single full-frame view should be drawn.
+    #[must_use]
+    pub fn spectator_views(&self, fb_w: f32, fb_h: f32) -> Option<Vec<SpectatorPane>> {
+        if !self.is_spectator() || !self.spectator_grid || self.catching_up {
+            return None;
+        }
+        let seats = self.seats_in_game();
+        if seats.len() < 2 {
+            return None;
+        }
+        let rects = pane_rects(seats.len(), fb_w, fb_h);
+        let views = seats
+            .iter()
+            .zip(rects)
+            .filter_map(|(&seat, rect)| {
+                let (eye, forward) = self.view_pose_for(seat)?;
+                Some(SpectatorPane {
+                    seat,
+                    eye,
+                    forward,
+                    rect,
+                })
+            })
+            .collect::<Vec<_>>();
+        (!views.is_empty()).then_some(views)
     }
 
     fn sample_input(&mut self) -> InputSample {
@@ -567,9 +884,29 @@ impl PlaySession {
         // Always drain: `World::tick` clears the queue next tic, and translate
         // also loads DMX lumps into `SoundSystem.bank` for later merge.
         let events = self.game.drain_audio(&self.vfs);
+        let music_req = self.game.take_music_request();
         let Some(audio) = self.audio.as_ref() else {
             return;
         };
+        if audio.needs_resume() {
+            audio.resume();
+        }
+        if let Some(song) = music_req {
+            if let Ok(mut music) = audio.music.try_borrow_mut() {
+                match play_music_lump(&mut music, &self.vfs, &song) {
+                    Ok(lump) => {
+                        web_sys::console::log_1(
+                            &format!("room-web: ACS music {song} → {lump}").into(),
+                        );
+                    }
+                    Err(e) => {
+                        web_sys::console::warn_1(
+                            &format!("room-web: ACS music {song}: {e}").into(),
+                        );
+                    }
+                }
+            }
+        }
         let seat = usize::from(self.local_seat);
         let listener = self
             .game
@@ -587,62 +924,27 @@ impl PlaySession {
             }
             mix.apply(&events);
         }
+        // Top up the AudioWorklet ring (ScriptProcessor renders in its callback).
+        audio.feed_output();
     }
 
     /// Rasterize weapon + classic `STBAR` HUD into a CPU canvas for `CanvasGpu`.
     pub fn build_hud_canvas(&mut self, fb_w: f32, fb_h: f32) -> Canvas {
+        if self.edit_cam.is_some() {
+            let mut canvas = Canvas::new();
+            canvas.clear([0.0, 0.0, 0.0, 0.0]);
+            return canvas;
+        }
+        let panes = self.spectator_views(fb_w, fb_h);
+        let show_bar = panes.is_none() && !self.catching_up;
         let mut ui = UiDrawList::new();
-        let mut hud = HudState::doom_default();
-        if let Some(h) = self
-            .game
-            .world()
-            .and_then(|w| w.player_hud(usize::from(self.local_seat)))
-        {
-            hud.health = h.health;
-            hud.armor = h.armor;
-            hud.ammo = h.ammo;
-            hud.ammo_max = h.ammo_max;
-            hud.keys = h.keys;
-            hud.face = h.face;
-            hud.weapon_patch = h.weapon_patch;
-            hud.flash_patch = h.flash_patch;
-            hud.bob_x = h.bob_x;
-            hud.bob_y = h.bob_y;
+        if show_bar {
+            self.draw_player_hud(&mut ui);
         }
-        // Classic STBAR strip (raises the weapon by `STATUS_BAR_HEIGHT`).
-        hud.fullscreen = false;
+        let overlay = self.build_overlay(fb_w, fb_h, panes.as_deref(), show_bar);
 
-        if !hud.weapon_patch.is_empty() {
-            let _ = self.patches.ensure(&self.vfs, &hud.weapon_patch);
-        }
-        if !hud.flash_patch.is_empty() {
-            let _ = self.patches.ensure(&self.vfs, &hud.flash_patch);
-        }
-
-        let soft = self.patches.get(&hud.weapon_patch);
-        draw_weapon(
-            &mut ui,
-            &hud.weapon_patch,
-            hud.fullscreen,
-            soft,
-            hud.bob_x,
-            hud.bob_y,
-        );
-        if !hud.flash_patch.is_empty() {
-            let soft_flash = self.patches.get(&hud.flash_patch);
-            draw_weapon(
-                &mut ui,
-                &hud.flash_patch,
-                hud.fullscreen,
-                soft_flash,
-                hud.bob_x,
-                hud.bob_y,
-            );
-        }
-        DoomStatusBar.draw(&hud, &mut ui);
-
-        // Prefetch every patch the draw list needs (STBAR, STTNUM*, mugshot, keys).
-        for cmd in &ui.cmds {
+        // Prefetch every patch the draw lists need (STBAR, STTNUM*, mugshot, keys, STCFN).
+        for cmd in ui.cmds.iter().chain(&overlay.cmds) {
             if let DrawCmd::Patch { name, .. } = cmd {
                 let _ = self.patches.ensure(&self.vfs, name);
             }
@@ -688,7 +990,264 @@ impl PlaySession {
                 oy,
             },
         );
+        blit_draw_list_full(
+            &overlay,
+            fb_w,
+            fb_h,
+            None,
+            Some(&self.patches),
+            &mut Sink(&mut canvas),
+        );
         canvas
+    }
+
+    /// Full-width overlay (virtual height 200): event feed, spectator pane
+    /// labels / banner, and the Tab scoreboard.
+    fn build_overlay(
+        &self,
+        fb_w: f32,
+        fb_h: f32,
+        panes: Option<&[SpectatorPane]>,
+        status_bar: bool,
+    ) -> UiDrawList {
+        let mut ov = UiDrawList::new();
+        let px = 200.0 / fb_h.max(1.0);
+        ov.virtual_h = 200.0;
+        ov.virtual_w = (fb_w * px).max(1.0);
+        let line_h = 9.0 * SMALL_TEXT + 1.5;
+        let shade = Rgba::new(0.0, 0.0, 0.0, 0.55);
+
+        if let Some(panes) = panes {
+            for pane in panes {
+                let [x, y, w, _] = pane.rect;
+                let label = self.seat_label(pane.seat);
+                let lw = measure_stcfn_string(&label, SMALL_TEXT) + 4.0;
+                let (lx, ly) = (x * px + 2.0, y * px + 2.0);
+                ov.fill(Rect::new(lx, ly, lw.min(w * px - 4.0), line_h + 1.0), shade);
+                draw_stcfn_string(&mut ov, lx + 2.0, ly + 1.0, &label, SMALL_TEXT);
+            }
+        }
+
+        if self.is_spectator() {
+            let banner = if self.catching_up {
+                "CATCHING UP...".to_owned()
+            } else if panes.is_some() {
+                "SPECTATING  1-4 FOLLOW  G FOLLOW  TAB SCORES".to_owned()
+            } else {
+                format!(
+                    "FOLLOWING {}  CLICK NEXT  G GRID  TAB SCORES",
+                    stcfn_safe(&self.seat_name(self.local_seat))
+                )
+            };
+            let bw = measure_stcfn_string(&banner, SMALL_TEXT);
+            let bx = (ov.virtual_w - bw) * 0.5;
+            let by = if panes.is_some() {
+                100.0 - line_h * 0.5
+            } else {
+                3.0
+            };
+            ov.fill(Rect::new(bx - 3.0, by - 1.0, bw + 6.0, line_h + 1.0), shade);
+            draw_stcfn_string(&mut ov, bx, by, &banner, SMALL_TEXT);
+        }
+
+        // Bottom-left event feed, newest at the bottom.
+        let now = now_ms();
+        let lines: Vec<(String, f64)> = self
+            .feed
+            .iter(now)
+            .map(|(t, left)| (stcfn_safe(t), left))
+            .collect();
+        let bottom = if status_bar {
+            200.0 - 32.0 - 3.0
+        } else {
+            197.0
+        };
+        let mut y = bottom - line_h * lines.len() as f32;
+        for (text, left) in &lines {
+            // Patch draws can't fade, so the backdrop fades instead.
+            let a = (left / 1000.0).clamp(0.0, 1.0) as f32 * 0.5;
+            let w = measure_stcfn_string(text, SMALL_TEXT);
+            ov.fill(
+                Rect::new(2.0, y - 0.5, w + 4.0, line_h),
+                Rgba::new(0.0, 0.0, 0.0, a),
+            );
+            draw_stcfn_string(&mut ov, 4.0, y + 0.5, text, SMALL_TEXT);
+            y += line_h;
+        }
+
+        if self.held.contains("scores") {
+            self.draw_scoreboard(&mut ov, line_h);
+        }
+        ov
+    }
+
+    /// `NAME  HP 100  AR 50` (or `DEAD`) for a spectator pane.
+    fn seat_label(&self, seat: u8) -> String {
+        let name = stcfn_safe(&self.seat_name(seat));
+        let hud = self
+            .game
+            .world()
+            .and_then(|w| w.player_hud(usize::from(seat)));
+        match hud {
+            Some(h) if h.health > 0 => format!("{name}  HP {}  AR {}", h.health, h.armor),
+            Some(_) => format!("{name}  DEAD"),
+            None => name,
+        }
+    }
+
+    fn draw_scoreboard(&self, ov: &mut UiDrawList, line_h: f32) {
+        const COLS: [(&str, f32); 7] = [
+            ("PLAYER", 0.0),
+            ("HEALTH", 92.0),
+            ("ARMOR", 128.0),
+            ("KILLS", 160.0),
+            ("DEATHS", 190.0),
+            ("FRAGS", 226.0),
+            ("STATUS", 256.0),
+        ];
+        let width = 300.0;
+        let seats: Vec<u8> = match self.game.world() {
+            Some(w) => w
+                .players
+                .iter()
+                .take(VIEW_SEATS)
+                .enumerate()
+                .filter(|(_, p)| p.is_some())
+                .map(|(i, _)| i as u8)
+                .collect(),
+            None => Vec::new(),
+        };
+        let rows = seats.len() as f32 + 3.0;
+        let height = rows * (line_h + 2.0) + 6.0;
+        let x0 = ((ov.virtual_w - width) * 0.5).max(0.0);
+        let y0 = ((200.0 - height) * 0.5 - 16.0).max(2.0);
+        ov.fill(
+            Rect::new(x0, y0, width, height),
+            Rgba::new(0.0, 0.0, 0.0, 0.72),
+        );
+        let row_h = line_h + 2.0;
+        let mut y = y0 + 4.0;
+
+        let title = match self.game.world() {
+            Some(w) => {
+                let secs = w.level.time / 35;
+                format!(
+                    "{}  KILLS {}/{}  TIME {}:{:02}",
+                    stcfn_safe(self.game.map_name()),
+                    w.level.found_kills,
+                    w.level.total_kills,
+                    secs / 60,
+                    secs % 60
+                )
+            }
+            None => stcfn_safe(self.game.map_name()),
+        };
+        let tw = measure_stcfn_string(&title, SMALL_TEXT);
+        draw_stcfn_string(ov, x0 + (width - tw) * 0.5, y, &title, SMALL_TEXT);
+        y += row_h * 1.5;
+        for (label, cx) in COLS {
+            draw_stcfn_string(ov, x0 + 6.0 + cx, y, label, SMALL_TEXT);
+        }
+        y += row_h;
+        ov.fill(
+            Rect::new(x0 + 4.0, y - 2.0, width - 8.0, 0.6),
+            Rgba::new(0.75, 0.1, 0.1, 0.9),
+        );
+
+        for seat in seats {
+            if self.is_seat_followed(seat) {
+                ov.fill(
+                    Rect::new(x0 + 2.0, y - 1.0, width - 4.0, row_h),
+                    Rgba::new(0.6, 0.1, 0.1, 0.35),
+                );
+            }
+            let hud = self
+                .game
+                .world()
+                .and_then(|w| w.player_hud(usize::from(seat)));
+            let (hp, ar) = hud.as_ref().map_or((0, 0), |h| (h.health, h.armor));
+            let gone = self.net.as_ref().is_some_and(|n| n.is_gone(seat));
+            let status = if gone {
+                "LEFT"
+            } else if hp <= 0 {
+                "DEAD"
+            } else {
+                "ALIVE"
+            };
+            let sc = self.scores.seats[usize::from(seat).min(self.scores.seats.len() - 1)];
+            let mut name = stcfn_safe(&self.seat_name(seat));
+            name.truncate(15);
+            let cells = [
+                name,
+                hp.max(0).to_string(),
+                ar.max(0).to_string(),
+                sc.kills.to_string(),
+                sc.deaths.to_string(),
+                sc.frags.to_string(),
+                status.to_owned(),
+            ];
+            for ((_, cx), text) in COLS.iter().zip(cells.iter()) {
+                draw_stcfn_string(ov, x0 + 6.0 + cx, y, text, SMALL_TEXT);
+            }
+            y += row_h;
+        }
+    }
+
+    /// Row highlighted on the scoreboard (you / followed player).
+    fn is_seat_followed(&self, seat: u8) -> bool {
+        seat == self.local_seat && !(self.is_spectator() && self.spectator_grid)
+    }
+
+    /// Weapon sprite + classic `STBAR` for `local_seat` into a 320×200 list.
+    fn draw_player_hud(&mut self, ui: &mut UiDrawList) {
+        let mut hud = HudState::doom_default();
+        if let Some(h) = self
+            .game
+            .world()
+            .and_then(|w| w.player_hud(usize::from(self.local_seat)))
+        {
+            hud.health = h.health;
+            hud.armor = h.armor;
+            hud.ammo = h.ammo;
+            hud.ammo_max = h.ammo_max;
+            hud.keys = h.keys;
+            hud.face = h.face;
+            hud.weapon_patch = h.weapon_patch;
+            hud.flash_patch = h.flash_patch;
+            hud.bob_x = h.bob_x;
+            hud.bob_y = h.bob_y;
+        }
+        // Classic STBAR strip (raises the weapon by `STATUS_BAR_HEIGHT`).
+        hud.fullscreen = false;
+
+        if !hud.weapon_patch.is_empty() {
+            let _ = self.patches.ensure(&self.vfs, &hud.weapon_patch);
+        }
+        if !hud.flash_patch.is_empty() {
+            let _ = self.patches.ensure(&self.vfs, &hud.flash_patch);
+        }
+
+        let soft = self.patches.get(&hud.weapon_patch);
+        draw_weapon(
+            ui,
+            &hud.weapon_patch,
+            hud.fullscreen,
+            soft,
+            hud.bob_x,
+            hud.bob_y,
+        );
+        if !hud.flash_patch.is_empty() {
+            let soft_flash = self.patches.get(&hud.flash_patch);
+            draw_weapon(
+                ui,
+                &hud.flash_patch,
+                hud.fullscreen,
+                soft_flash,
+                hud.bob_x,
+                hud.bob_y,
+            );
+        }
+        DoomStatusBar.draw(&hud, ui);
     }
 
     fn sync_map_from_world(&mut self) {
@@ -745,34 +1304,35 @@ impl PlaySession {
     }
 
     fn sync_camera_from_player(&mut self) {
-        let Some(world) = self.game.world() else {
-            return;
-        };
-        let seat = usize::from(self.local_seat);
-        let Some(p) = world.players.get(seat).and_then(|p| p.as_ref()) else {
-            return;
-        };
-        let view_id = p.camera.or(p.mo);
-        let Some(vid) = view_id else {
-            return;
-        };
-        let Some(a) = world.actors.get(vid) else {
-            return;
-        };
-        self.yaw = a.angle.radians();
-        self.pitch = a.pitch.radians();
+        for seat in 0..VIEW_SEATS {
+            let eye = self.sim_eye(seat as u8);
+            self.prev_eyes[seat] = match (self.cur_eyes[seat], eye) {
+                (Some(prev), Some(cur)) if prev.distance(cur) <= TELEPORT_DIST => Some(prev),
+                _ => eye,
+            };
+            self.cur_eyes[seat] = eye;
+        }
+        if let Some((yaw, pitch)) = self.sim_look(self.local_seat) {
+            self.yaw = yaw;
+            self.pitch = pitch;
+        }
     }
 
-    /// Eye + forward for this frame (includes pending mouse look preview).
-    #[must_use]
-    pub fn view_pose(&self) -> Option<(Vec3, Vec3)> {
-        let scale =
-            f64::from(room_input::MOUSE_YAW_SCALE) * std::f64::consts::TAU / 65536.0;
-        let yaw = self.yaw + f64::from(self.mouse_yaw) * scale;
-        let pitch = (self.pitch + f64::from(self.mouse_pitch) * scale).clamp(-1.4, 1.4);
+    /// Yaw / pitch (radians) of `seat`'s view actor as of the last tic.
+    fn sim_look(&self, seat: u8) -> Option<(f64, f64)> {
         let world = self.game.world()?;
-        let seat = usize::from(self.local_seat);
-        let p = world.players.get(seat).and_then(|p| p.as_ref())?;
+        let p = world.players.get(usize::from(seat))?.as_ref()?;
+        let a = world.actors.get(p.camera.or(p.mo)?)?;
+        Some((a.angle.radians(), a.pitch.radians()))
+    }
+
+    /// Eye position of `seat` as of the last simulated tic.
+    fn sim_eye(&self, seat: u8) -> Option<Vec3> {
+        let world = self.game.world()?;
+        let p = world
+            .players
+            .get(usize::from(seat))
+            .and_then(|p| p.as_ref())?;
         let view_id = p.camera.or(p.mo)?;
         let a = world.actors.get(view_id)?;
         let z = if p.camera.is_some() {
@@ -787,18 +1347,49 @@ impl PlaySession {
         } else {
             p.view_z
         };
-        let eye = Vec3::new(a.pos.x() as f32, a.pos.y() as f32, z as f32);
-        let cp = pitch.cos();
-        let mut forward = Vec3::new(
-            (yaw.cos() * cp) as f32,
-            (yaw.sin() * cp) as f32,
-            pitch.sin() as f32,
-        )
-        .normalize_or_zero();
-        if forward.length_squared() < 1e-6 {
-            forward = Vec3::X;
+        Some(Vec3::new(a.pos.x() as f32, a.pos.y() as f32, z as f32))
+    }
+
+    /// Eye + forward for this frame: eye interpolated between the last two
+    /// tics, look includes mouse input not yet applied by the sim.
+    #[must_use]
+    pub fn view_pose(&self) -> Option<(Vec3, Vec3)> {
+        if let Some(cam) = self.edit_cam {
+            return Some((cam.pos, look_dir(cam.yaw, cam.pitch)));
         }
-        Some((eye, forward))
+        if self.is_spectator() {
+            return self.view_pose_for(self.local_seat);
+        }
+        let scale = std::f64::consts::TAU / 65536.0;
+        let (sent_yaw, sent_pitch) = self.net.as_ref().map_or((0, 0), NetPlay::unapplied_look);
+        let mouse = f64::from(room_input::MOUSE_YAW_SCALE);
+        let yaw = self.yaw + (f64::from(self.mouse_yaw) * mouse + f64::from(sent_yaw)) * scale;
+        let pitch = (self.pitch
+            + (f64::from(self.mouse_pitch) * mouse + f64::from(sent_pitch)) * scale)
+            .clamp(-1.4, 1.4);
+        let eye = self.interp_eye(self.local_seat)?;
+        Some((eye, look_dir(yaw, pitch)))
+    }
+
+    /// Interpolated eye + sim look for any seat (no local mouse preview).
+    #[must_use]
+    pub fn view_pose_for(&self, seat: u8) -> Option<(Vec3, Vec3)> {
+        let (yaw, pitch) = self.sim_look(seat)?;
+        Some((self.interp_eye(seat)?, look_dir(yaw, pitch)))
+    }
+
+    fn interp_eye(&self, seat: u8) -> Option<Vec3> {
+        let i = usize::from(seat);
+        match (
+            self.prev_eyes.get(i).copied().flatten(),
+            self.cur_eyes.get(i).copied().flatten(),
+        ) {
+            (Some(prev), Some(cur)) => {
+                let alpha = (self.tic_accum * 35.0).clamp(0.0, 1.0);
+                Some(prev.lerp(cur, alpha))
+            }
+            _ => self.sim_eye(seat),
+        }
     }
 
     /// Apply eye + forward to `camera` (call every frame).
@@ -811,10 +1402,15 @@ impl PlaySession {
 
     /// Live actor billboards for `build_scene` (SoftPatch size + topoffset, same as desktop).
     pub fn collect_live_sprites(&mut self, camera: &Camera) -> Vec<SpriteInstance> {
+        self.collect_live_sprites_for(camera, self.local_seat)
+    }
+
+    /// Like [`Self::collect_live_sprites`], hiding `seat`'s own body.
+    pub fn collect_live_sprites_for(&mut self, camera: &Camera, seat: u8) -> Vec<SpriteInstance> {
         let Some(world) = self.game.world() else {
             return Vec::new();
         };
-        let seat = usize::from(self.local_seat);
+        let seat = usize::from(seat);
         let local_mo = world
             .players
             .get(seat)
@@ -859,8 +1455,21 @@ impl PlaySession {
             })
             .collect();
         let mut out = Vec::with_capacity(actors.len());
-        for (x, y, z, angle_deg, radius, height, scale_x, scale_y, light, alpha, sprite, frame, flags)
-            in actors
+        for (
+            x,
+            y,
+            z,
+            angle_deg,
+            radius,
+            height,
+            scale_x,
+            scale_y,
+            light,
+            alpha,
+            sprite,
+            frame,
+            flags,
+        ) in actors
         {
             let mut w = (radius * 2.0 * scale_x.abs()).clamp(1.0, 256.0);
             let mut h = (height * scale_y.abs()).clamp(1.0, 256.0);
@@ -887,11 +1496,7 @@ impl PlaySession {
                         } else {
                             raw_bottom + 0.05
                         };
-                        anchor_u = if pw > 1e-6 {
-                            (left / pw) as f32
-                        } else {
-                            0.5
-                        };
+                        anchor_u = if pw > 1e-6 { (left / pw) as f32 } else { 0.5 };
                         texture = name.clone();
                         flip_u = *flip;
                         break;
@@ -930,9 +1535,7 @@ impl PlaySession {
             .intermission
             .as_ref()
             .and_then(|t| t.next_map.clone())
-            .or_else(|| {
-                Headless::default_next_map(self.game.map_name(), false)
-            });
+            .or_else(|| Headless::default_next_map(self.game.map_name(), false));
         let Some(name) = next else {
             self.game.enter_finale();
             return;
@@ -949,6 +1552,21 @@ impl PlaySession {
         self.map = next_map.clone();
         let _ = self.game.continue_to_map(next_map);
         self.start_level_music();
+    }
+
+    /// `D_DM2INT` / `D_INTER` on the tally screen (desktop parity).
+    fn start_intermission_music(&mut self) {
+        let Some(audio) = self.audio.as_ref() else {
+            return;
+        };
+        let Ok(mut music) = audio.music.try_borrow_mut() else {
+            return;
+        };
+        if let Err(e) =
+            play_first_music_lump(&mut music, &self.vfs, intermission_music_candidates())
+        {
+            web_sys::console::warn_1(&format!("room-web: intermission music: {e}").into());
+        }
     }
 
     /// Load / restart map music into the Web Audio music player.
@@ -974,6 +1592,19 @@ impl PlaySession {
     #[must_use]
     pub fn status_line(&self) -> String {
         match self.game.state {
+            GameState::Level if self.is_spectator() && self.catching_up => format!(
+                "Spectating {} — catching up with the match…",
+                self.game.map_name()
+            ),
+            GameState::Level if self.is_spectator() => format!(
+                "Spectating {} — G grid/follow · 1-4 or click pick player · Tab scores",
+                self.game.map_name()
+            ),
+            GameState::Level if self.net.as_ref().is_some_and(|n| !n.peers_ready()) => format!(
+                "Coop {} seat {} — waiting for peers to finish loading…",
+                self.game.map_name(),
+                self.local_seat
+            ),
             GameState::Level if self.net.is_some() => format!(
                 "Coop {} seat {} — click for audio/mouse · WASD · E use · LMB fire",
                 self.game.map_name(),
@@ -988,6 +1619,229 @@ impl PlaySession {
             GameState::Title => "Title".into(),
         }
     }
+}
+
+impl PlaySession {
+    /// Freeze the sim and fly freely (`Some`) or hand control back (`None`).
+    pub fn set_edit_cam(&mut self, cam: Option<EditCam>) {
+        self.edit_cam = cam;
+        self.tic_accum = 0.0;
+        self.mouse_yaw = 0;
+        self.mouse_pitch = 0;
+    }
+
+    /// Pose the view currently shows (fly camera or local player).
+    #[must_use]
+    pub fn current_eye(&self) -> Option<EditCam> {
+        if let Some(cam) = self.edit_cam {
+            return Some(cam);
+        }
+        Some(EditCam {
+            pos: self.interp_eye(self.local_seat)?,
+            yaw: self.yaw,
+            pitch: self.pitch,
+        })
+    }
+
+    /// Fly-camera mouse look (CSS pixels while the look button is held).
+    pub fn edit_look(&mut self, dx: f64, dy: f64) {
+        if let Some(cam) = self.edit_cam.as_mut() {
+            cam.yaw -= dx * 0.004;
+            cam.pitch = (cam.pitch - dy * 0.004).clamp(-1.55, 1.55);
+        }
+    }
+
+    fn fly_edit_cam(&mut self, dt: f32) {
+        self.mouse_yaw = 0;
+        self.mouse_pitch = 0;
+        self.weapon = 0;
+        let held = &self.held;
+        let Some(cam) = self.edit_cam.as_mut() else {
+            return;
+        };
+        if held.contains("left") {
+            cam.yaw += f64::from(dt) * 2.0;
+        }
+        if held.contains("right") {
+            cam.yaw -= f64::from(dt) * 2.0;
+        }
+        let fwd = look_dir(cam.yaw, cam.pitch);
+        let right = Vec3::new(cam.yaw.sin() as f32, -cam.yaw.cos() as f32, 0.0);
+        let mut v = Vec3::ZERO;
+        for (key, dir) in [
+            ("w", fwd),
+            ("s", -fwd),
+            ("d", right),
+            ("a", -right),
+            ("up", Vec3::Z),
+            ("use", Vec3::Z),
+            ("down", -Vec3::Z),
+        ] {
+            if held.contains(key) {
+                v += dir;
+            }
+        }
+        let boost = if held.contains("shift") { 3.0 } else { 1.0 };
+        cam.pos += v.normalize_or_zero() * EDIT_FLY_SPEED * boost * dt;
+    }
+
+    /// Swap in edited geometry (nodes built).
+    ///
+    /// `live`: topology and things are unchanged, so the running world is
+    /// patched in place (heights, light, textures, flags, specials). Otherwise
+    /// the level restarts; a playing user respawns where they stood.
+    pub fn editor_apply(&mut self, geom: MapGeometry, live: bool) -> Result<(), String> {
+        if live {
+            if let Some(world) = self.game.world_mut() {
+                for (i, (new, old)) in geom.sectors.iter().zip(&self.map_base.sectors).enumerate() {
+                    let Some(d) = world.sectors.get_mut(i) else {
+                        continue;
+                    };
+                    if new.floor_height != old.floor_height {
+                        d.floor_z = new.floor_height;
+                        d.prev_floor_z = new.floor_height;
+                    }
+                    if new.ceiling_height != old.ceiling_height {
+                        d.ceiling_z = new.ceiling_height;
+                        d.prev_ceiling_z = new.ceiling_height;
+                    }
+                    if new.light != old.light {
+                        d.light = new.light;
+                    }
+                }
+                world.map = Arc::new(geom.clone());
+            }
+            self.map_base = geom.clone();
+            self.map = geom;
+            if self.edit_cam.is_none() {
+                self.sync_map_from_world();
+            }
+            return Ok(());
+        }
+        let at = if self.edit_cam.is_none() {
+            self.local_pose_i16()
+        } else {
+            None
+        };
+        self.restart_level(geom, at)
+    }
+
+    /// Restart on `geom`, optionally moving player 1's start to `(x, y, angle°)`.
+    pub fn restart_level(
+        &mut self,
+        geom: MapGeometry,
+        at: Option<(i32, i32, i16)>,
+    ) -> Result<(), String> {
+        let mut start = geom.clone();
+        if let Some((x, y, angle)) = at {
+            if let Some(t) = start.things.iter_mut().find(|t| t.type_id == 1) {
+                t.x = clamp_i16(f64::from(x));
+                t.y = clamp_i16(f64::from(y));
+                t.angle = angle;
+            }
+        }
+        self.game
+            .start_custom_map(start, self.skill)
+            .map_err(|e| e.to_string())?;
+        self.map_base = geom.clone();
+        self.map = geom;
+        self.prev_eyes = [None; VIEW_SEATS];
+        self.cur_eyes = [None; VIEW_SEATS];
+        self.tic_accum = 0.0;
+        self.intermission_wait = 0;
+        if self.edit_cam.is_none() {
+            self.sync_camera_from_player();
+        }
+        Ok(())
+    }
+
+    /// Swap class definitions (editor actor values). The state table must be
+    /// the one the world already uses: live actors hold state ids into it.
+    pub fn replace_defs(&mut self, data: EngineData) {
+        if let Some(world) = self.game.world_mut() {
+            world.classes = Arc::clone(&data.classes);
+        }
+        self.game.set_defs(data.classes, data.states);
+    }
+
+    /// Play a music lump by name (`""` stops).
+    pub fn play_music_named(&mut self, name: &str) {
+        let Some(audio) = self.audio.as_ref() else {
+            return;
+        };
+        let Ok(mut music) = audio.music.try_borrow_mut() else {
+            return;
+        };
+        if name.is_empty() {
+            music.stop();
+        } else if let Err(e) = play_music_lump(&mut music, &self.vfs, name) {
+            web_sys::console::warn_1(&format!("room-web: music {name}: {e}").into());
+        }
+    }
+
+    /// Pick cylinders for the map's things (class radius / height).
+    #[must_use]
+    pub fn thing_boxes(&self) -> Vec<crate::editor_pick::ThingBox> {
+        let classes = self.game.world().map(|w| Arc::clone(&w.classes));
+        self.map
+            .things
+            .iter()
+            .enumerate()
+            .map(|(index, t)| {
+                let (x, y) = (f64::from(t.x), f64::from(t.y));
+                let class = classes.as_ref().and_then(|c| {
+                    c.find_doomednum(i32::from(t.type_id))
+                        .and_then(|id| c.get(id))
+                });
+                let floor = room_nodebuild::point_in_sector(&self.map, x, y)
+                    .and_then(|s| self.map.sectors.get(s.raw() as usize))
+                    .map_or(0.0, |s| s.floor_height);
+                crate::editor_pick::ThingBox {
+                    index,
+                    pos: glam::DVec3::new(x, y, floor + f64::from(t.z)),
+                    radius: class.map_or(16.0, |c| c.radius.max(8.0)),
+                    height: class.map_or(32.0, |c| c.height.max(16.0)),
+                }
+            })
+            .collect()
+    }
+}
+
+fn look_dir(yaw: f64, pitch: f64) -> Vec3 {
+    let cp = pitch.cos();
+    let forward = Vec3::new(
+        (yaw.cos() * cp) as f32,
+        (yaw.sin() * cp) as f32,
+        pitch.sin() as f32,
+    )
+    .normalize_or_zero();
+    if forward.length_squared() < 1e-6 {
+        Vec3::X
+    } else {
+        forward
+    }
+}
+
+/// Integer pixel panes: 2 side by side, 3-4 as a 2×2 grid.
+fn pane_rects(n: usize, fb_w: f32, fb_h: f32) -> Vec<[f32; 4]> {
+    let (cols, rows) = if n <= 2 { (n.max(1), 1) } else { (2, 2) };
+    let cell_w = ((fb_w - PANE_GAP * (cols as f32 - 1.0)) / cols as f32).floor();
+    let cell_h = ((fb_h - PANE_GAP * (rows as f32 - 1.0)) / rows as f32).floor();
+    (0..n.min(cols * rows))
+        .map(|i| {
+            let (c, r) = ((i % cols) as f32, (i / cols) as f32);
+            [
+                c * (cell_w + PANE_GAP),
+                r * (cell_h + PANE_GAP),
+                cell_w.max(1.0),
+                cell_h.max(1.0),
+            ]
+        })
+        .collect()
+}
+
+fn clamp_i16(v: f64) -> i16 {
+    v.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16
 }
 
 fn load_genmidi(vfs: &Vfs) -> Option<GenMidiBank> {

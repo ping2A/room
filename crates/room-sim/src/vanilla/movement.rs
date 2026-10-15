@@ -1078,12 +1078,8 @@ actor DoomImp : Actor 3001
         let mut w = World::from_map_with_classes(map, classes, states).unwrap();
         w.math_mode = SimMathMode::VanillaFixed;
         let imp = w.classes.find_doomednum(3001).unwrap();
-        w.spawn_at(
-            imp,
-            DVec3::new(416.0, 2592.0, 0.0),
-            room_core::Angle::ZERO,
-        )
-        .unwrap();
+        w.spawn_at(imp, DVec3::new(416.0, 2592.0, 0.0), room_core::Angle::ZERO)
+            .unwrap();
         let mo = w.players[0].as_ref().unwrap().mo.unwrap();
         let a = w.actors.get(mo).unwrap().clone();
         let chk = check_position_fixed(&w, &a, a.pos, Some(mo));

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Room Editor</title>
+  <link rel="stylesheet" href="./editor.css" />
+</head>
+<body>
+  <header id="toolbar">
+    <div class="brand">ROOM<span>editor</span></div>
+    <div class="group">
+      <label class="btn" title="Open an IWAD, PWAD or PK3 (or drop files anywhere)">
+        Open…<input id="file-open" type="file" accept=".wad,.pk3,.zip,.iwad,.pwad" multiple hidden />
+      </label>
+      <select id="map-select" title="Map"></select>
+      <button id="btn-new-map" class="btn" title="New map">New map</button>
+      <button id="btn-export" class="btn primary" title="Download every change as a PWAD (Ctrl+S)">Export WAD</button>
+    </div>
+    <div class="group">
+      <button id="btn-undo" class="btn icon" title="Undo (Ctrl+Z)">↶</button>
+      <button id="btn-redo" class="btn icon" title="Redo (Ctrl+Y)">↷</button>
+    </div>
+    <div class="group modes" id="modes">
+      <button data-mode="vertices" class="btn" title="Vertices (V)">Vertices</button>
+      <button data-mode="lines" class="btn" title="Lines (L)">Lines</button>
+      <button data-mode="sectors" class="btn active" title="Sectors (S)">Sectors</button>
+      <button data-mode="things" class="btn" title="Things (T)">Things</button>
+      <button data-mode="draw" class="btn" title="Draw sector (D)">Draw</button>
+    </div>
+    <div class="group">
+      <label title="Grid size ([ / ])">Grid
+        <select id="grid">
+          <option>4</option><option>8</option><option>16</option><option selected>32</option>
+          <option>64</option><option>128</option><option>256</option>
+        </select>
+      </label>
+      <label title="Snap to grid (G)"><input id="snap" type="checkbox" checked /> Snap</label>
+      <label title="Fill sectors with their floor flat"><input id="textured" type="checkbox" checked /> Flats</label>
+    </div>
+    <div class="group">
+      <button id="btn-copy" class="btn icon" title="Copy selection (Ctrl+C) · Ctrl+X cut · Ctrl+D duplicate">⧉</button>
+      <button id="btn-paste" class="btn icon" title="Paste at the mouse (Ctrl+V)">📋</button>
+      <button id="btn-rotate" class="btn icon" title="Rotate 90° (R · Shift+R counter-clockwise)">⟳</button>
+      <button id="btn-mirror" class="btn icon" title="Mirror horizontally (H · Shift+H vertically)">⇋</button>
+      <button id="btn-check" class="btn" title="Map checker (F8)">✔ Check</button>
+      <button id="btn-composer" class="btn" title="TEXTURE1/TEXTURE2 + PNAMES composer">🧱 Textures</button>
+    </div>
+    <div class="group play">
+      <select id="skill" title="Skill for play tests">
+        <option value="1">ITYTD</option><option value="2">HNTR</option>
+        <option value="3" selected>HMP</option><option value="4">UV</option><option value="5">NM</option>
+      </select>
+      <button id="btn-play" class="btn go" title="Play from the player start (F5)">▶ Play</button>
+      <button id="btn-play-here" class="btn go" title="Play from the 3D camera (F6)">▶ Here</button>
+      <button id="btn-stop" class="btn" title="Back to the fly camera (F7)" disabled>■ Edit</button>
+    </div>
+    <div class="group layout">
+      <button data-layout="2d" class="btn" title="2D only">2D</button>
+      <button data-layout="split" class="btn active" title="2D + 3D">Split</button>
+      <button data-layout="3d" class="btn" title="3D only">3D</button>
+    </div>
+  </header>
+
+  <main id="workspace">
+    <aside id="browser">
+      <nav class="tabs" id="browser-tabs">
+        <button data-tab="maps" class="active">Maps</button>
+        <button data-tab="things">Things</button>
+        <button data-tab="textures">Textures</button>
+        <button data-tab="flats">Flats</button>
+        <button data-tab="actors">Actors</button>
+        <button data-tab="lumps">Lumps</button>
+      </nav>
+      <div class="search"><input id="browser-filter" type="search" placeholder="Filter…" /></div>
+      <div id="browser-body"></div>
+    </aside>
+
+    <section id="center">
+      <nav class="tabs doc-tabs" id="doc-tabs"></nav>
+      <div id="map-view" class="split">
+        <div id="view2d-wrap">
+          <canvas id="view2d" tabindex="0"></canvas>
+          <div class="hint" id="hint2d"></div>
+        </div>
+        <div id="splitter" title="Drag to resize"></div>
+        <div id="view3d-wrap">
+          <canvas id="room" width="1" height="1" tabindex="0" data-fit="parent"></canvas>
+          <div class="hint" id="hint3d">Click: select · Right-drag: look · WASD/Q/Z: fly · Shift: fast</div>
+          <div class="badge" id="badge3d">EDIT</div>
+        </div>
+      </div>
+      <div id="doc-view" hidden></div>
+    </section>
+
+    <aside id="inspector">
+      <div class="panel-title" id="inspector-title">Inspector</div>
+      <div id="inspector-body"><p class="muted">Select something in the 2D or 3D view.</p></div>
+    </aside>
+  </main>
+
+  <footer id="statusbar">
+    <span id="st-msg">Loading engine…</span>
+    <span id="st-sync" class="pill"></span>
+    <span id="st-counts"></span>
+    <span id="st-pos"></span>
+  </footer>
+
+  <div id="picker" hidden>
+    <div class="picker-head">
+      <input id="picker-filter" type="search" placeholder="Filter textures…" />
+      <button id="picker-close" class="btn icon">✕</button>
+    </div>
+    <div id="picker-grid"></div>
+  </div>
+
+  <div id="toast" hidden></div>
+
+  <script type="module" src="./editor.js"></script>
+</body>
+</html>

@@ -595,7 +595,10 @@ mod tests {
                 )
             })
             .count();
-        assert!(stcfn >= 20, "STCFN fallback for Doom1-style IWADs, got {stcfn}");
+        assert!(
+            stcfn >= 20,
+            "STCFN fallback for Doom1-style IWADs, got {stcfn}"
+        );
         let skull = list.cmds.iter().any(|c| {
             matches!(
                 c,

@@ -2,8 +2,8 @@
 
 #![allow(clippy::unwrap_used)]
 
-use room_render::{DynLightInstance, ShadowOccluder, bake_1d_shadowmaps};
 use glam::Vec3;
+use room_render::{DynLightInstance, ShadowOccluder, bake_1d_shadowmaps};
 use std::time::Instant;
 
 #[test]

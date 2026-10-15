@@ -1,0 +1,66 @@
+[package]
+name = "room-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Multi-room WebSocket game server for Room web coop (docs/22)."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "room-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "room-load"
+path = "src/bin/room_load.rs"
+
+[features]
+default = ["legacy-ftrl", "builtin-turn"]
+## Speak today's FTRL framing for room-web migration.
+legacy-ftrl = []
+## Lightcall STUN/TURN servers (webrtc-rs `turn`; `ring` allowlisted in deny.toml).
+builtin-turn = ["room-sfu/builtin-turn"]
+## In-process str0m UDP SFU (`--sfu-udp`).
+rtp = ["room-sfu/rtp"]
+## Headless `room-game` verifier (`--iwad` + `--enable-verifier`).
+verifier = [
+  "dep:room-game",
+  "dep:room-map",
+  "dep:room-nodebuild",
+  "dep:room-vfs",
+  "dep:room-decorate",
+  "dep:room-sim",
+]
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+dashmap = { workspace = true }
+futures-util = { workspace = true }
+getrandom = { workspace = true }
+room-net = { path = "../room-net", default-features = false }
+room-proto = { path = "../room-proto" }
+room-sfu = { path = "../room-sfu" }
+room-game = { path = "../room-game", optional = true }
+room-map = { path = "../room-map", optional = true }
+room-nodebuild = { path = "../room-nodebuild", optional = true }
+room-vfs = { path = "../room-vfs", optional = true }
+room-decorate = { path = "../room-decorate", optional = true }
+room-sim = { path = "../room-sim", optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+futures-util = { workspace = true }

@@ -110,7 +110,11 @@ pub fn draw_intermission(
             }
             // Level name + "Finished".
             let wilv = format!("WILV{ep}{map}");
-            list.patch(&wilv, Vec2::new(title_x(&wilv, width), TITLE_Y), Vec2::new(0.0, 0.0));
+            list.patch(
+                &wilv,
+                Vec2::new(title_x(&wilv, width), TITLE_Y),
+                Vec2::new(0.0, 0.0),
+            );
             list.patch(
                 "WIF",
                 Vec2::new(title_x("WIF", width), FINISHED_Y),
@@ -174,24 +178,14 @@ fn draw_episode_stats(list: &mut UiDrawList, stats: &IntermissionStats) {
         Vec2::new(SP_TIME_X, SP_TIME_Y),
         Vec2::new(0.0, 0.0),
     );
-    draw_wi_time(
-        list,
-        SP_TIME_X + 44.0,
-        SP_TIME_Y,
-        stats.time_tics,
-    );
+    draw_wi_time(list, SP_TIME_X + 44.0, SP_TIME_Y, stats.time_tics);
     if stats.par_tics > 0 {
         list.patch(
             "WIPAR",
             Vec2::new(SP_TIME_X + 120.0, SP_TIME_Y),
             Vec2::new(0.0, 0.0),
         );
-        draw_wi_time(
-            list,
-            SP_TIME_X + 160.0,
-            SP_TIME_Y,
-            stats.par_tics,
-        );
+        draw_wi_time(list, SP_TIME_X + 160.0, SP_TIME_Y, stats.par_tics);
     }
     // Small STCFN cue (vanilla advances on any key; keep an explicit prompt).
     draw_stcfn_string(list, 70.0, 188.0, "PRESS ENTER", 1.0);
@@ -233,13 +227,7 @@ fn draw_commercial_stats(list: &mut UiDrawList, stats: &IntermissionStats, width
         list.patch("WIPAR", Vec2::new(x, y), Vec2::new(0.0, 0.0));
         draw_wi_time(list, x + 44.0, y, stats.par_tics);
     }
-    draw_stcfn_string(
-        list,
-        x,
-        height_prompt(list),
-        "PRESS ENTER TO CONTINUE",
-        1.0,
-    );
+    draw_stcfn_string(list, x, height_prompt(list), "PRESS ENTER TO CONTINUE", 1.0);
 }
 
 fn height_prompt(list: &UiDrawList) -> f32 {
@@ -255,11 +243,7 @@ fn draw_wi_percent(list: &mut UiDrawList, x_right: f32, y: f32, percent: u8) {
     let chars: Vec<char> = text.chars().collect();
     x -= digit_w * chars.len() as f32;
     for ch in chars {
-        list.patch(
-            &format!("WINUM{ch}"),
-            Vec2::new(x, y),
-            Vec2::new(0.0, 0.0),
-        );
+        list.patch(&format!("WINUM{ch}"), Vec2::new(x, y), Vec2::new(0.0, 0.0));
         x += digit_w;
     }
     list.patch("WIPCNT", Vec2::new(x_right, y), Vec2::new(0.0, 0.0));
@@ -273,11 +257,7 @@ fn draw_wi_time(list: &mut UiDrawList, mut x: f32, y: f32, tics: u32) {
     for ch in text.chars() {
         match ch {
             '0'..='9' => {
-                list.patch(
-                    &format!("WINUM{ch}"),
-                    Vec2::new(x, y),
-                    Vec2::new(0.0, 0.0),
-                );
+                list.patch(&format!("WINUM{ch}"), Vec2::new(x, y), Vec2::new(0.0, 0.0));
                 x += 12.0;
             }
             ':' => {

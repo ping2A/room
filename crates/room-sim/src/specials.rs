@@ -4124,9 +4124,8 @@ fn teleport_line(
     let mid_x = (v1.pos.x() + v2.pos.x()) * 0.5;
     let mid_y = (v1.pos.y() + v2.pos.y()) * 0.5;
     // Nudge onto the front side so the activator isn't stuck on the line.
-    let len = room_core::dmath::sqrt(
-        dest.delta.x() * dest.delta.x() + dest.delta.y() * dest.delta.y(),
-    );
+    let len =
+        room_core::dmath::sqrt(dest.delta.x() * dest.delta.x() + dest.delta.y() * dest.delta.y());
     let (nx, ny) = if len > 1e-6 {
         (-dest.delta.y() / len, dest.delta.x() / len)
     } else {
@@ -6523,11 +6522,7 @@ fn crush_sector_actors(world: &mut World, sector: SectorId) {
                 }
                 let in_sec = room_nodebuild::point_in_sector(&world.map, a.pos.x(), a.pos.y())
                     .or_else(|| {
-                        room_nodebuild::point_in_sector_vanilla(
-                            &world.map,
-                            a.pos.x(),
-                            a.pos.y(),
-                        )
+                        room_nodebuild::point_in_sector_vanilla(&world.map, a.pos.x(), a.pos.y())
                     })
                     .is_some_and(|s| s == sector);
                 if !in_sec {
@@ -7914,9 +7909,7 @@ fn carry_floor_actors(world: &mut World, sector: SectorId, old_floor: f64, delta
             continue;
         }
         let Some(sid) = room_nodebuild::point_in_sector(&world.map, a.pos.x(), a.pos.y())
-            .or_else(|| {
-                room_nodebuild::point_in_sector_vanilla(&world.map, a.pos.x(), a.pos.y())
-            })
+            .or_else(|| room_nodebuild::point_in_sector_vanilla(&world.map, a.pos.x(), a.pos.y()))
         else {
             continue;
         };
@@ -9085,7 +9078,10 @@ actor PlayerPawn : Actor 0
             "plat start should cue platforms/start"
         );
         let high = w.sectors[0].floor_z;
-        assert!((w.plats[0].low - (0.0 + 8.0)).abs() < 1e-6, "low=neighbor+lip");
+        assert!(
+            (w.plats[0].low - (0.0 + 8.0)).abs() < 1e-6,
+            "low=neighbor+lip"
+        );
         tick_plats(&mut w);
         assert!(w.sectors[0].floor_z < high);
         for _ in 0..160 {
@@ -10160,7 +10156,11 @@ actor PlayerPawn : Actor 0
         let mut w = World::from_map(map).unwrap();
         let lid = LineId::from_raw(0);
         assert!(activate_line(&mut w, lid, None, ActivationType::Use));
-        assert_ne!(w.line_special(lid), 0, "DR door must keep its special (REP)");
+        assert_ne!(
+            w.line_special(lid),
+            0,
+            "DR door must keep its special (REP)"
+        );
         assert!(
             activate_line(&mut w, lid, None, ActivationType::Use),
             "DR door must be usable again while the thinker is active"

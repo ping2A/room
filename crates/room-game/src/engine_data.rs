@@ -135,6 +135,34 @@ pub fn load_engine_data(vfs: &Vfs) -> Result<EngineData, GameError> {
     })
 }
 
+/// Like [`load_engine_data`], but parses **every** `DECORATE` lump in load order
+/// (engine → IWAD → PWADs), as GZDoom does, so PWAD actors may add, redefine
+/// editor numbers, or `replaces` engine classes.
+pub fn load_layered_engine_data(vfs: &Vfs) -> Result<EngineData, GameError> {
+    let mut base = load_engine_data(vfs)?;
+    let lumps = vfs
+        .find_all("DECORATE", Namespace::Global)
+        .collect::<Vec<_>>();
+    if lumps.len() <= 1 {
+        return Ok(base);
+    }
+    let mut decorate = String::new();
+    for id in lumps {
+        let bytes = vfs
+            .read(id)
+            .map_err(|e| GameError::Message(e.to_string()))?;
+        decorate.push_str(&String::from_utf8_lossy(&bytes));
+        decorate.push('\n');
+    }
+    let ir = parse_decorate_with_includes(&decorate, |path| resolve_include(vfs, path))
+        .map_err(|e| GameError::Message(format!("DECORATE: {e}")))?;
+    let classes =
+        Arc::new(ClassRegistry::from_decorate(&ir).map_err(|e| GameError::Message(e.to_string()))?);
+    base.states = Arc::new(StateTable::from_decorate(&ir, &classes));
+    base.classes = classes;
+    Ok(base)
+}
+
 fn resolve_include(vfs: &Vfs, path: &str) -> Result<String, DecorateError> {
     let normalized = path.replace('\\', "/");
     let candidates = [

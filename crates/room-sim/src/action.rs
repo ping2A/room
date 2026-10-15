@@ -6756,8 +6756,7 @@ pub(crate) fn noise_alert_ex(world: &mut World, target: ActorId, emitter: ActorI
     // Doom `P_RecursiveSound`: flood through open 2S lines from the emitter's
     // sector. `ML_SOUNDBLOCK` allows one extra hop then stops.
     const ML_SOUNDBLOCK: i16 = 0x0040;
-    let Some(start) = room_nodebuild::point_in_sector(&world.map, src.pos.x(), src.pos.y())
-    else {
+    let Some(start) = room_nodebuild::point_in_sector(&world.map, src.pos.x(), src.pos.y()) else {
         return;
     };
     let nsec = world.map.sectors.len();
@@ -8278,11 +8277,7 @@ actor AlwaysShoot : Actor 9402
         let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
         let zombie = classes.find_name("AlwaysShoot").unwrap();
         let id = w
-            .spawn_at(
-                zombie,
-                room_core::DVec3::new(200.0, 64.0, 0.0),
-                Angle::ZERO,
-            )
+            .spawn_at(zombie, room_core::DVec3::new(200.0, 64.0, 0.0), Angle::ZERO)
             .unwrap();
         w.level.time = 16;
         assert_eq!(

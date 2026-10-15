@@ -387,8 +387,7 @@ fn freedoom2_demo1_vanilla_full_playback() {
         let t = i + 1;
         assert_eq!(game.state, GameState::Level, "left Level at tic {}", t);
 
-        if std::env::var_os("ROOM_DUMP_IMP").is_some() && (200..=500).contains(&t) && t % 5 == 0
-        {
+        if std::env::var_os("ROOM_DUMP_IMP").is_some() && (200..=500).contains(&t) && t % 5 == 0 {
             let w = game.world().unwrap();
             for &id in &w.thinkers.default {
                 let Some(a) = w.actors.get(id) else { continue };
@@ -1288,13 +1287,9 @@ fn record_and_verify_bundle(wad: &PathBuf, maps: &[&str], out_name: &str) -> Dem
     for demo in &bundle.demos {
         let mut map = load_map(&vfs, &demo.map).unwrap();
         ensure_nodes(&mut map);
-        let mut world = room_sim::World::from_map_with_skill(
-            map,
-            Arc::clone(&classes),
-            Arc::clone(&states),
-            3,
-        )
-        .unwrap();
+        let mut world =
+            room_sim::World::from_map_with_skill(map, Arc::clone(&classes), Arc::clone(&states), 3)
+                .unwrap();
         world.rng.set_seed(demo.rng_seed);
         let result = DemoPlayer { demo }.verify(&mut world).unwrap();
         assert_eq!(
@@ -1324,13 +1319,9 @@ fn verify_committed_bundle(wad: &PathBuf, file: &str, expected_len: usize) {
     for demo in &bundle.demos {
         let mut map = load_map(&vfs, &demo.map).unwrap();
         ensure_nodes(&mut map);
-        let mut world = room_sim::World::from_map_with_skill(
-            map,
-            Arc::clone(&classes),
-            Arc::clone(&states),
-            3,
-        )
-        .unwrap();
+        let mut world =
+            room_sim::World::from_map_with_skill(map, Arc::clone(&classes), Arc::clone(&states), 3)
+                .unwrap();
         world.rng.set_seed(demo.rng_seed);
         let result = DemoPlayer { demo }.verify(&mut world).unwrap();
         assert_eq!(

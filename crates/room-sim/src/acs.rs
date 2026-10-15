@@ -2495,8 +2495,7 @@ impl AcsHost for WorldAcsHost<'_> {
         let Some(li) = lines_for_acs_id(self.world, line_id).into_iter().next() else {
             return 0;
         };
-        self.world
-            .line_activation(room_core::LineId::from_raw(li)) as i32
+        self.world.line_activation(room_core::LineId::from_raw(li)) as i32
     }
 
     fn set_line_texture(&mut self, line_id: i32, side: i32, position: i32, texture: &str) {
@@ -2871,8 +2870,7 @@ fn udmf_builtin_int(world: &World, kind: u8, id: i32, key: &str) -> i32 {
                 "playercross" | "playeruse" | "monstercross" | "impact" | "playerpush"
                 | "missilecross" | "monsteruse" | "monsterpush" | "anycross" | "playeruseback"
                 | "damagespecial" | "deathspecial" => {
-                    let act =
-                        world.line_activation(room_core::ids::LineId::from_raw(idx as u32));
+                    let act = world.line_activation(room_core::ids::LineId::from_raw(idx as u32));
                     let bit = match key.as_str() {
                         "playercross" => room_map::spac::CROSS,
                         "playeruse" => room_map::spac::USE,

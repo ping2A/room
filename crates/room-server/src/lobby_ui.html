@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="color-scheme" content="dark"/>
+  <title>ROOM — Enter the Fray</title>
+  <link rel="stylesheet" href="/lobby/assets/app.css"/>
+</head>
+<body>
+  <div class="bg" aria-hidden="true">
+    <div class="bg-blood"></div>
+    <div class="bg-grit"></div>
+    <div class="bg-drips"></div>
+  </div>
+
+  <header class="top">
+    <div class="top-meta">
+      <span id="node-pill" class="pill">node —</span>
+      <span id="drain-pill" class="pill warn hidden">draining</span>
+      <label class="name-field">
+        <span>Callsign</span>
+        <input id="player-name" maxlength="24" placeholder="doomguy" autocomplete="nickname"/>
+      </label>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="hero-block">
+      <p class="mark" aria-label="Room">ROOM</p>
+      <h1 class="hero-line">Rip &amp; tear — online</h1>
+      <p class="lede">Public pits on this node. Create a slaughter, join by id, or watch the carnage.</p>
+      <div class="hero-actions">
+        <button type="button" id="btn-create" class="btn primary">Open a pit</button>
+        <button type="button" id="btn-join-id" class="btn">Join by id</button>
+        <button type="button" id="btn-refresh" class="btn ghost">Refresh</button>
+        <a id="btn-editor" class="btn ghost" href="/play/editor.html" target="_blank" rel="noopener">WAD editor</a>
+      </div>
+      <p id="flash" class="flash hidden" role="status"></p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Live pits</h2>
+        <span class="muted" id="room-count">—</span>
+      </div>
+      <div id="room-grid" class="room-grid"></div>
+      <p id="rooms-empty" class="empty">No blood spilled yet — open a pit.</p>
+    </section>
+
+    <aside id="watch-panel" class="panel watch hidden">
+      <div class="panel-head">
+        <h2>Spectating</h2>
+        <button type="button" id="watch-close" class="btn ghost small">Close</button>
+      </div>
+      <div id="watch-body" class="watch-body"></div>
+      <div class="watch-actions">
+        <button type="button" id="watch-live" class="btn">Watch live — multi-view</button>
+        <button type="button" id="watch-play" class="btn primary">Join &amp; play</button>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="foot">
+    <span>Client: <code id="play-base-label">—</code></span>
+    <span>Ops: <code>--admin-bind</code> (script default :8766/admin)</span>
+  </footer>
+
+  <dialog id="modal" class="modal">
+    <form method="dialog" id="modal-form">
+      <header>
+        <h2 id="modal-title">Action</h2>
+        <button type="submit" value="cancel" class="icon-btn" aria-label="Close">×</button>
+      </header>
+      <div id="modal-body" class="modal-body"></div>
+      <footer>
+        <button type="submit" value="cancel" class="btn">Cancel</button>
+        <button type="submit" value="confirm" class="btn primary" id="modal-confirm">Confirm</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <script src="/lobby/assets/app.js" defer></script>
+</body>
+</html>

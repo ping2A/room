@@ -22,6 +22,75 @@
       padding: 6px 10px; background: rgba(0,0,0,0.55); border-radius: 4px;
       font-size: 13px; pointer-events: none; transition: opacity 0.4s; z-index: 3;
     }
+    #lobby {
+      position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+      background: rgba(6, 8, 12, 0.55); z-index: 5;
+      /* Capture clicks so the canvas underneath cannot steal the cursor / pointer-lock. */
+      pointer-events: auto;
+    }
+    #lobby .panel {
+      min-width: 18rem; max-width: 24rem; padding: 1.25rem 1.4rem;
+      background: rgba(16, 18, 26, 0.92); border: 1px solid #2e3444; border-radius: 10px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+    }
+    #lobby h2 { margin: 0 0 0.35rem; font-size: 1.15rem; font-weight: 650; color: #f0f2f6; }
+    #lobby .meta { margin: 0 0 0.85rem; font-size: 0.85rem; color: #9aa3b2; }
+    #lobby .meta span { color: #d8dee9; font-weight: 600; }
+    #lobby ul.seats { list-style: none; margin: 0 0 0.85rem; padding: 0; }
+    #lobby li.seat {
+      display: grid; grid-template-columns: 1.1rem 1fr auto; gap: 0.45rem; align-items: center;
+      padding: 0.35rem 0; border-bottom: 1px solid rgba(50, 56, 70, 0.65);
+      font-size: 0.9rem; color: #6a7384;
+    }
+    #lobby li.seat.on { color: #e8edf5; }
+    #lobby li.seat .dot { color: #4a5568; }
+    #lobby li.seat.on .dot { color: #7dba5a; }
+    #lobby li.seat .idx { font-size: 0.75rem; color: #6a7384; font-variant-numeric: tabular-nums; }
+    #lobby .hint { margin: 0; font-size: 0.78rem; color: #6a7384; line-height: 1.4; }
+    #lobby .err { color: #e08080; }
+    #lobby .muted { color: #8a93a3; }
+    #lobby .invite { margin: 0 0 0.85rem; }
+    #lobby .invite-label {
+      display: block; margin: 0 0 0.35rem; font-size: 0.75rem; letter-spacing: 0.04em;
+      text-transform: uppercase; color: #8a93a3; font-weight: 600;
+    }
+    #lobby .invite-row { display: flex; gap: 0.4rem; align-items: stretch; }
+    #lobby .invite[hidden] { display: none !important; }
+    #lobby .invite-url {
+      flex: 1; min-width: 0; padding: 0.45rem 0.55rem; border-radius: 5px;
+      border: 1px solid #3a4254; background: #0c0e14; color: #c8d0dc;
+      font: 0.72rem/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+      user-select: text; -webkit-user-select: text; cursor: text;
+    }
+    #lobby .invite-copy {
+      flex: 0 0 auto; padding: 0.45rem 0.7rem; border-radius: 5px; cursor: pointer;
+      border: 1px solid #4a6e36; background: #3a5a2a; color: #e8ffe0;
+      font: 0.8rem/1.2 system-ui, sans-serif; white-space: nowrap;
+    }
+    #lobby .invite-copy:hover { background: #4a6e36; }
+    #lobby .invite-copy.copied { background: #2a4a5a; border-color: #4a7a9a; color: #d0e8f8; }
+    #callsign {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: rgba(6, 8, 12, 0.82); z-index: 8;
+    }
+    #callsign[hidden] { display: none; }
+    #callsign form {
+      width: 20rem; padding: 1.25rem 1.4rem;
+      background: rgba(16, 18, 26, 0.96); border: 1px solid #2e3444; border-radius: 10px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+    }
+    #callsign h2 { margin: 0 0 0.35rem; font-size: 1.15rem; color: #f0f2f6; }
+    #callsign p { margin: 0 0 0.85rem; font-size: 0.85rem; color: #9aa3b2; }
+    #callsign input {
+      box-sizing: border-box; width: 100%; padding: 0.55rem 0.65rem; margin: 0 0 0.75rem;
+      border-radius: 5px; border: 1px solid #3a4254; background: #0c0e14; color: #e8edf5;
+      font: 1rem system-ui, sans-serif;
+    }
+    #callsign button {
+      width: 100%; padding: 0.55rem; border-radius: 5px; cursor: pointer;
+      border: 1px solid #4a6e36; background: #3a5a2a; color: #e8ffe0; font: 0.95rem system-ui, sans-serif;
+    }
+    #callsign button:disabled { opacity: 0.5; cursor: default; }
     #boot {
       position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
       background: rgba(8, 8, 14, 0.72); z-index: 2;
@@ -40,7 +109,96 @@
     #boot input { display: none; }
     #boot .hint { margin-top: 0.85rem; font-size: 0.8rem; color: #787888; }
     #boot.error .panel { border-color: #833; }
+    #voiceBar {
+      position: fixed; right: 12px; bottom: 12px; z-index: 4;
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px; background: rgba(10, 12, 16, 0.72);
+      border: 1px solid rgba(80, 90, 100, 0.45); border-radius: 6px;
+      font-size: 12px; color: #a8b0b8;
+      /* Never cover the playfield for pointer-lock / click-to-play. */
+      pointer-events: none;
+      user-select: none;
+    }
+    #voiceBar .voice-ptt,
+    #voiceBar .voice-spk {
+      pointer-events: auto;
+      cursor: pointer;
+      border-radius: 4px;
+      padding: 6px 10px;
+      border: 1px solid #3a4540;
+      background: #1c2420;
+      color: #c8d8cc;
+      font: inherit;
+      line-height: 1.2;
+      outline: none;
+      -webkit-user-select: none;
+      user-select: none;
+      touch-action: none;
+    }
+    #voiceBar .voice-ptt:hover,
+    #voiceBar .voice-spk:hover { background: #243028; }
+    #voiceBar .voice-ptt.disabled,
+    #voiceBar.no-mic .voice-ptt {
+      opacity: 0.55;
+      cursor: default;
+      background: #1a1a20;
+      border-color: #333;
+      color: #888;
+    }
+    #voiceBar .voice-ptt.active,
+    #voiceBar.is-talking .voice-ptt {
+      background: #3a5a2a;
+      border-color: #6a9a4a;
+      color: #e8ffe0;
+      box-shadow: 0 0 0 1px rgba(120, 180, 80, 0.35);
+    }
+    #voiceBar .voice-spk.is-off {
+      background: #2a1c1c;
+      border-color: #5a3a3a;
+      color: #e0c0c0;
+    }
+    #voiceBar .voice-hear {
+      color: #8ec8ff;
+      font-size: 11px;
+      letter-spacing: 0.02em;
+    }
+    #voiceBar.is-hearing { border-color: rgba(100, 160, 220, 0.55); }
+    #voiceHint { color: #787888; font-size: 11px; max-width: 9rem; }
+    #netGraph {
+      position: fixed; left: 12px; top: 12px; z-index: 4;
+      min-width: 11.5rem; max-width: 16rem;
+      padding: 8px 10px 6px; background: rgba(8, 10, 14, 0.78);
+      border: 1px solid rgba(70, 80, 95, 0.5); border-radius: 6px;
+      font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #a8b0bc; pointer-events: none; user-select: none;
+    }
+    #netGraph.is-idle { opacity: 0.45; }
+    #netGraph.is-stalling { border-color: rgba(200, 90, 70, 0.65); }
+    #netGraph .ng-title {
+      font: 600 10px/1 system-ui, sans-serif; letter-spacing: 0.08em;
+      text-transform: uppercase; color: #7a8494; margin: 0 0 6px;
+    }
+    #netGraph .ng-row {
+      display: grid; grid-template-columns: auto 1fr auto 1fr;
+      gap: 2px 6px; align-items: baseline; margin-bottom: 2px;
+    }
+    #netGraph .ng-k { color: #5a6474; }
+    #netGraph .ng-bars {
+      display: flex; align-items: flex-end; gap: 1px;
+      height: 36px; margin-top: 6px; padding-top: 2px;
+      border-top: 1px solid rgba(50, 56, 68, 0.7);
+    }
+    #netGraph .ng-bars i {
+      display: block; width: 3px; min-height: 2px;
+      background: #4a9a5a; border-radius: 1px 1px 0 0;
+    }
+    #netGraph .ng-bars i.warn { background: #c9a24a; }
+    #netGraph .ng-bars i.bad { background: #c45a4a; }
+    #netGraph .ng-hint {
+      margin: 4px 0 0; font: 9px/1.2 system-ui, sans-serif; color: #5a6474;
+    }
   </style>
+  <link rel="icon" href="data:," />
 </head>
 <body>
   <div id="stage">
@@ -54,18 +212,175 @@
         Choose IWAD…
         <input id="iwad" type="file" accept=".wad,application/octet-stream" />
       </label>
-      <p class="hint">Or run <code>./scripts/play-web.sh</code> with <code>testdata/doom/doom1.wad</code> present — it will be served as <code>/doom1.wad</code> and load automatically. Coop: <code>./scripts/play-web-coop.sh</code> or add <code>?ws=ws://127.0.0.1:8765&amp;players=2</code>. Click the canvas to unlock audio + mouse look.</p>
+      <p class="hint">Or run <code>./scripts/play-web.sh</code> with <code>testdata/doom/doom1.wad</code> present — it will be served as <code>/doom1.wad</code> and load automatically. Coop: <code>./scripts/play-web-coop.sh</code> or add <code>?ws=ws://127.0.0.1:8765&amp;players=2</code>. Press a key or click to unlock audio; click the canvas for mouse look. Coop voice: hold <kbd>V</kbd> to talk (push-to-talk).</p>
     </div>
+  </div>
+  <div id="lobby" aria-live="polite">
+    <div class="panel">
+      <div id="lobby-body">
+        <h2>Connecting…</h2>
+        <p class="muted">Joining coop lobby</p>
+      </div>
+      <!-- Stable node: lobby-body is rewritten every poll; keep invite/copy out of that churn. -->
+      <div id="lobby-invite" class="invite" hidden>
+        <label class="invite-label" for="lobby-invite-url">Invite a friend</label>
+        <div class="invite-row">
+          <input id="lobby-invite-url" class="invite-url" type="text" readonly value="" />
+          <button type="button" id="lobby-invite-copy" class="invite-copy">Copy link</button>
+        </div>
+        <p class="hint">They open this link to join a free seat (fresh ticket).</p>
+      </div>
+    </div>
+  </div>
+  <div id="callsign" hidden>
+    <form autocomplete="off">
+      <h2 id="callsign-title">Pick your callsign</h2>
+      <p id="callsign-hint">Other players see this name in the scoreboard and kill feed.</p>
+      <input id="callsign-input" type="text" maxlength="24" placeholder="Callsign" required />
+      <button type="submit" id="callsign-go" disabled>Join</button>
+    </form>
   </div>
   <p id="status">Loading Room…</p>
   <script type="module">
     const status = document.getElementById("status");
     const boot = document.getElementById("boot");
     const fileInput = document.getElementById("iwad");
+    const lobbyEl = document.getElementById("lobby");
+    const inviteCopyBtn = document.getElementById("lobby-invite-copy");
+    const inviteUrlInput = document.getElementById("lobby-invite-url");
+
+    let copyBusyUntil = 0;
+    async function copyInviteLink(ev) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      const now = Date.now();
+      if (now < copyBusyUntil) return;
+      copyBusyUntil = now + 800;
+      const url = (inviteUrlInput && inviteUrlInput.value) || "";
+      if (!url || !inviteCopyBtn) return;
+      let ok = false;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(url);
+          ok = true;
+        }
+      } catch (_) { /* fall through */ }
+      if (!ok && inviteUrlInput) {
+        try {
+          inviteUrlInput.focus();
+          inviteUrlInput.select();
+          inviteUrlInput.setSelectionRange(0, url.length);
+          ok = document.execCommand("copy");
+        } catch (_) { /* ignore */ }
+      }
+      if (!ok && inviteUrlInput) {
+        inviteUrlInput.focus();
+        inviteUrlInput.select();
+        return;
+      }
+      inviteCopyBtn.textContent = "Copied";
+      inviteCopyBtn.classList.add("copied");
+      setTimeout(() => {
+        inviteCopyBtn.textContent = "Copy link";
+        inviteCopyBtn.classList.remove("copied");
+      }, 1600);
+    }
+
+    function askCallsign(watching) {
+      const root = document.getElementById("callsign");
+      const form = root.querySelector("form");
+      const input = document.getElementById("callsign-input");
+      const go = document.getElementById("callsign-go");
+      document.getElementById("callsign-title").textContent =
+        watching ? "Spectate as…" : "Pick your callsign";
+      go.textContent = watching ? "Watch" : "Join";
+      let saved = "";
+      try { saved = localStorage.getItem("roomLobbyName") || ""; } catch (_) { /* private mode */ }
+      input.value = saved;
+      const sync = () => { go.disabled = input.value.trim().length === 0; };
+      input.addEventListener("input", sync);
+      sync();
+      root.hidden = false;
+      input.focus();
+      input.select();
+      return new Promise((resolve) => {
+        form.addEventListener("submit", (ev) => {
+          ev.preventDefault();
+          const name = input.value.trim().slice(0, 24);
+          if (!name) return;
+          try { localStorage.setItem("roomLobbyName", name); } catch (_) { /* ignore */ }
+          root.hidden = true;
+          resolve(name);
+        });
+      });
+    }
+
+    // pointerdown is the primary path (click often lost if DOM churns); click is backup.
+    inviteCopyBtn.addEventListener("pointerdown", (ev) => { copyInviteLink(ev); });
+    inviteCopyBtn.addEventListener("click", (ev) => { copyInviteLink(ev); });
+    lobbyEl.addEventListener("pointerdown", (ev) => {
+      // Keep lobby UI from falling through to the canvas.
+      ev.stopPropagation();
+    });
 
     try {
       const mod = await import("./room_web.js");
       await mod.default();
+      // Debug helpers for coop (console / automation).
+      window.roomDebugState = () => mod.roomDebugState();
+      window.roomNetStats = () => mod.roomNetStats();
+      window.roomAudioStats = () => mod.roomAudioStats();
+      window.roomVoiceActive = () => mod.roomVoiceActive();
+
+      const params = new URLSearchParams(location.search);
+      // Coop / spectate always needs a callsign before the IWAD boots the session.
+      if (params.get("ws") && !(params.get("name") || "").trim()) {
+        const watching = !!params.get("spectate") && params.get("spectate") !== "0";
+        const name = await askCallsign(watching);
+        params.set("name", name);
+        history.replaceState(null, "", `${location.pathname}?${params.toString()}${location.hash}`);
+      }
+      if (params.get("ws")) {
+        const ws = params.get("ws") || "";
+        // Net graph always on for coop sessions.
+        try {
+          await import("./netgraph.js");
+        } catch (e) {
+          console.warn("room-web: netgraph unavailable", e);
+        }
+        // v2: WebRTC Opus (`rtc.js`) only. Legacy FTRL: PCM voice.js fallback.
+        let webrtc = false;
+        if (ws.includes("/v2/") && window.RTCPeerConnection) {
+          try {
+            await import("./rtc.js");
+            webrtc = true;
+            if (window.roomRtc && typeof window.roomRtc.ensureUi === "function") {
+              window.roomRtc.ensureUi();
+            }
+            status.textContent = "Room web ready — WebRTC voice (hold V); load an IWAD";
+          } catch (_) {
+            webrtc = false;
+          }
+        }
+        if (!webrtc) {
+          const { initRoomVoice } = await import("./voice.js");
+          await initRoomVoice(mod);
+        }
+      }
+
+      // GM SoundFont = same music synth as the desktop build (`?midi=opl` keeps FM).
+      if (params.get("midi") !== "opl") {
+        fetch(params.get("soundfont") || "soundfont.sf2", { cache: "force-cache" })
+          .then((res) => (res.ok ? res.arrayBuffer() : null))
+          .then((buf) => {
+            if (!buf || buf.byteLength < 64) return;
+            mod.roomSetSoundfont(new Uint8Array(buf));
+            console.log("room-web: SoundFont music ready");
+          })
+          .catch((e) => console.warn("room-web: SoundFont unavailable, using OPL", e));
+      }
 
       const startWithBytes = (bytes, label) => {
         status.textContent = `Loading ${label}…`;
@@ -76,7 +391,6 @@
       status.textContent = "Room web ready — load an IWAD to play";
 
       const tryUrls = [];
-      const params = new URLSearchParams(location.search);
       if (params.get("iwad")) tryUrls.push(params.get("iwad"));
       tryUrls.push("doom1.wad", "freedoom1.wad");
 

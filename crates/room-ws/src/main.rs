@@ -9,7 +9,8 @@
 //! ```
 
 use room_net::{
-    MSG_DATA, MSG_HELLO, PeerId, pack_reject, pack_server_data, pack_welcome, parse_relay,
+    MSG_DATA, MSG_HELLO, MSG_VOICE, PeerId, pack_peer_join, pack_peer_leave, pack_reject,
+    pack_server_data, pack_server_voice, pack_welcome, parse_relay,
 };
 use std::collections::BTreeMap;
 use std::env;
@@ -18,7 +19,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 use tungstenite::protocol::Message;
-use tungstenite::{accept, Error as WsError};
+use tungstenite::{Error as WsError, accept};
 
 fn main() {
     let (bind, players) = parse_args(env::args().skip(1));
@@ -47,10 +48,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> (String, u8) {
                 bind = s["--bind=".len()..].to_owned();
             }
             s if s.starts_with("--players=") => {
-                players = s["--players=".len()..]
-                    .parse()
-                    .unwrap_or(2)
-                    .clamp(2, 8);
+                players = s["--players=".len()..].parse().unwrap_or(2).clamp(2, 8);
             }
             "-h" | "--help" => {
                 eprintln!(
@@ -67,17 +65,14 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> (String, u8) {
 enum ClientEvent {
     Hello { seat: PeerId, name: String },
     Data { from: PeerId, payload: Vec<u8> },
+    Voice { from: PeerId, payload: Vec<u8> },
     Gone { seat: PeerId },
 }
 
 fn run(bind: &str, max_players: u8) -> Result<(), String> {
     let listener = TcpListener::bind(bind).map_err(|e| e.to_string())?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| e.to_string())?;
-    eprintln!(
-        "room-ws: listening on ws://{bind}/  (waiting for {max_players} players)"
-    );
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    eprintln!("room-ws: listening on ws://{bind}/  (waiting for {max_players} players)");
 
     let (tx, rx) = mpsc::channel::<ClientEvent>();
     let mut outboxes: BTreeMap<PeerId, Sender<Vec<u8>>> = BTreeMap::new();
@@ -95,7 +90,8 @@ fn run(bind: &str, max_players: u8) -> Result<(), String> {
                             let _ = ws.close(None);
                         }
                     });
-                } else if let Some(seat_id) = (0..max_players).find(|id| !outboxes.contains_key(&PeerId(*id)))
+                } else if let Some(seat_id) =
+                    (0..max_players).find(|id| !outboxes.contains_key(&PeerId(*id)))
                 {
                     // Reuse the lowest free seat so refresh/reconnect works.
                     let seat = PeerId(seat_id);
@@ -117,6 +113,12 @@ fn run(bind: &str, max_players: u8) -> Result<(), String> {
         while let Ok(ev) = rx.try_recv() {
             match ev {
                 ClientEvent::Hello { seat, name } => {
+                    // Tell the newcomer who is already here.
+                    for (&other, other_name) in &names {
+                        if let Some(out) = outboxes.get(&seat) {
+                            let _ = out.send(pack_peer_join(other, other_name));
+                        }
+                    }
                     names.insert(seat, name.clone());
                     eprintln!(
                         "room-ws: seat {} hello name={name:?} ({}/{})",
@@ -124,6 +126,13 @@ fn run(bind: &str, max_players: u8) -> Result<(), String> {
                         names.len(),
                         max_players
                     );
+                    // Announce join to everyone else.
+                    let packet = pack_peer_join(seat, &name);
+                    for (&other, out) in &outboxes {
+                        if other != seat {
+                            let _ = out.send(packet.clone());
+                        }
+                    }
                 }
                 ClientEvent::Data { from, payload } => {
                     let packet = pack_server_data(from, &payload);
@@ -133,10 +142,31 @@ fn run(bind: &str, max_players: u8) -> Result<(), String> {
                         }
                     }
                 }
+                ClientEvent::Voice { from, payload } => {
+                    // Cap voice fan-out size (PCM ~2 KiB / 20 ms frame).
+                    if payload.len() > 8_192 {
+                        continue;
+                    }
+                    let packet = pack_server_voice(from, &payload);
+                    for (&seat, out) in &outboxes {
+                        if seat != from {
+                            let _ = out.send(packet.clone());
+                        }
+                    }
+                }
                 ClientEvent::Gone { seat } => {
                     outboxes.remove(&seat);
-                    names.remove(&seat);
-                    eprintln!("room-ws: seat {} disconnected", seat.0);
+                    let left_name = names.remove(&seat).unwrap_or_else(|| "?".into());
+                    eprintln!(
+                        "room-ws: seat {} disconnected name={left_name:?} ({}/{})",
+                        seat.0,
+                        names.len(),
+                        max_players
+                    );
+                    let packet = pack_peer_leave(seat);
+                    for out in outboxes.values() {
+                        let _ = out.send(packet.clone());
+                    }
                 }
             }
         }
@@ -186,9 +216,7 @@ fn client_thread(
                             name: name.clone(),
                         });
                         if ws
-                            .send(Message::Binary(
-                                pack_welcome(seat, max_players).into(),
-                            ))
+                            .send(Message::Binary(pack_welcome(seat, max_players).into()))
                             .is_err()
                         {
                             let _ = tx.send(ClientEvent::Gone { seat });
@@ -198,6 +226,12 @@ fn client_thread(
                     }
                     Ok((MSG_DATA, rest)) if welcomed => {
                         let _ = tx.send(ClientEvent::Data {
+                            from: seat,
+                            payload: rest.to_vec(),
+                        });
+                    }
+                    Ok((MSG_VOICE, rest)) if welcomed => {
+                        let _ = tx.send(ClientEvent::Voice {
                             from: seat,
                             payload: rest.to_vec(),
                         });

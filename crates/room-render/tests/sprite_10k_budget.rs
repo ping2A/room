@@ -2,8 +2,8 @@
 
 #![allow(clippy::unwrap_used)]
 
-use room_render::{Camera, SceneLists, SpriteInstance, append_sprites};
 use glam::Vec3;
+use room_render::{Camera, SceneLists, SpriteInstance, append_sprites};
 use std::time::Instant;
 
 #[test]

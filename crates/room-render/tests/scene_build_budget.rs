@@ -2,10 +2,10 @@
 
 #![allow(clippy::unwrap_used)]
 
+use glam::Vec3;
 use room_nodebuild::apply_nodes;
 use room_render::{Camera, build_scene};
 use room_testkit::{MapBuilder, rect};
-use glam::Vec3;
 use std::time::Instant;
 
 #[test]

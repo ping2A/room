@@ -1,8 +1,8 @@
 //! Doom classic + ZDoom extended (XNOD/ZNOD) node loaders.
 
 use crate::error::MapError;
-use room_core::{DVec2, LineId, VertexId};
 use flate2::read::ZlibDecoder;
+use room_core::{DVec2, LineId, VertexId};
 use std::io::Read;
 
 /// Child index with bit 31 set ⇒ subsector (ZDoom extended convention).

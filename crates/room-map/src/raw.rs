@@ -1,7 +1,10 @@
 //! Raw Doom/Hexen map records before geometry linking.
 
+use serde::{Deserialize, Serialize};
+
 /// Doom/Hexen vertex (integer map units).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RawVertex {
     /// X.
     pub x: i16,
@@ -10,7 +13,8 @@ pub struct RawVertex {
 }
 
 /// Linedef.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RawLinedef {
     /// Start vertex.
     pub v1: u16,
@@ -71,7 +75,8 @@ pub struct RawLinedef {
 }
 
 /// Sidedef.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RawSidedef {
     /// Texture X offset.
     pub x_offset: i16,
@@ -138,7 +143,8 @@ pub struct RawSidedef {
 }
 
 /// Sector.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RawSector {
     /// Floor height.
     pub floor_height: i16,
@@ -235,7 +241,8 @@ pub struct RawSector {
 }
 
 /// Thing / mapthing.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RawThing {
     /// Hexen TID.
     pub tid: i16,

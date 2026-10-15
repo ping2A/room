@@ -1472,10 +1472,8 @@ fn dispatch_acs_func(
             room_core::Fixed::from_f64(room_core::dmath::sqrt(v)).0
         }
         pcd::acsf::VECTOR_LENGTH => {
-            let x =
-                f64::from(args.first().copied().unwrap_or(0)) / f64::from(room_core::FRACUNIT);
-            let y =
-                f64::from(args.get(1).copied().unwrap_or(0)) / f64::from(room_core::FRACUNIT);
+            let x = f64::from(args.first().copied().unwrap_or(0)) / f64::from(room_core::FRACUNIT);
+            let y = f64::from(args.get(1).copied().unwrap_or(0)) / f64::from(room_core::FRACUNIT);
             let len = room_core::dmath::sqrt(x * x + y * y);
             room_core::Fixed::from_f64(len).0
         }
