@@ -187,6 +187,10 @@ pub struct NetJoinConfig {
     pub ticket: Option<String>,
     /// Join as a seatless spectator (v2 only).
     pub spectate: bool,
+    /// Gameplay mod named by the server's `welcome` (v2); mounted after the IWAD.
+    pub game_mod: Option<room_proto::RoomModRef>,
+    /// Match time limit in seconds from `welcome` (0 = none).
+    pub time_limit: u32,
 }
 
 /// Ready lockstep session + match settings (hand off to [`crate::play::PlaySession`]).
@@ -213,6 +217,8 @@ pub struct NetReady {
     pub peer_names: BTreeMap<PeerId, String>,
     /// Seatless spectator (never sends input).
     pub spectator: bool,
+    /// Match time limit in seconds (0 = none).
+    pub time_limit: u32,
 }
 
 /// Connecting / lobby phases before the sim starts.
@@ -300,6 +306,24 @@ impl NetLobby {
             self.v2_ready_sent = true;
             web_sys::console::log_1(&"room-web: v2 ready sent (map prepared)".into());
         }
+    }
+
+    /// Mod the room plays with (known after `welcome`).
+    #[must_use]
+    pub fn game_mod(&self) -> Option<&room_proto::RoomModRef> {
+        self.cfg.game_mod.as_ref()
+    }
+
+    /// Match time limit in seconds (known after `welcome`; 0 = none).
+    #[must_use]
+    pub fn time_limit(&self) -> u32 {
+        self.cfg.time_limit
+    }
+
+    /// Relay WebSocket URL (mod downloads use the same host).
+    #[must_use]
+    pub fn ws_url(&self) -> &str {
+        &self.cfg.url
     }
 
     /// Match settings after welcome (for map prepare).
@@ -442,6 +466,8 @@ impl NetLobby {
                 self.cfg.map = w.room.map;
                 self.cfg.skill = w.room.skill;
                 self.cfg.players = w.room.max_players;
+                self.cfg.game_mod = w.room.game_mod.clone();
+                self.cfg.time_limit = w.room.time_limit;
                 transport.set_peer_count(w.room.max_players);
                 for seat in &w.roster {
                     self.peer_names.insert(PeerId(seat.seat), seat.name.clone());
@@ -482,6 +508,8 @@ impl NetLobby {
                     self.cfg.map = room.map;
                     self.cfg.skill = room.skill;
                     self.cfg.players = room.max_players;
+                    self.cfg.game_mod = room.game_mod.clone();
+                    self.cfg.time_limit = room.time_limit;
                     t.set_peer_count(room.max_players);
                     for seat in roster {
                         self.peer_names.insert(PeerId(seat.seat), seat.name);
@@ -700,6 +728,7 @@ impl NetLobby {
                 fingerprint: self.cfg.fingerprint,
                 peer_names: std::mem::take(&mut self.peer_names),
                 spectator: self.cfg.spectate,
+                time_limit: self.cfg.time_limit,
             }));
         }
         Ok(None)
@@ -926,9 +955,31 @@ impl NetPlay {
         self.gone_peers.contains(&PeerId(seat))
     }
 
-    /// Drain join / leave lines for the event feed.
+    /// Drain join / leave lines (and server notices) for the event feed.
     pub fn take_feed(&mut self) -> Vec<String> {
+        if let CoopSocket::V2(t) = &mut self.transport {
+            self.feed.extend(t.take_notices());
+        }
         std::mem::take(&mut self.feed)
+    }
+
+    /// Report the match result to the server (seats only, v2 only).
+    pub fn send_result(&mut self, msg: &room_proto::ControlMsg) {
+        if self.spectator {
+            return;
+        }
+        if let CoopSocket::V2(t) = &mut self.transport {
+            t.send_result(msg);
+        }
+    }
+
+    /// Why the server closed the room (`bye` reason), if it did.
+    #[must_use]
+    pub fn closed_reason(&self) -> Option<String> {
+        match &self.transport {
+            CoopSocket::V2(t) => t.bye().map(|(_, reason)| reason),
+            CoopSocket::Legacy(_) => None,
+        }
     }
 
     /// Send pose to the server for the admin minimap (throttled).
@@ -953,6 +1004,7 @@ impl NetPlay {
         held: &BTreeSet<&'static str>,
         attack: bool,
         weapon: &mut u8,
+        weapon_cycle: &mut i32,
         mouse_yaw: &mut i32,
         mouse_pitch: &mut i32,
     ) -> Option<Vec<TicCmd>> {
@@ -974,7 +1026,7 @@ impl NetPlay {
         }
 
         if self.transport.is_v2() {
-            return self.advance_v2(held, attack, weapon, mouse_yaw, mouse_pitch);
+            return self.advance_v2(held, attack, weapon, weapon_cycle, mouse_yaw, mouse_pitch);
         }
         if !self.lockstep_peers_ready() {
             self.ensure_ready_announced();
@@ -994,7 +1046,14 @@ impl NetPlay {
         if self.pending.is_none() {
             // Consume look/weapon only when submitting — keep deltas that arrive
             // while waiting for the peer so the next tic still feels them.
-            let sample = sample_input(held, attack, *weapon, *mouse_yaw, *mouse_pitch);
+            let sample = sample_input(
+                held,
+                attack,
+                *weapon,
+                weapon_cycle,
+                *mouse_yaw,
+                *mouse_pitch,
+            );
             *mouse_yaw = 0;
             *mouse_pitch = 0;
             *weapon = 0;
@@ -1105,6 +1164,7 @@ impl NetPlay {
         held: &BTreeSet<&'static str>,
         attack: bool,
         weapon: &mut u8,
+        weapon_cycle: &mut i32,
         mouse_yaw: &mut i32,
         mouse_pitch: &mut i32,
     ) -> Option<Vec<TicCmd>> {
@@ -1126,7 +1186,14 @@ impl NetPlay {
         };
         let mut sent = 0;
         while self.next_send_tic < target && sent < MAX_SENDS_PER_CALL {
-            let sample = sample_input(held, attack, *weapon, *mouse_yaw, *mouse_pitch);
+            let sample = sample_input(
+                held,
+                attack,
+                *weapon,
+                weapon_cycle,
+                *mouse_yaw,
+                *mouse_pitch,
+            );
             *mouse_yaw = 0;
             *mouse_pitch = 0;
             *weapon = 0;
@@ -1496,6 +1563,7 @@ fn sample_input(
     held: &BTreeSet<&'static str>,
     attack: bool,
     weapon: u8,
+    weapon_cycle: &mut i32,
     mouse_yaw: i32,
     mouse_pitch: i32,
 ) -> InputSample {
@@ -1536,6 +1604,13 @@ fn sample_input(
         6 => keys.push(Key::Weapon6),
         7 => keys.push(Key::Weapon7),
         _ => {}
+    }
+    if *weapon_cycle > 0 {
+        keys.push(Key::NextWeapon);
+        *weapon_cycle -= 1;
+    } else if *weapon_cycle < 0 {
+        keys.push(Key::PrevWeapon);
+        *weapon_cycle += 1;
     }
     InputSample {
         keys,

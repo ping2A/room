@@ -17,6 +17,9 @@ const YAW_TO_DEG: f64 = 360.0 / 65536.0;
 
 /// Tick timed powerups toward expiry.
 fn tick_powerups(world: &mut World, player: &mut Player) {
+    if player.berserk {
+        player.berserk_tics = player.berserk_tics.saturating_add(1);
+    }
     if player.invul_tics > 0 {
         player.invul_tics -= 1;
         if player.invul_tics == 0 {
@@ -49,6 +52,43 @@ fn tick_powerups(world: &mut World, player: &mut Player) {
     }
 }
 
+/// Doom `P_DeathThink`: lower the eye 1 unit/tic to 6, then turn 5°/tic toward
+/// the killer and fade the red flash once facing them. Returns true while the
+/// view is locked onto a killer (manual look is ignored then).
+fn death_think(world: &mut World, player: &mut Player, mo: ActorId) -> bool {
+    const ANG5: u32 = 0x038E_38E3;
+    player.view_height = (player.view_height - 1.0).max(6.0);
+    let Some(a) = world.actors.get(mo) else {
+        return false;
+    };
+    player.view_z = a.pos.z() + player.view_height;
+    let killer = player
+        .attacker
+        .filter(|&k| k != mo)
+        .and_then(|k| world.actors.get(k))
+        .map(|k| (k.pos.x(), k.pos.y()));
+    let Some((kx, ky)) = killer else {
+        player.damage_count = (player.damage_count - 1).max(0);
+        return false;
+    };
+    let fx = |v: f64| room_core::Fixed::from_f64(v).0;
+    let angle = room_core::math::point_to_angle2(fx(a.pos.x()), fx(a.pos.y()), fx(kx), fx(ky));
+    let current = a.angle.to_bam().0;
+    let delta = angle.wrapping_sub(current);
+    let next = if delta < ANG5 || delta > ANG5.wrapping_neg() {
+        player.damage_count = (player.damage_count - 1).max(0);
+        angle
+    } else if delta < 0x8000_0000 {
+        current.wrapping_add(ANG5)
+    } else {
+        current.wrapping_sub(ANG5)
+    };
+    if let Some(a) = world.actors.get_mut(mo) {
+        a.angle = room_core::Bam(next).to_angle();
+    }
+    true
+}
+
 /// Apply this tic's `TicCmd` to the player's mobj.
 pub fn player_think(world: &mut World, player: &mut Player) {
     let Some(mo) = player.mo else {
@@ -56,9 +96,10 @@ pub fn player_think(world: &mut World, player: &mut Player) {
     };
     world.thinking_refire = player.refire;
     let cmd = player.cmd;
-    // Dead: look around; USE → respawn at Player 1 start (coop-style).
+    // Dead: sink to the floor, face the killer; USE → respawn at Player 1 start.
     if player.player_state == PlayerState::Dead {
-        if cmd.yaw != 0 || cmd.pitch != 0 {
+        let tracking = death_think(world, player, mo);
+        if !tracking && (cmd.yaw != 0 || cmd.pitch != 0) {
             if let Some(a) = world.actors.get_mut(mo) {
                 if cmd.yaw != 0 {
                     a.angle =
@@ -71,7 +112,7 @@ pub fn player_think(world: &mut World, player: &mut Player) {
                 }
             }
         }
-        if cmd.buttons.any(Buttons::USE) {
+        if cmd.buttons.any(Buttons::USE) && !world.no_player_respawn {
             if world.respawn_player_at(player) {
                 if let Some(mo) = player.mo {
                     crate::acs::start_respawn_scripts(world, mo);
@@ -83,6 +124,8 @@ pub fn player_think(world: &mut World, player: &mut Player) {
     if player.player_state != PlayerState::Live {
         return;
     }
+    player.damage_count = (player.damage_count - 1).max(0);
+    player.bonus_count = (player.bonus_count - 1).max(0);
     tick_powerups(world, player);
     // Yaw / pitch (same turn units as Doom `angleturn`).
     if cmd.yaw != 0 || cmd.pitch != 0 {
@@ -198,11 +241,17 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
     // Cap zero-tic chains so a broken Loop with tics=0 cannot spin forever.
     for _ in 0..64 {
         player.pspr_state = Some(state);
-        let (tics, action) = world
+        let (tics, action, args) = world
             .states
             .get(state)
-            .map(|st| (i32::from(st.tics), st.action.clone()))
-            .unwrap_or((-1, None));
+            .map(|st| {
+                (
+                    i32::from(st.tics),
+                    st.action.clone(),
+                    st.action_args.clone(),
+                )
+            })
+            .unwrap_or((-1, None, Vec::new()));
         player.pspr_tics = tics;
         if let Some(action) = action {
             match action.as_str() {
@@ -272,7 +321,7 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                     }
                 }
                 other => {
-                    let _ = crate::action::call_action(world, mo, other);
+                    let _ = crate::action::call_action_args(world, mo, other, &args);
                     if is_fire_action(other) {
                         start_flash_psprite(world, player);
                     }
@@ -499,6 +548,27 @@ pub fn request_weapon_change(
     cid: room_core::ClassId,
 ) {
     request_weapon(world, player, mo, cid);
+}
+
+/// After inventory was taken: switch away from a ready / pending weapon the
+/// player no longer owns (GZDoom `PickNewWeapon`).
+pub fn drop_unowned_weapon(world: &mut World, player: &mut Player, mo: ActorId) {
+    let owns = |w: Option<room_core::ClassId>| w.is_some_and(|c| world.inventory.count(mo, c) > 0);
+    if player.pending_weapon.is_some() && !owns(player.pending_weapon) {
+        player.pending_weapon = None;
+    }
+    if player.ready_weapon.is_none() || owns(player.ready_weapon) {
+        return;
+    }
+    let next = best_weapon_with_ammo(world, mo, None)
+        .or_else(|| owned_weapon_order(world, mo).into_iter().next());
+    match next {
+        Some(cid) => request_weapon(world, player, mo, cid),
+        None => {
+            player.ready_weapon = None;
+            player.pspr_state = None;
+        }
+    }
 }
 
 /// Queue a weapon change; prefer Deselect→A_Lower when available.
@@ -1164,6 +1234,75 @@ mod tests {
         assert_eq!(player.extralight, 1, "PISF A_Light1");
         w.players[0] = Some(player);
         assert_eq!(w.player_hud(0).unwrap().flash_patch, "PISFA0");
+    }
+
+    #[test]
+    fn mod_weapon_a_fire_projectile_uses_its_arguments() {
+        let base = include_str!("../../../testdata/actors/doom_basic.txt");
+        let src = format!(
+            "{base}\n{}",
+            r#"actor ModLauncher : RocketLauncher
+{
+  States
+  {
+  Fire:
+    MISG B 1 A_FireProjectile("Rocket", 10, 1, 8, 4, FPF_NOAUTOAIM)
+    MISG B 1 A_FireCustomMissile("PlasmaBall", 0, 1, 0, 0, 0, -20)
+    Goto Ready
+  }
+}"#
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 1024.0, 1024.0), 0.0, 256.0)
+            .player_start(64.0, 512.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let wpn = classes.find_name("ModLauncher").unwrap();
+        let ammo = classes.find_name("RocketAmmo").unwrap();
+        let rocket = classes.find_name("Rocket").unwrap();
+        let plasma = classes.find_name("PlasmaBall").unwrap();
+        let mo = w.players[0].as_ref().and_then(|p| p.mo).unwrap();
+        let _ = give_inventory(&mut w, mo, wpn, 1);
+        let _ = give_inventory(&mut w, mo, ammo, 10);
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.angle = room_core::Angle::from_degrees(0.0);
+        }
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(wpn);
+        player.pending_weapon = None;
+        player.pspr_state = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.attack_down = false;
+        player.cmd.buttons = Buttons(Buttons::ATTACK);
+        player_think(&mut w, &mut player);
+        player_think(&mut w, &mut player);
+        w.players[0] = Some(player);
+        let find = |cid| {
+            w.thinkers
+                .default
+                .iter()
+                .find_map(|&id| w.actors.get(id).filter(|a| a.class == cid))
+                .cloned()
+        };
+        let feet = w.actors.get(mo).unwrap().pos.z();
+        let r = find(rocket).expect("A_FireProjectile spawned a rocket");
+        assert!(
+            (r.pos.z() - (feet + 36.0)).abs() < 1e-6,
+            "32 + spawnheight 4"
+        );
+        assert!(r.pos.y() < 512.0, "spawnofs_xy 8 → right of the player");
+        assert!((r.angle.degrees() - 10.0).abs() < 1e-6, "angle 10");
+        assert!(
+            r.vel.y() > 0.0 && r.vel.z().abs() < 1e-9,
+            "turned left, level"
+        );
+        let p = find(plasma).expect("A_FireCustomMissile spawned a plasma ball");
+        assert!(p.vel.z() > 0.0, "pitch -20 aims up (GZDoom sign)");
     }
 
     #[test]

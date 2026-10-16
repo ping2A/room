@@ -27,6 +27,8 @@ async fn legacy_two_peers_stamped_data() {
             max_players: 2,
             enable_verifier: false,
             visibility: "public".into(),
+            game_mod: None,
+            time_limit: None,
         })
         .expect("create");
     let (addr, _server) = bind_ephemeral(registry).await.expect("bind");
@@ -117,6 +119,8 @@ async fn v2_tic_frame_two_seats() {
             max_players: 2,
             enable_verifier: false,
             visibility: "public".into(),
+            game_mod: None,
+            time_limit: None,
         })
         .expect("create");
     let (addr, _server) = bind_ephemeral(registry).await.expect("bind");
@@ -220,6 +224,8 @@ async fn many_rooms_create_and_pair() {
                     max_players: 2,
                     enable_verifier: false,
                     visibility: "public".into(),
+                    game_mod: None,
+                    time_limit: None,
                 })
                 .expect("create"),
         );
@@ -275,6 +281,8 @@ async fn soak_1000_rooms_v2_tic_frames() {
                     max_players: 2,
                     enable_verifier: false,
                     visibility: "public".into(),
+                    game_mod: None,
+                    time_limit: None,
                 })
                 .expect("create")
                 .id,
@@ -409,6 +417,8 @@ async fn origin_allowlist_rejects_unknown() {
             max_players: 2,
             enable_verifier: false,
             visibility: "public".into(),
+            game_mod: None,
+            time_limit: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -445,6 +455,8 @@ async fn join_ticket_round_trip_and_replay_rejected() {
             max_players: 2,
             enable_verifier: false,
             visibility: "public".into(),
+            game_mod: None,
+            time_limit: None,
         })
         .unwrap();
     let (ticket, _) = registry.issue_join_ticket(&created.id, "alice").unwrap();

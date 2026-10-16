@@ -21,6 +21,9 @@ pub struct MaterialCatalog {
     pnames: Option<Pnames>,
     /// TEXTURE1/2 definitions keyed by uppercase name.
     texturex: BTreeMap<String, TexturexDef>,
+    /// `TX_START` textures (uppercase) → pixel size; these replace TEXTUREX
+    /// composites of the same name (GZDoom precedence).
+    tx_sizes: BTreeMap<String, (u32, u32)>,
     /// Base texture (uppercase) → brightmap lump name (GLDEFS).
     brightmaps: BTreeMap<String, String>,
     /// Base texture → normal / specular / PBR map lump names (GLDEFS `material`).
@@ -62,6 +65,7 @@ impl MaterialCatalog {
             playpal: None,
             pnames: None,
             texturex: BTreeMap::new(),
+            tx_sizes: BTreeMap::new(),
             brightmaps: BTreeMap::new(),
             pbr_maps: BTreeMap::new(),
             sampler: None,
@@ -164,6 +168,16 @@ impl MaterialCatalog {
                 }
             }
         }
+        self.tx_sizes.clear();
+        for (_, info) in vfs.iter() {
+            if info.namespace != Namespace::NewTextures {
+                continue;
+            }
+            let name = normalize(info.short_name.as_str());
+            if let Some(img) = load_tx_image(vfs, &name) {
+                self.tx_sizes.insert(name, (img.width(), img.height()));
+            }
+        }
     }
 
     /// Lookup a previously uploaded texture.
@@ -175,16 +189,22 @@ impl MaterialCatalog {
     /// TEXTUREX width/height for wall UV (defaults to 128×128 like Doom's common tiles).
     #[must_use]
     pub fn wall_texel_size(&self, name: &str) -> (f32, f32) {
+        let key = normalize(name);
+        if let Some(&(w, h)) = self.tx_sizes.get(&key) {
+            return (w.max(1) as f32, h.max(1) as f32);
+        }
         self.texturex
-            .get(&normalize(name))
+            .get(&key)
             .map(|d| (f32::from(d.width.max(1)), f32::from(d.height.max(1))))
             .unwrap_or((128.0, 128.0))
     }
 
-    /// Snapshot of TEXTUREX sizes for scene UV (name → (w, h)).
+    /// Snapshot of wall sizes for scene UV (name → (w, h)); `TX_START`
+    /// replacements override TEXTUREX.
     #[must_use]
     pub fn wall_texel_sizes(&self) -> BTreeMap<String, (f32, f32)> {
-        self.texturex
+        let mut out: BTreeMap<String, (f32, f32)> = self
+            .texturex
             .iter()
             .map(|(k, d)| {
                 (
@@ -192,7 +212,11 @@ impl MaterialCatalog {
                     (f32::from(d.width.max(1)), f32::from(d.height.max(1))),
                 )
             })
-            .collect()
+            .collect();
+        for (k, &(w, h)) in &self.tx_sizes {
+            out.insert(k.clone(), (w.max(1) as f32, h.max(1) as f32));
+        }
+        out
     }
 
     /// Insert or refresh an RGBA8 texture by Doom name (camera canvases).
@@ -232,9 +256,7 @@ impl MaterialCatalog {
         if let Some(id) = self.by_name.get(&key) {
             return Some(*id);
         }
-        let image = self
-            .compose_texturex(vfs, &key)
-            .or_else(|| load_named_image(vfs, &key))?;
+        let image = self.source_image(vfs, &key)?;
         let id = self
             .textures
             .upload_image(device, queue, &image, self.playpal.as_ref());
@@ -246,19 +268,55 @@ impl MaterialCatalog {
     /// thumbnails). Returns `(width, height, rgba)`.
     #[must_use]
     pub fn preview_rgba(&self, vfs: &Vfs, name: &str) -> Option<(u32, u32, Vec<u8>)> {
+        let image = self.source_image(vfs, name)?;
+        Some(image_to_rgba(&image, self.playpal.as_ref()))
+    }
+
+    /// Decoded picture a wall / flat name resolves to: a `TX_START` lump,
+    /// else the TEXTUREX composite, else a patch / flat / sprite lump.
+    #[must_use]
+    pub fn source_image(&self, vfs: &Vfs, name: &str) -> Option<Image> {
         let key = normalize(name);
         if key.is_empty() || key == "-" {
             return None;
         }
-        let image = self
-            .compose_texturex(vfs, &key)
-            .or_else(|| load_named_image(vfs, &key))?;
-        Some(image_to_rgba(&image, self.playpal.as_ref()))
+        load_tx_image(vfs, &key)
+            .or_else(|| self.compose_texturex(vfs, &key))
+            .or_else(|| load_named_image(vfs, &key))
     }
 
-    /// Composite `TEXTURE1`/`TEXTURE2` names (sorted).
+    /// Wall texture names (TEXTUREX composites + `TX_START` lumps, sorted).
     pub fn texture_names(&self) -> impl Iterator<Item = &str> {
-        self.texturex.keys().map(String::as_str)
+        let mut names: Vec<&str> = self
+            .texturex
+            .keys()
+            .chain(self.tx_sizes.keys())
+            .map(String::as_str)
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names.into_iter()
+    }
+
+    /// TEXTUREX composites that draw patch `patch` (uppercase names).
+    #[must_use]
+    pub fn textures_using_patch(&self, patch: &str) -> Vec<String> {
+        let Some(pnames) = self.pnames.as_ref() else {
+            return Vec::new();
+        };
+        let want = normalize(patch);
+        self.texturex
+            .values()
+            .filter(|d| {
+                d.patches.iter().any(|p| {
+                    pnames
+                        .names
+                        .get(usize::from(p.pnames_index))
+                        .is_some_and(|n| normalize(n) == want)
+                })
+            })
+            .map(|d| d.name.clone())
+            .collect()
     }
 
     /// Loaded `PLAYPAL` (for raw lump previews).
@@ -387,6 +445,37 @@ mod tests {
         };
         assert!(pal.alpha.iter().all(|&a| a == 0));
         assert!(img.has_translucency);
+    }
+
+    #[test]
+    fn tx_start_lump_replaces_texturex_composite() {
+        let tx = room_formats::encode_patch(4, 2, 0, 0, &[7; 8], &[]).unwrap();
+        let mut w = room_vfs::WadWriter::pwad();
+        w.marker("TX_START").add("WALLA", tx).marker("TX_END");
+        let vfs = VfsBuilder::new()
+            .mount_memory("tx.wad", w.finish().unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
+        let mut cat = MaterialCatalog::new();
+        cat.texturex.insert(
+            "WALLA".into(),
+            TexturexDef {
+                name: "WALLA".into(),
+                width: 64,
+                height: 128,
+                flags: 0,
+                scale_x: 0,
+                scale_y: 0,
+                patches: vec![],
+            },
+        );
+        cat.load_texturex(&vfs);
+        let img = cat.source_image(&vfs, "walla").unwrap();
+        assert_eq!((img.width(), img.height()), (4, 2));
+        assert_eq!(cat.wall_texel_size("WALLA"), (4.0, 2.0));
+        assert_eq!(cat.wall_texel_sizes().get("WALLA"), Some(&(4.0, 2.0)));
+        assert_eq!(cat.texture_names().collect::<Vec<_>>(), vec!["WALLA"]);
     }
 
     #[test]
@@ -527,6 +616,11 @@ fn image_to_rgba(image: &Image, playpal: Option<&Playpal>) -> (u32, u32, Vec<u8>
             (p.width, p.height, out)
         }
     }
+}
+
+fn load_tx_image(vfs: &Vfs, name: &str) -> Option<Image> {
+    let lump = vfs.find(name, Namespace::NewTextures)?;
+    decode_image(&vfs.read(lump).ok()?).ok()
 }
 
 fn load_named_image(vfs: &Vfs, name: &str) -> Option<Image> {

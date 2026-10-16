@@ -1,7 +1,7 @@
 # room-server
 
 Production multi-room WebSocket server for Room web coop (`docs/22-room-server.md`).
-Config is CLI flags only (no `ROOM_*` env for server settings).
+Config is CLI flags; each flag also reads a matching `ROOM_*` environment variable.
 
 ## Quick start
 
@@ -85,6 +85,8 @@ curl -s -X POST http://127.0.0.1:8765/api/rooms/<id>/join \
 | `/api/lobby` | `{ play_base, node_id, draining }` |
 | `/api/rooms` | `GET` public directory · `POST` create |
 | `/api/rooms/{id}/join` | Mint join ticket |
+| `/api/mods` | Allowed mods `[{name, title, fingerprint, size, url}]` |
+| `/api/mods/{name}.wad` | Mod WAD bytes (CORS `*`, `ETag` = fingerprint) |
 | `/v2/rooms/{id}/ws` | Protocol v2 WebSocket |
 | `/ws/{id}` | Legacy FTRL gateway |
 | `/healthz` `/readyz` `/metrics` | Ops |
@@ -94,7 +96,7 @@ curl -s -X POST http://127.0.0.1:8765/api/rooms/<id>/join \
 | Path | Purpose |
 |------|---------|
 | `/admin` | Operator console |
-| `/admin/api/v1/*` | Summary, rooms, kick/mute/notice, ban-from-seat, bans CRUD, audit, drain |
+| `/admin/api/v1/*` | Summary, rooms, kick/mute/notice, ban-from-seat, bans CRUD, mods allow/disallow, audit, drain |
 
 ### CLI flags
 
@@ -121,6 +123,8 @@ curl -s -X POST http://127.0.0.1:8765/api/rooms/<id>/join \
 | `--enable-verifier` | off | Allow `enable_verifier` on create |
 | `--max-verified-rooms` | `200` | Cap verified rooms |
 | `--iwad` | _(empty)_ | IWAD path for Headless verifier (`--features verifier`) |
+| `--mods-dir` | _(empty)_ | Directory of mod WADs (`ROOMMOD` lump) offered to rooms; `POST /api/rooms` with `"mod": "<file stem>"` |
+| `--allow-mods` | _(none)_ | First-run allow list (`a,b` or `*`) before `<data-dir>/mods.json` exists; afterwards admins allow mods in Settings → Mods |
 | `--drain-grace-secs` | `60` | Delay after drain notice before force-close |
 
 TLS: put Caddy (or nginx) in front — see `deploy/Caddyfile`.

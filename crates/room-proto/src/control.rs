@@ -51,6 +51,67 @@ pub struct WelcomeRoom {
     pub rng_seed: u32,
     /// Input delay tics.
     pub delay: u32,
+    /// Gameplay mod every seat mounts after the IWAD (absent = vanilla).
+    #[serde(default, rename = "mod", skip_serializing_if = "Option::is_none")]
+    pub game_mod: Option<RoomModRef>,
+    /// Match time limit in seconds (0 = none). Every seat's sim ends the match
+    /// when it runs out; the server closes the room shortly after.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub time_limit: u32,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
+/// One seat in a `result` report (final standings, best first).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResultRow {
+    /// Seat index.
+    pub seat: u8,
+    /// 1-based place.
+    pub place: u8,
+    /// Frags.
+    pub frags: i32,
+    /// Deaths.
+    pub deaths: i32,
+}
+
+/// Mod PWAD a room plays with; clients download it from `GET /api/mods/{name}.wad`
+/// and must reject bytes whose [`content_fingerprint`] differs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoomModRef {
+    /// Catalog name (`[a-z0-9_-]`, 1..=32).
+    pub name: String,
+    /// Display title (manifest `name`).
+    pub title: String,
+    /// [`content_fingerprint`] of the file, 16 hex digits.
+    pub fingerprint: String,
+    /// File size in bytes.
+    pub size: u64,
+}
+
+/// FNV-1a over the bytes, then xor the length (same hash as the IWAD fingerprint).
+#[must_use]
+pub fn content_fingerprint(bytes: &[u8]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325_u64;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    h ^ bytes.len() as u64
+}
+
+/// Valid mod catalog name: 1..=32 of `[a-z0-9_-]`.
+#[must_use]
+pub fn is_valid_mod_name(name: &str) -> bool {
+    (1..=32).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
 /// One ICE server entry (STUN/TURN) for `welcome.media`.
@@ -218,6 +279,19 @@ pub enum ControlMsg {
         #[serde(default)]
         client_version: String,
     },
+    /// Client → server: the match ended in this seat's sim (identical on
+    /// every honest seat). The server records it once all seats agree and
+    /// closes the room after a grace period.
+    Result {
+        /// Winning seat (absent = no winner).
+        #[serde(default)]
+        winner: Option<u8>,
+        /// Ended by the time limit.
+        #[serde(default)]
+        time_up: bool,
+        /// Standings, best first.
+        standings: Vec<ResultRow>,
+    },
     /// Server → spectator: room settings + roster. Frames from tic 0 follow
     /// as `TIC_BATCH` / `TIC_FRAME` once the room has started.
     Watching {
@@ -268,6 +342,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn welcome_room_mod_is_optional_on_the_wire() {
+        let mut room = WelcomeRoom {
+            map: "E1M1".into(),
+            skill: 3,
+            max_players: 2,
+            rng_seed: 7,
+            delay: 0,
+            game_mod: None,
+            time_limit: 0,
+        };
+        let plain = serde_json::to_string(&room).unwrap();
+        assert!(!plain.contains("mod") && !plain.contains("time_limit"));
+        assert_eq!(serde_json::from_str::<WelcomeRoom>(&plain).unwrap(), room);
+        room.game_mod = Some(RoomModRef {
+            name: "bounty".into(),
+            title: "Bounty Hunter".into(),
+            fingerprint: format!("{:016x}", content_fingerprint(b"PWAD")),
+            size: 4,
+        });
+        let modded = serde_json::to_string(&room).unwrap();
+        assert!(modded.contains("\"mod\":{\"name\":\"bounty\""));
+        assert_eq!(serde_json::from_str::<WelcomeRoom>(&modded).unwrap(), room);
+    }
+
+    #[test]
+    fn mod_names_are_restricted() {
+        assert!(is_valid_mod_name("doom1-bounty_2"));
+        for bad in ["", "Bounty", "../x", "a.wad", &"x".repeat(33)] {
+            assert!(!is_valid_mod_name(bad), "{bad}");
+        }
+    }
+
+    #[test]
     fn hello_ready_roundtrip() {
         let hello = ControlMsg::Hello(HelloMsg {
             ticket: "abc".into(),
@@ -308,6 +415,32 @@ mod tests {
         assert!(matches!(
             parse_control(minimal).unwrap(),
             ControlMsg::Watch { name: None, .. }
+        ));
+    }
+
+    #[test]
+    fn result_roundtrip() {
+        let msg = ControlMsg::Result {
+            winner: Some(1),
+            time_up: false,
+            standings: vec![ResultRow {
+                seat: 1,
+                place: 1,
+                frags: 2,
+                deaths: 0,
+            }],
+        };
+        let s = encode_control(&msg).unwrap();
+        assert!(s.contains("\"t\":\"result\""));
+        assert_eq!(parse_control(&s).unwrap(), msg);
+        let draw = r#"{"t":"result","standings":[]}"#;
+        assert!(matches!(
+            parse_control(draw).unwrap(),
+            ControlMsg::Result {
+                winner: None,
+                time_up: false,
+                ..
+            }
         ));
     }
 

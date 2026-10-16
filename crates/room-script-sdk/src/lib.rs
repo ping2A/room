@@ -1,23 +1,29 @@
-//! Guest-side Rust SDK (`#![no_std]` + `alloc`) for Room WASM modules.
+//! Guest-side Rust SDK (`#![no_std]`, optional `alloc` feature) for Room WASM modules.
 //!
 //! Thin wrappers over `"room"` imports (`docs/12-wasm-scripting.md` §5.3).
 #![allow(unsafe_code)] // WASM import/export surface (AGENTS.md §3).
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 #![no_std]
 
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
 use room_script_abi::ABI_VERSION;
 
 mod bump;
+/// World / actor / level control and typed events (play scope).
+pub mod game;
 #[macro_use]
 #[allow(unused_imports)]
 mod macros;
 /// Registration-phase wrappers (`reg_*`).
 pub mod reg;
 mod sys;
+mod sys_game;
 
-/// Heap types re-exported for guest modules.
+/// Heap types re-exported for guest modules (`alloc` feature; the guest must
+/// provide a `#[global_allocator]` or link `std`).
+#[cfg(feature = "alloc")]
 pub mod mem {
     pub use alloc::boxed::Box;
     pub use alloc::string::String;

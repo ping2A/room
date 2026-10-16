@@ -1014,7 +1014,7 @@ impl AcsHost for WorldAcsHost<'_> {
 
     fn print(&mut self, text: &str, _bold: bool) {
         if !text.is_empty() {
-            self.world.messages.push(text.to_owned());
+            self.world.push_message(text);
         }
     }
 
@@ -3747,7 +3747,7 @@ pub(crate) fn init_acs(world: &mut World) {
             start_open_on(world);
         }
         Err(e) => {
-            world.messages.push(format!("ACS load failed: {e}"));
+            world.push_message(format!("ACS load failed: {e}"));
         }
     }
 }
@@ -3809,7 +3809,7 @@ pub fn push_acs_library(world: &mut World, bytes: &[u8]) -> bool {
             true
         }
         Err(e) => {
-            world.messages.push(format!("ACS library load failed: {e}"));
+            world.push_message(format!("ACS library load failed: {e}"));
             false
         }
     }

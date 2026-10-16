@@ -126,6 +126,10 @@ pub enum DrawCmd {
         pos: Vec2,
         /// Optional size override (0 = native).
         size: Vec2,
+        /// Doom `V_DrawPatch`: shift `pos` by the lump's left/top offsets.
+        apply_offsets: bool,
+        /// Draw through Doom's `INVERSECOLORMAP` (invulnerability psprites).
+        inverse: bool,
     },
     /// Coloured line segment (automap).
     Line {
@@ -191,6 +195,29 @@ impl UiDrawList {
             name: name.to_owned(),
             pos,
             size,
+            apply_offsets: false,
+            inverse: false,
+        });
+    }
+
+    /// Route every patch pushed since `start` through the inverse colormap
+    /// (call with the command count taken before drawing the weapon).
+    pub fn invert_since(&mut self, start: usize) {
+        for cmd in self.cmds.iter_mut().skip(start) {
+            if let DrawCmd::Patch { inverse, .. } = cmd {
+                *inverse = true;
+            }
+        }
+    }
+
+    /// Push a native-size picture placed by its lump offsets (`V_DrawPatch`).
+    pub fn picture(&mut self, name: &str, pos: Vec2) {
+        self.cmds.push(DrawCmd::Patch {
+            name: name.to_owned(),
+            pos,
+            size: Vec2::new(0.0, 0.0),
+            apply_offsets: true,
+            inverse: false,
         });
     }
 }

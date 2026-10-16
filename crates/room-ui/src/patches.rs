@@ -172,6 +172,17 @@ impl PatchCache {
         self.patches.get(&key)
     }
 
+    /// Replace (or add) the cached picture for `name` (editor live edits).
+    pub fn insert(&mut self, name: &str, patch: SoftPatch) {
+        self.patches.insert(name.to_ascii_uppercase(), patch);
+    }
+
+    /// Whether `name` has been loaded.
+    #[must_use]
+    pub fn contains(&self, name: &str) -> bool {
+        self.patches.contains_key(&name.to_ascii_uppercase())
+    }
+
     /// Look up a previously loaded patch.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&SoftPatch> {
@@ -207,7 +218,7 @@ mod tests {
         pal[2] = [0, 255, 0];
         pal[3] = [0, 0, 255];
         pal[4] = [255, 255, 0];
-        let mut covered = vec![false; 8 * 4]; // 7.2≈ceil → use 8×4
+        let mut covered = [false; 8 * 4]; // 7.2≈ceil → use 8×4
         patch.paint(0.0, 0.0, 1.8, 1.8, &pal, |x, y, w, h, _| {
             let x0 = x as i32;
             let y0 = y as i32;
@@ -246,6 +257,24 @@ mod tests {
         assert_eq!(emits.len(), 2);
         assert!((emits[0].2[0] - 10.0 / 255.0).abs() < 1e-4);
         assert!((emits[1].2[0] - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn insert_replaces_cached_picture() {
+        let mut cache = PatchCache::default();
+        assert!(!cache.contains("possa1"));
+        let pic = |w: u16| SoftPatch {
+            width: w,
+            height: 1,
+            left_offset: 3,
+            top_offset: 4,
+            indices: vec![7; usize::from(w)],
+            alpha: vec![255; usize::from(w)],
+        };
+        cache.insert("possa1", pic(2));
+        cache.insert("POSSA1", pic(5));
+        assert!(cache.contains("PossA1"));
+        assert_eq!(cache.get("POSSA1").map(|p| p.width), Some(5));
     }
 
     #[test]

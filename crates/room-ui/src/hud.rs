@@ -27,6 +27,36 @@ pub struct HudState {
     pub bob_y: f32,
     /// Screenblocks-style: true = fullscreen HUD (no STBAR strip).
     pub fullscreen: bool,
+    /// Owned weapon slots for `STARMS` (bit `n` = slot `n`, 2..=7).
+    pub arms: u8,
+    /// `[count, max]` for Clip / Shell / RocketAmmo / Cell.
+    pub ammo_table: [[i32; 2]; 4],
+    /// PLAYPAL flash index (0 none, 1..=8 red, 9..=12 gold, 13 green).
+    pub palette: u8,
+    /// Doom `fixedcolormap` (32 = invulnerability: invert the weapon too).
+    pub colormap: u8,
+    /// Deathmatch: frags replace the `STARMS` panel.
+    pub deathmatch: bool,
+    /// Netgame face background `STFB<n>`; `None` in single player.
+    pub face_back: Option<u8>,
+}
+
+/// Doom PLAYPAL flash palettes as a full-screen blend: red tints in 1/9
+/// steps, pickup gold in 1/8 steps, radiation-suit green at 1/8.
+#[must_use]
+pub fn screen_blend(palette: u8) -> Option<crate::draw::Rgba> {
+    use crate::draw::Rgba;
+    match palette {
+        1..=8 => Some(Rgba::new(1.0, 0.0, 0.0, f32::from(palette) / 9.0)),
+        9..=12 => Some(Rgba::new(
+            215.0 / 255.0,
+            186.0 / 255.0,
+            69.0 / 255.0,
+            f32::from(palette - 8) / 8.0,
+        )),
+        13 => Some(Rgba::new(0.0, 1.0, 0.0, 0.125)),
+        _ => None,
+    }
 }
 
 impl HudState {
@@ -47,6 +77,12 @@ impl HudState {
             bob_y: 0.0,
             // Classic STBAR strip. F5 toggles overlay numbers (no bar).
             fullscreen: false,
+            arms: 1 << 2,
+            ammo_table: [[50, 200], [0, 50], [0, 50], [0, 300]],
+            palette: 0,
+            colormap: 0,
+            deathmatch: false,
+            face_back: None,
         }
     }
 
@@ -74,7 +110,50 @@ impl HudState {
             bob_x: 0.0,
             bob_y: 0.0,
             fullscreen,
+            arms: 0,
+            ammo_table: [[0; 2]; 4],
+            palette: 0,
+            colormap: 0,
+            deathmatch: false,
+            face_back: None,
         }
+    }
+
+    /// Attach netgame state: deathmatch frags and the `STFB<n>` face background.
+    #[must_use]
+    pub fn with_netgame(mut self, deathmatch: bool, frags: i32, face_back: Option<u8>) -> Self {
+        self.deathmatch = deathmatch;
+        self.frags = frags;
+        self.face_back = face_back;
+        self
+    }
+
+    /// Attach Doom's `fixedcolormap` (see [`Self::colormap`]).
+    #[must_use]
+    pub fn with_colormap(mut self, colormap: u8) -> Self {
+        self.colormap = colormap;
+        self
+    }
+
+    /// True while the invulnerability inverse colormap is active.
+    #[must_use]
+    pub fn inverse_colormap(&self) -> bool {
+        self.colormap == 32
+    }
+
+    /// Attach the `STARMS` weapon bits and the four-row ammo table.
+    #[must_use]
+    pub fn with_inventory(mut self, arms: u8, ammo_table: [[i32; 2]; 4]) -> Self {
+        self.arms = arms;
+        self.ammo_table = ammo_table;
+        self
+    }
+
+    /// Attach the PLAYPAL flash index (see [`screen_blend`]).
+    #[must_use]
+    pub fn with_palette(mut self, palette: u8) -> Self {
+        self.palette = palette;
+        self
     }
 
     /// Attach a muzzle-flash patch lump.

@@ -1,6 +1,7 @@
 //! In-process room registry.
 
 use crate::config::ServerConfig;
+use crate::leaderboard::Leaderboard;
 use crate::room::{
     AdminCmd, CreateRoomRequest, CreateRoomResponse, RoomCmd, RoomHandle, RoomSettings,
     make_create_response, new_rng_seed, spawn_room,
@@ -17,6 +18,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tracing::info;
 
+/// Longest room time limit (minutes).
+pub const MAX_TIME_LIMIT_MINS: u16 = 180;
+
 /// Registry errors.
 #[derive(Debug, Error)]
 pub enum RegistryError {
@@ -29,6 +33,12 @@ pub enum RegistryError {
     /// Verifier room cap reached.
     #[error("verifier capacity")]
     VerifierFull,
+    /// Requested mod is not in this node's catalog.
+    #[error("unknown mod")]
+    UnknownMod,
+    /// Requested mod is in the catalog but an admin has not allowed it.
+    #[error("mod not allowed")]
+    ModNotAllowed,
     /// RNG failure.
     #[error("rng failed")]
     Rng,
@@ -57,6 +67,7 @@ pub struct RoomRegistry {
     next_conn: Arc<AtomicU64>,
     draining: Arc<AtomicBool>,
     verified_rooms: Arc<AtomicUsize>,
+    leaderboard: Arc<Leaderboard>,
     /// Prometheus counters.
     pub(crate) metric_ws_msgs_in: Arc<AtomicU64>,
     pub(crate) metric_ws_bytes_in: Arc<AtomicU64>,
@@ -73,7 +84,9 @@ impl RoomRegistry {
     #[must_use]
     pub fn new(cfg: ServerConfig) -> Self {
         let ticket_key = TicketKey::from_secret(&cfg.ticket_secret);
+        let leaderboard = Arc::new(Leaderboard::open(&cfg.data_dir));
         Self {
+            leaderboard,
             rooms: Arc::new(DashMap::new()),
             room_location: Arc::new(DashMap::new()),
             used_tickets: Arc::new(DashMap::new()),
@@ -287,6 +300,16 @@ impl RoomRegistry {
         if self.rooms.len() >= self.cfg.max_rooms {
             return Err(RegistryError::Full);
         }
+        let game_mod = match req.game_mod.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(name) => {
+                let entry = self.cfg.mods.get(name).ok_or(RegistryError::UnknownMod)?;
+                if !self.cfg.mods.is_allowed(name) {
+                    return Err(RegistryError::ModNotAllowed);
+                }
+                Some(entry.info.clone())
+            }
+        };
         let want_verifier = req.enable_verifier && self.cfg.enable_verifier;
         if want_verifier {
             let cur = self.verified_rooms.load(Ordering::Relaxed);
@@ -305,6 +328,12 @@ impl RoomRegistry {
             max_players,
             visibility,
             enable_verifier: want_verifier,
+            game_mod,
+            time_limit: req
+                .time_limit
+                .filter(|&m| m > 0)
+                .unwrap_or(self.cfg.room_time_limit_mins)
+                .clamp(1, MAX_TIME_LIMIT_MINS),
         };
         let id = new_room_id().map_err(|_| RegistryError::Rng)?;
         let rng_seed = new_rng_seed();
@@ -401,6 +430,12 @@ impl RoomRegistry {
             }
         }
         self.room_location.remove(id);
+    }
+
+    /// Top players across this node's finished matches.
+    #[must_use]
+    pub fn leaderboard(&self) -> &Leaderboard {
+        &self.leaderboard
     }
 
     /// Count of rooms with the optional verifier enabled.

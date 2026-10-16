@@ -14,6 +14,7 @@ Room is licensed under GPL-3.0-or-later. Code and tables derived from other proj
 | `GENMIDI` layout | Doom / DMX OPL driver (Chocolate Doom / ZMusic references) | GPL family | `crates/room-music/src/opl.rs` |
 | TimGM6mb SoundFont | Timidity++ GM bank (fetched by `scripts/fetch-soundfont.sh`) | Public domain / free | `soundfonts/TimGM6mb.sf2` (not committed) |
 | DeHackEd vanilla index tables (InfoNames, OrgSprNames, SoundMap, ActionList, WeaponNames, AmmoNames) | GZDoom `wadsrc/static/dehsupp.txt` | GPL-3.0-or-later | `wadsrc/room/dehacked/` |
+| Doom actor state sequences (frames, tics, action order incl. XDeath / Raise / Heal) | id Software Doom `info.c` state table, cross-checked with GZDoom `wadsrc/static/zscript/actors/doom/` (behavioural tables) | GPL-2.0-or-later / GPL-3.0-or-later | `wadsrc/room/actors/doom.txt`, `testdata/actors/doom_basic.txt` |
 | Doom SBARINFO fixture | GZDoom `wadsrc/static/sbarinfo/doom.txt` | GPL-3.0-or-later | `testdata/sbarinfo/doom.txt` |
 | TERRAIN fixture | GZDoom `wadsrc/static/terrain.txt` | GPL-3.0-or-later | `testdata/terrain/gzdoom_terrain.txt` |
 | DECALDEF fixture | GZDoom `wadsrc/static/decaldef.txt` | GPL-3.0-or-later | `testdata/decaldef/gzdoom_decaldef.txt` |

@@ -109,6 +109,7 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
                 continue;
             }
             p.berserk = true;
+            p.berserk_tics = 1;
             applied = true;
         }
         if !applied {
@@ -225,7 +226,8 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
             if let Some(item) = world.inventory.find_mut(toucher, cid) {
                 item.max_amount = doubled;
             }
-            let _ = give_inventory(world, toucher, cid, amount.max(1));
+            let give = skill_ammo(world, amount.max(1));
+            let _ = give_inventory(world, toucher, cid, give);
             if let Some(item) = world.inventory.find_mut(toucher, cid) {
                 item.max_amount = doubled;
             }
@@ -244,11 +246,14 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
         let mut gave_ammo = false;
         if ammo_give > 0 && !ammo_name.is_empty() {
             if let Some(ammo) = world.classes.find_name(&ammo_name) {
-                let give = if dropped {
-                    (ammo_give / 2).max(1)
-                } else {
-                    ammo_give
-                };
+                let give = skill_ammo(
+                    world,
+                    if dropped {
+                        (ammo_give / 2).max(1)
+                    } else {
+                        ammo_give
+                    },
+                );
                 let before = world.inventory.count(toucher, ammo);
                 gave_ammo = give_inventory(world, toucher, ammo, give);
                 if std::env::var_os("ROOM_TRACE_AMMO").is_some() {
@@ -282,10 +287,19 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
                 world.level.time, class_name, ammo_name, amount
             );
         }
-        if !give_inventory(world, toucher, ammo, amount) {
+        if !give_inventory(world, toucher, ammo, skill_ammo(world, amount)) {
             return false;
         }
-    } else if !give_inventory(world, toucher, class, amount) {
+    } else if !give_inventory(
+        world,
+        toucher,
+        class,
+        if class_is_ammo(world, class) {
+            skill_ammo(world, amount)
+        } else {
+            amount
+        },
+    ) {
         return false;
     } else if std::env::var_os("ROOM_TRACE_AMMO").is_some()
         && (class_name.contains("shell") || class_name.contains("clip"))
@@ -334,7 +348,18 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
     if !pickup_snd.is_empty() {
         world.play_sound(&pickup_snd, it.pos.x(), it.pos.y(), it.pos.z(), 1.0);
     }
-    let _ = ClassId::from_raw(0);
+    if let Some(p) = world
+        .players
+        .iter_mut()
+        .flatten()
+        .find(|p| p.mo == Some(toucher))
+    {
+        p.bonus_count += crate::player::BONUS_ADD;
+    }
+    world.push_script_event(crate::script_mods::ScriptEvent::ItemPickup {
+        toucher,
+        item_class: class,
+    });
     true
 }
 
@@ -355,6 +380,39 @@ fn switch_player_weapon(world: &mut World, toucher: ActorId, weapon: room_core::
 }
 
 /// Doom ammo boxes grant their base ammo type (not a separate inventory stack).
+/// Vanilla `P_GiveAmmo`: I'm Too Young To Die and Nightmare give double ammo.
+pub(crate) fn skill_ammo(world: &World, amount: i32) -> i32 {
+    if matches!(world.skill, 1 | 5) {
+        amount.saturating_mul(2)
+    } else {
+        amount
+    }
+}
+
+fn class_is_ammo(world: &World, class: ClassId) -> bool {
+    let Some(name) = world.classes.get(class).map(|c| c.name.as_str()) else {
+        return false;
+    };
+    if world
+        .classes
+        .iter()
+        .any(|c| c.is_weapon && c.ammo_type.eq_ignore_ascii_case(name))
+    {
+        return true;
+    }
+    let mut cur = Some(class);
+    for _ in 0..64 {
+        let Some(def) = cur.and_then(|c| world.classes.get(c)) else {
+            return false;
+        };
+        if def.name.eq_ignore_ascii_case("Ammo") {
+            return true;
+        }
+        cur = def.parent;
+    }
+    false
+}
+
 fn ammo_box_grants(class_name: &str) -> Option<&'static str> {
     match class_name {
         "clipbox" => Some("Clip"),

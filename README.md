@@ -72,11 +72,23 @@ ROOM_TRANSPORT=tcp-server ROOM_NOISE=1 ./scripts/play-doom1-coop.sh
 ./scripts/room-server.sh stop
 ```
 
+Or with Docker (amd64 / arm64, baked `/play` client):
+
+```bash
+./scripts/docker-build.sh                          # local arch → room-server:latest
+cp deploy/.env.example deploy/.env                 # set ROOM_ADMIN_BOOTSTRAP + ticket secret
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env up
+# Multi-arch push:
+# ./scripts/docker-build.sh --platforms linux/amd64,linux/arm64 --tag ghcr.io/you/room-server:latest --push
+```
+
+See [`deploy/README.md`](deploy/README.md) for TLS, volumes, and registry tags.
+
 | URL | What |
 |-----|------|
 | http://127.0.0.1:8765/ | Public lobby — create / join rooms |
 | http://127.0.0.1:8765/play/ | Game client (same origin, built `room-web`) |
-| http://127.0.0.1:8766/admin | Operator console |
+| http://127.0.0.1:8766/admin | Operator console (MFA: TOTP and/or YubiKey; first-run user `admin`, password `admin`) |
 
 From the lobby: **Play** opens the game in this tab; use a second browser/profile
 (or **New tab**) for another seat. Lockstep starts when every seat has joined and
@@ -103,6 +115,39 @@ One-shot helper (build client, start server, print URLs):
 
 Keep both browser tabs focused — background tabs throttle `requestAnimationFrame`
 and stall lockstep for everyone.
+
+## Mods (WebAssembly)
+
+Mods are WASM modules that control the game (spawn, damage, inventory, states,
+HUD messages, level exit, …), packed in a PWAD with a `ROOMMOD` manifest. Three
+examples for `doom1.wad`:
+
+| Mod | Language |
+|-----|----------|
+| [`mods/doom1-bounty`](mods/doom1-bounty/README.md) — Bounty Hunter | AssemblyScript |
+| [`mods/doom1-survival`](mods/doom1-survival/README.md) — Survival Director | Rust (`room-script-sdk`) |
+| [`mods/doom1-royale`](mods/doom1-royale/README.md) — Battle Royale (multiplayer: no monsters, fists only, last one standing) | Rust (`room-script-sdk`) |
+
+`./scripts/room-server.sh mods` builds every `mods/<dir>` into its WAD
+(`start` does it too).
+
+```bash
+cargo run -p room-app --release -- --iwad testdata/doom/doom1.wad \
+  --file mods/doom1-bounty/bounty.wad --map E1M1 --play
+# Browser: http://127.0.0.1:8080/?mod=bounty (or the Mod select on the play page)
+```
+
+Multiplayer: `./scripts/room-server.sh start` builds and serves the example
+mods. Each one stays disallowed until an admin allows it in the admin console
+(Settings → **Mods**); allowed mods appear in the lobby's *Open a pit* →
+**Mod** select (or `POST /api/rooms` with `"mod": "bounty"`). Every player
+downloads and verifies the same mod WAD before the map loads. Production
+servers point `--mods-dir` / `ROOM_MODS_DIR` at a directory of mod WADs
+([`docs/22-room-server.md`](docs/22-room-server.md) §4 *Mods*).
+
+The web editor's **Scripts** tab compiles AssemblyScript in the browser and
+reloads it into a running play test on Ctrl+S. Writing mods (usage and full API):
+[`docs/12-wasm-scripting.md`](docs/12-wasm-scripting.md) §15–16.
 
 ## Develop
 

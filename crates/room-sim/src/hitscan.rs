@@ -124,9 +124,40 @@ pub fn bullet_slope(world: &World, source: ActorId) -> f64 {
     dmath::tan(pr)
 }
 
+/// `P_SpawnPlayerMissile` aim from `angle`: the autoaim angle + (slope,
+/// linetarget) (centre, then ±5.625°), else `angle` with `None` (caller
+/// follows freelook pitch).
+#[must_use]
+pub(crate) fn player_missile_aim(
+    world: &World,
+    source: ActorId,
+    angle: Angle,
+) -> (Angle, Option<(f64, ActorId)>) {
+    let base = angle.to_bam().0;
+    const AIM_SWEEP: u32 = 1 << 26;
+    for d in [0i32, AIM_SWEEP as i32, -(AIM_SWEEP as i32)] {
+        let ang = room_core::Bam(base.wrapping_add(d as u32)).to_angle();
+        if let Some(hit) = aim_line_attack_target(world, source, ang, 1024.0) {
+            return (ang, Some(hit));
+        }
+    }
+    (angle, None)
+}
+
 /// Doom `P_AimLineAttack` subset — returns aimslope if a shootable is sighted.
 #[must_use]
 pub fn aim_line_attack(world: &World, source: ActorId, angle: Angle, range: f64) -> Option<f64> {
+    aim_line_attack_target(world, source, angle, range).map(|(slope, _)| slope)
+}
+
+/// [`aim_line_attack`] plus the sighted actor (`linetarget`).
+#[must_use]
+pub(crate) fn aim_line_attack_target(
+    world: &World,
+    source: ActorId,
+    angle: Angle,
+    range: f64,
+) -> Option<(f64, ActorId)> {
     let (origin, _) = shoot_origin(world, source)?;
     let (dir_x, dir_y) = {
         let (dx, dy) = finesine_dir(angle, range);
@@ -294,7 +325,7 @@ pub fn aim_line_attack(world: &World, source: ActorId, angle: Angle, range: f64)
                         a.pos.y(),
                     );
                 }
-                return Some(slope);
+                return Some((slope, id));
             }
         }
     }

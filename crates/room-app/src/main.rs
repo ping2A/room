@@ -63,6 +63,9 @@ struct Args {
     /// IWAD / PWAD / directory to mount (optional; uses built-in test room).
     #[arg(long)]
     iwad: Option<PathBuf>,
+    /// PWAD / PK3 / directory mounted after `--iwad` (repeatable; e.g. WASM mods).
+    #[arg(long)]
+    file: Vec<PathBuf>,
     /// Map lump name (e.g. MAP01).
     #[arg(long, default_value = "MAP01")]
     map: String,
@@ -432,6 +435,7 @@ fn main() {
         cam_curr: None,
         messages: MessageQueue::new(),
         last_player_hp: 100,
+        fixed_colormap: 0,
         mouse_yaw_accum: 0,
         mouse_pitch_accum: 0,
         console: {
@@ -608,6 +612,16 @@ fn engine_extra_search_roots() -> Vec<PathBuf> {
     roots
 }
 
+fn mount_pwads(mut builder: VfsBuilder, args: &Args) -> Result<VfsBuilder, String> {
+    for path in &args.file {
+        builder = builder
+            .mount_path(path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        eprintln!("room: mounted {}", path.display());
+    }
+    Ok(builder)
+}
+
 fn load_viewer_map(args: &Args) -> Result<(MapGeometry, Option<Vfs>), String> {
     if args.combat_demo {
         let iwad = args.iwad.clone().or_else(default_freedoom2);
@@ -625,9 +639,7 @@ fn load_viewer_map(args: &Args) -> Result<(MapGeometry, Option<Vfs>), String> {
             }
         };
         let builder = mount_optional_engine_extras(builder, &engine_extra_search_roots());
-        let vfs = builder
-            .mount_path(&path)
-            .map_err(|e| e.to_string())?
+        let vfs = mount_pwads(builder.mount_path(&path).map_err(|e| e.to_string())?, args)?
             .build()
             .map_err(|e| e.to_string())?;
         let mut map = combat_arena()
@@ -646,9 +658,7 @@ fn load_viewer_map(args: &Args) -> Result<(MapGeometry, Option<Vfs>), String> {
             }
         };
         let builder = mount_optional_engine_extras(builder, &engine_extra_search_roots());
-        let vfs = builder
-            .mount_path(path)
-            .map_err(|e| e.to_string())?
+        let vfs = mount_pwads(builder.mount_path(path).map_err(|e| e.to_string())?, args)?
             .build()
             .map_err(|e| e.to_string())?;
         // Doom 1 / Freedoom Phase 1 use ExMy; Doom II uses MAPxx.
@@ -778,9 +788,11 @@ struct Keys {
     use_btn: bool,
     /// Weapon slots 1..=7 edge (cleared after sample).
     weapon: u8,
-    /// Next/prev weapon edges (cleared after sample).
-    next_weapon: bool,
-    prev_weapon: bool,
+    /// Queued weapon cycles (positive = next, negative = previous). One step
+    /// is consumed per tic, so a multi-notch wheel still switches once per tic.
+    weapon_cycle: i32,
+    /// Fractional wheel notches not yet turned into a cycle.
+    wheel_remainder: f32,
 }
 
 struct ViewerApp {
@@ -867,6 +879,8 @@ struct ViewerApp {
     messages: MessageQueue,
     /// Previous local player health (to announce invisible attackers).
     last_player_hp: i32,
+    /// Local player's Doom `fixedcolormap` (32 = invulnerability inverse).
+    fixed_colormap: u8,
     /// Mouse yaw delta accumulated since last tic.
     mouse_yaw_accum: i32,
     /// Accumulated mouse pitch for the next play tic (`InputSample::mouse_pitch`).
@@ -1110,6 +1124,17 @@ fn start_play_session(
         game.set_defs(classes, states);
     }
     if let Some(vfs) = vfs {
+        game.drop_weapons_without_sprites(vfs);
+        let (mods, mod_errors) = room_game::discover_mods(vfs);
+        for e in mod_errors {
+            eprintln!("room: mod: {e}");
+        }
+        if !mods.is_empty() {
+            match game.set_script_mods(mods) {
+                Ok(names) => eprintln!("room: WASM mods: {}", names.join(", ")),
+                Err(e) => eprintln!("room: {e}"),
+            }
+        }
         let mut sounds = SoundSystem::with_sample_rate(audio_rate);
         match sounds.load_sndinfo_from_vfs(vfs) {
             Ok(()) => {
@@ -1121,7 +1146,7 @@ fn start_play_session(
     }
     game.set_pending_map(map.clone());
     eprintln!(
-        "room: play mode — WASD move, ←→/Q turn, mouse look, E use, Ctrl/LMB attack, Tab automap (=/- / wheel zoom), Esc pause, F6–F9 cheats, F12 screenshot, F11 GIF"
+        "room: play mode — WASD move, ←→/Q turn, mouse look, wheel weapon, E use, Ctrl/LMB attack, Tab automap (=/- / wheel zoom), Esc pause, F6–F9 cheats, F12 screenshot, F11 GIF"
     );
     (game, decaldef)
 }
@@ -1440,8 +1465,12 @@ impl ApplicationHandler for ViewerApp {
                     KeyCode::Digit7 | KeyCode::Numpad7 if down && !menu_open => {
                         self.keys.weapon = 7;
                     }
-                    KeyCode::BracketRight if down && !menu_open => self.keys.next_weapon = true,
-                    KeyCode::BracketLeft if down && !menu_open => self.keys.prev_weapon = true,
+                    KeyCode::BracketRight if down && !menu_open => {
+                        self.keys.weapon_cycle = self.keys.weapon_cycle.saturating_add(1);
+                    }
+                    KeyCode::BracketLeft if down && !menu_open => {
+                        self.keys.weapon_cycle = self.keys.weapon_cycle.saturating_sub(1);
+                    }
                     KeyCode::Tab if down && !menu_open => self.automap = !self.automap,
                     KeyCode::Equal | KeyCode::NumpadAdd if down && self.automap && !menu_open => {
                         self.zoom_automap(1.25);
@@ -1594,6 +1623,22 @@ impl ApplicationHandler for ViewerApp {
                     // Never clear mouse attack on focus loss — macOS Locked/hide can
                     // blip focus around a click and was wiping LMB before the tic sample.
                     self.keys.attack.set_key(false);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. }
+                if self.play.is_some() && !self.automap && self.menu.is_none() =>
+            {
+                // GZDoom: wheel up = next weapon, wheel down = previous.
+                let steps = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
+                };
+                self.keys.wheel_remainder += steps;
+                #[allow(clippy::cast_possible_truncation)]
+                let notches = self.keys.wheel_remainder.trunc() as i32;
+                self.keys.wheel_remainder -= notches as f32;
+                if notches != 0 {
+                    self.keys.weapon_cycle = self.keys.weapon_cycle.saturating_add(notches);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } if self.automap && self.menu.is_none() => {
@@ -1939,6 +1984,8 @@ impl ViewerApp {
         self.refresh_plane_reflect_textures(&scene.plane_reflects);
         let want_shot = self.pending_screenshot;
         let want_gif = self.gif_recorder.is_some();
+        let inverse_colormap =
+            self.play.is_some() && self.fixed_colormap == room_sim::INVERSE_COLORMAP;
         let capture_rgba = {
             let (
                 Some(surface),
@@ -1965,6 +2012,7 @@ impl ViewerApp {
                 return;
             };
             pass.set_fog_density(fog_density);
+            pass.inverse_colormap = inverse_colormap;
             pass.time += dt; // fuzz animation clock
             pass.prepare(gpu, &self.camera, &scene);
 
@@ -2056,6 +2104,7 @@ impl ViewerApp {
                                 let _ = self.patches.ensure(vfs, &self.hud.flash_patch);
                             }
                         }
+                        let weapon_cmds = ui.cmds.len();
                         let soft = self.patches.get(&self.hud.weapon_patch);
                         draw_weapon(
                             &mut ui,
@@ -2076,8 +2125,14 @@ impl ViewerApp {
                                 self.hud.bob_y,
                             );
                         }
+                        if self.hud.inverse_colormap() {
+                            ui.invert_since(weapon_cmds);
+                        }
                     }
                     DoomStatusBar.draw(&self.hud, &mut ui);
+                    if let Some(tint) = room_ui::screen_blend(self.hud.palette) {
+                        ui.fill(Rect::new(0.0, 0.0, 320.0, 200.0), tint);
+                    }
                     self.messages.draw(&mut ui, 8.0, 8.0);
                     if let Some(menu) = &self.menu {
                         let tic = self
@@ -2385,6 +2440,9 @@ impl ViewerApp {
             if let Some(game) = self.play.as_mut() {
                 let prev_state = game.state;
                 game.tick(&cmds);
+                for line in game.drain_script_log() {
+                    eprintln!("room: mod {line}");
+                }
                 entered_intermission =
                     prev_state == GameState::Level && game.state == GameState::Intermission;
                 if let Some(vfs) = self.vfs.as_ref() {
@@ -2401,9 +2459,9 @@ impl ViewerApp {
                                 .world()
                                 .and_then(|w| w.players.get(seat).and_then(|p| p.as_ref()))
                             {
-                                if let Some(mo) = p.mo {
-                                    if let Some(a) = game.world().and_then(|w| w.actors.get(mo)) {
-                                        shared.mixer.listener = a.pos;
+                                if let Some(view) = p.camera.or(p.mo) {
+                                    if let Some(a) = game.world().and_then(|w| w.actors.get(view)) {
+                                        shared.mixer.set_listener(a.pos, a.angle.radians());
                                     }
                                 }
                             }
@@ -2439,15 +2497,16 @@ impl ViewerApp {
                         .into_iter()
                         .map(|e| (e.color, e.fullbright, e.lifetime, e.size, e.x, e.y, e.z))
                         .collect();
-                    let (extralight, infrared) = world
+                    let (extralight, colormap) = world
                         .players
-                        .first()
+                        .get(usize::from(self.local_seat))
                         .and_then(|p| p.as_ref())
-                        .map(|p| (p.extralight, p.infrared))
-                        .unwrap_or((0, false));
+                        .map(|p| (p.extralight, p.fixed_colormap()))
+                        .unwrap_or((0, 0));
+                    self.fixed_colormap = colormap;
                     // Doom: extralight<<4; infrared roughly fills to mid-bright.
                     let light_boost =
-                        (extralight.clamp(0, 2) * 16 + i32::from(infrared) * 64) as i16;
+                        (extralight.clamp(0, 2) * 16 + i32::from(colormap == 1) * 64) as i16;
                     planes = world
                         .sectors
                         .iter()
@@ -2777,6 +2836,13 @@ impl ViewerApp {
                 self.hud.flash_patch = h.flash_patch;
                 self.hud.bob_x = h.bob_x;
                 self.hud.bob_y = h.bob_y;
+                self.hud.arms = h.arms;
+                self.hud.ammo_table = h.ammo_table;
+                self.hud.palette = h.palette;
+                self.hud.colormap = h.colormap;
+                self.hud.deathmatch = h.deathmatch;
+                self.hud.frags = h.frags;
+                self.hud.face_back = h.face_back;
             }
             self.messages.tick();
             self.sync_forward();
@@ -4134,13 +4200,12 @@ impl ViewerApp {
             _ => {}
         }
         self.keys.weapon = 0;
-        if self.keys.next_weapon {
+        if self.keys.weapon_cycle > 0 {
             keys.push(Key::NextWeapon);
-            self.keys.next_weapon = false;
-        }
-        if self.keys.prev_weapon {
+            self.keys.weapon_cycle -= 1;
+        } else if self.keys.weapon_cycle < 0 {
             keys.push(Key::PrevWeapon);
-            self.keys.prev_weapon = false;
+            self.keys.weapon_cycle += 1;
         }
         let mouse_yaw = self.mouse_yaw_accum;
         self.mouse_yaw_accum = 0;

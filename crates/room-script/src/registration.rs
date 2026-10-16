@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 pub enum PropId {
     /// Health.
     Health = 1,
-    /// Speed (stored as i32 × 65536 until f64 path lands).
+    /// Speed (map units per tic).
     Speed = 2,
     /// PainChance.
     PainChance = 3,
@@ -16,6 +16,26 @@ pub enum PropId {
     Radius = 4,
     /// Height.
     Height = 5,
+    /// Mass.
+    Mass = 6,
+    /// ReactionTime (tics).
+    ReactionTime = 7,
+    /// MeleeRange.
+    MeleeRange = 8,
+    /// DamageFactor in percent (50 = half damage taken).
+    DamageFactorPercent = 9,
+    /// Scale in percent (150 = 1.5×).
+    ScalePercent = 10,
+    /// FastSpeed (Nightmare / fast monsters).
+    FastSpeed = 11,
+    /// Alpha in percent.
+    AlphaPercent = 12,
+    /// Translation string (`"Ice"`, `"112:127=176:191"`) — `reg_class_property_str`.
+    Translation = 20,
+    /// Tag (display name) — `reg_class_property_str`.
+    Tag = 21,
+    /// Obituary — `reg_class_property_str`.
+    Obituary = 22,
 }
 
 /// Virtual method slots for `reg_class_virtual`.
@@ -32,29 +52,7 @@ pub enum VirtualSlot {
     Die = 4,
 }
 
-/// `reg_event_handler` event_mask bits (`docs/12` §9).
-pub mod event_mask {
-    /// `WorldTick`.
-    pub const WORLD_TICK: u64 = 1 << 0;
-    /// `WorldThingDied`.
-    pub const WORLD_THING_DIED: u64 = 1 << 1;
-    /// `NewGame`.
-    pub const NEW_GAME: u64 = 1 << 2;
-    /// `WorldLoaded`.
-    pub const WORLD_LOADED: u64 = 1 << 3;
-    /// `UiTick` (UI-scope modules).
-    pub const UI_TICK: u64 = 1 << 16;
-    /// `RenderOverlay` (UI-scope).
-    pub const RENDER_OVERLAY: u64 = 1 << 17;
-}
-
-/// `reg_event_handler` flags.
-pub mod event_handler_flags {
-    /// Survives map changes (`StaticEventHandler`).
-    pub const STATIC: u32 = 1 << 0;
-    /// Map-only handler.
-    pub const MAP_ONLY: u32 = 1 << 1;
-}
+pub use room_script_abi::{event_handler_flags, event_mask};
 
 /// One recorded registration call (fingerprint / tests).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +78,13 @@ pub enum RegCall {
         prop: u32,
         /// Value.
         value: i32,
+    },
+    /// `reg_class_property_str`.
+    PropertyStr {
+        /// Property id.
+        prop: u32,
+        /// Value.
+        value: String,
     },
     /// `reg_class_flag`.
     Flag {
@@ -219,6 +224,8 @@ pub struct RegisteredClass {
     pub flags: u32,
     /// i32 properties.
     pub props_i32: Vec<(u32, i32)>,
+    /// String properties.
+    pub props_str: Vec<(u32, String)>,
     /// Flags set/cleared.
     pub class_flags: Vec<(u32, bool)>,
     /// Virtual overrides.
@@ -235,6 +242,7 @@ struct OpenClass {
     doomednum: i32,
     flags: u32,
     props_i32: Vec<(u32, i32)>,
+    props_str: Vec<(u32, String)>,
     class_flags: Vec<(u32, bool)>,
     virtuals: Vec<(u32, i32)>,
     states: Vec<RegCall>,
@@ -390,11 +398,22 @@ impl RegistrationSession {
             doomednum,
             flags,
             props_i32: Vec::new(),
+            props_str: Vec::new(),
             class_flags: Vec::new(),
             virtuals: Vec::new(),
             states: Vec::new(),
         });
         class_ref
+    }
+
+    /// `reg_class_property_str`.
+    pub fn class_property_str(&mut self, prop: u32, value: &[u8]) {
+        let Some(open) = self.open.as_mut() else {
+            return;
+        };
+        let value = String::from_utf8_lossy(value).into_owned();
+        open.props_str.push((prop, value.clone()));
+        self.calls.push(RegCall::PropertyStr { prop, value });
     }
 
     /// `reg_class_property_i32`.
@@ -431,6 +450,7 @@ impl RegistrationSession {
             doomednum: open.doomednum,
             flags: open.flags,
             props_i32: open.props_i32,
+            props_str: open.props_str,
             class_flags: open.class_flags,
             virtuals: open.virtuals,
             states: open.states,

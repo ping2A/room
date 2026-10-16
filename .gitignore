@@ -36,3 +36,6 @@ rustc-ice-*.txt
 
 .DS_Store
 **/.DS_Store
+
+# Local deploy secrets (copy from deploy/.env.example)
+deploy/.env

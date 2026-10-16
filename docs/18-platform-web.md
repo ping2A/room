@@ -54,7 +54,8 @@ Platforms: Windows 10+ (x86-64, aarch64), macOS 11+ (aarch64, x86-64), Linux (x8
 
 ### 3.3 Input
 
-- Pointer Lock API for mouse look (requested on canvas click), `movementX/Y`; keyboard via `KeyboardEvent.code` mapped to `KEY_*`; prevent default for game keys while captured; Gamepad API polled each frame; Fullscreen API (`F11`/menu option); touch controls overlay (S).
+- Pointer Lock API for mouse look (requested on canvas click), `movementX/Y`; keyboard via `KeyboardEvent.code` mapped to `KEY_*`; prevent default for game keys while captured; Gamepad API polled each frame; Fullscreen API (`F11`/menu option).
+- **Touch (phones / tablets)** — `crates/room-web/touch.js`, enabled for `(pointer: coarse)` or at the first `touchstart` (`?touch=1|0` overrides). Pointer Events, multi-touch: floating left stick → `KeyW/S/A/D` with a 0.28 dead zone, `ShiftLeft` (run) past 85 % deflection; right-half drag and drag-on-FIRE → look (0.3 mouse counts per CSS px × `localStorage.roomTouchLook`, fractional remainder carried; pitch × 0.6); FIRE / USE / scores hold buttons, ‹ › weapon cycle, fullscreen + `screen.orientation.lock("landscape")` where allowed, ☰ shows the skill / mod bar. Everything goes through `roomInputKey` / `roomInputLook` / `roomInputWeaponCycle` into the same input hub as the keyboard, so netplay tic commands are identical. Keys are released on `blur` / `visibilitychange` / `pointercancel`. The page disables pinch / double-tap zoom, pull-to-refresh and long-press callouts, respects `env(safe-area-inset-*)`, and letterboxes the view at ≥ 4:3 in portrait. Audio unlocks on `touchend` / `click` too (iOS Safari).
 
 ### 3.4 Audio
 

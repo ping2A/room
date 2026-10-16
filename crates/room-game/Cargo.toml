@@ -18,6 +18,7 @@ room-defs = { path = "../room-defs" }
 room-formats = { path = "../room-formats" }
 room-map = { path = "../room-map" }
 room-music = { path = "../room-music" }
+room-script = { path = "../room-script" }
 room-sim = { path = "../room-sim" }
 room-ui = { path = "../room-ui" }
 room-vfs = { path = "../room-vfs" }

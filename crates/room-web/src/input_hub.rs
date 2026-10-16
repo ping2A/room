@@ -12,6 +12,9 @@ thread_local! {
     static HELD: RefCell<BTreeSet<&'static str>> = const { RefCell::new(BTreeSet::new()) };
     static ATTACK: Cell<bool> = const { Cell::new(false) };
     static WEAPON: Cell<u8> = const { Cell::new(0) };
+    /// Queued weapon cycles (positive = next). Fractional notches live in `WHEEL_FRAC`.
+    static WHEEL: Cell<i32> = const { Cell::new(0) };
+    static WHEEL_FRAC: Cell<f64> = const { Cell::new(0.0) };
     static VIEW_GRID: Cell<bool> = const { Cell::new(false) };
     static MOUSE_YAW: Cell<i32> = const { Cell::new(0) };
     static MOUSE_PITCH: Cell<i32> = const { Cell::new(0) };
@@ -103,6 +106,18 @@ pub fn set_mouse_button(button: i16, down: bool) {
     }
 }
 
+/// Mouse wheel while looking. `delta_y` is a `WheelEvent` delta: positive is
+/// scrolling down (previous weapon), matching GZDoom's `mwheelup` = next.
+pub fn add_weapon_wheel(delta_y: f64) {
+    let acc = WHEEL_FRAC.get() - delta_y;
+    #[allow(clippy::cast_possible_truncation)]
+    let steps = acc.trunc() as i32;
+    WHEEL_FRAC.set(acc - f64::from(steps));
+    if steps != 0 {
+        WHEEL.set(WHEEL.get().saturating_add(steps));
+    }
+}
+
 /// Pointer-lock mouse motion (CSS pixels), same sign as [`PlaySession::add_mouse_delta`].
 pub fn add_mouse_delta(dx: f64, dy: f64) {
     MOUSE_YAW.set(MOUSE_YAW.get().saturating_add((-dx).round() as i32));
@@ -123,6 +138,10 @@ pub fn drain_into(play: &mut PlaySession) {
     if VIEW_GRID.replace(false) {
         play.view_grid_toggle = true;
     }
+    let wheel = WHEEL.replace(0);
+    if wheel != 0 {
+        play.weapon_cycle = play.weapon_cycle.saturating_add(wheel);
+    }
     play.mouse_yaw = play.mouse_yaw.saturating_add(MOUSE_YAW.replace(0));
     play.mouse_pitch = play.mouse_pitch.saturating_add(MOUSE_PITCH.replace(0));
 }
@@ -133,6 +152,8 @@ pub fn reset() {
     HELD.with(|h| h.borrow_mut().clear());
     ATTACK.set(false);
     WEAPON.set(0);
+    WHEEL.set(0);
+    WHEEL_FRAC.set(0.0);
     VIEW_GRID.set(false);
     MOUSE_YAW.set(0);
     MOUSE_PITCH.set(0);

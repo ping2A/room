@@ -1,5 +1,6 @@
 //! Shared HTTP / admin app state.
 
+use crate::admin_auth::AuthStore;
 use crate::registry::RoomRegistry;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -15,6 +16,8 @@ pub struct AppState {
     pub registry: RoomRegistry,
     /// Admin audit / bans.
     pub admin: AdminStore,
+    /// Admin authentication (sessions, MFA, WebAuthn).
+    pub auth: AuthStore,
 }
 
 /// Append-only audit entry.

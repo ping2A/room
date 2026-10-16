@@ -742,3 +742,23 @@ body::before {
     grid-template-columns: 1fr;
   }
 }
+
+.gate-step { display: flex; flex-direction: column; gap: 0.65rem; }
+.gate-step.hidden { display: none; }
+.gate-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.secret {
+  display: block;
+  padding: 0.55rem 0.7rem;
+  background: var(--bg0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font: 13px/1.4 var(--font-mono);
+  word-break: break-all;
+  user-select: all;
+}
+.keys-list { list-style: none; margin: 0.75rem 0 0; padding: 0; }
+.keys-list li {
+  display: flex; justify-content: space-between; gap: 1rem;
+  padding: 0.4rem 0; border-bottom: 1px solid var(--line-soft); font-size: 0.9rem;
+}
+.mods-list li { align-items: center; }

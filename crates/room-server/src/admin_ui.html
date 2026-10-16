@@ -12,12 +12,54 @@
     <div class="gate-panel">
       <p class="brand-mark">ROOM</p>
       <h1>Ops pit</h1>
-      <p class="lede">Enter the admin bearer token to unlock this node. Leave blank if none is configured.</p>
-      <label class="field">
-        <span>Bearer token</span>
-        <input id="gate-token" type="password" autocomplete="current-password" placeholder="optional"/>
-      </label>
-      <button type="button" id="gate-enter" class="btn primary">Enter console</button>
+      <p class="lede" id="gate-lede">Sign in with your admin password.</p>
+
+      <div id="gate-step-bootstrap" class="gate-step hidden">
+        <p class="lede">First run — create the operator account.</p>
+        <label class="field"><span>Username</span><input id="boot-user" autocomplete="username"/></label>
+        <label class="field"><span>Password</span><input id="boot-pass" type="password" autocomplete="new-password"/></label>
+        <button type="button" id="boot-submit" class="btn primary">Create admin</button>
+      </div>
+
+      <div id="gate-step-password" class="gate-step hidden">
+        <label class="field"><span>Username</span><input id="gate-user" autocomplete="username"/></label>
+        <label class="field"><span>Password</span><input id="gate-pass" type="password" autocomplete="current-password"/></label>
+        <button type="button" id="gate-login" class="btn primary">Sign in</button>
+      </div>
+
+      <div id="gate-step-totp" class="gate-step hidden">
+        <p class="lede">Enter the 6-digit code from your authenticator app.</p>
+        <label class="field"><span>TOTP code</span><input id="gate-totp" inputmode="numeric" autocomplete="one-time-code" maxlength="8"/></label>
+        <div class="gate-actions">
+          <button type="button" id="gate-totp-submit" class="btn primary">Verify</button>
+          <button type="button" id="gate-use-key" class="btn ghost hidden">Use YubiKey / passkey</button>
+        </div>
+      </div>
+
+      <div id="gate-step-enroll" class="gate-step hidden">
+        <p class="lede">Optional: add an authenticator or a YubiKey / passkey. You can also do this later from Settings.</p>
+        <div class="gate-actions">
+          <button type="button" id="enroll-totp" class="btn primary">Set up authenticator</button>
+          <button type="button" id="enroll-key" class="btn">Register YubiKey / passkey</button>
+        </div>
+        <div id="enroll-totp-box" class="hidden">
+          <p class="lede">Add this secret to your TOTP app, then confirm a code.</p>
+          <code id="enroll-secret" class="secret"></code>
+          <p class="muted"><a id="enroll-otpauth" href="#">otpauth link</a></p>
+          <label class="field"><span>Confirm code</span><input id="enroll-totp-code" inputmode="numeric" maxlength="8"/></label>
+          <button type="button" id="enroll-totp-confirm" class="btn primary">Confirm TOTP</button>
+        </div>
+      </div>
+
+      <div id="gate-step-token" class="gate-step hidden">
+        <p class="lede">Dev mode: bearer token (or leave blank if the node is open).</p>
+        <label class="field">
+          <span>Bearer token</span>
+          <input id="gate-token" type="password" autocomplete="current-password" placeholder="optional"/>
+        </label>
+        <button type="button" id="gate-enter" class="btn primary">Enter console</button>
+      </div>
+
       <p id="gate-error" class="err hidden"></p>
     </div>
   </div>
@@ -48,10 +90,7 @@
           <p id="view-sub" class="muted">Cluster pulse for this node</p>
         </div>
         <div class="top-actions">
-          <label class="token-field">
-            <span>Token</span>
-            <input id="token" type="password" autocomplete="off" placeholder="bearer"/>
-          </label>
+          <span id="whoami" class="chip">signed out</span>
           <button type="button" id="refresh" class="btn">Refresh</button>
         </div>
       </header>
@@ -240,9 +279,27 @@
           </form>
         </div>
         <div class="panel">
+          <div class="panel-head">
+            <h2>Mods</h2>
+            <span class="muted">Gameplay mods players may create rooms with (every player downloads the room's mod)</span>
+          </div>
+          <p class="muted" id="mods-status">—</p>
+          <ul id="mods-list" class="keys-list mods-list"></ul>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Security keys</h2>
+            <span class="muted">Register a YubiKey / passkey for passwordless MFA</span>
+          </div>
+          <div class="row">
+            <button type="button" id="add-passkey" class="btn primary">Add YubiKey / passkey</button>
+            <p class="muted" id="keys-status">—</p>
+          </div>
+          <ul id="keys-list" class="keys-list"></ul>
+        </div>
+        <div class="panel">
           <div class="panel-head"><h2>Session</h2></div>
-          <p class="muted">Token is stored in localStorage for this browser only.</p>
-          <button type="button" id="lock-console" class="btn">Lock console</button>
+          <p class="muted">HttpOnly cookie · CSRF on every mutation · 8h absolute lifetime.</p>
+          <button type="button" id="lock-console" class="btn">Sign out</button>
         </div>
       </section>
     </div>

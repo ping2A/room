@@ -372,6 +372,9 @@
       '<div class="row"><span class="k">Skill</span><span>' +
       escapeHtml(room.skill) +
       "</span></div>" +
+      (room.mod
+        ? '<div class="row"><span class="k">Mod</span><span>' + escapeHtml(modLabel(room)) + "</span></div>"
+        : "") +
       '<div class="row"><span class="k">Seats</span><span>' +
       room.occupied +
       " / " +
@@ -379,6 +382,9 @@
       " (" +
       openSeats +
       " free)</span></div>" +
+      (room.time_limit
+        ? '<div class="row"><span class="k">Time limit</span><span>' + escapeHtml(room.time_limit) + " min</span></div>"
+        : "") +
       '<div class="row"><span class="k">State</span><span>' +
       (room.started ? "in game" : "lobby") +
       "</span></div>" +
@@ -389,8 +395,25 @@
     $("watch-play").disabled = openSeats === 0;
   }
 
+  /** Mods admins allowed on this server (`GET /api/mods`); every player downloads the room's mod. */
+  function loadMods() {
+    return api("/api/mods").catch(() => []);
+  }
+
+  function modLabel(room) {
+    return room.mod ? room.mod.title || room.mod.name : "";
+  }
+
   async function createRoom() {
     if (!requireCallsign()) return;
+    const mods = await loadMods();
+    const modField = mods.length
+      ? '<label class="field"><span>Mod</span><select name="mod"><option value="">None (vanilla)</option>' +
+        mods
+          .map((m) => '<option value="' + escapeHtml(m.name) + '">' + escapeHtml(m.title) + "</option>")
+          .join("") +
+        "</select></label>"
+      : "";
     const data = await openModal({
       title: "Open a pit",
       confirmLabel: "Spill blood",
@@ -398,7 +421,11 @@
         '<label class="field"><span>Map</span><input name="map" value="E1M1" required/></label>' +
         '<label class="field"><span>Skill</span><input name="skill" type="number" min="1" max="5" value="3"/></label>' +
         '<label class="field"><span>Max players</span><input name="max_players" type="number" min="2" max="8" value="2"/></label>' +
-        '<label class="field"><span>Visibility</span><select name="visibility"><option value="public">public</option><option value="private">private</option></select></label>',
+        '<label class="field"><span>Time limit (minutes)</span><input name="time_limit" type="number" min="1" max="180" value="' +
+        escapeHtml(state.config.room_time_limit_mins || 20) +
+        '"/></label>' +
+        '<label class="field"><span>Visibility</span><select name="visibility"><option value="public">public</option><option value="private">private</option></select></label>' +
+        modField,
     });
     if (!data) return;
     try {
@@ -409,6 +436,8 @@
           skill: Number(data.skill) || 3,
           max_players: Number(data.max_players) || 2,
           visibility: data.visibility || "public",
+          time_limit: Number(data.time_limit) || undefined,
+          mod: data.mod || undefined,
         }),
       });
       flash("Created " + shortId(created.id));
@@ -418,6 +447,8 @@
         map: created.settings.map,
         skill: created.settings.skill,
         max_players: created.settings.max_players,
+        mod: created.settings.mod,
+        time_limit: created.settings.time_limit,
         occupied: 0,
         started: false,
         ws_v2: created.ws_v2,
@@ -425,7 +456,11 @@
       };
       await playRoom(room);
     } catch (err) {
-      flash(err.message || String(err), "error");
+      if (err.code === 403 && data.mod) {
+        flash("Mod " + data.mod + " is no longer allowed on this server", "error");
+      } else {
+        flash(err.message || String(err), "error");
+      }
     }
   }
 
@@ -472,7 +507,9 @@
         room.occupied +
         "/" +
         room.max_players +
-        ' seats</p><p class="id" title="' +
+        " seats" +
+        (room.time_limit ? " · " + escapeHtml(room.time_limit) + " min" : "") +
+        '</p><p class="id" title="' +
         escapeHtml(room.id) +
         '">' +
         escapeHtml(shortId(room.id)) +
@@ -481,6 +518,7 @@
           ? '<span class="badge live">in game</span>'
           : '<span class="badge open">lobby</span>') +
         (full ? '<span class="badge">full</span>' : "") +
+        (room.mod ? '<span class="badge mod">' + escapeHtml(modLabel(room)) + "</span>" : "") +
         "</div></div>";
       const actions = document.createElement("div");
       actions.className = "room-actions";
@@ -514,11 +552,38 @@
     if (state.watching) renderWatch();
   }
 
+  function renderTop(players) {
+    const list = $("top-list");
+    const rows = players || [];
+    $("top-empty").classList.toggle("hidden", rows.length > 0);
+    list.innerHTML = rows
+      .map(
+        (p) =>
+          '<li><span class="who" title="' +
+          escapeHtml(p.name) +
+          '">' +
+          escapeHtml(p.name) +
+          '</span><span class="stats"><b>' +
+          p.wins +
+          "</b> W · " +
+          p.frags +
+          " frags · " +
+          p.matches +
+          " played</span></li>"
+      )
+      .join("");
+  }
+
   async function refresh() {
     try {
-      const [cfg, rooms] = await Promise.all([api("/api/lobby"), api("/api/rooms")]);
+      const [cfg, rooms, top] = await Promise.all([
+        api("/api/lobby"),
+        api("/api/rooms"),
+        api("/api/leaderboard").catch(() => null),
+      ]);
       state.config = cfg;
       state.rooms = rooms || [];
+      if (top) renderTop(top);
       $("node-pill").textContent = "node " + (cfg.node_id || "—");
       $("drain-pill").classList.toggle("hidden", !cfg.draining);
       $("drain-pill").classList.toggle("warn", !!cfg.draining);

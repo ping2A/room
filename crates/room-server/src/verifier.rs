@@ -3,6 +3,7 @@
 //! Runs `room-game::Headless` on completed TIC_FRAMEs and returns authoritative
 //! world checksums for desync detection.
 
+use bytes::Bytes;
 use room_decorate::parse_decorate;
 use room_game::{GameOptions, Headless, Skill};
 use room_map::load_map;
@@ -39,22 +40,33 @@ pub struct VerifierChecksum {
     pub checksum: u64,
 }
 
-/// Spawn a verifier worker; returns frame sink + checksum source.
+/// Spawn a verifier worker; returns frame sink + checksum source. `game_mod`
+/// (`name`, PWAD bytes) is mounted after the IWAD, like every client does.
 ///
 /// # Errors
 ///
-/// IWAD / map load failure.
+/// IWAD / map / mod load failure.
 pub fn spawn_verifier_with_output(
     iwad: PathBuf,
+    game_mod: Option<(String, Bytes)>,
     map: &str,
     skill: u8,
     rng_seed: u32,
     max_players: u8,
+    time_limit_tics: u32,
 ) -> Result<(mpsc::Sender<TicFrameMsg>, mpsc::Receiver<VerifierChecksum>), String> {
     let (tx, mut rx) = mpsc::channel::<TicFrameMsg>(256);
     let (out_tx, out_rx) = mpsc::channel::<VerifierChecksum>(64);
     let map = map.to_owned();
-    let mut game = load_headless(&iwad, &map, skill, rng_seed, max_players)?;
+    let mut game = load_headless(
+        &iwad,
+        game_mod,
+        &map,
+        skill,
+        rng_seed,
+        max_players,
+        time_limit_tics,
+    )?;
     info!(map = %map, "verifier Headless started");
     tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Handle::current();
@@ -81,16 +93,22 @@ pub fn spawn_verifier_with_output(
 
 fn load_headless(
     iwad: &Path,
+    game_mod: Option<(String, Bytes)>,
     map: &str,
     skill: u8,
     rng_seed: u32,
     max_players: u8,
+    time_limit_tics: u32,
 ) -> Result<Headless, String> {
-    let vfs = VfsBuilder::new()
+    let mut builder = VfsBuilder::new()
         .mount_path(iwad)
-        .map_err(|e| format!("mount iwad: {e}"))?
-        .build()
-        .map_err(|e| format!("vfs: {e}"))?;
+        .map_err(|e| format!("mount iwad: {e}"))?;
+    if let Some((name, bytes)) = game_mod {
+        builder = builder
+            .mount_memory(format!("{name}.wad"), bytes)
+            .map_err(|e| format!("mount mod {name}: {e}"))?;
+    }
+    let vfs = builder.build().map_err(|e| format!("vfs: {e}"))?;
     let mut geometry = load_map(&vfs, map).map_err(|e| format!("load_map: {e}"))?;
     ensure_nodes(&mut geometry);
     let src = include_str!("../../../testdata/actors/doom_basic.txt");
@@ -103,9 +121,20 @@ fn load_headless(
         rng_seed,
         record_demo: false,
         coop_players: max_players.clamp(1, 4),
+        time_limit_tics,
         ..Default::default()
     });
     game.set_defs(classes, states);
+    let (mods, mod_errors) = room_game::discover_mods(&vfs);
+    if let Some(e) = mod_errors.first() {
+        return Err(format!("mod: {e}"));
+    }
+    if !mods.is_empty() {
+        let names = game
+            .set_script_mods(mods)
+            .map_err(|e| format!("mods: {e}"))?;
+        info!(mods = %names.join(", "), "verifier mods loaded");
+    }
     game.start_custom_map(geometry, skill)
         .map_err(|e| format!("start map: {e}"))?;
     Ok(game)

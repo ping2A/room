@@ -1,6 +1,38 @@
 # room-script-sdk
 
-Guest-side Rust SDK (`#![no_std]` + `alloc`) for Room WASM play/UI modules.
+Guest-side Rust SDK (`#![no_std]`, `alloc` opt-in feature) for Room WASM play/UI modules.
+
+## Game mods
+
+`game` wraps every game import (`Actor`, `spawn`, `player`, `print`, `random`,
+`skill`, `level_stat`, …) and `export_mod!` turns a `RoomMod` into a module:
+
+```rust
+use room_script_sdk::game::{self, Event, RoomMod, event_mask};
+use room_script_sdk::{class_find, export_mod};
+
+#[derive(Default)]
+struct Hello;
+
+impl RoomMod for Hello {
+    const NAME: &'static str = "Hello";
+    const EVENTS: u64 = event_mask::WORLD_LOADED | event_mask::WORLD_THING_DIED;
+    fn on_event(&mut self, event: Event) {
+        match event {
+            Event::Loaded { .. } => game::print(None, "hello"),
+            Event::ThingDied { source: Some(s), .. } => {
+                let _ = s.give(class_find("Stimpack"), 1);
+            }
+            _ => {}
+        }
+    }
+}
+
+export_mod!(Hello);
+```
+
+Full example: `mods/doom1-survival`. The same game API exists for AssemblyScript
+(`crates/room-web/as/room.ts`, example `mods/doom1-bounty`, docs/12 §16).
 
 ## Status (M11)
 

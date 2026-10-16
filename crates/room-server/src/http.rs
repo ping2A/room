@@ -1,6 +1,7 @@
 //! HTTP API + WebSocket gateways.
 
 use crate::admin::{admin_routes, prometheus_text};
+use crate::admin_auth::AuthStore;
 use crate::limits::{TokenBucket, ViolationWindow};
 use crate::lobby::{list_public_rooms, lobby_routes};
 use crate::registry::{RegistryError, RoomRegistry};
@@ -11,7 +12,7 @@ use crate::state::AppState;
 use axum::extract::ConnectInfo;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Path, State, WebSocketUpgrade};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -62,7 +63,8 @@ pub async fn serve(registry: RoomRegistry) -> Result<(), std::io::Error> {
         AdminStore::open(&registry.config().data_dir)?
     };
     registry.set_admin(admin.clone());
-    warn_insecure_defaults(registry.config());
+    let auth = build_auth_store(registry.config())?;
+    warn_insecure_defaults(registry.config(), &auth);
     #[cfg(feature = "rtp")]
     if !registry.config().sfu_udp.is_empty() {
         let addr: SocketAddr = registry
@@ -141,7 +143,11 @@ pub async fn serve(registry: RoomRegistry) -> Result<(), std::io::Error> {
     if !registry.config().turn_bind.is_empty() {
         warn!("--turn-bind set but room-server built without feature builtin-turn");
     }
-    let state = AppState { registry, admin };
+    let state = AppState {
+        registry,
+        admin,
+        auth,
+    };
     let listener = tokio::net::TcpListener::bind(&bind).await?.tap_io(|tcp| {
         if let Err(e) = tcp.set_nodelay(true) {
             warn!(?e, "TCP_NODELAY failed");
@@ -200,6 +206,8 @@ pub fn public_router(state: AppState) -> Router {
                 .route("/metrics", get(metrics))
                 .route("/api/rooms", get(list_public_rooms).post(create_room))
                 .route("/api/rooms/{room_id}/join", post(join_room))
+                .route("/api/mods", get(list_mods))
+                .route("/api/mods/{file}", get(get_mod_file))
                 .route("/ws/{room_id}", get(ws_legacy))
                 .route("/v2/rooms/{room_id}/ws", get(ws_v2))
                 .merge(lobby_routes()),
@@ -232,6 +240,8 @@ pub fn router(state: AppState) -> Router {
                 .route("/metrics", get(metrics))
                 .route("/api/rooms", get(list_public_rooms).post(create_room))
                 .route("/api/rooms/{room_id}/join", post(join_room))
+                .route("/api/mods", get(list_mods))
+                .route("/api/mods/{file}", get(get_mod_file))
                 .route("/ws/{room_id}", get(ws_legacy))
                 .route("/v2/rooms/{room_id}/ws", get(ws_v2))
                 .merge(lobby_routes())
@@ -291,9 +301,45 @@ fn origin_allowed(headers: &HeaderMap, allowed: &[String]) -> bool {
     allowed.iter().any(|a| a == origin)
 }
 
-fn warn_insecure_defaults(cfg: &crate::config::ServerConfig) {
-    if cfg.admin_token.is_empty() {
-        warn!("room-server: --admin-token is empty — admin API is open (dev only)");
+fn build_auth_store(cfg: &crate::config::ServerConfig) -> Result<AuthStore, std::io::Error> {
+    let auth = if cfg.data_dir.is_empty() {
+        AuthStore::memory(&cfg.admin_rp_id, &cfg.admin_rp_origin)
+    } else {
+        AuthStore::open(
+            &cfg.data_dir,
+            &cfg.admin_rp_id,
+            &cfg.admin_rp_origin,
+            cfg.admin_secure_cookie,
+        )?
+    };
+    if !cfg.admin_bootstrap.is_empty() {
+        if let Some((user, pass)) = cfg.admin_bootstrap.split_once(':') {
+            if let Err(e) = auth.bootstrap_user(user, pass) {
+                warn!(%e, "admin bootstrap skipped");
+            }
+        } else {
+            warn!("--admin-bootstrap must be user:password");
+        }
+    }
+    Ok(auth)
+}
+
+fn warn_insecure_defaults(cfg: &crate::config::ServerConfig, auth: &AuthStore) {
+    if auth.has_users() {
+        info!(
+            users = auth.user_count(),
+            rp = %cfg.admin_rp_id,
+            origin = %cfg.admin_rp_origin,
+            "admin MFA enabled (password + TOTP / WebAuthn)"
+        );
+    } else if cfg.admin_token.is_empty() {
+        warn!(
+            "room-server: no admin users and --admin-token is empty — admin API is open (dev only)"
+        );
+    } else {
+        warn!(
+            "room-server: admin uses bearer token only — set --admin-bootstrap or enroll MFA users for production"
+        );
     }
     if cfg.ticket_secret == "room-dev-ticket-secret" || cfg.ticket_secret.len() < 16 {
         warn!(
@@ -322,8 +368,39 @@ async fn create_room(
             RegistryError::Full | RegistryError::Draining | RegistryError::VerifierFull => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
+            RegistryError::UnknownMod => StatusCode::BAD_REQUEST,
+            RegistryError::ModNotAllowed => StatusCode::FORBIDDEN,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         })
+}
+
+/// `GET /api/mods` — mods rooms can be created with.
+async fn list_mods(State(state): State<AppState>) -> Json<Vec<crate::mods::ModListing>> {
+    Json(state.registry.config().mods.listing())
+}
+
+/// `GET /api/mods/{name}.wad` — mod file for clients (public, cacheable; CORS
+/// open so a client served from another origin can fetch it).
+async fn get_mod_file(
+    State(state): State<AppState>,
+    Path(file): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let name = file.strip_suffix(".wad").ok_or(StatusCode::NOT_FOUND)?;
+    let entry = state
+        .registry
+        .config()
+        .mods
+        .get(name)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
+            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_owned()),
+            (header::CACHE_CONTROL, "public, max-age=300".to_owned()),
+            (header::ETAG, format!("\"{}\"", entry.info.fingerprint)),
+        ],
+        entry.bytes.clone(),
+    ))
 }
 
 async fn join_room(
@@ -704,9 +781,11 @@ pub async fn bind_ephemeral(
     });
     // Share the registry's admin store so bans added via HTTP hit WS hello checks.
     let admin = registry.admin();
+    let auth = build_auth_store(registry.config())?;
     let app = router(AppState {
         registry: registry.clone(),
         admin,
+        auth,
     });
     let handle = tokio::spawn(async move {
         let _ = axum::serve(

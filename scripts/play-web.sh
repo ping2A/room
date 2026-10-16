@@ -62,10 +62,27 @@ cp crates/room-web/index.html "$OUT/index.html"
 cp crates/room-web/voice.js "$OUT/voice.js"
 cp crates/room-web/rtc.js "$OUT/rtc.js"
 cp crates/room-web/netgraph.js "$OUT/netgraph.js"
+cp crates/room-web/touch.js "$OUT/touch.js"
 cp crates/room-web/mixer-worklet.js "$OUT/mixer-worklet.js"
 cp crates/room-web/editor.html "$OUT/editor.html"
 cp crates/room-web/editor.js "$OUT/editor.js"
 cp crates/room-web/editor-tools.js "$OUT/editor-tools.js"
+cp crates/room-web/editor-paint.js "$OUT/editor-paint.js"
+cp crates/room-web/editor-scripts.js "$OUT/editor-scripts.js"
+mkdir -p "$OUT/mods"
+cp mods/doom1-survival/survival.wad "$OUT/mods/survival.wad"
+cp mods/doom1-bounty/bounty.wad "$OUT/mods/bounty.wad"
+# AssemblyScript live mods: the game API library + a vendored compiler
+# (falls back to the jsDelivr CDN in the editor when absent).
+mkdir -p "$OUT/as"
+cp crates/room-web/as/room.ts crates/room-web/as/room_abi.ts "$OUT/as/"
+if [[ ! -f target/asc-vendor/asc.js && "${ROOM_WEB_NO_ASC:-0}" != "1" ]] && command -v npm >/dev/null; then
+  ./scripts/fetch-assemblyscript.sh || echo "room: AssemblyScript vendoring failed — editor will use the CDN" >&2
+fi
+if [[ -f target/asc-vendor/asc.js ]]; then
+  mkdir -p "$OUT/vendor/asc"
+  cp target/asc-vendor/* "$OUT/vendor/asc/"
+fi
 cp crates/room-web/editor.css "$OUT/editor.css"
 # GM SoundFont for web music (same search order as the desktop shell).
 for sf in soundfonts/room.sf2 soundfonts/TimGM6mb.sf2 soundfonts/default.sf2 soundfonts/gzdoom.sf2 soundfonts/FluidR3_GM.sf2; do
@@ -78,14 +95,16 @@ CACHE_TS="$(date +%s)"
 if [[ "$(uname)" == Darwin ]]; then
   sed -i '' "s|./room_web.js|./room_web.js?v=${CACHE_TS}|g" "$OUT/index.html"
   sed -i '' "s|./voice.js|./voice.js?v=${CACHE_TS}|g" "$OUT/index.html"
+  sed -i '' "s|./touch.js|./touch.js?v=${CACHE_TS}|g" "$OUT/index.html"
   sed -i '' "s|room_web_bg.wasm|room_web_bg.wasm?v=${CACHE_TS}|g" "$OUT/room_web.js"
-  sed -i '' -e "s|./room_web.js|./room_web.js?v=${CACHE_TS}|g" -e "s|./editor-tools.js|./editor-tools.js?v=${CACHE_TS}|g" "$OUT/editor.js"
+  sed -i '' -e "s|./room_web.js|./room_web.js?v=${CACHE_TS}|g" -e "s|./editor-tools.js|./editor-tools.js?v=${CACHE_TS}|g" -e "s|./editor-paint.js|./editor-paint.js?v=${CACHE_TS}|g" -e "s|./editor-scripts.js|./editor-scripts.js?v=${CACHE_TS}|g" "$OUT/editor.js"
   sed -i '' -e "s|./editor.js|./editor.js?v=${CACHE_TS}|g" -e "s|./editor.css|./editor.css?v=${CACHE_TS}|g" "$OUT/editor.html"
 else
   sed -i "s|./room_web.js|./room_web.js?v=${CACHE_TS}|g" "$OUT/index.html"
   sed -i "s|./voice.js|./voice.js?v=${CACHE_TS}|g" "$OUT/index.html"
+  sed -i "s|./touch.js|./touch.js?v=${CACHE_TS}|g" "$OUT/index.html"
   sed -i "s|room_web_bg.wasm|room_web_bg.wasm?v=${CACHE_TS}|g" "$OUT/room_web.js"
-  sed -i -e "s|./room_web.js|./room_web.js?v=${CACHE_TS}|g" -e "s|./editor-tools.js|./editor-tools.js?v=${CACHE_TS}|g" "$OUT/editor.js"
+  sed -i -e "s|./room_web.js|./room_web.js?v=${CACHE_TS}|g" -e "s|./editor-tools.js|./editor-tools.js?v=${CACHE_TS}|g" -e "s|./editor-paint.js|./editor-paint.js?v=${CACHE_TS}|g" -e "s|./editor-scripts.js|./editor-scripts.js?v=${CACHE_TS}|g" "$OUT/editor.js"
   sed -i -e "s|./editor.js|./editor.js?v=${CACHE_TS}|g" -e "s|./editor.css|./editor.css?v=${CACHE_TS}|g" "$OUT/editor.html"
 fi
 

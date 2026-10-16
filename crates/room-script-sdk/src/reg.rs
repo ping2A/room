@@ -120,3 +120,5 @@ pub fn static_function(class_name: &str, func_name: &str, callback_id: i32) -> i
         )
     }
 }
+
+pub use crate::game::class_property_str;

@@ -1,8 +1,8 @@
 //! `wasmtime` Cranelift backend (native).
 
 use crate::{
-    CompiledModule, HostLinker, LogFn, ScriptError, SharedRegistration, WasmBackend, WasmInstance,
-    validate_module,
+    CompiledModule, GameFn, GuestMemory, HostLinker, LogFn, ScriptError, SharedGameBridge,
+    SharedRegistration, ValKind, WasmBackend, WasmInstance, validate_module,
 };
 use room_script_abi::{Budget, ModuleConfig, Trap, Val};
 use std::sync::Arc;
@@ -20,6 +20,7 @@ struct HostState {
     class_find: crate::ClassFindFn,
     acs_execute: crate::AcsExecuteFn,
     reg: SharedRegistration,
+    game: Option<SharedGameBridge>,
 }
 
 /// Fuel-metered wasmtime engine.
@@ -75,6 +76,7 @@ impl WasmBackend for WasmtimeBackend {
             class_find: Arc::clone(&host.class_find),
             acs_execute: Arc::clone(&host.acs_execute),
             reg: Arc::clone(&host.reg),
+            game: host.game.clone(),
         };
         let mut store = Store::new(&self.engine, state);
         store
@@ -147,6 +149,7 @@ impl WasmBackend for WasmtimeBackend {
             )
             .map_err(|e| ScriptError::Backend(e.to_string()))?;
         link_reg_imports(&mut linker)?;
+        link_game_imports(&self.engine, &mut linker)?;
 
         let instance = linker
             .instantiate(&mut store, &wasm)
@@ -262,6 +265,18 @@ fn link_reg_imports(linker: &mut Linker<HostState>) -> Result<(), ScriptError> {
             |caller: Caller<'_, HostState>, prop: i32, value: i32| {
                 if let Ok(mut g) = caller.data().reg.lock() {
                     g.class_property_i32(prop as u32, value);
+                }
+            },
+        )
+        .map_err(|e| ScriptError::Backend(e.to_string()))?;
+    linker
+        .func_wrap(
+            "room",
+            "reg_class_property_str",
+            |mut caller: Caller<'_, HostState>, prop: i32, ptr: i32, len: i32| {
+                let value = read_guest_bytes(&mut caller, ptr, len);
+                if let Ok(mut g) = caller.data().reg.lock() {
+                    g.class_property_str(prop as u32, &value);
                 }
             },
         )
@@ -390,6 +405,81 @@ fn link_reg_imports(linker: &mut Linker<HostState>) -> Result<(), ScriptError> {
             },
         )
         .map_err(|e| ScriptError::Backend(e.to_string()))?;
+    Ok(())
+}
+
+fn wt_kind(k: ValKind) -> wasmtime::ValType {
+    match k {
+        ValKind::I32 => wasmtime::ValType::I32,
+        ValKind::I64 => wasmtime::ValType::I64,
+        ValKind::F64 => wasmtime::ValType::F64,
+    }
+}
+
+struct CallerMem<'a, 'b> {
+    caller: &'a mut Caller<'b, HostState>,
+    mem: Option<wasmtime::Memory>,
+}
+
+impl GuestMemory for CallerMem<'_, '_> {
+    fn read(&self, ptr: i32, len: i32) -> Option<Vec<u8>> {
+        let mem = self.mem?;
+        let data = mem.data(&*self.caller);
+        let start = usize::try_from(ptr).ok()?;
+        let end = start.checked_add(usize::try_from(len).ok()?)?;
+        data.get(start..end).map(<[u8]>::to_vec)
+    }
+
+    fn write(&mut self, ptr: i32, bytes: &[u8]) -> bool {
+        let Some(mem) = self.mem else {
+            return false;
+        };
+        let data = mem.data_mut(&mut *self.caller);
+        let Ok(start) = usize::try_from(ptr) else {
+            return false;
+        };
+        let Some(dst) = start
+            .checked_add(bytes.len())
+            .and_then(|end| data.get_mut(start..end))
+        else {
+            return false;
+        };
+        dst.copy_from_slice(bytes);
+        true
+    }
+}
+
+fn link_game_imports(engine: &Engine, linker: &mut Linker<HostState>) -> Result<(), ScriptError> {
+    for &f in GameFn::ALL {
+        let ty = wasmtime::FuncType::new(
+            engine,
+            f.params().iter().copied().map(wt_kind),
+            f.result().map(wt_kind),
+        );
+        linker
+            .func_new(
+                "room",
+                f.name(),
+                ty,
+                move |mut caller: Caller<'_, HostState>, params, results| {
+                    let args: Vec<Val> = params.iter().map(wt_to_val).collect();
+                    let bridge = caller.data().game.clone();
+                    let mem = caller.get_export("memory").and_then(|e| e.into_memory());
+                    let out = bridge.and_then(|b| {
+                        let mut view = CallerMem {
+                            caller: &mut caller,
+                            mem,
+                        };
+                        b.call(f, &args, &mut view)
+                    });
+                    if let (Some(slot), Some(kind)) = (results.first_mut(), f.result()) {
+                        *slot = val_to_wt(&crate::game::coerce(out, kind));
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|e| ScriptError::Backend(e.to_string()))?;
+    }
     Ok(())
 }
 

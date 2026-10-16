@@ -466,6 +466,9 @@ impl ClassRegistry {
         for &(prop, value) in &reg.props_i32 {
             apply_script_prop_i32(&mut def, prop, value);
         }
+        for (prop, value) in &reg.props_str {
+            apply_script_prop_str(&mut def, *prop, value);
+        }
         for &(flag, on) in &reg.class_flags {
             apply_script_flag(&mut def, flag, on);
         }
@@ -1241,16 +1244,48 @@ fn apply_script_prop_i32(def: &mut ClassDef, prop: u32, value: i32) {
         x if x == PropId::PainChance as u32 => def.pain_chance = value,
         x if x == PropId::Radius as u32 => def.radius = f64::from(value),
         x if x == PropId::Height as u32 => def.height = f64::from(value),
+        x if x == PropId::Mass as u32 => def.mass = value,
+        x if x == PropId::ReactionTime as u32 => def.reaction_time = value,
+        x if x == PropId::MeleeRange as u32 => def.melee_range = f64::from(value),
+        x if x == PropId::DamageFactorPercent as u32 => {
+            def.damage_factor = f64::from(value.max(0)) / 100.0;
+        }
+        x if x == PropId::ScalePercent as u32 => {
+            let s = f64::from(value.max(1)) / 100.0;
+            def.scale_x = s;
+            def.scale_y = s;
+        }
+        x if x == PropId::FastSpeed as u32 => def.fast_speed = f64::from(value),
+        x if x == PropId::AlphaPercent as u32 => {
+            def.alpha = f64::from(value.clamp(0, 100)) / 100.0;
+        }
+        _ => {}
+    }
+}
+
+fn apply_script_prop_str(def: &mut ClassDef, prop: u32, value: &str) {
+    match prop {
+        x if x == PropId::Translation as u32 => def.translation = value.to_owned(),
+        x if x == PropId::Tag as u32 => def.tag = value.to_owned(),
+        x if x == PropId::Obituary as u32 => def.obituary = value.to_owned(),
         _ => {}
     }
 }
 
 fn apply_script_flag(def: &mut ClassDef, flag: u32, on: bool) {
-    // Bootstrap FlagId → engine bit (expand with ABI FlagId table later).
+    // ABI FlagId → engine bit (`room-script-sdk::flag`).
     let bit = match flag {
         1 => FLAG_SOLID,
         2 => FLAG_SHOOTABLE,
         3 => FLAG_COUNTKILL,
+        4 => FLAG_FRIENDLY,
+        5 => FLAG_NOGRAVITY,
+        6 => FLAG_FLOAT,
+        7 => FLAG_NOBLOOD,
+        8 => FLAG_BOSS,
+        9 => FLAG_NORADIUSDMG,
+        10 => FLAG_INVULNERABLE,
+        11 => FLAG_DONTDRAW,
         _ => return,
     };
     if on {

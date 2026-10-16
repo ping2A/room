@@ -146,6 +146,7 @@ cp crates/room-web/index.html "$OUT/index.html"
 cp crates/room-web/voice.js "$OUT/voice.js"
 cp crates/room-web/rtc.js "$OUT/rtc.js"
 cp crates/room-web/netgraph.js "$OUT/netgraph.js"
+cp crates/room-web/touch.js "$OUT/touch.js"
 cp crates/room-web/mixer-worklet.js "$OUT/mixer-worklet.js"
 CACHE_TS="$(date +%s)"
 if [[ "$(uname)" == Darwin ]]; then
@@ -153,12 +154,14 @@ if [[ "$(uname)" == Darwin ]]; then
   sed -i '' "s|./voice.js|./voice.js?v=${CACHE_TS}|g" "$OUT/index.html"
   sed -i '' "s|./rtc.js|./rtc.js?v=${CACHE_TS}|g" "$OUT/index.html"
   sed -i '' "s|./netgraph.js|./netgraph.js?v=${CACHE_TS}|g" "$OUT/index.html"
+  sed -i '' "s|./touch.js|./touch.js?v=${CACHE_TS}|g" "$OUT/index.html"
   sed -i '' "s|room_web_bg.wasm|room_web_bg.wasm?v=${CACHE_TS}|g" "$OUT/room_web.js"
 else
   sed -i "s|./room_web.js|./room_web.js?v=${CACHE_TS}|g" "$OUT/index.html"
   sed -i "s|./voice.js|./voice.js?v=${CACHE_TS}|g" "$OUT/index.html"
   sed -i "s|./rtc.js|./rtc.js?v=${CACHE_TS}|g" "$OUT/index.html"
   sed -i "s|./netgraph.js|./netgraph.js?v=${CACHE_TS}|g" "$OUT/index.html"
+  sed -i "s|./touch.js|./touch.js?v=${CACHE_TS}|g" "$OUT/index.html"
   sed -i "s|room_web_bg.wasm|room_web_bg.wasm?v=${CACHE_TS}|g" "$OUT/room_web.js"
 fi
 

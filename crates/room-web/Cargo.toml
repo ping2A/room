@@ -25,10 +25,12 @@ room-net = { path = "../room-net", default-features = false, optional = true }
 room-proto = { path = "../room-proto", optional = true }
 room-nodebuild = { path = "../room-nodebuild", optional = true }
 room-render = { path = "../room-render", optional = true }
+room-script = { path = "../room-script", optional = true }
 room-sim = { path = "../room-sim", optional = true }
 room-ui = { path = "../room-ui", optional = true }
 room-vfs = { path = "../room-vfs", optional = true }
 glam = { workspace = true, optional = true }
+wat = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
@@ -47,6 +49,7 @@ web-sys = { version = "0.3", optional = true, features = [
     "Performance",
     "KeyboardEvent",
     "MouseEvent",
+    "WheelEvent",
     "Event",
     "EventTarget",
     "AddEventListenerOptions",
@@ -73,6 +76,7 @@ web-sys = { version = "0.3", optional = true, features = [
     "BinaryType",
     "CloseEvent",
     "WebSocket",
+    "Response",
 ] }
 console_error_panic_hook = { version = "0.1", optional = true }
 wgpu = { workspace = true, optional = true }
@@ -100,12 +104,14 @@ browser = [
     "dep:room-proto",
     "dep:room-nodebuild",
     "dep:room-render",
+    "dep:room-script",
     "dep:room-sim",
     "dep:room-ui",
     "dep:room-vfs",
     "dep:glam",
     "dep:wgpu",
     "dep:libm",
+    "dep:wat",
 ]
 
 [dev-dependencies]

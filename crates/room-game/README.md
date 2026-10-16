@@ -13,6 +13,9 @@ Game state machine: startup, levels, hubs, intermission, saves, demos.
 - `play_map_music` / `doom2_music_lump` — MAPINFO or Doom II defaults → MUS into `MusicPlayer`
 - `hud_state` — `PlayerHud` → `room-ui::HudState` for the Doom status bar
 - `Skill` / `GameOptions` / `GameState` (`coop_players` spawns seats 2–4)
+- `discover_mods` (`ROOMMOD` lump / `room.toml`) → `Headless::set_script_mods` —
+  WASM game mods restarted per new game, ticked after each sim tic
+  (`drain_script_log`, `script_mod_names`; test `wasm_mod_survival`)
 
 ## Multiplayer tests
 

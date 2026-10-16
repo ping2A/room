@@ -38,6 +38,35 @@ thread_local! {
     static PENDING_SOFTFONT: RefCell<Option<SoftFont>> = const { RefCell::new(None) };
     /// Music player of the live context, so a late SoundFont can be swapped in.
     static ACTIVE_MUSIC: RefCell<Weak<RefCell<MusicPlayer>>> = const { RefCell::new(Weak::new()) };
+    /// Global mute (`roomSetMuted`), applied to every graph including later ones.
+    static MUTED: RefCell<bool> = const { RefCell::new(false) };
+    static MASTER_GAINS: RefCell<Vec<GainNode>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Mute / unmute all game audio (SFX + music).
+pub fn set_muted(muted: bool) {
+    MUTED.with(|m| *m.borrow_mut() = muted);
+    MASTER_GAINS.with(|g| {
+        for node in g.borrow().iter() {
+            node.gain().set_value(if muted { 0.0 } else { 1.0 });
+        }
+    });
+}
+
+/// Current [`set_muted`] state.
+pub fn muted() -> bool {
+    MUTED.with(|m| *m.borrow())
+}
+
+fn track_master_gain(gain: &GainNode) {
+    MASTER_GAINS.with(|g| {
+        let mut g = g.borrow_mut();
+        // Play tests rebuild the graph; old contexts are dead weight.
+        if g.len() >= 4 {
+            g.remove(0);
+        }
+        g.push(gain.clone());
+    });
 }
 
 fn now_ms() -> f64 {
@@ -228,7 +257,8 @@ impl WebAudio {
         ACTIVE_MUSIC.with(|m| *m.borrow_mut() = Rc::downgrade(&music));
         let scratch = Rc::new(RefCell::new(Scratch::with_frames(SP_FRAMES as usize)));
         let gain = ctx.create_gain()?;
-        gain.gain().set_value(1.0);
+        gain.gain().set_value(if muted() { 0.0 } else { 1.0 });
+        track_master_gain(&gain);
         let _ = gain.connect_with_audio_node(&ctx.destination());
 
         // Prefer AudioWorklet first (avoids ScriptProcessor deprecation warning).

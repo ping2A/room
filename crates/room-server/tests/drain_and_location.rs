@@ -20,6 +20,8 @@ async fn drain_rejects_creates_and_readyz_503() {
             max_players: 2,
             enable_verifier: false,
             visibility: "public".into(),
+            game_mod: None,
+            time_limit: None,
         })
         .unwrap();
     assert_eq!(registry.locate_room(&created.id).as_deref(), Some("node-a"));

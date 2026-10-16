@@ -5,6 +5,7 @@
 #   ./scripts/room-server.sh stop
 #   ./scripts/room-server.sh restart
 #   ./scripts/room-server.sh status
+#   ./scripts/room-server.sh mods      # only build the gameplay mods (mods/*)
 #
 # Extra server flags after `--`:
 #   ./scripts/room-server.sh start --bind 127.0.0.1:8765 -- \
@@ -31,13 +32,17 @@ EXTRA_ARGS=()
 
 usage() {
   cat <<EOF
-Usage: $0 <start|stop|restart|status> [options] [-- server-flags...]
+Usage: $0 <start|stop|restart|status|mods> [options] [-- server-flags...]
 
 Commands:
   start     Build (unless --no-build) and run room-server in the background
   stop      Stop the background process (SIGTERM, then SIGKILL)
   restart   stop then start
   status    Print pid / health / admin UI
+  mods      Build every mods/<dir> (Rust crate or AssemblyScript) into <module>.wad
+
+Mods: start builds them too (unless --no-build) and serves them, but each one
+stays disallowed until an admin allows it in the admin UI (Settings → Mods).
 
 Options:
   --bind HOST:PORT        Game/API/lobby listen address (default: ${BIND})
@@ -61,7 +66,7 @@ EOF
 cmd=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    start|stop|restart|status)
+    start|stop|restart|status|mods)
       if [[ -n "$cmd" ]]; then
         echo "room-server.sh: unexpected second command '$1'" >&2
         exit 2
@@ -113,8 +118,18 @@ build_room_web() {
   mkdir -p "$out"
   wasm-bindgen "$wasm" --out-dir "$out" --target web --no-typescript
   cp crates/room-web/index.html crates/room-web/voice.js crates/room-web/rtc.js \
-    crates/room-web/netgraph.js crates/room-web/mixer-worklet.js \
-    crates/room-web/editor.html crates/room-web/editor.js crates/room-web/editor-tools.js crates/room-web/editor.css "$out/"
+    crates/room-web/netgraph.js crates/room-web/touch.js crates/room-web/mixer-worklet.js \
+    crates/room-web/editor.html crates/room-web/editor.js crates/room-web/editor-tools.js crates/room-web/editor-paint.js crates/room-web/editor-scripts.js crates/room-web/editor.css "$out/"
+  cp -R crates/room-web/as "$out/as"
+  # Version every module URL so browsers never run a stale wasm / JS mix
+  # (the server sends no cache headers).
+  local v
+  v="$(date +%s)"
+  sed -i.bak "s|room_web_bg\.wasm|room_web_bg.wasm?v=${v}|g" "$out/room_web.js"
+  sed -i.bak -E "s#\./(room_web|editor-tools|editor-paint|editor-scripts|netgraph|touch|rtc|voice)\.js#./\1.js?v=${v}#g" \
+    "$out/editor.js" "$out/index.html"
+  sed -i.bak -E "s#\./editor\.(js|css)#./editor.\1?v=${v}#g" "$out/editor.html"
+  rm -f "$out"/*.bak
   # GM SoundFont for web music (same search order as the desktop shell).
   for sf in soundfonts/room.sf2 soundfonts/TimGM6mb.sf2 soundfonts/default.sf2 soundfonts/gzdoom.sf2 soundfonts/FluidR3_GM.sf2; do
     if [[ -f "$sf" ]]; then
@@ -129,6 +144,58 @@ build_room_web() {
   elif [[ -f testdata/freedoom/freedoom2.wad ]]; then
     cp testdata/freedoom/freedoom2.wad "$out/freedoom1.wad"
   fi
+}
+
+# Build each mods/<dir> with a room.toml manifest and pack it as a PWAD:
+# ROOMMOD (room.toml) + one lump per [[module]] (`file`) from <name>.wasm,
+# plus the `source` lump from <name>.ts when the manifest names one.
+# Cargo.toml → Rust crate (one module); <name>.ts → AssemblyScript.
+build_mods() {
+  local dir
+  for dir in mods/*/; do
+    dir="${dir%/}"
+    [[ -f "$dir/room.toml" ]] || continue
+    if [[ -f "$dir/Cargo.toml" ]]; then
+      rustup target add wasm32-unknown-unknown >/dev/null
+      cargo build --release --target wasm32-unknown-unknown \
+        --manifest-path "$dir/Cargo.toml" --target-dir target/mods
+    elif compgen -G "$dir/*.ts" >/dev/null; then
+      if ! command -v node >/dev/null 2>&1; then
+        echo "room-server: skip ${dir} (AssemblyScript needs node)" >&2
+        continue
+      fi
+      [[ -f target/asc-npm/node_modules/assemblyscript/dist/asc.js ]] || ./scripts/fetch-assemblyscript.sh
+    fi
+    python3 - "$dir" <<'EOF'
+import pathlib, struct, subprocess, sys, tomllib
+d = pathlib.Path(sys.argv[1])
+manifest = (d / "room.toml").read_bytes()
+modules = tomllib.loads(manifest.decode()).get("module", [])
+if not modules:
+    sys.exit(f"{d}/room.toml: no [[module]]")
+cargo = d / "Cargo.toml"
+if cargo.is_file():
+    crate = tomllib.loads(cargo.read_text())["package"]["name"].replace("-", "_")
+    built = pathlib.Path("target/mods/wasm32-unknown-unknown/release") / f"{crate}.wasm"
+    (d / f"{modules[0]['name']}.wasm").write_bytes(built.read_bytes())
+lumps = [("ROOMMOD", manifest)]
+for m in modules:
+    wasm, ts = d / f"{m['name']}.wasm", d / f"{m['name']}.ts"
+    if not cargo.is_file() and ts.is_file():
+        subprocess.run(["node", "scripts/asc-compile.mjs", str(ts), str(wasm)], check=True)
+    lumps.append((m["file"], wasm.read_bytes()))
+    if m.get("source") and ts.is_file():
+        lumps.append((m["source"], ts.read_bytes()))
+data, dir_, off = b"", b"", 12
+for name, body in lumps:
+    dir_ += struct.pack("<ii8s", off, len(body), name.encode())
+    data += body
+    off += len(body)
+out = d / f"{modules[0]['name']}.wad"
+out.write_bytes(b"PWAD" + struct.pack("<ii", len(lumps), off) + data + dir_)
+print(f"room-server: mod {out} ({len(data) + len(dir_) + 12} bytes)")
+EOF
+  done
 }
 
 http_base_for() {
@@ -223,6 +290,38 @@ do_start() {
     start_args+=(--turn-bind "0.0.0.0:3479" --turn-public-ip "127.0.0.1")
   fi
 
+  # Gameplay mods rooms can be created with (every player downloads the room's
+  # mod); admins allow each one in Settings → Mods.
+  if [[ "$extra_joined" != *"--mods-dir"* && -z "${ROOM_MODS_DIR:-}" ]]; then
+    if [[ "$BUILD" -eq 1 ]]; then
+      build_mods
+    fi
+    local mods_dir="$RUN_DIR/mods"
+    mkdir -p "$mods_dir"
+    rm -f "$mods_dir"/*.wad
+    local wad
+    for wad in mods/*/*.wad; do
+      [[ -f "$wad" ]] && cp "$wad" "$mods_dir/"
+    done
+    start_args+=(--mods-dir "$mods_dir")
+  fi
+
+  # Persist bans/audit/admins; bootstrap MFA admin on first run.
+  local data_dir="$RUN_DIR/data"
+  mkdir -p "$data_dir"
+  if [[ "$extra_joined" != *"--data-dir"* ]]; then
+    start_args+=(--data-dir "$data_dir")
+  fi
+  if [[ "$extra_joined" != *"--admin-rp-origin"* ]]; then
+    start_args+=(--admin-rp-id localhost --admin-rp-origin "$(http_base_for "$ADMIN_BIND")")
+  fi
+  if [[ "$extra_joined" != *"--admin-bootstrap"* && -z "${ROOM_ADMIN_BOOTSTRAP:-}" && ! -f "$data_dir/admins.json" ]]; then
+    start_args+=(--admin-bootstrap "admin:admin")
+    printf 'username=admin\npassword=admin\n' >"$data_dir/bootstrap.txt"
+    chmod 600 "$data_dir/bootstrap.txt" 2>/dev/null || true
+    echo "room-server: first-run admin → user admin, password admin"
+  fi
+
   echo "room-server: starting ${start_args[*]}${EXTRA_ARGS[*]:+ ${EXTRA_ARGS[*]}}"
   printf '%s\n' "$BIND" >"$BIND_FILE"
   printf '%s\n' "$ADMIN_BIND" >"$ADMIN_BIND_FILE"
@@ -245,7 +344,7 @@ do_start() {
       echo "room-server: started pid=${pid}"
       echo "  lobby: ${base}/"
       echo "  play:  ${PLAY_BASE}/"
-      echo "  admin: ${admin_base}/admin"
+      echo "  admin: ${admin_base}/admin  (Settings → Mods to allow mods)"
       echo "  log:   ${LOG_FILE}"
       return 0
     fi
@@ -303,4 +402,5 @@ case "$cmd" in
   stop) do_stop ;;
   restart) do_stop; do_start ;;
   status) do_status ;;
+  mods) build_mods ;;
 esac

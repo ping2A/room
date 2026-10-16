@@ -1,10 +1,11 @@
 //! Admin API + embedded SPA (docs/22 §7).
 
+use crate::admin_auth::{AdminIdentity, auth_routes};
 use crate::registry::RoomRegistry;
 use crate::room::{AdminCmd, CreateRoomRequest, CreateRoomResponse, RoomCmd, RoomInspect};
 use crate::state::{AppState, AuditEntry, Ban};
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -35,6 +36,7 @@ pub fn admin_routes() -> Router<AppState> {
         .route("/admin/", get(admin_spa))
         .route("/admin/assets/app.css", get(admin_css))
         .route("/admin/assets/app.js", get(admin_js))
+        .merge(auth_routes())
         .route("/admin/api/v1/summary", get(summary))
         .route(
             "/admin/api/v1/rooms",
@@ -55,38 +57,30 @@ pub fn admin_routes() -> Router<AppState> {
         .route("/admin/api/v1/audit", get(audit_list))
         .route("/admin/api/v1/bans", get(list_bans).post(add_ban))
         .route("/admin/api/v1/bans/{id}", delete(delete_ban))
+        .route("/admin/api/v1/mods", get(list_mods))
+        .route("/admin/api/v1/mods/{name}", post(set_mod_allowed))
         .route("/admin/api/v1/maintenance", post(maintenance))
         .route("/admin/api/v1/locations", get(list_locations))
 }
 
-fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
-    let expected = state.registry.config().admin_token.as_str();
-    if expected.is_empty() {
-        return Ok(());
-    }
-    let ok = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| {
-            v.strip_prefix("Bearer ")
-                .is_some_and(|t| const_eq(t.as_bytes(), expected.as_bytes()))
-        });
-    if ok {
-        Ok(())
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
-    }
+fn authorize(state: &AppState, headers: &HeaderMap) -> Result<AdminIdentity, StatusCode> {
+    authorize_method(state, headers, &Method::GET)
 }
 
-fn const_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut d = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        d |= x ^ y;
-    }
-    d == 0
+fn authorize_mut(state: &AppState, headers: &HeaderMap) -> Result<AdminIdentity, StatusCode> {
+    authorize_method(state, headers, &Method::POST)
+}
+
+fn authorize_method(
+    state: &AppState,
+    headers: &HeaderMap,
+    method: &Method,
+) -> Result<AdminIdentity, StatusCode> {
+    state.auth.authorize(
+        headers,
+        method,
+        state.registry.config().admin_token.as_str(),
+    )
 }
 
 async fn admin_spa() -> impl IntoResponse {
@@ -117,7 +111,7 @@ async fn summary(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Summary>, StatusCode> {
-    authorize(&state, &headers)?;
+    let _actor = authorize(&state, &headers)?;
     Ok(Json(Summary {
         rooms: state.registry.len(),
         node_id: state.registry.config().node_id.clone(),
@@ -139,11 +133,48 @@ async fn maintenance(
     headers: HeaderMap,
     Json(body): Json<MaintenanceBody>,
 ) -> Result<StatusCode, StatusCode> {
-    authorize(&state, &headers)?;
+    let actor = authorize_mut(&state, &headers)?;
     if body.enabled {
         state.registry.begin_drain(&body.message);
-        state.admin.audit("admin", "drain", "node", &body.message);
+        state
+            .admin
+            .audit(&actor.actor, "drain", "node", &body.message);
     }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_mods(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<crate::mods::AdminModRow>>, StatusCode> {
+    let _actor = authorize(&state, &headers)?;
+    Ok(Json(state.registry.config().mods.admin_listing()))
+}
+
+#[derive(Deserialize)]
+struct ModAllowBody {
+    allowed: bool,
+}
+
+async fn set_mod_allowed(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(body): Json<ModAllowBody>,
+) -> Result<StatusCode, StatusCode> {
+    let actor = authorize_mut(&state, &headers)?;
+    let mods = &state.registry.config().mods;
+    if mods.get(&name).is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    mods.set_allowed(&name, body.allowed)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let action = if body.allowed {
+        "allow_mod"
+    } else {
+        "disallow_mod"
+    };
+    state.admin.audit(&actor.actor, action, &name, "");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -151,7 +182,7 @@ async fn list_locations(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
-    authorize(&state, &headers)?;
+    let _actor = authorize(&state, &headers)?;
     let rows = state
         .registry
         .room_locations()
@@ -165,7 +196,7 @@ async fn list_rooms(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
-    authorize(&state, &headers)?;
+    let _actor = authorize(&state, &headers)?;
     let ids = state.registry.room_ids();
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
@@ -177,6 +208,7 @@ async fn list_rooms(
                 "max_players": h.settings.max_players,
                 "rng_seed": h.rng_seed,
                 "enable_verifier": h.settings.enable_verifier,
+                "mod": h.settings.game_mod.as_ref().map(|m| m.name.clone()),
                 "occupied": h.occupied.load(std::sync::atomic::Ordering::Relaxed),
                 "started": h.started.load(std::sync::atomic::Ordering::Relaxed),
                 "node_id": state.registry.locate_room(&id).unwrap_or_default(),
@@ -191,7 +223,7 @@ async fn inspect_room(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<RoomInspect>, StatusCode> {
-    authorize(&state, &headers)?;
+    let _actor = authorize(&state, &headers)?;
     let Some(room) = state.registry.get(&id) else {
         return Err(StatusCode::NOT_FOUND);
     };
@@ -212,15 +244,19 @@ async fn create_room_admin(
     headers: HeaderMap,
     Json(body): Json<CreateRoomRequest>,
 ) -> Result<Json<CreateRoomResponse>, StatusCode> {
-    authorize(&state, &headers)?;
+    let actor = authorize_mut(&state, &headers)?;
     let map = body.map.clone();
     let created = state.registry.create_room(body).map_err(|e| match e {
         crate::registry::RegistryError::Full => StatusCode::INSUFFICIENT_STORAGE,
         crate::registry::RegistryError::Draining => StatusCode::SERVICE_UNAVAILABLE,
-        crate::registry::RegistryError::VerifierFull => StatusCode::BAD_REQUEST,
+        crate::registry::RegistryError::VerifierFull
+        | crate::registry::RegistryError::UnknownMod
+        | crate::registry::RegistryError::ModNotAllowed => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     })?;
-    state.admin.audit("admin", "create_room", &created.id, &map);
+    state
+        .admin
+        .audit(&actor.actor, "create_room", &created.id, &map);
     Ok(Json(created))
 }
 
@@ -229,7 +265,7 @@ async fn close_room(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    authorize(&state, &headers)?;
+    let actor = authorize_mut(&state, &headers)?;
     let Some(room) = state.registry.get(&id) else {
         return Err(StatusCode::NOT_FOUND);
     };
@@ -240,7 +276,9 @@ async fn close_room(
         }))
         .await;
     state.registry.remove(&id);
-    state.admin.audit("admin", "close_room", &id, "admin close");
+    state
+        .admin
+        .audit(&actor.actor, "close_room", &id, "admin close");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -255,7 +293,7 @@ async fn notice_room(
     Path(id): Path<String>,
     Json(body): Json<NoticeBody>,
 ) -> Result<StatusCode, StatusCode> {
-    authorize(&state, &headers)?;
+    let actor = authorize_mut(&state, &headers)?;
     let Some(room) = state.registry.get(&id) else {
         return Err(StatusCode::NOT_FOUND);
     };
@@ -264,7 +302,7 @@ async fn notice_room(
         .send(RoomCmd::Admin(AdminCmd::Notice { text: text.clone() }))
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
-    state.admin.audit("admin", "notice", &id, &text);
+    state.admin.audit(&actor.actor, "notice", &id, &text);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -280,7 +318,7 @@ async fn kick_seat(
     Path((id, seat)): Path<(String, u8)>,
     Json(body): Json<KickBody>,
 ) -> Result<StatusCode, StatusCode> {
-    authorize(&state, &headers)?;
+    let actor = authorize_mut(&state, &headers)?;
     let Some(room) = state.registry.get(&id) else {
         return Err(StatusCode::NOT_FOUND);
     };
@@ -298,7 +336,7 @@ async fn kick_seat(
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
     state
         .admin
-        .audit("admin", "kick", &format!("{id}/{seat}"), &reason);
+        .audit(&actor.actor, "kick", &format!("{id}/{seat}"), &reason);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -327,7 +365,7 @@ async fn ban_seat(
     Path((id, seat)): Path<(String, u8)>,
     Json(body): Json<BanSeatBody>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    authorize(&state, &headers)?;
+    let actor = authorize_mut(&state, &headers)?;
     let Some(room) = state.registry.get(&id) else {
         return Err(StatusCode::NOT_FOUND);
     };
@@ -391,9 +429,12 @@ async fn ban_seat(
             exp: body.exp,
         };
         state.admin.add_ban(ban);
-        state
-            .admin
-            .audit("admin", "add_ban", &ban_id, &format!("{scope}={value}"));
+        state.admin.audit(
+            &actor.actor,
+            "add_ban",
+            &ban_id,
+            &format!("{scope}={value}"),
+        );
         created.push(serde_json::json!({ "id": ban_id, "scope": scope, "value": value }));
     }
     if body.kick {
@@ -406,7 +447,7 @@ async fn ban_seat(
             .map_err(|_| StatusCode::BAD_GATEWAY)?;
         state
             .admin
-            .audit("admin", "kick", &format!("{id}/{seat}"), &reason);
+            .audit(&actor.actor, "kick", &format!("{id}/{seat}"), &reason);
     }
     Ok(Json(
         serde_json::json!({ "bans": created, "kicked": body.kick }),
@@ -429,7 +470,7 @@ async fn mute_seat(
     Path((id, seat)): Path<(String, u8)>,
     Json(body): Json<MuteBody>,
 ) -> Result<StatusCode, StatusCode> {
-    authorize(&state, &headers)?;
+    let actor = authorize_mut(&state, &headers)?;
     let Some(room) = state.registry.get(&id) else {
         return Err(StatusCode::NOT_FOUND);
     };
@@ -443,7 +484,7 @@ async fn mute_seat(
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
     state.admin.audit(
-        "admin",
+        &actor.actor,
         "mute",
         &format!("{id}/{seat}"),
         &format!("a={} v={} c={}", body.audio, body.video, body.chat),
@@ -455,7 +496,7 @@ async fn audit_list(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<AuditEntry>>, StatusCode> {
-    authorize(&state, &headers)?;
+    let _actor = authorize(&state, &headers)?;
     Ok(Json(state.admin.audit_list()))
 }
 
@@ -463,7 +504,7 @@ async fn list_bans(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<Ban>>, StatusCode> {
-    authorize(&state, &headers)?;
+    let _actor = authorize(&state, &headers)?;
     Ok(Json(state.admin.bans()))
 }
 
@@ -481,7 +522,7 @@ async fn add_ban(
     headers: HeaderMap,
     Json(body): Json<AddBanBody>,
 ) -> Result<Json<Ban>, StatusCode> {
-    authorize(&state, &headers)?;
+    let actor = authorize_mut(&state, &headers)?;
     let scope = crate::bans::normalize_scope(&body.scope);
     let value = body.value.trim().to_owned();
     crate::bans::validate_ban(&scope, &value).map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -494,7 +535,7 @@ async fn add_ban(
         exp: body.exp,
     };
     state.admin.add_ban(ban.clone());
-    state.admin.audit("admin", "add_ban", &id, &ban.reason);
+    state.admin.audit(&actor.actor, "add_ban", &id, &ban.reason);
     Ok(Json(ban))
 }
 
@@ -503,11 +544,11 @@ async fn delete_ban(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    authorize(&state, &headers)?;
+    let actor = authorize_mut(&state, &headers)?;
     if !state.admin.remove_ban(&id) {
         return Err(StatusCode::NOT_FOUND);
     }
-    state.admin.audit("admin", "delete_ban", &id, "");
+    state.admin.audit(&actor.actor, "delete_ban", &id, "");
     Ok(StatusCode::NO_CONTENT)
 }
 

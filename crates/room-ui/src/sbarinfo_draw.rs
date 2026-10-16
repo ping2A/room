@@ -180,7 +180,7 @@ fn draw_mugshot(list: &mut UiDrawList, hud: &HudState, args: &[String]) {
     let (x, y) = trailing_xy(args).unwrap_or((143, 168));
     let (px, py) = adjust_xy(x, y, args, hud.fullscreen);
     if !hud.face.is_empty() {
-        list.patch(&hud.face, Vec2::new(px, py), Vec2::new(24.0, 32.0));
+        list.picture(&hud.face, Vec2::new(px, py));
     }
 }
 

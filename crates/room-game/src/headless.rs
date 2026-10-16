@@ -49,6 +49,9 @@ pub struct GameOptions {
     pub helper_dogs: u8,
     /// Coop player count 1..=4 (spawns seats at Player 2–4 starts when >1).
     pub coop_players: u8,
+    /// Match time limit in tics across the maps of one game (`0` = none);
+    /// [`World::match_over`] is set when it runs out.
+    pub time_limit_tics: u32,
 }
 
 /// Headless errors.
@@ -96,6 +99,9 @@ pub struct Headless {
     classes: Arc<ClassRegistry>,
     /// State table.
     states: Arc<StateTable>,
+    /// [`Self::set_defs`] tables before mod classes were merged in.
+    base_classes: Arc<ClassRegistry>,
+    base_states: Arc<StateTable>,
     /// Tallies captured when entering Intermission.
     pub intermission: Option<IntermissionTallies>,
     /// Map kept for title → start / intermission → restart.
@@ -128,6 +134,14 @@ pub struct Headless {
     pub sv_nomapfixes: bool,
     /// In-memory hub map snapshots (keyed by uppercase map lump name).
     hub_snapshots: BTreeMap<String, HubSnapshot>,
+    /// Play-scope WASM mod modules (rebuilt per new game).
+    mod_sources: Vec<room_sim::script_mods::ModSource>,
+    /// Match time left across maps of this game (tics; `None` = no limit).
+    time_left: Option<u32>,
+    /// Live mod runtime for the current game session.
+    mods: Option<room_sim::script_mods::ModRuntime>,
+    /// Mod load / runtime errors not yet drained by the shell.
+    mod_errors: Vec<String>,
 }
 
 /// Per-map hub state preserved while travelling within a hub cluster.
@@ -396,6 +410,8 @@ impl Headless {
             demo_bundle: DemoBundle::new(),
             classes: Arc::new(ClassRegistry::new()),
             states: Arc::new(StateTable::new()),
+            base_classes: Arc::new(ClassRegistry::new()),
+            base_states: Arc::new(StateTable::new()),
             intermission: None,
             pending_map: None,
             sounds: None,
@@ -412,13 +428,155 @@ impl Headless {
             level_fixes: None,
             sv_nomapfixes: false,
             hub_snapshots: BTreeMap::new(),
+            mod_sources: Vec::new(),
+            time_left: None,
+            mods: None,
+            mod_errors: Vec::new(),
         }
     }
 
     /// Install class / state tables (from DECORATE).
+    /// Installed mod classes are merged in again.
     pub fn set_defs(&mut self, classes: Arc<ClassRegistry>, states: Arc<StateTable>) {
+        self.base_classes = Arc::clone(&classes);
+        self.base_states = Arc::clone(&states);
         self.classes = classes;
         self.states = states;
+        if !self.mod_sources.is_empty() {
+            let sources = std::mem::take(&mut self.mod_sources);
+            if let Err(e) = self.set_script_mods(sources) {
+                self.mod_errors.push(e.to_string());
+            }
+        }
+    }
+
+    /// Session class registry (DECORATE plus merged mod classes).
+    #[must_use]
+    pub fn classes(&self) -> &Arc<ClassRegistry> {
+        &self.classes
+    }
+
+    /// Install WASM mod modules (after [`Self::set_defs`]): registers them once,
+    /// merges their classes into the session tables, and runs them every tic
+    /// of every following game. Returns the loaded module names.
+    ///
+    /// # Errors
+    ///
+    /// Compile / link / registration failure, or a class that cannot be merged.
+    /// On error no mod is installed.
+    pub fn set_script_mods(
+        &mut self,
+        sources: Vec<room_sim::script_mods::ModSource>,
+    ) -> Result<Vec<String>, GameError> {
+        self.mods = None;
+        self.mod_sources.clear();
+        self.classes = Arc::clone(&self.base_classes);
+        self.states = Arc::clone(&self.base_states);
+        if sources.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rt = room_sim::script_mods::ModRuntime::new(&sources, Arc::clone(&self.classes))
+            .map_err(|e| GameError::Message(format!("mod: {e}")))?;
+        let (classes, states) = rt
+            .merge_classes(&self.classes, &self.states)
+            .map_err(|e| GameError::Message(format!("mod: {e}")))?;
+        self.classes = Arc::new(classes);
+        self.states = Arc::new(states);
+        self.mod_errors.extend(rt.drain_log());
+        let names = rt.module_names().iter().map(|s| (*s).to_owned()).collect();
+        self.mod_sources = sources;
+        Ok(names)
+    }
+
+    /// Swap the mod set while a level is running (live editing): the old
+    /// modules get `WorldUnloaded`, the new ones `room_init` + `WorldLoaded` /
+    /// `PlayerEntered` on the current map. Class property changes apply to new
+    /// spawns; added / removed mod classes need a level restart. Outside a
+    /// level this is [`Self::set_script_mods`].
+    ///
+    /// # Errors
+    ///
+    /// Compile / registration / merge failure; the running mods are kept.
+    pub fn hot_swap_script_mods(
+        &mut self,
+        sources: Vec<room_sim::script_mods::ModSource>,
+    ) -> Result<Vec<String>, GameError> {
+        if self.state != GameState::Level || self.world.is_none() {
+            return self.set_script_mods(sources);
+        }
+        let err = |e: room_script::ScriptError| GameError::Message(format!("mod: {e}"));
+        let (mut classes, mut states) = (
+            Arc::clone(&self.base_classes),
+            Arc::clone(&self.base_states),
+        );
+        let mut next = None;
+        if !sources.is_empty() {
+            let rt = room_sim::script_mods::ModRuntime::new(&sources, Arc::clone(&classes))
+                .map_err(err)?;
+            let (c, s) = rt.merge_classes(&classes, &states).map_err(err)?;
+            classes = Arc::new(c);
+            states = Arc::new(s);
+            next = Some(rt);
+        }
+        if let Some(old) = self.mods.as_mut() {
+            old.end_map(&mut self.world);
+            self.mod_errors.extend(old.drain_log());
+        }
+        let same_layout = classes.len() == self.classes.len() && states.len() == self.states.len();
+        if let Some(w) = self.world.as_mut() {
+            if same_layout {
+                w.classes = Arc::clone(&classes);
+                w.states = Arc::clone(&states);
+            } else {
+                self.mod_errors.push(
+                    "mod classes were added or removed - restart the level to use them".into(),
+                );
+            }
+        }
+        self.classes = classes;
+        self.states = states;
+        self.mod_sources = sources;
+        self.mods = next;
+        if let Some(rt) = self.mods.as_mut() {
+            self.mod_errors.extend(rt.drain_log());
+            rt.begin_map(&mut self.world);
+        }
+        Ok(self.script_mod_names())
+    }
+
+    /// Names of the installed mod modules.
+    #[must_use]
+    pub fn script_mod_names(&self) -> Vec<String> {
+        self.mod_sources.iter().map(|s| s.name.clone()).collect()
+    }
+
+    /// Identity of the installed mod set (0 when none) for net / demo checks.
+    #[must_use]
+    pub fn script_mods_fingerprint(&self) -> u64 {
+        self.mods
+            .as_ref()
+            .map_or(0, room_sim::script_mods::ModRuntime::fingerprint)
+    }
+
+    /// Take mod log lines and errors since the last call.
+    pub fn drain_script_log(&mut self) -> Vec<String> {
+        let mut out = std::mem::take(&mut self.mod_errors);
+        if let Some(rt) = self.mods.as_ref() {
+            out.extend(rt.drain_log());
+        }
+        out
+    }
+
+    /// Fresh mod session for a new game (`room_init(NewGame)` runs again).
+    fn restart_mods(&mut self) {
+        self.mods = None;
+        if self.mod_sources.is_empty() {
+            return;
+        }
+        match room_sim::script_mods::ModRuntime::new(&self.mod_sources, Arc::clone(&self.classes)) {
+            Ok(rt) => self.mods = Some(rt),
+            Err(e) => self.mod_errors.push(format!("mod: {e}")),
+        }
     }
 
     /// Install MAPINFO (next / secretnext / par overrides).
@@ -457,6 +615,34 @@ impl Headless {
     pub fn set_keyconf(&mut self, conf: &room_defs::KeyConf) {
         apply_keyconf(&mut self.weapon_slots, conf);
         self.keyconf = Some(conf.clone());
+    }
+
+    /// Remove slotted weapons whose `Ready` sprite has no graphics in `vfs`
+    /// (the super shotgun on Doom 1 / shareware IWADs), so slot keys and
+    /// `give weapons` never pick an invisible gun. Call after
+    /// [`Self::set_defs`] and [`Self::set_keyconf`].
+    pub fn drop_weapons_without_sprites(&mut self, vfs: &room_vfs::Vfs) {
+        let sprites: std::collections::BTreeSet<String> = vfs
+            .iter()
+            .filter(|(_, e)| e.namespace == room_vfs::Namespace::Sprites)
+            .filter_map(|(_, e)| e.short_name.as_str().get(..4).map(str::to_ascii_uppercase))
+            .collect();
+        let (classes, states) = (&self.classes, &self.states);
+        self.weapon_slots.retain_weapons(|name| {
+            let Some(cid) = classes.find_name(name) else {
+                return true;
+            };
+            let Some(st) = states
+                .find_label(cid, "Ready")
+                .and_then(|sid| states.get(sid))
+            else {
+                return true;
+            };
+            let sprite = st.sprite.to_ascii_uppercase();
+            sprite.len() != 4
+                || matches!(sprite.as_str(), "TNT1" | "----" | "####")
+                || sprites.contains(&sprite)
+        });
     }
 
     /// Borrow KEYCONF for shell alias / bind apply.
@@ -539,7 +725,11 @@ impl Headless {
             )
             .with_flash(hud.flash_patch)
             .with_bob(hud.bob_x, hud.bob_y)
-            .with_ammo_max(hud.ammo_max),
+            .with_ammo_max(hud.ammo_max)
+            .with_inventory(hud.arms, hud.ammo_table)
+            .with_palette(hud.palette)
+            .with_colormap(hud.colormap)
+            .with_netgame(hud.deathmatch, hud.frags, hud.face_back),
         )
     }
 
@@ -562,6 +752,15 @@ impl Headless {
 
     /// Start a custom map geometry (testkit / tools).
     pub fn start_custom_map(&mut self, map: MapGeometry, skill: Skill) -> Result<(), GameError> {
+        if self.state == GameState::Intermission {
+            if let Some(rt) = self.mods.as_mut() {
+                rt.end_map(&mut self.world);
+            }
+        } else {
+            self.restart_mods();
+            self.time_left =
+                (self.options.time_limit_tics > 0).then_some(self.options.time_limit_tics);
+        }
         self.options.skill = skill;
         self.map_name = map.name.clone();
         let map_key = self.map_name.to_ascii_uppercase();
@@ -658,6 +857,11 @@ impl Headless {
             }
         }
         world.rng.set_seed(self.options.rng_seed);
+        match self.time_left {
+            Some(0) => world.end_match(None, true),
+            Some(t) => world.match_tics_left = t,
+            None => {}
+        }
         let coop = self.options.coop_players.clamp(1, 4);
         if coop > 1 {
             let _ = world.spawn_coop_players(coop)?;
@@ -721,6 +925,9 @@ impl Headless {
             room_sim::start_enter_scripts(&mut world);
         }
         self.world = Some(world);
+        if let Some(rt) = self.mods.as_mut() {
+            rt.begin_map(&mut self.world);
+        }
         self.intermission = None;
         self.state = GameState::Level;
         Ok(())
@@ -817,6 +1024,15 @@ impl Headless {
         }
         world.set_ticcmds(&full);
         world.tick();
+        if self.time_left.is_some() {
+            self.time_left = Some(world.match_tics_left);
+        }
+        if let Some(rt) = self.mods.as_mut() {
+            rt.tick(&mut self.world);
+        }
+        let Some(world) = self.world.as_mut() else {
+            return;
+        };
         if world.level.exiting {
             room_sim::start_unloading_scripts(world);
             let key = self.map_name.to_ascii_uppercase();
@@ -1371,6 +1587,7 @@ actor PlayerPawn : Actor 0
         assert_eq!(hud.health, 100);
         assert_eq!(hud.face, "STFST00");
         assert!(game.cheat_god(0));
+        game.run_tics(1);
         let hud = game.hud_state(0, false).unwrap();
         assert_eq!(hud.face, "STFGOD0");
         let mut list = UiDrawList::new();

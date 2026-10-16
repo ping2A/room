@@ -214,6 +214,27 @@ pub struct SectorPlaneGlow {
     pub height: f32,
 }
 
+/// Who a [`HudMessage`] is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageTo {
+    /// Sim message without a recipient (pickups, ACS `Print`): solo shells
+    /// show it; netplay shells cannot tell whose screen it belongs to.
+    Unscoped,
+    /// Every player.
+    All,
+    /// One seat (0-based).
+    Seat(u8),
+}
+
+/// One HUD message for the shell (never read by the sim).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HudMessage {
+    /// Recipient.
+    pub to: MessageTo,
+    /// Text.
+    pub text: String,
+}
+
 /// One death for shell kill feeds / scoreboards (never read by the sim).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KillEvent {
@@ -417,11 +438,22 @@ pub struct World {
     /// ACS `SetSkyScrollSpeed` skymist scroll speed.
     pub sky_mist_speed: f64,
     /// HUD messages produced this tic (drained by the shell).
-    pub messages: Vec<String>,
+    pub messages: Vec<HudMessage>,
     /// Deaths since the last [`World::drain_kill_events`] (shell-only).
     pub kill_events: Vec<KillEvent>,
     /// Pause flag (menu / pause key).
     pub paused: bool,
+    /// Deathmatch rules: players can hurt each other; the status bar shows
+    /// frags instead of `STARMS`.
+    pub deathmatch: bool,
+    /// Dead players stay down instead of respawning with Use (mod rule).
+    pub no_player_respawn: bool,
+    /// Set once the match is decided (mod `game_end_match` or the time limit).
+    pub match_over: Option<MatchOver>,
+    /// Tics left before the room time limit ends the match (`0` = no limit).
+    pub match_tics_left: u32,
+    /// Level time of each player's latest death (standings tie-break).
+    pub player_died_at: [Option<u32>; MAX_PLAYERS],
     /// Doom skill 1..=5 (filters map things).
     pub skill: u8,
     /// Fast monsters (Nightmare or `-fast`); uses `FastSpeed` when set.
@@ -430,6 +462,12 @@ pub struct World {
     pub respawn_monsters: bool,
     /// Round-robin index into live `BossTarget` actors for `A_BrainSpit`.
     pub boss_target_cursor: usize,
+    /// `A_BrainSpit` easy toggle (skills 1–2 fire every other cube).
+    pub brain_spit_easy: bool,
+    /// Event bits WASM mods subscribed to ([`crate::script_mods::ModRuntime`]).
+    pub script_event_mask: u64,
+    /// Sim events queued this tic for WASM mod handlers.
+    pub script_events: Vec<crate::script_mods::ScriptEvent>,
     /// Monster corpse FIFO (`sv_corpsequeuesize`, default 64). Oldest destroyed when full.
     pub corpse_queue: std::collections::VecDeque<ActorId>,
     /// Max retained monster corpses (`0` disables enqueue).
@@ -454,6 +492,32 @@ pub struct World {
     pub acs: room_acs::AcsState,
     /// WASM play modules (M11 `room-script`).
     pub scripts: crate::script_host::ScriptHost,
+}
+
+/// How a match ended (read by shells for the final screen).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchOver {
+    /// Winning player slot (`None` = draw / no winner).
+    pub winner: Option<u8>,
+    /// Ended by the room time limit rather than the rules.
+    pub time_up: bool,
+    /// Level time (tics) the match ended.
+    pub maptime: u32,
+}
+
+/// One row of [`World::standings`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Standing {
+    /// Player slot.
+    pub slot: u8,
+    /// 1-based place.
+    pub place: u8,
+    /// Frags (kills of other players minus suicides).
+    pub frags: i32,
+    /// Times this player died.
+    pub deaths: i32,
+    /// Alive when the match ended.
+    pub alive: bool,
 }
 
 /// One UMAPINFO `bossaction = Class, special, tag` entry.
@@ -638,6 +702,20 @@ pub struct PlayerHud {
     pub bob_y: f32,
     /// God mode active.
     pub god: bool,
+    /// Owned weapon slots for the `STARMS` panel (bit `n` = slot `n`, 2..=7).
+    pub arms: u8,
+    /// `[count, max]` for Clip / Shell / RocketAmmo / Cell (STBAR ammo table).
+    pub ammo_table: [[i32; 2]; 4],
+    /// Screen-flash PLAYPAL index ([`crate::palette_index`]).
+    pub palette: u8,
+    /// Doom `fixedcolormap` ([`Player::fixed_colormap`]).
+    pub colormap: u8,
+    /// Deathmatch: draw [`Self::frags`] instead of `STARMS`.
+    pub deathmatch: bool,
+    /// `st_fragscount`: kills of other players minus suicides.
+    pub frags: i32,
+    /// Netgame face background `STFB<n>` (player slot), `None` in single player.
+    pub face_back: Option<u8>,
 }
 
 /// Doom ready-frame patch for a weapon class (mirrors `room_ui::weapon_ready_patch`).
@@ -1071,10 +1149,18 @@ impl World {
             messages: Vec::new(),
             kill_events: Vec::new(),
             paused: false,
+            deathmatch: false,
+            no_player_respawn: false,
+            match_over: None,
+            match_tics_left: 0,
+            player_died_at: [None; MAX_PLAYERS],
             skill: skill.clamp(1, 5),
             fast_monsters: skill >= 5,
             respawn_monsters: skill >= 5,
             boss_target_cursor: 0,
+            brain_spit_easy: false,
+            script_event_mask: 0,
+            script_events: Vec::new(),
             corpse_queue: std::collections::VecDeque::new(),
             corpse_queue_size: DEFAULT_CORPSE_QUEUE_SIZE,
             body_queue: std::collections::VecDeque::new(),
@@ -1865,7 +1951,12 @@ impl World {
             sprite,
             frame,
             flags,
-            reaction_time: def.reaction_time,
+            // Vanilla `P_SpawnMobj`: Nightmare monsters react immediately.
+            reaction_time: if self.fast_monsters {
+                0
+            } else {
+                def.reaction_time
+            },
             threshold: def.threshold,
             pain_threshold: def.pain_threshold,
             target: None,
@@ -1910,6 +2001,7 @@ impl World {
         if (def.flags & crate::class::FLAG_COUNTITEM) != 0 {
             self.level.total_items = self.level.total_items.saturating_add(1);
         }
+        self.push_script_event(crate::script_mods::ScriptEvent::ThingSpawned { thing: id });
         Ok(id)
     }
 
@@ -2083,11 +2175,27 @@ impl World {
 
     /// Queue a HUD message for the shell.
     pub fn push_message(&mut self, text: impl Into<String>) {
-        self.messages.push(text.into());
+        self.push_message_to(MessageTo::Unscoped, text);
     }
 
-    /// Drain HUD messages since the last call.
+    /// Queue a HUD message for everyone or one seat.
+    pub fn push_message_to(&mut self, to: MessageTo, text: impl Into<String>) {
+        self.messages.push(HudMessage {
+            to,
+            text: text.into(),
+        });
+    }
+
+    /// Drain HUD message texts since the last call (every recipient).
     pub fn drain_messages(&mut self) -> Vec<String> {
+        self.drain_hud_messages()
+            .into_iter()
+            .map(|m| m.text)
+            .collect()
+    }
+
+    /// Drain HUD messages with their recipients since the last call.
+    pub fn drain_hud_messages(&mut self) -> Vec<HudMessage> {
         std::mem::take(&mut self.messages)
     }
 
@@ -2121,31 +2229,38 @@ impl World {
         let player = self.players.get(p).and_then(|s| s.as_ref())?;
         let mo = player.mo?;
         let actor = self.actors.get(mo)?;
-        let ammo_cid = player
-            .ready_weapon
-            .and_then(|w| self.classes.get(w))
-            .filter(|w| !w.ammo_type.is_empty())
-            .and_then(|w| self.classes.find_name(&w.ammo_type))
-            .or_else(|| {
-                ["Clip", "Shell", "RocketAmmo", "Cell"]
-                    .iter()
-                    .find_map(|name| {
-                        let cid = self.classes.find_name(name)?;
-                        (self.inventory.count(mo, cid) > 0).then_some(cid)
-                    })
-            });
-        let ammo = ammo_cid
-            .map(|cid| self.inventory.count(mo, cid))
-            .unwrap_or(0);
-        let ammo_max = ammo_cid
-            .and_then(|cid| self.inventory.find(mo, cid))
-            .map(|item| item.max_amount)
-            .or_else(|| {
-                ammo_cid
-                    .and_then(|cid| self.classes.get(cid))
-                    .map(|c| c.inventory_max_amount)
-            })
-            .unwrap_or(0);
+        const AMMO_TYPES: [&str; 4] = ["Clip", "Shell", "RocketAmmo", "Cell"];
+        let ammo_of = |cid: ClassId| -> [i32; 2] {
+            let max = self
+                .inventory
+                .find(mo, cid)
+                .map(|item| item.max_amount)
+                .or_else(|| self.classes.get(cid).map(|c| c.inventory_max_amount))
+                .unwrap_or(0);
+            [self.inventory.count(mo, cid), max]
+        };
+        // Vanilla blanks the big ammo number for `am_noammo` weapons (fist, saw).
+        let ammo_cid = match player.ready_weapon.and_then(|w| self.classes.get(w)) {
+            Some(w) if w.ammo_type.is_empty() => None,
+            Some(w) => self.classes.find_name(&w.ammo_type),
+            None => AMMO_TYPES.iter().find_map(|name| {
+                let cid = self.classes.find_name(name)?;
+                (self.inventory.count(mo, cid) > 0).then_some(cid)
+            }),
+        };
+        let [ammo, ammo_max] = ammo_cid.map_or([-1, 0], ammo_of);
+        let ammo_table =
+            AMMO_TYPES.map(|name| self.classes.find_name(name).map_or([0, 0], ammo_of));
+        let mut arms = 0u8;
+        for slot in 2u8..=7 {
+            if self.weapon_slots.weapons_for(slot).iter().any(|name| {
+                self.classes
+                    .find_name(name)
+                    .is_some_and(|cid| self.inventory.count(mo, cid) > 0)
+            }) {
+                arms |= 1 << slot;
+            }
+        }
         // Bits: blue/yellow/red card = 1/2/4; blue/yellow/red skull = 8/16/32.
         let mut keys = 0u8;
         if self
@@ -2190,35 +2305,26 @@ impl World {
         {
             keys |= 32;
         }
-        let face = if player.god || player.invulnerable {
-            "STFGOD0".into()
-        } else if actor.health <= 0 {
-            "STFDEAD0".into()
-        } else if actor.health < 20 {
-            "STFST40".into()
-        } else if actor.health < 40 {
-            "STFST30".into()
-        } else if actor.health < 60 {
-            "STFST20".into()
-        } else if actor.health < 80 {
-            "STFST10".into()
-        } else {
-            "STFST00".into()
-        };
+        let face = player.mugshot.lump();
+        // Vanilla `A_Lower` parks a dead player's gun at `WEAPONBOTTOM` (off screen).
+        let alive = player.player_state == crate::player::PlayerState::Live;
         let weapon_patch = player
             .pspr_state
+            .filter(|_| alive)
             .and_then(|sid| self.states.get(sid))
             .map(|st| weapon_patch_from_sprite_frame(&st.sprite, st.frame))
             .filter(|p| !p.is_empty())
             .or_else(|| {
                 player
                     .ready_weapon
+                    .filter(|_| alive)
                     .and_then(|w| self.classes.get(w))
                     .map(|c| weapon_patch_for_class(&c.name).to_string())
             })
             .unwrap_or_default();
         let flash_patch = player
             .pspr_flash_state
+            .filter(|_| alive)
             .and_then(|sid| self.states.get(sid))
             .map(|st| weapon_patch_from_sprite_frame(&st.sprite, st.frame))
             .filter(|p| !p.is_empty())
@@ -2243,6 +2349,19 @@ impl World {
             bob_x,
             bob_y,
             god: player.god,
+            arms,
+            ammo_table,
+            palette: crate::mugshot::palette_index(player),
+            colormap: player.fixed_colormap(),
+            deathmatch: self.deathmatch,
+            frags: player
+                .frags
+                .iter()
+                .enumerate()
+                .map(|(i, &n)| if i == p { -n } else { n })
+                .sum(),
+            face_back: (self.deathmatch || self.players.iter().flatten().count() > 1)
+                .then_some((p % 4) as u8),
         })
     }
 
@@ -2433,15 +2552,104 @@ impl World {
         }
     }
 
+    /// Decide the match once (later calls are ignored). Shells show the final
+    /// screen; the sim keeps running underneath.
+    pub fn end_match(&mut self, winner: Option<u8>, time_up: bool) {
+        if self.match_over.is_some() {
+            return;
+        }
+        let winner = winner.filter(|&w| {
+            self.players
+                .get(usize::from(w))
+                .is_some_and(Option::is_some)
+        });
+        self.match_over = Some(MatchOver {
+            winner,
+            time_up,
+            maptime: self.level.maptime,
+        });
+    }
+
+    /// Frags of player `slot`: kills of other players minus suicides.
+    #[must_use]
+    pub fn player_frags(&self, slot: usize) -> i32 {
+        let Some(p) = self.players.get(slot).and_then(Option::as_ref) else {
+            return 0;
+        };
+        (0..MAX_PLAYERS)
+            .map(|v| if v == slot { -p.frags[v] } else { p.frags[v] })
+            .sum()
+    }
+
+    /// Players ranked for the final screen: the winner, then whoever is still
+    /// alive, then the dead by how long they lasted; frags break ties.
+    #[must_use]
+    pub fn standings(&self) -> Vec<Standing> {
+        let winner = self.match_over.and_then(|m| m.winner);
+        let mut rows: Vec<(Standing, u32)> = Vec::new();
+        for (slot, p) in self.players.iter().enumerate() {
+            let Some(p) = p else {
+                continue;
+            };
+            let frags = self.player_frags(slot);
+            let deaths = self.players.iter().flatten().map(|o| o.frags[slot]).sum();
+            let alive = p.player_state != crate::player::PlayerState::Dead
+                && p.mo
+                    .and_then(|mo| self.actors.get(mo))
+                    .is_some_and(|a| a.health > 0);
+            let lasted = if alive {
+                u32::MAX
+            } else {
+                self.player_died_at[slot].unwrap_or(0)
+            };
+            rows.push((
+                Standing {
+                    slot: slot as u8,
+                    place: 0,
+                    frags,
+                    deaths,
+                    alive,
+                },
+                lasted,
+            ));
+        }
+        rows.sort_by(|(a, la), (b, lb)| {
+            (Some(b.slot) == winner)
+                .cmp(&(Some(a.slot) == winner))
+                .then(lb.cmp(la))
+                .then(b.frags.cmp(&a.frags))
+                .then(a.deaths.cmp(&b.deaths))
+                .then(a.slot.cmp(&b.slot))
+        });
+        rows.into_iter()
+            .enumerate()
+            .map(|(i, (mut s, _))| {
+                s.place = i as u8 + 1;
+                s
+            })
+            .collect()
+    }
+
     /// One game tic (`P_Ticker` subset). See `docs/07-playsim.md §2.2`.
     pub fn tick(&mut self) {
         // GZDoom: if paused ⇒ return
         if self.paused {
             return;
         }
+        if self.match_tics_left > 0 {
+            self.match_tics_left -= 1;
+            if self.match_tics_left == 0 {
+                self.end_match(None, true);
+            }
+        }
         self.scripts.sync_from_world(self);
         self.sound_events.clear();
-        self.messages.clear();
+        // Kept until drained: text pushed between tics (map start, mods) must
+        // reach the shell. Bounded for hosts that never drain.
+        if self.messages.len() > 64 {
+            let excess = self.messages.len() - 32;
+            self.messages.drain(..excess);
+        }
         self.screen_fade.tick();
         // Snapshot plane Z for render interpolation (`interpolations.begin_tic`).
         for sec in &mut self.sectors {
@@ -2544,6 +2752,7 @@ impl World {
             }
         }
         crate::sector_specials::monsters_in_special_sectors(self);
+        crate::mugshot::tick_players(self);
         self.level.tick();
         // gc_destroyed_actors — later
     }
@@ -2564,7 +2773,13 @@ impl World {
         let action_args = st.action_args.clone();
         if let Some(a) = self.actors.get_mut(id) {
             a.state = Some(sid);
-            a.tics = i32::from(st.tics);
+            let tics = i32::from(st.tics);
+            // `AActor::GetTics`: fast states run in `tics - tics/2` under fast monsters.
+            a.tics = if self.fast_monsters && st.fast && tics > 0 {
+                tics - (tics >> 1)
+            } else {
+                tics
+            };
             a.sprite = st.sprite;
             a.frame = st.frame;
         }
@@ -3755,6 +3970,7 @@ actor Clip : Actor 2007 { Inventory.Amount 10 Inventory.MaxAmount 200 States { S
             p.armor = 50;
             p.god = true;
         }
+        w.tick();
         let hud = w.player_hud(0).unwrap();
         assert_eq!(hud.ammo, before + 40);
         assert!(hud.ammo_max >= hud.ammo, "ammo_max={}", hud.ammo_max);
@@ -3765,8 +3981,185 @@ actor Clip : Actor 2007 { Inventory.Amount 10 Inventory.MaxAmount 200 States { S
         if let Some(p) = w.players[0].as_mut() {
             p.god = false;
             p.invulnerable = true;
+            p.invul_tics = 100;
         }
+        w.tick();
         assert_eq!(w.player_hud(0).unwrap().face, "STFGOD0");
+    }
+
+    fn face_world() -> (World, ActorId, Arc<ClassRegistry>) {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let p = w.players[0].as_mut().unwrap();
+        p.notarget = true;
+        let mo = p.mo.unwrap();
+        (w, mo, classes)
+    }
+
+    #[test]
+    fn mugshot_looks_around_and_tracks_pain_band() {
+        let (mut w, mo, _) = face_world();
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..35 * 8 {
+            w.tick();
+            seen.insert(w.player_hud(0).unwrap().face);
+        }
+        assert!(
+            seen.len() >= 2 && seen.iter().all(|f| f.starts_with("STFST0")),
+            "idle face glances left/right: {seen:?}"
+        );
+        w.actors.get_mut(mo).unwrap().health = 50;
+        // The idle face re-reads health when its 17-tic glance runs out.
+        for _ in 0..18 {
+            w.tick();
+        }
+        assert!(w.player_hud(0).unwrap().face.starts_with("STFST2"));
+    }
+
+    #[test]
+    fn mugshot_turns_toward_attacker_and_shows_ouch() {
+        let (mut w, mo, classes) = face_world();
+        let imp = classes.find_name("DoomImp").unwrap();
+        // Player faces east (0°); an attacker due north is to the left.
+        let north = w
+            .spawn_at(imp, DVec3::new(64.0, 400.0, 0.0), Angle::from_degrees(0.0))
+            .unwrap();
+        w.tick();
+        let _ = crate::damage::damage_mobj(&mut w, mo, None, Some(north), 5);
+        w.tick();
+        assert_eq!(w.player_hud(0).unwrap().face, "STFTL00");
+        for _ in 0..40 {
+            w.tick();
+        }
+        let south = w
+            .spawn_at(imp, DVec3::new(64.0, -300.0, 0.0), Angle::from_degrees(0.0))
+            .unwrap();
+        let _ = crate::damage::damage_mobj(&mut w, mo, None, Some(south), 5);
+        w.tick();
+        assert_eq!(w.player_hud(0).unwrap().face, "STFTR00");
+        for _ in 0..40 {
+            w.tick();
+        }
+        // Losing more than 20 health in one tic: ouch face (GZDoom sign).
+        let _ = crate::damage::damage_mobj(&mut w, mo, None, Some(north), 30);
+        w.tick();
+        let face = w.player_hud(0).unwrap().face;
+        assert!(face.starts_with("STFOUCH"), "got {face}");
+        let hud = w.player_hud(0).unwrap();
+        assert!(
+            (1..=8).contains(&hud.palette),
+            "red flash, got {}",
+            hud.palette
+        );
+    }
+
+    #[test]
+    fn mugshot_evil_grin_on_weapon_pickup() {
+        let (mut w, mo, classes) = face_world();
+        w.tick();
+        let shotgun = classes.find_name("Shotgun").unwrap();
+        let item = w
+            .spawn_at(
+                shotgun,
+                DVec3::new(64.0, 64.0, 0.0),
+                Angle::from_degrees(0.0),
+            )
+            .unwrap();
+        assert!(crate::pickup::try_pickup(&mut w, mo, item));
+        w.tick();
+        let hud = w.player_hud(0).unwrap();
+        assert_eq!(hud.face, "STFEVL0");
+        assert!(
+            (9..=12).contains(&hud.palette),
+            "gold flash, got {}",
+            hud.palette
+        );
+        assert_ne!(hud.arms & (1 << 3), 0, "ARMS slot 3 lit");
+    }
+
+    #[test]
+    fn fixed_colormap_inverse_while_invulnerable_and_blinks_out() {
+        let mut p = Player::default();
+        assert_eq!(p.fixed_colormap(), 0);
+        p.infrared = true;
+        p.infrared_tics = 1000;
+        assert_eq!(p.fixed_colormap(), 1);
+        p.invulnerable = true;
+        p.invul_tics = 1000;
+        assert_eq!(p.fixed_colormap(), crate::player::INVERSE_COLORMAP);
+        p.invul_tics = 100; // last 4 s, bit 3 clear → off (masks infrared too)
+        assert_eq!(p.fixed_colormap(), 0);
+        p.invul_tics = 104;
+        assert_eq!(p.fixed_colormap(), crate::player::INVERSE_COLORMAP);
+    }
+
+    #[test]
+    fn invulnerability_shows_god_face() {
+        let (mut w, mo, _) = face_world();
+        assert_eq!(crate::inventory::cheat_give(&mut w, mo, "idbeholdv"), 1);
+        for _ in 0..3 {
+            w.tick();
+        }
+        let hud = w.player_hud(0).unwrap();
+        assert_eq!(hud.colormap, crate::player::INVERSE_COLORMAP);
+        assert_eq!(hud.face, "STFGOD0");
+    }
+
+    #[test]
+    fn deathmatch_counts_frags_and_allows_pvp_damage() {
+        let (mut w, mo0, _) = face_world();
+        let classes = Arc::clone(&w.classes);
+        let pawn = classes.find_name("DoomPlayer").unwrap();
+        let mo1 = w
+            .spawn_at(
+                pawn,
+                DVec3::new(200.0, 200.0, 0.0),
+                Angle::from_degrees(0.0),
+            )
+            .unwrap();
+        let mut second = Player::default();
+        second.possess(mo1, pawn);
+        w.players[1] = Some(second);
+        // Coop: players cannot hurt each other.
+        assert_eq!(
+            crate::damage::damage_mobj(&mut w, mo1, None, Some(mo0), 10),
+            0
+        );
+        let hud = w.player_hud(0).unwrap();
+        assert!(!hud.deathmatch);
+        assert_eq!(hud.face_back, Some(0), "netgame face background");
+        assert_eq!(w.player_hud(1).unwrap().face_back, Some(1));
+
+        w.deathmatch = true;
+        assert!(crate::damage::damage_mobj(&mut w, mo1, None, Some(mo0), 1000) > 0);
+        assert_eq!(w.players[0].as_ref().unwrap().frags[1], 1);
+        assert_eq!(w.player_hud(0).unwrap().frags, 1);
+        // Killed by the world: counts as a suicide (−1).
+        let _ = crate::damage::damage_mobj(&mut w, mo0, None, None, 1000);
+        let hud = w.player_hud(0).unwrap();
+        assert!(hud.deathmatch);
+        assert_eq!(hud.frags, 0);
+    }
+
+    #[test]
+    fn mugshot_rampage_after_two_seconds_of_fire() {
+        let (mut w, _, _) = face_world();
+        for _ in 0..80 {
+            if let Some(p) = w.players[0].as_mut() {
+                p.cmd.buttons = crate::player::Buttons(crate::player::Buttons::ATTACK);
+            }
+            w.tick();
+        }
+        assert_eq!(w.player_hud(0).unwrap().face, "STFKILL0");
     }
 
     #[test]

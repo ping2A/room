@@ -17,6 +17,8 @@ async fn public_list_hides_private_and_serves_lobby() {
             max_players: 2,
             visibility: "public".into(),
             enable_verifier: false,
+            game_mod: None,
+            time_limit: None,
         })
         .unwrap();
     let _priv = registry
@@ -26,6 +28,8 @@ async fn public_list_hides_private_and_serves_lobby() {
             max_players: 2,
             visibility: "private".into(),
             enable_verifier: false,
+            game_mod: None,
+            time_limit: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();

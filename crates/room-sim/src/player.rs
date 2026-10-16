@@ -151,9 +151,40 @@ pub struct Player {
     pub camera: Option<ActorId>,
     /// Revert to `mo` on move (`ChangeCamera` revert flag).
     pub camera_revert: bool,
+    /// Doom `player->damagecount` — recent damage (0..=100), red flash + face.
+    pub damage_count: i32,
+    /// Doom `player->bonuscount` — recent pickup, gold flash + evil grin gate.
+    pub bonus_count: i32,
+    /// Doom `player->attacker` — last damage source (face turn / death cam).
+    pub attacker: Option<ActorId>,
+    /// Doom `powers[pw_strength]` — tics since berserk pickup (red fade-out).
+    pub berserk_tics: i32,
+    /// Status-bar face animator (`ST_updateFaceWidget`).
+    pub mugshot: crate::mugshot::MugShot,
+    /// Doom `player->frags[victim]` — kills of each player slot (own = suicides).
+    pub frags: [i32; MAX_PLAYERS],
 }
 
 impl Player {
+    /// Doom `player->fixedcolormap`: [`INVERSE_COLORMAP`] while invulnerable,
+    /// `1` (light amp) with infrared goggles, else `0`. Both blink during the
+    /// last 4 seconds (`> 4*32 || & 8`), and invulnerability masks infrared.
+    #[must_use]
+    pub fn fixed_colormap(&self) -> u8 {
+        let on = |tics: i32| tics <= 0 || tics > 4 * 32 || tics & 8 != 0;
+        if self.invulnerable {
+            if on(self.invul_tics) {
+                INVERSE_COLORMAP
+            } else {
+                0
+            }
+        } else if self.infrared && on(self.infrared_tics) {
+            1
+        } else {
+            0
+        }
+    }
+
     /// Bind a pawn and mark live.
     pub fn possess(&mut self, mo: ActorId, cls: ClassId) {
         self.mo = Some(mo);
@@ -193,8 +224,19 @@ impl Player {
         self.notarget = false;
         self.camera = None;
         self.camera_revert = false;
+        self.damage_count = 0;
+        self.bonus_count = 0;
+        self.attacker = None;
+        self.berserk_tics = 0;
+        self.mugshot = crate::mugshot::MugShot::default();
     }
 }
+
+/// Doom `INVERSECOLORMAP` — COLORMAP index of the invulnerability greyscale.
+pub const INVERSE_COLORMAP: u8 = 32;
+
+/// Doom `BONUSADD` — `bonuscount` added per pickup.
+pub const BONUS_ADD: i32 = 6;
 
 /// Ready weapon screen Y (`WEAPONTOP`).
 pub const WEAPON_TOP: f64 = 32.0;

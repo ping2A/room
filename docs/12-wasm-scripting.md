@@ -49,6 +49,7 @@ name = "betterimps_hud"
 handlers = ["betterimps::ImpTracker"]
 ```
 
+- WADs carry the same manifest in a `ROOMMOD` lump; `file` (and `source`) then name lumps in the same WAD (`file = "SURVIVAL"`). A later manifest with the same `id` replaces an earlier one (PWAD override). Implemented subset: see §15.
 - Modules are loaded in VFS order of their containers; dependencies must already be loaded (error otherwise — no reordering).
 - A module's identity for saves and netplay = `(mod.id, module.name, sha256(wasm bytes))`.
 - Maps can opt into map-scoped handlers through MAPINFO `EventHandlers = "betterimps::ArenaRules"`.
@@ -412,3 +413,202 @@ Consequences: we own the binding generator; ABI evolution rules are ours to enfo
 - Save/load round-trip mid-session with active module state; hot-reload test.
 - Validation tests for every rejected proposal and import scope violation.
 - Benchmarks: 10k actors with a module `Tick` override at 35 Hz must run ≤ 4 ms/tic on wasmtime (desktop), ≤ 25 ms on wasmi.
+
+## 15. Implementation status: game-control mods (2026-10-16)
+
+What runs today (play scope, `wasmi` on desktop and web):
+
+- **Loading.** `room_game::discover_mods(&Vfs)` finds `room.toml` (PK3 / directory root) and `ROOMMOD` (WAD lump) manifests; `Headless::set_script_mods` compiles, registers and merges mod classes into the session tables (a class with `replaces` and no editor number takes the replaced class's number, so map things spawn it). Desktop (`room-app`), web play and the web editor call it after `set_defs`. A new game re-creates the instances (`room_init(NewGame)`); the same instances persist across map changes (`WorldUnloaded` → `WorldLoaded`).
+- **Runtime (`room_sim::script_mods::ModRuntime`).** Between tics the host lends the whole `World` to the mods (moved into a shared cell, no `unsafe`, no snapshot), so every import reads and mutates live state. The sim queues `ThingSpawned` / `ThingDamaged` / `ThingDied` / `ItemPickup` only when a handler subscribed (`World::script_event_mask`); after each tic the runtime fires `WorldTick`, then drains queued events (and events those handlers cause, bounded to 16 rounds / 4096 events). A trap or exhausted fuel disables that module (logged + HUD message); the game keeps running.
+- **Imports.** The core set (`log`, `class_find`, `actor_exists`, `acs_execute`, `reg_*` incl. `reg_class_property_str`) plus the game table in `room-script/src/game.rs` (`GameFn`, 44 functions): skill, level stats / map name, game rules (`game_get_rule` / `game_set_rule`: `rule::DEATHMATCH` = player-vs-player damage + frags, `rule::RESPAWN` = 0 keeps dead players down until the next map; rules reset every map, set them in `WorldLoaded`), deterministic `math_*`, `rng_range` (playsim RNG), players (actor, stats, `player_print` to everyone or one seat — in netplay a seat's message shows on that seat's screen only), actor queries (class, pos, vel, angle, `actor_get_i32/f64/ref`, iterate by class / radius, sight, distance, inventory, floor / ceiling), and mutation (`actor_spawn` with telefog / position check / friendly, destroy, set props / pos / vel / angle / pointers, `actor_damage`, give / take inventory (taking the weapon in hand switches the player to their best remaining weapon), `actor_set_state`, `actor_start_sound`, `level_exit`, `level_set_music`). Selector constants live in `room-script-abi` (`game::*`, `event_mask`, `class_prop`, `class_flag`).
+- **Callbacks.** `room_dispatch(callback_base + event bit, payload, len)` with little-endian payloads: Tick `[i32 maptime]`, Loaded `[i32 0][i32 maptime]`, PlayerEntered / PlayerDied `[u64 actor][i32 player+1]`, ThingSpawned `[u64]`, ThingDamaged `[u64 thing][u64 source][u64 inflictor][i32 damage][i32 health]`, ThingDied `[u64 thing][u64 source][u64 0]`, ItemPickup `[u64 toucher][i32 ClassRef]`, Unloaded `[]`.
+- **SDK.** `room-script-sdk::game` wraps every import (`Actor` handle with methods, `spawn`, `player`, `print`, `random`, …), decodes payloads into `Event`, and `export_mod!(T)` turns a `RoomMod` type into a module (registers the handler, keeps one instance, dispatches events). `alloc` is opt-in (feature `alloc`).
+- **Editor.** The web editor's *Scripts* tab writes modules (AssemblyScript or WAT compiled in the browser, or imported `.wasm`) as `ROOMMOD` + module (+ `S_*` source) lumps into the override PWAD; modules are validated (compile + register) on save, *Export WAD* includes them, and the mod log is shown live. Saving during a play test hot-swaps the mods (`Headless::hot_swap_script_mods`): the level keeps running, old modules get `WorldUnloaded`, new ones `WorldLoaded` / `PlayerEntered`; class property edits apply to new spawns, added / removed mod classes need a level restart.
+- **AssemblyScript.** `crates/room-web/as/room.ts` is the game API for AssemblyScript (`RoomMod` with `onLoad` / `onTick` / `onThingDied` / … overrides, `Actor` with getters / setters, `spawn`, `print`, `defineClass`, …); `room_abi.ts` holds the lifecycle exports and is appended to every module. Compiler options: `--runtime incremental --use abort=room/roomAbort -O2`; modules importing anything outside `"room"` (e.g. `Math.random` → `env.seed`) are rejected with a hint. The compiler (AssemblyScript 0.28.20 + binaryen, ~15 MB) is vendored by `scripts/fetch-assemblyscript.sh` into the web bundle, with the jsDelivr CDN as fallback; `node scripts/asc-compile.mjs mod.ts mod.wasm` compiles offline. Test: `room-game/tests/wasm_mod_assemblyscript.rs` (fixture `testdata/mods/hello_as.ts`).
+- **Example.** `mods/doom1-survival` (Rust, SDK): skill-scaled monster waves spawned at the map's own thing spots, a boss wave every fifth wave, two mod classes, kill-streak messages, heal-on-kill and wave rewards. `scripts/room-server.sh mods` builds `survival.wasm` and packs `survival.wad` (it builds every `mods/<dir>`: a `Cargo.toml` crate or `<module>.ts` AssemblyScript, packed as `ROOMMOD` + one lump per `[[module]]` + its `source` lump); `room-game/tests/wasm_mod_survival.rs` runs it end to end (and on `doom1.wad` E1M1 when present).
+- **Example (multiplayer).** `mods/doom1-royale` (Rust) — *Battle Royale* for room-server rooms: monsters removed and replaced by loot, fists only, players scattered, deathmatch rules with one life, a closing zone, last player standing wins and the level ends. Test `room-game/tests/wasm_mod_royale.rs`.
+- **Example (AssemblyScript).** `mods/doom1-bounty` — *Bounty Hunter*: a marked monster to hunt, compass hints, payouts and a final boss; see §16.
+- **Multiplayer (room-server).** Mods run in lockstep rooms: the server loads a catalog of mod WADs (`--mods-dir`), an admin allows the ones players may pick (admin Settings → Mods), a room is created with `"mod": "<name>"`, `welcome.room.mod` carries `{name, title, fingerprint, size}`, and every client downloads `GET /api/mods/<name>.wad`, checks the fingerprint and mounts it after the IWAD before loading the map. The optional server verifier mounts the same bytes, so checksums agree. Mods must stay deterministic (playsim RNG, `math_*`, no host state) — anything else desyncs the room. See `docs/22-room-server.md` §4 *Mods*. The legacy `FTRL` gateway and the peer-hosted relay do not carry mods.
+
+Not yet: save games do not store module memory (§10), UI-scope modules are skipped (logged), and per-actor virtual overrides / custom states from modules. `Translation` is stored on classes but not yet rendered.
+
+## 16. Writing mods in AssemblyScript
+
+[AssemblyScript](https://www.assemblyscript.org/) is a TypeScript-like language that compiles straight to WebAssembly. It is the quickest way to write a Room mod: the web editor compiles it in the browser and reloads it into a running play test. The API lives in `crates/room-web/as/room.ts` (game API) and `room_abi.ts` (lifecycle exports, appended automatically). The complete worked example is `mods/doom1-bounty/bounty.ts`.
+
+### 16.1 A minimal mod
+
+```ts
+import { RoomMod, Actor, register, print, player, spawn, TICRATE, Events } from "./room";
+
+class Hello extends RoomMod {
+  constructor() { super("Hello"); this.events = Events.LOADED | Events.TICK | Events.THING_DIED; }
+  onLoad(maptime: i32): void { print("Hello from AssemblyScript!"); }
+  onTick(maptime: i32): void {
+    if (maptime == 10 * TICRATE) {
+      const p = player();
+      if (p != null) spawn("DoomImp", p.pos.x + 128, p.pos.y);
+    }
+  }
+  onThingDied(thing: Actor, killer: Actor | null): void {
+    if (killer != null && killer.isPlayer) print(thing.className + " down");
+  }
+}
+register(new Hello());
+```
+
+One file, one `RoomMod` subclass, one `register(...)` call at top level. Override only the callbacks you need; `events` restricts which events the engine sends (fewer events = less work per tic).
+
+### 16.2 Usage
+
+**Web editor (live).** Open the editor (`editor.html`, served by `./scripts/play-web.sh`), go to the *Scripts* tab:
+
+- *+ New AssemblyScript mod* creates a module from a template; *Example: Bounty Hunter (AS)* mounts the shipped example WAD (it runs in play tests as is) and *Copy into editor for editing* imports it as an editable module (needs the `S_*` source lump, see below).
+- The *Game API (room.ts)* panel under the code lists the whole API. `Ctrl+S` compiles, validates (compile + register) and saves the module into the override PWAD; compile errors show under the code.
+- During a play test (*▶ Play*), saving hot-swaps the mod without restarting the level: the old instance gets `onUnload`, the new one `onLoad` + `onPlayerEnter`. Class property edits apply to new spawns; adding or removing mod classes needs a level restart.
+- *Export WAD* writes the `ROOMMOD` manifest, the compiled modules and their sources into the PWAD.
+- The *Mod log* panel shows `log(...)` lines, warnings, traps and validation errors.
+
+The first compile downloads nothing when the bundle was built with the vendored compiler (`scripts/play-web.sh` runs `scripts/fetch-assemblyscript.sh`; set `ROOM_WEB_NO_ASC=1` to skip it and fall back to the jsDelivr CDN).
+
+**Command line.**
+
+```sh
+./scripts/fetch-assemblyscript.sh                 # once: AssemblyScript 0.28.20 into target/asc-npm
+node scripts/asc-compile.mjs mymod.ts mymod.wasm  # same options as the editor
+```
+
+`asc-compile.mjs` supplies `room.ts` / `room_abi.ts` and the editor's options (`--runtime incremental --use abort=room/roomAbort -O2`), so `mymod.ts` only needs `import … from "./room"`. To use plain `npx asc` instead, copy both files next to your source, end it with `export * from "./room_abi";` and pass the same options.
+
+**Packaging.** A mod is a PWAD (or PK3) holding a manifest plus the module:
+
+```toml
+# ROOMMOD lump (WAD) or room.toml (PK3 root)
+[mod]
+id = "me.mymod"
+name = "My Mod"
+version = "0.1.0"
+abi = 1
+
+[[module]]
+file = "MYMOD"        # lump / file holding the .wasm
+scope = "play"
+name = "mymod"
+source = "S_MYMOD"    # optional: AssemblyScript source, lets the editor reopen it
+```
+
+Source lumps are named `S_` + the first six characters of the module lump. `scripts/room-server.sh mods` does the whole build: compile, then pack `ROOMMOD` + `BOUNTY` + `S_BOUNTY` into `bounty.wad`.
+
+**Playing.**
+
+```sh
+cargo run -p room-app -- --iwad testdata/doom/doom1.wad --file mymod.wad --map E1M1 --play
+```
+
+On the web play page, pick a mod in the *Mod* select or open `/?mod=<name>`, which loads `mods/<name>.wad` from the bundle (`scripts/play-web.sh` ships `survival` and `bounty`).
+
+### 16.3 API reference (`room.ts`)
+
+All functions talk to the live game and **must only be called from `RoomMod` callbacks** (or `register` for class definitions); outside them no world is attached and calls read 0 / do nothing.
+
+**`RoomMod`** — base class; fields `name: string` (constructor), `events: u64` (default `Events.ALL`), `order: i32` (handler order, lower runs first).
+
+| Callback | When |
+|---|---|
+| `register()` | once at load; declare classes here |
+| `onLoad(maptime)` | a map starts (also after a hot swap) |
+| `onTick(maptime)` | after every game tic (35 per second) |
+| `onUnload()` | the map ends (or the mod is swapped out) |
+| `onPlayerEnter(player, slot)` | a player spawns into the map |
+| `onPlayerDied(player, slot)` | a player dies |
+| `onThingSpawned(thing)` | any actor spawns |
+| `onThingDamaged(thing, source, inflictor, damage, health)` | an actor takes damage (`health` = remaining) |
+| `onThingDied(thing, killer)` | an actor dies (`killer` may be null) |
+| `onItemPickup(toucher, item)` | an inventory item is picked up (`item` = class name) |
+
+**`Actor`** — handle to a live actor (`ref: u64`). Stale handles (actor removed) read as 0 and ignore writes; check `exists` when you keep handles across tics.
+
+| Member | Meaning |
+|---|---|
+| `exists`, `className`, `is(name)` | still alive in the world; class name; instance of `name` or a subclass |
+| `pos`, `vel` (`Vec3`), `setPos(x,y,z)`, `setVel(x,y,z)` | position / velocity; `setPos` teleports without collision checks |
+| `angle` (get/set, degrees) | facing |
+| `health`, `speed`, `alpha` (get/set) | common properties |
+| `isMonster`, `isDead`, `isPlayer`, `playerSlot` | flags; slot is 0-based or -1 |
+| `getInt(Prop.*)` / `setInt`, `getFloat(FProp.*)` / `setFloat` | any property selector |
+| `target`, `master`, `tracer` (get/set `Actor \| null`) | actor pointers (`target` = who a monster attacks) |
+| `distanceTo(a)`, `canSee(a)` | 3D distance; line-of-sight check |
+| `countInv(item)`, `give(item, n=1)`, `take(item, n=1)` | inventory: weapons, ammo, armor, health, keys, powerups |
+| `damage(n, source?, inflictor?)` | damage through the normal path (pain, death, obituaries); returns damage dealt |
+| `destroy()` | remove without dying |
+| `setState(label)` | jump to a state label (`"See"`, `"Pain"`, `"Death"`, …) |
+| `sound(name, volume=1)` | play a SNDINFO sound from the actor |
+
+**World functions.**
+
+| Function | Meaning |
+|---|---|
+| `spawn(cls, x, y, z=NaN, angle=0, flags=0)` | spawn an actor (`z` NaN = floor); `flags` from `Spawn.*`; null when blocked or unknown |
+| `actorsOfClass(cls, subclasses=true)` | actors of a class (`""` = every actor), at most 512 |
+| `actorsInRadius(x, y, r)` | actors within `r` map units, at most 512 |
+| `player(slot=0)`, `playerStat(slot, PlayerStat.*)`, `playerCount()` | player bodies and stats |
+| `print(msg, slot=-1)` | HUD message to everyone or one player |
+| `log(msg)` | line in the editor mod log / desktop console |
+| `skill()` | 1 (ITYTD) … 5 (Nightmare) |
+| `levelTime()`, `levelStat(Stat.*)`, `mapName()` | tics since map start; kills / items / secrets; `"E1M1"` |
+| `floorZ(x,y)`, `ceilingZ(x,y)` | sector heights at a point |
+| `exitLevel(secret=false)`, `setMusic(name)` | end the map; change music (`""` stops) |
+| `getRule(Rule.X)`, `setRule(Rule.X, v)` | game rules: `Rule.DEATHMATCH` (PvP + frags), `Rule.RESPAWN` (0 = no respawn until the next map); reset every map, set in `onLoad` |
+| `acs(script, a0, a1, a2)` | run an ACS script on the current map |
+| `random(lo, hi)` | inclusive integer from the game RNG |
+| `sin`, `cos`, `atan2`, `sqrt` | deterministic math (radians) |
+| `classOf(name)`, `className(cls)` | class handle ↔ name (0 = unknown) |
+
+**Defining classes** (inside `register()`):
+
+```ts
+register(): void {
+  defineClass("Warden", "BaronOfHell");            // name, parent, replaces = "", editorNum = -1
+  classProperty(ClassProp.HEALTH, 1500);
+  classProperty(ClassProp.SCALE_PERCENT, 130);
+  classPropertyString(ClassProp.OBITUARY, "%o was judged by the Warden.");
+  classFlag(ClassFlag.BOSS);
+  endClass();
+}
+```
+
+Passing `replaces` makes map things of the replaced class spawn yours (it inherits the editor number).
+
+**Constants.**
+
+| Namespace | Values |
+|---|---|
+| `Events` | `TICK`, `THING_DIED`, `LOADED`, `THING_SPAWNED`, `THING_DAMAGED`, `PLAYER_ENTERED`, `PLAYER_DIED`, `UNLOADED`, `ITEM_PICKUP`, `ALL` |
+| `Stat` | `KILLS`, `TOTAL_KILLS`, `ITEMS`, `TOTAL_ITEMS`, `SECRETS`, `TOTAL_SECRETS`, `MAPTIME` |
+| `PlayerStat` | `IN_GAME`, `HEALTH`, `ARMOR`, `KILLS`, `ITEMS`, `SECRETS` |
+| `Prop` (int) | `HEALTH`, `SPAWN_HEALTH`, `TID`, `FLAGS`, `IS_MONSTER`, `PLAYER`, `IS_MISSILE`, `IS_DEAD`, `DAMAGE`, `REACTION_TIME`, `FRIENDLY` |
+| `FProp` (float) | `RADIUS`, `HEIGHT`, `SPEED`, `ALPHA`, `SCALE_X`, `SCALE_Y`, `GRAVITY`, `DAMAGE_FACTOR`, `FLOOR_Z` |
+| `Spawn` | `TELEFOG`, `CHECK_POSITION`, `FRIENDLY` (combine with `\|`) |
+| `ClassProp` | `HEALTH`, `SPEED`, `PAIN_CHANCE`, `RADIUS`, `HEIGHT`, `MASS`, `REACTION_TIME`, `MELEE_RANGE`, `DAMAGE_FACTOR_PERCENT`, `SCALE_PERCENT`, `FAST_SPEED`, `ALPHA_PERCENT`, `TRANSLATION` / `TAG` / `OBITUARY` (strings) |
+| `ClassFlag` | `SOLID`, `SHOOTABLE`, `COUNTKILL`, `FRIENDLY`, `NOGRAVITY`, `FLOAT`, `NOBLOOD`, `BOSS`, `NORADIUSDMG`, `INVULNERABLE`, `DONTDRAW` |
+| `TICRATE` | 35 tics per second |
+
+### 16.4 Rules and pitfalls
+
+- **Determinism.** Mods run inside the playsim, so they must be reproducible (demos, netplay). Use `random()` and the math functions from `room.ts`; `Math.random` imports `env.seed` and the module is rejected. Never use wall-clock time — count tics (`maptime`, `levelTime()`).
+- **No closures.** AssemblyScript cannot capture local variables in lambdas, so `arr.sort((a, b) => …)` comparators that use outer locals fail to compile; write a small loop (the example uses an insertion sort). `Array.splice` cannot insert; push and swap instead.
+- **State.** Module globals and mod fields persist across maps within one game and are reset on a new game. They are not stored in save games yet (§10).
+- **Budgets.** A trap (`abort`, out-of-bounds, `unreachable`) or exhausted fuel disables the module with a log line and HUD message; the game continues. Keep per-tic work small; throttle expensive scans (the example only scans every few seconds).
+- **Lists** from `actorsOfClass` / `actorsInRadius` are capped at 512 entries.
+- **Imports.** Only the `"room"` module is allowed; `--use abort=room/roomAbort` routes AssemblyScript aborts to the mod log.
+
+### 16.5 Example: Bounty Hunter (`mods/doom1-bounty`)
+
+A complete mod for `doom1.wad` (any Doom map works) showing every part of the API:
+
+- **Bounties.** Every few seconds a random living monster is marked: health × skill toughness (150–400%), bigger and faster. `print` announces it; periodic hints give distance and compass direction (via `atan2`) and whether it is in sight.
+- **Payouts.** Killing the bounty pays score and a reward rotating through Shotgun, Chaingun, Rocket Launcher and extra shells (`give`), plus +25 health capped at 200. Quick kills chain into combos; backpacks are worth bonus points (`onItemPickup`).
+- **Final boss.** When the map has no monsters left, a mod class `Warden` (a Baron of Hell variant declared with `defineClass`) teleports in at a spot far from the player and hunts them (`target`, `setState("See")`).
+- **Events used.** `onLoad`, `onTick`, `onThingDamaged`, `onThingDied`, `onItemPickup`, `onPlayerDied`, `onUnload`.
+
+Build and run: `./scripts/room-server.sh mods`, then see `mods/doom1-bounty/README.md`. Test: `room-game/tests/wasm_mod_bounty.rs` (bounty selection, payout, Warden spawn and death; plus `doom1.wad` E1M1 when present).

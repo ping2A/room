@@ -7,8 +7,11 @@
 use room_script_abi::{Budget, REQUIRED_EXPORTS, Trap, Val};
 use std::sync::Arc;
 
+pub mod game;
+pub mod manifest;
 mod registration;
 
+pub use game::{GameBridge, GameFn, GuestMemory, SharedGameBridge, ValKind};
 pub use registration::{
     PropId, RegCall, RegisteredClass, RegisteredEventHandler, RegisteredStaticFunction,
     RegisteredThinkerClass, RegistrationSession, SharedRegistration, VirtualSlot,
@@ -87,6 +90,8 @@ pub struct HostLinker {
     pub acs_execute: AcsExecuteFn,
     /// Registration-phase session (`reg_*` imports).
     pub reg: SharedRegistration,
+    /// Game-control imports ([`GameFn`]); `None` → every call returns zero.
+    pub game: Option<SharedGameBridge>,
 }
 
 impl Default for HostLinker {
@@ -108,6 +113,7 @@ impl Default for HostLinker {
             }),
             acs_execute: Arc::new(|_script, _map, _args| 0),
             reg,
+            game: None,
         }
     }
 }

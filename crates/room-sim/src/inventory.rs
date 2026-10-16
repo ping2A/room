@@ -198,10 +198,9 @@ pub fn cheat_give(world: &mut World, owner: ActorId, what: &str) -> u32 {
             let n = cheat_give(world, owner, "weapons");
             n + cheat_give(world, owner, "ammo") + cheat_give(world, owner, "armor")
         }
-        "weapons" => give_named(
-            world,
-            owner,
-            &[
+        "weapons" => {
+            // GZDoom only gives weapons that sit in a slot.
+            let names: Vec<&str> = [
                 "Chainsaw",
                 "Shotgun",
                 "SuperShotgun",
@@ -209,9 +208,12 @@ pub fn cheat_give(world: &mut World, owner: ActorId, what: &str) -> u32 {
                 "RocketLauncher",
                 "PlasmaRifle",
                 "BFG9000",
-            ],
-            1,
-        ),
+            ]
+            .into_iter()
+            .filter(|n| world.weapon_slots.contains(n))
+            .collect();
+            give_named(world, owner, &names, 1)
+        }
         "ammo" => give_named(world, owner, &["Clip", "Shell", "RocketAmmo", "Cell"], 200),
         "keys" => give_named(
             world,

@@ -291,6 +291,7 @@ pub fn call_action_args(
             ActionResult::Continue
         }
         "A_FireMissile" => a_fire_missile(world, self_id),
+        "A_FireProjectile" | "A_FireCustomMissile" => a_fire_projectile(world, self_id, args),
         "A_FirePlasma" => a_fire_plasma(world, self_id),
         "A_FireBFG" => a_fire_bfg(world, self_id),
         "A_BFGSpray" => a_bfg_spray(world, self_id),
@@ -2930,7 +2931,7 @@ fn a_custom_missile(world: &mut World, self_id: ActorId, args: &[String]) -> Act
     let speed = world
         .classes
         .get(missile_class)
-        .map(|c| c.speed)
+        .map(|c| class_move_speed(world, c))
         .filter(|s| *s > 0.0)
         .unwrap_or(20.0);
     if let Some(m) = world.actors.get_mut(id) {
@@ -5048,6 +5049,15 @@ fn spawn_missile(world: &mut World, self_id: ActorId, class_name: &str, speed: f
     spawn_missile_angled(world, self_id, class_name, speed, 0.0);
 }
 
+/// Class `Speed`, or `FastSpeed` under fast monsters (Nightmare fireballs).
+pub(crate) fn class_move_speed(world: &World, class: &crate::class::ClassDef) -> f64 {
+    if world.fast_monsters && class.fast_speed > 0.0 {
+        class.fast_speed
+    } else {
+        class.speed
+    }
+}
+
 /// Double-math `P_SpawnMissile`: target aim + spawn offset clear of the shooter.
 fn spawn_missile_aimed(
     world: &mut World,
@@ -5073,7 +5083,7 @@ fn spawn_missile_aimed(
     let speed = world
         .classes
         .get(missile_class)
-        .map(|c| c.speed)
+        .map(|c| class_move_speed(world, c))
         .filter(|s| *s > 0.0)
         .unwrap_or(speed_fallback);
     // Vanilla spawn Z is `source->z + 32`; clear the shooter body in XY.
@@ -5151,7 +5161,7 @@ fn spawn_missile_vanilla(
     let speed = world
         .classes
         .get(missile_class)
-        .map(|c| c.speed)
+        .map(|c| class_move_speed(world, c))
         .filter(|s| *s > 0.0)
         .unwrap_or(speed_fallback);
     let speed_f = Fixed::from_f64(speed);
@@ -5263,7 +5273,7 @@ fn spawn_missile_angled(
     let speed = world
         .classes
         .get(missile_class)
-        .map(|c| c.speed)
+        .map(|c| class_move_speed(world, c))
         .filter(|s| *s > 0.0)
         .unwrap_or(speed);
     if let Some(m) = world.actors.get_mut(id) {
@@ -5407,9 +5417,11 @@ fn a_pain_attack(world: &mut World, self_id: ActorId) -> ActionResult {
     ActionResult::Continue
 }
 
-/// `A_PainDie`: spawn four LostSouls on death (cardinal directions).
+/// `A_PainDie`: `A_Fall`, then three Lost Souls at +90° / +180° / +270°
+/// (Doom `p_enemy.c`; none straight ahead).
 fn a_pain_die(world: &mut World, self_id: ActorId) -> ActionResult {
-    for i in 0..4 {
+    let _ = a_no_blocking(world, self_id);
+    for i in 1..4 {
         let _ = spawn_lost_soul(world, self_id, f64::from(i) * 90.0);
     }
     ActionResult::Continue
@@ -5886,6 +5898,10 @@ fn boss_targets(world: &World) -> Vec<ActorId> {
 
 /// `A_BrainSpit([spawntype])`: fire a cube at the next `BossTarget`.
 fn a_brain_spit(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    world.brain_spit_easy = !world.brain_spit_easy;
+    if world.skill <= 2 && !world.brain_spit_easy {
+        return ActionResult::Continue;
+    }
     let targets = boss_targets(world);
     if targets.is_empty() {
         return ActionResult::Continue;
@@ -5959,7 +5975,7 @@ fn spawn_missile_at(
     let speed = world
         .classes
         .get(missile_class)
-        .map(|c| c.speed)
+        .map(|c| class_move_speed(world, c))
         .filter(|s| *s > 0.0)
         .unwrap_or(default_speed);
     // Arrival delay in tics ≈ distance / speed (vanilla `special2` countdown).
@@ -6710,10 +6726,159 @@ fn a_fire_shotgun2(world: &mut World, self_id: ActorId) -> ActionResult {
     ActionResult::Continue
 }
 
+/// `A_FireProjectile` options on top of plain `P_SpawnPlayerMissile`.
+#[derive(Clone, Copy, Default)]
+struct PlayerMissileOpts {
+    /// Degrees added to the launch direction (left positive).
+    angle: f64,
+    /// Sideways spawn offset (right positive, GZDoom `spawnofs_xy`).
+    ofs_xy: f64,
+    /// Added to the `z + 32` spawn height.
+    height: f64,
+    /// Freelook pitch offset, GZDoom sign (positive aims down).
+    pitch: f64,
+    /// `FPF_AIMATANGLE`: autoaim along `angle` instead of turning afterwards.
+    aim_at_angle: bool,
+    /// `FPF_NOAUTOAIM`: follow the view pitch only.
+    no_autoaim: bool,
+}
+
+fn spawn_player_missile(world: &mut World, self_id: ActorId, class_name: &str, speed: f64) {
+    if let Some(cid) = world.classes.find_name(class_name) {
+        let _ = spawn_player_missile_ex(world, self_id, cid, speed, PlayerMissileOpts::default());
+    }
+}
+
+/// `P_SpawnPlayerMissile`: launch from `z + 32` along the autoaim angle /
+/// slope (else freelook pitch). Ignores the shooter's `target`, which
+/// `P_DamageMobj` sets to whoever last hurt the player.
+fn spawn_player_missile_ex(
+    world: &mut World,
+    self_id: ActorId,
+    missile_class: room_core::ClassId,
+    speed: f64,
+    opts: PlayerMissileOpts,
+) -> Option<ActorId> {
+    let src = world.actors.get(self_id).cloned()?;
+    let shoot_angle = if opts.aim_at_angle {
+        Angle::from_degrees(src.angle.degrees() + opts.angle)
+    } else {
+        src.angle
+    };
+    let (mut ang, aim) = if opts.no_autoaim {
+        (shoot_angle, None)
+    } else {
+        crate::hitscan::player_missile_aim(world, self_id, shoot_angle)
+    };
+    let speed = world
+        .classes
+        .get(missile_class)
+        .map(|c| class_move_speed(world, c))
+        .filter(|s| *s > 0.0)
+        .unwrap_or(speed);
+    // Autoaim: vanilla `momz = speed * slope` on top of full XY speed.
+    // Freelook: split `speed` along the view pitch (GZDoom).
+    let (xy, z) = match aim {
+        Some((s, _)) => (speed, speed * s),
+        None => {
+            let pr = (src.pitch.radians() - opts.pitch.to_radians()).clamp(-1.4, 1.4);
+            (speed * dmath::cos(pr), speed * dmath::sin(pr))
+        }
+    };
+    // Spawn just clear of the player in XY so `P_CheckMissileSpawn` does not
+    // explode it against the shooter; `ofs_xy` is relative to the view angle.
+    let rad = ang.radians();
+    let view = src.angle.radians();
+    let offset = src.radius + 8.0;
+    let pos = DVec3::new(
+        src.pos.x() + dmath::cos(rad) * offset + dmath::sin(view) * opts.ofs_xy,
+        src.pos.y() + dmath::sin(rad) * offset - dmath::cos(view) * opts.ofs_xy,
+        src.pos.z() + 32.0 + opts.height,
+    );
+    if !opts.aim_at_angle {
+        ang = Angle::from_degrees(ang.degrees() + opts.angle);
+    }
+    let rad = ang.radians();
+    let id = world.spawn_at(missile_class, pos, ang).ok()?;
+    if let Some(m) = world.actors.get_mut(id) {
+        m.angle = ang;
+        m.pitch = src.pitch;
+        m.vel = DVec3::new(dmath::cos(rad) * xy, dmath::sin(rad) * xy, z);
+        m.flags |= crate::class::FLAG_MISSILE;
+        m.flags &= !crate::class::FLAG_SOLID;
+        m.health = 1000;
+        m.target = Some(self_id);
+        m.master = Some(self_id);
+        // GZDoom hands seekers their autoaim `linetarget`.
+        m.tracer = aim.map(|(_, t)| t);
+    }
+    check_missile_spawn(world, id);
+    let class_name = world
+        .classes
+        .get(missile_class)
+        .map(|c| c.name.clone())
+        .unwrap_or_default();
+    record_missile_shot(world, self_id, self_id, &class_name, pos);
+    let see = world
+        .classes
+        .get(missile_class)
+        .map(|c| c.see_sound.clone())
+        .filter(|s| !s.is_empty());
+    if let Some(snd) = see {
+        if let Some(m) = world.actors.get(id) {
+            world.play_sound(&snd, m.pos.x(), m.pos.y(), m.pos.z(), 1.0);
+        }
+    }
+    Some(id)
+}
+
+const FPF_AIMATANGLE: i32 = 1;
+const FPF_NOAUTOAIM: i32 = 4;
+
+/// `FPF_*` flags as an int or `A|B` names.
+fn parse_fpf_flags(raw: Option<&String>) -> i32 {
+    let Some(raw) = raw.map(|s| s.trim_matches('"').trim()) else {
+        return 0;
+    };
+    if let Ok(n) = raw.parse::<i32>() {
+        return n;
+    }
+    raw.split('|')
+        .map(|f| match f.trim().to_ascii_uppercase().as_str() {
+            "FPF_AIMATANGLE" => FPF_AIMATANGLE,
+            "FPF_TRANSFERTRANSLATION" => 2,
+            "FPF_NOAUTOAIM" => FPF_NOAUTOAIM,
+            "TRUE" => FPF_AIMATANGLE,
+            _ => 0,
+        })
+        .fold(0, |a, b| a | b)
+}
+
+/// `A_FireProjectile` / `A_FireCustomMissile(missiletype, angle, useammo,
+/// spawnofs_xy, spawnheight, flags, pitch)`. Ammo is spent when the Fire
+/// state starts, so `useammo` is ignored. For `A_FireCustomMissile` a bool
+/// `flags` is the old `aimatangle`.
+fn a_fire_projectile(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let Some(cid) = args.first().and_then(|s| resolve_type_arg(world, s)) else {
+        return ActionResult::Continue;
+    };
+    let flags = parse_fpf_flags(args.get(5));
+    let opts = PlayerMissileOpts {
+        angle: parse_f64_arg(args, 1, 0.0),
+        ofs_xy: parse_f64_arg(args, 3, 0.0),
+        height: parse_f64_arg(args, 4, 0.0),
+        pitch: parse_f64_arg(args, 6, 0.0),
+        aim_at_angle: flags & FPF_AIMATANGLE != 0,
+        no_autoaim: flags & FPF_NOAUTOAIM != 0,
+    };
+    let _ = spawn_player_missile_ex(world, self_id, cid, 20.0, opts);
+    ActionResult::Continue
+}
+
 /// `A_FireMissile`: spawn a `Rocket` from the shooter.
 fn a_fire_missile(world: &mut World, self_id: ActorId) -> ActionResult {
     if world.classes.find_name("Rocket").is_some() {
-        spawn_missile(world, self_id, "Rocket", 20.0);
+        spawn_player_missile(world, self_id, "Rocket", 20.0);
     } else if let Some(a) = world.actors.get(self_id) {
         world.play_sound("weapons/rocklf", a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
     }
@@ -6723,7 +6888,7 @@ fn a_fire_missile(world: &mut World, self_id: ActorId) -> ActionResult {
 /// `A_FirePlasma`: spawn a `PlasmaBall`.
 fn a_fire_plasma(world: &mut World, self_id: ActorId) -> ActionResult {
     if world.classes.find_name("PlasmaBall").is_some() {
-        spawn_missile(world, self_id, "PlasmaBall", 25.0);
+        spawn_player_missile(world, self_id, "PlasmaBall", 25.0);
     } else if let Some(a) = world.actors.get(self_id) {
         world.play_sound("weapons/plasmaf", a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
     }
@@ -6733,7 +6898,7 @@ fn a_fire_plasma(world: &mut World, self_id: ActorId) -> ActionResult {
 /// `A_FireBFG`: spawn a `BFGBall` (spray extras spawn from `A_BFGSpray` on death).
 fn a_fire_bfg(world: &mut World, self_id: ActorId) -> ActionResult {
     if world.classes.find_name("BFGBall").is_some() {
-        spawn_missile(world, self_id, "BFGBall", 25.0);
+        spawn_player_missile(world, self_id, "BFGBall", 25.0);
     }
     ActionResult::Continue
 }
@@ -7121,7 +7286,7 @@ fn a_mushroom(world: &mut World, self_id: ActorId, args: &[String]) -> ActionRes
     let base_speed = world
         .classes
         .get(shot)
-        .map(|c| c.speed)
+        .map(|c| class_move_speed(world, c))
         .filter(|&s| s > 0.0)
         .unwrap_or(20.0)
         * speed_mul;
@@ -7365,7 +7530,7 @@ fn a_monster_projectile(world: &mut World, self_id: ActorId, args: &[String]) ->
     let speed = world
         .classes
         .get(missile_class)
-        .map(|c| c.speed)
+        .map(|c| class_move_speed(world, c))
         .filter(|s| *s > 0.0)
         .unwrap_or(20.0);
     // Pitch: negative = up (MBF21).
@@ -10291,6 +10456,55 @@ actor Boom : Actor 9103
         };
         assert_eq!(count(plasma), 1);
         assert_eq!(count(bfg), 1);
+    }
+
+    #[test]
+    fn player_rocket_launches_from_32_and_ignores_last_attacker() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 1024.0, 1024.0), 0.0, 256.0)
+            .player_start(64.0, 512.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let rocket = classes.find_name("Rocket").unwrap();
+        let barrel = classes.find_name("ExplosiveBarrel").unwrap();
+        let player = w.players[0].as_ref().and_then(|p| p.mo).unwrap();
+        // Last attacker: high up and off to the side, out of the autoaim cone.
+        let attacker = w
+            .spawn_at(
+                barrel,
+                DVec3::new(600.0, 1000.0, 200.0),
+                Angle::from_degrees(0.0),
+            )
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(player) {
+            a.target = Some(attacker);
+            a.angle = Angle::from_degrees(0.0);
+        }
+        assert_eq!(a_fire_missile(&mut w, player), ActionResult::Continue);
+        let m = w
+            .thinkers
+            .default
+            .iter()
+            .find_map(|&aid| w.actors.get(aid).filter(|a| a.class == rocket))
+            .unwrap();
+        let feet = w.actors.get(player).unwrap().pos.z();
+        assert!(
+            (m.pos.z() - (feet + 32.0)).abs() < 1e-6,
+            "spawn z {}",
+            m.pos.z()
+        );
+        assert!(m.vel.z().abs() < 1e-9, "level shot, vel {:?}", m.vel);
+        assert!(
+            m.vel.y().abs() < 1e-9 && m.vel.x() > 19.0,
+            "straight ahead {:?}",
+            m.vel
+        );
     }
 
     #[test]

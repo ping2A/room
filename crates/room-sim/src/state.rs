@@ -3,7 +3,7 @@
 use crate::class::ClassRegistry;
 use room_core::{ClassId, StateId};
 use room_decorate::{ActorDef, ClassDefIr, StateFlow, StateItem};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One compiled state (`FState` subset).
 #[derive(Clone, Debug)]
@@ -22,6 +22,8 @@ pub struct State {
     pub action_args: Vec<String>,
     /// DECORATE `Bright` — fullbright sprite for this frame.
     pub bright: bool,
+    /// DECORATE `Fast` — tics halved (rounded up) under fast monsters.
+    pub fast: bool,
     /// Next state (`None` = Stop).
     pub next: Option<StateId>,
 }
@@ -50,7 +52,43 @@ impl StateTable {
             };
             table.compile_actor(cid, def);
         }
+        table.inherit_labels(classes);
         table
+    }
+
+    /// DECORATE inheritance: a class keeps every parent label it does not
+    /// redefine (pointing at the parent's states). Parents are resolved first.
+    pub(crate) fn inherit_labels(&mut self, classes: &ClassRegistry) {
+        let mut done: BTreeSet<u32> = BTreeSet::new();
+        for class in classes.iter() {
+            self.inherit_labels_for(classes, class.id, &mut done, 0);
+        }
+    }
+
+    fn inherit_labels_for(
+        &mut self,
+        classes: &ClassRegistry,
+        class: ClassId,
+        done: &mut BTreeSet<u32>,
+        depth: u32,
+    ) {
+        if depth > 64 || !done.insert(class.raw()) {
+            return;
+        }
+        let Some(parent) = classes.get(class).and_then(|c| c.parent) else {
+            return;
+        };
+        if parent == class {
+            return;
+        }
+        self.inherit_labels_for(classes, parent, done, depth + 1);
+        let inherited: Vec<(String, StateId)> = self
+            .labels_of(parent)
+            .map(|(l, id)| (l.to_owned(), id))
+            .collect();
+        for (label, id) in inherited {
+            self.labels.entry((class.raw(), label)).or_insert(id);
+        }
     }
 
     fn compile_actor(&mut self, class: ClassId, def: &ActorDef) {
@@ -92,6 +130,10 @@ impl StateTable {
                             .modifiers
                             .iter()
                             .any(|m| m.eq_ignore_ascii_case("bright"));
+                        let fast = line
+                            .modifiers
+                            .iter()
+                            .any(|m| m.eq_ignore_ascii_case("fast"));
                         let id = self.states.len();
                         self.states.push(State {
                             owner: class,
@@ -101,6 +143,7 @@ impl StateTable {
                             action: line.action.clone(),
                             action_args: line.action_args.clone(),
                             bright,
+                            fast,
                             // Temporary: chain to next frame; flows patched later.
                             next: Some(StateId::from_raw((id + 1) as u32)),
                         });
@@ -173,6 +216,15 @@ impl StateTable {
             .copied()
     }
 
+    /// A class's own labels (lowercase) and their first states, by label name.
+    pub fn labels_of(&self, class: ClassId) -> impl Iterator<Item = (&str, StateId)> + '_ {
+        let raw = class.raw();
+        self.labels
+            .range((raw, String::new())..)
+            .take_while(move |((c, _), _)| *c == raw)
+            .map(|((_, l), &id)| (l.as_str(), id))
+    }
+
     /// State count.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -224,6 +276,55 @@ actor ZombieMan : Actor 3004
         assert_eq!(b.frame, 1);
         // Loop → back to Spawn (frame A).
         assert_eq!(b.next.unwrap().raw(), spawn.raw());
+        let labels: Vec<_> = table.labels_of(cid).map(|(l, _)| l.to_owned()).collect();
+        assert_eq!(labels, ["spawn"]);
+    }
+
+    #[test]
+    fn bundled_doom_monsters_have_vanilla_gib_and_raise_states() {
+        let ir = parse_decorate(include_str!("../../../testdata/actors/doom_basic.txt")).unwrap();
+        let classes = ClassRegistry::from_decorate(&ir).unwrap();
+        let t = StateTable::from_decorate(&ir, &classes);
+        let label = |c: &str, l: &str| t.find_label(classes.find_name(c).unwrap(), l);
+        for c in [
+            "ZombieMan",
+            "ShotgunGuy",
+            "ChaingunGuy",
+            "DoomImp",
+            "WolfensteinSS",
+        ] {
+            assert!(label(c, "XDeath").is_some(), "{c} has no XDeath");
+        }
+        for c in [
+            "ZombieMan",
+            "ShotgunGuy",
+            "ChaingunGuy",
+            "DoomImp",
+            "Demon",
+            "BaronOfHell",
+            "HellKnight",
+            "Cacodemon",
+            "Revenant",
+            "Arachnotron",
+            "Fatso",
+            "WolfensteinSS",
+            "PainElemental",
+        ] {
+            assert!(label(c, "Raise").is_some(), "{c} has no Raise");
+        }
+        // Not resurrectable in Doom (no raisestate).
+        for c in ["LostSoul", "Archvile", "Cyberdemon", "SpiderMastermind"] {
+            assert!(label(c, "Raise").is_none(), "{c} must not have Raise");
+        }
+        // Arch-vile heal uses the `[`, `\`, `]` sprite frames.
+        let mut at = label("Archvile", "Heal");
+        let mut frames = Vec::new();
+        for _ in 0..3 {
+            let s = t.get(at.unwrap()).unwrap();
+            frames.push(s.frame);
+            at = s.next;
+        }
+        assert_eq!(frames, [26, 27, 28]);
     }
 
     #[test]

@@ -3,6 +3,8 @@
 // `roomEditorUpdateMap`, which patches the running level in place when it can.
 
 import { install as installTools, HEXEN_LINE_SPECIALS } from "./editor-tools.js";
+import { install as installPaint, paintNs } from "./editor-paint.js";
+import { install as installScripts } from "./editor-scripts.js";
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, attrs = {}, ...kids) => {
@@ -148,6 +150,7 @@ async function boot() {
   const mod = await import("./room_web.js");
   await mod.default();
   S.mod = mod;
+  try { applyMute(localStorage.getItem("room/editor-muted") === "1"); } catch (_) { /* private mode */ }
   await ready;
   status("Engine ready");
   const params = new URLSearchParams(location.search);
@@ -1023,6 +1026,7 @@ cv.addEventListener("dblclick", (e) => {
 
 const room = $("#room");
 let look = false;
+let lastClickHit = false;
 room.addEventListener("contextmenu", (e) => e.preventDefault());
 room.addEventListener("mousedown", (e) => {
   room.focus();
@@ -1035,8 +1039,14 @@ room.addEventListener("mousedown", (e) => {
     const nx = ((e.clientX - r.left) / r.width) * 2 - 1;
     const ny = 1 - ((e.clientY - r.top) / r.height) * 2;
     const hit = S.mod.roomEditorPick(nx, ny);
+    lastClickHit = !!hit;
     if (hit) applyPick(JSON.parse(hit), e.shiftKey);
   }
+});
+room.addEventListener("dblclick", (e) => {
+  if (S.playing || e.button !== 0 || !lastClickHit) return;
+  e.preventDefault();
+  editPicked();
 });
 window.addEventListener("mouseup", (e) => {
   if (e.button === 2 && look) { look = false; if (document.pointerLockElement === room && !S.playing) document.exitPointerLock(); }
@@ -1044,6 +1054,70 @@ window.addEventListener("mouseup", (e) => {
 window.addEventListener("mousemove", (e) => {
   if (look && !S.playing) S.mod.roomEditorLook(e.movementX, e.movementY);
 });
+
+// 3D overlay: outline the selected things (solid) and the one under the mouse (dashed).
+const overlay = $("#room-overlay");
+const octx = overlay.getContext("2d");
+let hover3d = -1;
+let hoverEvent = null;
+room.addEventListener("mousemove", (e) => { hoverEvent = look ? null : e; });
+room.addEventListener("mouseleave", () => { hoverEvent = null; hover3d = -1; room.style.cursor = ""; });
+
+function updateHover3d() {
+  const e = hoverEvent;
+  hoverEvent = null;
+  const r = room.getBoundingClientRect();
+  const hit = S.mod.roomEditorPick(((e.clientX - r.left) / r.width) * 2 - 1, 1 - ((e.clientY - r.top) / r.height) * 2);
+  const h = hit ? JSON.parse(hit) : null;
+  hover3d = h?.kind === "thing" ? h.index : -1;
+  room.style.cursor = hover3d >= 0 ? "pointer" : "";
+}
+
+function drawOverlay() {
+  requestAnimationFrame(drawOverlay);
+  const dpr = window.devicePixelRatio || 1;
+  const w = overlay.clientWidth, h = overlay.clientHeight;
+  if (overlay.width !== Math.round(w * dpr) || overlay.height !== Math.round(h * dpr)) {
+    overlay.width = Math.round(w * dpr); overlay.height = Math.round(h * dpr);
+  }
+  octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  octx.clearRect(0, 0, w, h);
+  if (!S.mod || !S.doc || S.playing || !w) return;
+  if (look) hover3d = -1;
+  else if (hoverEvent) updateHover3d();
+  const sel = S.mode === "things" ? [...S.sel] : [];
+  const ids = new Set(sel);
+  if (hover3d >= 0) ids.add(hover3d);
+  if (!ids.size) return;
+  const rects = S.mod.roomEditorThingRects(Uint32Array.from(ids));
+  octx.font = "600 11px ui-monospace, Menlo, monospace";
+  octx.textBaseline = "bottom";
+  for (let k = 0; k < rects.length; k += 6) {
+    const i = rects[k];
+    octx.globalAlpha = rects[k + 5] ? 1 : 0.35;
+    const x0 = ((rects[k + 1] + 1) / 2) * w - 4, x1 = ((rects[k + 3] + 1) / 2) * w + 4;
+    const y0 = ((1 - rects[k + 4]) / 2) * h - 4, y1 = ((1 - rects[k + 2]) / 2) * h + 4;
+    const selected = S.mode === "things" && S.sel.has(i);
+    const color = selected ? "#ffcc33" : "#7fd4ff";
+    octx.lineWidth = selected ? 2 : 1.5;
+    octx.strokeStyle = color;
+    octx.setLineDash(selected ? [] : [5, 4]);
+    octx.fillStyle = selected ? "rgba(255,204,51,0.10)" : "rgba(127,212,255,0.08)";
+    octx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    octx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    const t = S.doc.things[i];
+    const label = `${i} · ${S.thingInfo.get(t?.type_id)?.title || t?.type_id}`;
+    const tw = octx.measureText(label).width + 8;
+    const ly = y0 > 18 ? y0 - 2 : y1 + 16;
+    octx.fillStyle = "rgba(0,0,0,0.7)";
+    octx.fillRect(x0, ly - 15, tw, 15);
+    octx.fillStyle = color;
+    octx.fillText(label, x0 + 4, ly - 2);
+  }
+  octx.globalAlpha = 1;
+  octx.setLineDash([]);
+}
+requestAnimationFrame(drawOverlay);
 
 function applyPick(hit, add) {
   const mode = { thing: "things", wall: "lines", floor: "sectors", ceiling: "sectors" }[hit.kind];
@@ -1083,7 +1157,24 @@ function pickTarget() {
   return null;
 }
 
+/** Open the picked 3D object in the pixel editor (thing sprite, wall texture, flat). */
+function editPicked() {
+  const h = S.pick3d;
+  if (h?.kind === "thing") {
+    const num = S.doc.things[h.index]?.type_id;
+    const sprite = S.thingInfo.get(num)?.sprite;
+    if (!sprite) { toast("This thing has no sprite to edit", true); return false; }
+    paint.open("sprites", sprite, { num });
+    return true;
+  }
+  const t = pickTarget();
+  if (!t) return false;
+  paint.open(t.plane ? "flats" : "textures", t.obj[t.key]);
+  return true;
+}
+
 function key3d(e) {
+  if (e.code === "KeyP") return editPicked();
   const t = pickTarget();
   if (!t) return false;
   const sec = S.doc.sectors[t.sector];
@@ -1141,8 +1232,8 @@ function syncPlayUi() {
   b.textContent = S.playing ? "PLAYING" : "EDIT";
   b.classList.toggle("playing", S.playing);
   $("#hint3d").textContent = S.playing
-    ? "Playing — WASD move · mouse look · Ctrl/LMB fire · E/Space use · edits apply live"
-    : "Click: select · Right-drag: look · WASD/Q/Z: fly · Shift: fast · PgUp/PgDn height · T paint · +/- light";
+    ? "Playing — WASD move · mouse look · wheel weapon · Ctrl/LMB fire · E/Space use · edits apply live"
+    : "Click: select · Double-click / P: edit pixels · Right-drag: look · WASD/Q/Z: fly · Shift: fast · PgUp/PgDn height · T paint · +/- light";
 }
 
 function pollCamera() {
@@ -1234,7 +1325,8 @@ function fieldFor(objs, key, opts = {}) {
       drawThumb(thumbC, v0, 40);
       thumbC.addEventListener("click", () => openPicker(opts.flat ? "flats" : "textures", (name) => { input.value = name; drawThumb(thumbC, name, 40); apply(name); snapped = false; }));
       input.addEventListener("change", () => { const v = input.value.trim().toUpperCase() || "-"; drawThumb(thumbC, v, 40); apply(v); snapped = false; });
-      const wrap = el("div", { class: "tex-field" }, thumbC, input);
+      const edit = el("button", { class: "btn small icon", title: "Edit pixels", onclick: () => paint.open(opts.flat ? "flats" : "textures", input.value) }, "✎");
+      const wrap = el("div", { class: "tex-field" }, thumbC, input, edit);
       return wrap;
     }
     input.addEventListener("change", () => { apply(input.value); snapped = false; });
@@ -1324,13 +1416,18 @@ function renderInspector() {
     }
     typeSel.addEventListener("change", () => { snapshot(); objs.forEach((o) => { o.type_id = Number(typeSel.value); }); commit(); });
     const icon = el("canvas", { class: "thing-icon" });
-    if (info?.sprite) drawThumb(icon, info.sprite, 34);
+    if (info?.sprite) {
+      drawThumb(icon, info.sprite, 34);
+      icon.title = "Edit sprite & animations";
+      icon.style.cursor = "pointer";
+      icon.addEventListener("click", () => paint.open("sprites", info.sprite, { num: objs[0].type_id }));
+    }
     const angles = { 0: "East", 45: "NE", 90: "North", 135: "NW", 180: "West", 225: "SW", 270: "South", 315: "SE" };
     body.append(
       el("fieldset", {}, el("legend", {}, "Type"), el("div", { class: "tex-field" }, icon, typeSel), rowEl("type_id", fieldFor(objs, "type_id"))),
       fieldset("Placement", objs, ["x", "y", "z", "angle"], { fields: { angle: { options: angles } } }),
       el("fieldset", {}, el("legend", {}, "Flags"), fieldFor(objs, "flags", { flags: isHexen() ? HEXEN_THING_FLAGS : DOOM_THING_FLAGS })),
-      (isHexen() || isUdmf()) ? fieldset("Action", objs, ["tid", "special", "args"], { fields: { special: { options: HEXEN_LINE_SPECIALS } } }) : null,
+      ...((isHexen() || isUdmf()) ? [fieldset("Action", objs, ["tid", "special", "args"], { fields: { special: { options: HEXEN_LINE_SPECIALS } } })] : []),
       advanced("All fields", objs, ["x", "y", "z", "angle", "type_id", "flags", "tid", "special", "args"]),
     );
   } else if (S.mode === "lines") {
@@ -1404,7 +1501,8 @@ function fieldTexPick(kind) {
     if (kind === "flats") S.flat = n; else S.texture = n;
     renderInspector();
   }));
-  return el("div", { class: "tex-field" }, c, lbl);
+  const edit = el("button", { class: "btn small icon", title: "Edit pixels", onclick: () => paint.open(kind, name) }, "✎");
+  return el("div", { class: "tex-field" }, c, lbl, edit);
 }
 
 function addBackSide(line) {
@@ -1514,8 +1612,8 @@ function renderBrowser() {
     const flats = S.tab === "flats";
     const names = (flats ? sm.flats : sm.textures).filter((n) => !q || n.includes(q));
     body.append(el("p", { class: "muted", style: "padding:6px 10px;margin:0" },
-      flats ? "Click: current flat · Double-click: apply to selected sectors' floor (Shift: ceiling) · T in 3D paints the picked plane"
-        : "Click: current texture · Double-click: apply to selected lines · T in 3D paints the picked wall"));
+      flats ? "Click: current flat · Double-click: apply to selected sectors' floor (Shift: ceiling) · Right-click: edit pixels · T / P in 3D paint / edit the picked plane"
+        : "Click: current texture · Double-click: apply to selected lines · Right-click: edit pixels · T / P in 3D paint / edit the picked wall"));
     const grid = el("div", { class: "thumbs" });
     for (const n of names) {
       const tile = thumbTile(n, () => {
@@ -1525,6 +1623,7 @@ function renderBrowser() {
         if (!S.sel.size) renderInspector();
       }, (flats ? S.flat : S.texture) === n);
       tile.addEventListener("dblclick", (e) => applyPaint(flats, n, e.shiftKey));
+      tile.addEventListener("contextmenu", (e) => { e.preventDefault(); paint.open(flats ? "flats" : "textures", n); });
       grid.append(tile);
     }
     body.append(grid);
@@ -1539,6 +1638,8 @@ function renderBrowser() {
         el("span", { class: "name" }, a.name), a.edited ? el("span", { class: "kind map" }, "edited") : null,
         el("span", { class: "meta" }, a.num ?? "")));
     }
+  } else if (S.tab === "scripts") {
+    scripts.renderBrowser(body);
   } else if (S.tab === "lumps") {
     body.append(el("div", { class: "actions", style: "padding:6px 10px;margin:0" },
       el("button", { class: "btn small", onclick: newLump }, "+ New text lump"),
@@ -1674,9 +1775,11 @@ function pickFile(accept) {
   });
 }
 
+const overrideNs = (l) => (["flats", "sprites", "patches", "textures"].includes(l.ns) ? l.ns : "global");
+const IMAGE_KINDS = ["flat", "patch", "sprite", "graphic", "texture"];
+
 function overrideLump(l, bytes) {
-  const ns = ["flats", "sprites", "patches"].includes(l.ns) ? l.ns : "global";
-  S.mod.roomEditorSetLump(ns, l.name, bytes);
+  S.mod.roomEditorSetLump(overrideNs(l), l.name, bytes);
   const json = S.mod.roomEditorApplyLumps();
   thumbs.clear();
   setSummary(json);
@@ -1699,13 +1802,15 @@ function openLump(l) {
       try { const err = overrideLump(l, b); toast(err ? `Replaced — DECORATE: ${err}` : `${l.name} replaced and reloaded`, !!err); } catch (e) { toast(errText(e), true); }
     } }, "Replace…"),
     el("button", { class: "btn small", onclick: () => {
-      try { const ns = ["flats", "sprites", "patches"].includes(l.ns) ? l.ns : "global"; S.mod.roomEditorSetLump(ns, l.name, null); setSummary(S.mod.roomEditorApplyLumps()); thumbs.clear(); toast(`${l.name} override removed`); } catch (e) { toast(errText(e), true); }
+      try { S.mod.roomEditorSetLump(overrideNs(l), l.name, null); setSummary(S.mod.roomEditorApplyLumps()); thumbs.clear(); toast(`${l.name} override removed`); } catch (e) { toast(errText(e), true); }
     } }, "Revert override"));
   view.append(head, actions);
   const bytes = lumpBytes(l);
   const textish = l.kind === "text" || (l.kind === "data" && looksText(bytes));
+  const picture = !textish && (IMAGE_KINDS.includes(l.kind) || (l.kind === "data" && S.mod.roomEditorPreviewLump(l.id)));
+  if (picture) actions.append(el("button", { class: "btn small go", onclick: () => paint.open(paintNs(l), l.name) }, "✎ Edit pixels"));
   if (textish) view.append(textEditor(l, bytes));
-  else if (["flat", "patch", "sprite", "graphic"].includes(l.kind) || (l.kind === "data" && S.mod.roomEditorPreviewLump(l.id))) view.append(imageView(l));
+  else if (picture) view.append(imageView(l));
   else if (l.kind === "sound") view.append(soundView(l));
   else if (l.kind === "music") view.append(el("div", { class: "actions" },
     el("button", { class: "btn go", onclick: () => S.mod.roomEditorPlayMusic(l.name) }, "▶ Play in engine"),
@@ -1922,6 +2027,15 @@ $("#btn-redo").addEventListener("click", redo);
 $("#btn-play").addEventListener("click", () => setPlaying(true, "start"));
 $("#btn-play-here").addEventListener("click", () => setPlaying(true, "here"));
 $("#btn-stop").addEventListener("click", () => setPlaying(false));
+function applyMute(muted) {
+  try { localStorage.setItem("room/editor-muted", muted ? "1" : "0"); } catch (_) { /* private mode */ }
+  if (S.mod) S.mod.roomSetMuted(muted);
+  const b = $("#btn-mute");
+  b.textContent = muted ? "🔇" : "🔊";
+  b.title = muted ? "Unmute game sound and music" : "Mute game sound and music";
+  b.classList.toggle("active", muted);
+}
+$("#btn-mute").addEventListener("click", () => applyMute(!(S.mod && S.mod.roomMuted())));
 $("#grid").addEventListener("change", (e) => { S.grid = Number(e.target.value); render2d(); });
 $("#snap").addEventListener("change", (e) => { S.snap = e.target.checked; });
 $("#textured").addEventListener("change", (e) => { S.textured = e.target.checked; render2d(); });
@@ -2022,9 +2136,17 @@ const tools = installTools({
   toast, status, errText, snapshot, commit, render2d, renderInspector, side, vtx, tpl, geometry, sectorAt,
   selectionVertices, snap, compact, deleteSelection, syncModeButtons, isHexen, isUdmf, thumb, lumpBytes,
   setSummary, selectDocTab, setPlaying, clearThumbs: () => thumbs.clear(),
+  openPaint: (ns, name) => paint.open(ns, name),
+});
+const paint = installPaint({
+  S, el, toast, errText, selectDocTab, setSummary, render2d, renderInspector, thumb,
+  clearThumbs: () => thumbs.clear(),
+});
+const scripts = installScripts({
+  S, el, toast, errText, selectDocTab, setSummary, setPlaying, renderBrowser, rowEl, download, pickFile, addPwad,
 });
 // Console scripting hook: edit `roomEditor.state.doc`, then `roomEditor.commit()`.
-window.roomEditor = { state: S, tools, snapshot, commit, undo, redo, loadMap };
+window.roomEditor = { state: S, tools, paint, scripts, snapshot, commit, undo, redo, loadMap };
 $("#btn-check").addEventListener("click", () => tools.toggleChecker());
 $("#btn-composer").addEventListener("click", () => tools.openComposer());
 $("#btn-rotate").addEventListener("click", (e) => tools.transform(e.shiftKey ? "ccw" : "cw"));

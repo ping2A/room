@@ -51,6 +51,8 @@ pub struct PlaySession {
     pub(crate) held: BTreeSet<&'static str>,
     /// One-shot weapon slot `1..=7`.
     pub(crate) weapon: u8,
+    /// Queued weapon cycles (positive = next). One step per sampled tic.
+    pub(crate) weapon_cycle: i32,
     /// Mouse yaw counts this tic (public for mid-tic look preview).
     pub mouse_yaw: i32,
     /// Mouse pitch counts this tic (public for mid-tic look preview).
@@ -92,6 +94,8 @@ pub struct PlaySession {
     pub edit_cam: Option<EditCam>,
     /// Skill the level was started with (editor restarts).
     skill: Skill,
+    /// The match result went to the server already.
+    match_reported: bool,
 }
 
 /// Editor fly camera (map units / radians).
@@ -158,6 +162,10 @@ pub struct PlayStartOpts {
     pub local_seat: u8,
     /// Active lockstep session.
     pub net: Option<NetPlay>,
+    /// PWADs (name, bytes) mounted after the IWAD, in order.
+    pub pwads: Vec<(String, Vec<u8>)>,
+    /// Room match time limit in seconds (0 = none).
+    pub time_limit_secs: u32,
 }
 
 impl Default for PlayStartOpts {
@@ -169,30 +177,26 @@ impl Default for PlayStartOpts {
             coop_players: 1,
             local_seat: 0,
             net: None,
+            pwads: Vec::new(),
+            time_limit_secs: 0,
         }
     }
 }
 
 impl PlaySession {
-    /// Mount embedded `room.pk3` + IWAD bytes and start `map` (or E1M1/MAP01).
-    pub fn start(iwad: &[u8], map_name: Option<&str>) -> Result<Self, String> {
-        Self::start_with(
-            iwad,
-            PlayStartOpts {
-                map_name: map_name.map(str::to_owned),
-                ..PlayStartOpts::default()
-            },
-        )
-    }
-
-    /// Start with coop / lockstep options.
+    /// Mount embedded `room.pk3` + IWAD bytes and start (skill, map, coop /
+    /// lockstep options).
     pub fn start_with(iwad: &[u8], opts: PlayStartOpts) -> Result<Self, String> {
         let builder = mount_embedded_engine(VfsBuilder::new()).map_err(|e| e.to_string())?;
-        let vfs = builder
+        let mut builder = builder
             .mount_memory("doom1.wad", Bytes::copy_from_slice(iwad))
-            .map_err(|e| e.to_string())?
-            .build()
             .map_err(|e| e.to_string())?;
+        for (name, bytes) in &opts.pwads {
+            builder = builder
+                .mount_memory(name, Bytes::copy_from_slice(bytes))
+                .map_err(|e| format!("{name}: {e}"))?;
+        }
+        let vfs = builder.build().map_err(|e| e.to_string())?;
 
         let requested = opts.map_name.as_deref().unwrap_or("").trim();
         let map_name = resolve_start_map(&vfs, requested);
@@ -216,6 +220,7 @@ impl PlaySession {
             rng_seed: opts.rng_seed,
             record_demo: false,
             coop_players: coop,
+            time_limit_tics: opts.time_limit_secs.saturating_mul(35),
             ..GameOptions::default()
         });
 
@@ -247,6 +252,19 @@ impl PlaySession {
         }
 
         game.set_defs(data.classes, data.states);
+        game.drop_weapons_without_sprites(&vfs);
+        let (mods, mod_errors) = room_game::discover_mods(&vfs);
+        for e in mod_errors {
+            web_sys::console::warn_1(&format!("room-web: mod: {e}").into());
+        }
+        if !mods.is_empty() {
+            match game.set_script_mods(mods) {
+                Ok(names) => web_sys::console::log_1(
+                    &format!("room-web: WASM mods: {}", names.join(", ")).into(),
+                ),
+                Err(e) => web_sys::console::warn_1(&format!("room-web: {e}").into()),
+            }
+        }
         if let Some(db) = data.compat_db {
             game.set_compat_db(db);
         }
@@ -289,6 +307,7 @@ impl PlaySession {
             gldefs,
             held: BTreeSet::new(),
             weapon: 0,
+            weapon_cycle: 0,
             mouse_yaw: 0,
             mouse_pitch: 0,
             attack: false,
@@ -310,6 +329,7 @@ impl PlaySession {
             catching_up: false,
             edit_cam: None,
             skill,
+            match_reported: false,
         };
         session.sync_camera_from_player();
         Ok(session)
@@ -585,7 +605,13 @@ impl PlaySession {
         let Some(mo) = p.mo.and_then(|id| world.actors.get(id)) else {
             return "?".into();
         };
-        format!("{:.1},{:.1}", mo.pos.x(), mo.pos.y())
+        let ammo = world.player_hud(seat).map_or(-1, |h| h.ammo);
+        format!(
+            "{:.1},{:.1} angle={:.1} ammo={ammo}",
+            mo.pos.x(),
+            mo.pos.y(),
+            mo.angle.0
+        )
     }
 
     /// Advance sim at 35 Hz; returns `true` if at least one tic ran.
@@ -625,6 +651,7 @@ impl PlaySession {
                             &self.held,
                             self.attack,
                             &mut self.weapon,
+                            &mut self.weapon_cycle,
                             &mut self.mouse_yaw,
                             &mut self.mouse_pitch,
                         ) else {
@@ -693,6 +720,7 @@ impl PlaySession {
                 &self.held,
                 false,
                 &mut self.weapon,
+                &mut self.weapon_cycle,
                 &mut self.mouse_yaw,
                 &mut self.mouse_pitch,
             ) else {
@@ -713,11 +741,12 @@ impl PlaySession {
 
     /// Fold this tic's deaths into scores / feed; route sim messages.
     fn process_tic_events(&mut self, quiet: bool) {
+        self.report_match();
         let Some(world) = self.game.world_mut() else {
             return;
         };
         let kills = world.drain_kill_events();
-        let msgs = world.drain_messages();
+        let msgs = world.drain_hud_messages();
         for ev in &kills {
             self.scores.apply(ev);
         }
@@ -731,18 +760,112 @@ impl PlaySession {
             }
         }
         // Pickup / ACS messages are not per-player in the sim; only solo shows them.
-        if self.net.is_none() {
-            for m in msgs {
-                self.feed.push(m, now);
+        let solo = self.net.is_none();
+        for m in msgs {
+            let mine = match m.to {
+                room_sim::MessageTo::Unscoped => solo,
+                room_sim::MessageTo::All => true,
+                room_sim::MessageTo::Seat(s) => solo || s == self.local_seat,
+            };
+            if mine {
+                self.feed.push(m.text, now);
             }
         }
+    }
+
+    /// Send the final standings to the server once the sim decides the match.
+    fn report_match(&mut self) {
+        if self.match_reported {
+            return;
+        }
+        let Some(world) = self.game.world() else {
+            return;
+        };
+        let Some(over) = world.match_over else {
+            return;
+        };
+        self.match_reported = true;
+        let standings = world
+            .standings()
+            .iter()
+            .map(|s| room_proto::ResultRow {
+                seat: s.slot,
+                place: s.place,
+                frags: s.frags,
+                deaths: s.deaths,
+            })
+            .collect();
+        let msg = room_proto::ControlMsg::Result {
+            winner: over.winner,
+            time_up: over.time_up,
+            standings,
+        };
+        if let Some(net) = self.net.as_mut() {
+            net.send_result(&msg);
+        }
+    }
+
+    /// Countdown + final screen state for the page overlay (JSON): time left,
+    /// the result once the match is over, and why the server closed the room.
+    #[must_use]
+    pub fn match_state_json(&self) -> String {
+        let Some(world) = self.game.world() else {
+            return "null".into();
+        };
+        let closed = self.net.as_ref().and_then(NetPlay::closed_reason);
+        let rows: Vec<serde_json::Value> = if world.match_over.is_some() || closed.is_some() {
+            world
+                .standings()
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "seat": s.slot,
+                        "name": self.seat_name(s.slot),
+                        "place": s.place,
+                        "frags": s.frags,
+                        "deaths": s.deaths,
+                        "alive": s.alive,
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let over = world.match_over.map(|m| {
+            serde_json::json!({
+                "winner": m.winner,
+                "winner_name": m.winner.map(|w| self.seat_name(w)),
+                "time_up": m.time_up,
+            })
+        });
+        serde_json::json!({
+            "time_left": (world.match_tics_left > 0).then(|| world.match_tics_left.div_ceil(35)),
+            "over": over,
+            "closed": closed,
+            "rows": rows,
+            "local_seat": self.local_seat,
+            "spectator": self.is_spectator(),
+            "solo": self.net.is_none(),
+        })
+        .to_string()
     }
 
     /// Spectator keys: 1-4 follow a player, G/0 toggles the grid, click = next.
     fn spectator_input(&mut self) {
         self.mouse_yaw = 0;
         self.mouse_pitch = 0;
+        let followed = self.local_seat;
+        self.pick_spectated_seat();
+        if self.local_seat != followed {
+            self.sync_listener();
+        }
+    }
+
+    fn pick_spectated_seat(&mut self) {
         let seats = self.seats_in_game();
+        if !seats.is_empty() && !seats.contains(&self.local_seat) {
+            self.local_seat = seats[0];
+        }
         if (1..=VIEW_SEATS as u8).contains(&self.weapon) {
             let seat = self.weapon - 1;
             if seats.contains(&seat) {
@@ -869,6 +992,13 @@ impl PlaySession {
             _ => {}
         }
         self.weapon = 0;
+        if self.weapon_cycle > 0 {
+            keys.push(Key::NextWeapon);
+            self.weapon_cycle -= 1;
+        } else if self.weapon_cycle < 0 {
+            keys.push(Key::PrevWeapon);
+            self.weapon_cycle += 1;
+        }
         let mouse_yaw = self.mouse_yaw;
         let mouse_pitch = self.mouse_pitch;
         self.mouse_yaw = 0;
@@ -907,25 +1037,35 @@ impl PlaySession {
                 }
             }
         }
-        let seat = usize::from(self.local_seat);
-        let listener = self
-            .game
-            .world()
-            .and_then(|w| w.players.get(seat).and_then(|p| p.as_ref()))
-            .and_then(|p| p.mo)
-            .and_then(|id| self.game.world().and_then(|w| w.actors.get(id)))
-            .map(|a| a.pos);
         if let Ok(mut mix) = audio.mixer.try_borrow_mut() {
             if let Some(sounds) = self.game.sounds.as_ref() {
                 mix.bank.merge_missing(&sounds.bank);
             }
-            if let Some(pos) = listener {
-                mix.listener = pos;
+            if let Some(ears) = self.listener_actor() {
+                mix.set_listener(ears.pos, ears.angle.radians());
             }
             mix.apply(&events);
         }
         // Top up the AudioWorklet ring (ScriptProcessor renders in its callback).
         audio.feed_output();
+    }
+
+    /// Ears of the seat on screen: the player you control, or the one a
+    /// spectator follows. Uses the view actor so ACS / chase cameras match.
+    fn listener_actor(&self) -> Option<&room_sim::Actor> {
+        let world = self.game.world()?;
+        let p = world.players.get(usize::from(self.local_seat))?.as_ref()?;
+        world.actors.get(p.camera.or(p.mo)?)
+    }
+
+    /// Move the mixer listener now (spectator switched player between tics).
+    fn sync_listener(&self) {
+        let (Some(audio), Some(ears)) = (self.audio.as_ref(), self.listener_actor()) else {
+            return;
+        };
+        if let Ok(mut mix) = audio.mixer.try_borrow_mut() {
+            mix.set_listener(ears.pos, ears.angle.radians());
+        }
     }
 
     /// Rasterize weapon + classic `STBAR` HUD into a CPU canvas for `CanvasGpu`.
@@ -990,6 +1130,11 @@ impl PlaySession {
                 oy,
             },
         );
+        if panes.is_none() {
+            for [r, g, b, a] in self.screen_tints() {
+                canvas.fill_rect(0.0, 0.0, fb_w, fb_h, [r, g, b, a]);
+            }
+        }
         blit_draw_list_full(
             &overlay,
             fb_w,
@@ -999,6 +1144,26 @@ impl PlaySession {
             &mut Sink(&mut canvas),
         );
         canvas
+    }
+
+    /// Pain / pickup / radsuit palette flash for the seat on screen, then the
+    /// ACS `FadeTo` / `A_SetBlend` screen fade.
+    fn screen_tints(&self) -> Vec<[f32; 4]> {
+        let Some(world) = self.game.world() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if let Some(c) = world
+            .player_hud(usize::from(self.local_seat))
+            .and_then(|h| room_ui::screen_blend(h.palette))
+        {
+            out.push([c.r, c.g, c.b, c.a]);
+        }
+        let fade = world.screen_fade;
+        if fade.a > 0.001 {
+            out.push([fade.r, fade.g, fade.b, fade.a.min(1.0)]);
+        }
+        out
     }
 
     /// Full-width overlay (virtual height 200): event feed, spectator pane
@@ -1216,7 +1381,14 @@ impl PlaySession {
             hud.flash_patch = h.flash_patch;
             hud.bob_x = h.bob_x;
             hud.bob_y = h.bob_y;
+            hud.arms = h.arms;
+            hud.ammo_table = h.ammo_table;
+            hud.palette = h.palette;
+            hud = hud
+                .with_colormap(h.colormap)
+                .with_netgame(h.deathmatch, h.frags, h.face_back);
         }
+        let weapon_cmds = ui.cmds.len();
         // Classic STBAR strip (raises the weapon by `STATUS_BAR_HEIGHT`).
         hud.fullscreen = false;
 
@@ -1247,20 +1419,32 @@ impl PlaySession {
                 hud.bob_y,
             );
         }
+        if hud.inverse_colormap() {
+            ui.invert_since(weapon_cmds);
+        }
         DoomStatusBar.draw(&hud, ui);
+    }
+
+    /// Doom `fixedcolormap` of `seat`'s player (32 = invulnerability inverse).
+    #[must_use]
+    pub fn fixed_colormap(&self, seat: u8) -> u8 {
+        self.game
+            .world()
+            .and_then(|w| w.players.get(usize::from(seat))?.as_ref())
+            .map_or(0, room_sim::Player::fixed_colormap)
     }
 
     fn sync_map_from_world(&mut self) {
         let Some(world) = self.game.world() else {
             return;
         };
-        let (extralight, infrared) = world
+        let (extralight, colormap) = world
             .players
-            .first()
+            .get(usize::from(self.local_seat))
             .and_then(|p| p.as_ref())
-            .map(|p| (p.extralight, p.infrared))
-            .unwrap_or((0, false));
-        let light_boost = (extralight.clamp(0, 2) * 16 + i32::from(infrared) * 64) as i16;
+            .map(|p| (p.extralight, p.fixed_colormap()))
+            .unwrap_or((0, 0));
+        let light_boost = (extralight.clamp(0, 2) * 16 + i32::from(colormap == 1) * 64) as i16;
         // Restore switchable textures from base, then apply live overrides.
         for (i, side) in self.map_base.sides.iter().enumerate() {
             if let Some(dst) = self.map.sides.get_mut(i) {
@@ -1758,10 +1942,22 @@ impl PlaySession {
     /// Swap class definitions (editor actor values). The state table must be
     /// the one the world already uses: live actors hold state ids into it.
     pub fn replace_defs(&mut self, data: EngineData) {
-        if let Some(world) = self.game.world_mut() {
-            world.classes = Arc::clone(&data.classes);
-        }
         self.game.set_defs(data.classes, data.states);
+        let classes = Arc::clone(self.game.classes());
+        if let Some(world) = self.game.world_mut() {
+            world.classes = classes;
+        }
+    }
+
+    /// Mod log lines (and load errors) since the last call.
+    pub fn drain_script_log(&mut self) -> Vec<String> {
+        self.game.drain_script_log()
+    }
+
+    /// Loaded WASM mod module names.
+    #[must_use]
+    pub fn script_mod_names(&self) -> Vec<String> {
+        self.game.script_mod_names()
     }
 
     /// Play a music lump by name (`""` stops).
@@ -1782,28 +1978,30 @@ impl PlaySession {
     /// Pick cylinders for the map's things (class radius / height).
     #[must_use]
     pub fn thing_boxes(&self) -> Vec<crate::editor_pick::ThingBox> {
-        let classes = self.game.world().map(|w| Arc::clone(&w.classes));
-        self.map
-            .things
-            .iter()
-            .enumerate()
-            .map(|(index, t)| {
-                let (x, y) = (f64::from(t.x), f64::from(t.y));
-                let class = classes.as_ref().and_then(|c| {
-                    c.find_doomednum(i32::from(t.type_id))
-                        .and_then(|id| c.get(id))
-                });
-                let floor = room_nodebuild::point_in_sector(&self.map, x, y)
-                    .and_then(|s| self.map.sectors.get(s.raw() as usize))
-                    .map_or(0.0, |s| s.floor_height);
-                crate::editor_pick::ThingBox {
-                    index,
-                    pos: glam::DVec3::new(x, y, floor + f64::from(t.z)),
-                    radius: class.map_or(16.0, |c| c.radius.max(8.0)),
-                    height: class.map_or(32.0, |c| c.height.max(16.0)),
-                }
-            })
+        (0..self.map.things.len())
+            .filter_map(|i| self.thing_box(i))
             .collect()
+    }
+
+    /// Pick cylinder for map thing `index`.
+    #[must_use]
+    pub fn thing_box(&self, index: usize) -> Option<crate::editor_pick::ThingBox> {
+        let t = self.map.things.get(index)?;
+        let (x, y) = (f64::from(t.x), f64::from(t.y));
+        let class = self.game.world().and_then(|w| {
+            w.classes
+                .find_doomednum(i32::from(t.type_id))
+                .and_then(|id| w.classes.get(id))
+        });
+        let floor = room_nodebuild::point_in_sector(&self.map, x, y)
+            .and_then(|s| self.map.sectors.get(s.raw() as usize))
+            .map_or(0.0, |s| s.floor_height);
+        Some(crate::editor_pick::ThingBox {
+            index,
+            pos: glam::DVec3::new(x, y, floor + f64::from(t.z)),
+            radius: class.map_or(16.0, |c| c.radius.max(8.0)),
+            height: class.map_or(32.0, |c| c.height.max(16.0)),
+        })
     }
 }
 

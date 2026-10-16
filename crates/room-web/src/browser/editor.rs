@@ -30,6 +30,8 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
+mod scripts;
+
 thread_local! {
     static EDITOR: RefCell<Option<Editor>> = const { RefCell::new(None) };
     static ACTIVE: Cell<bool> = const { Cell::new(false) };
@@ -150,6 +152,8 @@ struct Editor {
     /// Per map: `BEHAVIOR` + untouched lumps (not part of the JSON document).
     blobs: BTreeMap<String, MapBlobs>,
     skill: u8,
+    /// WASM mod written as `ROOMMOD` + module lumps into the overrides.
+    script_mod: scripts::EditorMod,
 }
 
 type MapBlobs = (Option<Vec<u8>>, Vec<(String, Vec<u8>)>);
@@ -213,6 +217,7 @@ fn overrides_wad(
             "flats" => Some(("FF_START", "FF_END")),
             "sprites" => Some(("SS_START", "SS_END")),
             "patches" => Some(("PP_START", "PP_END")),
+            "textures" => Some(("TX_START", "TX_END")),
             _ => None,
         };
         if let Some((start, _)) = markers {
@@ -254,6 +259,7 @@ impl Editor {
             geom: None,
             blobs: BTreeMap::new(),
             skill: 3,
+            script_mod: scripts::EditorMod::default(),
         })
     }
 
@@ -319,6 +325,64 @@ impl Editor {
             .next()
             .filter(|n| n.starts_with(&prefix))
             .cloned()
+    }
+
+    /// Animation sequences per state label (own labels override inherited),
+    /// in Doom order: each walks `next` until Stop, a loop or another label.
+    fn class_sequences(&self, class: &ClassDef) -> Vec<(String, Vec<&room_sim::State>)> {
+        let states = &self.data.states;
+        let mut labels = BTreeMap::new();
+        let mut cur = Some(class);
+        for _ in 0..32 {
+            let Some(c) = cur else {
+                break;
+            };
+            for (l, id) in states.labels_of(c.id) {
+                labels.entry(l.to_owned()).or_insert(id);
+            }
+            cur = c.parent.and_then(|p| self.data.classes.get(p));
+        }
+        let starts: BTreeSet<u32> = labels.values().map(|s: &_| s.raw()).collect();
+        const ORDER: [&str; 9] = [
+            "spawn", "see", "melee", "missile", "pain", "death", "xdeath", "raise", "ready",
+        ];
+        let rank = |l: &str| ORDER.iter().position(|o| *o == l).unwrap_or(ORDER.len());
+        let mut keys: Vec<String> = labels.keys().cloned().collect();
+        keys.sort_by_key(|l| (rank(l), l.clone()));
+        let mut out = Vec::new();
+        for label in keys {
+            let start = labels[&label];
+            let mut seq = Vec::new();
+            let mut seen = BTreeSet::new();
+            let mut at = Some(start);
+            while let Some(id) = at {
+                if seq.len() >= 128
+                    || !seen.insert(id.raw())
+                    || (id != start && starts.contains(&id.raw()))
+                {
+                    break;
+                }
+                let Some(st) = states.get(id) else {
+                    break;
+                };
+                seq.push(st);
+                at = st.next;
+            }
+            if seq
+                .iter()
+                .any(|s| s.sprite.len() == 4 && !s.sprite.eq_ignore_ascii_case("TNT1"))
+            {
+                let mut name = match label.as_str() {
+                    "xdeath" => "XDeath".to_owned(),
+                    _ => label,
+                };
+                if let Some(f) = name.get_mut(0..1) {
+                    f.make_ascii_uppercase();
+                }
+                out.push((name, seq));
+            }
+        }
+        out
     }
 
     fn summary(&self) -> Value {
@@ -424,6 +488,7 @@ fn classify(name: &str, path: &str, ns: Namespace) -> &'static str {
         Namespace::Flats => return "flat",
         Namespace::Sprites => return "sprite",
         Namespace::Patches => return "patch",
+        Namespace::NewTextures => return "texture",
         Namespace::Sounds => return "sound",
         Namespace::Music => return "music",
         Namespace::Graphics => return "graphic",
@@ -1028,14 +1093,62 @@ pub fn room_editor_pick(nx: f64, ny: f64) -> JsValue {
     JsValue::from_str(&v.to_string())
 }
 
+/// Screen rectangles of map things in normalised viewport coords (−1..1, `y`
+/// up), flat `[index, x0, y0, x1, y1, visible, …]` where `visible` is 1 when
+/// no wall / plane hides the thing's centre. Things wholly or partly behind
+/// the camera are skipped.
+#[wasm_bindgen(js_name = roomEditorThingRects)]
+pub fn room_editor_thing_rects(indices: &[u32]) -> Vec<f32> {
+    let Some(state) = APP.with(|a| a.borrow().clone()) else {
+        return Vec::new();
+    };
+    let Ok(s) = state.try_borrow() else {
+        return Vec::new();
+    };
+    let Mode::Play(play) = &s.mode else {
+        return Vec::new();
+    };
+    let vp = s.camera.view_proj();
+    let eye = s.camera.eye.as_dvec3();
+    let mut out = Vec::with_capacity(indices.len() * 6);
+    'things: for &i in indices {
+        let Some(b) = play.thing_box(i as usize) else {
+            continue;
+        };
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for k in 0..8 {
+            let sx = if k & 1 == 0 { -b.radius } else { b.radius };
+            let sy = if k & 2 == 0 { -b.radius } else { b.radius };
+            let z = if k & 4 == 0 { 0.0 } else { b.height };
+            let p = (b.pos + DVec3::new(sx, sy, z)).as_vec3();
+            let c = vp * p.extend(1.0);
+            if c.w <= 1.0 {
+                continue 'things;
+            }
+            let (nx, ny) = (c.x / c.w, c.y / c.w);
+            x0 = x0.min(nx);
+            y0 = y0.min(ny);
+            x1 = x1.max(nx);
+            y1 = y1.max(ny);
+        }
+        if x1 < -1.0 || x0 > 1.0 || y1 < -1.0 || y0 > 1.0 {
+            continue;
+        }
+        let centre = b.pos + DVec3::new(0.0, 0.0, b.height * 0.5);
+        let visible = matches!(
+            pick(&play.map, std::slice::from_ref(&b), eye, centre - eye),
+            Some(Pick::Thing(_))
+        );
+        out.extend_from_slice(&[i as f32, x0, y0, x1, y1, f32::from(u8::from(visible))]);
+    }
+    out
+}
+
 /// Override (or with `null`, revert) a lump. Call [`room_editor_apply_lumps`] after.
 #[wasm_bindgen(js_name = roomEditorSetLump)]
 pub fn room_editor_set_lump(ns: &str, name: &str, data: Option<Vec<u8>>) -> Result<(), JsValue> {
     with_editor(|ed| {
-        let ns = match ns {
-            "flats" | "sprites" | "patches" => ns,
-            _ => "global",
-        };
+        let ns = image_ns(ns);
         let name = name.to_ascii_uppercase();
         if name.is_empty() || name.len() > 8 {
             return Err(format!("lump name must be 1–8 characters: {name}"));
@@ -1050,6 +1163,381 @@ pub fn room_editor_set_lump(ns: &str, name: &str, data: Option<Vec<u8>>) -> Resu
             }
         }
         Ok(())
+    })
+}
+
+/// Override namespace (`textures` = `TX_START`, …); anything else is `global`.
+fn image_ns(ns: &str) -> &'static str {
+    match ns {
+        "flats" => "flats",
+        "sprites" => "sprites",
+        "patches" => "patches",
+        "textures" => "textures",
+        _ => "global",
+    }
+}
+
+/// Decode a picture lump; raw flats are recognised by size in the flat namespace.
+fn decode_picture(data: &[u8], raw_flat_first: bool) -> Option<room_formats::Image> {
+    let raw = || {
+        let dims = room_formats::flat_dimensions(data.len())?;
+        Some(room_formats::Image {
+            left_offset: 0,
+            top_offset: 0,
+            has_translucency: false,
+            pixels: room_formats::ImagePixels::Paletted(room_formats::PalettedImage {
+                width: dims.width,
+                height: dims.height,
+                indices: data.to_vec(),
+                alpha: Vec::new(),
+            }),
+        })
+    };
+    if raw_flat_first && !room_formats::is_png(data) {
+        if let Some(img) = raw() {
+            return Some(img);
+        }
+    }
+    room_formats::decode_image(data).ok().or_else(raw)
+}
+
+/// First PLAYPAL palette (greyscale ramp when the WAD has none).
+fn palette_rgb(ed: &Editor) -> [u8; 768] {
+    ed.materials
+        .playpal()
+        .and_then(|p| p.palettes.first())
+        .map_or_else(
+            || {
+                let mut g = [0u8; 768];
+                for (i, c) in g.chunks_exact_mut(3).enumerate() {
+                    #[allow(clippy::cast_possible_truncation)]
+                    c.fill(i as u8);
+                }
+                g
+            },
+            |p| p.rgb,
+        )
+}
+
+/// Nearest palette index for an RGB colour.
+fn nearest_index(pal: &[u8; 768], r: u8, g: u8, b: u8) -> u8 {
+    let mut best = (u32::MAX, 0u8);
+    for (i, c) in pal.chunks_exact(3).enumerate() {
+        let d = |a: u8, b: u8| u32::from(a.abs_diff(b)).pow(2);
+        let dist = d(c[0], r) + d(c[1], g) + d(c[2], b);
+        if dist < best.0 {
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                best = (dist, i as u8);
+            }
+        }
+    }
+    best.1
+}
+
+/// `(indices, alpha)` for any decoded picture (true-colour is quantised).
+fn to_paletted(img: &room_formats::Image, pal: &[u8; 768]) -> (Vec<u8>, Vec<u8>) {
+    match &img.pixels {
+        room_formats::ImagePixels::Paletted(p) => {
+            let alpha = if p.alpha.len() == p.indices.len() {
+                p.alpha
+                    .iter()
+                    .map(|&a| if a >= 128 { 255 } else { 0 })
+                    .collect()
+            } else if img.has_translucency {
+                p.indices
+                    .iter()
+                    .map(|&i| if i == 0 { 0 } else { 255 })
+                    .collect()
+            } else {
+                vec![255; p.indices.len()]
+            };
+            (p.indices.clone(), alpha)
+        }
+        room_formats::ImagePixels::Rgba8(p) => p
+            .pixels
+            .chunks_exact(4)
+            .map(|c| {
+                if c[3] < 128 {
+                    (0, 0)
+                } else {
+                    (nearest_index(pal, c[0], c[1], c[2]), 255)
+                }
+            })
+            .unzip(),
+    }
+}
+
+/// Expand palette indices to RGBA (holes stay transparent unless `opaque`).
+fn paletted_rgba(pal: &[u8; 768], indices: &[u8], alpha: &[u8], opaque: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(indices.len() * 4);
+    for (i, &idx) in indices.iter().enumerate() {
+        let o = usize::from(idx) * 3;
+        let a = if opaque {
+            255
+        } else {
+            alpha.get(i).copied().unwrap_or(255)
+        };
+        out.extend_from_slice(&[pal[o], pal[o + 1], pal[o + 2], a]);
+    }
+    out
+}
+
+/// Swap RGBA pictures into the running 3D / play session's materials by name.
+fn live_upload(items: &[(String, u32, u32, Vec<u8>)]) {
+    let Some(state) = APP.with(|a| a.borrow().clone()) else {
+        return;
+    };
+    let Ok(mut s) = state.try_borrow_mut() else {
+        return;
+    };
+    let s = &mut *s;
+    if let Mode::Play(play) = &mut s.mode {
+        for (name, w, h, rgba) in items {
+            let _ = play
+                .materials
+                .upsert_rgba(&s.gpu.device, &s.gpu.queue, name, *w, *h, rgba);
+        }
+    }
+}
+
+/// Swap a sprite / HUD / menu picture into the running session: the soft
+/// patch cache (sprite size + offsets, HUD and status-bar blits) and, for
+/// sprites or pictures already on the GPU, the material.
+fn live_picture(name: &str, patch: room_ui::SoftPatch, rgba: &[u8], sprite: bool) -> bool {
+    let Some(state) = APP.with(|a| a.borrow().clone()) else {
+        return false;
+    };
+    let Ok(mut s) = state.try_borrow_mut() else {
+        return false;
+    };
+    let s = &mut *s;
+    let Mode::Play(play) = &mut s.mode else {
+        return false;
+    };
+    let (w, h) = (u32::from(patch.width), u32::from(patch.height));
+    if sprite || play.materials.get(name).is_some() {
+        let _ = play
+            .materials
+            .upsert_rgba(&s.gpu.device, &s.gpu.queue, name, w, h, rgba);
+    }
+    play.patches.insert(name, patch);
+    true
+}
+
+/// Every animation of the actor behind a sprite: `{class, sequences: [{label,
+/// frames: [{sprite, frame, tics, bright}]}], lumps: [...]}` where `lumps`
+/// lists every sprite lump of the sprites those sequences use. `num` picks
+/// the class by editor number; otherwise the first placeable class whose
+/// states use `sprite` (4-char prefix of a lump name). `null` if unknown.
+#[wasm_bindgen(js_name = roomEditorSpriteAnims)]
+pub fn room_editor_sprite_anims(sprite: &str, num: Option<i32>) -> Result<JsValue, JsValue> {
+    with_editor(|ed| {
+        let prefix: String = sprite.trim().to_ascii_uppercase().chars().take(4).collect();
+        let uses = |seqs: &[(String, Vec<&room_sim::State>)]| {
+            seqs.iter()
+                .flat_map(|(_, s)| s.iter())
+                .any(|s| s.sprite.eq_ignore_ascii_case(&prefix))
+        };
+        let by_num = num
+            .and_then(|n| ed.data.classes.find_doomednum(n))
+            .and_then(|id| ed.data.classes.get(id))
+            .filter(|c| prefix.len() < 4 || uses(&ed.class_sequences(c)));
+        let class = by_num.or_else(|| {
+            ed.data
+                .classes
+                .iter()
+                .filter(|c| c.doomednum.is_some())
+                .find(|c| uses(&ed.class_sequences(c)))
+        });
+        let seqs = class.map(|c| ed.class_sequences(c)).unwrap_or_default();
+        let mut used: BTreeSet<String> = seqs
+            .iter()
+            .flat_map(|(_, s)| s.iter())
+            .filter(|s| s.sprite.len() == 4 && !s.sprite.eq_ignore_ascii_case("TNT1"))
+            .map(|s| s.sprite.to_ascii_uppercase())
+            .collect();
+        if prefix.len() == 4 {
+            used.insert(prefix.clone());
+        }
+        let lumps: Vec<String> = ed
+            .sprite_names()
+            .into_iter()
+            .filter(|n| n.len() >= 6 && used.contains(&n[..4]))
+            .collect();
+        if lumps.is_empty() {
+            return Ok(JsValue::NULL);
+        }
+        let sequences: Vec<Value> = seqs
+            .iter()
+            .map(|(label, frames)| {
+                json!({
+                    "label": label,
+                    "frames": frames.iter().map(|s| json!({
+                        "sprite": s.sprite.to_ascii_uppercase(),
+                        "frame": char::from(b'A' + s.frame.min(28)).to_string(),
+                        "tics": s.tics,
+                        "bright": s.bright,
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let name = class.map(|c| c.display_name().to_owned());
+        let v = json!({ "class": name, "sequences": sequences, "lumps": lumps });
+        Ok(JsValue::from_str(&v.to_string()))
+    })
+}
+
+/// PLAYPAL palette 0 as 768 RGB bytes (for the pixel editor swatches).
+#[wasm_bindgen(js_name = roomEditorPalette)]
+pub fn room_editor_palette() -> Result<Vec<u8>, JsValue> {
+    with_editor(|ed| Ok(palette_rgb(ed).to_vec()))
+}
+
+/// Picture to edit as palette indices: `{w, h, left, top, indices, alpha}`
+/// or `null`. `ns` = `textures` (wall name: `TX_START` / TEXTUREX composite /
+/// patch), `flats`, `patches`, `sprites` or `global`.
+#[wasm_bindgen(js_name = roomEditorImageGet)]
+pub fn room_editor_image_get(ns: &str, name: &str) -> Result<JsValue, JsValue> {
+    with_editor(|ed| {
+        let ns = image_ns(ns);
+        let name = name.trim().to_ascii_uppercase();
+        let img = if ns == "textures" {
+            ed.materials.source_image(&ed.vfs, &name)
+        } else {
+            let order: &[Namespace] = match ns {
+                "flats" => &[Namespace::Flats],
+                "patches" => &[Namespace::Patches, Namespace::Global],
+                "sprites" => &[Namespace::Sprites],
+                _ => &[Namespace::Global, Namespace::Graphics],
+            };
+            order
+                .iter()
+                .find_map(|n| ed.vfs.find(&name, *n))
+                .or_else(|| ed.vfs.find_any_ns(&name))
+                .and_then(|id| ed.vfs.read(id).ok())
+                .and_then(|d| decode_picture(&d, ns == "flats"))
+        };
+        let Some(img) = img else {
+            return Ok(JsValue::NULL);
+        };
+        let (indices, alpha) = to_paletted(&img, &palette_rgb(ed));
+        let o = js_sys::Object::new();
+        let set = |k: &str, v: JsValue| {
+            let _ = js_sys::Reflect::set(&o, &k.into(), &v);
+        };
+        set("w", img.width().into());
+        set("h", img.height().into());
+        set("left", img.left_offset.into());
+        set("top", img.top_offset.into());
+        set(
+            "indices",
+            js_sys::Uint8Array::from(indices.as_slice()).into(),
+        );
+        set("alpha", js_sys::Uint8Array::from(alpha.as_slice()).into());
+        Ok(o.into())
+    })
+}
+
+/// Store an edited picture as a lump override and show it in the running
+/// session. Flats are written raw (square 64/128/256…), everything else as a
+/// Doom patch (`textures` → `TX_START`, replacing the TEXTUREX composite).
+///
+/// Returns `"live"` when the 3D view already shows the change, or `"apply"`
+/// when the level must restart ([`room_editor_apply_lumps`]) — resized wall
+/// textures, or no running session. `commit` also refreshes the editor's own
+/// VFS (thumbnails, previews).
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen(js_name = roomEditorImagePut)]
+pub fn room_editor_image_put(
+    ns: &str,
+    name: &str,
+    w: u32,
+    h: u32,
+    left: i32,
+    top: i32,
+    indices: &[u8],
+    alpha: &[u8],
+    commit: bool,
+) -> Result<String, JsValue> {
+    with_editor(|ed| {
+        let ns = image_ns(ns);
+        let name = name.trim().to_ascii_uppercase();
+        if name.is_empty() || name.len() > 8 {
+            return Err(format!("lump name must be 1–8 characters: {name}"));
+        }
+        let n = (w as usize).saturating_mul(h as usize);
+        if indices.len() != n || (!alpha.is_empty() && alpha.len() != n) {
+            return Err("pixel buffer does not match the picture size".into());
+        }
+        let bytes = if ns == "flats" {
+            match room_formats::flat_dimensions(n) {
+                Some(d) if d.width == w && d.height == h => indices.to_vec(),
+                _ => return Err("flats must be square (64×64, 128×128, 256×256…)".into()),
+            }
+        } else {
+            let dim = |v: u32| u16::try_from(v).map_err(|_| "picture too large".to_owned());
+            let off = |v: i32| i16::try_from(v).map_err(|_| "offset out of range".to_owned());
+            room_formats::encode_patch(dim(w)?, dim(h)?, off(left)?, off(top)?, indices, alpha)
+                .map_err(|e| e.to_string())?
+        };
+        let resized = ns == "textures" && {
+            let (ow, oh) = ed.materials.wall_texel_size(&name);
+            (ow, oh) != (w as f32, h as f32)
+        };
+        ed.overrides
+            .entry(ns.to_owned())
+            .or_default()
+            .insert(name.clone(), bytes);
+        let pal = palette_rgb(ed);
+        let mode = match ns {
+            "textures" | "flats" if !resized => {
+                let rgba = paletted_rgba(&pal, indices, alpha, ns == "flats");
+                live_upload(&[(name, w, h, rgba)]);
+                if commit {
+                    ed.rebuild()?;
+                }
+                "live"
+            }
+            "patches" => {
+                ed.rebuild()?;
+                let uploads: Vec<_> = ed
+                    .materials
+                    .textures_using_patch(&name)
+                    .into_iter()
+                    .filter_map(|t| {
+                        let (w, h, px) = ed.materials.preview_rgba(&ed.vfs, &t)?;
+                        Some((t, w, h, px))
+                    })
+                    .collect();
+                live_upload(&uploads);
+                "live"
+            }
+            "sprites" | "global" => {
+                let dim = |v: u32| u16::try_from(v).unwrap_or(u16::MAX);
+                let off = |v: i32| i16::try_from(v).unwrap_or(0);
+                let opaque = alpha.is_empty();
+                let soft = room_ui::SoftPatch {
+                    width: dim(w),
+                    height: dim(h),
+                    left_offset: off(left),
+                    top_offset: off(top),
+                    indices: indices.to_vec(),
+                    alpha: if opaque { vec![255; n] } else { alpha.to_vec() },
+                };
+                let rgba = paletted_rgba(&pal, indices, alpha, opaque);
+                let shown = live_picture(&name, soft, &rgba, ns == "sprites");
+                if commit || !shown {
+                    ed.rebuild()?;
+                }
+                if shown { "live" } else { "apply" }
+            }
+            _ => {
+                ed.rebuild()?;
+                "apply"
+            }
+        };
+        Ok(mode.to_owned())
     })
 }
 

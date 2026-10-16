@@ -125,6 +125,7 @@ pub struct ViewUniforms {
     pub light_params: [f32; 4],
     /// World clip plane `nx,ny,nz,d` (`n·p + d > 0` discarded). Zero xyz = off.
     pub clip_plane: [f32; 4],
-    /// `x` = lightmap blend strength (0 = off); `yzw` reserved.
+    /// `x` = lightmap blend strength (0 = off), `y` = output gain, `z` = sRGB
+    /// encode, `w` = inverse colormap (invulnerability).
     pub lightmap_params: [f32; 4],
 }

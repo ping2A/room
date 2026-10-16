@@ -13,8 +13,8 @@ use room_net::{
     pack_server_data, pack_server_voice, pack_welcome, parse_relay,
 };
 use room_proto::{
-    BinaryMsg, ControlMsg, HelloMsg, IceServerEntry, MediaInfo, RejectMsg, RosterSeat, SeatState,
-    WelcomeMsg, WelcomeRoom, encode_binary, encode_control,
+    BinaryMsg, ControlMsg, HelloMsg, IceServerEntry, MediaInfo, RejectMsg, RoomModRef, RosterSeat,
+    SeatState, WelcomeMsg, WelcomeRoom, encode_binary, encode_control,
 };
 use room_sfu::{MediaSession, SignalIn, SignalOut, ice_servers, ice_servers_long_term};
 #[cfg(feature = "builtin-turn")]
@@ -211,6 +211,9 @@ pub struct RoomInspect {
     pub iwad_fingerprint: Option<String>,
     /// Verifier flag.
     pub enable_verifier: bool,
+    /// Gameplay mod name.
+    #[serde(rename = "mod", skip_serializing_if = "Option::is_none")]
+    pub game_mod: Option<String>,
     /// Occupied (live) seats.
     pub occupied: usize,
     /// Per-seat detail.
@@ -236,6 +239,12 @@ pub struct RoomSettings {
     /// Optional headless verifier (docs/22 phase 3); off by default.
     #[serde(default)]
     pub enable_verifier: bool,
+    /// Gameplay mod from the node's catalog (every seat mounts it).
+    #[serde(default, rename = "mod", skip_serializing_if = "Option::is_none")]
+    pub game_mod: Option<RoomModRef>,
+    /// Match time limit in minutes; the room closes when it runs out.
+    #[serde(default = "default_time_limit")]
+    pub time_limit: u16,
 }
 
 impl Default for RoomSettings {
@@ -246,8 +255,14 @@ impl Default for RoomSettings {
             max_players: 2,
             visibility: "public".into(),
             enable_verifier: false,
+            game_mod: None,
+            time_limit: default_time_limit(),
         }
     }
+}
+
+fn default_time_limit() -> u16 {
+    20
 }
 
 /// `POST /api/rooms` body.
@@ -268,6 +283,12 @@ pub struct CreateRoomRequest {
     /// Request server-side verifier when the node allows it (`--enable-verifier`).
     #[serde(default)]
     pub enable_verifier: bool,
+    /// Catalog mod name (`GET /api/mods`); empty / absent = vanilla.
+    #[serde(default, rename = "mod")]
+    pub game_mod: Option<String>,
+    /// Match time limit in minutes (1..=180); absent / 0 = the node default.
+    #[serde(default)]
+    pub time_limit: Option<u16>,
 }
 
 impl Default for CreateRoomRequest {
@@ -278,6 +299,8 @@ impl Default for CreateRoomRequest {
             max_players: default_max_players(),
             visibility: default_visibility(),
             enable_verifier: false,
+            game_mod: None,
+            time_limit: None,
         }
     }
 }
@@ -400,7 +423,29 @@ struct RoomState {
     verifier: Option<VerifierHandles>,
     occupied: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     started_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Room creation, then lockstep start (time limit clock).
+    clock_from: Instant,
+    /// Latest `result` report per seat.
+    results: BTreeMap<u8, MatchReport>,
+    /// Result recorded on the leaderboard (once per room).
+    recorded: bool,
+    /// The room closes at this instant (match over / time up).
+    close_at: Option<Instant>,
+    /// Set when the actor should stop (closed by admin, drain or match end).
+    closed: bool,
 }
+
+/// One seat's view of the match end (all honest seats send the same).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MatchReport {
+    winner: Option<u8>,
+    time_up: bool,
+    standings: Vec<room_proto::ResultRow>,
+}
+
+/// Wall-clock slack past the time limit before the server closes the room
+/// itself (seat sims end the match on their tic clock, which can lag).
+const TIME_LIMIT_SLACK: Duration = Duration::from_secs(30);
 
 #[cfg(feature = "verifier")]
 struct VerifierHandles {
@@ -450,8 +495,14 @@ pub fn spawn_room(
             verifier: None,
             occupied,
             started_flag,
+            clock_from: Instant::now(),
+            results: BTreeMap::new(),
+            recorded: false,
+            close_at: None,
+            closed: false,
         };
         room_loop(&mut state, rx).await;
+        state.registry.remove(&id);
         info!(room_id = %id, "room actor stopped");
     });
     // Housekeeping ticker.
@@ -499,6 +550,9 @@ async fn room_loop(state: &mut RoomState, mut rx: mpsc::Receiver<RoomCmd>) {
             RoomCmd::Tick => on_tick(state),
         }
         publish_lobby_stats(state);
+        if state.closed {
+            break;
+        }
         if state.seats.is_empty() && state.started {
             // Idle empty room after play — stop actor.
             debug!(room_id = %state.id, "empty after start; stopping");
@@ -687,6 +741,24 @@ fn on_v2_control(state: &mut RoomState, conn: ConnId, msg: ControlMsg) {
             if let Ok(s) = encode_control(&out) {
                 broadcast_all(state, Bytes::from(s.into_bytes()));
             }
+        }
+        ControlMsg::Result {
+            winner,
+            time_up,
+            standings,
+        } => {
+            let Some(&seat) = state.conn_seat.get(&conn) else {
+                return;
+            };
+            on_result(
+                state,
+                seat,
+                MatchReport {
+                    winner,
+                    time_up,
+                    standings,
+                },
+            );
         }
         _ => {}
     }
@@ -985,7 +1057,87 @@ fn welcome_room(state: &RoomState) -> WelcomeRoom {
         max_players: state.settings.max_players,
         rng_seed: state.rng_seed,
         delay: 0,
+        game_mod: state.settings.game_mod.clone(),
+        time_limit: u32::from(state.settings.time_limit) * 60,
     }
+}
+
+/// Wall-clock deadline: the time limit from the start (or from creation for
+/// a room nobody started), plus slack for seats whose tic clock lags.
+fn time_limit_deadline(state: &RoomState) -> Instant {
+    let limit = Duration::from_secs(u64::from(state.settings.time_limit) * 60);
+    state.clock_from + limit + TIME_LIMIT_SLACK
+}
+
+/// A seat reports the end of the match. Close once most seats agree; put it
+/// on the leaderboard once every seat in the room agrees.
+fn on_result(state: &mut RoomState, seat: u8, report: MatchReport) {
+    if !state.started || report.standings.len() > usize::from(state.settings.max_players) {
+        return;
+    }
+    state.results.insert(seat, report.clone());
+    let seats: Vec<u8> = state
+        .seats
+        .iter()
+        .filter(|(_, s)| s.tx.is_some())
+        .map(|(&k, _)| k)
+        .collect();
+    let agree = seats
+        .iter()
+        .filter(|s| state.results.get(s) == Some(&report))
+        .count();
+    if agree * 2 > seats.len() && state.close_at.is_none() {
+        let grace = state.cfg.match_end_grace_secs;
+        state.close_at = Some(Instant::now() + Duration::from_secs(grace));
+        info!(room_id = %state.id, ?report.winner, "match over");
+        let text = format!("Match over - this room closes in {grace}s");
+        if let Ok(s) = encode_control(&ControlMsg::Notice { text }) {
+            let packet = Bytes::from(s.into_bytes());
+            broadcast_all(state, packet.clone());
+            broadcast_spectators(state, &packet);
+        }
+    }
+    if state.recorded || agree < seats.len() || seats.len() < 2 {
+        return;
+    }
+    state.recorded = true;
+    let rows: Vec<crate::leaderboard::MatchRow> = report
+        .standings
+        .iter()
+        .filter_map(|r| {
+            let slot = state.seats.get(&r.seat)?;
+            Some(crate::leaderboard::MatchRow {
+                name: slot.name.clone(),
+                won: report.winner == Some(r.seat),
+                frags: r.frags,
+                deaths: r.deaths,
+            })
+        })
+        .collect();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    state.registry.leaderboard().record(&rows, now);
+}
+
+/// Say goodbye to everyone and stop the actor.
+fn close_room(state: &mut RoomState, code: &str, reason: &str) {
+    let bye = ControlMsg::Bye {
+        code: code.into(),
+        reason: reason.into(),
+    };
+    if let Ok(s) = encode_control(&bye) {
+        let packet = Bytes::from(s.into_bytes());
+        broadcast_all(state, packet.clone());
+        broadcast_spectators(state, &packet);
+    }
+    info!(room_id = %state.id, code, reason, "room closed");
+    state.seats.clear();
+    state.conn_seat.clear();
+    state.pending_v2.clear();
+    state.spectators.clear();
+    state.closed = true;
 }
 
 fn finish_v2_welcome(state: &mut RoomState, seat: u8) {
@@ -1230,6 +1382,7 @@ fn maybe_v2_start(state: &mut RoomState) {
         return;
     }
     state.started = true;
+    state.clock_from = Instant::now();
     for slot in state.seats.values_mut() {
         slot.state = SeatState::Playing;
     }
@@ -1274,12 +1427,18 @@ fn start_verifier_if_needed(state: &mut RoomState) {
             warn!(room_id = %state.id, "verifier enabled but --iwad empty");
             return;
         }
+        let game_mod = state.settings.game_mod.as_ref().and_then(|m| {
+            let entry = state.cfg.mods.get(&m.name)?;
+            Some((m.name.clone(), entry.bytes.clone()))
+        });
         match crate::verifier::spawn_verifier_with_output(
             std::path::PathBuf::from(&state.cfg.iwad_path),
+            game_mod,
             &state.settings.map,
             state.settings.skill,
             state.rng_seed,
             state.settings.max_players,
+            u32::from(state.settings.time_limit) * 60 * 35,
         ) {
             Ok((frames, checksums)) => {
                 state.verifier = Some(VerifierHandles { frames, checksums });
@@ -1458,6 +1617,12 @@ fn on_tick(state: &mut RoomState) {
         on_clock(state);
     }
     pump_spectators(state);
+    let now = Instant::now();
+    if state.close_at.is_some_and(|t| now >= t) {
+        close_room(state, "over", "match over");
+    } else if now >= time_limit_deadline(state) {
+        close_room(state, "over", "time limit reached");
+    }
 }
 
 /// Release every v2 frame due on the 35 Hz clock.
@@ -1530,21 +1695,7 @@ fn on_admin(state: &mut RoomState, cmd: AdminCmd) {
                 broadcast_spectators(state, &packet);
             }
         }
-        AdminCmd::Close { reason } => {
-            let bye = ControlMsg::Bye {
-                code: "closed".into(),
-                reason,
-            };
-            if let Ok(s) = encode_control(&bye) {
-                let packet = Bytes::from(s.into_bytes());
-                broadcast_all(state, packet.clone());
-                broadcast_spectators(state, &packet);
-            }
-            state.seats.clear();
-            state.conn_seat.clear();
-            state.pending_v2.clear();
-            state.spectators.clear();
-        }
+        AdminCmd::Close { reason } => close_room(state, "closed", &reason),
         AdminCmd::Inspect { reply } => {
             let _ = reply.send(build_room_inspect(state));
         }
@@ -1608,6 +1759,7 @@ fn build_room_inspect(state: &RoomState) -> RoomInspect {
         started: state.started,
         iwad_fingerprint: state.iwad_fingerprint.clone(),
         enable_verifier: state.settings.enable_verifier,
+        game_mod: state.settings.game_mod.as_ref().map(|m| m.name.clone()),
         occupied: state.occupied.load(std::sync::atomic::Ordering::Relaxed),
         seats,
         spectators: state

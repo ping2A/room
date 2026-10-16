@@ -798,6 +798,7 @@ export function install(ctx) {
         el("button", { class: "btn small", onclick: () => cur() && newTex(cur()) }, "Duplicate"),
         el("button", { class: "btn small danger", onclick: () => { if (!cur()) return; C.list.splice(C.sel, 1); C.sel = Math.max(0, C.sel - 1); markDirty(); renderList(); renderProps(); draw(); } }, "Delete"),
         el("button", { class: "btn small", onclick: () => { if (cur()) { S.texture = cur().name; ctx.renderInspector(); ctx.toast(`Paint texture: ${cur().name}`); } } }, "Use as paint"),
+        el("button", { class: "btn small", title: "Paint the composed pixels (saved as a TX_START texture)", onclick: () => { if (cur()) { if (C.dirty) apply(); ctx.openPaint("textures", cur().name); } } }, "✎ Edit pixels"),
         el("label", { class: "muted" }, "Zoom ", zoomSel),
         el("button", { class: "btn small go", onclick: apply }, "Apply to game")),
       el("div", { class: "cp-grid" }, el("div", { class: "cp-left" }, filter, listEl), el("div", { class: "cp-center" }, canvas), props));

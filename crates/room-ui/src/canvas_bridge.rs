@@ -11,7 +11,7 @@ pub trait CanvasSink {
     fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]);
 }
 
-use crate::draw::{DrawCmd, UiDrawList};
+use crate::draw::{DrawCmd, UiDrawList, Vec2};
 use crate::font::FontRegistry;
 use crate::patches::PatchCache;
 
@@ -29,6 +29,16 @@ pub fn blit_draw_list_with_fonts(
     sink: &mut impl CanvasSink,
 ) {
     blit_draw_list_full(list, fb_w, fb_h, fonts, None, sink);
+}
+
+/// Doom `INVERSECOLORMAP` applied to a palette: white→black inverted luminance.
+#[must_use]
+pub fn inverse_palette(pal: &[[u8; 3]; 256]) -> [[u8; 3]; 256] {
+    pal.map(|[r, g, b]| {
+        let lum = (u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114) / 1000;
+        let v = 255 - lum.min(255) as u8;
+        [v, v, v]
+    })
 }
 
 /// Full blit path: soft fonts + optional Doom picture cache for [`DrawCmd::Patch`].
@@ -77,11 +87,25 @@ pub fn blit_draw_list_full(
                     );
                 }
             }
-            DrawCmd::Patch { name, pos, size } => {
+            DrawCmd::Patch {
+                name,
+                pos,
+                size,
+                apply_offsets,
+                inverse,
+            } => {
                 let dest_w = if size.x > 0.0 { size.x } else { 16.0 };
                 let dest_h = if size.y > 0.0 { size.y } else { 16.0 };
                 if let Some(cache) = patches {
                     if let Some(patch) = cache.get(name) {
+                        let pos = if *apply_offsets {
+                            Vec2::new(
+                                pos.x - f32::from(patch.left_offset),
+                                pos.y - f32::from(patch.top_offset),
+                            )
+                        } else {
+                            *pos
+                        };
                         let dest_w = if size.x > 0.0 {
                             size.x
                         } else {
@@ -94,12 +118,19 @@ pub fn blit_draw_list_full(
                         };
                         let scale_x = (dest_w / f32::from(patch.width).max(1.0)) * sx;
                         let scale_y = (dest_h / f32::from(patch.height).max(1.0)) * sy;
+                        let inverted;
+                        let palette = if *inverse {
+                            inverted = inverse_palette(cache.palette());
+                            &inverted
+                        } else {
+                            cache.palette()
+                        };
                         patch.paint(
                             pos.x * sx,
                             pos.y * sy,
                             scale_x,
                             scale_y,
-                            cache.palette(),
+                            palette,
                             |x, y, w, h, rgba| sink.fill_rect(x, y, w, h, rgba),
                         );
                         continue;
@@ -171,6 +202,49 @@ mod tests {
     use crate::draw::{DrawCmd, Rgba, Vec2};
     use crate::font::{FontId, FontRegistry};
     use std::path::PathBuf;
+
+    #[test]
+    fn inverse_palette_is_inverted_greyscale() {
+        let mut pal = [[0u8; 3]; 256];
+        pal[1] = [255, 255, 255];
+        pal[2] = [255, 0, 0];
+        let inv = inverse_palette(&pal);
+        assert_eq!(inv[0], [255, 255, 255]);
+        assert_eq!(inv[1], [0, 0, 0]);
+        assert_eq!(inv[2], [179, 179, 179]);
+    }
+
+    #[test]
+    fn inverse_patch_paints_through_inverted_palette() {
+        struct Colors(Vec<[f32; 4]>);
+        impl CanvasSink for Colors {
+            fn fill_rect(&mut self, _: f32, _: f32, _: f32, _: f32, c: [f32; 4]) {
+                self.0.push(c);
+            }
+            fn text(&mut self, _: f32, _: f32, _: &str, _: [f32; 4]) {}
+        }
+        let mut cache = PatchCache::default();
+        cache.insert(
+            "GUN",
+            crate::patches::SoftPatch {
+                width: 1,
+                height: 1,
+                left_offset: 0,
+                top_offset: 0,
+                indices: vec![0],
+                alpha: vec![255],
+            },
+        );
+        let mut list = UiDrawList::new();
+        list.patch("GUN", Vec2::new(0.0, 0.0), Vec2::new(0.0, 0.0));
+        list.invert_since(0);
+        let mut sink = Colors(Vec::new());
+        blit_draw_list_full(&list, 320.0, 200.0, None, Some(&cache), &mut sink);
+        assert_eq!(sink.0.len(), 1);
+        let [r, g, b, _] = sink.0[0];
+        assert!(r == g && g == b, "greyscale: {:?}", sink.0[0]);
+        assert!(r > 0.9, "black palette index 0 inverts to white");
+    }
 
     struct CountSink {
         fills: usize,

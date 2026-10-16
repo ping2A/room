@@ -55,6 +55,16 @@ pub fn draw_stt_percent(list: &mut UiDrawList, x_right: f32, y: f32, value: i32,
     );
 }
 
+/// Doom `STlib_drawNum` with the small yellow `STYSNUM*` digits (4 px pitch);
+/// `x_right` is the right edge.
+pub fn draw_stys_num(list: &mut UiDrawList, x_right: f32, y: f32, value: i32) {
+    let mut x = x_right;
+    for ch in value.clamp(0, 999).to_string().chars().rev() {
+        x -= 4.0;
+        list.picture(&format!("STYSNUM{ch}"), Vec2::new(x, y));
+    }
+}
+
 /// Width of a `STT` string at `scale` (for layout).
 #[must_use]
 pub fn measure_stt_string(text: &str, scale: f32) -> f32 {

@@ -55,6 +55,18 @@ room-sim = { path = "../room-sim", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+hmac = { workspace = true }
+sha1 = { workspace = true }
+subtle = { workspace = true }
+argon2 = { workspace = true }
+password-hash = { workspace = true }
+totp-rs = { workspace = true }
+base64 = { workspace = true }
+p256 = { workspace = true }
+ecdsa = { workspace = true }
+ciborium = { workspace = true }
+url = { workspace = true }
+zeroize = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
@@ -64,3 +76,4 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 futures-util = { workspace = true }
+totp-rs = { workspace = true }

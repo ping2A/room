@@ -13,6 +13,10 @@
     modalResolve: null,
     selectedRoomId: null,
     roomDetail: null,
+    authMode: "open",
+    csrf: "",
+    username: "",
+    methods: [],
   };
 
   const TITLES = {
@@ -24,38 +28,118 @@
   };
 
   function token() {
-    return ($("token").value || "").trim();
+    return (localStorage.getItem("roomAdminToken") || "").trim();
   }
 
-  function headers(extra = {}) {
+  function headers(extra = {}, mutating = false) {
     const h = { Accept: "application/json", ...extra };
     const t = token();
     if (t) h.Authorization = "Bearer " + t;
+    if (mutating && state.csrf) h["X-CSRF-Token"] = state.csrf;
     return h;
   }
 
   async function api(path, opts = {}) {
+    const method = (opts.method || "GET").toUpperCase();
+    const mutating = method !== "GET" && method !== "HEAD";
     const init = {
+      credentials: "same-origin",
       ...opts,
-      headers: headers({
-        ...(opts.body ? { "Content-Type": "application/json" } : {}),
-        ...(opts.headers || {}),
-      }),
+      headers: headers(
+        {
+          ...(opts.body ? { "Content-Type": "application/json" } : {}),
+          ...(opts.headers || {}),
+        },
+        mutating
+      ),
     };
     const res = await fetch(path, init);
-    if (res.status === 401) {
-      const err = new Error("unauthorized");
-      err.code = 401;
+    if (res.status === 401 || res.status === 403) {
+      const err = new Error(res.status === 403 ? "csrf/forbidden" : "unauthorized");
+      err.code = res.status;
       throw err;
     }
     if (!res.ok) {
-      const err = new Error(res.status + " " + path);
+      let detail = res.status + " " + path;
+      try {
+        const j = await res.clone().json();
+        if (typeof j === "string") detail = j;
+        else if (j && j.message) detail = j.message;
+      } catch (_) {
+        try {
+          const t = await res.clone().text();
+          if (t) detail = t;
+        } catch (_) {}
+      }
+      const err = new Error(detail);
       err.code = res.status;
       throw err;
     }
     if (res.status === 204) return null;
     const ct = res.headers.get("content-type") || "";
     return ct.includes("json") ? res.json() : res.text();
+  }
+
+  function b64urlToBuf(b64) {
+    const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+    const s = (b64 + pad).replace(/-/g, "+").replace(/_/g, "/");
+    const bin = atob(s);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out.buffer;
+  }
+
+  function bufToB64url(buf) {
+    const bytes = new Uint8Array(buf);
+    let s = "";
+    for (const b of bytes) s += String.fromCharCode(b);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  function revivePublicKey(opts) {
+    const o = structuredClone(opts);
+    o.challenge = b64urlToBuf(o.challenge);
+    if (o.user && o.user.id) o.user.id = b64urlToBuf(o.user.id);
+    if (o.excludeCredentials) {
+      o.excludeCredentials = o.excludeCredentials.map((c) => ({
+        ...c,
+        id: b64urlToBuf(c.id),
+      }));
+    }
+    if (o.allowCredentials) {
+      o.allowCredentials = o.allowCredentials.map((c) => ({
+        ...c,
+        id: b64urlToBuf(c.id),
+      }));
+    }
+    return o;
+  }
+
+  function credentialToJson(cred) {
+    const r = cred.response;
+    const out = {
+      id: cred.id,
+      rawId: bufToB64url(cred.rawId),
+      type: cred.type,
+      response: {
+        clientDataJSON: bufToB64url(r.clientDataJSON),
+      },
+    };
+    if (r.attestationObject) {
+      out.response.attestationObject = bufToB64url(r.attestationObject);
+    }
+    if (r.authenticatorData) {
+      out.response.authenticatorData = bufToB64url(r.authenticatorData);
+    }
+    if (r.signature) out.response.signature = bufToB64url(r.signature);
+    if (r.userHandle) out.response.userHandle = bufToB64url(r.userHandle);
+    return out;
+  }
+
+  function showGateStep(name) {
+    for (const el of document.querySelectorAll(".gate-step")) {
+      el.classList.toggle("hidden", el.id !== "gate-step-" + name);
+    }
   }
 
   function flash(msg, kind = "ok") {
@@ -110,6 +194,10 @@
     $("view-title").textContent = TITLES[name][0];
     $("view-sub").textContent = TITLES[name][1];
     render();
+    if (name === "settings") {
+      refreshSecurity().catch(() => {});
+      refreshMods().catch(() => {});
+    }
   }
 
   function openModal({ title, bodyHtml, confirmLabel = "Confirm", danger = false }) {
@@ -690,8 +778,11 @@
   }
 
   function onError(err) {
-    if (err && err.code === 401) {
-      showGate("Unauthorized — check the bearer token.");
+    if (err && (err.code === 401 || err.code === 403)) {
+      state.csrf = "";
+      state.username = "";
+      showGate(err.code === 403 ? "Session/CSRF rejected — sign in again." : "Sign-in required.");
+      routeGate().catch(() => {});
       return;
     }
     flash(err.message || String(err), "error");
@@ -714,6 +805,99 @@
   function showShell() {
     $("auth-gate").classList.add("hidden");
     $("shell").classList.remove("hidden");
+    $("whoami").textContent = state.username || (token() ? "token" : "open");
+  }
+
+  async function routeGate() {
+    const st = await fetch("/admin/api/v1/auth/status", { credentials: "same-origin" }).then((r) =>
+      r.json()
+    );
+    state.authMode = st.mode;
+    if (st.user && st.user.csrf) {
+      state.csrf = st.user.csrf;
+      state.username = st.user.username || "";
+      showShell();
+      return true;
+    }
+    showGate("");
+    if (st.bootstrap || st.mode === "mfa") {
+      $("gate-lede").textContent =
+        "Sign in with your admin password. An authenticator or passkey is asked for only after you set one up.";
+      if (st.bootstrap) showGateStep("bootstrap");
+      else showGateStep("password");
+    } else {
+      $("gate-lede").textContent =
+        "Dev mode — bearer token (optional if the node is open). Prefer --admin-bootstrap for MFA.";
+      showGateStep("token");
+    }
+    return false;
+  }
+
+  async function afterPassword(step) {
+    if (step.csrf) {
+      await finishSession(step);
+      return;
+    }
+    state.methods = step.methods || [];
+    $("gate-use-key").classList.toggle("hidden", !state.methods.includes("webauthn"));
+    if (step.need === "enroll") {
+      showGateStep("enroll");
+      return;
+    }
+    if (step.need === "webauthn") {
+      await doWebAuthnLogin(step.publicKey);
+      return;
+    }
+    showGateStep("totp");
+    $("gate-totp").focus();
+  }
+
+  async function finishSession(body) {
+    state.csrf = body.csrf || "";
+    const me = await api("/admin/api/v1/auth/me");
+    state.username = (me.user && me.user.username) || "";
+    if (me.user && me.user.csrf) state.csrf = me.user.csrf;
+    await refresh();
+  }
+
+  async function doWebAuthnLogin(publicKey) {
+    if (!publicKey) {
+      const begun = await api("/admin/api/v1/auth/webauthn/login/begin", {
+        method: "POST",
+        body: "{}",
+      });
+      publicKey = begun.publicKey;
+    }
+    if (!window.PublicKeyCredential) {
+      throw new Error("This browser has no WebAuthn support");
+    }
+    const cred = await navigator.credentials.get({
+      publicKey: revivePublicKey(publicKey),
+    });
+    const body = await api("/admin/api/v1/auth/webauthn/login/finish", {
+      method: "POST",
+      body: JSON.stringify({ credential: credentialToJson(cred) }),
+    });
+    await finishSession(body);
+  }
+
+  async function doWebAuthnRegister(name) {
+    const begun = await api("/admin/api/v1/auth/webauthn/register/begin", {
+      method: "POST",
+      body: "{}",
+    });
+    const cred = await navigator.credentials.create({
+      publicKey: revivePublicKey(begun.publicKey),
+    });
+    const body = await api("/admin/api/v1/auth/webauthn/register/finish", {
+      method: "POST",
+      body: JSON.stringify({
+        credential: credentialToJson(cred),
+        name: name || "YubiKey",
+      }),
+    });
+    if (body && body.csrf) await finishSession(body);
+    else flash("Security key registered");
   }
 
   async function refresh() {
@@ -817,37 +1001,195 @@
       onError(err);
     }
   });
-  $("lock-console").addEventListener("click", () => {
+  $("lock-console").addEventListener("click", async () => {
+    try {
+      await api("/admin/api/v1/auth/logout", { method: "POST", body: "{}" });
+    } catch (_) {}
     localStorage.removeItem("roomAdminToken");
-    $("token").value = "";
-    $("gate-token").value = "";
+    state.csrf = "";
+    state.username = "";
     showGate("");
-  });
-  $("token").addEventListener("change", () => {
-    localStorage.setItem("roomAdminToken", $("token").value);
+    routeGate().catch(() => {});
   });
   $("gate-enter").addEventListener("click", async () => {
-    $("token").value = $("gate-token").value;
-    localStorage.setItem("roomAdminToken", $("token").value);
+    localStorage.setItem("roomAdminToken", ($("gate-token").value || "").trim());
     try {
       await refresh();
-    } catch (_) {
-      /* gate message set in onError */
-    }
+    } catch (_) {}
   });
   $("gate-token").addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") $("gate-enter").click();
   });
+  $("boot-submit").addEventListener("click", async () => {
+    try {
+      await api("/admin/api/v1/auth/bootstrap", {
+        method: "POST",
+        body: JSON.stringify({
+          username: $("boot-user").value,
+          password: $("boot-pass").value,
+        }),
+      });
+      $("gate-user").value = $("boot-user").value;
+      $("gate-pass").value = $("boot-pass").value;
+      showGateStep("password");
+      flash("Admin created — sign in");
+    } catch (err) {
+      showGate(err.message || String(err));
+    }
+  });
+  $("gate-login").addEventListener("click", async () => {
+    try {
+      const step = await api("/admin/api/v1/auth/login", {
+        method: "POST",
+        body: JSON.stringify({
+          username: $("gate-user").value,
+          password: $("gate-pass").value,
+        }),
+      });
+      $("gate-error").classList.add("hidden");
+      await afterPassword(step);
+    } catch (err) {
+      showGate(err.message || String(err));
+    }
+  });
+  $("gate-pass").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") $("gate-login").click();
+  });
+  $("gate-totp-submit").addEventListener("click", async () => {
+    try {
+      const body = await api("/admin/api/v1/auth/totp", {
+        method: "POST",
+        body: JSON.stringify({ code: $("gate-totp").value }),
+      });
+      await finishSession(body);
+    } catch (err) {
+      showGate(err.message || String(err));
+    }
+  });
+  $("gate-totp").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") $("gate-totp-submit").click();
+  });
+  $("gate-use-key").addEventListener("click", () => {
+    doWebAuthnLogin(null).catch((err) => showGate(err.message || String(err)));
+  });
+  $("enroll-totp").addEventListener("click", async () => {
+    try {
+      const body = await api("/admin/api/v1/auth/totp/enroll", {
+        method: "POST",
+        body: "{}",
+      });
+      $("enroll-totp-box").classList.remove("hidden");
+      $("enroll-secret").textContent = body.secret;
+      $("enroll-otpauth").href = body.otpauth;
+    } catch (err) {
+      showGate(err.message || String(err));
+    }
+  });
+  $("enroll-totp-confirm").addEventListener("click", async () => {
+    try {
+      const body = await api("/admin/api/v1/auth/totp/confirm", {
+        method: "POST",
+        body: JSON.stringify({ code: $("enroll-totp-code").value }),
+      });
+      await finishSession(body);
+    } catch (err) {
+      showGate(err.message || String(err));
+    }
+  });
+  $("enroll-key").addEventListener("click", () => {
+    doWebAuthnRegister("YubiKey").catch((err) => showGate(err.message || String(err)));
+  });
+  $("add-passkey").addEventListener("click", async () => {
+    try {
+      await doWebAuthnRegister("YubiKey");
+      await refreshSecurity();
+    } catch (err) {
+      onError(err);
+    }
+  });
+
+  async function refreshSecurity() {
+    try {
+      const users = await api("/admin/api/v1/auth/users");
+      const me = users.find((u) => u.username === state.username) || users[0];
+      const keys = (me && me.keys) || [];
+      $("keys-status").textContent = keys.length
+        ? keys.length + " key(s)"
+        : "No security keys yet";
+      $("keys-list").replaceChildren(
+        ...keys.map((k) => {
+          const li = document.createElement("li");
+          li.innerHTML =
+            "<span>" +
+            (k.name || "key") +
+            '</span><span class="muted">' +
+            shortId(k.id) +
+            "</span>";
+          return li;
+        })
+      );
+    } catch (_) {
+      $("keys-status").textContent = "—";
+    }
+  }
+
+  async function refreshMods() {
+    let mods;
+    try {
+      mods = await api("/admin/api/v1/mods");
+    } catch (_) {
+      $("mods-status").textContent = "—";
+      return;
+    }
+    const allowed = mods.filter((m) => m.allowed).length;
+    $("mods-status").textContent = mods.length
+      ? allowed + " of " + mods.length + " allowed · new mods start disallowed"
+      : "No mods on this node (--mods-dir)";
+    $("mods-list").replaceChildren(
+      ...mods.map((m) => {
+        const li = document.createElement("li");
+        li.innerHTML =
+          "<span><strong>" +
+          escapeHtml(m.title) +
+          '</strong> <span class="muted">' +
+          escapeHtml(m.name) +
+          " · " +
+          fmtNum(Math.round(m.size / 1024)) +
+          " KB · " +
+          escapeHtml(String(m.fingerprint).slice(0, 8)) +
+          "</span></span>";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = m.allowed ? "btn" : "btn primary";
+        btn.textContent = m.allowed ? "Disallow" : "Allow";
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          try {
+            await api("/admin/api/v1/mods/" + encodeURIComponent(m.name), {
+              method: "POST",
+              body: JSON.stringify({ allowed: !m.allowed }),
+            });
+            flash((m.allowed ? "Disallowed " : "Allowed ") + m.title);
+          } catch (e) {
+            flash("Mod update failed: " + e.message, "error");
+          }
+          await refreshMods();
+        });
+        li.appendChild(btn);
+        return li;
+      })
+    );
+  }
 
   // Boot
-  const saved = localStorage.getItem("roomAdminToken") || "";
-  $("token").value = saved;
-  $("gate-token").value = saved;
-  refresh()
-    .then(() => showShell())
-    .catch(() => {
-      if (!saved) showGate("");
-    });
+  routeGate()
+    .then((ok) => {
+      if (ok) return refresh();
+      if (state.authMode !== "mfa") {
+        return refresh().catch(() => {});
+      }
+    })
+    .catch(() => showGate(""));
   setInterval(() => {
     if ($("shell").classList.contains("hidden")) return;
     refresh().catch(() => {});

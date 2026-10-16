@@ -118,8 +118,8 @@ pub fn damage_mobj(
             return 0;
         }
     }
-    // Coop: no player-vs-player damage (deathmatch will opt into friendly fire later).
-    if let Some(src) = source {
+    // Coop: no player-vs-player damage.
+    if let Some(src) = source.filter(|_| !world.deathmatch) {
         if src != target {
             let src_is_player = world.players.iter().flatten().any(|p| p.mo == Some(src));
             let tgt_is_player = world.players.iter().flatten().any(|p| p.mo == Some(target));
@@ -160,6 +160,13 @@ pub fn damage_mobj(
         damage
     } else {
         (f64::from(damage) * factor).round() as i32
+    };
+    // Vanilla `P_DamageMobj`: players take half damage on I'm Too Young To Die.
+    let damage = if world.skill == 1 && world.players.iter().flatten().any(|p| p.mo == Some(target))
+    {
+        damage >> 1
+    } else {
+        damage
     };
     if damage <= 0 {
         return 0;
@@ -327,6 +334,15 @@ pub fn damage_mobj(
         }
         actor.health
     };
+    if is_player_pawn {
+        for p in world.players.iter_mut().flatten() {
+            if p.mo == Some(target) {
+                p.attacker = source;
+                p.damage_count = (p.damage_count + health_damage).min(100);
+                break;
+            }
+        }
+    }
     if is_player_pawn && health_damage > 0 {
         world.last_damage = Some(crate::world::LastDamageInfo {
             tic: world.level.time,
@@ -340,6 +356,13 @@ pub fn damage_mobj(
             cause: String::new(),
         });
     }
+    world.push_script_event(crate::script_mods::ScriptEvent::ThingDamaged {
+        thing: target,
+        source,
+        inflictor,
+        damage: health_damage,
+        health,
+    });
     if health <= 0 {
         die(world, target, class, source, dtype.as_deref());
         return health_damage;
@@ -446,6 +469,28 @@ pub(crate) fn die(
         world.level.found_kills = world.level.found_kills.saturating_add(1);
     }
     record_kill_event(world, target, class, countkill, source);
+    world.push_script_event(crate::script_mods::ScriptEvent::ThingDied {
+        thing: target,
+        source,
+    });
+    // Vanilla `P_KillMobj` frags: the killer's player scores `frags[victim]`;
+    // a player killed by the world scores against themself.
+    let slot_of = |world: &World, id: ActorId| {
+        world
+            .players
+            .iter()
+            .position(|p| p.as_ref().is_some_and(|p| p.mo == Some(id)))
+    };
+    if let Some(victim) = slot_of(world, target) {
+        world.player_died_at[victim] = Some(world.level.maptime);
+        let scorer = match source {
+            Some(src) => slot_of(world, src),
+            None => Some(victim),
+        };
+        if let Some(p) = scorer.and_then(|i| world.players[i].as_mut()) {
+            p.frags[victim] += 1;
+        }
+    }
     // Player death: mark Dead (blocks `player_think` input), show killer obituary.
     let is_player = world.players.iter().flatten().any(|p| p.mo == Some(target));
     let mut drop_player_weapon = None;
@@ -465,10 +510,6 @@ pub(crate) fn die(
             p.pspr_flash_state = None;
             p.pspr_flash_tics = 0;
             p.extralight = 0;
-            p.view_height = 6.0; // Doom dead-view eye height
-            if let Some(a) = world.actors.get(target) {
-                p.view_z = a.pos.z() + p.view_height;
-            }
             break;
         }
         crate::acs::start_death_scripts(world, target);
@@ -784,15 +825,64 @@ actor PlayerPawn : Actor 0
             w.players[0].as_ref().unwrap().player_state,
             crate::player::PlayerState::Dead
         );
-        assert_eq!(w.players[0].as_ref().unwrap().view_height, 6.0);
+        let eye0 = w.players[0].as_ref().unwrap().view_height;
         // Dead players ignore movement commands.
         let mut player = w.players[0].take().unwrap();
         player.cmd.forward_move = 50 * 256;
         crate::think_player::player_think(&mut w, &mut player);
+        // `P_DeathThink`: the eye sinks one unit per tic down to 6.
+        assert!((player.view_height - (eye0 - 1.0)).abs() < 1e-9);
+        for _ in 0..64 {
+            crate::think_player::player_think(&mut w, &mut player);
+        }
+        assert_eq!(player.view_height, 6.0);
         w.players[0] = Some(player);
         let after = w.actors.get(mo).unwrap().pos;
         assert_eq!(after.x(), start.x());
         assert_eq!(after.y(), start.y());
+    }
+
+    #[test]
+    fn dead_player_turns_toward_killer_then_fades_flash() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let mo = w.players[0].as_ref().and_then(|p| p.mo).unwrap();
+        let imp = w
+            .spawn_at(
+                classes.find_name("DoomImp").unwrap(),
+                DVec3::new(64.0, 400.0, 0.0),
+                room_core::Angle::from_degrees(0.0),
+            )
+            .unwrap();
+        let _ = damage_mobj(&mut w, mo, None, Some(imp), 999);
+        let mut player = w.players[0].take().unwrap();
+        assert_eq!(player.attacker, Some(imp));
+        assert_eq!(player.damage_count, 100);
+        crate::think_player::player_think(&mut w, &mut player);
+        let yaw = w.actors.get(mo).unwrap().angle.degrees();
+        assert!((yaw - 5.0).abs() < 0.01, "turns 5°/tic, got {yaw}");
+        assert_eq!(player.damage_count, 100, "flash holds until facing killer");
+        for _ in 0..30 {
+            crate::think_player::player_think(&mut w, &mut player);
+        }
+        let yaw = w.actors.get(mo).unwrap().angle.degrees();
+        assert!((yaw - 90.0).abs() < 0.01, "locked on killer, got {yaw}");
+        assert!(player.damage_count < 100);
+        w.players[0] = Some(player);
+        w.tick();
+        let hud = w.player_hud(0).unwrap();
+        assert_eq!(hud.face, "STFDEAD0");
+        assert!(hud.weapon_patch.is_empty(), "gun drops off screen on death");
+        assert!((1..=8).contains(&hud.palette), "red flash while dead");
     }
 
     #[test]

@@ -20,11 +20,13 @@ mod hitscan;
 mod inventory;
 mod level;
 mod locks;
+mod mugshot;
 mod physics;
 mod pickup;
 mod player;
 mod polyobj;
 mod script_host;
+pub mod script_mods;
 mod sector_specials;
 mod sight;
 mod sndseq;
@@ -59,12 +61,13 @@ pub use inventory::{
 };
 pub use level::LevelState;
 pub use locks::{LockKeyReq, LockSpec, LockTable};
+pub use mugshot::{MugShot, palette_index};
 pub use physics::{
     CheckResult, actor_light_level, actor_waterlevel, ceiling_at_xy, check_position, floor_at_xy,
     try_move, xy_movement, z_movement,
 };
 pub use pickup::{touch_specials, try_pickup};
-pub use player::{Buttons, MAX_PLAYERS, Player, PlayerState, TicCmd};
+pub use player::{Buttons, INVERSE_COLORMAP, MAX_PLAYERS, Player, PlayerState, TicCmd};
 pub use polyobj::{PolyMotion, PolyMotionResume, PolyobjDynamic};
 pub use script_host::{ModuleMemorySnapshot, ScriptHost};
 pub use sight::check_sight;
@@ -86,6 +89,7 @@ pub use vanilla::{
 pub use weapon_slots::{PlayerClassEntry, WeaponSlots, default_slot_weapons};
 pub use world::{
     BossAction, CameraTextureBind, DEFAULT_BODY_QUEUE_SIZE, DEFAULT_CORPSE_QUEUE_SIZE, HudClipRect,
-    KillEvent, LastDamageInfo, MAX_KILL_EVENTS, PlayerHud, Quake, ScreenFade, SectorDynamic,
-    ShotKind, ShotTrace, SimDecalEvent, SimError, SimParticleEvent, SimSoundEvent, World,
+    HudMessage, KillEvent, LastDamageInfo, MAX_KILL_EVENTS, MatchOver, MessageTo, PlayerHud, Quake,
+    ScreenFade, SectorDynamic, ShotKind, ShotTrace, SimDecalEvent, SimError, SimParticleEvent,
+    SimSoundEvent, Standing, World,
 };

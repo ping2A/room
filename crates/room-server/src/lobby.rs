@@ -22,6 +22,12 @@ pub fn lobby_routes() -> Router<AppState> {
         .route("/lobby/assets/app.css", get(lobby_css))
         .route("/lobby/assets/app.js", get(lobby_js))
         .route("/api/lobby", get(lobby_config))
+        .route("/api/leaderboard", get(leaderboard))
+}
+
+/// `GET /api/leaderboard` — top 10 players (no auth).
+async fn leaderboard(State(state): State<AppState>) -> Json<Vec<crate::leaderboard::PlayerStats>> {
+    Json(state.registry.leaderboard().top(10))
 }
 
 async fn lobby_spa() -> impl IntoResponse {
@@ -53,13 +59,17 @@ struct LobbyConfig {
     play_base: String,
     node_id: String,
     draining: bool,
+    /// Default match length for new rooms (minutes).
+    room_time_limit_mins: u16,
 }
 
 async fn lobby_config(State(state): State<AppState>) -> Json<LobbyConfig> {
+    let cfg = state.registry.config();
     Json(LobbyConfig {
-        play_base: state.registry.config().play_base.clone(),
-        node_id: state.registry.config().node_id.clone(),
+        play_base: cfg.play_base.clone(),
+        node_id: cfg.node_id.clone(),
         draining: state.registry.is_draining(),
+        room_time_limit_mins: cfg.room_time_limit_mins,
     })
 }
 
@@ -82,6 +92,11 @@ pub struct PublicRoom {
     pub node_id: String,
     /// Always `public` for listed rooms.
     pub visibility: String,
+    /// Gameplay mod (name + title), if any.
+    #[serde(rename = "mod", skip_serializing_if = "Option::is_none")]
+    pub game_mod: Option<room_proto::RoomModRef>,
+    /// Match time limit (minutes).
+    pub time_limit: u16,
     /// Relative v2 WebSocket path.
     pub ws_v2: String,
     /// Relative legacy WebSocket path.
@@ -110,6 +125,8 @@ pub async fn list_public_rooms(
             started: h.started.load(Ordering::Relaxed),
             node_id: state.registry.locate_room(&id).unwrap_or_default(),
             visibility: h.settings.visibility.clone(),
+            game_mod: h.settings.game_mod.clone(),
+            time_limit: h.settings.time_limit,
             ws_v2: format!("/v2/rooms/{id}/ws"),
             ws_legacy: format!("/ws/{id}"),
         });

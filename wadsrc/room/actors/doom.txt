@@ -27,16 +27,14 @@ actor PlayerPawn : Actor 0
     PLAY E 12
     Goto Spawn
   Pain:
-    PLAY G 4 A_Pain
     PLAY G 4
+    PLAY G 4 A_Pain
     Goto Spawn
   Death:
-    PLAY H 10 A_PlayerScream
-    PLAY I 10 A_NoBlocking
-    PLAY J 10
-    PLAY K 10
-    PLAY L 10
-    PLAY M 10
+    PLAY H 10
+    PLAY I 10 A_PlayerScream
+    PLAY J 10 A_NoBlocking
+    PLAY KLM 10
     PLAY N -1
     Stop
   XDeath:
@@ -327,6 +325,17 @@ actor ShotgunGuy : Actor 9
     SPOS K 5
     SPOS L -1
     Stop
+  XDeath:
+    SPOS M 5
+    SPOS N 5 A_XScream
+    SPOS O 5 A_NoBlocking
+    SPOS PQRST 5
+    SPOS U -1
+    Stop
+  Raise:
+    SPOS L 5
+    SPOS KJIH 5
+    Goto See
   }
 }
 
@@ -335,6 +344,7 @@ actor DoomImpBall : Actor
   Radius 6
   Height 8
   Speed 10
+  FastSpeed 20
   Damage 3
   +NOBLOCKMAP
   +NOGRAVITY
@@ -390,6 +400,18 @@ actor DoomImp : Actor 3001
     TROO L 6 A_NoBlocking
     TROO M -1
     Stop
+  XDeath:
+    TROO N 5
+    TROO O 5 A_XScream
+    TROO P 5
+    TROO Q 5 A_NoBlocking
+    TROO RST 5
+    TROO U -1
+    Stop
+  Raise:
+    TROO ML 8
+    TROO KJI 6
+    Goto See
   }
 }
 
@@ -432,6 +454,17 @@ actor ChaingunGuy : Actor 65
     CPOS KLM 5
     CPOS N -1
     Stop
+  XDeath:
+    CPOS O 5
+    CPOS P 5 A_XScream
+    CPOS Q 5 A_NoBlocking
+    CPOS RS 5
+    CPOS T -1
+    Stop
+  Raise:
+    CPOS N 5
+    CPOS MLKJIH 5
+    Goto See
   }
 }
 
@@ -487,15 +520,15 @@ actor Demon : Actor 3002
     SARG AB 10 A_Look
     Loop
   See:
-    SARG AABBCCDD 2 A_Chase
+    SARG AABBCCDD 2 Fast A_Chase
     Loop
   Melee:
-    SARG EF 8 A_FaceTarget
-    SARG G 8 A_SargAttack
+    SARG EF 8 Fast A_FaceTarget
+    SARG G 8 Fast A_SargAttack
     Goto See
   Pain:
-    SARG H 2
-    SARG H 2 A_Pain
+    SARG H 2 Fast
+    SARG H 2 Fast A_Pain
     Goto See
   Death:
     SARG I 8
@@ -505,6 +538,10 @@ actor Demon : Actor 3002
     SARG M 4
     SARG N -1
     Stop
+  Raise:
+    SARG N 5
+    SARG MLKJI 5
+    Goto See
   }
 }
 
@@ -571,6 +608,7 @@ actor BaronBall : Actor
   Radius 6
   Height 16
   Speed 15
+  FastSpeed 20
   Damage 8
   +NOBLOCKMAP
   +NOGRAVITY
@@ -625,8 +663,12 @@ actor BaronOfHell : Actor 3003
     BOSS K 8
     BOSS L 8 A_NoBlocking
     BOSS MN 8
-    BOSS O -1
+    BOSS O -1 A_BossDeath
     Stop
+  Raise:
+    BOSS O 8
+    BOSS NMLKJI 8
+    Goto See
   }
 }
 
@@ -662,6 +704,10 @@ actor HellKnight : BaronOfHell 69
     BOS2 MN 8
     BOS2 O -1
     Stop
+  Raise:
+    BOS2 O 8
+    BOS2 NMLKJI 8
+    Goto See
   }
 }
 
@@ -690,10 +736,10 @@ actor LostSoul : Actor 3006
     SKUL AB 6 A_Chase
     Loop
   Missile:
-    SKUL C 10 A_FaceTarget
-    SKUL D 4 A_SkullAttack
-    SKUL CD 4
-    Goto See
+    SKUL C 10 Bright A_FaceTarget
+    SKUL D 4 Bright A_SkullAttack
+    SKUL CD 4 Bright
+    Goto Missile+2
   Pain:
     SKUL E 3
     SKUL E 3 A_Pain
@@ -704,6 +750,7 @@ actor LostSoul : Actor 3006
     SKUL H 6
     SKUL I 6 A_NoBlocking
     SKUL J 6
+    SKUL K 6
     Stop
   }
 }
@@ -713,6 +760,7 @@ actor CacodemonBall : Actor
   Radius 6
   Height 8
   Speed 10
+  FastSpeed 20
   Damage 5
   +NOBLOCKMAP
   +NOGRAVITY
@@ -770,6 +818,10 @@ actor Cacodemon : Actor 3005
     HEAD K 8 A_NoBlocking
     HEAD L -1
     Stop
+  Raise:
+    HEAD L 8
+    HEAD KJIHG 8
+    Goto See
   }
 }
 
@@ -817,6 +869,10 @@ actor Revenant : Actor 66
     SKEL P 7
     SKEL Q -1
     Stop
+  Raise:
+    SKEL Q 5
+    SKEL PONML 5
+    Goto See
   }
 }
 
@@ -907,20 +963,25 @@ actor Arachnotron : Actor 68
     BSPI DEEFF 3 A_Chase
     Goto See+1
   Missile:
-    BSPI A 20 A_BspiAttack
-    BSPI B 3 A_BspiAttack
-    BSPI B 3 A_SpidRefire
-    Goto See+1
+    BSPI A 20 Bright A_FaceTarget
+    BSPI G 4 Bright A_BspiAttack
+    BSPI H 4 Bright
+    BSPI H 1 Bright A_SpidRefire
+    Goto Missile+1
   Pain:
-    BSPI G 3
-    BSPI G 3 A_Pain
+    BSPI I 3
+    BSPI I 3 A_Pain
     Goto See+1
   Death:
-    BSPI H 20 A_Scream
-    BSPI I 7 A_NoBlocking
-    BSPI JKLM 7
-    BSPI N -1
+    BSPI J 20 A_Scream
+    BSPI K 7 A_NoBlocking
+    BSPI LMNO 7
+    BSPI P -1 A_BossDeath
     Stop
+  Raise:
+    BSPI P 5
+    BSPI ONMLKJ 5
+    Goto See+1
   }
 }
 
@@ -952,20 +1013,21 @@ actor SpiderMastermind : Actor 7
     SPID EFF 3 A_Chase
     Loop
   Missile:
-    SPID A 20 A_FaceTarget
-    SPID A 4 A_SPosAttack
-    SPID B 4 A_SPosAttack
-    SPID B 1 A_SpidRefire
-    Goto See
+    SPID A 20 Bright A_FaceTarget
+    SPID G 4 Bright A_SPosAttack
+    SPID H 4 Bright A_SPosAttack
+    SPID H 1 Bright A_SpidRefire
+    Goto Missile+1
   Pain:
-    SPID G 3
-    SPID G 3 A_Pain
+    SPID I 3
+    SPID I 3 A_Pain
     Goto See
   Death:
-    SPID H 20 A_Scream
-    SPID I 10 A_NoBlocking
-    SPID JKLMNO 10
-    SPID P -1
+    SPID J 20 A_Scream
+    SPID K 10 A_NoBlocking
+    SPID LMNOPQR 10
+    SPID S 30
+    SPID S -1 A_BossDeath
     Stop
   }
 }
@@ -1021,12 +1083,12 @@ actor Cyberdemon : Actor 16
     CYBR D 3 A_Chase
     Loop
   Missile:
-    CYBR E 0 A_FaceTarget
-    CYBR E 10 A_FaceTarget
-    CYBR F 10 A_FaceTarget
-    CYBR E 18 A_CyberAttack
-    CYBR F 10 A_FaceTarget
-    CYBR E 18 A_CyberAttack
+    CYBR E 6 A_FaceTarget
+    CYBR F 12 A_CyberAttack
+    CYBR E 12 A_FaceTarget
+    CYBR F 12 A_CyberAttack
+    CYBR E 12 A_FaceTarget
+    CYBR F 12 A_CyberAttack
     Goto See
   Pain:
     CYBR G 10 A_Pain
@@ -1109,6 +1171,10 @@ actor Fatso : Actor 67
     FATT NOPQRS 6
     FATT T -1 A_BossDeath
     Stop
+  Raise:
+    FATT R 5
+    FATT QPONMLK 5
+    Goto See
   }
 }
 
@@ -1138,10 +1204,11 @@ actor WolfensteinSS : Actor 84
   Missile:
     SSWV E 10 A_FaceTarget
     SSWV F 10 A_FaceTarget
-    SSWV G 4 A_CPosAttack
-    SSWV F 4 A_CPosAttack
+    SSWV G 4 Bright A_CPosAttack
+    SSWV F 6 A_FaceTarget
+    SSWV G 4 Bright A_CPosAttack
     SSWV F 1 A_CPosRefire
-    Goto See
+    Goto Missile+1
   Pain:
     SSWV H 3
     SSWV H 3 A_Pain
@@ -1153,6 +1220,17 @@ actor WolfensteinSS : Actor 84
     SSWV L 5
     SSWV M -1
     Stop
+  XDeath:
+    SSWV N 5
+    SSWV O 5 A_XScream
+    SSWV P 5 A_NoBlocking
+    SSWV QRSTU 5
+    SSWV V -1
+    Stop
+  Raise:
+    SSWV M 5
+    SSWV LKJI 5
+    Goto See
   }
 }
 
@@ -1189,12 +1267,15 @@ actor PainElemental : Actor 71
     PAIN G 6 A_Pain
     Goto See
   Death:
-    PAIN H 8 A_Scream
-    PAIN I 8 A_PainDie
-    PAIN JK 8
-    PAIN L 8 A_NoBlocking
-    PAIN M 8
+    PAIN H 8 Bright
+    PAIN I 8 Bright A_Scream
+    PAIN JK 8 Bright
+    PAIN L 8 Bright A_PainDie
+    PAIN M 8 Bright
     Stop
+  Raise:
+    PAIN MLKJIH 8
+    Goto See
   }
 }
 
@@ -1228,9 +1309,7 @@ actor Archvile : Actor 64
     VILE P 20
     Goto See
   Heal:
-    VILE H 10
-    VILE I 10
-    VILE J 10
+    VILE "[\\]" 10 Bright
     Goto See
   Pain:
     VILE Q 5

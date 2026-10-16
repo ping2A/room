@@ -33,7 +33,7 @@ pub use doom_text::{
 pub use draw::{DrawCmd, Rect, Rgba, UiDrawList, Vec2};
 pub use finale::draw_finale;
 pub use font::{FontId, FontRegistry, SoftFont};
-pub use hud::HudState;
+pub use hud::{HudState, screen_blend};
 pub use i18n::{StringTable, localize};
 pub use intermission::{IntermissionStats, draw_intermission};
 pub use menu::{ListMenu, MenuCommand, MenuItem, MenuSfx, MenuStack, parse_menu_action};

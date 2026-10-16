@@ -99,6 +99,8 @@ pub struct UnlitPass {
     /// Use on non-sRGB targets that still need display-referred bytes (fallback
     /// if an sRGB texture view is unavailable).
     pub encode_srgb: bool,
+    /// Doom `INVERSECOLORMAP`: unlit inverted greyscale (invulnerability sphere).
+    pub inverse_colormap: bool,
 }
 
 impl UnlitPass {
@@ -707,6 +709,7 @@ impl UnlitPass {
             lightmap_strength: 0.0,
             output_gain: 1.0,
             encode_srgb: false,
+            inverse_colormap: false,
         }
     }
 
@@ -886,7 +889,7 @@ impl UnlitPass {
                 self.lightmap_strength,
                 self.output_gain.max(0.01),
                 if self.encode_srgb { 1.0 } else { 0.0 },
-                0.0,
+                if self.inverse_colormap { 1.0 } else { 0.0 },
             ],
         };
         gpu.queue

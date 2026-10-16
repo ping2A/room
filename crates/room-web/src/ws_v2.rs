@@ -46,6 +46,10 @@ struct Shared {
     watching: Option<(WelcomeRoom, Vec<RosterSeat>)>,
     /// Seats in the last roster (diffed to synthesize leaves).
     roster: std::collections::BTreeSet<u8>,
+    /// Server / admin `notice` lines not yet shown.
+    notices: VecDeque<String>,
+    /// `(code, reason)` of the server's `bye` (room closed).
+    bye: Option<(String, String)>,
 }
 
 /// v2 game gateway transport.
@@ -94,6 +98,8 @@ impl WsV2Transport {
             rtt_ms: None,
             watching: None,
             roster: std::collections::BTreeSet::new(),
+            notices: VecDeque::new(),
+            bye: None,
         }));
         let outbox: Outbox = Rc::new(RefCell::new(VecDeque::new()));
 
@@ -295,6 +301,24 @@ impl WsV2Transport {
         self.send_control(&ControlMsg::Ready {});
     }
 
+    /// Report the end of the match (`ControlMsg::Result`).
+    pub fn send_result(&mut self, msg: &ControlMsg) {
+        if matches!(msg, ControlMsg::Result { .. }) {
+            self.send_control(msg);
+        }
+    }
+
+    /// Drain server `notice` lines.
+    pub fn take_notices(&mut self) -> Vec<String> {
+        self.shared.borrow_mut().notices.drain(..).collect()
+    }
+
+    /// `(code, reason)` once the server said `bye`.
+    #[must_use]
+    pub fn bye(&self) -> Option<(String, String)> {
+        self.shared.borrow().bye.clone()
+    }
+
     /// Send admin telemetry pose.
     pub fn send_pose(&mut self, x: i32, y: i32, angle: i16) {
         self.send_control(&ControlMsg::Pose { x, y, angle });
@@ -452,8 +476,16 @@ fn on_text(shared: &Rc<RefCell<Shared>>, text: &str) {
                 );
             }
         }
-        ControlMsg::Bye { reason, .. } => {
-            shared.borrow_mut().reject = Some(reason);
+        ControlMsg::Bye { code, reason } => {
+            let mut s = shared.borrow_mut();
+            s.bye = Some((code, reason.clone()));
+            s.reject = Some(reason);
+        }
+        ControlMsg::Notice { text } => {
+            let mut s = shared.borrow_mut();
+            if s.notices.len() < 16 {
+                s.notices.push_back(text);
+            }
         }
         ControlMsg::Rtc { .. } => {
             let mut s = shared.borrow_mut();

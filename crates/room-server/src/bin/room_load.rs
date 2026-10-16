@@ -91,6 +91,8 @@ async fn main() {
             max_players: args.players,
             enable_verifier: false,
             visibility: "public".into(),
+            game_mod: None,
+            time_limit: None,
         }) {
             Ok(r) => room_ids.push(r.id),
             Err(e) => {

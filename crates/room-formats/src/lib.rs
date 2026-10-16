@@ -38,7 +38,7 @@ pub use jpeg::{is_jpeg, parse_jpeg};
 pub use mp3::{is_mp3, parse_mp3};
 pub use mus::{is_mus, mus_to_midi};
 pub use ogg::{is_ogg, parse_ogg};
-pub use patch::{Patch, PatchColumn, parse_patch};
+pub use patch::{Patch, PatchColumn, encode_patch, parse_patch};
 pub use pcx::{is_pcx, parse_pcx};
 pub use playpal::{Palette, Playpal, parse_playpal};
 pub use pnames::{Pnames, parse_pnames};

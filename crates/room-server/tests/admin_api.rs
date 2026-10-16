@@ -23,6 +23,8 @@ async fn admin_summary_and_close_audited() {
             max_players: 2,
             enable_verifier: false,
             visibility: "public".into(),
+            game_mod: None,
+            time_limit: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry.clone()).await.unwrap();
@@ -72,9 +74,11 @@ async fn admin_bind_separate_listener() {
     let public_addr = public_listener.local_addr().unwrap();
     let admin_addr = admin_listener.local_addr().unwrap();
     let admin = registry.admin();
+    let auth = room_server::AuthStore::memory("localhost", "http://127.0.0.1:8766");
     let state = AppState {
         registry: registry.clone(),
         admin,
+        auth,
     };
     let public = public_router(state.clone());
     let admin = admin_router(state);
@@ -134,6 +138,8 @@ async fn admin_notice_reaches_v2_client() {
             max_players: 2,
             enable_verifier: false,
             visibility: "public".into(),
+            game_mod: None,
+            time_limit: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -210,6 +216,8 @@ async fn ban_by_name_blocks_join_and_hello() {
             max_players: 2,
             enable_verifier: false,
             visibility: "public".into(),
+            game_mod: None,
+            time_limit: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -290,6 +298,8 @@ async fn ban_name_regex_and_auth_key_scopes() {
             max_players: 2,
             enable_verifier: false,
             visibility: "public".into(),
+            game_mod: None,
+            time_limit: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();

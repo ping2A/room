@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Guest-side Rust SDK (#![no_std] + alloc) for WASM modules."
+description = "Guest-side Rust SDK (#![no_std], optional alloc) for WASM modules."
 
 [lints]
 workspace = true
@@ -12,3 +12,7 @@ workspace = true
 [dependencies]
 room-script-abi = { path = "../room-script-abi" }
 room-script-sdk-macros = { path = "../room-script-sdk-macros" }
+
+[features]
+default = []
+alloc = []

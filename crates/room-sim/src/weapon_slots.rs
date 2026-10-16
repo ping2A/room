@@ -73,6 +73,29 @@ impl WeaponSlots {
         self.section = Some(name.into());
     }
 
+    /// Whether `weapon` sits in any slot (GZDoom `LocateWeapon`).
+    #[must_use]
+    pub fn contains(&self, weapon: &str) -> bool {
+        (1u8..=10).any(|s| {
+            self.weapons_for(s)
+                .iter()
+                .any(|w| w.eq_ignore_ascii_case(weapon))
+        })
+    }
+
+    /// Drop every slotted weapon for which `keep` is false (e.g. no sprites
+    /// in the loaded IWAD, like the super shotgun in Doom 1).
+    pub fn retain_weapons(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        for slot in 1u8..=10 {
+            let mut list = self.weapons_for(slot);
+            let before = list.len();
+            list.retain(|w| keep(w));
+            if list.len() != before {
+                self.slots.insert(slot, list);
+            }
+        }
+    }
+
     /// `setslot n weapon…` — replace slot contents.
     pub fn set_slot(&mut self, slot: i32, weapons: &[String]) {
         if !(1..=10).contains(&slot) {
@@ -148,6 +171,15 @@ mod tests {
         s.set_slot(2, &["Shotgun".into()]);
         assert_eq!(s.weapons_for(2), vec!["Shotgun".to_owned()]);
         assert_eq!(s.weapons_for(1)[0], "Chainsaw");
+    }
+
+    #[test]
+    fn retain_weapons_drops_from_defaults() {
+        let mut s = WeaponSlots::with_doom_defaults();
+        s.retain_weapons(|w| w != "SuperShotgun");
+        assert_eq!(s.weapons_for(3), vec!["Shotgun".to_owned()]);
+        assert!(!s.contains("supershotgun"));
+        assert!(s.contains("BFG9000"));
     }
 
     #[test]

@@ -36,10 +36,26 @@ fn doom1_maps_survive_json_roundtrip() {
         geom.game_nodes.clone_from(&loaded.game_nodes);
         geom.gl_nodes.clone_from(&loaded.gl_nodes);
         for (field, a, b) in [
-            ("setup", format!("{:?}", geom.setup), format!("{:?}", loaded.setup)),
-            ("reject", format!("{:?}", geom.reject), format!("{:?}", loaded.reject)),
-            ("format", format!("{:?}", geom.format), format!("{:?}", loaded.format)),
-            ("udmf", format!("{:?}", geom.udmf_user), format!("{:?}", loaded.udmf_user)),
+            (
+                "setup",
+                format!("{:?}", geom.setup),
+                format!("{:?}", loaded.setup),
+            ),
+            (
+                "reject",
+                format!("{:?}", geom.reject),
+                format!("{:?}", loaded.reject),
+            ),
+            (
+                "format",
+                format!("{:?}", geom.format),
+                format!("{:?}", loaded.format),
+            ),
+            (
+                "udmf",
+                format!("{:?}", geom.udmf_user),
+                format!("{:?}", loaded.udmf_user),
+            ),
         ] {
             assert!(a == b, "{name} {field} differs");
         }

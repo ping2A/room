@@ -145,7 +145,7 @@ The server becomes the arbitrator and the only sender of tic frames: clients sen
 | `t` | Dir | Fields |
 | --- | --- | --- |
 | `hello` | C→S | `ticket`, `client_version`, `abi_major`, `iwad_fingerprint` (u64 hex), `resume_token?` |
-| `welcome` | S→C | `seat`, `room` {map, skill, max\_players, rng\_seed, delay}, `resume_token`, `roster[]`, `media` {enabled, ice\_servers\[\]} |
+| `welcome` | S→C | `seat`, `room` {map, skill, max\_players, rng\_seed, delay, `mod?` {name, title, fingerprint, size}}, `resume_token`, `roster[]`, `media` {enabled, ice\_servers\[\]} |
 | `reject` | S→C | `code` (enum), `reason` |
 | `roster` | S→C | `seats[]` {seat, name, state: lobby/loading/ready/playing/away, muted} |
 | `ready` | C→S | `{}` after map load |
@@ -155,6 +155,20 @@ The server becomes the arbitrator and the only sender of tic frames: clients sen
 | `rtc` | both | WebRTC signalling: `{kind: offer/answer/ice/track, sdp?, candidate?, mid?}` (§8) |
 | `notice` | S→C | admin broadcast text, kick reason, shutdown warning |
 | `bye` | S→C | `code`, `reason` before close |
+| `result` | C→S | `winner` (seat or null), `time_up`, `standings: [{seat, place, frags, deaths}]` — sent once by each seat when its sim ends the match |
+
+**Match end, time limit, leaderboard.** Every room has a time limit in minutes
+(`time_limit` on `POST /api/rooms`, clamped 1–180; default
+`--room-time-limit-mins` / `ROOM_TIME_LIMIT_MINS`, 20). `welcome.room.time_limit`
+carries it in seconds, and the deterministic sim ends the match on every seat when it
+runs out (`World.match_over`, `time_up`); mods can end it earlier with
+`game_end_match`. Seats report a `result`. Once more than half the connected seats agree, the
+server sends a `notice` and closes the room `--match-end-grace-secs` later
+(`ROOM_MATCH_END_GRACE_SECS`, 20) with `bye {code: "over"}`. A wall-clock
+backstop closes it at start + limit + 30 s ("time limit reached"). Closed
+rooms leave the directory. When every connected seat (≥ 2) agrees, the result
+goes into `data_dir/leaderboard.json`; `GET /api/leaderboard` returns the top 10
+(wins, frags, deaths, matches), shown as "Top players" in the lobby.
 | `watch` | C→S | `iwad_fingerprint`, `name?`, `client_version` — join as a spectator instead of `hello` (no ticket, no seat) |
 | `watching` | S→C | `room` (same as `welcome.room`), `roster[]`; followed by `start` if the match is running |
 
@@ -172,12 +186,26 @@ The server becomes the arbitrator and the only sender of tic frames: clients sen
 
 **Room lifecycle:**
 
-1. **Created** — `POST /api/rooms` with {map, skill, max\_players 2–8, visibility public/private, password?, media flags}. The server generates `room_id` (128-bit random, base32) and `rng_seed` from the OS CSPRNG.
+1. **Created** — `POST /api/rooms` with {map, skill, max\_players 2–8, visibility public/private, password?, media flags, `mod?`}. The server generates `room_id` (128-bit random, base32) and `rng_seed` from the OS CSPRNG.
 2. **Lobby** — players join with tickets; first `hello` pins the IWAD fingerprint unless the creator set it. Mismatch → `reject{code: "fingerprint"}`.
 3. **Loading** — creator (or auto-start when full) triggers start; server sends `welcome` settings; waits for `ready` from every seat (timeout 60 s, then drop that seat).
 4. **Running** — tic relay as above.
 5. **Reconnect** — a dropped seat stays reserved for `resume_grace` (default 60 s). Only a `hello` carrying that seat's `resume_token` reclaims it. Without the verifier, a reconnecting client cannot rebuild state, so v2 only supports resume during the Lobby/Loading phases, or while running if the verifier is on (snapshot sent).
 6. **Ended / Closed** — all seats gone for 30 s, an admin close, or max duration (default 6 h). Write a summary row to `room_history` and free memory.
+
+**Mods.** Rooms can run one WASM mod (`docs/12-wasm-scripting.md` §15). Every seat runs the full sim, so all seats must mount the same bytes:
+
+1. **Catalog.** `--mods-dir` / `ROOM_MODS_DIR` names a directory of `*.wad` files that contain a `ROOMMOD` lump; it is read once at startup (files over 32 MiB, without `ROOMMOD`, or whose stem is not `[a-z0-9_-]{1,32}` are skipped with a warning). The file stem is the mod name; the title comes from the manifest's `[mod] name`. `scripts/room-server.sh start` builds every `mods/<dir>` (Rust crate or AssemblyScript; `./scripts/room-server.sh mods` builds only) and serves the resulting WADs; the Docker image ships them too.
+2. **Allowing.** Catalog mods start **disallowed**. An admin allows or disallows each one in the admin console (Settings → *Mods*; `GET /admin/api/v1/mods` → `[{name, title, fingerprint, size, url, allowed}]`, `POST /admin/api/v1/mods/{name}` with `{"allowed": true|false}`, audited as `allow_mod` / `disallow_mod`). The allow list is saved in `<data-dir>/mods.json`; on the first run (no file yet) `--allow-mods` / `ROOM_ALLOW_MODS` seeds it (comma-separated names, or `*`). Disallowing only affects new rooms: running rooms keep their mod and its file stays downloadable.
+3. **HTTP.** `GET /api/mods` → allowed mods `[{name, title, fingerprint, size, url}]`; `GET /api/mods/{name}.wad` serves the bytes of any catalog mod (`application/octet-stream`, `Access-Control-Allow-Origin: *`, `ETag` = fingerprint, 5 min cache). Both are on the public and lobby routers.
+4. **Rooms.** `POST /api/rooms` with `"mod": "bounty"` pins the mod for the room's lifetime; an unknown name is a 400 (`unknown mod`), a disallowed one a 403, an empty string means vanilla. `GET /api/rooms` and the admin room list show the mod name; the lobby UI has a *Mod* select and a badge on room cards.
+5. **Clients.** `welcome.room.mod` (and `watching.room.mod`) carries `{name, title, fingerprint, size}`; the field is omitted for vanilla rooms, so old clients and servers interoperate. Before preparing the map the web client fetches `{http(s) of the ws origin}/api/mods/{name}.wad`, checks `content_fingerprint` (same 64-bit hash as the IWAD fingerprint, hex) and mounts it after the IWAD; a mismatch or download error is a lobby error, never a silent vanilla start.
+6. **Verifier.** The headless verifier mounts the same catalog bytes and calls `discover_mods` + `set_script_mods`, so server checksums include the mod.
+7. **HUD messages.** A mod's `player_print` to everyone shows on every client; a print to one seat only on that seat's screen (and spectators following it). Unscoped sim messages (pickups, ACS `Print`) stay hidden in netplay.
+
+Example mods shipped with the server: `bounty` (Bounty Hunter), `survival` (Survival Director) and `royale` (Battle Royale — multiplayer only: no monsters, fists only, deathmatch rules with one life, closing zone, last player standing ends the level; `mods/doom1-royale`). Doom coop has four player starts, so modded rooms, like all rooms, play with at most four bodies.
+
+The legacy `FTRL` gateway has no mod field; its rooms are always vanilla.
 
 **Compatibility.** Under feature `legacy-ftrl`, keep a gateway that speaks today's `FTRL` framing but still applies §5 limits and stamps the sender seat; deprecate it once `room-web` ships v2.
 
@@ -212,7 +240,7 @@ Treat every client as hostile: identity comes from a signed ticket, the seat com
 
 **Authority and anti-cheat.** Because every client runs the full sim, lockstep cannot hide information (wallhacks remain possible), but the server must prevent input forgery and arbitration abuse: seat stamping, first-cmd-wins, range checks, server-chosen seed and map, server stall policy. With the phase-3 verifier the server's checksum is authoritative, so a client that reports a different checksum is the one flagged.
 
-**Admin plane.** Separate listener bound to a private interface or VPN; never exposed on the public port. Admin auth = WebAuthn passkeys (preferred) or Argon2id password + TOTP; session cookie `HttpOnly; Secure; SameSite=Strict`, 8 h absolute lifetime; CSRF token on every state-changing request; RBAC roles `viewer`, `moderator`, `admin`. Every mutating action writes an append-only `audit_log` row (who, what, target, before/after, ip, ts).
+**Admin plane.** Separate listener bound to a private interface or VPN; never exposed on the public port. Admin auth = **Argon2id password**. TOTP and/or **WebAuthn / YubiKey / passkey** (pure-Rust ES256 — not `webauthn-rs`/OpenSSL) is optional: it is required on the next login only after an admin enrolls one. Bootstrap with `--admin-bootstrap user:password` or `ROOM_ADMIN_BOOTSTRAP` when `admins.json` is empty (`scripts/room-server.sh` uses `admin` / `admin`); credentials live under `--data-dir`. Session cookie `room_admin_sid` is `HttpOnly; SameSite=Strict` (+ `Secure` with `--admin-secure-cookie`), 8 h absolute lifetime; pending MFA uses `room_admin_pending`. CSRF via `X-CSRF-Token` on every mutating request. Legacy `--admin-token` bearer remains only when **no** MFA users exist (dev). Every mutating action writes an append-only `audit_log` row (who, what, target, detail, ts).
 
 **Media.** WebRTC media is always DTLS-SRTP encrypted. TURN credentials are short-lived (RFC 8489 REST style: HMAC of `expiry:user` with a shared secret, TTL 10 min), issued only inside `welcome`. Optional E2EE via Insertable Streams / SFrame (phase 4; disables server-side recording).
 
@@ -274,7 +302,7 @@ Operators get a private web console to watch every room live and to kick, mute, 
 | Players | Search by name, ticket id, IP hash; active sessions | Kick everywhere, ban (moderator) |
 | Bans | List with scope (IP /32, /64, name, fingerprint), reason, expiry, author | Add, edit, lift (moderator) |
 | Audit log | Append-only, filter by actor/action/target/date, CSV export | — (admin) |
-| Settings | Limits from §5 and §6, maintenance mode, global notice; hot-reloaded, versioned | Edit (admin) |
+| Settings | Limits from §5 and §6, maintenance mode, global notice, mods allowed for new rooms; hot-reloaded, versioned | Edit (admin) |
 | Admin users | Accounts, roles, passkeys, last login | Invite, change role, revoke (admin) |
 
 **Admin REST API** (JSON, under `/admin/api/v1`, session cookie + `X-CSRF-Token`):
@@ -291,6 +319,7 @@ Operators get a private web console to watch every room live and to kick, mute, 
 | `POST /rooms/{id}/seats/{seat}/mute` | `{audio: bool, video: bool, chat: bool}` |
 | `POST /rooms/{id}/dump` | Ask clients for a desync dump at a tic (client uploads via signed URL, size cap 2 MiB) |
 | `GET/POST/DELETE /bans` | Manage bans |
+| `GET /mods` · `POST /mods/{name}` | Catalog mods with their allow state · `{allowed}` (§4 *Mods*) |
 | `GET /audit?…` | Audit log |
 | `GET/PUT /settings` | Runtime limits (PUT requires `If-Match` version) |
 | `POST /maintenance` | `{enabled, message}`: stop new rooms, warn players |
@@ -349,7 +378,7 @@ So 1 Gbit/s of SFU egress fits about 550 voice-only rooms or about 100 camera ro
 
 Ship in five milestones, each closed by automated acceptance tests; the server is not done until the load test meets the §6 budgets and the security tests in M2 pass.
 
-**Deployment.** One static binary plus the embedded admin SPA. Provide a multi-stage `Dockerfile` (distroless or `scratch` + CA certs, non-root UID, read-only root FS), a `systemd` unit with `NoNewPrivileges`, `ProtectSystem=strict`, `LimitNOFILE=65536`, and a `docker-compose.yml` with `room-server`, Postgres and coturn for local runs. Config from a TOML file overridable by `ROOM_*` env vars; secrets from files. Serve the `room-web` static build (wasm, JS, `index.html`, `voice.js`) from the same origin with long-cache hashed filenames instead of today's `?v=` query busting. IWADs are never served by the server; players load their own (licensing), Freedoom may be offered.
+**Deployment.** One static binary plus the embedded admin SPA and a baked `room-web` client. `deploy/Dockerfile` is a multi-stage Debian slim image (non-root UID 1000, `tini`, healthcheck on `/healthz`); build for `linux/amd64`, `linux/arm64`, … with `./scripts/docker-build.sh` (Docker buildx). `deploy/docker-compose.yml` runs the server with a persistent data volume and optional Caddy TLS (`--profile tls`). Config is CLI flags and matching `ROOM_*` environment variables (clap `env`). `deploy/room-server.service` covers bare-metal systemd (`NoNewPrivileges`, `ProtectSystem=strict`, `LimitNOFILE=65536`). IWADs are never served by the server; players load their own (licensing), Freedoom may be offered. See `deploy/README.md`.
 
 **Observability.**
 

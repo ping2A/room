@@ -54,6 +54,7 @@
       <button id="btn-play" class="btn go" title="Play from the player start (F5)">▶ Play</button>
       <button id="btn-play-here" class="btn go" title="Play from the 3D camera (F6)">▶ Here</button>
       <button id="btn-stop" class="btn" title="Back to the fly camera (F7)" disabled>■ Edit</button>
+      <button id="btn-mute" class="btn icon" title="Mute game sound and music">🔊</button>
     </div>
     <div class="group layout">
       <button data-layout="2d" class="btn" title="2D only">2D</button>
@@ -70,6 +71,7 @@
         <button data-tab="textures">Textures</button>
         <button data-tab="flats">Flats</button>
         <button data-tab="actors">Actors</button>
+        <button data-tab="scripts" title="WASM mods">Scripts</button>
         <button data-tab="lumps">Lumps</button>
       </nav>
       <div class="search"><input id="browser-filter" type="search" placeholder="Filter…" /></div>
@@ -86,6 +88,7 @@
         <div id="splitter" title="Drag to resize"></div>
         <div id="view3d-wrap">
           <canvas id="room" width="1" height="1" tabindex="0" data-fit="parent"></canvas>
+          <canvas id="room-overlay"></canvas>
           <div class="hint" id="hint3d">Click: select · Right-drag: look · WASD/Q/Z: fly · Shift: fast</div>
           <div class="badge" id="badge3d">EDIT</div>
         </div>

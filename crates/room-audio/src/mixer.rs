@@ -14,6 +14,10 @@ pub const ENGINE_SAMPLE_RATE: u32 = 44_100;
 const CLOSE_DIST: f64 = 160.0;
 /// Doom silence distance.
 const CLIP_DIST: f64 = 1200.0;
+/// Doom `S_STEREO_SWING` (separation units out of 256).
+const STEREO_SWING: f64 = 96.0;
+/// Sources closer than this to the listener play centred (own weapon, pain, …).
+const PAN_MIN_DIST: f64 = 1.0;
 
 /// Linear-resample mono PCM from `src_rate` to `dst_rate`.
 #[must_use]
@@ -116,6 +120,8 @@ pub struct Mixer {
     pub voices: Vec<Voice>,
     /// Listener position.
     pub listener: DVec3,
+    /// Listener facing as a unit XY vector `(cos, sin)`; `None` = mono (no panning).
+    pub listener_facing: Option<(f64, f64)>,
     /// Master SFX gain.
     pub master: f32,
     /// Master music gain (applied by [`Self::mix_music`]).
@@ -130,6 +136,7 @@ impl Default for Mixer {
             bank: SampleBank::default(),
             voices: Vec::new(),
             listener: DVec3::ZERO,
+            listener_facing: None,
             master: 1.0,
             music_gain: 1.0,
             sample_rate: ENGINE_SAMPLE_RATE,
@@ -151,6 +158,13 @@ impl Mixer {
             sample_rate: sample_rate.max(1),
             ..Self::default()
         }
+    }
+
+    /// Place the listener at `pos` facing `angle` (radians, Doom convention:
+    /// counter-clockwise from +X). Enables stereo panning.
+    pub fn set_listener(&mut self, pos: DVec3, angle: f64) {
+        self.listener = pos;
+        self.listener_facing = Some((room_core::dmath::cos(angle), room_core::dmath::sin(angle)));
     }
 
     /// Apply a batch of sound events.
@@ -205,6 +219,13 @@ impl Mixer {
             }
             let atten = attenuate(voice.origin, self.listener, voice.attenuation);
             let gain = voice.volume * atten * self.master;
+            let (pan_l, pan_r) = stereo_gains(
+                voice.origin,
+                voice.attenuation,
+                self.listener,
+                self.listener_facing,
+            );
+            let (gain_l, gain_r) = (gain * pan_l, gain * pan_r);
             let mut pos = voice.cursor as f32;
             for f in 0..frames {
                 let idx = pos as usize;
@@ -216,9 +237,9 @@ impl Mixer {
                     finished.push(vi);
                     break;
                 }
-                let s = pcm[idx] * gain;
-                out[f * 2] += s;
-                out[f * 2 + 1] += s;
+                let s = pcm[idx];
+                out[f * 2] += s * gain_l;
+                out[f * 2 + 1] += s * gain_r;
                 pos += voice.pitch;
             }
             voice.cursor = pos as usize;
@@ -292,6 +313,41 @@ fn attenuate(origin: SoundOrigin, listener: DVec3, scale: f32) -> f32 {
     }
 }
 
+/// Left/right gains for a voice heard by a listener facing `facing`.
+///
+/// Doom separation curve (`sep = 128 ∓ swing·sin θ`, gain `1 − (sep/256)²`),
+/// rescaled so a centred source keeps unity gain.
+fn stereo_gains(
+    origin: SoundOrigin,
+    scale: f32,
+    listener: DVec3,
+    facing: Option<(f64, f64)>,
+) -> (f32, f32) {
+    let (Some((fx, fy)), SoundOrigin::Point(p)) = (facing, origin) else {
+        return (1.0, 1.0);
+    };
+    if scale <= 0.0 {
+        return (1.0, 1.0);
+    }
+    let dx = p.x() - listener.x();
+    let dy = p.y() - listener.y();
+    let dist = room_core::dmath::sqrt(dx * dx + dy * dy);
+    if dist < PAN_MIN_DIST {
+        return (1.0, 1.0);
+    }
+    // sin of the angle from facing to the source; > 0 = source on the left.
+    let side = (fx * dy - fy * dx) / dist;
+    let sep = 128.0 - STEREO_SWING * side.clamp(-1.0, 1.0);
+    let curve = |s: f64| (1.0 - (s / 256.0) * (s / 256.0)) / 0.75;
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        (
+            curve(sep).min(1.0) as f32,
+            curve(256.0 - sep).min(1.0) as f32,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -327,6 +383,59 @@ mod tests {
         // Second render exhausts sample.
         mix.render(&mut out);
         assert!(mix.voices.is_empty());
+    }
+
+    fn render_point(mix: &mut Mixer, at: DVec3) -> (f32, f32) {
+        mix.bank
+            .insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 64]));
+        mix.voices.clear();
+        mix.apply(&[SoundEvent::Start {
+            origin: SoundOrigin::Point(at),
+            channel: 1,
+            sound: SoundId::from_raw(1),
+            volume: 1.0,
+            attenuation: 1.0,
+            pitch: 1.0,
+            flags: SoundFlags::default(),
+        }]);
+        let mut out = vec![0.0f32; 8];
+        mix.render(&mut out);
+        (out[0], out[1])
+    }
+
+    #[test]
+    fn pans_relative_to_listener_facing() {
+        let mut mix = Mixer::new();
+        // Facing +X (east): +Y is to the left.
+        mix.set_listener(DVec3::ZERO, 0.0);
+        let (l, r) = render_point(&mut mix, DVec3::new(0.0, 100.0, 0.0));
+        assert!(l > r * 2.0, "left source: l={l} r={r}");
+        // Same source after turning to face +Y: dead ahead → centred.
+        mix.set_listener(DVec3::ZERO, std::f64::consts::FRAC_PI_2);
+        let (l, r) = render_point(&mut mix, DVec3::new(0.0, 100.0, 0.0));
+        assert!((l - r).abs() < 1e-4, "ahead: l={l} r={r}");
+        // Facing -Y: source is behind-ish → still centred; at +X it is on the left.
+        mix.set_listener(DVec3::ZERO, -std::f64::consts::FRAC_PI_2);
+        let (l, r) = render_point(&mut mix, DVec3::new(100.0, 0.0, 0.0));
+        assert!(l > r * 2.0, "facing south, east is left: l={l} r={r}");
+    }
+
+    #[test]
+    fn listener_own_sounds_stay_centred() {
+        let mut mix = Mixer::new();
+        mix.set_listener(DVec3::new(10.0, 20.0, 0.0), 1.0);
+        let (l, r) = render_point(&mut mix, DVec3::new(10.0, 20.0, 0.0));
+        assert!(
+            (l - 0.5).abs() < 1e-4 && (r - 0.5).abs() < 1e-4,
+            "l={l} r={r}"
+        );
+    }
+
+    #[test]
+    fn no_facing_is_mono() {
+        let mut mix = Mixer::new();
+        let (l, r) = render_point(&mut mix, DVec3::new(0.0, 100.0, 0.0));
+        assert!((l - r).abs() < 1e-6);
     }
 
     #[test]

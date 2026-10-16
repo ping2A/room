@@ -72,10 +72,18 @@ pub struct ServerConfig {
     pub chat_refill_per_sec: f64,
     /// Max concurrent WebSocket connections per client IP (0 = unlimited).
     pub max_conn_per_ip: usize,
-    /// Bearer token for `/admin/*` (empty = allow all — local/dev only).
+    /// Bearer token for `/admin/*` when no MFA users exist (empty = open — local/dev only).
     pub admin_token: String,
-    /// Directory for persisted audit.jsonl + bans.json (empty = memory only).
+    /// Directory for persisted audit.jsonl + bans.json + admins.json (empty = memory only).
     pub data_dir: String,
+    /// WebAuthn RP ID (hostname, e.g. `localhost` or `admin.example.com`).
+    pub admin_rp_id: String,
+    /// WebAuthn / cookie origin (e.g. `http://127.0.0.1:8766`).
+    pub admin_rp_origin: String,
+    /// Bootstrap `user:password` when no admins exist (also `ROOM_ADMIN_BOOTSTRAP`).
+    pub admin_bootstrap: String,
+    /// Set `Secure` on admin session cookies (HTTPS).
+    pub admin_secure_cookie: bool,
     /// STUN URL for `welcome.media` (empty = Google public STUN, or built-in when `stun_bind` set).
     pub stun_url: String,
     /// TURN host (no scheme); empty disables coturn REST credentials.
@@ -104,10 +112,16 @@ pub struct ServerConfig {
     pub drain_grace_secs: u64,
     /// IWAD path for the optional Headless verifier (empty = verifier cannot start).
     pub iwad_path: String,
+    /// Gameplay mods rooms can be created with (`--mods-dir`).
+    pub mods: Arc<crate::mods::ModCatalog>,
     /// Seconds to wait for the first client frame (hello) before close.
     pub handshake_timeout_secs: u64,
     /// Seconds without any frame before idle close (clients should ping).
     pub idle_timeout_secs: u64,
+    /// Match time limit for rooms that do not pick one (minutes, 1..=180).
+    pub room_time_limit_mins: u16,
+    /// Seconds the room stays open after the match ends (final screen).
+    pub match_end_grace_secs: u64,
 }
 
 impl Default for ServerConfig {
@@ -137,6 +151,10 @@ impl Default for ServerConfig {
             max_conn_per_ip: 16,
             admin_token: String::new(),
             data_dir: String::new(),
+            admin_rp_id: "localhost".into(),
+            admin_rp_origin: "http://127.0.0.1:8766".into(),
+            admin_bootstrap: String::new(),
+            admin_secure_cookie: false,
             stun_url: String::new(),
             turn_host: String::new(),
             turn_secret: String::new(),
@@ -151,6 +169,9 @@ impl Default for ServerConfig {
             max_verified_rooms: 200,
             drain_grace_secs: 60,
             iwad_path: String::new(),
+            mods: Arc::default(),
+            room_time_limit_mins: 20,
+            match_end_grace_secs: 20,
             handshake_timeout_secs: 5,
             idle_timeout_secs: 30,
         }

@@ -2,10 +2,22 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#000000" />
   <title>Room</title>
   <style>
-    html, body { margin: 0; height: 100%; background: #000; color: #c8c8d0; font-family: system-ui, sans-serif; overflow: hidden; }
+    html, body { margin: 0; height: 100%; background: #000; color: #c8c8d0; font-family: system-ui, sans-serif; overflow: hidden; overscroll-behavior: none; -webkit-text-size-adjust: 100%; }
+    #stage, #room { touch-action: none; -webkit-tap-highlight-color: transparent; }
+    /* Phones: panels fit the screen and scroll instead of overflowing. */
+    #boot .panel, #lobby .panel, #callsign form {
+      box-sizing: border-box; max-width: calc(100vw - 1.5rem); max-height: calc(100dvh - 1.5rem); overflow-y: auto;
+    }
+    #lobby .panel { min-width: min(18rem, calc(100vw - 1.5rem)); }
+    #boot label, #callsign button, #lobby .invite-copy { min-height: 44px; }
+    #boot select, #gamebar select { min-height: 32px; font-size: 16px; }
     /* Center playfield; WASM sizes #room to ≤16:9 (desktop FOV). */
     #stage {
       position: fixed; inset: 0;
@@ -197,12 +209,74 @@
     #netGraph .ng-hint {
       margin: 4px 0 0; font: 9px/1.2 system-ui, sans-serif; color: #5a6474;
     }
+    #gamebar {
+      position: fixed; top: 8px; left: 8px; z-index: 30; display: flex; gap: 10px; align-items: center;
+      padding: 6px 10px; background: rgba(12, 14, 20, 0.82); border: 1px solid #2a3040; border-radius: 6px;
+      font: 12px system-ui, sans-serif; color: #aab;
+    }
+    #gamebar.locked { display: none; }
+    #gamebar select { background: #1a1e28; color: #dde; border: 1px solid #3a4258; border-radius: 4px; font: inherit; padding: 2px 4px; }
+    #gamebar a { color: #8fb4ff; text-decoration: none; }
+    #matchclock {
+      position: fixed; top: max(8px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 6;
+      padding: 4px 12px; border-radius: 999px; background: rgba(8, 10, 14, 0.72);
+      border: 1px solid rgba(80, 90, 105, 0.5); font: 600 14px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #dfe6f0; pointer-events: none; user-select: none; font-variant-numeric: tabular-nums;
+    }
+    #matchclock.low { color: #ffb0a0; border-color: rgba(220, 90, 70, 0.7); }
+    #matchclock[hidden], #matchover[hidden] { display: none; }
+    #matchover {
+      position: fixed; inset: 0; z-index: 9; display: flex; align-items: center; justify-content: center;
+      background: radial-gradient(ellipse at center, rgba(40, 10, 10, 0.78), rgba(4, 4, 8, 0.92));
+      pointer-events: auto;
+    }
+    #matchover .panel {
+      box-sizing: border-box; width: min(30rem, calc(100vw - 1.5rem)); max-height: calc(100dvh - 1.5rem); overflow-y: auto;
+      padding: 1.4rem 1.5rem; background: rgba(16, 18, 26, 0.95); border: 1px solid #4a2a2a; border-radius: 12px;
+      box-shadow: 0 16px 60px rgba(0,0,0,0.6); text-align: center;
+    }
+    #matchover h1 { margin: 0 0 0.25rem; font-size: 1.9rem; letter-spacing: 0.06em; color: #ffd27a; text-transform: uppercase; }
+    #matchover h1.lost { color: #e8a0a0; }
+    #matchover .sub { margin: 0 0 1rem; color: #9aa3b2; font-size: 0.92rem; }
+    #matchover table { width: 100%; border-collapse: collapse; margin: 0 0 1.1rem; font-size: 0.92rem; }
+    #matchover th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: #7a8494; font-weight: 600; padding: 0 0.4rem 0.35rem; }
+    #matchover td { padding: 0.45rem 0.4rem; border-top: 1px solid rgba(60, 66, 82, 0.6); color: #d8dee9; font-variant-numeric: tabular-nums; }
+    #matchover td.name { text-align: left; }
+    #matchover tr.me td { color: #fff; background: rgba(90, 140, 70, 0.18); }
+    #matchover tr.first td.place { color: #ffd27a; font-weight: 700; }
+    #matchover .out { color: #8a6a6a; }
+    #matchover .actions { display: flex; gap: 0.6rem; justify-content: center; flex-wrap: wrap; }
+    #matchover .actions a, #matchover .actions button {
+      min-height: 44px; padding: 0.55rem 1.1rem; border-radius: 6px; cursor: pointer; text-decoration: none;
+      border: 1px solid #4a6e36; background: #3a5a2a; color: #e8ffe0; font: 0.95rem system-ui, sans-serif;
+      display: inline-flex; align-items: center;
+    }
   </style>
   <link rel="icon" href="data:," />
 </head>
 <body>
   <div id="stage">
     <canvas id="room" width="1" height="1" tabindex="0"></canvas>
+  </div>
+  <div id="gamebar">
+    <label>Skill
+      <select id="game-skill">
+        <option value="1">I'm too young to die</option>
+        <option value="2">Hey, not too rough</option>
+        <option value="3">Hurt me plenty</option>
+        <option value="4">Ultra-Violence</option>
+        <option value="5">Nightmare!</option>
+      </select>
+    </label>
+    <label>Mod
+      <select id="game-mod">
+        <option value="">None</option>
+        <option value="survival">Survival Director (Rust)</option>
+        <option value="bounty">Bounty Hunter (AssemblyScript)</option>
+        <option value="royale">Battle Royale practice (Rust)</option>
+      </select>
+    </label>
+    <a href="editor.html" title="Map editor — Scripts tab for WASM mods">Editor ↗</a>
   </div>
   <div id="boot">
     <div class="panel">
@@ -212,7 +286,17 @@
         Choose IWAD…
         <input id="iwad" type="file" accept=".wad,application/octet-stream" />
       </label>
-      <p class="hint">Or run <code>./scripts/play-web.sh</code> with <code>testdata/doom/doom1.wad</code> present — it will be served as <code>/doom1.wad</code> and load automatically. Coop: <code>./scripts/play-web-coop.sh</code> or add <code>?ws=ws://127.0.0.1:8765&amp;players=2</code>. Press a key or click to unlock audio; click the canvas for mouse look. Coop voice: hold <kbd>V</kbd> to talk (push-to-talk).</p>
+      <label>
+        Skill
+        <select id="skill-select">
+          <option value="1">I'm too young to die</option>
+          <option value="2">Hey, not too rough</option>
+          <option value="3" selected>Hurt me plenty</option>
+          <option value="4">Ultra-Violence</option>
+          <option value="5">Nightmare!</option>
+        </select>
+      </label>
+      <p class="hint">Or run <code>./scripts/play-web.sh</code> with <code>testdata/doom/doom1.wad</code> present — it will be served as <code>/doom1.wad</code> and load automatically. Coop: <code>./scripts/play-web-coop.sh</code> or add <code>?ws=ws://127.0.0.1:8765&amp;players=2</code>. Press a key or click to unlock audio; click the canvas for mouse look. Coop voice: hold <kbd>V</kbd> to talk (push-to-talk). Phones / tablets: left thumb moves (push to the edge to run), right thumb drags to look, plus FIRE / USE / weapon buttons; play sideways.</p>
     </div>
   </div>
   <div id="lobby" aria-live="polite">
@@ -239,6 +323,18 @@
       <input id="callsign-input" type="text" maxlength="24" placeholder="Callsign" required />
       <button type="submit" id="callsign-go" disabled>Join</button>
     </form>
+  </div>
+  <div id="matchclock" hidden></div>
+  <div id="matchover" hidden role="dialog" aria-modal="true" aria-labelledby="matchover-title">
+    <div class="panel">
+      <h1 id="matchover-title">Match over</h1>
+      <p class="sub" id="matchover-sub"></p>
+      <table>
+        <thead><tr><th>#</th><th class="name">Player</th><th>Frags</th><th>Deaths</th><th></th></tr></thead>
+        <tbody id="matchover-rows"></tbody>
+      </table>
+      <div class="actions" id="matchover-actions"></div>
+    </div>
   </div>
   <p id="status">Loading Room…</p>
   <script type="module">
@@ -317,6 +413,87 @@
       });
     }
 
+    // Match countdown pill + final standings once the sim ends the match
+    // (everyone dead / last one standing / time up) or the server closes the room.
+    function initMatchOverlay(mod, params) {
+      const clock = document.getElementById("matchclock");
+      const over = document.getElementById("matchover");
+      const title = document.getElementById("matchover-title");
+      const sub = document.getElementById("matchover-sub");
+      const rows = document.getElementById("matchover-rows");
+      const actions = document.getElementById("matchover-actions");
+      over.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+      over.addEventListener("keydown", (ev) => ev.stopPropagation());
+      const ws = params.get("ws") || "";
+      let lobbyUrl = "/";
+      try {
+        if (ws) lobbyUrl = new URL("/", ws.replace(/^ws/, "http")).href;
+      } catch (_) { /* keep "/" */ }
+      const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+      const fmt = (secs) => {
+        const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+        const mm = h ? String(m).padStart(2, "0") : String(m);
+        return (h ? `${h}:` : "") + `${mm}:${String(s).padStart(2, "0")}`;
+      };
+      let shown = "";
+      const show = (st) => {
+        const key = JSON.stringify([st.over, st.closed, st.rows]);
+        if (key === shown) return;
+        shown = key;
+        const o = st.over;
+        const me = st.spectator ? null : st.local_seat;
+        let head, lost = false;
+        if (o && o.winner != null) {
+          if (o.winner === me) head = st.solo ? "Survived" : "Victory!";
+          else { head = `${o.winner_name || "Player " + (o.winner + 1)} wins`; lost = me != null; }
+        } else if (o && o.time_up) {
+          head = "Time's up";
+        } else if (o) {
+          head = st.solo ? "You died" : "No survivors";
+          lost = true;
+        } else {
+          head = "Room closed";
+        }
+        title.textContent = head;
+        title.classList.toggle("lost", lost);
+        const notes = [];
+        if (o && o.time_up && o.winner == null) notes.push("No one claimed the win before the clock ran out.");
+        if (st.closed) notes.push(`The server closed this room (${st.closed}).`);
+        else if (!st.solo) notes.push("The room closes shortly.");
+        sub.textContent = notes.join(" ");
+        rows.innerHTML = (st.rows || []).map((r) => {
+          const cls = [r.seat === me ? "me" : "", r.place === 1 ? "first" : ""].join(" ");
+          const state = r.alive ? "alive" : '<span class="out">out</span>';
+          return `<tr class="${cls}"><td class="place">${r.place}</td><td class="name">${esc(r.name)}</td>` +
+            `<td>${r.frags}</td><td>${r.deaths}</td><td>${state}</td></tr>`;
+        }).join("");
+        actions.innerHTML = ws
+          ? `<a href="${esc(lobbyUrl)}">Back to lobby</a>`
+          : `<button type="button" id="matchover-again">Play again</button>`;
+        const again = document.getElementById("matchover-again");
+        if (again) again.addEventListener("click", () => location.reload());
+        if (document.pointerLockElement) document.exitPointerLock();
+        over.hidden = false;
+      };
+      setInterval(() => {
+        let st = null;
+        try { st = JSON.parse(mod.roomMatchState()); } catch (_) { return; }
+        if (!st) { clock.hidden = true; return; }
+        if (st.over || st.closed) {
+          clock.hidden = true;
+          show(st);
+          return;
+        }
+        if (st.time_left != null) {
+          clock.textContent = fmt(st.time_left);
+          clock.classList.toggle("low", st.time_left <= 60);
+          clock.hidden = false;
+        } else {
+          clock.hidden = true;
+        }
+      }, 250);
+    }
+
     // pointerdown is the primary path (click often lost if DOM churns); click is backup.
     inviteCopyBtn.addEventListener("pointerdown", (ev) => { copyInviteLink(ev); });
     inviteCopyBtn.addEventListener("click", (ev) => { copyInviteLink(ev); });
@@ -333,8 +510,49 @@
       window.roomNetStats = () => mod.roomNetStats();
       window.roomAudioStats = () => mod.roomAudioStats();
       window.roomVoiceActive = () => mod.roomVoiceActive();
+      try {
+        const { initTouchControls } = await import("./touch.js");
+        initTouchControls(mod);
+      } catch (e) {
+        console.warn("room-web: touch controls unavailable", e);
+      }
 
       const params = new URLSearchParams(location.search);
+      initMatchOverlay(mod, params);
+      // Skill / mod changes reload with new URL params (a fresh game).
+      const bindParamSelect = (id, key, fallback) => {
+        const sel = document.getElementById(id);
+        if (!sel) return;
+        sel.value = params.get(key) || fallback;
+        sel.addEventListener("change", () => {
+          if (sel.value) params.set(key, sel.value);
+          else params.delete(key);
+          location.search = params.toString();
+        });
+        // Keep game keys (arrows / WASD) away from a focused select.
+        sel.addEventListener("keydown", (ev) => ev.stopPropagation());
+      };
+      bindParamSelect("skill-select", "skill", "3");
+      bindParamSelect("game-skill", "skill", "3");
+      bindParamSelect("game-mod", "mod", "");
+      const gamebar = document.getElementById("gamebar");
+      document.addEventListener("pointerlockchange", () => {
+        gamebar.classList.toggle("locked", !!document.pointerLockElement);
+      });
+      if (params.get("ws")) gamebar.querySelector("#game-mod").closest("label").hidden = true;
+
+      const modName = params.get("ws") ? "" : (params.get("mod") || "").replace(/[^a-z0-9_-]/gi, "");
+      if (modName) {
+        try {
+          const res = await fetch(`mods/${modName}.wad`, { cache: "no-cache" });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          mod.roomAddPwad(`${modName}.wad`, new Uint8Array(await res.arrayBuffer()));
+          console.log(`room-web: mod ${modName}.wad mounted`);
+        } catch (e) {
+          console.warn(`room-web: mod ${modName} unavailable`, e);
+          status.textContent = `Mod ${modName} unavailable (run ./scripts/room-server.sh mods)`;
+        }
+      }
       // Coop / spectate always needs a callsign before the IWAD boots the session.
       if (params.get("ws") && !(params.get("name") || "").trim()) {
         const watching = !!params.get("spectate") && params.get("spectate") !== "0";

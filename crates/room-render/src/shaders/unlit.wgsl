@@ -318,7 +318,13 @@ fn shade(v: VsOut) -> vec4<f32> {
         }
     }
     let fog_density = view.light_params.z;
-    if (fog_density > 0.0) {
+    if (view.lightmap_params.w > 0.5) {
+        // Doom `INVERSECOLORMAP` (invulnerability): fixed colormap, so no sector
+        // light or fog; inverted luminance taken in display (gamma) space.
+        let g = pow(max(albedo, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+        let lum = dot(g, vec3<f32>(0.299, 0.587, 0.114));
+        color = vec3<f32>(pow(1.0 - lum, 2.2));
+    } else if (fog_density > 0.0) {
         let dist = length(v.world_pos - view.eye.xyz);
         let fog_factor = clamp(1.0 - exp(-fog_density * dist * 0.001), 0.0, 1.0);
         let fog_color = vec3<f32>(0.05, 0.05, 0.08);

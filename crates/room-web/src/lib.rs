@@ -126,10 +126,22 @@ mod browser {
         /// IWAD bytes received before GPU init finished.
         static PENDING_IWAD: RefCell<Option<(Vec<u8>, Option<String>)>> =
             const { RefCell::new(None) };
+        /// PWADs (`roomAddPwad`) mounted by the next single-player start.
+        static PWADS: RefCell<Vec<(String, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
         /// Lobby pump timer id (`setInterval`) — rAF is throttled in background tabs.
         static LOBBY_INTERVAL: RefCell<Option<i32>> = const { RefCell::new(None) };
         /// Play lockstep pump — keeps TIC_CMD flowing when rAF is throttled.
         static PLAY_INTERVAL: RefCell<Option<i32>> = const { RefCell::new(None) };
+        /// Download of the coop room's mod (`welcome.room.mod`).
+        static NET_MOD: RefCell<NetModState> = const { RefCell::new(NetModState::Idle) };
+    }
+
+    enum NetModState {
+        Idle,
+        Fetching,
+        /// Catalog name + verified bytes.
+        Ready(String, Vec<u8>),
+        Failed(String),
     }
 
     /// Start: locate `#room` and run a wgpu rAF loop (demo until IWAD loads).
@@ -258,6 +270,12 @@ mod browser {
         Ok(())
     }
 
+    /// Mount a PWAD (e.g. a WASM mod) after the IWAD on single-player starts.
+    #[wasm_bindgen(js_name = roomAddPwad)]
+    pub fn room_add_pwad(name: &str, data: &[u8]) {
+        PWADS.with(|p| p.borrow_mut().push((name.to_owned(), data.to_vec())));
+    }
+
     /// Start (or restart) a Doom/Freedoom play session from IWAD bytes.
     #[wasm_bindgen(js_name = roomStartIwad)]
     pub fn room_start_iwad(data: &[u8]) -> Result<(), JsValue> {
@@ -278,7 +296,20 @@ mod browser {
             return begin_net_lobby(state, data, map, &ws);
         }
         set_status("Loading IWAD…");
-        let play = PlaySession::start(data, map).map_err(|e| JsValue::from_str(&e))?;
+        let skill = room_url_param("skill")
+            .and_then(|s| s.parse::<u8>().ok())
+            .unwrap_or(3)
+            .clamp(1, 5);
+        let play = PlaySession::start_with(
+            data,
+            PlayStartOpts {
+                map_name: map.map(str::to_owned),
+                skill,
+                pwads: PWADS.with(|p| p.borrow().clone()),
+                ..PlayStartOpts::default()
+            },
+        )
+        .map_err(|e| JsValue::from_str(&e))?;
         enter_play_mode(state, play)
     }
 
@@ -322,7 +353,10 @@ mod browser {
             rng_seed,
             ticket,
             spectate,
+            game_mod: None,
+            time_limit: 0,
         };
+        NET_MOD.with(|n| *n.borrow_mut() = NetModState::Idle);
         let lobby = NetLobby::begin(cfg).map_err(|e| JsValue::from_str(&e))?;
         set_status(&lobby.status());
         hide_boot_overlay();
@@ -562,6 +596,9 @@ mod browser {
             return Ok(());
         }
 
+        let Some(pwads) = coop_mod_pwads(state)? else {
+            return Ok(());
+        };
         set_status("Loading map…");
         set_lobby_html("<h2>Loading map…</h2><p class=\"muted\">Preparing level before Ready</p>");
         let (iwad, opts) = {
@@ -580,7 +617,9 @@ mod browser {
                     rng_seed,
                     coop_players: players.min(4),
                     local_seat: seat,
-                    net: None,
+                    pwads,
+                    time_limit_secs: lobby.time_limit(),
+                    ..PlayStartOpts::default()
                 },
             )
         };
@@ -609,6 +648,117 @@ mod browser {
         Ok(())
     }
 
+    /// Named PWAD files (`name`, bytes).
+    type NamedPwads = Vec<(String, Vec<u8>)>;
+
+    /// PWADs for the room's mod: `Some` once ready (empty = vanilla room),
+    /// `None` while the download runs.
+    fn coop_mod_pwads(state: &Shared) -> Result<Option<NamedPwads>, JsValue> {
+        let (game_mod, ws_url) = {
+            let s = state.borrow();
+            let Mode::Lobby { lobby, .. } = &s.mode else {
+                return Ok(Some(Vec::new()));
+            };
+            (lobby.game_mod().cloned(), lobby.ws_url().to_owned())
+        };
+        let Some(m) = game_mod else {
+            return Ok(Some(Vec::new()));
+        };
+        let start = NET_MOD.with(|n| {
+            let mut n = n.borrow_mut();
+            match &*n {
+                NetModState::Ready(name, _) if *name == m.name => Ok(false),
+                NetModState::Fetching => Ok(false),
+                NetModState::Failed(e) => Err(e.clone()),
+                _ => {
+                    *n = NetModState::Fetching;
+                    Ok(true)
+                }
+            }
+        });
+        let start = start.map_err(|e| {
+            set_status(&format!("Mod download failed: {e}"));
+            set_lobby_html(&format!(
+                "<h2>Mod download failed</h2><p class=\"err\">{}</p>",
+                html_escape(&e)
+            ));
+            JsValue::from_str(&e)
+        })?;
+        if start {
+            set_status(&format!("Downloading mod {}…", m.title));
+            set_lobby_html(&format!(
+                "<h2>Downloading mod…</h2><p class=\"muted\">{} ({} KiB)</p>",
+                html_escape(&m.title),
+                m.size.div_ceil(1024)
+            ));
+            let url = mod_download_url(&ws_url, &m.name);
+            let m = m.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = fetch_bytes(&url).await.and_then(|bytes| {
+                    let fp = format!("{:016x}", room_proto::content_fingerprint(&bytes));
+                    if fp == m.fingerprint {
+                        Ok(bytes)
+                    } else {
+                        Err(format!(
+                            "{} has fingerprint {fp}, the room expects {}",
+                            m.name, m.fingerprint
+                        ))
+                    }
+                });
+                NET_MOD.with(|n| {
+                    *n.borrow_mut() = match result {
+                        Ok(bytes) => NetModState::Ready(m.name.clone(), bytes),
+                        Err(e) => NetModState::Failed(e),
+                    };
+                });
+            });
+        }
+        Ok(NET_MOD.with(|n| match &*n.borrow() {
+            NetModState::Ready(name, bytes) if *name == m.name => {
+                Some(vec![(format!("{name}.wad"), bytes.clone())])
+            }
+            _ => None,
+        }))
+    }
+
+    /// The downloaded coop mod, if any.
+    fn ready_mod_pwads() -> Vec<(String, Vec<u8>)> {
+        NET_MOD.with(|n| match &*n.borrow() {
+            NetModState::Ready(name, bytes) => vec![(format!("{name}.wad"), bytes.clone())],
+            _ => Vec::new(),
+        })
+    }
+
+    /// `ws[s]://host/v2/…` → `http[s]://host/api/mods/{name}.wad` (the relay serves its mods).
+    fn mod_download_url(ws_url: &str, name: &str) -> String {
+        let (scheme, rest) = if let Some(r) = ws_url.strip_prefix("wss://") {
+            ("https", r)
+        } else if let Some(r) = ws_url.strip_prefix("ws://") {
+            ("http", r)
+        } else {
+            return format!("/api/mods/{name}.wad");
+        };
+        let host = rest.split('/').next().unwrap_or(rest);
+        format!("{scheme}://{host}/api/mods/{name}.wad")
+    }
+
+    async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
+        let js_err = |e: JsValue| format!("{e:?}");
+        let win = window().ok_or("no window")?;
+        let resp: web_sys::Response = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str(url))
+            .await
+            .map_err(js_err)?
+            .dyn_into()
+            .map_err(|_| "fetch did not return a Response".to_owned())?;
+        if !resp.ok() {
+            return Err(format!("HTTP {} for {url}", resp.status()));
+        }
+        let buf = wasm_bindgen_futures::JsFuture::from(resp.array_buffer().map_err(js_err)?)
+            .await
+            .map_err(js_err)?;
+        Ok(js_sys::Uint8Array::new(&buf).to_vec())
+    }
+
     fn finish_lobby_start(state: &Shared, ready: crate::netplay::NetReady) -> Result<(), JsValue> {
         set_status("Starting coop…");
         set_lobby_html("<h2>Starting…</h2><p class=\"muted\">All players ready</p>");
@@ -617,6 +767,7 @@ mod browser {
         let map = ready.map.clone();
         let skill = ready.skill;
         let rng_seed = ready.rng_seed;
+        let time_limit_secs = ready.time_limit;
         let net = NetPlay::from_ready(ready);
         let (iwad, prepared) = {
             let mut s = state.borrow_mut();
@@ -636,7 +787,9 @@ mod browser {
                     rng_seed,
                     coop_players: peer_count.min(4),
                     local_seat: local,
-                    net: None,
+                    pwads: ready_mod_pwads(),
+                    time_limit_secs,
+                    ..PlayStartOpts::default()
                 },
             ) {
                 Ok(p) => p,
@@ -974,6 +1127,33 @@ mod browser {
             mm.forget();
         }
         {
+            let wh = Closure::wrap(Box::new(move |ev: web_sys::WheelEvent| {
+                let locked = window()
+                    .and_then(|w| w.document())
+                    .and_then(|d| d.pointer_lock_element())
+                    .is_some_and(|el| el.id() == "room");
+                if !locked {
+                    return;
+                }
+                ev.prevent_default();
+                // `delta_mode` 1 is lines; pixels need several counts per notch.
+                let scale = if ev.delta_mode() == 1 {
+                    1.0
+                } else {
+                    1.0 / 40.0
+                };
+                input_hub::add_weapon_wheel(ev.delta_y() * scale);
+            }) as Box<dyn FnMut(_)>);
+            let opts = web_sys::AddEventListenerOptions::new();
+            opts.set_passive(false);
+            let _ = win.add_event_listener_with_callback_and_add_event_listener_options(
+                "wheel",
+                wh.as_ref().unchecked_ref(),
+                &opts,
+            );
+            wh.forget();
+        }
+        {
             let md = Closure::wrap(Box::new(move |ev: web_sys::MouseEvent| {
                 input_hub::set_mouse_button(ev.button(), true);
             }) as Box<dyn FnMut(_)>);
@@ -1033,7 +1213,8 @@ mod browser {
         }) as Box<dyn FnMut(_)>);
         let opts = web_sys::AddEventListenerOptions::new();
         opts.set_capture(true);
-        for ev_name in ["pointerdown", "keydown", "touchstart"] {
+        // iOS Safari only resumes an AudioContext from `touchend` / `click`.
+        for ev_name in ["pointerdown", "keydown", "touchstart", "touchend", "click"] {
             let _ = doc.add_event_listener_with_callback_and_add_event_listener_options(
                 ev_name,
                 unlock.as_ref().unchecked_ref(),
@@ -1342,6 +1523,18 @@ mod browser {
             },
             Mode::Demo { .. } | Mode::Lobby { .. } => Vec::new(),
         };
+        let inverse_colormap = match &s.mode {
+            Mode::Play(play)
+            | Mode::Lobby {
+                prepared: Some(play),
+                ..
+            } => {
+                play.fixed_colormap(seat.unwrap_or_else(|| play.local_seat_debug()))
+                    == room_sim::INVERSE_COLORMAP
+            }
+            _ => false,
+        };
+        s.pass.inverse_colormap = inverse_colormap;
         let scene: SceneLists = match &s.mode {
             Mode::Demo { map, .. } => build_scene_with_sky(map, cam, None, None),
             Mode::Lobby {
@@ -1463,12 +1656,14 @@ mod browser {
         pass.encode_srgb = true;
     }
 
-    /// Largest ≤16:9 playfield in the window → CSS + GPU buffer.
+    /// Largest 4:3…16:9 playfield in the window → CSS + GPU buffer.
     ///
-    /// Caps ultrawide panels so FOV matches desktop (~90° H at 16:9). Buffer and
-    /// CSS share the same aspect; `camera.aspect = w/h`.
+    /// Caps ultrawide panels so FOV matches desktop (~90° H at 16:9), and
+    /// letterboxes portrait phones at 4:3 so the view does not shrink to a
+    /// slit. Buffer and CSS share the same aspect; `camera.aspect = w/h`.
     fn fit_canvas_buffer(canvas: &HtmlCanvasElement) -> (u32, u32) {
         const MAX_ASPECT: f64 = 16.0 / 9.0;
+        const MIN_ASPECT: f64 = 4.0 / 3.0;
         let win = window();
         let dpr = win
             .as_ref()
@@ -1508,6 +1703,8 @@ mod browser {
             size
         } else if vw / vh > MAX_ASPECT {
             (vh * MAX_ASPECT, vh)
+        } else if vw / vh < MIN_ASPECT {
+            (vw, vw / MIN_ASPECT)
         } else {
             (vw, vh)
         };
@@ -1607,6 +1804,38 @@ mod browser {
     #[wasm_bindgen(js_name = roomSetSoundfont)]
     pub fn room_set_soundfont(data: &[u8]) -> Result<(), JsValue> {
         crate::web_audio::set_soundfont(data).map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Mute / unmute all game sound and music (play page and editor).
+    #[wasm_bindgen(js_name = roomSetMuted)]
+    pub fn room_set_muted(muted: bool) {
+        crate::web_audio::set_muted(muted);
+    }
+
+    /// Current [`room_set_muted`] state.
+    #[wasm_bindgen(js_name = roomMuted)]
+    #[must_use]
+    pub fn room_muted() -> bool {
+        crate::web_audio::muted()
+    }
+
+    /// On-screen controls: press / release a game key by `KeyboardEvent.code`
+    /// (`KeyW`, `ShiftLeft`, `ControlLeft` = fire, `KeyE` = use, `Tab`, …).
+    #[wasm_bindgen(js_name = roomInputKey)]
+    pub fn room_input_key(code: &str, down: bool) {
+        input_hub::set_key(code, down);
+    }
+
+    /// On-screen controls: look by whole mouse counts (≈1.4° each; +x right, +y down).
+    #[wasm_bindgen(js_name = roomInputLook)]
+    pub fn room_input_look(dx: f64, dy: f64) {
+        input_hub::add_mouse_delta(dx, dy);
+    }
+
+    /// On-screen controls: switch weapon (`1` = next, `-1` = previous).
+    #[wasm_bindgen(js_name = roomInputWeaponCycle)]
+    pub fn room_input_weapon_cycle(steps: i32) {
+        input_hub::add_weapon_wheel(-f64::from(steps));
     }
 
     /// Read a URL query parameter (`?map=MAP01&iwad=…`).
@@ -1730,6 +1959,26 @@ mod browser {
             set("underruns", JsValue::from(f64::from(st.underruns)));
             set("voices", JsValue::from(st.voices as f64));
             obj.into()
+        })
+    }
+
+    /// Match countdown / final standings as JSON (`null` outside a level):
+    /// `{time_left, over: {winner, winner_name, time_up}, closed, rows: [...],
+    /// local_seat, spectator, solo}`.
+    #[wasm_bindgen(js_name = roomMatchState)]
+    #[must_use]
+    pub fn room_match_state() -> String {
+        APP.with(|a| {
+            let Some(app) = a.borrow().as_ref().cloned() else {
+                return "null".into();
+            };
+            let Ok(s) = app.try_borrow() else {
+                return "null".into();
+            };
+            match &s.mode {
+                Mode::Play(play) => play.match_state_json(),
+                _ => "null".into(),
+            }
         })
     }
 
