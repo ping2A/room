@@ -1,0 +1,33 @@
+# Keep the Docker build context small and free of secrets / build artefacts.
+.git
+.github
+.cursor
+agent-transcripts
+**/target
+**/target-*
+fuzz/corpus
+fuzz/artifacts
+testdata/doom
+testdata/freedoom
+**/*.wad
+**/*.WAD
+**/*.pk3
+**/*.PK3
+# Built example mods (served to clients via --mods-dir).
+!mods/*/*.wad
+soundfonts
+*.sf2
+**/.DS_Store
+**/*~
+**/*.swp
+**/.env
+**/.env.*
+deploy/data
+deploy/*.log
+node_modules
+dist
+coverage
+*.md
+!README.md
+!docs/22-room-server.md
+!deploy/README.md
