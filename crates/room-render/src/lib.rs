@@ -47,6 +47,7 @@ pub mod skinning;
 pub mod sky;
 pub mod sprites;
 pub mod ssao;
+pub mod texanim;
 pub mod texture;
 pub mod ue1;
 
@@ -119,11 +120,12 @@ pub use skinning::{
 };
 pub use sky::{CubemapFaces, cubemap_sky, cylinder_sky, scroll_sky_u};
 pub use sprites::{
-    SpriteInstance, emit_sprite_quad, mirror_rotation, sprite_lump_candidates,
+    SpriteInstance, SpriteOrient, emit_sprite_quad, mirror_rotation, sprite_lump_candidates,
     sprite_lump_candidates_rot, sprite_rotation_digit,
 };
 pub use ssao::{
     SsaoPass, SsaoUniforms, depth_only_view, ssao_bilateral_weight, ssao_edge_occlusion,
 };
+pub use texanim::TextureAnimator;
 pub use texture::{TextureEntry, TextureFormatKind, TextureManager};
 pub use ue1::{Ue1Model, Ue1Tri, decompress_ue1_vertex, parse_ue1};

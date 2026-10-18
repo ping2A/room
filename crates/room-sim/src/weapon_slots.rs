@@ -39,6 +39,16 @@ pub struct WeaponSlots {
     pub cleared_player_classes: bool,
 }
 
+/// Storage key of KEYCONF slot `0..=9` (or `10`): slot 0 is the tenth key.
+fn slot_key(slot: i32) -> Option<u8> {
+    match slot {
+        0 | 10 => Some(10),
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        1..=9 => Some(slot as u8),
+        _ => None,
+    }
+}
+
 impl WeaponSlots {
     /// Start from Doom defaults (slots 1–7 filled).
     #[must_use]
@@ -59,6 +69,7 @@ impl WeaponSlots {
     /// Weapons for a slot (KEYCONF override or Doom default).
     #[must_use]
     pub fn weapons_for(&self, slot: u8) -> Vec<String> {
+        let slot = slot_key(i32::from(slot)).unwrap_or(slot);
         if let Some(list) = self.slots.get(&slot) {
             return list.clone();
         }
@@ -98,21 +109,17 @@ impl WeaponSlots {
 
     /// `setslot n weapon…` — replace slot contents.
     pub fn set_slot(&mut self, slot: i32, weapons: &[String]) {
-        if !(1..=10).contains(&slot) {
+        let Some(s) = slot_key(slot) else {
             return;
-        }
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let s = slot as u8;
+        };
         self.slots.insert(s, weapons.to_vec());
     }
 
     /// `addslot n weapon` — append if not already present.
     pub fn add_slot(&mut self, slot: i32, weapon: &str) {
-        if !(1..=10).contains(&slot) {
+        let Some(s) = slot_key(slot) else {
             return;
-        }
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let s = slot as u8;
+        };
         let list = self.slots.entry(s).or_default();
         if !list.iter().any(|w| w.eq_ignore_ascii_case(weapon)) {
             list.push(weapon.to_owned());
@@ -121,11 +128,9 @@ impl WeaponSlots {
 
     /// `addslotdefault n weapon` — append only if slot is empty / missing the weapon.
     pub fn add_slot_default(&mut self, slot: i32, weapon: &str) {
-        if !(1..=10).contains(&slot) {
+        let Some(s) = slot_key(slot) else {
             return;
-        }
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let s = slot as u8;
+        };
         let list = self.slots.entry(s).or_insert_with(|| {
             default_slot_weapons(s)
                 .iter()
@@ -171,6 +176,17 @@ mod tests {
         s.set_slot(2, &["Shotgun".into()]);
         assert_eq!(s.weapons_for(2), vec!["Shotgun".to_owned()]);
         assert_eq!(s.weapons_for(1)[0], "Chainsaw");
+    }
+
+    #[test]
+    fn slot_zero_is_the_tenth_slot() {
+        let mut s = WeaponSlots::with_doom_defaults();
+        s.set_slot(0, &["Freezer".into()]);
+        assert_eq!(s.weapons_for(0), vec!["Freezer".to_owned()]);
+        assert_eq!(s.weapons_for(10), vec!["Freezer".to_owned()]);
+        assert!(s.contains("freezer"));
+        s.set_slot(11, &["Nope".into()]);
+        assert!(!s.contains("nope"));
     }
 
     #[test]

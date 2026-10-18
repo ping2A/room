@@ -31,10 +31,13 @@ pub fn set_key(code: &str, down: bool) {
         "ArrowRight" => Some("right"),
         "ShiftLeft" | "ShiftRight" => Some("shift"),
         "KeyE" | "Space" => Some("use"),
+        "Enter" | "NumpadEnter" => Some("enter"),
         "ControlLeft" | "ControlRight" => Some("attack"),
         "Tab" => Some("scores"),
         "KeyQ" => Some("up"),
         "KeyZ" | "KeyC" => Some("down"),
+        "Slash" => Some("kick"),
+        "Quote" => Some("invuse"),
         "KeyG" | "Digit0" | "Numpad0" => {
             if down {
                 VIEW_GRID.set(true);
@@ -80,6 +83,18 @@ pub fn set_key(code: &str, down: bool) {
         "Digit7" | "Numpad7" => {
             if down {
                 WEAPON.set(7);
+            }
+            None
+        }
+        "Digit8" | "Numpad8" => {
+            if down {
+                WEAPON.set(8);
+            }
+            None
+        }
+        "Digit9" | "Numpad9" => {
+            if down {
+                WEAPON.set(9);
             }
             None
         }

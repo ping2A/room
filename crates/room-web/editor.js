@@ -183,7 +183,7 @@ async function boot() {
       console.warn("editor: autoload", url, e);
     }
   }
-  status("Open an IWAD (Open… or drop a .wad) to start editing");
+  status("Open an IWAD or DUKE3D.GRP (Open… or drop a file) to start editing");
 }
 
 function setSummary(json) {
@@ -204,6 +204,11 @@ function openIwad(bytes, name) {
   try {
     setSummary(S.mod.roomEditorOpen(bytes, name));
     S.docs = {};
+    // Play-test skills 1–5 run as Duke 1, 1, 2, 3, 4 for a GRP.
+    const labels = S.summary.duke
+      ? ["Cake-", "Cake", "Rock", "Some", "Damn"]
+      : ["ITYTD", "HNTR", "HMP", "UV", "NM"];
+    [...$("#skill").options].forEach((o, i) => (o.textContent = labels[i]));
     status(`Opened ${name} — ${S.summary.maps.length} maps, ${S.summary.lumps.length} lumps`);
   } catch (e) {
     toast(`Open failed: ${errText(e)}`, true);
@@ -212,8 +217,14 @@ function openIwad(bytes, name) {
 
 function addPwad(bytes, name) {
   try {
+    const before = new Set(S.summary?.duke?.userMaps || []);
     setSummary(S.mod.roomEditorAddPwad(bytes, name));
     status(`Mounted ${name}`);
+    if (/\.map$/i.test(name) && S.summary.duke) {
+      const added = S.summary.duke.userMaps.find((m) => !before.has(m)) || S.summary.duke.userMaps.at(-1);
+      if (added) loadMap(added);
+      return;
+    }
     const own = S.summary.lumps.filter((l) => l.src === name && l.kind === "map").map((l) => l.name);
     if (own.length) loadMap(own[0]);
   } catch (e) {
@@ -225,7 +236,12 @@ async function openFiles(files) {
   for (const f of files) {
     const buf = new Uint8Array(await f.arrayBuffer());
     const magic = String.fromCharCode(...buf.slice(0, 4));
-    if (magic === "IWAD" || (!S.summary && magic === "PWAD")) {
+    if (String.fromCharCode(...buf.slice(0, 12)) === "KenSilverman") {
+      status(`Converting ${f.name}…`);
+      openIwad(buf, f.name);
+      const m = S.summary?.maps.find((x) => x === "E1M1") || S.summary?.maps[0];
+      if (m) loadMap(m);
+    } else if (magic === "IWAD" || (!S.summary && magic === "PWAD")) {
       if (magic === "PWAD") { toast("Open an IWAD first, then add PWADs on top", true); continue; }
       openIwad(buf, f.name);
       const m = S.summary.maps.find((x) => x === "E1M1" || x === "MAP01") || S.summary.maps[0];

@@ -18,10 +18,10 @@ use room_console::{Console, HostCommand};
 use room_decorate::parse_decorate;
 use room_defs::{DefinitionsBuilder, DynLightKind, GlDefs, ModelDefs};
 use room_game::{
-    GameOptions, GameState, Headless, Skill, SoundSystem, intermission_music_candidates,
-    keyconf_alias_lines, keyconf_default_binds, mount_embedded_engine,
-    mount_optional_engine_extras, play_first_music_lump, play_map_music, play_music_lump,
-    title_music_candidates,
+    DemoPlayer, DemoRecorder, GameOptions, GameState, Headless, Skill, SoundSystem,
+    intermission_music_candidates, keyconf_alias_lines, keyconf_default_binds,
+    mount_embedded_engine, mount_optional_engine_extras, play_first_music_lump, play_map_music,
+    play_music_lump, read_save_info, title_music_candidates,
 };
 use room_input::{AttackLatch, InputSample, Key, build_ticcmd, device_button_is_primary};
 use room_map::{MapGeometry, load_map};
@@ -29,10 +29,11 @@ use room_nodebuild::{apply_nodes, ensure_nodes};
 use room_render::{
     Camera, Canvas, CanvasGpu, CubemapFaces, DecalStore, DynLightInstance, GpuContext, LightMode,
     MaterialCatalog, MaterialMaps, ModelActorPose, ModelCatalog, OffscreenTarget, PARTICLE_TEX,
-    ParticleStore, SceneLists, SpriteInstance, UnlitPass, append_actor_models, append_decals,
-    append_particles, apply_glow_fullbright, build_scene, build_scene_with_sky_ex_sized,
-    clip_scene_to_mirror_line, mirror_clip_plane, read_rgba, read_texture_rgba, render_offscreen,
-    scroll_sky_u, sprite_lump_candidates_rot, sprite_rotation_digit,
+    ParticleStore, SceneLists, SpriteInstance, SpriteOrient, TextureAnimator, UnlitPass,
+    append_actor_models, append_decals, append_particles, apply_glow_fullbright, build_scene,
+    build_scene_with_sky_ex_sized, clip_scene_to_mirror_line, mirror_clip_plane, read_rgba,
+    read_texture_rgba, render_offscreen, scroll_sky_u, sprite_lump_candidates_rot,
+    sprite_rotation_digit,
 };
 use room_sim::{
     ActorId, Buttons, ClassRegistry, FLAG_CORPSE, FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_FLOAT,
@@ -41,9 +42,11 @@ use room_sim::{
 };
 use room_testkit::{MapBuilder, combat_arena, rect};
 use room_ui::{
-    AutomapView, CanvasSink, DoomStatusBar, DrawCmd, FontRegistry, HudState, IntermissionStats,
-    MenuCommand, MenuSfx, MenuStack, MessageQueue, PatchCache, Rect, Rgba, StatusBar, UiDrawList,
-    blit_draw_list_full, draw_automap, draw_finale, draw_intermission, draw_title, draw_weapon,
+    AutomapView, CanvasSink, DoomStatusBar, DrawCmd, DukeStatusBar, FontRegistry, HudState,
+    IntermissionStats, MenuCommand, MenuSfx, MenuStack, MessageQueue, PatchCache, Rect, Rgba,
+    StatusBar, UiDrawList, anim_pic, blit_draw_list_full, draw_automap, draw_finale,
+    draw_intermission, draw_title, draw_weapon, finale_anm_prefix, parse_titledef, splash_ms,
+    title_screen_pic,
 };
 use room_vfs::{Namespace, Vfs, VfsBuilder};
 use screen_capture::GifRecorder;
@@ -85,6 +88,9 @@ struct Args {
     /// Start with all weapons, ammo, keys, and armor (`give all`).
     #[arg(long, default_value_t = false)]
     give_all: bool,
+    /// Save a screenshot after this many frames, then quit (smoke checks).
+    #[arg(long)]
+    shot_after: Option<u64>,
     /// Optional DECORATE file (defaults to testdata/actors/doom_basic.txt when --play).
     #[arg(long)]
     decorate: Option<PathBuf>,
@@ -344,11 +350,11 @@ fn main() {
     let menu = play
         .as_ref()
         .filter(|g| g.state == GameState::Title)
-        .map(|g| MenuStack::from_menudef_or_doom(g.menudef()));
+        .map(title_menu);
     let (skyboxes, initial_sky, initial_cube) = load_sky_defs(vfs.as_ref(), &args.map);
     let gldefs = load_gldefs(vfs.as_ref());
     let modeldefs = load_modeldefs(vfs.as_ref());
-    let camera_tex_sizes = load_camera_tex_sizes(vfs.as_ref());
+    let (camera_tex_sizes, tex_anim) = load_animdefs(vfs.as_ref());
     let mut materials = MaterialCatalog::new();
     {
         let mut bm = std::collections::BTreeMap::new();
@@ -401,6 +407,7 @@ fn main() {
         modeldefs,
         models: ModelCatalog::new(),
         camera_tex_sizes,
+        tex_anim,
         camera_tex_frame: 0,
         window: None,
         surface: None,
@@ -413,15 +420,21 @@ fn main() {
         canvas_gpu: None,
         camera: Camera::default(),
         pending_screenshot: false,
+        shot_after: args.shot_after,
+        quit: false,
         gif_recorder: None,
         keys: Keys::default(),
         yaw: 0.0,
         pitch: 0.0,
         mouse_look: false,
         ignore_warp_motion: false,
+        unfocused_since: None,
         menu_cursor: (160.0, 100.0),
         last_frame: std::time::Instant::now(),
         frames: 0,
+        title_anim_origin: 0,
+        title_skip_ms: 0,
+        demo_slot: "quick".into(),
         fps_window: std::time::Instant::now(),
         fps_count: 0,
         automap: false,
@@ -569,6 +582,48 @@ fn dirs_room_ini() -> PathBuf {
     PathBuf::from("room.ini")
 }
 
+/// Slot name for a Room `.fsave` (`quick` when empty or punctured).
+fn save_slot_name(raw: Option<&str>) -> String {
+    let raw = raw.unwrap_or("quick");
+    let slot: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .take(32)
+        .collect();
+    if slot.is_empty() {
+        "quick".into()
+    } else {
+        slot
+    }
+}
+
+fn dirs_room_save(slot: &str) -> PathBuf {
+    let ini = dirs_room_ini();
+    match ini.parent() {
+        Some(dir) => dir.join("saves").join(format!("{slot}.fsave")),
+        None => PathBuf::from(format!("{slot}.fsave")),
+    }
+}
+
+fn read_play_save_bytes(slot: &str) -> Result<(PathBuf, Vec<u8>), String> {
+    let fsave = dirs_room_save(slot);
+    if let Ok(b) = std::fs::read(&fsave) {
+        return Ok((fsave, b));
+    }
+    let sav = fsave.with_extension("sav");
+    std::fs::read(&sav)
+        .map(|b| (sav, b))
+        .map_err(|e| e.to_string())
+}
+
+fn dirs_room_demo(slot: &str) -> PathBuf {
+    let ini = dirs_room_ini();
+    match ini.parent() {
+        Some(dir) => dir.join("demos").join(format!("{slot}.fdem")),
+        None => PathBuf::from(format!("{slot}.fdem")),
+    }
+}
+
 fn default_freedoom2() -> Option<PathBuf> {
     let candidates = [
         PathBuf::from("testdata/freedoom/freedoom2.wad"),
@@ -658,7 +713,7 @@ fn load_viewer_map(args: &Args) -> Result<(MapGeometry, Option<Vfs>), String> {
             }
         };
         let builder = mount_optional_engine_extras(builder, &engine_extra_search_roots());
-        let vfs = mount_pwads(builder.mount_path(path).map_err(|e| e.to_string())?, args)?
+        let vfs = mount_pwads(room_build::mount::mount_path(builder, path)?, args)?
             .build()
             .map_err(|e| e.to_string())?;
         // Doom 1 / Freedoom Phase 1 use ExMy; Doom II uses MAPxx.
@@ -777,6 +832,10 @@ struct Keys {
     d: bool,
     space: bool,
     c: bool,
+    /// Duke quick kick (`/`).
+    slash: bool,
+    /// Duke inventory use (`'`).
+    quote: bool,
     shift: bool,
     /// Turn left (← / Q when not in a menu).
     left: bool,
@@ -786,7 +845,7 @@ struct Keys {
     attack: AttackLatch,
     /// Use (E).
     use_btn: bool,
-    /// Weapon slots 1..=7 edge (cleared after sample).
+    /// Weapon slots 1..=9 edge (cleared after sample).
     weapon: u8,
     /// Queued weapon cycles (positive = next, negative = previous). One step
     /// is consumed per tic, so a multi-notch wheel still switches once per tic.
@@ -827,6 +886,8 @@ struct ViewerApp {
     models: ModelCatalog,
     /// ANIMDEFS `cameratexture` sizes (uppercase name → w×h).
     camera_tex_sizes: std::collections::BTreeMap<String, (u32, u32)>,
+    /// ANIMDEFS texture / flat animations.
+    tex_anim: TextureAnimator,
     /// Frame counter for throttling camera-texture refreshes.
     camera_tex_frame: u32,
     window: Option<Arc<Window>>,
@@ -843,6 +904,9 @@ struct ViewerApp {
     camera: Camera,
     /// Capture PNG of the next presented frame.
     pending_screenshot: bool,
+    /// `--shot-after`: frame to capture on; quit once saved.
+    shot_after: Option<u64>,
+    quit: bool,
     /// When set, append scaled frames for GIF encode on stop.
     gif_recorder: Option<GifRecorder>,
     keys: Keys,
@@ -851,10 +915,19 @@ struct ViewerApp {
     mouse_look: bool,
     /// Skip the next `DeviceEvent::MouseMotion` (macOS cursor recenter warp).
     ignore_warp_motion: bool,
+    /// When the window lost focus. Raw device events arrive system-wide, so
+    /// they are ignored once focus has been gone longer than a click's blip.
+    unfocused_since: Option<std::time::Instant>,
     /// Cursor in virtual 320×200 UI space (menus).
     menu_cursor: (f32, f32),
     last_frame: std::time::Instant,
     frames: u64,
+    /// `frames` when the current title/splash started.
+    title_anim_origin: u64,
+    /// Extra title elapsed so Enter / click can skip `RADLOGO`.
+    title_skip_ms: u64,
+    /// Slot name for the in-progress Room demo (`record` / `stop`).
+    demo_slot: String,
     fps_window: std::time::Instant,
     fps_count: u32,
     /// Tab toggles classic automap overlay.
@@ -897,20 +970,26 @@ struct ViewerApp {
     audio: Option<AudioOut>,
 }
 
-fn load_camera_tex_sizes(vfs: Option<&Vfs>) -> std::collections::BTreeMap<String, (u32, u32)> {
+/// ANIMDEFS camera texture sizes and texture animations.
+fn load_animdefs(
+    vfs: Option<&Vfs>,
+) -> (
+    std::collections::BTreeMap<String, (u32, u32)>,
+    TextureAnimator,
+) {
     let mut out = std::collections::BTreeMap::new();
     let Some(vfs) = vfs else {
-        return out;
+        return (out, TextureAnimator::default());
     };
     let Ok(defs) = DefinitionsBuilder::new(vfs).build() else {
-        return out;
+        return (out, TextureAnimator::default());
     };
     for cam in &defs.animdefs.camera_textures {
         let w = cam.width.clamp(1, 256) as u32;
         let h = cam.height.clamp(1, 256) as u32;
         out.insert(cam.name.clone(), (w, h));
     }
-    out
+    (out, TextureAnimator::new(&defs.animdefs))
 }
 
 /// Animate pulse / flicker radius from GLDEFS (`interval` in seconds).
@@ -978,6 +1057,13 @@ fn load_gldefs(vfs: Option<&Vfs>) -> GlDefs {
 fn fmt_actor_id(id: Option<ActorId>) -> String {
     id.map(|h| format!("#{}", h.index()))
         .unwrap_or_else(|| "-".into())
+}
+
+/// Title menu: MENUDEF `MainMenu` (or Doom's) with the MAPINFO skill names.
+fn title_menu(game: &Headless) -> MenuStack {
+    MenuStack::from_menudef_or_doom(game.menudef())
+        .with_skills(game.mapinfo().map_or(&[], |m| m.skills.as_slice()))
+        .with_episodes(game.mapinfo().map_or(&[], |m| m.episodes.as_slice()))
 }
 
 fn load_sky_defs(
@@ -1054,6 +1140,13 @@ fn start_play_session(
             game.set_decaldef(&defs.decaldef);
             decaldef = Some(defs.decaldef.clone());
             game.set_keyconf(&defs.keyconf);
+            if let Some(id) = vfs.find_any_ns("CONEVT") {
+                if let Ok(bytes) = vfs.read(id) {
+                    if let Ok(text) = std::str::from_utf8(&bytes) {
+                        game.set_conevt(text);
+                    }
+                }
+            }
             game.set_menudef(defs.menudef.clone());
             let mut libs = Vec::new();
             for name in &defs.loadacs.libraries {
@@ -1095,7 +1188,16 @@ fn start_play_session(
         };
         let states = Arc::new(StateTable::from_decorate(&ir, &classes));
         game.set_defs(classes, states);
-    } else if let Some(data) = try_load_engine_data() {
+    } else if let Some(data) = vfs
+        .and_then(|v| match room_game::load_embedded_engine_data_with(v) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                eprintln!("room: PWAD DECORATE: {e}");
+                None
+            }
+        })
+        .or_else(try_load_engine_data)
+    {
         game.set_defs(data.classes, data.states);
         if let Some(db) = data.compat_db {
             game.set_compat_db(db);
@@ -1413,6 +1515,9 @@ impl ApplicationHandler for ViewerApp {
                     }
                     return;
                 }
+                if down && self.try_skip_title_splash() {
+                    return;
+                }
                 let menu_open = self.menu.is_some();
                 match code {
                     KeyCode::ArrowUp | KeyCode::KeyW if down && menu_open => {
@@ -1433,6 +1538,8 @@ impl ApplicationHandler for ViewerApp {
                     KeyCode::KeyD if !menu_open => self.keys.d = down,
                     KeyCode::Space if !menu_open => self.keys.space = down,
                     KeyCode::KeyC if !menu_open => self.keys.c = down,
+                    KeyCode::Slash if !menu_open => self.keys.slash = down,
+                    KeyCode::Quote if !menu_open => self.keys.quote = down,
                     KeyCode::ShiftLeft | KeyCode::ShiftRight if !menu_open => {
                         self.keys.shift = down
                     }
@@ -1464,6 +1571,15 @@ impl ApplicationHandler for ViewerApp {
                     }
                     KeyCode::Digit7 | KeyCode::Numpad7 if down && !menu_open => {
                         self.keys.weapon = 7;
+                    }
+                    KeyCode::Digit8 | KeyCode::Numpad8 if down && !menu_open => {
+                        self.keys.weapon = 8;
+                    }
+                    KeyCode::Digit9 | KeyCode::Numpad9 if down && !menu_open => {
+                        self.keys.weapon = 9;
+                    }
+                    KeyCode::Digit0 | KeyCode::Numpad0 if down && !menu_open => {
+                        self.keys.weapon = 10;
                     }
                     KeyCode::BracketRight if down && !menu_open => {
                         self.keys.weapon_cycle = self.keys.weapon_cycle.saturating_add(1);
@@ -1582,6 +1698,11 @@ impl ApplicationHandler for ViewerApp {
                 state,
                 button: MouseButton::Left,
                 ..
+            } if state == ElementState::Pressed && self.try_skip_title_splash() => {}
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
             } if self.play.is_some() && self.menu.is_some() && state == ElementState::Pressed => {
                 let (vx, vy) = self.menu_cursor;
                 if self
@@ -1615,6 +1736,7 @@ impl ApplicationHandler for ViewerApp {
                 }
             }
             WindowEvent::Focused(focused) => {
+                self.unfocused_since = (!focused).then(std::time::Instant::now);
                 if focused {
                     if self.mouse_look {
                         self.set_play_look(true);
@@ -1652,7 +1774,12 @@ impl ApplicationHandler for ViewerApp {
                     self.zoom_automap(1.0 / (1.0 + 0.15 * (-steps)));
                 }
             }
-            WindowEvent::RedrawRequested => self.frame(),
+            WindowEvent::RedrawRequested => {
+                self.frame();
+                if self.quit {
+                    event_loop.exit();
+                }
+            }
             _ => {}
         }
     }
@@ -1663,6 +1790,13 @@ impl ApplicationHandler for ViewerApp {
         _device_id: winit::event::DeviceId,
         event: DeviceEvent,
     ) {
+        if self
+            .unfocused_since
+            .is_some_and(|t| t.elapsed() > std::time::Duration::from_millis(250))
+        {
+            self.keys.attack.set_device_left(false);
+            return;
+        }
         match event {
             DeviceEvent::MouseMotion { delta: (dx, dy) } if self.mouse_look => {
                 if self.ignore_warp_motion {
@@ -1934,6 +2068,13 @@ impl ViewerApp {
             self.sky_cubemap.as_ref(),
             Some(&tex_sizes),
         );
+        let tic = self
+            .play
+            .as_ref()
+            .and_then(|g| g.world())
+            .map_or(0, |w| w.level.maptime);
+        self.tex_anim
+            .apply(&mut scene, u32::try_from(tic).unwrap_or(0));
         scene.dyn_lights = self.collect_dyn_lights();
         // Dyn lights shade on the GPU (`LightUniforms`); keep CPU boost off to
         // avoid double-lighting once the forward path is active.
@@ -1982,6 +2123,9 @@ impl ViewerApp {
         self.refresh_mirror_textures(&scene.mirrors);
         self.refresh_portal_textures(&scene.linked_portals);
         self.refresh_plane_reflect_textures(&scene.plane_reflects);
+        if self.shot_after.is_some_and(|n| self.frames >= n) {
+            self.pending_screenshot = true;
+        }
         let want_shot = self.pending_screenshot;
         let want_gif = self.gif_recorder.is_some();
         let inverse_colormap =
@@ -2027,19 +2171,41 @@ impl ViewerApp {
             let mut ui = UiDrawList::new();
             match self.play.as_ref().map(|g| g.state) {
                 Some(GameState::Title) => {
-                    let has_titlepic = self.vfs.as_ref().is_some_and(|v| {
-                        v.find("TITLEPIC", Namespace::Global).is_some()
+                    let elapsed_ms = self
+                        .frames
+                        .saturating_sub(self.title_anim_origin)
+                        .saturating_mul(16)
+                        .saturating_add(self.title_skip_ms);
+                    let (pic, splash) = self.vfs.as_ref().map_or((None, false), |v| {
+                        let read_def = |name: &str| {
+                            v.find_any_ns(name)
+                                .and_then(|id| v.read(id).ok())
+                                .and_then(|b| parse_titledef(&String::from_utf8_lossy(&b)))
+                        };
+                        let splash_def = read_def("RADLDEF");
+                        let logo_def = read_def("TITLEDEF");
+                        if splash_def.is_some() || logo_def.is_some() {
+                            let (name, splash) = title_screen_pic(splash_def, logo_def, elapsed_ms);
+                            (Some(name), splash)
+                        } else if v.find("TITLEPIC", Namespace::Global).is_some()
                             || v.find_any_ns("TITLEPIC").is_some()
+                        {
+                            (Some("TITLEPIC".into()), false)
+                        } else {
+                            (None, false)
+                        }
                     });
-                    draw_title(&mut ui, 320.0, 200.0, has_titlepic);
-                    if let Some(menu) = &self.menu {
-                        let tic = self
-                            .play
-                            .as_ref()
-                            .and_then(|g| g.world())
-                            .map(|w| w.level.maptime)
-                            .unwrap_or(self.frames as u32);
-                        menu.draw(&mut ui, tic, Some(&self.fonts));
+                    draw_title(&mut ui, 320.0, 200.0, pic.as_deref());
+                    if !splash {
+                        if let Some(menu) = &self.menu {
+                            let tic = self
+                                .play
+                                .as_ref()
+                                .and_then(|g| g.world())
+                                .map(|w| w.level.maptime)
+                                .unwrap_or(self.frames as u32);
+                            menu.draw(&mut ui, tic, Some(&self.fonts));
+                        }
                     }
                 }
                 Some(GameState::Intermission) => {
@@ -2065,7 +2231,15 @@ impl ViewerApp {
                         .and_then(|g| g.intermission.as_ref())
                         .map(|t| t.map_name.as_str())
                         .unwrap_or("");
-                    draw_finale(&mut ui, map_name, 320.0, 200.0);
+                    let elapsed_ms = self.frames.saturating_mul(16);
+                    let pic = self.vfs.as_ref().and_then(|v| {
+                        let prefix = finale_anm_prefix(map_name)?;
+                        let def = v.find_any_ns(&format!("{prefix}DEF"))?;
+                        let body = v.read(def).ok()?;
+                        let (n, fps) = parse_titledef(&String::from_utf8_lossy(&body))?;
+                        Some(anim_pic(prefix, n, fps, elapsed_ms))
+                    });
+                    draw_finale(&mut ui, map_name, 320.0, 200.0, pic.as_deref());
                 }
                 _ => {
                     if self.automap {
@@ -2114,13 +2288,13 @@ impl ViewerApp {
                             self.hud.bob_x,
                             self.hud.bob_y,
                         );
-                        if !self.hud.flash_patch.is_empty() {
-                            let soft_flash = self.patches.get(&self.hud.flash_patch);
+                        // A flash frame without a lump draws nothing (GZDoom).
+                        if let Some(soft_flash) = self.patches.get(&self.hud.flash_patch) {
                             draw_weapon(
                                 &mut ui,
                                 &self.hud.flash_patch,
                                 self.hud.fullscreen,
-                                soft_flash,
+                                Some(soft_flash),
                                 self.hud.bob_x,
                                 self.hud.bob_y,
                             );
@@ -2129,7 +2303,15 @@ impl ViewerApp {
                             ui.invert_since(weapon_cmds);
                         }
                     }
-                    DoomStatusBar.draw(&self.hud, &mut ui);
+                    if self
+                        .vfs
+                        .as_ref()
+                        .is_some_and(|v| v.find_any_ns(DukeStatusBar::MARKER).is_some())
+                    {
+                        DukeStatusBar.draw(&self.hud, &mut ui);
+                    } else {
+                        DoomStatusBar.draw(&self.hud, &mut ui);
+                    }
                     if let Some(tint) = room_ui::screen_blend(self.hud.palette) {
                         ui.fill(Rect::new(0.0, 0.0, 320.0, 200.0), tint);
                     }
@@ -2348,6 +2530,7 @@ impl ViewerApp {
                 if want_shot {
                     self.pending_screenshot = false;
                     self.save_screenshot_rgba(&rgba, w, h);
+                    self.quit |= self.shot_after.take().is_some();
                 }
                 if let Some(rec) = self.gif_recorder.as_mut() {
                     let n = rec.frames.len();
@@ -2438,6 +2621,13 @@ impl ViewerApp {
             let mut new_particles = Vec::new();
             let mut entered_intermission = false;
             if let Some(game) = self.play.as_mut() {
+                let autoaim = !matches!(
+                    self.console.cvars.get("autoaim"),
+                    Some(room_console::CvarValue::Bool(false))
+                );
+                if let Some(world) = game.world_mut() {
+                    world.autoaim = autoaim;
+                }
                 let prev_state = game.state;
                 game.tick(&cmds);
                 for line in game.drain_script_log() {
@@ -3415,8 +3605,8 @@ impl ViewerApp {
         {
             // Prefer patch pixel size (1 map unit per texel). Floor items / monsters
             // must keep Doom topoffset math — do not inflate height independently.
-            let mut w = (radius * 2.0 * scale_x.abs()).clamp(1.0, 256.0);
-            let mut h = (height * scale_y.abs()).clamp(1.0, 256.0);
+            let mut w = (radius * 2.0 * scale_x.abs()).clamp(0.25, 4096.0);
+            let mut h = (height * scale_y.abs()).clamp(0.25, 4096.0);
             let mut texture = String::new();
             let mut flip_u = false;
             let mut anchor_u = 0.5_f32;
@@ -3429,8 +3619,8 @@ impl ViewerApp {
                 if let Some(vfs) = self.vfs.as_ref() {
                     for (name, flip) in &candidates {
                         if let Some(patch) = self.patches.ensure(vfs, name) {
-                            let pw = (f64::from(patch.width) * scale_x.abs()).clamp(1.0, 256.0);
-                            let ph = (f64::from(patch.height) * scale_y.abs()).clamp(1.0, 256.0);
+                            let pw = (f64::from(patch.width) * scale_x.abs()).clamp(0.25, 4096.0);
+                            let ph = (f64::from(patch.height) * scale_y.abs()).clamp(0.25, 4096.0);
                             let top = f64::from(patch.top_offset) * scale_y.abs();
                             let left = f64::from(patch.left_offset) * scale_x.abs();
                             w = pw;
@@ -3452,16 +3642,21 @@ impl ViewerApp {
                         }
                     }
                 }
-                if texture.is_empty() {
-                    if let Some((name, flip)) = candidates.first() {
-                        texture = name.clone();
-                        flip_u = *flip;
-                    }
-                }
-            } else if grounded {
-                z_bottom = z + 1.0;
+            }
+            // `TNT1` and frames without a lump draw nothing (GZDoom).
+            if texture.is_empty() {
+                continue;
             }
             #[allow(clippy::cast_possible_truncation)]
+            let yaw = angle_deg.to_radians() as f32;
+            let orient = if flags & room_sim::FLAG_FLATSPRITE != 0 {
+                z_bottom = z;
+                SpriteOrient::Flat { yaw }
+            } else if flags & room_sim::FLAG_WALLSPRITE != 0 {
+                SpriteOrient::Wall { yaw }
+            } else {
+                SpriteOrient::Billboard
+            };
             out.push(SpriteInstance {
                 pos: Vec3::new(x as f32, y as f32, z_bottom as f32),
                 width: w as f32,
@@ -3472,6 +3667,7 @@ impl ViewerApp {
                 texture,
                 flip_u,
                 anchor_u,
+                orient,
             });
         }
         Some(out)
@@ -3547,7 +3743,7 @@ impl ViewerApp {
             let Some(pass) = self.pass.as_mut() else {
                 return;
             };
-            let target = OffscreenTarget::new(gpu, 128, 128);
+            let target = OffscreenTarget::with_format(gpu, 128, 128, pass.format());
             render_offscreen(gpu, pass, &target, &view, &scene);
             let Ok(rgba) = read_rgba(gpu, &target) else {
                 continue;
@@ -3578,7 +3774,7 @@ impl ViewerApp {
                 .translucent_flat_ranges
                 .retain(|r| !r.name.starts_with("__PREFL"));
             scene.plane_reflects.clear();
-            let target = OffscreenTarget::new(gpu, 128, 128);
+            let target = OffscreenTarget::with_format(gpu, 128, 128, pass.format());
             render_offscreen(gpu, pass, &target, &reflected, &scene);
             let Ok(rgba) = read_rgba(gpu, &target) else {
                 continue;
@@ -3627,7 +3823,7 @@ impl ViewerApp {
                 f64::from(reflected.eye.y),
             );
             pass.set_clip_plane(plane);
-            let target = OffscreenTarget::new(gpu, 128, 128);
+            let target = OffscreenTarget::with_format(gpu, 128, 128, pass.format());
             render_offscreen(gpu, pass, &target, &reflected, &scene);
             pass.clear_clip_plane();
             let Ok(rgba) = read_rgba(gpu, &target) else {
@@ -3681,7 +3877,7 @@ impl ViewerApp {
             let cam =
                 Camera::from_actor_view(actor.pos.x(), actor.pos.y(), z, yaw, bind.fov, aspect);
             let scene = build_scene(&self.map, &cam, None);
-            let target = OffscreenTarget::new(gpu, w, h);
+            let target = OffscreenTarget::with_format(gpu, w, h, pass.format());
             render_offscreen(gpu, pass, &target, &cam, &scene);
             let Ok(rgba) = read_rgba(gpu, &target) else {
                 continue;
@@ -3689,6 +3885,25 @@ impl ViewerApp {
             let _ = self
                 .materials
                 .upsert_rgba(&gpu.device, &gpu.queue, &name, w, h, &rgba);
+        }
+    }
+
+    fn prepare_title_start_map(&mut self, name: &str) {
+        let Some(vfs) = self.vfs.as_ref() else {
+            return;
+        };
+        let mut next_map = match load_map(vfs, name) {
+            Ok(m) => m,
+            Err(e) => {
+                self.messages.push(format!("start {name}: {e}"), 70);
+                return;
+            }
+        };
+        ensure_nodes(&mut next_map);
+        self.map_base = next_map.clone();
+        self.map = next_map.clone();
+        if let Some(game) = self.play.as_mut() {
+            game.set_pending_map(next_map);
         }
     }
 
@@ -3706,7 +3921,7 @@ impl ViewerApp {
                     self.menu = None;
                     self.messages.push("Entering level", 35);
                     self.start_level_music();
-                    self.set_play_look(true);
+                    self.set_play_look(self.mouse_look_enabled());
                 }
             }
             GameState::Intermission => {
@@ -3728,9 +3943,9 @@ impl ViewerApp {
                                 Err(e) => {
                                     self.messages.push(format!("continue: {e}"), 70);
                                     game.leave_intermission();
-                                    let defs = game.menudef().cloned();
-                                    self.menu =
-                                        Some(MenuStack::from_menudef_or_doom(defs.as_ref()));
+                                    let title = title_menu(game);
+                                    self.menu = Some(title);
+                                    self.restart_title_anim();
                                     self.start_title_music();
                                 }
                             }
@@ -3738,8 +3953,9 @@ impl ViewerApp {
                         Err(e) => {
                             self.messages.push(format!("next map {name}: {e}"), 70);
                             game.leave_intermission();
-                            let defs = game.menudef().cloned();
-                            self.menu = Some(MenuStack::from_menudef_or_doom(defs.as_ref()));
+                            let title = title_menu(game);
+                            self.menu = Some(title);
+                            self.restart_title_anim();
                             self.start_title_music();
                         }
                     }
@@ -3752,9 +3968,10 @@ impl ViewerApp {
             }
             GameState::Finale => {
                 game.leave_finale();
-                let defs = game.menudef().cloned();
+                let title = title_menu(game);
                 self.reset_impact_fx();
-                self.menu = Some(MenuStack::from_menudef_or_doom(defs.as_ref()));
+                self.restart_title_anim();
+                self.menu = Some(title);
                 self.messages.push("Title", 35);
                 self.start_title_music();
             }
@@ -3778,7 +3995,7 @@ impl ViewerApp {
             self.menu = None;
             self.messages.push("Resumed", 35);
             self.keys.attack.clear();
-            self.set_play_look(true);
+            self.set_play_look(self.mouse_look_enabled());
         } else {
             world.paused = true;
             let mut stack = MenuStack::pause();
@@ -3853,6 +4070,14 @@ impl ViewerApp {
                 if let Some(game) = self.play.as_mut() {
                     game.options.skill = Skill::new(level);
                 }
+                if let Some(start) = self
+                    .menu
+                    .as_ref()
+                    .and_then(MenuStack::start_map)
+                    .map(str::to_owned)
+                {
+                    self.prepare_title_start_map(&start);
+                }
                 self.play_advance();
             }
             MenuCommand::Resume => self.toggle_pause(),
@@ -3869,20 +4094,18 @@ impl ViewerApp {
                 }
                 self.keys.attack.clear();
                 self.reset_impact_fx();
-                let defs = self.play.as_ref().and_then(|g| g.menudef().cloned());
-                self.menu = Some(MenuStack::from_menudef_or_doom(defs.as_ref()));
+                self.restart_title_anim();
+                let title = self
+                    .play
+                    .as_ref()
+                    .map_or_else(MenuStack::doom_main, title_menu);
+                self.menu = Some(title);
                 self.set_play_look(false);
                 self.messages.push("Title", 35);
                 self.start_title_music();
             }
-            MenuCommand::LoadGame => {
-                self.messages
-                    .push("Load Game — not wired yet (use console `load`)", 70);
-            }
-            MenuCommand::SaveGame => {
-                self.messages
-                    .push("Save Game — not wired yet (use console `save`)", 70);
-            }
+            MenuCommand::LoadGame => self.load_play_save(None),
+            MenuCommand::SaveGame => self.save_play_save(None),
             MenuCommand::ReadThis => {
                 self.messages.push("Read This — help screen TBD", 70);
             }
@@ -3892,6 +4115,15 @@ impl ViewerApp {
                     if !name.is_empty() {
                         let _ = self.console.exec(&format!("toggle {name}"));
                         self.messages.push(format!("toggled {name}"), 35);
+                        if name == "mouse_look"
+                            && self
+                                .play
+                                .as_ref()
+                                .is_some_and(|g| g.state == GameState::Level)
+                            && self.menu.is_none()
+                        {
+                            self.set_play_look(self.mouse_look_enabled());
+                        }
                     }
                 } else if let Some(cmd) = action.strip_prefix("cmd ") {
                     let line = cmd.trim();
@@ -4046,6 +4278,11 @@ impl ViewerApp {
                     }
                 }
                 HostCommand::Map(name) => self.console_change_map(&name),
+                HostCommand::Save(slot) => self.save_play_save(slot.as_deref()),
+                HostCommand::Load(slot) => self.load_play_save(slot.as_deref()),
+                HostCommand::Record(slot) => self.begin_play_demo(slot.as_deref()),
+                HostCommand::StopDemo => self.stop_play_demo(),
+                HostCommand::PlayDemo(slot) => self.play_play_demo(slot.as_deref()),
                 HostCommand::Kill(target) => {
                     let kind = target.as_deref();
                     if kind.is_none_or(|t| t.eq_ignore_ascii_case("monsters")) {
@@ -4065,6 +4302,583 @@ impl ViewerApp {
                     }
                 }
             }
+        }
+    }
+
+    fn load_duke_sav(&mut self, h: room_build::SavHeader) {
+        let name = h.map_name();
+        let label = if h.name.is_empty() {
+            name.clone()
+        } else {
+            format!("{} → {name}", h.name)
+        };
+        let Some(vfs) = self.vfs.as_ref() else {
+            self.messages
+                .push(format!("load {label}: no IWAD mounted"), 70);
+            return;
+        };
+        let mut next_map = match load_map(vfs, &name) {
+            Ok(m) => m,
+            Err(e) => {
+                self.messages.push(format!("load {label}: {e}"), 70);
+                return;
+            }
+        };
+        ensure_nodes(&mut next_map);
+        self.map_base = next_map.clone();
+        self.map = next_map.clone();
+        let Some(game) = self.play.as_mut() else {
+            self.messages
+                .push(format!("load {label}: not in play mode"), 70);
+            return;
+        };
+        if let Some(seed) = h.room_rng_seed() {
+            game.options.rng_seed = seed;
+        }
+        match game.start_custom_map(next_map, Skill::new(h.room_skill())) {
+            Ok(()) => {
+                if let Some(t) = h.room_lock_tics() {
+                    if let Some(w) = game.world_mut() {
+                        w.level.time = t;
+                    }
+                }
+                if let Some(t) = h.room_quake_tics() {
+                    if let Some(w) = game.world_mut() {
+                        if let Ok(n) = i32::try_from(t) {
+                            w.start_duke_quake(n);
+                        }
+                    }
+                }
+                if let Some(r) = h.room_respawn_monsters() {
+                    if let Some(w) = game.world_mut() {
+                        w.respawn_monsters = r;
+                    }
+                }
+                if let Some(r) = h.room_respawn_items() {
+                    if let Some(w) = game.world_mut() {
+                        w.respawn_items = r;
+                    }
+                }
+                if let Some(r) = h.room_respawn_inventory() {
+                    if let Some(w) = game.world_mut() {
+                        w.respawn_inventory = r;
+                    }
+                }
+                if h.room_monsters_off() == Some(true) {
+                    if let Some(w) = game.world_mut() {
+                        w.monsters_off = true;
+                        let _ = w.kill_monsters();
+                    }
+                }
+                if let Some(r) = h.room_from_bonus() {
+                    if let Some(w) = game.world_mut() {
+                        w.from_bonus = r;
+                    }
+                }
+                if let Some(n) = h.room_secretlevel() {
+                    if let Some(w) = game.world_mut() {
+                        w.secretlevel = n;
+                    }
+                }
+                if let Some(r) = h.room_eog() {
+                    if let Some(w) = game.world_mut() {
+                        w.eog = r;
+                    }
+                }
+                if let Some(n) = h.room_global_random() {
+                    if let Some(w) = game.world_mut() {
+                        w.global_random = n;
+                    }
+                }
+                if let Some(r) = h.room_coop() {
+                    if let Some(w) = game.world_mut() {
+                        w.coop = r;
+                    }
+                }
+                if let Some(r) = h.room_ffire() {
+                    if let Some(w) = game.world_mut() {
+                        w.friendly_fire = r;
+                    }
+                }
+                if let Some(r) = h.room_marker() {
+                    if let Some(w) = game.world_mut() {
+                        w.marker = r;
+                    }
+                }
+                if let Some(n) = h.room_last_level() {
+                    if let Some(w) = game.world_mut() {
+                        w.last_level = n;
+                    }
+                }
+                if let Some(n) = h.room_camsprite() {
+                    if let Some(w) = game.world_mut() {
+                        w.camsprite = n;
+                        if n >= 0 {
+                            w.set_demo_cameras(true);
+                        }
+                    }
+                }
+                if let Some(n) = h.room_pskybits() {
+                    if let Some(w) = game.world_mut() {
+                        w.pskybits = n;
+                    }
+                }
+                if let Some(off) = h.room_pskyoff() {
+                    if let Some(w) = game.world_mut() {
+                        w.pskyoff = off;
+                    }
+                }
+                if let Some(n) = h.room_parallaxyscale() {
+                    if let Some(w) = game.world_mut() {
+                        w.parallaxyscale = n;
+                    }
+                }
+                if let Some(n) = h.room_connecthead() {
+                    if let Some(w) = game.world_mut() {
+                        w.connecthead = n;
+                    }
+                }
+                if let Some(links) = h.room_connectpoint2() {
+                    if let Some(w) = game.world_mut() {
+                        w.connectpoint2 = links;
+                    }
+                }
+                if let Some(n) = h.room_numplayersprites() {
+                    if let Some(w) = game.world_mut() {
+                        w.numplayersprites = n;
+                    }
+                }
+                if let Some(table) = h.room_frags() {
+                    if let Some(w) = game.world_mut() {
+                        w.duke_frags = table;
+                        if let Some(p) = w.players[0].as_mut() {
+                            for (i, dest) in p.frags.iter_mut().enumerate() {
+                                if let Some(row) = table.first() {
+                                    if let Some(n) = row.get(i) {
+                                        *dest = i32::from(*n);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(n) = h.room_animatecnt() {
+                    if let Some(w) = game.world_mut() {
+                        w.animatecnt = n;
+                    }
+                }
+                if let Some(v) = h.animategoal.as_ref() {
+                    if let Some(w) = game.world_mut() {
+                        w.animategoal = v.clone();
+                    }
+                }
+                if let Some(v) = h.animatevel.as_ref() {
+                    if let Some(w) = game.world_mut() {
+                        w.animatevel = v.clone();
+                    }
+                }
+                if let Some(v) = h.animateptr.as_ref() {
+                    if let Some(w) = game.world_mut() {
+                        w.animateptr = v.clone();
+                    }
+                }
+                if let Some(n) = h.room_numanimwalls() {
+                    if let Some(w) = game.world_mut() {
+                        w.numanimwalls = n;
+                    }
+                }
+                if let Some(n) = h.room_spriteqamount() {
+                    if let Some(w) = game.world_mut() {
+                        w.spriteqamount = n;
+                    }
+                }
+                if let Some(n) = h.room_numclouds() {
+                    if let Some(w) = game.world_mut() {
+                        w.numclouds = n;
+                    }
+                }
+                if let Some(n) = h.room_numcyclers() {
+                    if let Some(w) = game.world_mut() {
+                        w.numcyclers = n;
+                    }
+                }
+                if let Some(bits) = h.room_gotpic() {
+                    if let Some(w) = game.world_mut() {
+                        w.apply_duke_gotpic(bits);
+                    }
+                }
+                if let Some(n) = h.room_playerswhenstarted() {
+                    if let Some(w) = game.world_mut() {
+                        w.playerswhenstarted = n;
+                        if n >= 2 {
+                            let seats = u8::try_from(n).unwrap_or(4).clamp(2, 4);
+                            let _ = w.spawn_coop_players(seats);
+                        }
+                    }
+                }
+                if let Some(g) = h.room_god() {
+                    if let Some(w) = game.world_mut() {
+                        if let Some(p) = w.players[0].as_mut() {
+                            p.god = g;
+                        }
+                    }
+                }
+                if let Some(p) = h.player {
+                    if let Some(w) = game.world_mut() {
+                        let (x, y) = p.room_xy();
+                        if let Some(n) = p.room_prev_pitch() {
+                            w.set_player_prev_pitch(n);
+                        }
+                        if let Some(n) = p.room_footprint_shade() {
+                            w.set_player_footprint_shade(n);
+                        }
+                        if let Some(n) = p.room_footprint_count() {
+                            w.set_player_footprint_count(n);
+                        }
+                        if let Some(n) = p.room_footprint_pal() {
+                            w.set_player_footprint_pal(n);
+                        }
+                        w.set_player_pose(
+                            f64::from(x),
+                            f64::from(y),
+                            f64::from(p.room_z()),
+                            f64::from(p.room_yaw()),
+                            f64::from(p.room_pitch()),
+                        );
+                        if let Some(n) = p.room_weapon_ang_deg() {
+                            w.add_player_yaw(f64::from(n));
+                        }
+                        if let Some(n) = p.room_rotscrnang() {
+                            w.set_player_rotscrnang(n);
+                        }
+                        if let Some(n) = p.room_return_to_center() {
+                            w.set_player_return_to_center(n);
+                        }
+                        if let Some(n) = p.room_tip_incs() {
+                            w.set_player_tip_incs(n);
+                        }
+                        if let Some(on) = p.room_on_ground() {
+                            w.set_player_on_ground(on);
+                        }
+                        if let Some(n) = p.room_transporter_hold_tics() {
+                            w.set_player_transporter_hold(n);
+                        }
+                        if p.room_jumping() == Some(true) {
+                            w.set_player_jumping(true);
+                        }
+                        if let Some(on) = p.room_jumping_toggle() {
+                            w.set_player_jumping_toggle(on);
+                        }
+                        if let Some(hp) = p.room_health() {
+                            w.set_player_health(hp);
+                        }
+                        if p.room_dead() == Some(true) {
+                            w.set_player_dead(true);
+                        }
+                        if let Some(slot) = p.room_frag_ps() {
+                            w.set_player_frag_ps(slot);
+                        }
+                        if let Some(n) = p.room_inven_icon() {
+                            w.set_player_inven_icon(n);
+                        }
+                        if let Some(on) = p.room_toggle_key_flag() {
+                            w.set_player_toggle_key_flag(on);
+                        }
+                        if p.room_refresh_inventory() == Some(true) {
+                            w.set_player_invdisp_tics(35);
+                        }
+                        if let Some(n) = p.room_invdisp_tics() {
+                            w.set_player_invdisp_tics(n);
+                        }
+                        if p.room_hbomb_on() == Some(true) {
+                            w.set_player_hbomb_on(true);
+                        }
+                        if let Some(n) = p.room_hbomb_hold() {
+                            w.set_player_hbomb_hold(n);
+                        }
+                        if let Some(n) = p.room_clip_ammo() {
+                            w.set_player_clip_ammo(n);
+                        }
+                        if let Some(n) = p.room_shell_ammo() {
+                            w.set_player_shell_ammo(n);
+                        }
+                        if let Some(n) = p.room_rocket_ammo() {
+                            w.set_player_rocket_ammo(n);
+                        }
+                        if let Some(n) = p.room_cell_ammo() {
+                            w.set_player_cell_ammo(n);
+                        }
+                        if let Some(n) = p.room_pipebomb_ammo() {
+                            w.set_player_pipebomb_ammo(n);
+                        }
+                        if let Some(n) = p.room_devastator_ammo() {
+                            w.set_player_devastator_ammo(n);
+                        }
+                        if let Some(n) = p.room_freeze_ammo() {
+                            w.set_player_freeze_ammo(n);
+                        }
+                        if let Some(n) = p.room_tripbomb_ammo() {
+                            w.set_player_tripbomb_ammo(n);
+                        }
+                        if let Some(n) = p.room_grow_ammo() {
+                            w.set_player_grow_ammo(n);
+                        }
+                        if let Some(n) = p.room_armor() {
+                            w.set_player_armor(n);
+                        }
+                        if let Some(n) = p.room_firstaid() {
+                            w.set_player_firstaid(n);
+                        }
+                        if let Some(n) = p.room_steroids() {
+                            w.set_player_steroids(n);
+                        }
+                        if let Some(n) = p.room_jetpack() {
+                            w.set_player_jetpack(n);
+                        }
+                        if let Some(n) = p.room_scuba() {
+                            w.set_player_scuba(n);
+                        }
+                        if let Some(n) = p.room_holoduke() {
+                            w.set_player_holoduke(n);
+                        }
+                        if let Some(n) = p.room_boots() {
+                            w.set_player_boots(n);
+                        }
+                        if let Some(n) = p.room_heat() {
+                            w.set_player_heat(n);
+                        }
+                        if let Some(n) = p.room_got_access() {
+                            w.set_player_got_access(n);
+                        }
+                        if p.room_holoduke_on() == Some(true) {
+                            w.spawn_player_holoduke_decoy();
+                        }
+                        if let Some(on) = p.room_jetpack_on() {
+                            w.set_player_jetpack_on(on);
+                        }
+                        if let Some(on) = p.room_scuba_on() {
+                            w.set_player_scuba_on(on);
+                        }
+                        if let Some(n) = p.room_air_tics() {
+                            w.set_player_air_tics(n);
+                        }
+                        if let Some(on) = p.room_heat_on() {
+                            w.set_player_heat_on(on);
+                        }
+                        if let Some(n) = p.room_falling_tics() {
+                            w.set_player_falling_tics(n);
+                        }
+                        if let Some(n) = p.room_hard_landing() {
+                            w.set_player_hard_landing(n);
+                        }
+                        if p.room_knuckle_incs() == Some(true) {
+                            w.set_player_knuckle_incs(true);
+                        }
+                        if let Some(n) = p.room_palookup() {
+                            w.set_player_palookup(n);
+                        }
+                        if let Some(on) = p.room_walking_snd_toggle() {
+                            w.set_player_walking_snd_toggle(on);
+                        }
+                        if let Some(n) = p.room_pycount() {
+                            w.set_player_pycount(n);
+                        }
+                        if let Some(n) = p.room_pals_flash() {
+                            w.set_player_pals_flash(n);
+                        }
+                        if let Some(n) = p.room_hurt_delay_tics() {
+                            w.set_player_hurt_delay(n);
+                        }
+                        if let Some(i) = p.room_newowner() {
+                            if let Some(sp) = h.sprites.as_ref().and_then(|ss| ss.get(i)) {
+                                let (x, y) = sp.room_xy();
+                                w.look_through_duke_sprite_at(f64::from(x), f64::from(y));
+                            }
+                        }
+                        if let Some(got) = p.room_gotweapon() {
+                            w.give_player_gotweapons(&got);
+                        }
+                        if let Some(slot) = p.room_last_weapon_slot() {
+                            w.give_player_weapon_slot(slot);
+                        }
+                        if let Some(slot) = p.room_last_full_weapon_slot() {
+                            w.give_player_weapon_slot(slot);
+                        }
+                        if let Some(slot) = p.room_weapon_slot() {
+                            w.set_player_weapon_slot(slot);
+                        }
+                        if let Some(slot) = p.room_wantweapon_fire() {
+                            w.set_player_wantweapon_fire(slot);
+                        }
+                        if let Some(n) = p.room_kickback_pic() {
+                            w.set_player_kickback(n);
+                        } else if p.room_show_empty_weapon() == Some(true) {
+                            w.set_player_show_empty_weapon(true);
+                        }
+                        if p.room_rapid_fire_hold() == Some(true) {
+                            w.set_player_rapid_fire_hold(true);
+                        }
+                        if let Some(n) = p.room_knee_incs() {
+                            w.set_player_knee_incs(n);
+                        }
+                        if p.room_access_incs() == Some(true) {
+                            if let Some(i) = p.room_access_wallnum() {
+                                if let Some(wall) = h.walls.as_ref().and_then(|ws| ws.get(i)) {
+                                    let (x, y) = wall.room_xy();
+                                    w.use_duke_wall_at(f64::from(x), f64::from(y));
+                                } else {
+                                    w.set_player_access_incs(true);
+                                }
+                            } else if let Some(i) = p.room_access_spritenum() {
+                                if let Some(sp) = h.sprites.as_ref().and_then(|ss| ss.get(i)) {
+                                    let (x, y) = sp.room_xy();
+                                    w.use_duke_sprite_at(f64::from(x), f64::from(y));
+                                } else {
+                                    w.set_player_access_incs(true);
+                                }
+                            } else {
+                                w.set_player_access_incs(true);
+                            }
+                        }
+                        if let (Some(tics), Some(q)) = (p.room_fta_tics(), p.room_ftq()) {
+                            w.set_player_fta_quote(tics, q);
+                        }
+                        if let Some(y) = p.room_pspr_y() {
+                            w.set_player_pspr_y(y);
+                        }
+                        if p.room_quick_kick() == Some(true) {
+                            w.player_quick_kick();
+                        }
+                        if p.room_holster_weapon() == Some(true) {
+                            w.set_player_holster(true);
+                        }
+                    }
+                }
+                if let Some(secs) = h.sectors.as_ref() {
+                    if let Some(w) = game.world_mut() {
+                        let zs: Vec<(f64, f64)> = secs
+                            .iter()
+                            .map(|s| (f64::from(s.room_floor_z()), f64::from(s.room_ceiling_z())))
+                            .collect();
+                        w.apply_duke_sector_zs(&zs);
+                        let pics: Vec<(String, String)> = secs
+                            .iter()
+                            .map(|s| (s.room_floor_pic(), s.room_ceiling_pic()))
+                            .collect();
+                        w.apply_duke_sector_pics(&pics);
+                        let lights: Vec<i16> = secs.iter().map(|s| s.room_light()).collect();
+                        w.apply_duke_sector_lights(&lights);
+                        let fogs: Vec<u8> = secs.iter().map(|s| s.room_fog_density()).collect();
+                        w.apply_duke_sector_fogs(&fogs);
+                    }
+                }
+                if let Some(sprites) = h.sprites.as_ref() {
+                    if let Some(w) = game.world_mut() {
+                        let xys: Vec<(f64, f64)> = sprites
+                            .iter()
+                            .filter(|s| s.extra > 0)
+                            .map(|s| {
+                                let (x, y) = s.room_xy();
+                                (f64::from(x), f64::from(y))
+                            })
+                            .collect();
+                        w.apply_duke_sprite_xy(&xys);
+                        let hits: Vec<(f64, f64, i32)> = sprites
+                            .iter()
+                            .filter(|s| s.extra > 0)
+                            .map(|s| {
+                                let (x, y) = s.room_xy();
+                                (f64::from(x), f64::from(y), i32::from(s.extra))
+                            })
+                            .collect();
+                        w.apply_duke_sprite_health(&hits);
+                        let looks: Vec<(f64, f64, i32)> = sprites
+                            .iter()
+                            .map(|s| {
+                                let (x, y) = s.room_xy();
+                                (f64::from(x), f64::from(y), i32::from(s.cstat))
+                            })
+                            .collect();
+                        w.apply_duke_sprite_cstat(&looks);
+                        let scales: Vec<(f64, f64, u8, u8, u8)> = sprites
+                            .iter()
+                            .map(|s| {
+                                let (x, y) = s.room_xy();
+                                (f64::from(x), f64::from(y), s.xrepeat, s.yrepeat, s.clipdist)
+                            })
+                            .collect();
+                        w.apply_duke_sprite_scale(&scales);
+                        let pals: Vec<(f64, f64, u8)> = sprites
+                            .iter()
+                            .map(|s| {
+                                let (x, y) = s.room_xy();
+                                (f64::from(x), f64::from(y), s.pal)
+                            })
+                            .collect();
+                        w.apply_duke_sprite_pal(&pals);
+                        let angs: Vec<(f64, f64, f64)> = sprites
+                            .iter()
+                            .map(|s| {
+                                let (x, y) = s.room_xy();
+                                (f64::from(x), f64::from(y), f64::from(s.room_yaw()))
+                            })
+                            .collect();
+                        w.apply_duke_sprite_ang(&angs);
+                        let zs: Vec<(f64, f64, f64)> = sprites
+                            .iter()
+                            .map(|s| {
+                                let (x, y) = s.room_xy();
+                                (f64::from(x), f64::from(y), f64::from(s.room_z()))
+                            })
+                            .collect();
+                        w.apply_duke_sprite_z(&zs);
+                    }
+                }
+                if let Some(walls) = h.walls.as_ref() {
+                    if let Some(w) = game.world_mut() {
+                        let hits: Vec<(f64, f64, i32)> = walls
+                            .iter()
+                            .filter_map(|wall| {
+                                let hp = if wall.cstat & 1 == 0 {
+                                    0
+                                } else if wall.extra > 0 {
+                                    i32::from(wall.extra)
+                                } else {
+                                    return None;
+                                };
+                                let (x, y) = wall.room_xy();
+                                Some((f64::from(x), f64::from(y), hp))
+                            })
+                            .collect();
+                        w.apply_duke_wall_health(&hits);
+                        let pics: Vec<(f64, f64, String)> = walls
+                            .iter()
+                            .map(|wall| {
+                                let (x, y) = wall.room_xy();
+                                (f64::from(x), f64::from(y), wall.room_mid_pic())
+                            })
+                            .collect();
+                        w.apply_duke_wall_pics(&pics);
+                    }
+                }
+                if let Some(r) = h.room_auto_run() {
+                    let _ = self.console.cvars.set("cl_run", if r { "1" } else { "0" });
+                }
+                if let Some(r) = h.room_crosshair() {
+                    let _ = self
+                        .console
+                        .cvars
+                        .set("cl_crosshair", if r { "1" } else { "0" });
+                }
+                self.reset_impact_fx();
+                self.refresh_sky_texture();
+                self.menu = None;
+                self.set_play_look(self.mouse_look_enabled());
+                self.start_level_music();
+                self.messages
+                    .push(format!("Load Game {label} (use .fsave to restore)"), 70);
+            }
+            Err(e) => self.messages.push(format!("load {label}: {e}"), 70),
         }
     }
 
@@ -4100,6 +4914,201 @@ impl ViewerApp {
         }
     }
 
+    fn save_play_save(&mut self, slot: Option<&str>) {
+        let slot = save_slot_name(slot);
+        let Some(game) = self.play.as_mut() else {
+            self.messages.push("save: not in play mode", 70);
+            return;
+        };
+        match game.save_game() {
+            Ok(bytes) => {
+                let path = dirs_room_save(&slot);
+                if let Some(dir) = path.parent() {
+                    if let Err(e) = std::fs::create_dir_all(dir) {
+                        self.messages.push(format!("save: {e}"), 70);
+                        return;
+                    }
+                }
+                match std::fs::write(&path, bytes) {
+                    Ok(()) => {
+                        self.messages.push(format!("Saved {}", path.display()), 70);
+                    }
+                    Err(e) => self.messages.push(format!("save: {e}"), 70),
+                }
+            }
+            Err(e) => self.messages.push(format!("save: {e}"), 70),
+        }
+    }
+
+    fn load_play_save(&mut self, slot: Option<&str>) {
+        let slot = save_slot_name(slot);
+        let (path, bytes) = match read_play_save_bytes(&slot) {
+            Ok(v) => v,
+            Err(e) => {
+                self.messages.push(format!("load {slot}: {e}"), 70);
+                return;
+            }
+        };
+        if let Ok(room_build::LoadedSave::Duke(h)) = room_build::identify_save(&bytes) {
+            self.load_duke_sav(h);
+            return;
+        }
+        let info = match read_save_info(&bytes) {
+            Ok(i) => i,
+            Err(e) => {
+                self.messages
+                    .push(format!("load {}: {e}", path.display()), 70);
+                return;
+            }
+        };
+        if self.play.is_none() {
+            self.messages.push("load: not in play mode", 70);
+            return;
+        }
+        let need_map = self
+            .play
+            .as_ref()
+            .is_some_and(|g| g.state != GameState::Level || g.map_name() != info.map);
+        if need_map {
+            let Some(vfs) = self.vfs.as_ref() else {
+                self.messages.push("load: no IWAD mounted", 70);
+                return;
+            };
+            let mut next_map = match load_map(vfs, &info.map) {
+                Ok(m) => m,
+                Err(e) => {
+                    self.messages.push(format!("load {}: {e}", info.map), 70);
+                    return;
+                }
+            };
+            ensure_nodes(&mut next_map);
+            self.map_base = next_map.clone();
+            self.map = next_map.clone();
+            let skill = Skill::new(info.skill);
+            if let Some(game) = self.play.as_mut() {
+                if let Err(e) = game.start_custom_map(next_map, skill) {
+                    self.messages.push(format!("load {}: {e}", info.map), 70);
+                    return;
+                }
+            }
+        }
+        let Some(game) = self.play.as_mut() else {
+            return;
+        };
+        match game.load_game(&bytes) {
+            Ok(()) => {
+                self.reset_impact_fx();
+                self.refresh_sky_texture();
+                self.menu = None;
+                self.set_play_look(self.mouse_look_enabled());
+                self.start_level_music();
+                self.messages.push(format!("Loaded {}", info.map), 70);
+            }
+            Err(e) => self.messages.push(format!("load: {e}"), 70),
+        }
+    }
+
+    fn begin_play_demo(&mut self, slot: Option<&str>) {
+        self.demo_slot = save_slot_name(slot);
+        let Some(game) = self.play.as_mut() else {
+            self.messages.push("record: not in play mode", 70);
+            return;
+        };
+        game.begin_demo_record();
+        self.messages
+            .push(format!("Recording {}", self.demo_slot), 70);
+    }
+
+    fn stop_play_demo(&mut self) {
+        let Some(game) = self.play.as_mut() else {
+            self.messages.push("stop: not in play mode", 70);
+            return;
+        };
+        let Some(demo) = game.take_demo() else {
+            self.messages.push("stop: not recording", 70);
+            return;
+        };
+        game.options.record_demo = false;
+        let path = dirs_room_demo(&self.demo_slot);
+        if let Some(dir) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                self.messages.push(format!("stop: {e}"), 70);
+                return;
+            }
+        }
+        match std::fs::write(&path, demo.to_fdem()) {
+            Ok(()) => self.messages.push(
+                format!("Wrote {} ({} tics)", path.display(), demo.tics.len()),
+                70,
+            ),
+            Err(e) => self.messages.push(format!("stop: {e}"), 70),
+        }
+    }
+
+    fn play_play_demo(&mut self, slot: Option<&str>) {
+        let slot = save_slot_name(slot);
+        let path = dirs_room_demo(&slot);
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.messages
+                    .push(format!("playdemo {}: {e}", path.display()), 70);
+                return;
+            }
+        };
+        let rec = match DemoRecorder::from_fdem(&bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                self.messages.push(format!("playdemo: {e}"), 70);
+                return;
+            }
+        };
+        let Some(vfs) = self.vfs.as_ref() else {
+            self.messages.push("playdemo: no IWAD mounted", 70);
+            return;
+        };
+        let mut next_map = match load_map(vfs, &rec.map) {
+            Ok(m) => m,
+            Err(e) => {
+                self.messages.push(format!("playdemo {}: {e}", rec.map), 70);
+                return;
+            }
+        };
+        ensure_nodes(&mut next_map);
+        self.map_base = next_map.clone();
+        self.map = next_map.clone();
+        let skill = Skill::new(rec.skill);
+        let Some(game) = self.play.as_mut() else {
+            self.messages.push("playdemo: not in play mode", 70);
+            return;
+        };
+        game.options.record_demo = false;
+        if let Err(e) = game.start_custom_map(next_map, skill) {
+            self.messages.push(format!("playdemo {}: {e}", rec.map), 70);
+            return;
+        }
+        let Some(world) = game.world_mut() else {
+            self.messages.push("playdemo: no world", 70);
+            return;
+        };
+        match (DemoPlayer { demo: &rec }).verify(world) {
+            Ok(r) if r.first_mismatch.is_none() => {
+                self.reset_impact_fx();
+                self.refresh_sky_texture();
+                self.menu = None;
+                self.set_play_look(self.mouse_look_enabled());
+                self.start_level_music();
+                self.messages
+                    .push(format!("Demo {} ({} tics)", rec.map, r.tics_ok), 70);
+            }
+            Ok(r) => self.messages.push(
+                format!("demo desync at tic {}", r.first_mismatch.unwrap_or(0)),
+                70,
+            ),
+            Err(e) => self.messages.push(format!("playdemo: {e}"), 70),
+        }
+    }
+
     fn start_level_music(&mut self) {
         let Some(vfs) = self.vfs.as_ref() else {
             return;
@@ -4116,10 +5125,66 @@ impl ViewerApp {
         let Ok(mut shared) = audio.shared.lock() else {
             return;
         };
-        match play_map_music(&mut shared.music, vfs, &name, None) {
+        let mapinfo = self.play.as_ref().and_then(Headless::mapinfo);
+        match play_map_music(&mut shared.music, vfs, &name, mapinfo) {
             Ok(lump) => self.messages.push(format!("Music {lump}"), 35),
             Err(e) => eprintln!("room: music {name}: {e}"),
         }
+    }
+
+    fn mouse_look_enabled(&self) -> bool {
+        !matches!(
+            self.console.cvars.get("mouse_look"),
+            Some(room_console::CvarValue::Bool(false))
+        )
+    }
+
+    fn title_elapsed_ms(&self) -> u64 {
+        self.frames
+            .saturating_sub(self.title_anim_origin)
+            .saturating_mul(16)
+            .saturating_add(self.title_skip_ms)
+    }
+
+    fn title_anim_defs(&self) -> (Option<(u32, u16)>, Option<(u32, u16)>) {
+        let Some(v) = self.vfs.as_ref() else {
+            return (None, None);
+        };
+        let read_def = |name: &str| {
+            v.find_any_ns(name)
+                .and_then(|id| v.read(id).ok())
+                .and_then(|b| parse_titledef(&String::from_utf8_lossy(&b)))
+        };
+        (read_def("RADLDEF"), read_def("TITLEDEF"))
+    }
+
+    fn title_in_splash(&self) -> bool {
+        if !self
+            .play
+            .as_ref()
+            .is_some_and(|g| g.state == GameState::Title)
+        {
+            return false;
+        }
+        let (splash, logo) = self.title_anim_defs();
+        title_screen_pic(splash, logo, self.title_elapsed_ms()).1
+    }
+
+    fn try_skip_title_splash(&mut self) -> bool {
+        if !self.title_in_splash() {
+            return false;
+        }
+        let dur = splash_ms(self.title_anim_defs().0);
+        if dur == 0 {
+            return false;
+        }
+        self.title_skip_ms = dur;
+        true
+    }
+
+    fn restart_title_anim(&mut self) {
+        self.title_anim_origin = self.frames;
+        self.title_skip_ms = 0;
     }
 
     fn start_title_music(&mut self) {
@@ -4189,6 +5254,15 @@ impl ViewerApp {
         if self.keys.space {
             keys.push(Key::Jump);
         }
+        if self.keys.c {
+            keys.push(Key::MoveDown);
+        }
+        if self.keys.slash {
+            keys.push(Key::QuickKick);
+        }
+        if self.keys.quote {
+            keys.push(Key::InvUse);
+        }
         match self.keys.weapon {
             1 => keys.push(Key::Weapon1),
             2 => keys.push(Key::Weapon2),
@@ -4197,6 +5271,9 @@ impl ViewerApp {
             5 => keys.push(Key::Weapon5),
             6 => keys.push(Key::Weapon6),
             7 => keys.push(Key::Weapon7),
+            8 => keys.push(Key::Weapon8),
+            9 => keys.push(Key::Weapon9),
+            10 => keys.push(Key::Weapon0),
             _ => {}
         }
         self.keys.weapon = 0;

@@ -25,6 +25,26 @@ pub struct SpriteInstance {
     /// Horizontal origin as a fraction of width (`leftoffset / width`).
     /// Doom sprite origin sits at this column; `0.5` centres the billboard.
     pub anchor_u: f32,
+    /// Billboard, or a plane fixed to the actor's facing.
+    pub orient: SpriteOrient,
+}
+
+/// How a sprite quad is oriented in the world.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum SpriteOrient {
+    /// Turns to face the camera around Z (Doom).
+    #[default]
+    Billboard,
+    /// Vertical plane facing `yaw` radians (`+WALLSPRITE`, Build wall sprites).
+    Wall {
+        /// Facing direction in radians (map XY).
+        yaw: f32,
+    },
+    /// Horizontal plane centred on `pos`, its top edge toward `yaw` (`+FLATSPRITE`).
+    Flat {
+        /// Facing direction in radians (map XY).
+        yaw: f32,
+    },
 }
 
 /// Build candidate lump names for a DECORATE sprite + frame (rotation 0 then 1).
@@ -99,15 +119,28 @@ pub fn sprite_lump_candidates_rot(sprite: &str, frame: u8, rot_digit: u8) -> Vec
 /// Emit a Y-axis billboard quad facing `view_forward` (XY), standing on `pos`.
 #[must_use]
 pub fn emit_sprite_quad(inst: SpriteInstance, view_forward: Vec3) -> [WallVertex; 6] {
-    let fwd = Vec3::new(view_forward.x, view_forward.y, 0.0).normalize_or_zero();
-    let right = Vec3::new(-fwd.y, fwd.x, 0.0);
+    let (right, up) = match inst.orient {
+        SpriteOrient::Billboard => {
+            let fwd = Vec3::new(view_forward.x, view_forward.y, 0.0).normalize_or_zero();
+            (Vec3::new(-fwd.y, fwd.x, 0.0), Vec3::Z)
+        }
+        SpriteOrient::Wall { yaw } => (Vec3::new(yaw.sin(), -yaw.cos(), 0.0), Vec3::Z),
+        SpriteOrient::Flat { yaw } => (
+            Vec3::new(yaw.sin(), -yaw.cos(), 0.0),
+            Vec3::new(yaw.cos(), yaw.sin(), 0.0),
+        ),
+    };
     let half_w = inst.width * 0.5;
     // Shift so column `anchor_u * width` stays on `inst.pos` (Doom leftoverset;
     // may lie outside [0,1] for some patches).
     let anchor = inst.anchor_u;
-    let mid = inst.pos + right * (half_w - anchor * inst.width);
+    let mut mid = inst.pos + right * (half_w - anchor * inst.width);
+    if matches!(inst.orient, SpriteOrient::Flat { .. }) {
+        // Centred on the actor and lifted off the plane it lies on.
+        mid += Vec3::Z * 0.25 - up * (inst.height * 0.5);
+    }
     let lo = mid;
-    let hi = mid + Vec3::Z * inst.height;
+    let hi = mid + up * inst.height;
     let a = lo - right * half_w;
     let b = lo + right * half_w;
     let c = hi + right * half_w;
@@ -150,6 +183,7 @@ mod tests {
                 texture: String::new(),
                 flip_u: false,
                 anchor_u: 0.5,
+                orient: crate::sprites::SpriteOrient::Billboard,
             },
             Vec3::X,
         );
@@ -174,6 +208,7 @@ mod tests {
                 texture: String::new(),
                 flip_u: false,
                 anchor_u: 0.0,
+                orient: crate::sprites::SpriteOrient::Billboard,
             },
             Vec3::Y,
         );
@@ -205,6 +240,7 @@ mod tests {
                 texture: String::new(),
                 flip_u: false,
                 anchor_u: 0.5,
+                orient: crate::sprites::SpriteOrient::Billboard,
             },
             Vec3::Y,
         );
@@ -219,6 +255,7 @@ mod tests {
                 texture: String::new(),
                 flip_u: false,
                 anchor_u: 1.25,
+                orient: crate::sprites::SpriteOrient::Billboard,
             },
             Vec3::Y,
         );
@@ -271,6 +308,7 @@ mod tests {
                 texture: String::new(),
                 flip_u: true,
                 anchor_u: 0.5,
+                orient: crate::sprites::SpriteOrient::Billboard,
             },
             Vec3::X,
         );

@@ -144,6 +144,10 @@ build_room_web() {
   elif [[ -f testdata/freedoom/freedoom2.wad ]]; then
     cp testdata/freedoom/freedoom2.wad "$out/freedoom1.wad"
   fi
+  # Duke Nukem 3D rooms (lobby "Game" choice) load /play/duke3d.grp.
+  if [[ -f testdata/duke/duke3d.grp ]]; then
+    cp testdata/duke/duke3d.grp "$out/duke3d.grp"
+  fi
 }
 
 # Build each mods/<dir> with a room.toml manifest and pack it as a PWAD:

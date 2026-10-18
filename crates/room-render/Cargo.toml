@@ -29,6 +29,7 @@ thiserror.workspace = true
 wgpu.workspace = true
 
 [dev-dependencies]
+room-build = { path = "../room-build" }
 room-decorate = { path = "../room-decorate" }
 room-sim = { path = "../room-sim" }
 room-testkit = { path = "../room-testkit" }

@@ -31,6 +31,20 @@ const THING_PLAYER4_START: i16 = 4;
 /// MBF helper dog DoomEdNum.
 const THING_MBF_HELPER_DOG: i32 = 888;
 
+/// Duke `inven_icon` HUD name (1 kit … 7 boots).
+fn duke_inven_name(icon: u8) -> Option<&'static str> {
+    Some(match icon {
+        1 => "MEDKIT",
+        2 => "STEROIDS",
+        3 => "HOLODUKE",
+        4 => "JETPACK",
+        5 => "NIGHT VISION",
+        6 => "SCUBA",
+        7 => "BOOTS",
+        _ => return None,
+    })
+}
+
 /// Doom `mobj->angle = ANG45 * (mthing->angle / 45)` — exact BAM for 45° steps.
 fn doom_thing_angle(degrees: i16) -> Angle {
     let steps = i32::from(degrees) / 45;
@@ -278,6 +292,10 @@ pub struct World {
     pub players: [Option<Player>; MAX_PLAYERS],
     /// `player->refire` of the slot currently in `player_think` (slot is `take()`n).
     pub(crate) thinking_refire: i32,
+    /// `up_move` of the slot currently in `player_think` (slot is `take()`n).
+    pub(crate) thinking_up_move: i16,
+    /// Weapon whose psprite action is running: state jumps resolve its labels.
+    pub(crate) psprite_weapon: Option<ClassId>,
     /// Active vertical door movers.
     pub doors: Vec<DoorMover>,
     /// Active floor movers.
@@ -300,6 +318,16 @@ pub struct World {
     pub glows: Vec<LightGlow>,
     /// Active floor scroll / carry thinkers.
     pub scrollers: Vec<FloorScroller>,
+    /// Active walkable rotating floors.
+    pub spinners: Vec<crate::specials::FloorSpinner>,
+    /// Active locator-following subway / train cars.
+    pub subways: Vec<crate::specials::FloorSubway>,
+    /// Active `SE 20` stretch / shrink sectors.
+    pub stretches: Vec<crate::specials::FloorStretch>,
+    /// Active `SE 22` teeth prongs.
+    pub teeth: Vec<crate::specials::FloorTeeth>,
+    /// Active `SE 16` reactor skews.
+    pub skews: Vec<crate::specials::FloorSkew>,
     /// Accumulated floor UV offsets (sector index → u/v).
     pub floor_scroll_offsets: std::collections::BTreeMap<u32, (f64, f64)>,
     /// Active ceiling flat scrollers.
@@ -385,6 +413,8 @@ pub struct World {
     pub inventory: InventoryBags,
     /// Sound events produced this tic (drained by the game shell).
     pub sound_events: Vec<SimSoundEvent>,
+    /// Sound names queued when the last tic started (CON `ifsound` / `ifnosounds`).
+    pub sound_heard: Vec<String>,
     /// ACS `SetMusic` / `LocalSetMusic` request (lump or SNDINFO name; drained by shell).
     pub music_request: Option<String>,
     /// ACS `SetMusicVolume` (0..=1).
@@ -427,6 +457,8 @@ pub struct World {
     pub decal_generators: std::collections::BTreeMap<String, String>,
     /// ACS `SetCameraToTexture` bindings (texture name → camera actor + FOV).
     pub camera_textures: std::collections::BTreeMap<String, CameraTextureBind>,
+    /// Drive `DukeCamera` views while a Duke `.DMO` is playing (`SE 27`).
+    pub demo_cameras: bool,
     /// ACS `ChangeSky` sky1 override (empty = leave MAPINFO/default).
     pub sky1_override: Option<String>,
     /// ACS `ChangeSky` sky2 override.
@@ -460,6 +492,64 @@ pub struct World {
     pub fast_monsters: bool,
     /// Respawn `COUNTKILL` corpses (`-respawn` / Nightmare skill).
     pub respawn_monsters: bool,
+    /// Respawn picked-up items (Duke `ud.respawn_items`).
+    pub respawn_items: bool,
+    /// Respawn inventory pickups (Duke `ud.respawn_inventory`).
+    pub respawn_inventory: bool,
+    /// No monsters (Duke `ud.monsters_off`).
+    pub monsters_off: bool,
+    /// Came from a secret exit (Duke `ud.from_bonus`).
+    pub from_bonus: bool,
+    /// Pending secret level number (Duke `ud.secretlevel`; `0` = none).
+    pub secretlevel: i32,
+    /// End-of-game flag (Duke `ud.eog`).
+    pub eog: bool,
+    /// Duke CON `global_random`.
+    pub global_random: i32,
+    /// Cooperative play (Duke `ud.coop`).
+    pub coop: bool,
+    /// Friendly fire (Duke `ud.ffire`).
+    pub friendly_fire: bool,
+    /// Respawn markers (Duke `ud.marker`).
+    pub marker: bool,
+    /// Previous level index (Duke `ud.last_level`).
+    pub last_level: i32,
+    /// Active camera sprite (`-1` = none).
+    pub camsprite: i32,
+    /// Duke `pskybits`.
+    pub pskybits: i32,
+    /// Duke `pskyoff[8]`.
+    pub pskyoff: [i16; 8],
+    /// Duke `parallaxyscale`.
+    pub parallaxyscale: i32,
+    /// Multiplayer connect-list head (`-1` = none).
+    pub connecthead: i32,
+    /// Multiplayer connect-list next links.
+    pub connectpoint2: [i16; 16],
+    /// Duke `numplayersprites`.
+    pub numplayersprites: i32,
+    /// DukeMatch `frags[16][16]`.
+    pub duke_frags: [[i16; 16]; 16],
+    /// Duke `animatecnt`.
+    pub animatecnt: i32,
+    /// Duke `animategoal` (first `animatecnt` slots).
+    pub animategoal: Vec<i32>,
+    /// Duke `animatevel`.
+    pub animatevel: Vec<i32>,
+    /// Duke `animateptr`.
+    pub animateptr: Vec<i32>,
+    /// Duke `numanimwalls`.
+    pub numanimwalls: i32,
+    /// Duke `spriteqamount`.
+    pub spriteqamount: i32,
+    /// Duke `numclouds`.
+    pub numclouds: i32,
+    /// Duke `numcyclers`.
+    pub numcyclers: i32,
+    /// Duke `gotpic` tile-seen bits.
+    pub gotpic: Vec<u8>,
+    /// Duke `playerswhenstarted`.
+    pub playerswhenstarted: i32,
     /// Round-robin index into live `BossTarget` actors for `A_BrainSpit`.
     pub boss_target_cursor: usize,
     /// `A_BrainSpit` easy toggle (skills 1–2 fire every other cube).
@@ -486,6 +576,8 @@ pub struct World {
     pub recent_shots: std::collections::VecDeque<ShotTrace>,
     /// Numeric strategy (`Double` default; `VanillaFixed` for strict demo sync).
     pub math_mode: SimMathMode,
+    /// When false, hitscans and player missiles follow pitch (Duke Auto Aim off).
+    pub autoaim: bool,
     /// Classic `P_Random` / `M_Random` (used when [`SimMathMode::VanillaFixed`]).
     pub vanilla_rng: VanillaRng,
     /// ACS VM state (`BEHAVIOR` scripts for this map).
@@ -702,8 +794,8 @@ pub struct PlayerHud {
     pub bob_y: f32,
     /// God mode active.
     pub god: bool,
-    /// Owned weapon slots for the `STARMS` panel (bit `n` = slot `n`, 2..=7).
-    pub arms: u8,
+    /// Owned weapon slots (bit `n` = slot `n`, 2..=9; `STARMS` shows 2..=7).
+    pub arms: u16,
     /// `[count, max]` for Clip / Shell / RocketAmmo / Cell (STBAR ammo table).
     pub ammo_table: [[i32; 2]; 4],
     /// Screen-flash PLAYPAL index ([`crate::palette_index`]).
@@ -735,13 +827,17 @@ fn weapon_patch_for_class(class_name: &str) -> &'static str {
 }
 
 /// Build a Doom sprite lump name from psprite sprite + frame (`PISG`/`B` → `PISGB0`).
-fn weapon_patch_from_sprite_frame(sprite: &str, frame: u8) -> String {
+/// `None` when the state names no sprite; `Some("")` for the invisible `TNT1`.
+fn weapon_patch_from_sprite_frame(sprite: &str, frame: u8) -> Option<String> {
     let s = sprite.trim().to_ascii_uppercase();
     if s.is_empty() {
-        return String::new();
+        return None;
+    }
+    if s == "TNT1" {
+        return Some(String::new());
     }
     let letter = char::from(b'A' + frame.min(25));
-    format!("{s}{letter}0")
+    Some(format!("{s}{letter}0"))
 }
 
 /// ZDoom `ML_REPEAT_SPECIAL` — keep special after successful activation.
@@ -766,6 +862,19 @@ pub const ML_MAPPED: i32 = 0x0100;
 pub const ML_REVEALED: i32 = 0x0001_0000;
 /// Runtime `Line_Horizon` marker (not a vanilla ML bit).
 pub const ML_HORIZON: i32 = 0x4000_0000;
+/// GZDoom `ML_BLOCKHITSCAN` (UDMF `blockhitscan`).
+pub const ML_BLOCKHITSCAN: i32 = 0x0800_0000;
+
+/// Map flags of `line` as runtime [`World::line_flags`] bits.
+#[must_use]
+pub fn base_line_flags(line: &room_map::Line) -> i32 {
+    let hitscan = if line.block_hitscan {
+        ML_BLOCKHITSCAN
+    } else {
+        0
+    };
+    i32::from(line.flags) | hitscan
+}
 
 /// `Line_SetBlocking` `BLOCKF_*` bits (ACS / special args).
 pub mod blockf {
@@ -779,6 +888,8 @@ pub mod blockf {
     pub const EVERYTHING: i32 = 8;
     /// Railing (`ML_RAILING`).
     pub const RAILING: i32 = 32;
+    /// Blocks hitscans (`ML_BLOCKHITSCAN`).
+    pub const HITSCAN: i32 = 512;
 }
 
 /// ACS `SetLineBlocking` blocking modes.
@@ -921,7 +1032,7 @@ impl World {
         self.map
             .lines
             .get(idx as usize)
-            .map(|l| i32::from(l.flags))
+            .map(base_line_flags)
             .unwrap_or(0)
     }
 
@@ -975,6 +1086,26 @@ impl World {
         states: Arc<StateTable>,
         skill: u8,
         math_mode: SimMathMode,
+    ) -> Result<Self, SimError> {
+        Self::from_map_with_slots(
+            map,
+            classes,
+            states,
+            skill,
+            math_mode,
+            crate::weapon_slots::WeaponSlots::with_doom_defaults(),
+        )
+    }
+
+    /// Like [`Self::from_map_with_skill_mode`] with the KEYCONF weapon slots /
+    /// player classes in place before the player starts spawn.
+    pub fn from_map_with_slots(
+        map: MapGeometry,
+        classes: Arc<ClassRegistry>,
+        states: Arc<StateTable>,
+        skill: u8,
+        math_mode: SimMathMode,
+        weapon_slots: crate::weapon_slots::WeaponSlots,
     ) -> Result<Self, SimError> {
         let sectors: Vec<SectorDynamic> = map
             .sectors
@@ -1067,6 +1198,8 @@ impl World {
             map_thinker_count: 0,
             players: std::array::from_fn(|_| None),
             thinking_refire: 0,
+            thinking_up_move: 0,
+            psprite_weapon: None,
             doors: Vec::new(),
             floors: Vec::new(),
             plats: Vec::new(),
@@ -1078,6 +1211,11 @@ impl World {
             fades: Vec::new(),
             glows: Vec::new(),
             scrollers: Vec::new(),
+            spinners: Vec::new(),
+            subways: Vec::new(),
+            stretches: Vec::new(),
+            teeth: Vec::new(),
+            skews: Vec::new(),
             floor_scroll_offsets: std::collections::BTreeMap::new(),
             ceiling_scrollers: Vec::new(),
             ceiling_scroll_offsets: std::collections::BTreeMap::new(),
@@ -1107,7 +1245,7 @@ impl World {
             sndseq: crate::sndseq::SndSeqTable::default(),
             active_sndseqs: Vec::new(),
             locks: crate::locks::LockTable::default(),
-            weapon_slots: crate::weapon_slots::WeaponSlots::with_doom_defaults(),
+            weapon_slots,
             sector_specials: std::collections::BTreeMap::new(),
             line_specials: std::collections::BTreeMap::new(),
             line_args: std::collections::BTreeMap::new(),
@@ -1120,6 +1258,7 @@ impl World {
             side_lights: std::collections::BTreeMap::new(),
             inventory: InventoryBags::new(),
             sound_events: Vec::new(),
+            sound_heard: Vec::new(),
             music_request: None,
             music_volume: 1.0,
             screen_fade: ScreenFade::default(),
@@ -1141,6 +1280,7 @@ impl World {
             team_scores: std::collections::BTreeMap::new(),
             decal_generators: std::collections::BTreeMap::new(),
             camera_textures: std::collections::BTreeMap::new(),
+            demo_cameras: false,
             sky1_override: None,
             sky2_override: None,
             sky_speed1: 0.0,
@@ -1157,6 +1297,35 @@ impl World {
             skill: skill.clamp(1, 5),
             fast_monsters: skill >= 5,
             respawn_monsters: skill >= 5,
+            respawn_items: false,
+            respawn_inventory: false,
+            monsters_off: false,
+            from_bonus: false,
+            secretlevel: 0,
+            eog: false,
+            global_random: 0,
+            coop: false,
+            friendly_fire: false,
+            marker: false,
+            last_level: 0,
+            camsprite: -1,
+            pskybits: 0,
+            pskyoff: [0; 8],
+            parallaxyscale: 0,
+            connecthead: -1,
+            connectpoint2: [-1; 16],
+            numplayersprites: 0,
+            duke_frags: [[0; 16]; 16],
+            animatecnt: 0,
+            animategoal: Vec::new(),
+            animatevel: Vec::new(),
+            animateptr: Vec::new(),
+            numanimwalls: 0,
+            spriteqamount: 0,
+            numclouds: 0,
+            numcyclers: 0,
+            gotpic: Vec::new(),
+            playerswhenstarted: 1,
             boss_target_cursor: 0,
             brain_spit_easy: false,
             script_event_mask: 0,
@@ -1170,6 +1339,7 @@ impl World {
             last_damage: None,
             recent_shots: std::collections::VecDeque::new(),
             math_mode,
+            autoaim: true,
             acs: room_acs::AcsState::new(),
             scripts: crate::script_host::ScriptHost::new(),
             vanilla_rng: VanillaRng::new(),
@@ -1182,9 +1352,15 @@ impl World {
         crate::sector_specials::init_sector_specials(&mut world);
         crate::specials::init_line_scrollers(&mut world);
         crate::specials::init_udmf_side_scrollers(&mut world);
+        crate::specials::init_udmf_floor_spinners(&mut world);
+        crate::specials::init_udmf_floor_subways(&mut world);
+        crate::specials::init_udmf_floor_stretches(&mut world);
+        crate::specials::init_udmf_floor_teeth(&mut world);
+        crate::specials::init_udmf_floor_skews(&mut world);
         crate::specials::init_transfers(&mut world);
         world.spawn_map_things()?;
         world.map_thinker_count = world.thinkers.default.len();
+        crate::specials::init_security_camera_textures(&mut world);
         crate::sector_specials::spawn_sector_light_thinkers(&mut world);
         crate::specials::init_point_pushers(&mut world);
         crate::polyobj::init_polyobjs(&mut world);
@@ -1228,11 +1404,7 @@ impl World {
                 continue;
             }
             if thing.type_id == THING_PLAYER1_START {
-                let class = self
-                    .classes
-                    .find_name("PlayerPawn")
-                    .or_else(|| self.classes.find_name("Actor"))
-                    .unwrap_or(ClassId::from_raw(0));
+                let class = self.player_class();
                 let id = self.spawn_at(
                     class,
                     DVec3::new(f64::from(thing.x), f64::from(thing.y), f64::from(thing.z)),
@@ -1254,16 +1426,17 @@ impl World {
                         p.view_z = a.pos.z() + p.view_height;
                     }
                     self.players[0] = Some(p);
-                    self.give_starting_loadout(id);
+                    let _ = self.give_starting_loadout(id);
                 }
                 continue;
             }
             let Some(class) = self.classes.find_doomednum(i32::from(thing.type_id)) else {
                 continue;
             };
+            let z = self.map_thing_z(class, thing);
             let id = self.spawn_at(
                 class,
-                DVec3::new(f64::from(thing.x), f64::from(thing.y), f64::from(thing.z)),
+                DVec3::new(f64::from(thing.x), f64::from(thing.y), z),
                 doom_thing_angle(thing.angle),
             )?;
             self.randomize_mapthing_tics(id);
@@ -1412,8 +1585,70 @@ impl World {
                     a.attack_z_offset = thing.attack_z_offset;
                 }
             }
+            // Build maps can leave a COUNTKILL box in a wall or overlapping
+            // sector. Doom `P_CheckPosition` then keeps them stuck. Skip the
+            // vanilla-fixed path so demos stay bit-identical.
+            if self.math_mode != SimMathMode::VanillaFixed {
+                self.unstick_map_thing(id);
+            }
         }
         Ok(())
+    }
+
+    /// Nudge a `COUNTKILL` that does not fit at its map spot (up to 48 units).
+    fn unstick_map_thing(&mut self, id: ActorId) {
+        let Some(actor) = self.actors.get(id).cloned() else {
+            return;
+        };
+        if actor.destroyed || (actor.flags & crate::class::FLAG_COUNTKILL) == 0 {
+            return;
+        }
+        let here = actor.pos;
+        let fits = crate::physics::check_position(self, &actor, here, Some(id)).ok;
+        if let Some(floor) = crate::physics::floor_at_xy(self, here.x(), here.y()) {
+            if fits && (floor - here.z()).abs() <= 1.0 {
+                return;
+            }
+            if fits && (floor - here.z()).abs() <= 64.0 {
+                let p = DVec3::new(here.x(), here.y(), floor);
+                if crate::physics::check_position(self, &actor, p, Some(id)).ok {
+                    if let Some(a) = self.actors.get_mut(id) {
+                        a.pos = p;
+                        a.spawn_point = p;
+                    }
+                    return;
+                }
+            }
+        } else if fits {
+            return;
+        }
+        const REACH: i32 = 48;
+        let mut best: Option<(i32, DVec3)> = None;
+        let mut dy = -REACH;
+        while dy <= REACH {
+            let mut dx = -REACH;
+            while dx <= REACH {
+                if dx * dx + dy * dy <= REACH * REACH {
+                    let p =
+                        DVec3::new(here.x() + f64::from(dx), here.y() + f64::from(dy), here.z());
+                    let check = crate::physics::check_position(self, &actor, p, Some(id));
+                    if check.ok && (check.floor_z - here.z()).abs() <= 24.0 {
+                        let d = dx * dx + dy * dy;
+                        if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+                            best = Some((d, DVec3::new(p.x(), p.y(), check.floor_z)));
+                        }
+                    }
+                }
+                dx += 4;
+            }
+            dy += 4;
+        }
+        if let Some((_, p)) = best {
+            if let Some(a) = self.actors.get_mut(id) {
+                a.pos = p;
+                a.spawn_point = p;
+            }
+        }
     }
 
     /// Spawn coop players 2..=N at Player 2–4 starts (`total` clamped 1..=4).
@@ -1426,11 +1661,7 @@ impl World {
             return Ok(1);
         }
         self.spawn_multiplayer_only_things()?;
-        let class = self
-            .classes
-            .find_name("PlayerPawn")
-            .or_else(|| self.classes.find_name("Actor"))
-            .unwrap_or(ClassId::from_raw(0));
+        let class = self.player_class();
         let starts: [i16; 3] = [
             THING_PLAYER2_START,
             THING_PLAYER3_START,
@@ -1466,7 +1697,7 @@ impl World {
                 p.view_z = a.pos.z() + p.view_height;
             }
             self.players[seat] = Some(p);
-            self.give_starting_loadout(id);
+            let _ = self.give_starting_loadout(id);
             alive = alive.saturating_add(1);
         }
         Ok(alive)
@@ -1492,9 +1723,10 @@ impl World {
             let Some(class) = self.classes.find_doomednum(i32::from(thing.type_id)) else {
                 continue;
             };
+            let z = self.map_thing_z(class, thing);
             let id = self.spawn_at(
                 class,
-                DVec3::new(f64::from(thing.x), f64::from(thing.y), f64::from(thing.z)),
+                DVec3::new(f64::from(thing.x), f64::from(thing.y), z),
                 doom_thing_angle(thing.angle),
             )?;
             self.randomize_mapthing_tics(id);
@@ -1606,22 +1838,78 @@ impl World {
         if let Some(a) = self.actors.get(mo) {
             player.view_z = a.pos.z() + view_h;
         }
-        self.give_starting_loadout(mo);
         // Re-apply ready weapon after loadout (give_starting_loadout may set players[0]).
-        if let Some(pistol) = self.classes.find_name("Pistol") {
-            player.ready_weapon = Some(pistol);
+        if let Some(weapon) = self.give_starting_loadout(mo) {
+            player.ready_weapon = Some(weapon);
         }
         player.pspr_state = None;
         player.pspr_y = crate::player::WEAPON_TOP;
         true
     }
 
-    /// Doom starting kit: Fist + Pistol + a clip of bullets (when those classes exist).
-    fn give_starting_loadout(&mut self, mo: ActorId) {
+    /// Spawn z for a map thing: Hexen / UDMF `height` is relative to the floor.
+    fn map_thing_z(&self, class: ClassId, thing: &room_map::RawThing) -> f64 {
+        let ceiling = self
+            .classes
+            .get(class)
+            .is_some_and(|d| d.flags & crate::class::FLAG_SPAWNCEILING != 0);
+        if thing.z == 0 || ceiling {
+            return f64::from(thing.z);
+        }
+        crate::physics::floor_at_xy(self, f64::from(thing.x), f64::from(thing.y)).unwrap_or(0.0)
+            + f64::from(thing.z)
+    }
+
+    /// Player pawn class: the first KEYCONF `addplayerclass`, else `PlayerPawn`.
+    fn player_class(&self) -> ClassId {
+        self.weapon_slots
+            .player_classes
+            .iter()
+            .find_map(|c| self.classes.find_name(&c.class))
+            .or_else(|| self.classes.find_name("PlayerPawn"))
+            .or_else(|| self.classes.find_name("Actor"))
+            .unwrap_or(ClassId::from_raw(0))
+    }
+
+    /// Give `Player.StartItem` entries in order; the first weapon becomes ready.
+    fn give_start_items(&mut self, mo: ActorId, items: &[(String, i32)]) -> Option<ClassId> {
+        let mut ready = None;
+        for (name, amount) in items {
+            let Some(cid) = self.classes.find_name(name) else {
+                continue;
+            };
+            let _ = crate::inventory::give_inventory(self, mo, cid, *amount);
+            if ready.is_none() && self.classes.get(cid).is_some_and(|c| c.is_weapon) {
+                ready = Some(cid);
+            }
+        }
+        if let Some(weapon) = ready {
+            if let Some(p) = self.players.iter_mut().flatten().find(|p| p.mo == Some(mo)) {
+                p.ready_weapon = Some(weapon);
+                p.pspr_state = None;
+                p.pspr_y = crate::player::WEAPON_TOP;
+            }
+        }
+        ready
+    }
+
+    /// Starting kit: the pawn's `Player.StartItem` list, else Doom's Fist +
+    /// Pistol + a clip of bullets (when those classes exist). Returns the
+    /// ready weapon.
+    fn give_starting_loadout(&mut self, mo: ActorId) -> Option<ClassId> {
+        let start_items = self
+            .actors
+            .get(mo)
+            .and_then(|a| self.classes.get(a.class))
+            .map(|c| c.start_items.clone())
+            .unwrap_or_default();
+        if !start_items.is_empty() {
+            return self.give_start_items(mo, &start_items);
+        }
         let fist = self.classes.find_name("Fist");
         let pistol = self.classes.find_name("Pistol");
         if fist.is_none() && pistol.is_none() {
-            return;
+            return None;
         }
         if let Some(fist) = fist {
             let _ = crate::inventory::give_inventory(self, mo, fist, 1);
@@ -1655,6 +1943,7 @@ impl World {
                 .unwrap_or(50);
             let _ = crate::inventory::give_inventory(self, mo, clip, bullets);
         }
+        pistol
     }
 
     /// Doom `P_SpawnMapThing`: `tics = 1 + (P_Random() % tics)` when tics > 0.
@@ -1679,6 +1968,7 @@ impl World {
         pos: DVec3,
         angle: Angle,
     ) -> Result<ActorId, SimError> {
+        let class = self.classes.replacement(class);
         let def = self
             .classes
             .get(class)
@@ -1706,6 +1996,7 @@ impl World {
                 gravity: 1.0,
                 friction: 1.0,
                 jump_z: 8.0,
+                forward_move: 1.0,
                 ripper_level: 0,
                 rip_level_min: 0,
                 rip_level_max: 0,
@@ -1750,6 +2041,9 @@ impl World {
                 pain_threshold: 0,
                 typed_pain_chances: std::collections::BTreeMap::new(),
                 damage: 0,
+                contact_damage: 0,
+                kill_taunts: Vec::new(),
+                idle_taunts: Vec::new(),
                 ammo_type: String::new(),
                 ammo_use: 0,
                 ammo_give: 0,
@@ -1765,8 +2059,10 @@ impl World {
                 friendly_see_blocks: 10,
                 bounce_sound: String::new(),
                 wall_bounce_sound: String::new(),
+                bounce_factor: 0.7,
                 push_sound: String::new(),
                 use_sound: String::new(),
+                start_items: Vec::new(),
             });
         let spawn_state = self.states.find_label(class, "Spawn");
         let (sprite, frame, tics) = if let Some(sid) = spawn_state {
@@ -2043,6 +2339,11 @@ impl World {
         self.math_mode = math_mode_for_vanilla_demo(enabled);
     }
 
+    /// Look through `DukeCamera` actors while a Duke `.DMO` plays.
+    pub fn set_demo_cameras(&mut self, enabled: bool) {
+        self.demo_cameras = enabled;
+    }
+
     /// Queue a positional sound (SFX name resolved by the shell).
     pub fn play_sound(&mut self, name: &str, x: f64, y: f64, z: f64, volume: f32) {
         self.play_sound_attn(name, x, y, z, volume, 1.0);
@@ -2066,6 +2367,1420 @@ impl World {
             volume,
             attenuation,
         });
+    }
+
+    /// Resume a Duke save-game earthquake (`SE 2` / `A_Quake(4, …, 0, 2048)`).
+    pub fn start_duke_quake(&mut self, countdown: i32) {
+        if countdown <= 0 {
+            return;
+        }
+        let Some(spot) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        if self.actors.get(spot).is_none() {
+            return;
+        }
+        self.quakes.push(Quake {
+            spot,
+            intensity: 4.0,
+            countdown,
+            damage_radius: 0.0,
+            tremor_radius: 2048.0,
+            sound: "world/quake".into(),
+            thrust_multiplier: 0.5,
+        });
+    }
+
+    /// Move player 0 to a Duke save-game pose (Room units, yaw/pitch degrees).
+    pub fn set_player_pose(&mut self, x: f64, y: f64, z: f64, yaw_deg: f64, pitch_deg: f64) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        if let Some(a) = self.actors.get_mut(mo) {
+            a.pos = DVec3::new(x, y, z);
+            a.vel = DVec3::ZERO;
+            a.angle = Angle::from_degrees(yaw_deg);
+            a.pitch = Angle::from_degrees(pitch_deg);
+        }
+    }
+
+    /// Add degrees to player 0 yaw from a Duke save (`weapon_ang`).
+    pub fn add_player_yaw(&mut self, deg: f64) {
+        if deg == 0.0 {
+            return;
+        }
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        if let Some(a) = self.actors.get_mut(mo) {
+            a.angle = Angle::from_degrees(a.angle.degrees() + deg);
+        }
+    }
+
+    /// Set player 0 attacker from a Duke save (`frag_ps` slot).
+    pub fn set_player_frag_ps(&mut self, slot: u8) {
+        let i = usize::from(slot);
+        let mo = self
+            .players
+            .get(i)
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo);
+        if let Some(p) = self.players[0].as_mut() {
+            p.attacker = mo;
+        }
+    }
+
+    /// Mark player 0 dead from a Duke save (`dead_flag`).
+    pub fn set_player_dead(&mut self, dead: bool) {
+        if !dead {
+            return;
+        }
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        if let Some(a) = self.actors.get_mut(mo) {
+            a.health = 0;
+        }
+        if let Some(p) = self.players[0].as_mut() {
+            p.player_state = crate::player::PlayerState::Dead;
+            p.pending_weapon = None;
+            p.pspr_state = None;
+            p.pspr_tics = 0;
+            p.pspr_flash_state = None;
+            p.pspr_flash_tics = 0;
+            p.extralight = 0;
+        }
+        self.player_died_at[0] = Some(self.level.maptime);
+    }
+
+    /// Set player 0 pawn health from a Duke save (`last_extra`).
+    pub fn set_player_health(&mut self, health: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        if let Some(a) = self.actors.get_mut(mo) {
+            a.health = health.max(0);
+        }
+    }
+
+    /// Set player 0 clip ammo from a Duke save (`ammo_amount[PISTOL_WEAPON]`).
+    pub fn set_player_clip_ammo(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(clip) = self.classes.find_name("Clip") else {
+            return;
+        };
+        crate::set_inventory(self, mo, clip, amount.max(0));
+    }
+
+    /// Set player 0 shell ammo from a Duke save (`ammo_amount[SHOTGUN_WEAPON]`).
+    pub fn set_player_shell_ammo(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(shell) = self.classes.find_name("Shell") else {
+            return;
+        };
+        crate::set_inventory(self, mo, shell, amount.max(0));
+    }
+
+    /// Set player 0 rocket ammo from a Duke save (`ammo_amount[RPG_WEAPON]`).
+    pub fn set_player_rocket_ammo(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(rocket) = self.classes.find_name("RocketAmmo") else {
+            return;
+        };
+        crate::set_inventory(self, mo, rocket, amount.max(0));
+    }
+
+    /// Set player 0 cell ammo from a Duke save (`ammo_amount[SHRINKER_WEAPON]`).
+    pub fn set_player_cell_ammo(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(cell) = self.classes.find_name("Cell") else {
+            return;
+        };
+        crate::set_inventory(self, mo, cell, amount.max(0));
+    }
+
+    /// Set player 0 pipebomb ammo from a Duke save (`ammo_amount[HANDBOMB_WEAPON]`).
+    pub fn set_player_pipebomb_ammo(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(ammo) = self.classes.find_name("DukePipebombAmmo") else {
+            return;
+        };
+        crate::set_inventory(self, mo, ammo, amount.max(0));
+    }
+
+    /// Set player 0 devastator ammo from a Duke save (`ammo_amount[DEVISTATOR_WEAPON]`).
+    pub fn set_player_devastator_ammo(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(ammo) = self.classes.find_name("DukeDevastatorAmmo") else {
+            return;
+        };
+        crate::set_inventory(self, mo, ammo, amount.max(0));
+    }
+
+    /// Set player 0 freeze ammo from a Duke save (`ammo_amount[FREEZE_WEAPON]`).
+    pub fn set_player_freeze_ammo(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(ammo) = self.classes.find_name("DukeFreezeAmmo") else {
+            return;
+        };
+        crate::set_inventory(self, mo, ammo, amount.max(0));
+    }
+
+    /// Set player 0 tripbomb ammo from a Duke save (`ammo_amount[TRIPBOMB_WEAPON]`).
+    pub fn set_player_tripbomb_ammo(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(ammo) = self.classes.find_name("DukeTripbombAmmo") else {
+            return;
+        };
+        crate::set_inventory(self, mo, ammo, amount.max(0));
+    }
+
+    /// Set player 0 expander ammo from a Duke save (`ammo_amount[GROW_WEAPON]`).
+    pub fn set_player_grow_ammo(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(ammo) = self.classes.find_name("DukeGrowAmmo") else {
+            return;
+        };
+        crate::set_inventory(self, mo, ammo, amount.max(0));
+    }
+
+    fn duke_weapon_class_for_slot(&self, slot: i16) -> Option<room_core::ClassId> {
+        let names: &[&str] = match slot {
+            0 => &["DukeKick", "Fist"],
+            1 => &["DukePistol", "Pistol"],
+            2 => &["DukeShotgun", "Shotgun"],
+            3 => &["DukeRipper", "Chaingun"],
+            4 => &["DukeRPG", "RocketLauncher"],
+            5 => &["DukePipebomb"],
+            6 => &["DukeShrinker"],
+            7 => &["DukeDevastator"],
+            8 => &["DukeTripbomb"],
+            9 => &["DukeFreezer"],
+            11 => &["DukeExpander"],
+            _ => return None,
+        };
+        names.iter().find_map(|n| self.classes.find_name(n))
+    }
+
+    /// Give player 0 every Duke `gotweapon` slot that is set.
+    pub fn give_player_gotweapons(&mut self, got: &[u8; 12]) {
+        for (slot, flag) in got.iter().enumerate() {
+            if *flag == 0 {
+                continue;
+            }
+            if let Ok(slot) = i16::try_from(slot) {
+                self.give_player_weapon_slot(slot);
+            }
+        }
+    }
+
+    /// Give player 0 a Duke weapon slot without changing the ready gun.
+    pub fn give_player_weapon_slot(&mut self, slot: i16) {
+        let Some(cid) = self.duke_weapon_class_for_slot(slot) else {
+            return;
+        };
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let _ = crate::inventory::give_inventory(self, mo, cid, 1);
+    }
+
+    /// Resume player 0 pipebomb wind-up from a Duke save (`hbomb_hold_delay`).
+    pub fn set_player_hbomb_hold(&mut self, n: i32) {
+        if n <= 0 {
+            return;
+        }
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        if let Some(cid) = self.classes.find_name("DukeThrowPower") {
+            crate::set_inventory(self, mo, cid, n.clamp(1, 6));
+        }
+        if let Some(cid) = self
+            .classes
+            .find_name("DukePipebombWeapon")
+            .or_else(|| self.classes.find_name("DukePipebomb"))
+        {
+            let _ = crate::inventory::give_inventory(self, mo, cid, 1);
+            if let Some(p) = self.players[0].as_mut() {
+                p.ready_weapon = Some(cid);
+                p.pending_weapon = None;
+            }
+            if let Some(st) = self
+                .states
+                .find_label(cid, "Charge")
+                .or_else(|| self.states.find_label(cid, "Fire"))
+            {
+                let tics = self.states.get(st).map(|s| i32::from(s.tics)).unwrap_or(1);
+                if let Some(p) = self.players[0].as_mut() {
+                    p.pspr_state = Some(st);
+                    p.pspr_tics = tics;
+                    p.pspr_y = crate::player::WEAPON_TOP;
+                }
+            }
+        }
+        if let Some(p) = self.players[0].as_mut() {
+            p.attack_down = true;
+        }
+    }
+
+    /// Mark player 0 pipebomb remote out from a Duke save (`hbomb_on`).
+    pub fn set_player_hbomb_on(&mut self, on: bool) {
+        if !on {
+            return;
+        }
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(cid) = self.classes.find_name("DukeBombsOut") else {
+            return;
+        };
+        let _ = crate::inventory::give_inventory(self, mo, cid, 1);
+    }
+
+    /// Set player 0 medkit from a Duke save (`firstaid_amount`).
+    pub fn set_player_firstaid(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(aid) = self
+            .classes
+            .find_name("DukeFirstAid")
+            .or_else(|| self.classes.find_name("FirstAid"))
+        else {
+            return;
+        };
+        crate::set_inventory(self, mo, aid, amount.max(0));
+    }
+
+    /// Set player 0 steroids from a Duke save (`steroids_amount`).
+    pub fn set_player_steroids(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(cid) = self
+            .classes
+            .find_name("DukeSteroids")
+            .or_else(|| self.classes.find_name("Steroids"))
+        else {
+            return;
+        };
+        crate::set_inventory(self, mo, cid, amount.max(0));
+    }
+
+    /// Engage player 0 flight from a Duke save (`jetpack_on`).
+    pub fn set_player_jetpack_on(&mut self, on: bool) {
+        if !on {
+            return;
+        }
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        if let Some(p) = self.players[0].as_mut() {
+            p.fly_tics = crate::player::FLIGHT_TICS;
+        }
+        if let Some(a) = self.actors.get_mut(mo) {
+            a.flags |= crate::class::FLAG_NOGRAVITY;
+        }
+    }
+
+    /// Set player 0 jetpack from a Duke save (`jetpack_amount`).
+    pub fn set_player_jetpack(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(cid) = self
+            .classes
+            .find_name("DukeJetpack")
+            .or_else(|| self.classes.find_name("Jetpack"))
+        else {
+            return;
+        };
+        crate::set_inventory(self, mo, cid, amount.max(0));
+    }
+
+    /// Engage player 0 scuba from a Duke save (`scuba_on`).
+    pub fn set_player_scuba_on(&mut self, on: bool) {
+        if !on {
+            return;
+        }
+        if let Some(p) = self.players[0].as_mut() {
+            p.radsuit = true;
+            p.radsuit_tics = crate::player::RADSUIT_TICS;
+            let t = i32::try_from(self.level.time).unwrap_or(i32::MAX);
+            p.air_finished = t.saturating_add(60 * crate::player::TICRATE);
+        }
+    }
+
+    /// Set player 0 grounded flag from a Duke save (`on_ground`).
+    pub fn set_player_on_ground(&mut self, on: bool) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.on_ground = on;
+        }
+    }
+
+    /// Start player 0 mid-jump from a Duke save (`jumping_counter`).
+    pub fn set_player_jumping(&mut self, on: bool) {
+        if !on {
+            return;
+        }
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let jump_z = self.actors.get(mo).map(|a| a.jump_z).unwrap_or(8.0);
+        if jump_z > 0.0 {
+            if let Some(a) = self.actors.get_mut(mo) {
+                a.vel = DVec3::new(a.vel.x(), a.vel.y(), jump_z);
+            }
+        }
+        if let Some(p) = self.players[0].as_mut() {
+            p.on_ground = false;
+        }
+    }
+
+    /// Mark player 0 jump still held from a Duke save (`jumping_toggle`).
+    pub fn set_player_jumping_toggle(&mut self, on: bool) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.jump_down = on;
+        }
+    }
+
+    /// Set player 0 post-teleport lock from a Duke save (`transporter_hold`, already 35 Hz).
+    pub fn set_player_transporter_hold(&mut self, tics: u32) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.transporter_hold_tics = tics;
+        }
+        if tics == 0 {
+            return;
+        }
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        if let Some(a) = self.actors.get_mut(mo) {
+            a.vel = DVec3::ZERO;
+        }
+    }
+
+    /// Set player 0 inventory-key hold from a Duke save (`toggle_key_flag`).
+    pub fn set_player_toggle_key_flag(&mut self, on: bool) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.toggle_key_flag = on;
+            if on {
+                p.invuse_down = true;
+            }
+        }
+    }
+
+    /// Set player 0 selected inventory from a Duke save (`inven_icon`).
+    pub fn set_player_inven_icon(&mut self, icon: u8) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.inven_icon = icon;
+        }
+    }
+
+    /// Set player 0 footprint palette from a Duke save (`footprintpal`).
+    pub fn set_player_footprint_pal(&mut self, pal: u8) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.footprint_pal = Some(pal);
+        }
+    }
+
+    /// Set player 0 remaining footprints from a Duke save (`footprintcount`).
+    pub fn set_player_footprint_count(&mut self, n: u8) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.footprint_count = Some(n);
+        }
+    }
+
+    /// Set player 0 footprint shade from a Duke save (`footprintshade`).
+    pub fn set_player_footprint_shade(&mut self, shade: i16) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.footprint_shade = Some(shade);
+        }
+    }
+
+    /// Set player 0 previous look pitch from a Duke save (`ohoriz` / `ohorizoff`).
+    pub fn set_player_prev_pitch(&mut self, pitch: i32) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.prev_pitch = Some(pitch.clamp(-90, 90));
+        }
+    }
+
+    /// Set player 0 HUD inventory-name tics from a Duke save (`invdisptime`).
+    pub fn set_player_invdisp_tics(&mut self, tics: u32) {
+        let (icon, was) = self.players[0]
+            .as_ref()
+            .map(|p| (p.inven_icon, p.invdisp_tics))
+            .unwrap_or((0, 0));
+        if let Some(p) = self.players[0].as_mut() {
+            p.invdisp_tics = tics;
+        }
+        if was == 0 && tics > 0 {
+            if let Some(name) = duke_inven_name(icon) {
+                self.push_message(name);
+            }
+        }
+    }
+
+    /// Set player 0 view-bob phase from a Duke save (`pycount`).
+    pub fn set_player_pycount(&mut self, n: i16) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.pycount = Some(n & 2047);
+        }
+    }
+
+    /// Set player 0 footstep phase from a Duke save (`walking_snd_toggle`).
+    pub fn set_player_walking_snd_toggle(&mut self, on: bool) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.walk_snd_toggle = on;
+        }
+    }
+
+    /// Set player 0 palette from a Duke save (`palookup`).
+    pub fn set_player_palookup(&mut self, pal: u8) {
+        let Some(mo) = self.players[0].as_ref().and_then(|p| p.mo) else {
+            return;
+        };
+        if let Some(a) = self.actors.get_mut(mo) {
+            a.translation = if pal == 0 {
+                String::new()
+            } else {
+                format!("DukePal{pal}")
+            };
+        }
+    }
+
+    /// Play player 0 knuckle-crack from a Duke save (`knuckle_incs`).
+    pub fn set_player_knuckle_incs(&mut self, on: bool) {
+        if !on {
+            return;
+        }
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let name = self
+            .actors
+            .get(mo)
+            .and_then(|a| self.classes.get(a.class))
+            .and_then(|c| c.idle_taunts.first().cloned())
+            .unwrap_or_else(|| "duke/crack".into());
+        if let Some(a) = self.actors.get(mo) {
+            self.play_sound(&name, a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
+        }
+        if let Some(p) = self.players[0].as_mut() {
+            p.idle_tics = 0;
+        }
+    }
+
+    /// Set player 0 hard-land dip from a Duke save (`hard_landing`).
+    pub fn set_player_hard_landing(&mut self, n: u8) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.hard_landing = n;
+        }
+    }
+
+    /// Resume player 0 tip pose from a Duke save (`tipincs`, already 35 Hz).
+    pub fn set_player_tip_incs(&mut self, tics: u32) {
+        let mo = self.players[0].as_ref().and_then(|p| p.mo);
+        if let Some(p) = self.players[0].as_mut() {
+            p.tip_incs = tics;
+        }
+        if tics == 0 {
+            return;
+        }
+        if let Some(a) = mo.and_then(|id| self.actors.get(id)) {
+            self.play_sound("duke/duke_tip1", a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
+        }
+    }
+
+    /// Set player 0 look-recenter from a Duke save (`return_to_center`, already 35 Hz).
+    pub fn set_player_return_to_center(&mut self, tics: u32) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.return_to_center = tics;
+        }
+    }
+
+    /// Set player 0 screen tilt from a Duke save (`rotscrnang`).
+    pub fn set_player_rotscrnang(&mut self, n: i16) {
+        let mo = self.players[0].as_ref().and_then(|p| p.mo);
+        if let Some(p) = self.players[0].as_mut() {
+            p.rotscrnang = n;
+        }
+        if let Some(a) = mo.and_then(|id| self.actors.get_mut(id)) {
+            a.roll = Angle::from_degrees(f64::from(-(i32::from(n) * 360) / 2048));
+        }
+    }
+
+    /// Set player 0 pain-flash cooldown from a Duke save (`hurt_delay`, already 35 Hz).
+    pub fn set_player_hurt_delay(&mut self, tics: u32) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.hurt_delay_tics = tics;
+            let flash = i32::try_from(tics.min(100)).unwrap_or(100);
+            if p.damage_count < flash {
+                p.damage_count = flash;
+            }
+        }
+    }
+
+    /// Set player 0 remaining air from a Duke save (`airleft`, already 35 Hz).
+    pub fn set_player_air_tics(&mut self, tics: u32) {
+        if let Some(p) = self.players[0].as_mut() {
+            let t = i32::try_from(self.level.time).unwrap_or(i32::MAX);
+            let remaining = i32::try_from(tics).unwrap_or(i32::MAX);
+            p.air_finished = t.saturating_add(remaining);
+        }
+    }
+
+    /// Set player 0 scuba from a Duke save (`scuba_amount`).
+    pub fn set_player_scuba(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(cid) = self
+            .classes
+            .find_name("DukeScubaGear")
+            .or_else(|| self.classes.find_name("ScubaGear"))
+        else {
+            return;
+        };
+        crate::set_inventory(self, mo, cid, amount.max(0));
+    }
+
+    /// Set player 0 holoduke from a Duke save (`holoduke_amount`).
+    pub fn set_player_holoduke(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(cid) = self
+            .classes
+            .find_name("DukeHoloduke")
+            .or_else(|| self.classes.find_name("Holoduke"))
+        else {
+            return;
+        };
+        crate::set_inventory(self, mo, cid, amount.max(0));
+    }
+
+    /// Set player 0 boots from a Duke save (`boot_amount`).
+    pub fn set_player_boots(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(cid) = self
+            .classes
+            .find_name("DukeBoots")
+            .or_else(|| self.classes.find_name("Boots"))
+        else {
+            return;
+        };
+        crate::set_inventory(self, mo, cid, amount.max(0));
+    }
+
+    /// Spawn a holoduke decoy at player 0 (`holoduke_on >= 0`).
+    pub fn spawn_player_holoduke_decoy(&mut self) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(decoy) = self.classes.find_name("DukeHolodukeDecoy") else {
+            return;
+        };
+        let Some(a) = self.actors.get(mo) else {
+            return;
+        };
+        let pos = a.pos;
+        let angle = a.angle;
+        let _ = self.spawn_at(decoy, pos, angle);
+    }
+
+    /// Give player 0 access cards from a Duke save (`got_access` bits).
+    pub fn set_player_got_access(&mut self, bits: i16) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        if bits & 1 != 0 {
+            if let Some(cid) = self.classes.find_name("BlueCard") {
+                let _ = crate::inventory::give_inventory(self, mo, cid, 1);
+            }
+        }
+        if bits & 2 != 0 {
+            if let Some(cid) = self.classes.find_name("RedCard") {
+                let _ = crate::inventory::give_inventory(self, mo, cid, 1);
+            }
+        }
+        if bits & 4 != 0 {
+            if let Some(cid) = self.classes.find_name("YellowCard") {
+                let _ = crate::inventory::give_inventory(self, mo, cid, 1);
+            }
+        }
+    }
+
+    /// Set player 0 mid-air fall tics from a Duke save (`falling_counter`).
+    pub fn set_player_falling_tics(&mut self, tics: u32) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.falling_tics = tics;
+        }
+    }
+
+    /// Engage player 0 night vision from a Duke save (`heat_on`).
+    pub fn set_player_heat_on(&mut self, on: bool) {
+        if !on {
+            return;
+        }
+        if let Some(p) = self.players[0].as_mut() {
+            p.infrared = true;
+            p.infrared_tics = crate::player::INFRARED_TICS;
+        }
+    }
+
+    /// Set player 0 night vision from a Duke save (`heat_amount`).
+    pub fn set_player_heat(&mut self, amount: i32) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        let Some(cid) = self
+            .classes
+            .find_name("DukeNightVision")
+            .or_else(|| self.classes.find_name("NightVision"))
+        else {
+            return;
+        };
+        crate::set_inventory(self, mo, cid, amount.max(0));
+    }
+
+    /// Apply dump `sector[]` floor / ceiling Z (Room units) in map order.
+    pub fn apply_duke_sector_zs(&mut self, zs: &[(f64, f64)]) {
+        for (sec, &(floor_z, ceiling_z)) in self.sectors.iter_mut().zip(zs.iter()) {
+            sec.floor_z = floor_z;
+            sec.ceiling_z = ceiling_z;
+            sec.prev_floor_z = floor_z;
+            sec.prev_ceiling_z = ceiling_z;
+        }
+    }
+
+    /// Apply dump `sector[]` floor / ceiling tiles in map order.
+    pub fn apply_duke_sector_pics(&mut self, pics: &[(String, String)]) {
+        for (i, (floor, ceil)) in pics.iter().enumerate() {
+            let si = i as u32;
+            self.sector_floor_pics.insert(si, floor.clone());
+            self.sector_ceiling_pics.insert(si, ceil.clone());
+        }
+    }
+
+    /// Apply dump `sector[]` light in map order.
+    pub fn apply_duke_sector_lights(&mut self, lights: &[i16]) {
+        for (sec, &light) in self.sectors.iter_mut().zip(lights.iter()) {
+            sec.light = light;
+        }
+    }
+
+    /// Apply dump `sector[]` fog density in map order.
+    pub fn apply_duke_sector_fogs(&mut self, fogs: &[u8]) {
+        for (sec, &fog) in self.sectors.iter_mut().zip(fogs.iter()) {
+            sec.fog_density = fog;
+        }
+    }
+
+    /// Apply dump `gotpic` tile-seen bits; any set bit reveals the automap.
+    pub fn apply_duke_gotpic(&mut self, bits: &[u8]) {
+        self.gotpic = bits.to_vec();
+        if bits.iter().any(|&b| b != 0) {
+            if let Some(p) = self.players[0].as_mut() {
+                p.allmap = true;
+            }
+        }
+    }
+
+    /// Move living `COUNTKILL`s onto dump `sprite[]` XY (extra > 0), in think order.
+    pub fn apply_duke_sprite_xy(&mut self, hits: &[(f64, f64)]) {
+        let player_mo = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo);
+        let ids: Vec<_> = self
+            .thinkers
+            .default
+            .iter()
+            .copied()
+            .filter(|&id| {
+                if Some(id) == player_mo {
+                    return false;
+                }
+                self.actors.get(id).is_some_and(|a| {
+                    if a.destroyed || a.health <= 0 {
+                        return false;
+                    }
+                    let flags = a.flags | self.classes.get(a.class).map(|c| c.flags).unwrap_or(0);
+                    (flags & crate::class::FLAG_COUNTKILL) != 0
+                })
+            })
+            .collect();
+        for (id, &(x, y)) in ids.iter().zip(hits.iter()) {
+            if let Some(a) = self.actors.get_mut(*id) {
+                a.pos = DVec3::new(x, y, a.pos.z());
+            }
+        }
+    }
+
+    /// Apply dump `sprite[]` extra as health onto non-player actors at those XY.
+    pub fn apply_duke_sprite_health(&mut self, hits: &[(f64, f64, i32)]) {
+        let player_mo = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo);
+        let ids: Vec<_> = self.thinkers.default.iter().copied().collect();
+        for &(x, y, hp) in hits {
+            if hp <= 0 {
+                continue;
+            }
+            let Some(id) = ids.iter().copied().find(|&id| {
+                if Some(id) == player_mo {
+                    return false;
+                }
+                self.actors.get(id).is_some_and(|a| {
+                    !a.destroyed && (a.pos.x() - x).abs() < 8.0 && (a.pos.y() - y).abs() < 8.0
+                })
+            }) else {
+                continue;
+            };
+            if let Some(a) = self.actors.get_mut(id) {
+                a.health = hp;
+            }
+        }
+    }
+
+    /// Apply dump `sprite[]` `cstat` onto non-player actors at those XY.
+    pub fn apply_duke_sprite_cstat(&mut self, hits: &[(f64, f64, i32)]) {
+        let player_mo = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo);
+        let ids: Vec<_> = self.thinkers.default.iter().copied().collect();
+        for &(x, y, cstat) in hits {
+            let Some(id) = ids.iter().copied().find(|&id| {
+                if Some(id) == player_mo {
+                    return false;
+                }
+                self.actors.get(id).is_some_and(|a| {
+                    !a.destroyed && (a.pos.x() - x).abs() < 8.0 && (a.pos.y() - y).abs() < 8.0
+                })
+            }) else {
+                continue;
+            };
+            if let Some(a) = self.actors.get_mut(id) {
+                if cstat & 1 != 0 {
+                    a.flags |= crate::class::FLAG_SOLID;
+                } else {
+                    a.flags &= !crate::class::FLAG_SOLID;
+                }
+                a.alpha = if cstat & 2 != 0 { 0.66 } else { 1.0 };
+                if cstat & 32_768 != 0 {
+                    a.flags |= crate::class::FLAG_DONTDRAW;
+                } else {
+                    a.flags &= !crate::class::FLAG_DONTDRAW;
+                }
+            }
+        }
+    }
+
+    /// Apply dump `sprite[]` `xrepeat` / `yrepeat` / `clipdist` at those XY.
+    pub fn apply_duke_sprite_scale(&mut self, hits: &[(f64, f64, u8, u8, u8)]) {
+        let player_mo = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo);
+        let ids: Vec<_> = self.thinkers.default.iter().copied().collect();
+        for &(x, y, xrepeat, yrepeat, clipdist) in hits {
+            let Some(id) = ids.iter().copied().find(|&id| {
+                if Some(id) == player_mo {
+                    return false;
+                }
+                self.actors.get(id).is_some_and(|a| {
+                    !a.destroyed && (a.pos.x() - x).abs() < 8.0 && (a.pos.y() - y).abs() < 8.0
+                })
+            }) else {
+                continue;
+            };
+            if let Some(a) = self.actors.get_mut(id) {
+                if xrepeat != 0 || yrepeat != 0 {
+                    a.scale_x = f64::from(xrepeat) / 64.0;
+                    a.scale_y = f64::from(yrepeat) / 64.0;
+                }
+                if clipdist != 0 {
+                    a.radius = (f64::from(clipdist) / 16.0).clamp(1.0, 64.0);
+                }
+            }
+        }
+    }
+
+    /// Apply dump `sprite[]` `pal` onto non-player actors at those XY.
+    pub fn apply_duke_sprite_pal(&mut self, hits: &[(f64, f64, u8)]) {
+        let player_mo = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo);
+        let ids: Vec<_> = self.thinkers.default.iter().copied().collect();
+        for &(x, y, pal) in hits {
+            let Some(id) = ids.iter().copied().find(|&id| {
+                if Some(id) == player_mo {
+                    return false;
+                }
+                self.actors.get(id).is_some_and(|a| {
+                    !a.destroyed && (a.pos.x() - x).abs() < 8.0 && (a.pos.y() - y).abs() < 8.0
+                })
+            }) else {
+                continue;
+            };
+            if let Some(a) = self.actors.get_mut(id) {
+                a.translation = if pal == 0 {
+                    String::new()
+                } else {
+                    format!("DukePal{pal}")
+                };
+            }
+        }
+    }
+
+    /// Apply dump `sprite[]` `ang` onto non-player actors at those XY.
+    pub fn apply_duke_sprite_ang(&mut self, hits: &[(f64, f64, f64)]) {
+        let player_mo = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo);
+        let ids: Vec<_> = self.thinkers.default.iter().copied().collect();
+        for &(x, y, yaw) in hits {
+            let Some(id) = ids.iter().copied().find(|&id| {
+                if Some(id) == player_mo {
+                    return false;
+                }
+                self.actors.get(id).is_some_and(|a| {
+                    !a.destroyed && (a.pos.x() - x).abs() < 8.0 && (a.pos.y() - y).abs() < 8.0
+                })
+            }) else {
+                continue;
+            };
+            if let Some(a) = self.actors.get_mut(id) {
+                a.angle = Angle::from_degrees(yaw);
+            }
+        }
+    }
+
+    /// Apply dump `sprite[]` Z onto non-player actors at those XY.
+    pub fn apply_duke_sprite_z(&mut self, hits: &[(f64, f64, f64)]) {
+        let player_mo = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo);
+        let ids: Vec<_> = self.thinkers.default.iter().copied().collect();
+        for &(x, y, z) in hits {
+            let Some(id) = ids.iter().copied().find(|&id| {
+                if Some(id) == player_mo {
+                    return false;
+                }
+                self.actors.get(id).is_some_and(|a| {
+                    !a.destroyed && (a.pos.x() - x).abs() < 8.0 && (a.pos.y() - y).abs() < 8.0
+                })
+            }) else {
+                continue;
+            };
+            if let Some(a) = self.actors.get_mut(id) {
+                a.pos = DVec3::new(a.pos.x(), a.pos.y(), z);
+            }
+        }
+    }
+
+    /// Apply dump `wall[]` extra onto destructible linedefs at those XY.
+    pub fn apply_duke_wall_health(&mut self, hits: &[(f64, f64, i32)]) {
+        for &(x, y, hp) in hits {
+            let Some(i) = self.health_line_at(x, y) else {
+                continue;
+            };
+            self.line_health.insert(i, hp.max(0));
+            if hp <= 0 {
+                const CLEAR: i32 = ML_BLOCKING
+                    | ML_BLOCKMONSTERS
+                    | ML_BLOCK_PLAYERS
+                    | ML_BLOCKEVERYTHING
+                    | ML_BLOCKHITSCAN;
+                let map = std::sync::Arc::make_mut(&mut self.map);
+                if let Some(l) = map.lines.get_mut(i as usize) {
+                    l.block_projectiles = false;
+                    l.block_hitscan = false;
+                    l.block_sight = false;
+                    l.flags &= !(CLEAR as i16);
+                }
+                self.line_flags
+                    .insert(i, self.line_flags.get(&i).copied().unwrap_or(0) & !CLEAR);
+            }
+        }
+    }
+
+    /// Apply dump `wall[]` mid tiles onto linedefs at those XY.
+    pub fn apply_duke_wall_pics(&mut self, hits: &[(f64, f64, String)]) {
+        for (x, y, name) in hits {
+            let Some(i) = self.wall_line_at(*x, *y) else {
+                continue;
+            };
+            let sides: Vec<u32> = self
+                .map
+                .lines
+                .get(i as usize)
+                .map(|l| l.sides.iter().flatten().map(|s| s.raw()).collect())
+                .unwrap_or_default();
+            for idx in sides {
+                self.switch_mids.insert(idx, name.clone());
+                if let Some(side) = std::sync::Arc::make_mut(&mut self.map)
+                    .sides
+                    .get_mut(idx as usize)
+                {
+                    side.middle = name.clone();
+                }
+            }
+        }
+    }
+
+    fn wall_line_at(&self, x: f64, y: f64) -> Option<u32> {
+        if let Some(i) = self.health_line_at(x, y) {
+            return Some(i);
+        }
+        for (i, l) in self.map.lines.iter().enumerate() {
+            for vid in [l.v1, l.v2] {
+                let Some(v) = self.map.vertices.get(vid.raw() as usize) else {
+                    continue;
+                };
+                if (v.pos.x() - x).abs() < 8.0 && (v.pos.y() - y).abs() < 8.0 {
+                    return Some(i as u32);
+                }
+            }
+        }
+        None
+    }
+
+    fn health_line_at(&self, x: f64, y: f64) -> Option<u32> {
+        for &i in self.line_health.keys() {
+            let Some(l) = self.map.lines.get(i as usize) else {
+                continue;
+            };
+            for vid in [l.v1, l.v2] {
+                let Some(v) = self.map.vertices.get(vid.raw() as usize) else {
+                    continue;
+                };
+                if (v.pos.x() - x).abs() < 8.0 && (v.pos.y() - y).abs() < 8.0 {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
+    /// Set player 0 armor from a Duke save (`shield_amount`).
+    pub fn set_player_armor(&mut self, armor: i32) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.armor = armor.clamp(0, 200);
+            p.armor_class = if p.armor > 0 { 1 } else { 0 };
+        }
+    }
+
+    /// Start player 0's Duke `/` quick kick (`CON pkick`).
+    pub fn player_quick_kick(&mut self) {
+        let Some(kick) = self
+            .classes
+            .find_name("DukeKick")
+            .or_else(|| self.classes.find_name("Fist"))
+        else {
+            return;
+        };
+        let Some(mo) = self.players[0].as_ref().and_then(|p| p.mo) else {
+            return;
+        };
+        if self.inventory.count(mo, kick) == 0 {
+            return;
+        }
+        let Some(fire) = self.states.find_label(kick, "Fire") else {
+            return;
+        };
+        let tics = self
+            .states
+            .get(fire)
+            .map(|st| i32::from(st.tics))
+            .unwrap_or(1);
+        if let Some(p) = self.players[0].as_mut() {
+            if p.quick_kick_restore.is_some() {
+                return;
+            }
+            if p.ready_weapon != Some(kick) {
+                p.quick_kick_restore = p.ready_weapon;
+            }
+            p.pending_weapon = None;
+            p.ready_weapon = Some(kick);
+            p.pspr_y = crate::player::WEAPON_TOP;
+            p.pspr_state = Some(fire);
+            p.pspr_tics = tics;
+        }
+    }
+
+    /// Equip and fire player 0's gun from a Duke save (`wantweaponfire`).
+    pub fn set_player_wantweapon_fire(&mut self, slot: i16) {
+        if slot < 0 {
+            return;
+        }
+        self.set_player_weapon_slot(slot);
+        self.set_player_kickback(1);
+    }
+
+    /// Set player 0 quote timer from a Duke save (`fta` / `ftq`, already 35 Hz).
+    pub fn set_player_fta_quote(&mut self, tics: u32, quote: i16) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.fta_tics = tics;
+            p.ftq = quote;
+        }
+    }
+
+    /// Look through the actor at dump sprite XY from a Duke save (`newowner`).
+    pub fn look_through_duke_sprite_at(&mut self, x: f64, y: f64) {
+        let player_mo = self.players[0].as_ref().and_then(|p| p.mo);
+        let Some(id) = self.thinkers.default.iter().copied().find(|&id| {
+            if Some(id) == player_mo {
+                return false;
+            }
+            self.actors.get(id).is_some_and(|a| {
+                !a.destroyed && (a.pos.x() - x).abs() < 8.0 && (a.pos.y() - y).abs() < 8.0
+            })
+        }) else {
+            return;
+        };
+        if let Some(p) = self.players[0].as_mut() {
+            p.camera = Some(id);
+            p.camera_revert = true;
+        }
+    }
+
+    /// Use the `+USESPECIAL` actor at dump sprite XY from a Duke save (`access_spritenum`).
+    pub fn use_duke_sprite_at(&mut self, x: f64, y: f64) {
+        let player_mo = self.players[0].as_ref().and_then(|p| p.mo);
+        let Some(id) = self.thinkers.default.iter().copied().find(|&id| {
+            if Some(id) == player_mo {
+                return false;
+            }
+            self.actors.get(id).is_some_and(|a| {
+                if a.destroyed || (a.pos.x() - x).abs() >= 8.0 || (a.pos.y() - y).abs() >= 8.0 {
+                    return false;
+                }
+                let flags = a.flags | self.classes.get(a.class).map(|c| c.flags).unwrap_or(0);
+                (flags & crate::class::FLAG_USESPECIAL) != 0
+            })
+        }) else {
+            return;
+        };
+        if let Some(a) = self.actors.get_mut(id) {
+            a.target = player_mo;
+        }
+        let Some(class) = self.actors.get(id).map(|a| a.class) else {
+            return;
+        };
+        let Some(st) = self.states.find_label(class, "Use") else {
+            return;
+        };
+        self.set_state(id, Some(st), true);
+    }
+
+    /// Use the linedef at dump wall XY from a Duke save (`access_wallnum`).
+    pub fn use_duke_wall_at(&mut self, x: f64, y: f64) {
+        let Some(i) = self.wall_line_at(x, y) else {
+            return;
+        };
+        let mo = self.players[0].as_ref().and_then(|p| p.mo);
+        let _ = crate::specials::activate_line(
+            self,
+            room_core::LineId::from_raw(i),
+            mo,
+            crate::specials::ActivationType::Use,
+        );
+    }
+
+    /// Finish player 0's access-card use from a Duke save (`access_incs`).
+    pub fn set_player_access_incs(&mut self, on: bool) {
+        if !on {
+            return;
+        }
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        if !crate::use_lines::use_lines(self, mo) {
+            let _ = crate::use_lines::use_actors(self, mo);
+        }
+    }
+
+    /// Equip and fire player 0's kick from a Duke save (`knee_incs`).
+    pub fn set_player_knee_incs(&mut self, n: i16) {
+        if n <= 0 {
+            return;
+        }
+        self.set_player_weapon_slot(0);
+        self.set_player_kickback(n);
+    }
+
+    /// Flash player 0 HUD from a Duke save (`pals` / `pals_time`).
+    pub fn set_player_pals_flash(&mut self, n: i32) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.damage_count = n.clamp(0, 100);
+        }
+    }
+
+    /// Keep player 0 firing from a Duke save (`rapid_fire_hold`).
+    pub fn set_player_rapid_fire_hold(&mut self, on: bool) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.attack_down = on;
+            if on {
+                p.refire = p.refire.max(1);
+            }
+        }
+    }
+
+    /// Jump player 0's ready gun to `Fire` from a Duke save (`show_empty_weapon`).
+    pub fn set_player_show_empty_weapon(&mut self, on: bool) {
+        if on {
+            self.set_player_kickback(1);
+        }
+    }
+
+    /// Jump player 0's ready gun to `Fire` from a Duke save (`kickback_pic`).
+    pub fn set_player_kickback(&mut self, pic: i16) {
+        if pic <= 0 {
+            return;
+        }
+        let Some(wpn) = self.players[0].as_ref().and_then(|p| p.ready_weapon) else {
+            return;
+        };
+        let Some(fire) = self.states.find_label(wpn, "Fire") else {
+            return;
+        };
+        let tics = self
+            .states
+            .get(fire)
+            .map(|st| i32::from(st.tics))
+            .unwrap_or(1);
+        if let Some(p) = self.players[0].as_mut() {
+            p.pspr_state = Some(fire);
+            p.pspr_tics = tics;
+            p.pspr_y = crate::player::WEAPON_TOP;
+            p.attack_down = true;
+            p.refire = i32::from(pic);
+        }
+    }
+
+    /// Holster player 0's ready gun from a Duke save (`holster_weapon`).
+    pub fn set_player_holster(&mut self, on: bool) {
+        if !on {
+            return;
+        }
+        if let Some(p) = self.players[0].as_mut() {
+            p.ready_weapon = None;
+            p.pending_weapon = None;
+            p.pspr_state = None;
+            p.pspr_tics = 0;
+            p.pspr_y = crate::player::WEAPON_BOTTOM;
+        }
+    }
+
+    /// Set player 0 HUD gun Y from a Duke save (`weapon_pos`).
+    pub fn set_player_pspr_y(&mut self, y: f64) {
+        if let Some(p) = self.players[0].as_mut() {
+            p.pspr_y = y.clamp(crate::player::WEAPON_TOP, crate::player::WEAPON_BOTTOM);
+        }
+    }
+
+    /// Equip player 0 from a Duke save `curr_weapon` slot.
+    pub fn set_player_weapon_slot(&mut self, slot: i16) {
+        let Some(cid) = self.duke_weapon_class_for_slot(slot) else {
+            return;
+        };
+        self.give_player_weapon_slot(slot);
+        if let Some(p) = self.players[0].as_mut() {
+            p.ready_weapon = Some(cid);
+            p.pending_weapon = None;
+            p.pspr_state = None;
+            p.pspr_y = crate::player::WEAPON_TOP;
+        }
     }
 
     /// Peak tremor intensity at `viewer` (for `SimView` camera shake).
@@ -2251,8 +3966,8 @@ impl World {
         let [ammo, ammo_max] = ammo_cid.map_or([-1, 0], ammo_of);
         let ammo_table =
             AMMO_TYPES.map(|name| self.classes.find_name(name).map_or([0, 0], ammo_of));
-        let mut arms = 0u8;
-        for slot in 2u8..=7 {
+        let mut arms = 0u16;
+        for slot in 2u8..=9 {
             if self.weapon_slots.weapons_for(slot).iter().any(|name| {
                 self.classes
                     .find_name(name)
@@ -2312,8 +4027,7 @@ impl World {
             .pspr_state
             .filter(|_| alive)
             .and_then(|sid| self.states.get(sid))
-            .map(|st| weapon_patch_from_sprite_frame(&st.sprite, st.frame))
-            .filter(|p| !p.is_empty())
+            .and_then(|st| weapon_patch_from_sprite_frame(&st.sprite, st.frame))
             .or_else(|| {
                 player
                     .ready_weapon
@@ -2326,8 +4040,7 @@ impl World {
             .pspr_flash_state
             .filter(|_| alive)
             .and_then(|sid| self.states.get(sid))
-            .map(|st| weapon_patch_from_sprite_frame(&st.sprite, st.frame))
-            .filter(|p| !p.is_empty())
+            .and_then(|st| weapon_patch_from_sprite_frame(&st.sprite, st.frame))
             .unwrap_or_default();
         // Classic fine-angle bob: cos(t) / |sin(t)| style in screen space.
         let t = f64::from(self.level.maptime) * (core::f64::consts::PI / 32.0);
@@ -2351,7 +4064,10 @@ impl World {
             god: player.god,
             arms,
             ammo_table,
-            palette: crate::mugshot::palette_index(player),
+            palette: crate::mugshot::palette_for(
+                player,
+                crate::physics::actor_waterlevel(self, actor),
+            ),
             colormap: player.fixed_colormap(),
             deathmatch: self.deathmatch,
             frags: player
@@ -2516,6 +4232,68 @@ impl World {
         self.spawn_at(class, pos, angle).ok()
     }
 
+    /// DukeMatch: spawn deathmatch-only things, drop monsters, sit on a DM start.
+    pub fn apply_duke_match(&mut self) {
+        self.deathmatch = true;
+        let _ = self.spawn_multiplayer_only_things();
+        let duke = self.players.iter().flatten().any(|p| {
+            self.classes
+                .get(p.cls)
+                .is_some_and(|c| c.name == "DukePlayer")
+        });
+        if duke {
+            let player_mos: Vec<_> = self.players.iter().flatten().filter_map(|p| p.mo).collect();
+            let kills: Vec<_> = self
+                .thinkers
+                .default
+                .iter()
+                .copied()
+                .filter(|&id| {
+                    !player_mos.contains(&id)
+                        && self.actors.get(id).is_some_and(|a| {
+                            !a.destroyed && (a.flags & crate::class::FLAG_COUNTKILL) != 0
+                        })
+                })
+                .collect();
+            for id in kills {
+                if let Some(a) = self.actors.get_mut(id) {
+                    a.destroyed = true;
+                    a.health = 0;
+                }
+            }
+        }
+        let starts: Vec<_> = self
+            .map
+            .things
+            .iter()
+            .filter(|t| t.type_id == 11)
+            .cloned()
+            .collect();
+        if starts.is_empty() {
+            return;
+        }
+        let seats: Vec<(usize, ActorId)> = self
+            .players
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.as_ref().and_then(|p| p.mo).map(|mo| (i, mo)))
+            .collect();
+        for (i, mo) in seats {
+            let t = &starts[i % starts.len()];
+            let z = self.map_thing_z(
+                self.actors
+                    .get(mo)
+                    .map(|a| a.class)
+                    .unwrap_or_else(|| self.player_class()),
+                t,
+            );
+            if let Some(a) = self.actors.get_mut(mo) {
+                a.pos = DVec3::new(f64::from(t.x), f64::from(t.y), z);
+                a.angle = doom_thing_angle(t.angle);
+            }
+        }
+    }
+
     /// `kill monsters` — deal fatal damage to all `COUNTKILL` actors (not players).
     pub fn kill_monsters(&mut self) -> u32 {
         let player_mos: Vec<_> = self.players.iter().flatten().filter_map(|p| p.mo).collect();
@@ -2643,6 +4421,7 @@ impl World {
             }
         }
         self.scripts.sync_from_world(self);
+        self.sound_heard = self.sound_events.iter().map(|e| e.name.clone()).collect();
         self.sound_events.clear();
         // Kept until drained: text pushed between tics (map start, mods) must
         // reach the shell. Bounded for hosts that never drain.
@@ -2651,6 +4430,8 @@ impl World {
             self.messages.drain(..excess);
         }
         self.screen_fade.tick();
+        tick_contact_damage(self);
+        crate::damage::tick_duke_effects(self);
         // Snapshot plane Z for render interpolation (`interpolations.begin_tic`).
         for sec in &mut self.sectors {
             sec.prev_floor_z = sec.floor_z;
@@ -2659,7 +4440,9 @@ impl World {
         for i in 0..MAX_PLAYERS {
             if self.players[i].is_some() {
                 let mut p = self.players[i].take().unwrap_or_default();
+                self.thinking_up_move = p.cmd.up_move;
                 think_player::player_think(self, &mut p);
+                self.thinking_up_move = 0;
                 self.players[i] = Some(p);
             }
         }
@@ -2686,11 +4469,9 @@ impl World {
         while ti < n_map {
             let id = self.thinkers.default[ti];
             ti += 1;
-            if self
-                .actors
-                .get(id)
-                .is_some_and(|a| (a.flags & crate::class::FLAG_DORMANT) != 0)
-            {
+            if self.actors.get(id).is_some_and(|a| {
+                (a.flags & crate::class::FLAG_DORMANT) != 0 || crate::damage::is_frozen(self, id)
+            }) {
                 continue;
             }
             // Player pawns already applied cmd velocity this tic; still run XY for monsters.
@@ -2718,11 +4499,9 @@ impl World {
         while ti < self.thinkers.default.len() {
             let id = self.thinkers.default[ti];
             ti += 1;
-            if self
-                .actors
-                .get(id)
-                .is_some_and(|a| (a.flags & crate::class::FLAG_DORMANT) != 0)
-            {
+            if self.actors.get(id).is_some_and(|a| {
+                (a.flags & crate::class::FLAG_DORMANT) != 0 || crate::damage::is_frozen(self, id)
+            }) {
                 continue;
             }
             crate::physics::xy_movement(self, id);
@@ -2736,11 +4515,17 @@ impl World {
             specials::tick_ceilings(self);
             specials::tick_waggles(self);
             specials::tick_elevators(self);
+            specials::tick_subways(self);
+            specials::tick_stretches(self);
+            specials::tick_teeth(self);
+            specials::tick_skews(self);
+            specials::tick_demo_cameras(self);
             crate::polyobj::tick_polyobjs(self);
             crate::acs::tick_acs(self);
             crate::sndseq::tick_sequences(self);
             specials::tick_fades(self);
             specials::tick_scrollers(self);
+            specials::tick_spinners(self);
             specials::tick_ceiling_scrollers(self);
             specials::tick_tex_scrollers(self);
             specials::apply_transfers(self);
@@ -2944,6 +4729,23 @@ impl World {
             bytes.push(u8::from(p.infrared));
             bytes.push(u8::from(p.backpack));
             bytes.push(u8::from(p.allmap));
+            bytes.push(p.inven_icon);
+            bytes.push(u8::from(p.toggle_key_flag));
+            bytes.extend_from_slice(&p.invdisp_tics.to_le_bytes());
+            bytes.extend_from_slice(&p.prev_pitch.unwrap_or(0).to_le_bytes());
+            bytes.extend_from_slice(&p.footprint_shade.unwrap_or(0).to_le_bytes());
+            bytes.push(p.footprint_count.unwrap_or(0));
+            bytes.push(p.footprint_pal.unwrap_or(0));
+            bytes.extend_from_slice(&p.transporter_hold_tics.to_le_bytes());
+            bytes.extend_from_slice(&p.fta_tics.to_le_bytes());
+            bytes.extend_from_slice(&p.ftq.to_le_bytes());
+            bytes.push(p.hard_landing);
+            bytes.extend_from_slice(&p.pycount.unwrap_or(0).to_le_bytes());
+            bytes.extend_from_slice(&p.hurt_delay_tics.to_le_bytes());
+            bytes.extend_from_slice(&p.rotscrnang.to_le_bytes());
+            bytes.extend_from_slice(&p.return_to_center.to_le_bytes());
+            bytes.extend_from_slice(&p.tip_incs.to_le_bytes());
+            bytes.push(u8::from(p.walk_snd_toggle));
         }
         xxh3_64(&bytes)
     }
@@ -3010,6 +4812,120 @@ fn try_nightmare_respawn(world: &mut World, id: ActorId) {
     crate::specials::spawn_teleport_fog(world, old_pos);
     crate::specials::spawn_teleport_fog(world, spawn_pos);
     let _ = world.spawn_at(class, spawn_pos, spawn_angle);
+}
+
+/// `ContactDamage`: hurt overlapping shootable actors every 8 tics.
+fn tick_contact_damage(world: &mut World) {
+    if world.level.time % 8 != 0 {
+        return;
+    }
+    let fields: Vec<(ActorId, i32, f64, f64, f64, f64, f64)> = world
+        .thinkers
+        .default
+        .iter()
+        .copied()
+        .filter_map(|id| {
+            let a = world.actors.get(id)?;
+            if a.destroyed {
+                return None;
+            }
+            let dmg = world.classes.get(a.class)?.contact_damage;
+            if dmg <= 0 {
+                return None;
+            }
+            Some((id, dmg, a.pos.x(), a.pos.y(), a.pos.z(), a.radius, a.height))
+        })
+        .collect();
+    let mut hits = Vec::new();
+    for &oid in &world.thinkers.default {
+        let Some(o) = world.actors.get(oid) else {
+            continue;
+        };
+        if o.destroyed || (o.flags & crate::class::FLAG_SHOOTABLE) == 0 {
+            continue;
+        }
+        if world
+            .classes
+            .get(o.class)
+            .is_some_and(|c| c.contact_damage > 0)
+        {
+            continue;
+        }
+        for &(fid, dmg, x, y, z, r, h) in &fields {
+            if oid == fid {
+                continue;
+            }
+            let dx = o.pos.x() - x;
+            let dy = o.pos.y() - y;
+            let rad = o.radius + r;
+            if dx * dx + dy * dy >= rad * rad {
+                continue;
+            }
+            if o.pos.z() >= z + h || z >= o.pos.z() + o.height {
+                continue;
+            }
+            hits.push((oid, fid, dmg));
+        }
+    }
+    for (target, source, dmg) in hits {
+        crate::damage::damage_mobj(world, target, Some(source), Some(source), dmg);
+    }
+    let mut victims: Vec<ActorId> = world.thinkers.default.iter().copied().collect();
+    for p in world.players.iter().flatten() {
+        if let Some(mo) = p.mo {
+            if !victims.contains(&mo) {
+                victims.push(mo);
+            }
+        }
+    }
+    let mut line_hits = Vec::new();
+    for (i, line) in world.map.lines.iter().enumerate() {
+        let Some(dmg) = world
+            .map
+            .udmf_user
+            .lines
+            .get(i)
+            .and_then(|b| b.ints.get("user_contactdamage").copied())
+            .filter(|&d| d > 0)
+        else {
+            continue;
+        };
+        let Some(v1) = world.map.vertices.get(line.v1.raw() as usize) else {
+            continue;
+        };
+        let Some(v2) = world.map.vertices.get(line.v2.raw() as usize) else {
+            continue;
+        };
+        let (ax, ay, bx, by) = (v1.pos.x(), v1.pos.y(), v2.pos.x(), v2.pos.y());
+        for &oid in &victims {
+            let Some(o) = world.actors.get(oid) else {
+                continue;
+            };
+            if o.destroyed || (o.flags & crate::class::FLAG_SHOOTABLE) == 0 {
+                continue;
+            }
+            let d = dist_point_seg(o.pos.x(), o.pos.y(), ax, ay, bx, by);
+            if d > o.radius {
+                continue;
+            }
+            line_hits.push((oid, dmg));
+        }
+    }
+    for (target, dmg) in line_hits {
+        crate::damage::damage_mobj(world, target, None, None, dmg);
+    }
+}
+
+fn dist_point_seg(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
+    let dx = bx - ax;
+    let dy = by - ay;
+    let len2 = dx * dx + dy * dy;
+    if len2 < 1e-12 {
+        return (px - ax).hypot(py - ay);
+    }
+    let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+    let t = t.clamp(0.0, 1.0);
+    (px - (ax + t * dx)).hypot(py - (ay + t * dy))
 }
 
 /// Tick active earthquakes (damage + thrust + countdown).
@@ -3101,6 +5017,19 @@ mod tests {
     use room_decorate::parse_decorate;
     use room_nodebuild::apply_nodes;
     use room_testkit::{MapBuilder, rect};
+
+    #[test]
+    fn tnt1_weapon_frames_have_no_patch() {
+        assert_eq!(
+            weapon_patch_from_sprite_frame("PISF", 0).as_deref(),
+            Some("PISFA0")
+        );
+        assert_eq!(
+            weapon_patch_from_sprite_frame("tnt1", 0).as_deref(),
+            Some("")
+        );
+        assert_eq!(weapon_patch_from_sprite_frame("", 0), None);
+    }
 
     fn empty_room() -> MapGeometry {
         let mut map = MapBuilder::new()
@@ -3295,6 +5224,122 @@ actor HangMeat : Actor 9941
             "expected z=64, got {}",
             a.pos.z()
         );
+    }
+
+    #[test]
+    fn contact_damage_hurts_overlapping_player() {
+        let ir = parse_decorate(&format!(
+            "{}\nactor Zap : Actor 9901\n{{\n  Health 40\n  Radius 16\n  Height 64\n  \
+             +SOLID\n  +SHOOTABLE\n  +NOGRAVITY\n  ContactDamage 8\n  \
+             States {{ Spawn: TNT1 A -1 Stop }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        ))
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let pos = w.actors.get(mo).unwrap().pos;
+        let hp0 = w.actors.get(mo).unwrap().health;
+        w.spawn_at(classes.find_name("Zap").unwrap(), pos, Angle::ZERO)
+            .unwrap();
+        for _ in 0..8 {
+            w.tick();
+        }
+        let hp = w.actors.get(mo).unwrap().health;
+        assert!(hp < hp0, "contact {hp0} → {hp}");
+    }
+
+    #[test]
+    fn contact_damage_on_a_line_hurts_player() {
+        let ir = parse_decorate(include_str!("../../../testdata/actors/doom_basic.txt")).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        if map.udmf_user.lines.len() < map.lines.len() {
+            map.udmf_user
+                .lines
+                .resize(map.lines.len(), Default::default());
+        }
+        map.udmf_user.lines[0]
+            .ints
+            .insert("user_contactdamage".into(), 8);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let line = &w.map.lines[0];
+        let a = w.map.vertices[line.v1.raw() as usize].pos;
+        let b = w.map.vertices[line.v2.raw() as usize].pos;
+        let hp0 = w.actors.get(mo).unwrap().health;
+        let flags = w.actors.get(mo).unwrap().flags;
+        let radius = w.actors.get(mo).unwrap().radius;
+        let mid = DVec3::new((a.x() + b.x()) / 2.0, (a.y() + b.y()) / 2.0, 0.0);
+        let dist = dist_point_seg(mid.x(), mid.y(), a.x(), a.y(), b.x(), b.y());
+        assert!(
+            w.map.udmf_user.lines[0]
+                .ints
+                .get("user_contactdamage")
+                .is_some_and(|&d| d > 0),
+            "user field missing"
+        );
+        assert!(
+            (flags & crate::class::FLAG_SHOOTABLE) != 0,
+            "player not shootable {flags:#x}"
+        );
+        assert!(dist <= radius, "mid dist {dist} radius {radius}");
+        for _ in 0..8 {
+            if let Some(p) = w.actors.get_mut(mo) {
+                p.pos = mid;
+            }
+            w.tick();
+        }
+        let hp = w.actors.get(mo).unwrap().health;
+        assert!(hp < hp0, "line contact {hp0} → {hp} time {}", w.level.time);
+    }
+
+    #[test]
+    fn countkill_stuck_in_a_wall_is_nudged_free() {
+        let ir = parse_decorate(include_str!("../../../testdata/actors/doom_basic.txt")).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(128.0, 128.0, 0)
+            .thing(3004, 2.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let w = World::from_map_with_classes(map, classes, states).unwrap();
+        let zid = w
+            .thinkers
+            .default
+            .iter()
+            .copied()
+            .find(|&id| {
+                w.actors.get(id).is_some_and(|a| {
+                    w.classes
+                        .get(a.class)
+                        .is_some_and(|c| c.name == "ZombieMan")
+                })
+            })
+            .expect("zombie");
+        let z = w.actors.get(zid).unwrap();
+        assert!(
+            crate::physics::check_position(&w, z, z.pos, Some(zid)).ok,
+            "nudged out of the west wall at {:?}",
+            z.pos
+        );
+        assert!(z.pos.x() > 16.0, "x {}", z.pos.x());
     }
 
     #[test]
@@ -4148,6 +6193,48 @@ actor Clip : Actor 2007 { Inventory.Amount 10 Inventory.MaxAmount 200 States { S
         let hud = w.player_hud(0).unwrap();
         assert!(hud.deathmatch);
         assert_eq!(hud.frags, 0);
+    }
+
+    #[test]
+    fn duke_match_clears_monsters_and_uses_a_dm_start() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let extra = "actor DukePlayer : DoomPlayer { }\n";
+        let ir = parse_decorate(&format!("{src}\n{extra}")).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .thing(11, 200.0, 64.0, 90)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let duke = classes.find_name("DukePlayer").unwrap();
+        if let Some(p) = w.players[0].as_mut() {
+            p.cls = duke;
+        }
+        let zom = w
+            .spawn_at(
+                classes.find_name("ZombieMan").unwrap(),
+                DVec3::new(80.0, 80.0, 0.0),
+                Angle::ZERO,
+            )
+            .unwrap();
+        w.apply_duke_match();
+        assert!(w.deathmatch);
+        assert!(
+            w.actors
+                .get(zom)
+                .is_none_or(|a| a.destroyed || a.health <= 0),
+            "DukeMatch drops COUNTKILL"
+        );
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let p = w.actors.get(mo).unwrap().pos;
+        assert!(
+            (p.x() - 200.0).abs() < 2.0 && (p.y() - 64.0).abs() < 2.0,
+            "DM start {p:?}"
+        );
     }
 
     #[test]

@@ -7,6 +7,236 @@ use room_core::{DVec3, FRACUNIT, Fixed, math};
 /// `MF_SHOOTABLE` bit (matches class registry).
 const FLAG_SHOOTABLE: u64 = 1 << 1;
 
+/// Remaining freeze tics (`user_dukefreeze`).
+pub(crate) const USER_FREEZE: &str = "user_dukefreeze";
+/// Ice statue left after a freeze wears off (`user_dukeicecorpse`).
+pub(crate) const USER_ICECORPSE: &str = "user_dukeicecorpse";
+/// Remaining shrink tics (`user_dukeshink`).
+pub(crate) const USER_SHRINK: &str = "user_dukeshink";
+/// Remaining expander-grow tics (`user_dukegrow`).
+pub(crate) const USER_GROW: &str = "user_dukegrow";
+/// Duke freeze duration (~8 s).
+const FREEZE_TICS: i32 = 8 * 35;
+/// Duke shrink duration (~8 s), then the actor grows back.
+const SHRINK_TICS: i32 = 8 * 35;
+/// Expander swell (~2 s), then the actor pops.
+const GROW_TICS: i32 = 2 * 35;
+
+#[must_use]
+pub(crate) fn is_frozen(world: &World, id: ActorId) -> bool {
+    world.actors.get(id).is_some_and(|a| {
+        a.user_vars.get(USER_FREEZE).is_some_and(|&t| t > 0)
+            || a.user_vars.get(USER_ICECORPSE).is_some_and(|&t| t > 0)
+    })
+}
+
+#[must_use]
+pub(crate) fn is_shrunk(world: &World, id: ActorId) -> bool {
+    world
+        .actors
+        .get(id)
+        .and_then(|a| a.user_vars.get(USER_SHRINK).copied())
+        .is_some_and(|t| t > 0)
+}
+
+fn freeze_actor(world: &mut World, target: ActorId) {
+    if let Some(a) = world.actors.get_mut(target) {
+        a.user_vars.insert(USER_FREEZE.to_owned(), FREEZE_TICS);
+        a.vel = DVec3::ZERO;
+    }
+    jump_pose(world, target, "Ice");
+    for p in world.players.iter_mut().flatten() {
+        if p.mo == Some(target) {
+            p.frozen = true;
+        }
+    }
+}
+
+fn jump_pose(world: &mut World, id: ActorId, label: &str) {
+    let Some(class) = world.actors.get(id).map(|a| a.class) else {
+        return;
+    };
+    if let Some(sid) = world.states.find_label(class, label) {
+        world.set_state(id, Some(sid), false);
+    }
+}
+
+/// Tick freeze/shrink duration and stomp shrunk monsters the player is standing on.
+pub(crate) fn tick_duke_effects(world: &mut World) {
+    let ids: Vec<ActorId> = world.thinkers.default.clone();
+    let player_mos: Vec<ActorId> = world
+        .players
+        .iter()
+        .flatten()
+        .filter_map(|p| p.mo)
+        .collect();
+    let mut thawed = Vec::new();
+    let mut grown = Vec::new();
+    let mut popped = Vec::new();
+    for id in ids {
+        let Some(a) = world.actors.get_mut(id) else {
+            continue;
+        };
+        if let Some(t) = a.user_vars.get_mut(USER_FREEZE) {
+            *t -= 1;
+            if *t <= 0 {
+                a.user_vars.remove(USER_FREEZE);
+                let statue =
+                    !player_mos.contains(&id) && (a.flags & crate::class::FLAG_COUNTKILL) != 0;
+                if statue {
+                    a.user_vars.insert(USER_ICECORPSE.to_owned(), 1);
+                    a.vel = DVec3::ZERO;
+                } else {
+                    thawed.push(id);
+                }
+            } else {
+                a.vel = DVec3::ZERO;
+            }
+        }
+        if let Some(t) = a.user_vars.get_mut(USER_SHRINK) {
+            *t -= 1;
+            if *t <= 0 {
+                a.user_vars.remove(USER_SHRINK);
+                grown.push(id);
+            }
+        }
+        if let Some(t) = a.user_vars.get_mut(USER_GROW) {
+            *t -= 1;
+            if *t <= 0 {
+                a.user_vars.remove(USER_GROW);
+                popped.push(id);
+            }
+        }
+    }
+    for p in world.players.iter_mut().flatten() {
+        if p.mo.is_some_and(|mo| thawed.contains(&mo)) {
+            p.frozen = false;
+        }
+    }
+    for id in grown {
+        grow_actor(world, id);
+    }
+    for id in popped {
+        damage_mobj(world, id, None, None, 10_000);
+    }
+    let mut stomps = Vec::new();
+    for p in world.players.iter().flatten() {
+        let Some(mo) = p.mo else {
+            continue;
+        };
+        let Some(pl) = world.actors.get(mo) else {
+            continue;
+        };
+        if pl.destroyed || p.player_state != crate::player::PlayerState::Live {
+            continue;
+        }
+        let px = pl.pos.x();
+        let py = pl.pos.y();
+        let pz = pl.pos.z();
+        let pr = pl.radius;
+        let ph = pl.height;
+        for &oid in &world.thinkers.default {
+            if oid == mo || !is_shrunk(world, oid) {
+                continue;
+            }
+            let Some(o) = world.actors.get(oid) else {
+                continue;
+            };
+            if o.destroyed || (o.flags & FLAG_SHOOTABLE) == 0 {
+                continue;
+            }
+            let dx = o.pos.x() - px;
+            let dy = o.pos.y() - py;
+            let rad = o.radius + pr;
+            if dx * dx + dy * dy >= rad * rad {
+                continue;
+            }
+            if o.pos.z() >= pz + ph || pz >= o.pos.z() + o.height {
+                continue;
+            }
+            stomps.push((oid, mo));
+        }
+    }
+    for (target, source) in stomps {
+        damage_mobj(world, target, Some(source), Some(source), 10_000);
+    }
+}
+
+fn shrink_actor(world: &mut World, target: ActorId) {
+    if is_shrunk(world, target) {
+        if let Some(a) = world.actors.get_mut(target) {
+            a.user_vars.insert(USER_SHRINK.to_owned(), SHRINK_TICS);
+        }
+        return;
+    }
+    let countkill = world
+        .actors
+        .get(target)
+        .is_some_and(|a| (a.flags & crate::class::FLAG_COUNTKILL) != 0);
+    if !countkill {
+        return;
+    }
+    if world.players.iter().flatten().any(|p| p.mo == Some(target)) {
+        return;
+    }
+    if let Some(a) = world.actors.get_mut(target) {
+        a.user_vars.insert(USER_SHRINK.to_owned(), SHRINK_TICS);
+        a.scale_x *= 0.25;
+        a.scale_y *= 0.25;
+        a.radius = (a.radius * 0.25).max(4.0);
+        a.height = (a.height * 0.25).max(8.0);
+    }
+    jump_pose(world, target, "Shrink");
+}
+
+fn grow_actor(world: &mut World, target: ActorId) {
+    if let Some(a) = world.actors.get_mut(target) {
+        a.scale_x *= 4.0;
+        a.scale_y *= 4.0;
+        a.radius *= 4.0;
+        a.height *= 4.0;
+        a.user_vars.remove(USER_SHRINK);
+    }
+    jump_pose(world, target, "See");
+}
+
+fn is_grown(world: &World, id: ActorId) -> bool {
+    world
+        .actors
+        .get(id)
+        .and_then(|a| a.user_vars.get(USER_GROW).copied())
+        .is_some_and(|t| t > 0)
+}
+
+/// Expander: un-shrink, or swell a monster until it pops.
+fn expand_actor(world: &mut World, target: ActorId) {
+    if is_shrunk(world, target) {
+        grow_actor(world, target);
+        return;
+    }
+    if is_grown(world, target) {
+        if let Some(a) = world.actors.get_mut(target) {
+            a.user_vars.remove(USER_GROW);
+        }
+        damage_mobj(world, target, None, None, 10_000);
+        return;
+    }
+    let countkill = world
+        .actors
+        .get(target)
+        .is_some_and(|a| (a.flags & crate::class::FLAG_COUNTKILL) != 0);
+    if !countkill || world.players.iter().flatten().any(|p| p.mo == Some(target)) {
+        return;
+    }
+    if let Some(a) = world.actors.get_mut(target) {
+        a.user_vars.insert(USER_GROW.to_owned(), GROW_TICS);
+        a.scale_x *= 2.0;
+        a.scale_y *= 2.0;
+        a.radius *= 2.0;
+        a.height *= 2.0;
+    }
+}
+
 /// Doom `P_DamageMobj` knockback: `thrust = damage*(FRACUNIT>>3)*100/mass`.
 fn apply_damage_thrust(
     world: &mut World,
@@ -300,6 +530,36 @@ pub fn damage_mobj(
             return 0;
         }
     }
+    if is_frozen(world, target) {
+        if let Some(a) = world.actors.get_mut(target) {
+            a.health = 0;
+            a.user_vars.remove(USER_FREEZE);
+            a.user_vars.remove(USER_ICECORPSE);
+        }
+        die(world, target, class, source, dtype.as_deref());
+        return damage;
+    }
+    if dtype
+        .as_deref()
+        .is_some_and(|t| t.eq_ignore_ascii_case("Ice"))
+    {
+        freeze_actor(world, target);
+        return 0;
+    }
+    if dtype
+        .as_deref()
+        .is_some_and(|t| t.eq_ignore_ascii_case("Shrink"))
+    {
+        shrink_actor(world, target);
+        return 0;
+    }
+    if dtype
+        .as_deref()
+        .is_some_and(|t| t.eq_ignore_ascii_case("Grow"))
+    {
+        expand_actor(world, target);
+        return 0;
+    }
     // Doom applies knockback before armor/health (chainsaw exempt).
     if let Some(infl) = inflictor {
         apply_damage_thrust(world, target, infl, source, damage);
@@ -452,6 +712,26 @@ fn record_kill_event(
     });
 }
 
+/// Play a `KillTaunt` from the killer's class (player kills only).
+fn play_kill_taunt(world: &mut World, killer: ActorId) {
+    let Some(class) = world.actors.get(killer).map(|a| a.class) else {
+        return;
+    };
+    let taunts = world
+        .classes
+        .get(class)
+        .map(|c| c.kill_taunts.clone())
+        .unwrap_or_default();
+    if taunts.is_empty() {
+        return;
+    }
+    let i = (world.p_random("pr_killtaunt") as usize) % taunts.len();
+    let name = taunts[i].clone();
+    if let Some(a) = world.actors.get(killer) {
+        world.play_sound(&name, a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
+    }
+}
+
 /// Enter Death / XDeath (or destroy if neither label).
 pub(crate) fn die(
     world: &mut World,
@@ -469,6 +749,13 @@ pub(crate) fn die(
         world.level.found_kills = world.level.found_kills.saturating_add(1);
     }
     record_kill_event(world, target, class, countkill, source);
+    if countkill {
+        if let Some(src) = source {
+            if src != target && world.player_seat_of(src).is_some() {
+                play_kill_taunt(world, src);
+            }
+        }
+    }
     world.push_script_event(crate::script_mods::ScriptEvent::ThingDied {
         thing: target,
         source,
@@ -573,6 +860,15 @@ pub(crate) fn die(
         a.health = 0;
         a.destroyed = true;
         a.state = None;
+    }
+    // GZDoom `AActor::Die`: the thing's special runs with the killer as activator.
+    if let Some((special, args)) = world
+        .actors
+        .get(target)
+        .filter(|a| a.special != 0)
+        .map(|a| (a.special, a.args))
+    {
+        let _ = crate::specials::execute_special(world, special, &args, source, None);
     }
     // Doom: `target->tics -= P_Random()&3` (min 1) after death state.
     // DropItem spawn must come *after* this burn — Clip `P_SpawnMobj` lastlook
@@ -681,6 +977,34 @@ mod tests {
     use room_nodebuild::apply_nodes;
     use room_testkit::{MapBuilder, rect};
     use std::sync::Arc;
+
+    #[test]
+    fn death_runs_the_thing_special() {
+        let ir = parse_decorate(
+            "actor Crate : Actor 3004\n{\n  Health 5\n  +SHOOTABLE\n  States\n  {\n  Spawn:\n    POSS A -1\n    Stop\n  Death:\n    POSS H -1\n    Stop\n  }\n}\n",
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        map.sectors[0].tags.push(5);
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes.clone(), states).unwrap();
+        let cid = classes.find_doomednum(3004).unwrap();
+        let id = w
+            .spawn_at(cid, DVec3::new(64.0, 64.0, 0.0), Default::default())
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(id) {
+            a.special = crate::specials::num::LIGHT_CHANGE_TO_VALUE;
+            a.args = [5, 40, 0, 0, 0];
+        }
+        damage_mobj(&mut w, id, None, None, 5);
+        assert_eq!(w.sectors[0].light, 40);
+    }
 
     #[test]
     fn damage_kills_and_enters_death() {
@@ -1338,6 +1662,52 @@ actor MeanImp : Actor 9940
         assert_eq!(events[0].killer_player, None);
         assert_eq!(events[0].killer_class, "MeanImp");
         assert!(w.drain_kill_events().is_empty());
+    }
+
+    #[test]
+    fn player_kill_plays_a_kill_taunt() {
+        let ir = parse_decorate(
+            r#"
+actor PlayerPawn : Actor 0
+{
+  Health 100
+  KillTaunt "duke/yes"
+  KillTaunt "duke/comeget"
+  States { Spawn: PLAY A -1 Stop }
+}
+actor Fodder : Actor 9941
+{
+  Health 1
+  +SHOOTABLE
+  +COUNTKILL
+  States { Spawn: POSS A -1 Stop Death: POSS B -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let fodder = classes.find_name("Fodder").unwrap();
+        let victim = w
+            .spawn_at(fodder, DVec3::new(100.0, 64.0, 0.0), Default::default())
+            .unwrap();
+        let mo = w.players[0].as_ref().and_then(|p| p.mo).unwrap();
+        let _ = w.drain_sound_events();
+        let _ = damage_mobj(&mut w, victim, Some(mo), Some(mo), 999);
+        let sounds: Vec<_> = w.drain_sound_events().into_iter().map(|e| e.name).collect();
+        assert!(
+            sounds
+                .iter()
+                .any(|n| n == "duke/yes" || n == "duke/comeget"),
+            "expected a kill taunt, got {sounds:?}"
+        );
     }
 
     #[test]
@@ -2227,5 +2597,316 @@ actor PlayerPawn : Actor 0
         assert_eq!(damage_mobj(&mut w, mo, None, None, 30), 15);
         assert_eq!(w.actors.get(mo).unwrap().health, 85);
         assert_eq!(w.players[0].as_ref().unwrap().armor, 185);
+    }
+
+    #[test]
+    fn shrink_scales_a_monster_and_stomp_kills_it() {
+        let ir = parse_decorate(
+            r#"
+actor Victim : Actor 9921
+{
+  Health 50
+  Radius 20
+  Height 56
+  +SHOOTABLE
+  +COUNTKILL
+  States { Spawn: POSS A -1 Stop Death: POSS H 5 Stop }
+}
+actor ShrinkBolt : Actor 9922
+{
+  DamageType "Shrink"
+  Damage 8
+  +MISSILE
+  States { Spawn: BAL1 A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let victim = w
+            .spawn_at(
+                classes.find_name("Victim").unwrap(),
+                DVec3::new(64.0, 64.0, 0.0),
+                Default::default(),
+            )
+            .unwrap();
+        let bolt = w
+            .spawn_at(
+                classes.find_name("ShrinkBolt").unwrap(),
+                DVec3::new(80.0, 64.0, 0.0),
+                Default::default(),
+            )
+            .unwrap();
+        assert_eq!(damage_mobj(&mut w, victim, Some(bolt), Some(bolt), 8), 0);
+        let a = w.actors.get(victim).unwrap();
+        assert_eq!(a.health, 50);
+        assert!((a.scale_x - 0.25).abs() < 1e-9);
+        assert!(super::is_shrunk(&w, victim));
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        if let Some(p) = w.actors.get_mut(mo) {
+            p.pos = DVec3::new(64.0, 64.0, 0.0);
+        }
+        super::tick_duke_effects(&mut w);
+        assert!(
+            w.actors
+                .get(victim)
+                .is_none_or(|a| a.destroyed || a.health <= 0)
+        );
+    }
+
+    #[test]
+    fn shrink_grows_back_after_the_timer() {
+        let ir = parse_decorate(
+            r#"
+actor Victim : Actor 9925
+{
+  Health 50
+  Radius 20
+  Height 56
+  +SHOOTABLE
+  +COUNTKILL
+  States { Spawn: POSS A -1 Stop Shrink: POSS C -1 Stop See: POSS A 5 Loop Death: POSS H 5 Stop }
+}
+actor ShrinkBolt : Actor 9926
+{
+  DamageType "Shrink"
+  Damage 8
+  +MISSILE
+  States { Spawn: BAL1 A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let victim = w
+            .spawn_at(
+                classes.find_name("Victim").unwrap(),
+                DVec3::new(64.0, 64.0, 0.0),
+                Default::default(),
+            )
+            .unwrap();
+        let bolt = w
+            .spawn_at(
+                classes.find_name("ShrinkBolt").unwrap(),
+                DVec3::new(80.0, 64.0, 0.0),
+                Default::default(),
+            )
+            .unwrap();
+        assert_eq!(damage_mobj(&mut w, victim, Some(bolt), Some(bolt), 8), 0);
+        let victim_c = classes.find_name("Victim").unwrap();
+        assert_eq!(
+            w.actors.get(victim).unwrap().state,
+            w.states.find_label(victim_c, "Shrink")
+        );
+        if let Some(a) = w.actors.get_mut(victim) {
+            a.user_vars.insert(super::USER_SHRINK.to_owned(), 1);
+        }
+        super::tick_duke_effects(&mut w);
+        let a = w.actors.get(victim).unwrap();
+        assert!((a.scale_x - 1.0).abs() < 1e-9);
+        assert!((a.radius - 20.0).abs() < 1e-9);
+        assert!(!super::is_shrunk(&w, victim));
+        assert_eq!(a.state, w.states.find_label(victim_c, "See"));
+    }
+
+    #[test]
+    fn ice_freezes_then_a_second_hit_shatters() {
+        let ir = parse_decorate(
+            r#"
+actor Victim : Actor 9923
+{
+  Health 50
+  +SHOOTABLE
+  +COUNTKILL
+  States { Spawn: POSS A -1 Stop Ice: POSS B -1 Stop Death: POSS H 5 Stop }
+}
+actor IceBolt : Actor 9924
+{
+  DamageType "Ice"
+  Damage 6
+  +MISSILE
+  States { Spawn: BAL1 A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let victim = w
+            .spawn_at(
+                classes.find_name("Victim").unwrap(),
+                DVec3::new(64.0, 64.0, 0.0),
+                Default::default(),
+            )
+            .unwrap();
+        let bolt = w
+            .spawn_at(
+                classes.find_name("IceBolt").unwrap(),
+                DVec3::new(80.0, 64.0, 0.0),
+                Default::default(),
+            )
+            .unwrap();
+        assert_eq!(damage_mobj(&mut w, victim, Some(bolt), Some(bolt), 6), 0);
+        assert_eq!(w.actors.get(victim).unwrap().health, 50);
+        assert!(super::is_frozen(&w, victim));
+        assert_eq!(
+            w.actors.get(victim).unwrap().state,
+            w.states
+                .find_label(classes.find_name("Victim").unwrap(), "Ice")
+        );
+        assert_eq!(damage_mobj(&mut w, victim, Some(bolt), Some(bolt), 6), 6);
+        assert!(
+            w.actors
+                .get(victim)
+                .is_none_or(|a| a.destroyed || a.health <= 0)
+        );
+    }
+
+    #[test]
+    fn grow_unshrinks_then_swells_and_pops() {
+        let ir = parse_decorate(
+            r#"
+actor Victim : Actor 9929
+{
+  Health 50
+  Radius 20
+  Height 56
+  +SHOOTABLE
+  +COUNTKILL
+  States { Spawn: POSS A -1 Stop Death: POSS H 5 Stop }
+}
+actor GrowBolt : Actor 9930
+{
+  DamageType "Grow"
+  Damage 8
+  +MISSILE
+  States { Spawn: BAL1 A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let victim = w
+            .spawn_at(
+                classes.find_name("Victim").unwrap(),
+                DVec3::new(64.0, 64.0, 0.0),
+                Default::default(),
+            )
+            .unwrap();
+        let bolt = w
+            .spawn_at(
+                classes.find_name("GrowBolt").unwrap(),
+                DVec3::new(80.0, 64.0, 0.0),
+                Default::default(),
+            )
+            .unwrap();
+        super::shrink_actor(&mut w, victim);
+        assert!(super::is_shrunk(&w, victim));
+        assert_eq!(damage_mobj(&mut w, victim, Some(bolt), Some(bolt), 8), 0);
+        assert!(!super::is_shrunk(&w, victim));
+        assert!((w.actors.get(victim).unwrap().scale_x - 1.0).abs() < 1e-9);
+        assert_eq!(damage_mobj(&mut w, victim, Some(bolt), Some(bolt), 8), 0);
+        assert!(w.actors.get(victim).unwrap().scale_x > 1.5);
+        if let Some(a) = w.actors.get_mut(victim) {
+            a.user_vars.insert(super::USER_GROW.to_owned(), 1);
+        }
+        super::tick_duke_effects(&mut w);
+        assert!(
+            w.actors
+                .get(victim)
+                .is_none_or(|a| a.destroyed || a.health <= 0)
+        );
+    }
+
+    #[test]
+    fn ice_timeout_leaves_a_corpse_that_shatters() {
+        let ir = parse_decorate(
+            r#"
+actor Victim : Actor 9927
+{
+  Health 50
+  +SHOOTABLE
+  +COUNTKILL
+  States { Spawn: POSS A -1 Stop Death: POSS H 5 Stop }
+}
+actor IceBolt : Actor 9928
+{
+  DamageType "Ice"
+  Damage 6
+  +MISSILE
+  States { Spawn: BAL1 A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let victim = w
+            .spawn_at(
+                classes.find_name("Victim").unwrap(),
+                DVec3::new(64.0, 64.0, 0.0),
+                Default::default(),
+            )
+            .unwrap();
+        let bolt = w
+            .spawn_at(
+                classes.find_name("IceBolt").unwrap(),
+                DVec3::new(80.0, 64.0, 0.0),
+                Default::default(),
+            )
+            .unwrap();
+        assert_eq!(damage_mobj(&mut w, victim, Some(bolt), Some(bolt), 6), 0);
+        if let Some(a) = w.actors.get_mut(victim) {
+            a.user_vars.insert(super::USER_FREEZE.to_owned(), 1);
+        }
+        super::tick_duke_effects(&mut w);
+        let a = w.actors.get(victim).unwrap();
+        assert_eq!(a.health, 50);
+        assert_eq!(a.user_vars.get(super::USER_ICECORPSE).copied(), Some(1));
+        assert!(super::is_frozen(&w, victim));
+        assert_eq!(damage_mobj(&mut w, victim, Some(bolt), Some(bolt), 6), 6);
+        assert!(
+            w.actors
+                .get(victim)
+                .is_none_or(|a| a.destroyed || a.health <= 0)
+        );
     }
 }

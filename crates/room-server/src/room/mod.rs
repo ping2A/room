@@ -6,7 +6,7 @@ mod spectate;
 mod v2;
 
 pub use actor::{
-    AdminCmd, ConnId, CreateRoomRequest, CreateRoomResponse, LeaveReason, PoseInspect, RoomCmd,
-    RoomHandle, RoomInspect, RoomSettings, SeatInspect, make_create_response, new_rng_seed,
-    spawn_room,
+    AdminCmd, ConnId, CreateRoomRequest, CreateRoomResponse, GAMES, LeaveReason, PoseInspect,
+    RoomCmd, RoomHandle, RoomInspect, RoomSettings, SeatInspect, make_create_response,
+    new_rng_seed, spawn_room,
 };

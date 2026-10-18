@@ -129,6 +129,10 @@ elif copy_iwad "$ROOT/testdata/freedoom/freedoom2.wad" "freedoom1.wad"; then
   # Freedoom Phase 2 is MAP01-style; still playable via MAP01 fallback.
   IWAD_COPIED=1
 fi
+# Duke Nukem 3D: open http://…/?iwad=duke3d.grp
+if copy_iwad "$ROOT/testdata/duke/duke3d.grp" "duke3d.grp"; then
+  echo "room: Duke Nukem 3D available at ?iwad=duke3d.grp"
+fi
 if [[ "$IWAD_COPIED" -eq 0 ]]; then
   echo "room: no local IWAD found — use the file picker in the browser"
   echo "  (looked for testdata/doom/doom1.wad or testdata/freedoom/freedoom*.wad)"

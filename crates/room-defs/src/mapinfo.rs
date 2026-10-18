@@ -45,6 +45,15 @@ pub struct EpisodeDef {
     pub name: Option<String>,
 }
 
+/// Skill definition (`skill <id> { name = "…" }`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SkillDef {
+    /// Skill identifier (`baby`, `easy`, …).
+    pub id: String,
+    /// Menu name.
+    pub name: Option<String>,
+}
+
 /// Cluster / hub definition (`cluster` / `clusterdef`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ClusterDef {
@@ -73,6 +82,8 @@ pub struct MapInfo {
     pub episodes: Vec<EpisodeDef>,
     /// Clusters by id.
     pub clusters: BTreeMap<i32, ClusterDef>,
+    /// Skills in menu order (empty: the game's defaults).
+    pub skills: Vec<SkillDef>,
 }
 
 impl MapInfo {
@@ -236,6 +247,33 @@ pub fn parse_mapinfo(text: &str) -> Result<MapInfo, DefsError> {
                     }
                 }
                 info.clusters.insert(id, def);
+            }
+            Tok::Ident(kw) if Scanner::compare(kw, "clearskills") => info.skills.clear(),
+            Tok::Ident(kw) if Scanner::compare(kw, "skill") => {
+                let id = read_name(&mut sc)?;
+                let mut def = SkillDef {
+                    id: id.to_ascii_lowercase(),
+                    name: None,
+                };
+                if sc.check_punct(Punct::LBrace)? {
+                    let mut depth = 1;
+                    while depth > 0 {
+                        match sc.next_token()? {
+                            Tok::Eof => break,
+                            Tok::Punct(Punct::LBrace) => depth += 1,
+                            Tok::Punct(Punct::RBrace) => depth -= 1,
+                            Tok::Ident(k) if depth == 1 && Scanner::compare(k, "name") => {
+                                let _ = sc.check_punct(Punct::Eq)?;
+                                def.name = Some(read_name(&mut sc)?);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                match info.skills.iter_mut().find(|s| s.id == def.id) {
+                    Some(old) => *old = def,
+                    None => info.skills.push(def),
+                }
             }
             Tok::Ident(kw)
                 if Scanner::compare(kw, "defaultmap") || Scanner::compare(kw, "adddefaultmap") =>
@@ -673,6 +711,36 @@ episode MAP01
         assert_eq!(m.sky1.as_deref(), Some("SKY1"));
         assert_eq!(m.par_seconds, Some(30));
         assert_eq!(info.episodes.len(), 1);
+    }
+
+    #[test]
+    fn skills_replace_and_clear() {
+        let text = r#"
+skill baby { name = "Too Young" AmmoFactor = 2 }
+clearskills
+skill easy
+{
+    name = "Piece Of Cake"
+    DamageFactor = 0.5
+}
+skill normal
+{
+    name = "Let's Rock"
+}
+skill easy { name = "Cake" }
+map E1M1 "Hollywood Holocaust" { next = E1M2 }
+"#;
+        let info = parse_mapinfo(text).unwrap();
+        let names: Vec<_> = info
+            .skills
+            .iter()
+            .map(|s| (s.id.as_str(), s.name.as_deref()))
+            .collect();
+        assert_eq!(
+            names,
+            [("easy", Some("Cake")), ("normal", Some("Let's Rock"))]
+        );
+        assert!(info.maps.contains_key("E1M1"));
     }
 
     #[test]

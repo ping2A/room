@@ -43,7 +43,7 @@ pub use pcx::{is_pcx, parse_pcx};
 pub use playpal::{Palette, Playpal, parse_playpal};
 pub use pnames::{Pnames, parse_pnames};
 pub use png_img::{PngZdoomMeta, is_png, parse_png, scan_zdoom_png_chunks};
-pub use sound::{DecodedSound, decode_sound, is_dmx, parse_dmx};
+pub use sound::{DecodedSound, decode_sound, is_dmx, is_voc, parse_dmx, parse_voc};
 pub use switches::{SwitchRecord, parse_switches};
 pub use texturex::{TexturexDef, TexturexPatch, parse_texturex};
 pub use tga::{is_tga, parse_tga};

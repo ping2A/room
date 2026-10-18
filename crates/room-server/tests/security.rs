@@ -48,6 +48,7 @@ async fn require_tickets_rejects_bare_room_id() {
             visibility: "public".into(),
             game_mod: None,
             time_limit: None,
+            game: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -93,6 +94,7 @@ async fn seat_hijack_without_resume_token_rejected() {
             visibility: "public".into(),
             game_mod: None,
             time_limit: None,
+            game: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -194,6 +196,7 @@ async fn message_flood_disconnects() {
             visibility: "public".into(),
             game_mod: None,
             time_limit: None,
+            game: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();

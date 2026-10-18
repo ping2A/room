@@ -177,6 +177,8 @@ pub struct ClassDef {
     pub friction: f64,
     /// `JumpZ` vertical impulse for player jump (default 8).
     pub jump_z: f64,
+    /// `Player.ForwardMove` XY thrust scale (default 1).
+    pub forward_move: f64,
     /// `RipperLevel` — projectile/monster rip strength (default 0).
     pub ripper_level: i32,
     /// `RipLevelMin` — minimum ripper level that can rip this actor (default 0).
@@ -265,6 +267,12 @@ pub struct ClassDef {
     pub typed_pain_chances: BTreeMap<String, i32>,
     /// `Damage` property (missile/melee base; 0 = none).
     pub damage: i32,
+    /// `ContactDamage` — hurt overlapping shootable actors this much every 8 tics (`0` = none).
+    pub contact_damage: i32,
+    /// `KillTaunt` logical sounds played when this actor kills a `COUNTKILL`.
+    pub kill_taunts: Vec<String>,
+    /// `IdleTaunt` logical sounds played after standing still (`pr_idletaunt`).
+    pub idle_taunts: Vec<String>,
     /// `Weapon.AmmoType` class name (empty = no ammo).
     pub ammo_type: String,
     /// `Weapon.AmmoUse` per shot.
@@ -295,10 +303,14 @@ pub struct ClassDef {
     pub bounce_sound: String,
     /// `WallBounceSound` (wall bounce; empty = use `BounceSound`).
     pub wall_bounce_sound: String,
+    /// `BounceFactor` — velocity kept on a bounce (default 0.7).
+    pub bounce_factor: f64,
     /// `PushSound` when shoved by a pusher (empty = none).
     pub push_sound: String,
     /// `UseSound` when the actor is used (empty = none).
     pub use_sound: String,
+    /// `Player.StartItem` (class, amount) in order; empty = Doom default kit.
+    pub start_items: Vec<(String, i32)>,
 }
 
 impl ClassDef {
@@ -319,6 +331,7 @@ pub struct ClassRegistry {
     classes: Vec<ClassDef>,
     by_name: BTreeMap<String, ClassId>,
     by_doomednum: BTreeMap<i32, ClassId>,
+    replaced_by: BTreeMap<ClassId, ClassId>,
 }
 
 impl ClassRegistry {
@@ -349,6 +362,7 @@ impl ClassRegistry {
             gravity: 1.0,
             friction: 1.0,
             jump_z: 8.0,
+            forward_move: 1.0,
             ripper_level: 0,
             rip_level_min: 0,
             rip_level_max: 0,
@@ -393,6 +407,9 @@ impl ClassRegistry {
             pain_threshold: 0,
             typed_pain_chances: BTreeMap::new(),
             damage: 0,
+            contact_damage: 0,
+            kill_taunts: Vec::new(),
+            idle_taunts: Vec::new(),
             ammo_type: String::new(),
             ammo_use: 0,
             ammo_give: 0,
@@ -408,8 +425,10 @@ impl ClassRegistry {
             friendly_see_blocks: 10,
             bounce_sound: String::new(),
             wall_bounce_sound: String::new(),
+            bounce_factor: 0.7,
             push_sound: String::new(),
             use_sound: String::new(),
+            start_items: Vec::new(),
         });
         reg
     }
@@ -522,6 +541,7 @@ impl ClassRegistry {
         let mut gravity = parent.gravity;
         let mut friction = parent.friction;
         let mut jump_z = parent.jump_z;
+        let mut forward_move = parent.forward_move;
         let mut ripper_level = parent.ripper_level;
         let mut rip_level_min = parent.rip_level_min;
         let mut rip_level_max = parent.rip_level_max;
@@ -565,10 +585,17 @@ impl ClassRegistry {
         let mut pain_threshold = parent.pain_threshold;
         let mut typed_pain_chances = parent.typed_pain_chances.clone();
         let mut damage = parent.damage;
+        let mut contact_damage = parent.contact_damage;
+        let mut kill_taunts = parent.kill_taunts.clone();
+        let mut own_kill_taunts = false;
+        let mut idle_taunts = parent.idle_taunts.clone();
+        let mut own_idle_taunts = false;
         let mut ammo_type = parent.ammo_type.clone();
         let mut ammo_use = parent.ammo_use;
         let mut ammo_give = parent.ammo_give;
         let mut drop_items = parent.drop_items.clone();
+        let mut start_items = parent.start_items.clone();
+        let mut own_start_items = false;
         let mut see_sound = parent.see_sound.clone();
         let mut death_sound = parent.death_sound.clone();
         let mut pain_sound = parent.pain_sound.clone();
@@ -580,6 +607,7 @@ impl ClassRegistry {
         let mut friendly_see_blocks = parent.friendly_see_blocks;
         let mut bounce_sound = parent.bounce_sound.clone();
         let mut wall_bounce_sound = parent.wall_bounce_sound.clone();
+        let mut bounce_factor = parent.bounce_factor;
         let mut push_sound = parent.push_sound.clone();
         let mut use_sound = parent.use_sound.clone();
         for p in &def.properties {
@@ -672,6 +700,11 @@ impl ClassRegistry {
                 "jumpz" => {
                     if let Some(a) = p.args.first() {
                         jump_z = a.parse().unwrap_or(jump_z);
+                    }
+                }
+                "player.forwardmove" => {
+                    if let Some(a) = p.args.first() {
+                        forward_move = a.parse::<f64>().unwrap_or(forward_move).max(0.0);
                     }
                 }
                 "ripperlevel" => {
@@ -898,6 +931,35 @@ impl ClassRegistry {
                         damage = a.parse().unwrap_or(damage);
                     }
                 }
+                "contactdamage" => {
+                    if let Some(a) = p.args.first() {
+                        contact_damage = a.parse().unwrap_or(contact_damage);
+                    }
+                }
+                "killtaunt" => {
+                    if !own_kill_taunts {
+                        kill_taunts.clear();
+                        own_kill_taunts = true;
+                    }
+                    if let Some(a) = p.args.first() {
+                        let name = a.trim_matches('"').to_owned();
+                        if !name.is_empty() {
+                            kill_taunts.push(name);
+                        }
+                    }
+                }
+                "idletaunt" => {
+                    if !own_idle_taunts {
+                        idle_taunts.clear();
+                        own_idle_taunts = true;
+                    }
+                    if let Some(a) = p.args.first() {
+                        let name = a.trim_matches('"').to_owned();
+                        if !name.is_empty() {
+                            idle_taunts.push(name);
+                        }
+                    }
+                }
                 "weapon.ammotype" => {
                     is_weapon = true;
                     if let Some(a) = p.args.first() {
@@ -914,6 +976,16 @@ impl ClassRegistry {
                     is_weapon = true;
                     if let Some(a) = p.args.first() {
                         ammo_give = a.parse().unwrap_or(ammo_give);
+                    }
+                }
+                "player.startitem" => {
+                    if !own_start_items {
+                        start_items.clear();
+                        own_start_items = true;
+                    }
+                    if let Some(a) = p.args.first() {
+                        let amount = p.args.get(1).and_then(|n| n.parse().ok()).unwrap_or(1);
+                        start_items.push((a.trim_matches('"').to_owned(), amount));
                     }
                 }
                 "dropitem" => {
@@ -954,6 +1026,11 @@ impl ClassRegistry {
                 "wallbouncesound" => {
                     if let Some(a) = p.args.first() {
                         wall_bounce_sound = a.trim_matches('"').to_owned();
+                    }
+                }
+                "bouncefactor" => {
+                    if let Some(a) = p.args.first() {
+                        bounce_factor = a.parse::<f64>().unwrap_or(bounce_factor).clamp(0.0, 1.0);
                     }
                 }
                 "pushsound" => {
@@ -1030,6 +1107,7 @@ impl ClassRegistry {
             slot.gravity = gravity;
             slot.friction = friction;
             slot.jump_z = jump_z;
+            slot.forward_move = forward_move;
             slot.ripper_level = ripper_level;
             slot.rip_level_min = rip_level_min;
             slot.rip_level_max = rip_level_max;
@@ -1074,10 +1152,14 @@ impl ClassRegistry {
             slot.pain_threshold = pain_threshold;
             slot.typed_pain_chances = typed_pain_chances;
             slot.damage = damage;
+            slot.contact_damage = contact_damage;
+            slot.kill_taunts = kill_taunts;
+            slot.idle_taunts = idle_taunts;
             slot.ammo_type = ammo_type;
             slot.ammo_use = ammo_use;
             slot.ammo_give = ammo_give;
             slot.drop_items = drop_items;
+            slot.start_items = start_items;
             slot.see_sound = see_sound;
             slot.death_sound = death_sound;
             slot.pain_sound = pain_sound;
@@ -1089,6 +1171,7 @@ impl ClassRegistry {
             slot.friendly_see_blocks = friendly_see_blocks;
             slot.bounce_sound = bounce_sound;
             slot.wall_bounce_sound = wall_bounce_sound;
+            slot.bounce_factor = bounce_factor;
             slot.push_sound = push_sound;
             slot.use_sound = use_sound;
             slot.doomednum = def.doomednum.or(slot.doomednum);
@@ -1117,6 +1200,7 @@ impl ClassRegistry {
             gravity,
             friction,
             jump_z,
+            forward_move,
             ripper_level,
             rip_level_min,
             rip_level_max,
@@ -1161,6 +1245,9 @@ impl ClassRegistry {
             pain_threshold,
             typed_pain_chances,
             damage,
+            contact_damage,
+            kill_taunts,
+            idle_taunts,
             ammo_type,
             ammo_use,
             ammo_give,
@@ -1176,17 +1263,22 @@ impl ClassRegistry {
             friendly_see_blocks,
             bounce_sound,
             wall_bounce_sound,
+            bounce_factor,
             push_sound,
             use_sound,
+            start_items,
         })
         .inspect(|&id| self.apply_replaces(id, def.replaces.as_deref()))
     }
 
-    /// `replaces X`: map things placed as `X` now spawn `id` instead.
+    /// `replaces X`: spawns of `X` (and things placed as `X`) become `id`.
     fn apply_replaces(&mut self, id: ClassId, target: Option<&str>) {
         let Some(old) = target.and_then(|t| self.find_name(t)) else {
             return;
         };
+        if old != id {
+            self.replaced_by.insert(old, id);
+        }
         let Some(dn) = self.classes[old.raw() as usize].doomednum else {
             return;
         };
@@ -1194,6 +1286,19 @@ impl ClassRegistry {
             self.classes[id.raw() as usize].doomednum = Some(dn);
             self.by_doomednum.insert(dn, id);
         }
+    }
+
+    /// Final class a spawn of `id` produces after `replaces` chains.
+    #[must_use]
+    pub fn replacement(&self, id: ClassId) -> ClassId {
+        let mut cur = id;
+        for _ in 0..16 {
+            match self.replaced_by.get(&cur) {
+                Some(&next) if next != id => cur = next,
+                _ => break,
+            }
+        }
+        cur
     }
 
     /// Case-insensitive name lookup.
@@ -1363,6 +1468,16 @@ pub const FLAG_NOTRIGGER: u64 = 1 << 31;
 pub const FLAG_DONTRIP: u64 = 1 << 32;
 /// Projectile rips through shootables (`MF2_RIP` / `+RIPPER`).
 pub const FLAG_RIPPER: u64 = 1 << 33;
+/// Drawn as a plane along the actor's facing, not a billboard (`+WALLSPRITE`).
+pub const FLAG_WALLSPRITE: u64 = 1 << 34;
+/// Drawn flat on the floor / ceiling, rotated by the actor angle (`+FLATSPRITE`).
+pub const FLAG_FLATSPRITE: u64 = 1 << 35;
+/// Reflects off floors and ceilings instead of stopping (`+BOUNCEONFLOORS`).
+pub const FLAG_BOUNCEONFLOORS: u64 = 1 << 36;
+/// Reflects off walls instead of sliding (`+BOUNCEONWALLS`).
+pub const FLAG_BOUNCEONWALLS: u64 = 1 << 37;
+/// Player Use runs this actor's `Use` state (`+USESPECIAL`).
+pub const FLAG_USESPECIAL: u64 = 1 << 38;
 
 fn apply_flag(flags: &mut u64, op: &FlagOp) {
     let bit = match op.name.to_ascii_uppercase().as_str() {
@@ -1402,6 +1517,12 @@ fn apply_flag(flags: &mut u64, op: &FlagOp) {
         "NOTRIGGER" => FLAG_NOTRIGGER,
         "DONTRIP" => FLAG_DONTRIP,
         "RIPPER" => FLAG_RIPPER,
+        "WALLSPRITE" => FLAG_WALLSPRITE,
+        "FLATSPRITE" => FLAG_FLATSPRITE,
+        "BOUNCEONFLOORS" | "BOUNCEONCEILINGS" => FLAG_BOUNCEONFLOORS,
+        "BOUNCEONWALLS" => FLAG_BOUNCEONWALLS,
+        "USESPECIAL" => FLAG_USESPECIAL,
+        "DOOMBOUNCE" | "HEXENBOUNCE" => FLAG_BOUNCEONFLOORS | FLAG_BOUNCEONWALLS,
         "*" => {
             if !op.set {
                 *flags = 0;
@@ -1523,6 +1644,10 @@ actor ZombieMan : Actor 3004
         let imp = reg.get(reg.find_doomednum(3001).unwrap()).unwrap();
         assert_eq!(imp.name, "BigImp");
         assert_eq!(imp.health, 600);
+        let by_name = reg.replacement(reg.find_name("Imp").unwrap());
+        assert_eq!(reg.get(by_name).unwrap().name, "BigImp");
+        let z = reg.find_name("ZombieMan").unwrap();
+        assert_eq!(reg.replacement(z), z);
     }
 
     #[test]

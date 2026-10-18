@@ -11,8 +11,16 @@ use std::collections::BTreeSet;
 const ORIG_FRICTION: f64 = 0.90625;
 /// Vanilla `STOPSPEED` (~0x1000 / 65536) — zero XY below this after friction.
 const STOPSPEED: f64 = 0.0625;
-/// Default `MaxStepHeight` used when probing 3D-floor slabs in `check_position`.
+/// Default `MaxStepHeight` used when the actor has none set.
 const DEFAULT_STEP: f64 = 24.0;
+
+fn step_limit(actor: &Actor) -> f64 {
+    if actor.max_step_height > 0.0 {
+        actor.max_step_height
+    } else {
+        DEFAULT_STEP
+    }
+}
 
 /// Result of [`check_position`].
 #[derive(Clone, Debug, Default)]
@@ -190,6 +198,21 @@ pub fn path_traverse_blocks(bm: &Blockmap, x1: f64, y1: f64, x2: f64, y2: f64) -
     out
 }
 
+/// Doom `P_PointOnLineSide` == 1 (back). Front is the right side of `a → b`.
+fn on_back_side(p: DVec2, a: DVec2, b: DVec2) -> bool {
+    let dx = b.x() - a.x();
+    let dy = b.y() - a.y();
+    let adx = p.x() - a.x();
+    let ady = p.y() - a.y();
+    if dx.abs() < 1e-9 {
+        return if p.x() <= a.x() { dy > 0.0 } else { dy < 0.0 };
+    }
+    if dy.abs() < 1e-9 {
+        return if p.y() <= a.y() { dx < 0.0 } else { dx > 0.0 };
+    }
+    dy * adx <= ady * dx
+}
+
 fn line_blocks(
     world: &World,
     lid: LineId,
@@ -288,11 +311,17 @@ pub fn check_position(
     {
         let si = sid.raw() as usize;
         if world.sectors.get(si).is_some() {
-            contacted.insert(si);
-            result.floor_z = sector_z_at(world, si, pos.x(), pos.y(), true);
-            result.ceiling_z = sector_z_at(world, si, pos.x(), pos.y(), false);
-            result.dropoff_z = result.floor_z;
-            saw_sector = true;
+            let floor_z = sector_z_at(world, si, pos.x(), pos.y(), true);
+            let ceiling_z = sector_z_at(world, si, pos.x(), pos.y(), false);
+            // An overlapping Build sector (a balcony over a doorway) can contain
+            // the same point. Ignore a floor the actor cannot step up to.
+            if floor_z - pos.z() <= step_limit(actor) {
+                contacted.insert(si);
+                result.floor_z = floor_z;
+                result.ceiling_z = ceiling_z;
+                result.dropoff_z = result.floor_z;
+                saw_sector = true;
+            }
         }
     }
     for lid in lines_near(&world.map, xy, actor.radius) {
@@ -305,12 +334,6 @@ pub fn check_position(
         let back = line
             .back_sector
             .and_then(|sid| world.sectors.get(sid.raw() as usize).map(|_| sid));
-        if let Some(sid) = front {
-            contacted.insert(sid.raw() as usize);
-        }
-        if let Some(sid) = back {
-            contacted.insert(sid.raw() as usize);
-        }
         // Opening: only when the actor AABB actually reaches the seg.
         let Some(v1) = world.map.vertices.get(line.v1.raw() as usize) else {
             continue;
@@ -320,6 +343,12 @@ pub fn check_position(
         };
         let touches = dist_point_to_seg(xy, v1.pos, v2.pos) < actor.radius;
         if touches {
+            if let Some(sid) = front {
+                contacted.insert(sid.raw() as usize);
+            }
+            if let Some(sid) = back {
+                contacted.insert(sid.raw() as usize);
+            }
             match (front, back) {
                 (Some(f), Some(b)) => {
                     let fi = f.raw() as usize;
@@ -331,6 +360,37 @@ pub fn check_position(
                     let open_bottom = f_floor.max(b_floor);
                     let open_top = f_ceil.min(b_ceil);
                     let low_floor = f_floor.min(b_floor);
+                    let feet = pos.z();
+                    let head = feet + actor.height;
+                    // A step the actor cannot climb, on a line of some other
+                    // sector, is a balcony overlapping the floor they are on.
+                    let standing =
+                        room_nodebuild::point_in_sector(&world.map, actor.pos.x(), actor.pos.y())
+                            .or_else(|| {
+                                room_nodebuild::point_in_sector_vanilla(
+                                    &world.map,
+                                    actor.pos.x(),
+                                    actor.pos.y(),
+                                )
+                            })
+                            .map(|sid| sid.raw() as usize);
+                    let on_this = standing.is_some_and(|s| s == fi || s == bi);
+                    if !on_this && open_bottom - feet > step_limit(actor) {
+                        continue;
+                    }
+                    // A floor more than a body-height above the actor's head is
+                    // a balcony overlapping this room, not a door panel.
+                    if open_bottom - head > actor.height {
+                        continue;
+                    }
+                    // A floor above the actor's head is a wall (Build clipmove).
+                    // Merging it with another line's ceiling crushes a doorway
+                    // the body only overlaps.
+                    if head <= open_bottom + 1e-6 && open_bottom - feet > step_limit(actor) {
+                        result.ok = false;
+                        result.blocking_line = Some(lid);
+                        return result;
+                    }
                     if saw_sector {
                         result.floor_z = result.floor_z.max(open_bottom);
                         result.ceiling_z = result.ceiling_z.min(open_top);
@@ -346,7 +406,8 @@ pub fn check_position(
                     let fi = f.raw() as usize;
                     let floor_z = sector_z_at(world, fi, pos.x(), pos.y(), true);
                     let ceiling_z = sector_z_at(world, fi, pos.x(), pos.y(), false);
-                    if !saw_sector {
+                    // A balcony sector overlapping the floor the actor is on.
+                    if floor_z - pos.z() <= step_limit(actor) && !saw_sector {
                         result.floor_z = floor_z;
                         result.ceiling_z = ceiling_z;
                         result.dropoff_z = floor_z;
@@ -360,6 +421,22 @@ pub fn check_position(
             continue;
         }
         if touches {
+            // A one-sided wall only stops movement on its sector side. Build
+            // maps put the empty side over another sector (a ledge beside a
+            // doorway); the disc may overlap that wall until the centre crosses.
+            // A balcony whose floor is above the actor is the same kind of
+            // overlap: its wall is not a barrier on the floor they are walking.
+            if line.back_sector.is_none() && on_back_side(xy, v1.pos, v2.pos) {
+                continue;
+            }
+            if line.back_sector.is_none()
+                && line.front_sector.is_some_and(|sid| {
+                    sector_z_at(world, sid.raw() as usize, pos.x(), pos.y(), true) - pos.z()
+                        > step_limit(actor)
+                })
+            {
+                continue;
+            }
             result.ok = false;
             result.blocking_line = Some(lid);
             return result;
@@ -449,7 +526,7 @@ fn apply_midtex3d(world: &World, actor: &Actor, pos: DVec3, xy: DVec2, result: &
             result.floor_z = result.floor_z.max(mid_top);
         } else if head <= mid_bot + 1e-6 {
             result.ceiling_z = result.ceiling_z.min(mid_bot);
-        } else if mid_top - feet <= DEFAULT_STEP {
+        } else if mid_top - feet <= step_limit(actor) {
             result.floor_z = result.floor_z.max(mid_top);
         } else if head > mid_bot && feet < mid_top {
             // `midtex3dimpassible`: block like a short wall; missiles pass through.
@@ -535,7 +612,7 @@ fn apply_solid_ffloors(
             result.floor_z = result.floor_z.max(top);
         } else if head <= bot + 1e-6 {
             result.ceiling_z = result.ceiling_z.min(bot);
-        } else if top - feet <= DEFAULT_STEP {
+        } else if top - feet <= step_limit(actor) {
             result.floor_z = result.floor_z.max(top);
         } else {
             result.ceiling_z = result.ceiling_z.min(bot);
@@ -549,20 +626,26 @@ fn apply_solid_ffloors(
     }
 }
 
+/// Sector index containing `(x, y)` (nodes, then the vanilla fallback).
+#[must_use]
+pub fn sector_at_xy(world: &World, x: f64, y: f64) -> Option<usize> {
+    room_nodebuild::point_in_sector(&world.map, x, y)
+        .or_else(|| room_nodebuild::point_in_sector_vanilla(&world.map, x, y))
+        .map(|id| id.raw() as usize)
+}
+
 /// Floor Z under `(x, y)` for the sector containing the point (slopes + movers).
 #[must_use]
 pub fn floor_at_xy(world: &World, x: f64, y: f64) -> Option<f64> {
-    let sid = room_nodebuild::point_in_sector(&world.map, x, y)
-        .or_else(|| room_nodebuild::point_in_sector_vanilla(&world.map, x, y))?;
-    Some(sector_z_at(world, sid.raw() as usize, x, y, true))
+    let si = sector_at_xy(world, x, y)?;
+    Some(sector_z_at(world, si, x, y, true))
 }
 
 /// Ceiling Z above `(x, y)` for the sector containing the point.
 #[must_use]
 pub fn ceiling_at_xy(world: &World, x: f64, y: f64) -> Option<f64> {
-    let sid = room_nodebuild::point_in_sector(&world.map, x, y)
-        .or_else(|| room_nodebuild::point_in_sector_vanilla(&world.map, x, y))?;
-    Some(sector_z_at(world, sid.raw() as usize, x, y, false))
+    let si = sector_at_xy(world, x, y)?;
+    Some(sector_z_at(world, si, x, y, false))
 }
 
 /// Floor or ceiling Z at XY: sloped setup plane plus mover delta.
@@ -640,6 +723,24 @@ pub fn try_move_ex(world: &mut World, actor_id: ActorId, new_pos: DVec3) -> TryM
     if !actor_noclip(world, actor_id) {
         let check = check_position(world, &actor, new_pos, Some(actor_id));
         if !check.ok {
+            // A door the player is walking into never gets a cross event,
+            // because the move stops on the panel. Run it anyway.
+            if let Some(lid) = check.blocking_line {
+                let cross = world.line_activation(lid) & room_map::spac::CROSS != 0;
+                let player = world
+                    .players
+                    .iter()
+                    .flatten()
+                    .any(|p| p.mo == Some(actor_id));
+                if cross && player {
+                    let _ = crate::specials::activate_line(
+                        world,
+                        lid,
+                        Some(actor_id),
+                        crate::specials::ActivationType::Cross,
+                    );
+                }
+            }
             return TryMoveResult {
                 ok: false,
                 blocking_actor: check.blocking_actor,
@@ -827,6 +928,81 @@ fn slide_move_double(
 
 /// Doom gravity units per tic² (before level gravity scale).
 const GRAVITY: f64 = 1.0;
+
+/// Below this speed (units per tic) a bounce settles instead of rebounding.
+const BOUNCE_REST_SPEED: f64 = 1.0;
+
+fn bounce_factor(world: &World, actor: &Actor) -> f64 {
+    world
+        .classes
+        .get(actor.class)
+        .map_or(0.7, |c| c.bounce_factor)
+}
+
+fn play_bounce_sound(world: &mut World, actor: &Actor, wall: bool) {
+    let Some(class) = world.classes.get(actor.class) else {
+        return;
+    };
+    let sound = if wall && !class.wall_bounce_sound.is_empty() {
+        class.wall_bounce_sound.clone()
+    } else {
+        class.bounce_sound.clone()
+    };
+    if !sound.is_empty() {
+        world.play_sound(&sound, actor.pos.x(), actor.pos.y(), actor.pos.z(), 1.0);
+    }
+}
+
+/// `+BOUNCEONWALLS`: reflect the horizontal velocity off the line blocking a
+/// move to `dest`, scaled by `BounceFactor`. False when no line blocks it.
+fn bounce_off_wall(world: &mut World, actor_id: ActorId, dest: DVec3) -> bool {
+    let Some(actor) = world.actors.get(actor_id).cloned() else {
+        return false;
+    };
+    let check = check_position(world, &actor, dest, Some(actor_id));
+    let lid = check.blocking_line.or_else(|| {
+        let mid = DVec2::new(
+            (actor.pos.x() + dest.x()) * 0.5,
+            (actor.pos.y() + dest.y()) * 0.5,
+        );
+        lines_near(&world.map, mid, actor.radius + 8.0)
+            .into_iter()
+            .find(|&lid| {
+                world
+                    .map
+                    .lines
+                    .get(lid.raw() as usize)
+                    .is_some_and(|l| l.back_sector.is_none())
+            })
+    });
+    let Some(line) = lid.and_then(|lid| world.map.lines.get(lid.raw() as usize)) else {
+        return false;
+    };
+    let (Some(v1), Some(v2)) = (
+        world.map.vertices.get(line.v1.raw() as usize),
+        world.map.vertices.get(line.v2.raw() as usize),
+    ) else {
+        return false;
+    };
+    let (lx, ly) = (v2.pos.x() - v1.pos.x(), v2.pos.y() - v1.pos.y());
+    let len2 = lx * lx + ly * ly;
+    if len2 < 1e-12 {
+        return false;
+    }
+    let (vx, vy) = (actor.vel.x(), actor.vel.y());
+    let along = (vx * lx + vy * ly) / len2;
+    let (px, py) = (along * lx, along * ly);
+    let f = bounce_factor(world, &actor);
+    let (nx, ny) = ((2.0 * px - vx) * f, (2.0 * py - vy) * f);
+    if let Some(a) = world.actors.get_mut(actor_id) {
+        a.vel = DVec3::new(nx, ny, a.vel.z());
+        a.angle = room_core::math::Angle::from_degrees(
+            room_core::dmath::atan2(ny, nx) * (180.0 / core::f64::consts::PI),
+        );
+    }
+    play_bounce_sound(world, &actor, true);
+    true
+}
 
 /// Sector light for an actor, honouring 3D-floor control lights below/inside slabs.
 #[must_use]
@@ -1060,26 +1236,35 @@ pub fn z_movement(world: &mut World, actor_id: ActorId) {
             .unwrap_or(1.0);
         vel_z -= GRAVITY * world.level.gravity * sector_g * actor_g * water_gravity_scale(water);
     }
-    // Swim thrust from player `up_move` when waist-deep or deeper.
+    let player_slot = world
+        .players
+        .iter()
+        .flatten()
+        .find(|p| p.mo == Some(actor_id));
+    // Swim thrust from player `up_move` (or jump, GZDoom `CheckJump`) when
+    // waist-deep or deeper.
     if water >= 2 {
-        if let Some(slot) = world
-            .players
-            .iter()
-            .flatten()
-            .find(|p| p.mo == Some(actor_id))
-        {
-            if slot.cmd.up_move != 0 {
+        if let Some(slot) = player_slot {
+            let up = if slot.cmd.up_move == 0 && slot.cmd.buttons.any(crate::player::Buttons::JUMP)
+            {
+                1
+            } else {
+                slot.cmd.up_move
+            };
+            if up != 0 {
                 let speed = if actor.float_speed > 0.0 {
                     actor.float_speed
                 } else {
                     4.0
                 };
-                let dir = if slot.cmd.up_move > 0 { 1.0 } else { -1.0 };
+                let dir = if up > 0 { 1.0 } else { -1.0 };
                 vel_z += dir * speed;
             }
         }
         // Mild vertical drag in water.
         vel_z *= 0.9;
+    } else if no_gravity && actor.pos.z() > floor_z && player_slot.is_some_and(|p| p.fly_tics > 0) {
+        vel_z *= crate::player::FRICTION_FLY;
     }
     let mut z = actor.pos.z() + vel_z;
     if try_sector_plane_portal(world, actor_id, &actor, z, vel_z, floor_z, ceiling_z) {
@@ -1090,6 +1275,28 @@ pub fn z_movement(world: &mut World, actor_id: ActorId) {
     let mut hit_ceiling = false;
     let impact_vel_z = vel_z;
     let is_missile = (actor.flags & FLAG_MISSILE) != 0;
+    if (actor.flags & crate::class::FLAG_BOUNCEONFLOORS) != 0 {
+        let hit_floor = z <= floor_z && vel_z < 0.0;
+        let hit_ceiling = z + actor.height > ceiling_z && vel_z > 0.0;
+        if hit_floor || hit_ceiling {
+            let rebound = -vel_z * bounce_factor(world, &actor);
+            let loud = rebound.abs() >= BOUNCE_REST_SPEED;
+            let vel_z = if loud { rebound } else { 0.0 };
+            let z = if hit_floor {
+                floor_z
+            } else {
+                ceiling_z - actor.height
+            };
+            if let Some(a) = world.actors.get_mut(actor_id) {
+                a.pos = DVec3::new(a.pos.x(), a.pos.y(), z);
+                a.vel = DVec3::new(a.vel.x(), a.vel.y(), vel_z);
+            }
+            if loud {
+                play_bounce_sound(world, &actor, false);
+            }
+            return;
+        }
+    }
     if z <= floor_z {
         // Doom `P_ZMovement`: hard land (`*oof*`) when momz < -8.
         if actor.pos.z() > floor_z + 0.1 && vel_z < -8.0 {
@@ -1140,6 +1347,14 @@ pub fn z_movement(world: &mut World, actor_id: ActorId) {
     }
 }
 
+/// Falling faster than this (map units per tic) dives through a water link
+/// without swimming down (Duke: `vel.z > 8`).
+const WATER_DIVE_SPEED: f64 = 8.0;
+
+/// A Build fall link moves a player whose eye is this close to the source
+/// effector height, and leaves it this far past the destination one.
+const FALL_LINK_BAND: f64 = 24.0;
+
 fn try_sector_plane_portal(
     world: &mut World,
     actor_id: ActorId,
@@ -1161,19 +1376,74 @@ fn try_sector_plane_portal(
         if p.sector != sid || !p.is_traversable() || p.target == p.sector {
             continue;
         }
-        let through_floor = p.plane == 0 && vel_z < 0.0 && z <= floor_z;
-        let through_ceil = p.plane == 1 && vel_z > 0.0 && z + actor.height >= ceiling_z;
+        if p.kind == room_map::PORTAL_KIND_FALL {
+            let Some(view) = world
+                .players
+                .iter()
+                .flatten()
+                .find(|s| s.mo == Some(actor_id))
+                .map(|s| s.view_height)
+            else {
+                continue;
+            };
+            let [src, dst] = p.heights.map(f64::from);
+            let (before, after) = (actor.pos.z() + view - src, z + view - src);
+            // Fast falls may step over the band in one tic.
+            if after.abs() >= FALL_LINK_BAND && before.signum() == after.signum() {
+                continue;
+            }
+            let eye = if vel_z > 0.0 {
+                dst + FALL_LINK_BAND
+            } else {
+                dst - FALL_LINK_BAND
+            };
+            if let Some(a) = world.actors.get_mut(actor_id) {
+                a.pos = DVec3::new(
+                    actor.pos.x() + f64::from(p.offset[0]),
+                    actor.pos.y() + f64::from(p.offset[1]),
+                    eye - view,
+                );
+                a.vel = DVec3::new(a.vel.x(), a.vel.y(), vel_z);
+            }
+            return true;
+        }
+        let water = p.kind == room_map::PORTAL_KIND_WATER;
+        let (through_floor, through_ceil) = if water {
+            let Some(up) = world
+                .players
+                .iter()
+                .flatten()
+                .find(|s| s.mo == Some(actor_id))
+                .map(|s| s.cmd.up_move)
+            else {
+                continue;
+            };
+            (
+                p.plane == 0 && z <= floor_z && (up < 0 || vel_z < -WATER_DIVE_SPEED),
+                p.plane == 1 && z + actor.height >= ceiling_z && (up > 0 || vel_z > 0.0),
+            )
+        } else {
+            (
+                p.plane == 0 && vel_z < 0.0 && z <= floor_z,
+                p.plane == 1 && vel_z > 0.0 && z + actor.height >= ceiling_z,
+            )
+        };
         if !through_floor && !through_ceil {
             continue;
         }
-        let Some(src_c) = sector_xy_center(&world.map, p.sector.raw() as usize) else {
-            continue;
+        let (dx, dy) = if water {
+            (f64::from(p.offset[0]), f64::from(p.offset[1]))
+        } else {
+            let Some(src_c) = sector_xy_center(&world.map, p.sector.raw() as usize) else {
+                continue;
+            };
+            let Some(dst_c) = sector_xy_center(&world.map, p.target.raw() as usize) else {
+                continue;
+            };
+            (dst_c.x() - src_c.x(), dst_c.y() - src_c.y())
         };
-        let Some(dst_c) = sector_xy_center(&world.map, p.target.raw() as usize) else {
-            continue;
-        };
-        let nx = actor.pos.x() + (dst_c.x() - src_c.x());
-        let ny = actor.pos.y() + (dst_c.y() - src_c.y());
+        let nx = actor.pos.x() + dx;
+        let ny = actor.pos.y() + dy;
         let dest_floor = sector_z_at(world, p.target.raw() as usize, nx, ny, true);
         let dest_ceil = sector_z_at(world, p.target.raw() as usize, nx, ny, false);
         let nz = if through_floor {
@@ -1245,6 +1515,12 @@ pub fn xy_movement(world: &mut World, actor_id: ActorId) {
             x = nx;
             y = ny;
         } else {
+            if (actor.flags & crate::class::FLAG_BOUNCEONWALLS) != 0
+                && mv.blocking_actor.is_none()
+                && bounce_off_wall(world, actor_id, DVec3::new(nx, ny, z))
+            {
+                break;
+            }
             if is_missile {
                 if let Some(victim) = mv.blocking_actor {
                     apply_missile_damage(world, actor_id, victim);
@@ -1757,6 +2033,51 @@ actor PackShot : Actor 9921
             "missile must leave Spawn loop after floor impact"
         );
         let _ = states;
+    }
+
+    #[test]
+    fn bouncers_reflect_off_floors_and_walls() {
+        use crate::{ClassRegistry, StateTable};
+        use room_decorate::parse_decorate;
+        use std::sync::Arc;
+
+        let file = parse_decorate(
+            "actor Bomb 9990\n{\n  Radius 4\n  Height 4\n  BounceFactor 0.5\n  \
+             +BOUNCEONFLOORS\n  +BOUNCEONWALLS\n  States\n  {\n  Spawn:\n    BOMB A -1\n    Stop\n  }\n}\n",
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(128.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let bomb = classes.find_name("Bomb").unwrap();
+        let id = w
+            .spawn_at(bomb, DVec3::new(128.0, 128.0, 4.0), room_core::Angle::ZERO)
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(id) {
+            a.vel = DVec3::new(0.0, 0.0, -9.0);
+        }
+        z_movement(&mut w, id);
+        let a = w.actors.get(id).unwrap();
+        assert_eq!(a.pos.z(), 0.0);
+        assert_eq!(a.vel.z(), 5.0, "(9 + 1 gravity) * 0.5 back up");
+
+        let id = w
+            .spawn_at(bomb, DVec3::new(10.0, 128.0, 0.0), room_core::Angle::ZERO)
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(id) {
+            a.vel = DVec3::new(-12.0, 4.0, 0.0);
+        }
+        xy_movement(&mut w, id);
+        let a = w.actors.get(id).unwrap();
+        assert!(a.vel.x() > 0.0, "reflected off the west wall: {:?}", a.vel);
+        assert!(a.vel.y() > 0.0);
     }
 
     #[test]
@@ -2609,6 +2930,37 @@ actor Walker : Actor 9311
             pos.z() > 32.0,
             "should appear near dest ceiling, z={}",
             pos.z()
+        );
+    }
+
+    #[test]
+    fn water_link_dives_players_only_when_swimming_down() {
+        let mut map = MapBuilder::new()
+            .room("above", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .room("under", rect(256.0, 0.0, 512.0, 256.0), -256.0, -64.0)
+            .sector_tag("under", 5)
+            .sector_portal_between("above", "under", 5, 200, 0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        for p in &mut map.setup.portals.sectors {
+            p.offset = [300, 10];
+        }
+        let mut w = World::from_map(map).unwrap();
+        let id = w.players[0].as_ref().unwrap().mo.unwrap();
+        z_movement(&mut w, id);
+        assert!(w.actors.get(id).unwrap().pos.x() < 256.0, "standing stays");
+        w.players[0].as_mut().unwrap().cmd.up_move = -10;
+        z_movement(&mut w, id);
+        let pos = w.actors.get(id).unwrap().pos;
+        assert!(
+            (pos.x() - 364.0).abs() < 1e-6 && (pos.y() - 74.0).abs() < 1e-6,
+            "{pos:?}"
+        );
+        assert!(
+            pos.z() < -64.0 && pos.z() > -128.0,
+            "below the ceiling: {pos:?}"
         );
     }
 

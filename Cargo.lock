@@ -4523,6 +4523,7 @@ dependencies = [
  "glam",
  "pollster",
  "room-audio",
+ "room-build",
  "room-console",
  "room-decorate",
  "room-defs",
@@ -4546,6 +4547,17 @@ name = "room-audio"
 version = "0.1.0"
 dependencies = [
  "room-core",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "room-build"
+version = "0.1.0"
+dependencies = [
+ "room-formats",
+ "room-map",
+ "room-nodebuild",
+ "room-vfs",
  "thiserror 2.0.21",
 ]
 
@@ -4630,6 +4642,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "room-audio",
+ "room-build",
  "room-core",
  "room-decorate",
  "room-defs",
@@ -4725,6 +4738,7 @@ dependencies = [
  "naga",
  "png 0.17.16",
  "pollster",
+ "room-build",
  "room-core",
  "room-decorate",
  "room-defs",
@@ -4801,6 +4815,7 @@ dependencies = [
  "hmac",
  "p256",
  "password-hash",
+ "room-build",
  "room-decorate",
  "room-game",
  "room-map",
@@ -4911,6 +4926,7 @@ dependencies = [
  "js-sys",
  "libm",
  "room-audio",
+ "room-build",
  "room-defs",
  "room-formats",
  "room-game",

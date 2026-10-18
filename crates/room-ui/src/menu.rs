@@ -65,6 +65,8 @@ impl ListMenu {
             title: "PAUSE".into(),
             items: vec![
                 MenuItem::text("RESUME", "menu_resume"),
+                MenuItem::text("SAVE GAME", "menu_savegame"),
+                MenuItem::text("LOAD GAME", "menu_loadgame"),
                 MenuItem::text("OPTIONS", "openmenu OptionsMenu"),
                 MenuItem::text("END GAME", "menu_endgame"),
                 MenuItem::text("QUIT", "menu_quit"),
@@ -146,6 +148,44 @@ impl ListMenu {
             ],
             selected: 2,
             origin: Vec2::new(48.0, 64.0),
+            dim_background: true,
+            line_spacing: 16.0,
+            show_title: true,
+        }
+    }
+
+    /// Skill picker with MAPINFO names (`skill 1`… in order, at most five).
+    #[must_use]
+    pub fn named_skill(names: &[String]) -> Self {
+        let mut m = Self::doom_skill();
+        if names.is_empty() {
+            return m;
+        }
+        m.items = names
+            .iter()
+            .take(5)
+            .enumerate()
+            .map(|(i, n)| MenuItem::text(n.as_str(), format!("skill {}", i + 1)))
+            .collect();
+        m.selected = m.selected.min(m.items.len() - 1);
+        m
+    }
+
+    /// Episode picker using MAPINFO names (`episode 1`… in order).
+    #[must_use]
+    pub fn named_episode(names: &[String]) -> Self {
+        if names.is_empty() {
+            return Self::doom_episode();
+        }
+        Self {
+            title: "Select Episode".into(),
+            items: names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| MenuItem::text(n.as_str(), format!("episode {}", i + 1)))
+                .collect(),
+            selected: 0,
+            origin: Vec2::new(48.0, 56.0),
             dim_background: true,
             line_spacing: 16.0,
             show_title: true,
@@ -400,6 +440,14 @@ pub struct MenuStack {
     pub stack: Vec<ListMenu>,
     /// Optional MENUDEF for resolving `openmenu` targets.
     pub menudef: Option<room_defs::MenuDef>,
+    /// MAPINFO skill names for the new-game skill page (empty: Doom's).
+    pub skill_names: Vec<String>,
+    /// MAPINFO episode titles (empty: Doom's Knee-Deep / …).
+    pub episode_names: Vec<String>,
+    /// Start map for each episode (parallel to [`Self::episode_names`]).
+    pub episode_maps: Vec<String>,
+    /// Last chosen episode (1-based).
+    pub episode: u8,
 }
 
 impl MenuStack {
@@ -408,8 +456,36 @@ impl MenuStack {
     pub fn doom_main() -> Self {
         Self {
             stack: vec![ListMenu::doom_main()],
-            menudef: None,
+            ..Self::default()
         }
+    }
+
+    /// Use the MAPINFO `skill` names (unnamed skills keep their id).
+    #[must_use]
+    pub fn with_skills(mut self, skills: &[room_defs::SkillDef]) -> Self {
+        self.skill_names = skills
+            .iter()
+            .map(|s| s.name.clone().unwrap_or_else(|| s.id.clone()))
+            .collect();
+        self
+    }
+
+    /// Use the MAPINFO episode names and start maps.
+    #[must_use]
+    pub fn with_episodes(mut self, episodes: &[room_defs::EpisodeDef]) -> Self {
+        self.episode_names = episodes
+            .iter()
+            .map(|e| e.name.clone().unwrap_or_else(|| e.start_map.clone()))
+            .collect();
+        self.episode_maps = episodes.iter().map(|e| e.start_map.clone()).collect();
+        self
+    }
+
+    /// Start map for the last chosen episode.
+    #[must_use]
+    pub fn start_map(&self) -> Option<&str> {
+        let i = usize::from(self.episode.saturating_sub(1));
+        self.episode_maps.get(i).map(String::as_str)
     }
 
     /// Prefer MENUDEF `MainMenu` when available; else built-in Doom main.
@@ -426,6 +502,7 @@ impl MenuStack {
                 return Self {
                     stack: vec![m],
                     menudef: Some(defs.clone()),
+                    ..Self::default()
                 };
             }
         }
@@ -437,7 +514,7 @@ impl MenuStack {
     pub fn pause() -> Self {
         Self {
             stack: vec![ListMenu::pause()],
-            menudef: None,
+            ..Self::default()
         }
     }
 
@@ -483,11 +560,24 @@ impl MenuStack {
         let cmd = parse_menu_action(&action);
         match &cmd {
             MenuCommand::OpenMenu(name) if name.eq_ignore_ascii_case("SkillMenu") => {
-                self.stack.push(ListMenu::doom_skill());
+                self.stack.push(ListMenu::named_skill(&self.skill_names));
                 (None, Some(MenuSfx::Activate))
             }
             MenuCommand::OpenMenu(name) if name.eq_ignore_ascii_case("EpisodeMenu") => {
-                self.stack.push(ListMenu::doom_episode());
+                if let Some(defs) = self.menudef.as_ref() {
+                    if let Some(mut m) = crate::menudef_runtime::list_menu_from_def(
+                        defs,
+                        name,
+                        crate::menudef_runtime::MenuBuildOpts::default(),
+                    ) {
+                        m.dim_background = true;
+                        m.show_title = !m.title.is_empty();
+                        self.stack.push(m);
+                        return (None, Some(MenuSfx::Activate));
+                    }
+                }
+                self.stack
+                    .push(ListMenu::named_episode(&self.episode_names));
                 (None, Some(MenuSfx::Activate))
             }
             MenuCommand::Quit => {
@@ -517,6 +607,8 @@ impl MenuStack {
                     self.stack.push(ListMenu {
                         title: "Options".into(),
                         items: vec![
+                            MenuItem::text("AUTO AIM", "option autoaim"),
+                            MenuItem::text("MOUSE AIMING", "option mouse_look"),
                             MenuItem::text("INVERT MOUSE", "option invertmouse"),
                             MenuItem::text("ALWAYS RUN", "option cl_run"),
                             MenuItem::text("SHOW FPS", "option vid_fps"),
@@ -535,8 +627,9 @@ impl MenuStack {
                 }
                 (Some(cmd), Some(MenuSfx::Activate))
             }
-            MenuCommand::SelectEpisode(_) => {
-                self.stack.push(ListMenu::doom_skill());
+            MenuCommand::SelectEpisode(n) => {
+                self.episode = *n;
+                self.stack.push(ListMenu::named_skill(&self.skill_names));
                 (Some(cmd), Some(MenuSfx::Activate))
             }
             MenuCommand::Other(a) if a == "menu_back" => {
@@ -681,6 +774,31 @@ mod tests {
     }
 
     #[test]
+    fn mapinfo_skill_names_replace_doom_skills() {
+        let skills = [
+            room_defs::SkillDef {
+                id: "easy".into(),
+                name: Some("Piece Of Cake".into()),
+            },
+            room_defs::SkillDef {
+                id: "normal".into(),
+                name: None,
+            },
+        ];
+        let mut stack = MenuStack::doom_main().with_skills(&skills);
+        let _ = stack.activate();
+        let top = stack.top().unwrap();
+        let rows: Vec<_> = top
+            .items
+            .iter()
+            .map(|i| (i.label.as_str(), i.action.as_str()))
+            .collect();
+        assert_eq!(rows, [("Piece Of Cake", "skill 1"), ("normal", "skill 2")]);
+        let plain = MenuStack::doom_main();
+        assert!(plain.skill_names.is_empty());
+    }
+
+    #[test]
     fn hit_test_selects_row() {
         let m = ListMenu::doom_skill();
         let o = m.list_origin();
@@ -700,5 +818,30 @@ mod tests {
             parse_menu_action("menu_quit_yes"),
             MenuCommand::QuitConfirmed
         );
+    }
+
+    #[test]
+    fn episode_select_remembers_the_start_map() {
+        let episodes = [
+            room_defs::EpisodeDef {
+                start_map: "E1M1".into(),
+                name: Some("L.A. Meltdown".into()),
+            },
+            room_defs::EpisodeDef {
+                start_map: "E2M1".into(),
+                name: Some("Lunar Apocalypse".into()),
+            },
+        ];
+        let mut stack = MenuStack::doom_main().with_episodes(&episodes);
+        stack
+            .stack
+            .push(ListMenu::named_episode(&stack.episode_names.clone()));
+        if let Some(top) = stack.stack.last_mut() {
+            top.selected = 1;
+        }
+        let (cmd, _) = stack.activate();
+        assert_eq!(cmd, Some(MenuCommand::SelectEpisode(2)));
+        assert_eq!(stack.episode, 2);
+        assert_eq!(stack.start_map(), Some("E2M1"));
     }
 }

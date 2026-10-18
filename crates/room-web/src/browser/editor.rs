@@ -136,7 +136,10 @@ const MAP_LUMPS: &[&str] = &[
 ];
 
 struct Editor {
+    /// Base WAD as mounted: the IWAD, or the PWAD converted from a Duke GRP.
     iwad: (String, Bytes),
+    /// Duke Nukem 3D: the GRP and the user `.MAP` files converted with it.
+    duke: Option<DukeSource>,
     pwads: Vec<(String, Bytes)>,
     /// Edited lumps: namespace (`global` / `flats` / `sprites` / `patches`) → name → bytes.
     overrides: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
@@ -157,6 +160,8 @@ struct Editor {
 }
 
 type MapBlobs = (Option<Vec<u8>>, Vec<(String, Vec<u8>)>);
+/// GRP name, GRP bytes, user `.MAP` files.
+type DukeSource = (String, Bytes, Vec<(String, Vec<u8>)>);
 
 impl Editor {
     fn attach_blobs(&self, doc: &mut RawMap) {
@@ -240,14 +245,36 @@ fn catalog(vfs: &Vfs) -> MaterialCatalog {
     m
 }
 
+/// Duke GRP + user maps → the converted base PWAD.
+fn duke_base(
+    name: &str,
+    grp: &[u8],
+    maps: &[(String, Vec<u8>)],
+) -> Result<(String, Bytes), String> {
+    let out = room_build::convert_grp_with_maps(grp, maps).map_err(|e| format!("{name}: {e}"))?;
+    for w in &out.warnings {
+        web_sys::console::warn_1(&format!("{name}: {w}").into());
+    }
+    Ok((format!("{name}.wad"), Bytes::from(out.wad)))
+}
+
 impl Editor {
     fn new(iwad: (String, Bytes)) -> Result<Self, String> {
+        let (iwad, duke) = if room_build::is_grp(&iwad.1) {
+            (
+                duke_base(&iwad.0, &iwad.1, &[])?,
+                Some((iwad.0, iwad.1, Vec::new())),
+            )
+        } else {
+            (iwad, None)
+        };
         let overrides = BTreeMap::new();
         let vfs = mount(&iwad, &[], &overrides)?;
         let materials = catalog(&vfs);
         let data = load_layered_engine_data(&vfs).map_err(|e| e.to_string())?;
         Ok(Self {
             iwad,
+            duke,
             pwads: Vec::new(),
             overrides,
             vfs,
@@ -468,8 +495,16 @@ impl Editor {
             .iter()
             .flat_map(|(ns, m)| m.keys().map(move |n| json!({"ns": ns, "name": n})))
             .collect();
+        let duke = self.duke.as_ref().map(|(grp, _, user)| {
+            let user: Vec<String> = user
+                .iter()
+                .filter_map(|(f, _)| room_build::doom_map_name(f))
+                .collect();
+            json!({ "grp": grp, "userMaps": user })
+        });
         json!({
             "iwad": self.iwad.0,
+            "duke": duke,
             "pwads": self.pwads.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
             "lumps": lumps,
             "maps": maps,
@@ -791,9 +826,28 @@ pub fn room_editor_open(iwad: &[u8], name: &str) -> Result<String, JsValue> {
 }
 
 /// Mount a PWAD / PK3 on top (load order = call order); returns the summary.
+/// With a Duke GRP open, a Build `.MAP` is converted with the GRP's content.
 #[wasm_bindgen(js_name = roomEditorAddPwad)]
 pub fn room_editor_add_pwad(data: &[u8], name: &str) -> Result<String, JsValue> {
     with_editor(|ed| {
+        if room_build::is_build_map(data) {
+            let Some((grp_name, grp, maps)) = ed.duke.as_mut() else {
+                return Err("a Build .MAP needs DUKE3D.GRP opened first".to_owned());
+            };
+            let file = name.to_ascii_uppercase();
+            maps.retain(|(n, _)| !n.eq_ignore_ascii_case(&file));
+            maps.push((file, data.to_vec()));
+            let base = duke_base(grp_name, grp, maps);
+            match base {
+                Ok(b) => ed.iwad = b,
+                Err(e) => {
+                    maps.pop();
+                    return Err(e);
+                }
+            }
+            ed.rebuild()?;
+            return Ok(ed.summary().to_string());
+        }
         ed.pwads
             .push((name.to_owned(), Bytes::copy_from_slice(data)));
         if let Err(e) = ed.rebuild() {

@@ -171,6 +171,11 @@ pub fn count_inventory(world: &World, owner: ActorId, class: ClassId) -> i32 {
     world.inventory.count(owner, class)
 }
 
+/// Take up to `amount`. Returns the amount actually removed.
+pub fn take_inventory(world: &mut World, owner: ActorId, class: ClassId, amount: i32) -> i32 {
+    world.inventory.take(owner, class, amount)
+}
+
 /// Set absolute inventory amount using class max.
 pub fn set_inventory(world: &mut World, owner: ActorId, class: ClassId, amount: i32) {
     let max = world
@@ -200,21 +205,28 @@ pub fn cheat_give(world: &mut World, owner: ActorId, what: &str) -> u32 {
         }
         "weapons" => {
             // GZDoom only gives weapons that sit in a slot.
-            let names: Vec<&str> = [
-                "Chainsaw",
-                "Shotgun",
-                "SuperShotgun",
-                "Chaingun",
-                "RocketLauncher",
-                "PlasmaRifle",
-                "BFG9000",
-            ]
-            .into_iter()
-            .filter(|n| world.weapon_slots.contains(n))
-            .collect();
+            let names = unowned_slot_weapons(world, owner);
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
             give_named(world, owner, &names, 1)
         }
-        "ammo" => give_named(world, owner, &["Clip", "Shell", "RocketAmmo", "Cell"], 200),
+        "ammo" => {
+            let mut names: Vec<String> = ["Clip", "Shell", "RocketAmmo", "Cell"]
+                .map(str::to_owned)
+                .to_vec();
+            for w in slot_weapons(world) {
+                let ammo = world
+                    .classes
+                    .find_name(&w)
+                    .and_then(|c| world.classes.get(c))
+                    .map(|c| c.ammo_type.clone())
+                    .unwrap_or_default();
+                if !ammo.is_empty() && !names.iter().any(|n| n.eq_ignore_ascii_case(&ammo)) {
+                    names.push(ammo);
+                }
+            }
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            give_named(world, owner, &names, 200)
+        }
         "keys" => give_named(
             world,
             owner,
@@ -334,6 +346,31 @@ fn cheat_behold(world: &mut World, owner: ActorId, letter: char) -> bool {
         }
     }
     true
+}
+
+/// Every weapon in slots 1..=9 then 0, in slot order, once each.
+fn slot_weapons(world: &World) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for slot in (1u8..=9).chain([0]) {
+        for w in world.weapon_slots.weapons_for(slot) {
+            if !out.iter().any(|o| o.eq_ignore_ascii_case(&w)) {
+                out.push(w);
+            }
+        }
+    }
+    out
+}
+
+fn unowned_slot_weapons(world: &World, owner: ActorId) -> Vec<String> {
+    slot_weapons(world)
+        .into_iter()
+        .filter(|w| {
+            world
+                .classes
+                .find_name(w)
+                .is_some_and(|c| world.inventory.count(owner, c) == 0)
+        })
+        .collect()
 }
 
 fn give_named(world: &mut World, owner: ActorId, names: &[&str], amount: i32) -> u32 {

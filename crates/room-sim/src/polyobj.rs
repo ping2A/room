@@ -2,16 +2,20 @@
 //!
 //! Bootstrap: spawn from load-time [`room_map::setup::PolyobjStatic`], then
 //! `Polyobj_Move` / `Rotate*` / `DoorSwing` / `DoorSlide` / `Stop`, with mirror
-//! sync and solid collide.
+//! sync and solid collide. Poly lines are relinked into the blockmap whenever
+//! the poly moves so collision, use and hitscan see their current position.
 
 use crate::class::{FLAG_SHOOTABLE, FLAG_SOLID};
 use crate::world::World;
-use room_core::{DVec2, LineId, VertexId};
+use room_core::{DVec2, LineId, VertexId, dmath};
 use room_map::setup::PolyobjStatic;
 use std::sync::Arc;
 
 /// Hexen/Doom crush amount when a crushing poly pins an actor.
 const POLY_CRUSH_DAMAGE: i32 = 10;
+
+/// Radians per Hexen byte angle.
+const RAD_PER_BYTE: f64 = std::f64::consts::TAU / 256.0;
 
 /// Active polyobject instance.
 #[derive(Clone, Debug)]
@@ -20,6 +24,8 @@ pub struct PolyobjDynamic {
     pub id: i32,
     /// Vertices owned by this poly (indices into `World::map.vertices`).
     pub vertices: Vec<VertexId>,
+    /// Vertex offsets from `center` at angle 0 (GZDoom `OriginalPts`).
+    pub offsets: Vec<DVec2>,
     /// Linedefs belonging to the poly.
     pub lines: Vec<LineId>,
     /// Mirror poly id (`0` = none).
@@ -34,10 +40,21 @@ pub struct PolyobjDynamic {
     pub angle: f64,
     /// Active translation / rotation / wait, if any.
     pub motion: Option<PolyMotion>,
-    /// Door open→close: delay tics after the open leg finishes.
-    pub door_delay: i32,
-    /// Door open→close: closing motion after `door_delay`.
-    pub door_return: Option<PolyMotionResume>,
+    /// Door state while a `DoorSwing` / `DoorSlide` runs.
+    pub door: Option<PolyDoor>,
+    /// A door that opened for good (negative delay) never moves again.
+    pub blocked: bool,
+}
+
+/// `Polyobj_DoorSwing` / `DoorSlide` bookkeeping (GZDoom `DPolyDoor`).
+#[derive(Clone, Copy, Debug)]
+pub struct PolyDoor {
+    /// Full opening leg; closing runs it reversed.
+    pub open: PolyMotionResume,
+    /// Tics to stay open; negative stays open for good.
+    pub delay: i32,
+    /// Running (or waiting for) the closing leg.
+    pub closing: bool,
 }
 
 /// One poly move / rotate / door-wait job.
@@ -52,7 +69,7 @@ pub enum PolyMotion {
         /// Distance left.
         remaining: f64,
     },
-    /// Rotate by `omega` rad/tic until `|remaining|` hits 0.
+    /// Rotate by `omega` rad/tic until `|remaining|` hits 0 (infinite = perpetual).
     Rotate {
         /// Signed radians per tic.
         omega: f64,
@@ -104,6 +121,25 @@ impl PolyMotionResume {
             Self::Rotate { omega, remaining } => PolyMotion::Rotate { omega, remaining },
         }
     }
+
+    /// Same leg run backwards.
+    fn reversed(self) -> Self {
+        match self {
+            Self::Move {
+                dir,
+                speed,
+                remaining,
+            } => Self::Move {
+                dir: DVec2::new(-dir.x(), -dir.y()),
+                speed,
+                remaining,
+            },
+            Self::Rotate { omega, remaining } => Self::Rotate {
+                omega: -omega,
+                remaining: -remaining,
+            },
+        }
+    }
 }
 
 /// DoomEdNums for poly anchor / spawn (ZDoom; Hexen 3000–3002 also accepted).
@@ -136,29 +172,41 @@ pub fn init_polyobjs(world: &mut World) {
     for s in statics {
         let spawn = spawns.iter().find(|(id, _)| *id == s.id).map(|(_, p)| *p);
         let anchor = anchors.iter().find(|(id, _)| *id == s.id).map(|(_, p)| *p);
-        // GZDoom `TranslateToStartSpot`: verts -= (anchor - spawn) ≡ verts += (spawn - anchor).
-        if let (Some(spawn), Some(anchor)) = (spawn, anchor) {
-            let dx = spawn.x() - anchor.x();
-            let dy = spawn.y() - anchor.y();
-            if dx != 0.0 || dy != 0.0 {
-                let verts = s.vertices.clone();
-                let lines = s.lines.clone();
-                {
-                    let map = Arc::make_mut(&mut world.map);
-                    for &vid in &verts {
-                        if let Some(v) = map.vertices.get_mut(vid.raw() as usize) {
-                            v.pos = DVec2::new(v.pos.x() + dx, v.pos.y() + dy);
-                        }
+        {
+            let map = Arc::make_mut(&mut world.map);
+            unlink_lines(map, &s.lines);
+            // GZDoom `TranslateToStartSpot`: verts -= (anchor - spawn) ≡ verts += (spawn - anchor).
+            if let (Some(spawn), Some(anchor)) = (spawn, anchor) {
+                let dx = spawn.x() - anchor.x();
+                let dy = spawn.y() - anchor.y();
+                for &vid in &s.vertices {
+                    if let Some(v) = map.vertices.get_mut(vid.raw() as usize) {
+                        v.pos = DVec2::new(v.pos.x() + dx, v.pos.y() + dy);
                     }
-                    refresh_line_geom(map, &lines);
                 }
             }
+            refresh_line_geom(map, &s.lines);
+            link_lines(map, &s.lines);
         }
         let start_spot = spawn.unwrap_or_else(|| poly_center(world, &s.vertices));
         let center = start_spot;
+        let offsets = s
+            .vertices
+            .iter()
+            .map(|vid| {
+                world
+                    .map
+                    .vertices
+                    .get(vid.raw() as usize)
+                    .map_or(DVec2::ZERO, |v| {
+                        DVec2::new(v.pos.x() - center.x(), v.pos.y() - center.y())
+                    })
+            })
+            .collect();
         world.polyobjs.push(PolyobjDynamic {
             id: s.id,
             vertices: s.vertices,
+            offsets,
             lines: s.lines,
             mirror: s.mirror,
             crush: s.crush,
@@ -166,8 +214,8 @@ pub fn init_polyobjs(world: &mut World) {
             start_spot,
             angle: 0.0,
             motion: None,
-            door_delay: 0,
-            door_return: None,
+            door: None,
+            blocked: false,
         });
     }
 }
@@ -197,32 +245,39 @@ fn find_poly_mut(world: &mut World, id: i32) -> Option<&mut PolyobjDynamic> {
     world.polyobjs.iter_mut().find(|p| p.id == id)
 }
 
+fn mirror_of(world: &World, id: i32) -> i32 {
+    world
+        .polyobjs
+        .iter()
+        .find(|p| p.id == id)
+        .map_or(0, |p| p.mirror)
+}
+
 /// Hexen byte angle (0–255) → unit vector (east = 0).
 fn byte_angle_dir(byte: i32) -> DVec2 {
-    let a = (byte.rem_euclid(256) as f64) * (std::f64::consts::TAU / 256.0);
-    DVec2::new(a.cos(), a.sin())
+    let a = f64::from(byte.rem_euclid(256)) * RAD_PER_BYTE;
+    DVec2::new(dmath::cos(a), dmath::sin(a))
 }
 
 /// Start `motion` on `id` and the mirrored opposite on `mirror` (if any).
 /// When `override_busy` is false (plain Move/Rotate), refuse if already moving.
 fn start_motion(world: &mut World, id: i32, motion: PolyMotion, override_busy: bool) -> i32 {
-    let mirror = world
-        .polyobjs
-        .iter()
-        .find(|p| p.id == id)
-        .map(|p| p.mirror)
-        .unwrap_or(0);
+    let mirror = mirror_of(world, id);
     let Some(po) = find_poly_mut(world, id) else {
         return 0;
     };
-    if !override_busy && po.motion.is_some() {
+    if !override_busy && (po.motion.is_some() || po.blocked) {
         return 0;
     }
     po.motion = Some(motion);
+    po.door = None;
+    po.blocked = false;
     if mirror != 0 && mirror != id {
         if let Some(m) = find_poly_mut(world, mirror) {
-            if override_busy || m.motion.is_none() {
+            if override_busy || (m.motion.is_none() && !m.blocked) {
                 m.motion = Some(mirror_motion(motion));
+                m.door = None;
+                m.blocked = false;
             }
         }
     }
@@ -247,21 +302,7 @@ fn mirror_motion(m: PolyMotion) -> PolyMotion {
         },
         PolyMotion::Wait { tics, then } => PolyMotion::Wait {
             tics,
-            then: match then {
-                PolyMotionResume::Move {
-                    dir,
-                    speed,
-                    remaining,
-                } => PolyMotionResume::Move {
-                    dir: DVec2::new(-dir.x(), -dir.y()),
-                    speed,
-                    remaining,
-                },
-                PolyMotionResume::Rotate { omega, remaining } => PolyMotionResume::Rotate {
-                    omega: -omega,
-                    remaining: -remaining,
-                },
-            },
+            then: then.reversed(),
         },
     }
 }
@@ -335,7 +376,7 @@ pub fn polyobj_move_to(world: &mut World, args: &[i32; 5], override_busy: bool) 
     };
     let dx = dest.x() - po.start_spot.x();
     let dy = dest.y() - po.start_spot.y();
-    let dist = room_core::dmath::sqrt(dx * dx + dy * dy);
+    let dist = dmath::sqrt(dx * dx + dy * dy);
     if dist <= 1e-9 {
         return 0;
     }
@@ -381,18 +422,19 @@ pub fn polyobj_or_rotate(world: &mut World, args: &[i32; 5], left: bool) -> i32 
     polyobj_rotate_ex(world, args, left, true)
 }
 
+/// GZDoom `EV_RotatePoly`: speed is eighths of a byte angle per tic; angle `0`
+/// is a full turn and `255` rotates forever.
 fn polyobj_rotate_ex(world: &mut World, args: &[i32; 5], left: bool, override_busy: bool) -> i32 {
     let id = args[0];
-    // Hexen: speed is bytes/tic; angle arg is total bytes to turn.
-    let speed_bytes = args[1].abs().max(1) as f64;
-    let turn_bytes = args[2].abs() as f64;
-    if turn_bytes <= 0.0 {
-        return 0;
-    }
-    let rad_per_byte = std::f64::consts::TAU / 256.0;
+    let speed_bytes = f64::from(args[1].abs().max(1)) / 8.0;
+    let turn_bytes = match args[2].abs() {
+        0 => 256.0,
+        255 => f64::INFINITY,
+        n => f64::from(n),
+    };
     let sign = if left { 1.0 } else { -1.0 };
-    let omega = speed_bytes * rad_per_byte * sign;
-    let remaining = turn_bytes * rad_per_byte * sign;
+    let omega = speed_bytes * RAD_PER_BYTE * sign;
+    let remaining = turn_bytes * RAD_PER_BYTE * sign;
     start_motion(
         world,
         id,
@@ -401,112 +443,72 @@ fn polyobj_rotate_ex(world: &mut World, args: &[i32; 5], left: bool, override_bu
     )
 }
 
-/// `Polyobj_DoorSwing` (7): args = po, speed, angle(bytes), delay.
+/// `Polyobj_DoorSwing` (7): args = po, speed (1/8 byte per tic), angle(bytes),
+/// delay. Room extension: a negative angle swings clockwise.
 pub fn polyobj_door_swing(world: &mut World, args: &[i32; 5]) -> i32 {
-    let id = args[0];
-    let speed_bytes = args[1].abs().max(1) as f64;
-    let turn_bytes = args[2].abs() as f64;
-    let delay = args[3].max(0);
-    if turn_bytes <= 0.0 {
+    let speed_bytes = f64::from(args[1].abs().max(1)) / 8.0;
+    let turn = f64::from(args[2]);
+    if turn == 0.0 {
         return 0;
     }
-    let rad_per_byte = std::f64::consts::TAU / 256.0;
-    let omega = speed_bytes * rad_per_byte;
-    let remaining = turn_bytes * rad_per_byte;
-    // Open left, wait, close right (opposite omega).
-    let open = PolyMotion::Rotate { omega, remaining };
-    let close = PolyMotionResume::Rotate {
-        omega: -omega,
-        remaining: -remaining,
+    let sign = turn.signum();
+    let open = PolyMotionResume::Rotate {
+        omega: speed_bytes * RAD_PER_BYTE * sign,
+        remaining: turn * RAD_PER_BYTE,
     };
-    // Chain: run open; when done, insert Wait then close via tick helper.
-    let ok = start_motion(world, id, open, true);
-    if ok != 0 {
-        attach_door_return(world, id, delay, close);
-    }
-    ok
+    start_door(world, args[0], open, args[3])
 }
 
 /// `Polyobj_DoorSlide` (8): args = po, speed, angle, distance, delay.
 pub fn polyobj_door_slide(world: &mut World, args: &[i32; 5]) -> i32 {
-    let id = args[0];
     let speed = hexen_speed(args[1]);
     let dist = args[3].max(0) as f64;
-    let delay = args[4].max(0);
     if speed <= 0.0 || dist <= 0.0 {
         return 0;
     }
-    let dir = byte_angle_dir(args[2]);
-    let open = PolyMotion::Move {
-        dir,
+    let open = PolyMotionResume::Move {
+        dir: byte_angle_dir(args[2]),
         speed,
         remaining: dist,
     };
-    let close = PolyMotionResume::Move {
-        dir: DVec2::new(-dir.x(), -dir.y()),
-        speed,
-        remaining: dist,
-    };
-    let ok = start_motion(world, id, open, true);
-    if ok != 0 {
-        attach_door_return(world, id, delay, close);
-    }
-    ok
+    start_door(world, args[0], open, args[4])
 }
 
-/// After the current open leg finishes, wait `delay` then run `close` (and mirror).
-fn attach_door_return(world: &mut World, id: i32, delay: i32, close: PolyMotionResume) {
-    set_door_return(world, id, delay, close);
-}
-
-fn set_door_return(world: &mut World, id: i32, delay: i32, close: PolyMotionResume) {
-    let mirror = world
-        .polyobjs
-        .iter()
-        .find(|p| p.id == id)
-        .map(|p| p.mirror)
-        .unwrap_or(0);
-    if let Some(po) = world.polyobjs.iter_mut().find(|p| p.id == id) {
-        po.door_delay = delay;
-        po.door_return = Some(close);
-    }
-    if mirror != 0 && mirror != id {
-        if let Some(m) = world.polyobjs.iter_mut().find(|p| p.id == mirror) {
-            m.door_delay = delay;
-            m.door_return = Some(match close {
-                PolyMotionResume::Move {
-                    dir,
-                    speed,
-                    remaining,
-                } => PolyMotionResume::Move {
-                    dir: DVec2::new(-dir.x(), -dir.y()),
-                    speed,
-                    remaining,
-                },
-                PolyMotionResume::Rotate { omega, remaining } => PolyMotionResume::Rotate {
-                    omega: -omega,
-                    remaining: -remaining,
-                },
-            });
+/// GZDoom `EV_OpenPolyDoor`: a moving (or opened-for-good) door ignores the
+/// trigger; the mirror runs the opposite leg.
+fn start_door(world: &mut World, id: i32, open: PolyMotionResume, delay: i32) -> i32 {
+    let mirror = mirror_of(world, id);
+    let mut started = 0;
+    for (pid, leg) in [(id, open), (mirror, open.reversed())] {
+        if pid == 0 || (started == 1 && pid == id) {
+            continue;
         }
+        let Some(po) = find_poly_mut(world, pid) else {
+            continue;
+        };
+        if po.motion.is_some() || po.blocked {
+            break;
+        }
+        po.motion = Some(leg.into_motion());
+        po.door = Some(PolyDoor {
+            open: leg,
+            delay,
+            closing: false,
+        });
+        started = 1;
     }
+    started
 }
 
 /// `Polyobj_Stop` (87).
 pub fn polyobj_stop(world: &mut World, args: &[i32; 5]) -> i32 {
     let id = args[0];
-    let mirror = world
-        .polyobjs
-        .iter()
-        .find(|p| p.id == id)
-        .map(|p| p.mirror)
-        .unwrap_or(0);
+    let mirror = mirror_of(world, id);
     let mut n = 0;
     for po in &mut world.polyobjs {
         if po.id == id || (mirror != 0 && po.id == mirror) {
             po.motion = None;
-            po.door_return = None;
-            po.door_delay = 0;
+            po.door = None;
             n = 1;
         }
     }
@@ -551,9 +553,9 @@ pub fn tick_polyobjs(world: &mut World) {
                 let dy = dir.y() * step;
                 translate_poly(world, i, dx, dy);
                 if !resolve_poly_block(world, i) {
-                    // Non-crush block: undo and stop (GZDoom `CheckMobjBlocking`).
+                    // GZDoom `CheckMobjBlocking`: undo; retry next tic.
                     translate_poly(world, i, -dx, -dy);
-                    clear_motion(world, i);
+                    blocked_leg(world, i);
                     continue;
                 }
                 let left = remaining - step;
@@ -580,7 +582,7 @@ pub fn tick_polyobjs(world: &mut World) {
                 rotate_poly(world, i, step);
                 if !resolve_poly_block(world, i) {
                     rotate_poly(world, i, -step);
-                    clear_motion(world, i);
+                    blocked_leg(world, i);
                     continue;
                 }
                 let left = remaining - step;
@@ -597,30 +599,62 @@ pub fn tick_polyobjs(world: &mut World) {
     }
 }
 
-fn clear_motion(world: &mut World, index: usize) {
-    world.polyobjs[index].motion = None;
-    world.polyobjs[index].door_return = None;
-    world.polyobjs[index].door_delay = 0;
+/// A closing door that hits something opens back up (GZDoom `DPolyDoor::Tick`);
+/// anything else keeps trying.
+fn blocked_leg(world: &mut World, index: usize) {
+    let po = &mut world.polyobjs[index];
+    let Some(door) = po.door.as_mut() else {
+        return;
+    };
+    if !door.closing || po.crush {
+        return;
+    }
+    door.closing = false;
+    po.motion = match (po.motion, door.open) {
+        (
+            Some(PolyMotion::Move { remaining, .. }),
+            PolyMotionResume::Move {
+                dir,
+                speed,
+                remaining: total,
+            },
+        ) => Some(PolyMotion::Move {
+            dir,
+            speed,
+            remaining: (total - remaining).max(0.0),
+        }),
+        (
+            Some(PolyMotion::Rotate { remaining, .. }),
+            PolyMotionResume::Rotate {
+                omega,
+                remaining: total,
+            },
+        ) => Some(PolyMotion::Rotate {
+            omega,
+            remaining: total.signum() * (total.abs() - remaining.abs()).max(0.0),
+        }),
+        (m, _) => m,
+    };
 }
 
-/// Open leg done → optional door Wait → close, else idle.
+/// Leg done → door wait + close (or stay open for good), else idle.
 fn finish_leg(world: &mut World, index: usize) {
-    let delay = world.polyobjs[index].door_delay;
-    let ret = world.polyobjs[index].door_return.take();
-    world.polyobjs[index].door_delay = 0;
-    match ret {
-        Some(close) if delay > 0 => {
-            world.polyobjs[index].motion = Some(PolyMotion::Wait {
-                tics: delay,
-                then: close,
-            });
+    let po = &mut world.polyobjs[index];
+    po.motion = None;
+    match po.door {
+        Some(ref mut door) if !door.closing => {
+            if door.delay >= 0 {
+                door.closing = true;
+                po.motion = Some(PolyMotion::Wait {
+                    tics: door.delay,
+                    then: door.open.reversed(),
+                });
+            } else {
+                po.door = None;
+                po.blocked = true;
+            }
         }
-        Some(close) => {
-            world.polyobjs[index].motion = Some(close.into_motion());
-        }
-        None => {
-            world.polyobjs[index].motion = None;
-        }
+        _ => po.door = None,
     }
 }
 
@@ -629,6 +663,12 @@ fn resolve_poly_block(world: &mut World, index: usize) -> bool {
     let crush = world.polyobjs[index].crush;
     let victims = actors_hit_by_poly(world, index);
     if victims.is_empty() {
+        return true;
+    }
+    if !crush
+        && shove_off_poly(world, index, &victims)
+        && actors_hit_by_poly(world, index).is_empty()
+    {
         return true;
     }
     if crush {
@@ -644,6 +684,56 @@ fn resolve_poly_block(world: &mut World, index: usize) -> bool {
         return true;
     }
     false
+}
+
+/// Slide actors out of a swinging door so the panel can move.
+fn shove_off_poly(world: &mut World, index: usize, victims: &[crate::actor::ActorId]) -> bool {
+    let center = world.polyobjs[index].center;
+    for &id in victims {
+        let Some(a) = world.actors.get(id) else {
+            return false;
+        };
+        let (px, py, pz, r) = (a.pos.x(), a.pos.y(), a.pos.z(), a.radius.max(8.0));
+        let vx = a.vel.x();
+        let vy = a.vel.y();
+        let vlen = (vx * vx + vy * vy).sqrt();
+        let (fx, fy) = if vlen > 0.2 {
+            (vx / vlen, vy / vlen)
+        } else {
+            let ang = a.angle.radians();
+            (room_core::dmath::cos(ang), room_core::dmath::sin(ang))
+        };
+        let dx = px - center.x();
+        let dy = py - center.y();
+        let len = (dx * dx + dy * dy).sqrt().max(1.0);
+        let dirs = [(fx, fy), (-fy, fx), (fy, -fx), (dx / len, dy / len)];
+        let mut clear = false;
+        let step = r + 16.0;
+        for (ux, uy) in dirs {
+            let mut x = px;
+            let mut y = py;
+            for _ in 0..2 {
+                if !actors_hit_by_poly(world, index).contains(&id) {
+                    clear = true;
+                    break;
+                }
+                let dest = room_core::DVec3::new(x + ux * step, y + uy * step, pz);
+                if !crate::physics::try_move(world, id, dest) {
+                    break;
+                }
+                x = dest.x();
+                y = dest.y();
+            }
+            if clear || !actors_hit_by_poly(world, index).contains(&id) {
+                clear = true;
+                break;
+            }
+        }
+        if !clear {
+            return false;
+        }
+    }
+    true
 }
 
 /// Solid actors whose AABB crosses any linedef of the poly (Doom square clip).
@@ -707,45 +797,125 @@ fn aabb_hits_seg(px: f64, py: f64, radius: f64, ax: f64, ay: f64, bx: f64, by: f
     false
 }
 
-fn translate_poly(world: &mut World, index: usize, dx: f64, dy: f64) {
-    let verts = world.polyobjs[index].vertices.clone();
-    let lines = world.polyobjs[index].lines.clone();
-    {
-        let map = Arc::make_mut(&mut world.map);
-        for &vid in &verts {
-            if let Some(v) = map.vertices.get_mut(vid.raw() as usize) {
-                v.pos = DVec2::new(v.pos.x() + dx, v.pos.y() + dy);
-            }
-        }
-        refresh_line_geom(map, &lines);
+/// Slide map vertices and refresh the linedefs that use them (Duke `SE 20`).
+pub(crate) fn translate_vertices(
+    world: &mut World,
+    verts: &[VertexId],
+    lines: &[LineId],
+    dx: f64,
+    dy: f64,
+) {
+    if dx == 0.0 && dy == 0.0 {
+        return;
     }
-    world.polyobjs[index].center = DVec2::new(
-        world.polyobjs[index].center.x() + dx,
-        world.polyobjs[index].center.y() + dy,
-    );
-    world.polyobjs[index].start_spot = DVec2::new(
-        world.polyobjs[index].start_spot.x() + dx,
-        world.polyobjs[index].start_spot.y() + dy,
-    );
+    let map = Arc::make_mut(&mut world.map);
+    unlink_lines(map, lines);
+    for &vid in verts {
+        if let Some(v) = map.vertices.get_mut(vid.raw() as usize) {
+            v.pos = DVec2::new(v.pos.x() + dx, v.pos.y() + dy);
+        }
+    }
+    refresh_line_geom(map, lines);
+    link_lines(map, lines);
+}
+
+fn translate_poly(world: &mut World, index: usize, dx: f64, dy: f64) {
+    let po = &mut world.polyobjs[index];
+    po.center = DVec2::new(po.center.x() + dx, po.center.y() + dy);
+    po.start_spot = DVec2::new(po.start_spot.x() + dx, po.start_spot.y() + dy);
+    place_poly(world, index);
 }
 
 fn rotate_poly(world: &mut World, index: usize, delta: f64) {
-    let center = world.polyobjs[index].center;
-    let verts = world.polyobjs[index].vertices.clone();
-    let lines = world.polyobjs[index].lines.clone();
-    let (s, c) = (delta.sin(), delta.cos());
-    {
-        let map = Arc::make_mut(&mut world.map);
-        for &vid in &verts {
-            if let Some(v) = map.vertices.get_mut(vid.raw() as usize) {
-                let x = v.pos.x() - center.x();
-                let y = v.pos.y() - center.y();
-                v.pos = DVec2::new(center.x() + x * c - y * s, center.y() + x * s + y * c);
+    let po = &mut world.polyobjs[index];
+    po.angle = (po.angle + delta).rem_euclid(std::f64::consts::TAU);
+    place_poly(world, index);
+}
+
+/// Put the poly's vertices at `center + rotate(offset, angle)` and relink its
+/// lines into the blockmap.
+fn place_poly(world: &mut World, index: usize) {
+    let po = &world.polyobjs[index];
+    let (center, angle) = (po.center, po.angle);
+    let (s, c) = (dmath::sin(angle), dmath::cos(angle));
+    let placed: Vec<(VertexId, DVec2)> = po
+        .vertices
+        .iter()
+        .zip(&po.offsets)
+        .map(|(&vid, o)| {
+            let p = DVec2::new(
+                center.x() + o.x() * c - o.y() * s,
+                center.y() + o.x() * s + o.y() * c,
+            );
+            (vid, p)
+        })
+        .collect();
+    let lines = po.lines.clone();
+    let map = Arc::make_mut(&mut world.map);
+    unlink_lines(map, &lines);
+    for (vid, p) in placed {
+        if let Some(v) = map.vertices.get_mut(vid.raw() as usize) {
+            v.pos = p;
+        }
+    }
+    refresh_line_geom(map, &lines);
+    link_lines(map, &lines);
+}
+
+/// Blockmap cells covered by the bounding box of `line`.
+fn line_cells(map: &room_map::MapGeometry, lid: LineId) -> Option<(u16, u16, u16, u16)> {
+    let line = map.lines.get(lid.raw() as usize)?;
+    let a = map.vertices.get(line.v1.raw() as usize)?.pos;
+    let b = map.vertices.get(line.v2.raw() as usize)?.pos;
+    let bm = &map.blockmap;
+    if bm.columns == 0 || bm.rows == 0 {
+        return None;
+    }
+    let (x0, y0) = crate::physics::block_coords(bm, a.x().min(b.x()), a.y().min(b.y()));
+    let (x1, y1) = crate::physics::block_coords(bm, a.x().max(b.x()), a.y().max(b.y()));
+    Some((x0, y0, x1, y1))
+}
+
+fn unlink_lines(map: &mut room_map::MapGeometry, lines: &[LineId]) {
+    for &lid in lines {
+        let Some((x0, y0, x1, y1)) = line_cells(map, lid) else {
+            continue;
+        };
+        let cols = usize::from(map.blockmap.columns);
+        for by in y0..=y1 {
+            for bx in x0..=x1 {
+                if let Some(cell) = map
+                    .blockmap
+                    .blocks
+                    .get_mut(usize::from(by) * cols + usize::from(bx))
+                {
+                    cell.retain(|&l| l != lid);
+                }
             }
         }
-        refresh_line_geom(map, &lines);
     }
-    world.polyobjs[index].angle += delta;
+}
+
+fn link_lines(map: &mut room_map::MapGeometry, lines: &[LineId]) {
+    for &lid in lines {
+        let Some((x0, y0, x1, y1)) = line_cells(map, lid) else {
+            continue;
+        };
+        let cols = usize::from(map.blockmap.columns);
+        for by in y0..=y1 {
+            for bx in x0..=x1 {
+                if let Some(cell) = map
+                    .blockmap
+                    .blocks
+                    .get_mut(usize::from(by) * cols + usize::from(bx))
+                {
+                    if !cell.contains(&lid) {
+                        cell.push(lid);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn refresh_line_geom(map: &mut room_map::MapGeometry, lines: &[LineId]) {
@@ -881,6 +1051,7 @@ mod tests {
             damage_interval: 0,
             leakiness: 0,
             silent: false,
+            sound_sequence: String::new(),
             waterzone: false,
             drop_actors: true,
             no_falling_damage: false,
@@ -1117,7 +1288,7 @@ actor Blocker : Actor 9001
         for _ in 0..64 {
             tick_polyobjs(&mut w);
         }
-        assert!(w.polyobjs[0].motion.is_none(), "blocked poly should stop");
+        assert!(w.polyobjs[0].motion.is_some(), "blocked poly keeps trying");
         let x1 = w.map.vertices[v0.raw() as usize].pos.x();
         assert!(
             (x1 - x0).abs() < 32.0,
@@ -1132,12 +1303,12 @@ actor Blocker : Actor 9001
         apply_nodes(&mut map);
         let mut w = World::from_map(map).unwrap();
         let ang0 = w.polyobjs[0].angle;
-        // speed 32 bytes/tic, turn 64 bytes (=90°), delay 2.
+        // speed 256/8 = 32 bytes/tic, turn 64 bytes (=90°), delay 2.
         assert_eq!(
             execute_special(
                 &mut w,
                 num::POLYOBJ_DOOR_SWING,
-                &[7, 32, 64, 2, 0],
+                &[7, 256, 64, 2, 0],
                 None,
                 None
             ),
@@ -1188,8 +1359,7 @@ actor Blocker : Actor 9001
                 id: 8,
                 mirror: 0,
                 motion: None,
-                door_delay: 0,
-                door_return: None,
+                door: None,
                 ..base
             });
             w.polyobjs[1].id = 8;
@@ -1250,5 +1420,102 @@ actor Blocker : Actor 9001
         assert!(w.polyobjs[0].motion.is_none());
         assert!((w.polyobjs[0].start_spot.x() - f64::from(dest_x)).abs() < 1e-5);
         assert!((w.polyobjs[0].start_spot.y() - f64::from(dest_y)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn polyobj_door_ignores_retrigger_and_stays_open_on_negative_delay() {
+        let mut map = poly_square_map();
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        let args = [7, 256, -64, -1, 0];
+        assert_eq!(
+            execute_special(&mut w, num::POLYOBJ_DOOR_SWING, &args, None, None),
+            1
+        );
+        assert_eq!(
+            execute_special(&mut w, num::POLYOBJ_DOOR_SWING, &args, None, None),
+            0
+        );
+        for _ in 0..4 {
+            tick_polyobjs(&mut w);
+        }
+        let p = &w.polyobjs[0];
+        assert!(p.motion.is_none() && p.blocked);
+        let quarter = std::f64::consts::FRAC_PI_2;
+        assert!(
+            (p.angle - (std::f64::consts::TAU - quarter)).abs() < 1e-6,
+            "clockwise: {}",
+            p.angle
+        );
+        assert_eq!(
+            execute_special(&mut w, num::POLYOBJ_DOOR_SWING, &args, None, None),
+            0
+        );
+    }
+
+    #[test]
+    fn polyobj_rotate_255_is_perpetual_and_eighth_speed() {
+        let mut map = poly_square_map();
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        assert_eq!(
+            execute_special(
+                &mut w,
+                num::POLYOBJ_ROTATE_LEFT,
+                &[7, 64, 255, 0, 0],
+                None,
+                None
+            ),
+            1
+        );
+        let v0 = w.polyobjs[0].vertices[0];
+        let start = w.map.vertices[v0.raw() as usize].pos;
+        // 64/8 = 8 bytes/tic → a full turn in 32 tics.
+        for _ in 0..32 * 10 {
+            tick_polyobjs(&mut w);
+        }
+        assert!(w.polyobjs[0].motion.is_some());
+        let end = w.map.vertices[v0.raw() as usize].pos;
+        assert!((end.x() - start.x()).abs() < 1e-6 && (end.y() - start.y()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn polyobj_lines_follow_the_poly_in_the_blockmap() {
+        let mut map = poly_square_map();
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        let lines = w.polyobjs[0].lines.clone();
+        let line = lines[0];
+        {
+            let m = Arc::make_mut(&mut w.map);
+            m.blockmap = room_map::Blockmap {
+                origin_x: 0,
+                origin_y: 0,
+                columns: 8,
+                rows: 1,
+                blocks: vec![Vec::new(); 8],
+            };
+            link_lines(m, &lines);
+        }
+        let near = |w: &World, x: f64| {
+            crate::physics::lines_near(&w.map, DVec2::new(x, 32.0), 4.0).contains(&line)
+        };
+        // Relocated to x 64..128 at init.
+        assert!(near(&w, 96.0));
+        assert_eq!(
+            execute_special(
+                &mut w,
+                num::POLYOBJ_MOVE,
+                &[7, 64 * 8, 0, 256, 0],
+                None,
+                None
+            ),
+            1
+        );
+        for _ in 0..4 {
+            tick_polyobjs(&mut w);
+        }
+        assert!(near(&w, 96.0 + 256.0), "poly line linked at its new spot");
+        assert!(!near(&w, 96.0), "and unlinked from the old one");
     }
 }

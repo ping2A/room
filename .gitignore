@@ -6,6 +6,9 @@ testdata/freedoom/
 # Commercial / local Doom IWADs (never commit)
 testdata/doom/
 
+# Commercial Duke Nukem 3D GRP (never commit)
+testdata/duke/
+
 # Downloaded GM SoundFonts (see scripts/fetch-soundfont.sh)
 soundfonts/
 

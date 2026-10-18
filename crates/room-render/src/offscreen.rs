@@ -41,7 +41,18 @@ impl OffscreenTarget {
     /// Create an RGBA8 + depth24+stencil8 target.
     #[must_use]
     pub fn new(gpu: &GpuContext, width: u32, height: u32) -> Self {
-        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        Self::with_format(gpu, width, height, wgpu::TextureFormat::Rgba8UnormSrgb)
+    }
+
+    /// Target in `format`, which must match the pass that draws into it
+    /// (a window's [`UnlitPass`] uses the surface format, often BGRA8).
+    #[must_use]
+    pub fn with_format(
+        gpu: &GpuContext,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Self {
         let extent = wgpu::Extent3d {
             width,
             height,

@@ -5,13 +5,26 @@ use crate::draw::{Rect, Rgba, UiDrawList, Vec2};
 /// Draw a full-screen finale text board into `list`.
 ///
 /// `map_name` is the completed map lump (used to pick a short stub blurb).
-pub fn draw_finale(list: &mut UiDrawList, map_name: &str, width: f32, height: f32) {
+/// `pic` is an optional cinematic still (`E1AN00`…); when set, only that
+/// picture is drawn (Duke episode-end ANM).
+pub fn draw_finale(
+    list: &mut UiDrawList,
+    map_name: &str,
+    width: f32,
+    height: f32,
+    pic: Option<&str>,
+) {
     list.virtual_w = width;
     list.virtual_h = height;
     list.fill(
         Rect::new(0.0, 0.0, width, height),
         Rgba::new(0.0, 0.0, 0.0, 1.0),
     );
+    if let Some(name) = pic {
+        list.patch(name, Vec2::new(0.0, 0.0), Vec2::new(width, height));
+        return;
+    }
+    list.patch("CREDIT", Vec2::new(0.0, 0.0), Vec2::new(width, height));
     let name = map_name.trim().to_ascii_uppercase();
     let cast = name == "MAP30";
     let title = if cast {
@@ -73,6 +86,18 @@ fn doom2_cast_call() -> &'static [&'static str] {
     ]
 }
 
+/// ANM prefix for a Duke episode-end map (`E1AN` + `E1ANDEF`).
+#[must_use]
+pub fn finale_anm_prefix(map_name: &str) -> Option<&'static str> {
+    match map_name.trim().to_ascii_uppercase().as_str() {
+        "E1M6" => Some("E1AN"),
+        "E2M11" => Some("E2AN"),
+        "E3M11" => Some("E3AN"),
+        "E4M11" => Some("E4AN"),
+        _ => None,
+    }
+}
+
 fn finale_blurb(map_name: &str) -> &'static [&'static str] {
     match map_name {
         "MAP30" => doom2_cast_call(),
@@ -81,9 +106,13 @@ fn finale_blurb(map_name: &str) -> &'static [&'static str] {
             "You have defeated the barons",
             "of Hell and stopped the invasion.",
         ],
+        "E1M6" => &["That's the way, baby.", "On to the Lunar Apocalypse."],
         "E2M8" => &["You have defeated Cyberdemon."],
+        "E2M11" => &["Shiny. Let's hit the Shrapnel City."],
         "E3M8" => &["You have defeated Spider Mastermind."],
+        "E3M11" => &["The alien queen is toast. One more ride."],
         "E4M8" => &["You have defeated Spider Mastermind."],
+        "E4M11" => &["It's time to abort her whole ugly race."],
         _ => &["Episode complete.", "Thanks for playing."],
     }
 }
@@ -95,8 +124,20 @@ mod tests {
     #[test]
     fn draws_finale_commands() {
         let mut list = UiDrawList::new();
-        draw_finale(&mut list, "MAP30", 320.0, 200.0);
-        assert!(list.cmds.len() >= 4);
+        draw_finale(&mut list, "MAP30", 320.0, 200.0, None);
+        assert!(list.cmds.len() >= 5);
+        assert!(list.cmds.iter().any(|c| matches!(
+            c,
+            crate::draw::DrawCmd::Patch { name, .. } if name == "CREDIT"
+        )));
+        let mut cine = UiDrawList::new();
+        draw_finale(&mut cine, "E1M6", 320.0, 200.0, Some("E1AN03"));
+        assert!(cine.cmds.iter().any(|c| matches!(
+            c,
+            crate::draw::DrawCmd::Patch { name, .. } if name == "E1AN03"
+        )));
+        assert_eq!(finale_anm_prefix("E1M6"), Some("E1AN"));
+        assert_eq!(finale_anm_prefix("MAP30"), None);
     }
 
     #[test]

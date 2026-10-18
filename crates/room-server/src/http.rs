@@ -368,7 +368,7 @@ async fn create_room(
             RegistryError::Full | RegistryError::Draining | RegistryError::VerifierFull => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
-            RegistryError::UnknownMod => StatusCode::BAD_REQUEST,
+            RegistryError::UnknownMod | RegistryError::UnknownGame => StatusCode::BAD_REQUEST,
             RegistryError::ModNotAllowed => StatusCode::FORBIDDEN,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         })

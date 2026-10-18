@@ -251,6 +251,7 @@ async fn create_room_admin(
         crate::registry::RegistryError::Draining => StatusCode::SERVICE_UNAVAILABLE,
         crate::registry::RegistryError::VerifierFull
         | crate::registry::RegistryError::UnknownMod
+        | crate::registry::RegistryError::UnknownGame
         | crate::registry::RegistryError::ModNotAllowed => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     })?;

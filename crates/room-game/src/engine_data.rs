@@ -83,6 +83,40 @@ pub fn load_embedded_engine_data() -> Result<EngineData, GameError> {
     load_engine_data(&vfs)
 }
 
+/// Embedded `room.pk3` actors followed by every `DECORATE` lump in `vfs`
+/// (IWAD → PWADs), for shells whose game VFS does not mount the engine.
+pub fn load_embedded_engine_data_with(vfs: &Vfs) -> Result<EngineData, GameError> {
+    let engine = embedded_engine_vfs()?;
+    let mut base = load_engine_data(&engine)?;
+    let lumps: Vec<_> = vfs.find_all("DECORATE", Namespace::Global).collect();
+    if lumps.is_empty() {
+        return Ok(base);
+    }
+    let engine_decorate = read_text_lump(&engine, "DECORATE").unwrap_or_default();
+    let mut decorate = engine_decorate.clone();
+    for id in lumps {
+        let bytes = vfs
+            .read(id)
+            .map_err(|e| GameError::Message(e.to_string()))?;
+        let text = String::from_utf8_lossy(&bytes);
+        // `vfs` may already mount room.pk3 itself.
+        if text == engine_decorate {
+            continue;
+        }
+        decorate.push('\n');
+        decorate.push_str(&text);
+    }
+    let ir = parse_decorate_with_includes(&decorate, |path| {
+        resolve_include(&engine, path).or_else(|_| resolve_include(vfs, path))
+    })
+    .map_err(|e| GameError::Message(format!("DECORATE: {e}")))?;
+    let classes =
+        Arc::new(ClassRegistry::from_decorate(&ir).map_err(|e| GameError::Message(e.to_string()))?);
+    base.states = Arc::new(StateTable::from_decorate(&ir, &classes));
+    base.classes = classes;
+    Ok(base)
+}
+
 /// Built-in defs loaded from an engine-data archive (directory or PK3).
 #[derive(Clone, Debug)]
 pub struct EngineData {
@@ -102,7 +136,11 @@ pub struct EngineData {
 pub fn load_engine_data(vfs: &Vfs) -> Result<EngineData, GameError> {
     let decorate = read_text_lump(vfs, "DECORATE")
         .ok_or_else(|| GameError::Message("engine data: missing DECORATE lump".into()))?;
-    let ir = parse_decorate_with_includes(&decorate, |path| resolve_include(vfs, path))
+    load_engine_data_from(vfs, &decorate)
+}
+
+fn load_engine_data_from(vfs: &Vfs, decorate: &str) -> Result<EngineData, GameError> {
+    let ir = parse_decorate_with_includes(decorate, |path| resolve_include(vfs, path))
         .map_err(|e| GameError::Message(format!("DECORATE: {e}")))?;
     let classes =
         Arc::new(ClassRegistry::from_decorate(&ir).map_err(|e| GameError::Message(e.to_string()))?);
@@ -139,12 +177,11 @@ pub fn load_engine_data(vfs: &Vfs) -> Result<EngineData, GameError> {
 /// (engine → IWAD → PWADs), as GZDoom does, so PWAD actors may add, redefine
 /// editor numbers, or `replaces` engine classes.
 pub fn load_layered_engine_data(vfs: &Vfs) -> Result<EngineData, GameError> {
-    let mut base = load_engine_data(vfs)?;
     let lumps = vfs
         .find_all("DECORATE", Namespace::Global)
         .collect::<Vec<_>>();
     if lumps.len() <= 1 {
-        return Ok(base);
+        return load_engine_data(vfs);
     }
     let mut decorate = String::new();
     for id in lumps {
@@ -154,13 +191,7 @@ pub fn load_layered_engine_data(vfs: &Vfs) -> Result<EngineData, GameError> {
         decorate.push_str(&String::from_utf8_lossy(&bytes));
         decorate.push('\n');
     }
-    let ir = parse_decorate_with_includes(&decorate, |path| resolve_include(vfs, path))
-        .map_err(|e| GameError::Message(format!("DECORATE: {e}")))?;
-    let classes =
-        Arc::new(ClassRegistry::from_decorate(&ir).map_err(|e| GameError::Message(e.to_string()))?);
-    base.states = Arc::new(StateTable::from_decorate(&ir, &classes));
-    base.classes = classes;
-    Ok(base)
+    load_engine_data_from(vfs, &decorate)
 }
 
 fn resolve_include(vfs: &Vfs, path: &str) -> Result<String, DecorateError> {

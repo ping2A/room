@@ -1,0 +1,10 @@
+[mod]
+id = "room.example.doom1-royale"
+name = "Battle Royale"
+version = "0.1.0"
+abi = 1
+
+[[module]]
+file = "ROYALE"
+scope = "play"
+name = "royale"

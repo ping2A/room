@@ -264,12 +264,14 @@ fn strip_dollar(s: &str) -> String {
 fn map_action(target: &str) -> String {
     // MENUDEF submenu / class names → existing MenuStack actions where known.
     match target {
-        "PlayerclassMenu" | "EpisodeMenu" | "SkillMenu" => "menu_newgame".into(),
+        "PlayerclassMenu" | "SkillMenu" => "menu_newgame".into(),
+        "EpisodeMenu" => "openmenu EpisodeMenu".into(),
         "OptionsMenu" | "Options" => "openmenu OptionsMenu".into(),
         "LoadGameMenu" => "menu_loadgame".into(),
         "SaveGameMenu" => "menu_savegame".into(),
         "QuitMenu" => "menu_quit".into(),
         "ReadThisMenu" => "menu_readthis".into(),
+        other if other.starts_with("episode ") || other.starts_with("skill ") => other.into(),
         other => format!("openmenu {other}"),
     }
 }
@@ -301,6 +303,54 @@ mod tests {
             "expected menu_quit, got {:?}",
             menu.items
         );
+    }
+
+    #[test]
+    fn builds_duke_main_menu() {
+        let defs = parse_menudef(
+            r#"
+ListMenu "MainMenu"
+{
+	Title "DUKE NUKEM 3D"
+	Position 48, 80
+	TextItem "New Game", "n", "EpisodeMenu"
+	TextItem "Options", "o", "OptionsMenu"
+	TextItem "Quit Game", "q", "QuitMenu"
+}
+"#,
+        )
+        .unwrap();
+        let menu = list_menu_from_def(&defs, "MainMenu", MenuBuildOpts::default()).unwrap();
+        assert_eq!(menu.items.len(), 3);
+        assert!(
+            menu.items
+                .iter()
+                .any(|i| i.action == "openmenu EpisodeMenu")
+        );
+        assert!(menu.items.iter().any(|i| i.action == "menu_quit"));
+    }
+
+    #[test]
+    fn builds_duke_options_menu() {
+        let defs = parse_menudef(
+            r#"
+OptionMenu "OptionsMenu"
+{
+	Title "OPTIONS"
+	Option "Auto Aim", "autoaim", "OnOff"
+	Option "Mouse Aiming", "mouse_look", "OnOff"
+	Option "Invert Mouse", "invertmouse", "OnOff"
+}
+"#,
+        )
+        .unwrap();
+        let menu = option_menu_from_def(&defs, "OptionsMenu", MenuBuildOpts::default()).unwrap();
+        assert!(
+            menu.items.iter().any(|i| i.action == "option autoaim"),
+            "{:?}",
+            menu.items
+        );
+        assert!(menu.items.iter().any(|i| i.action == "option mouse_look"));
     }
 
     #[test]

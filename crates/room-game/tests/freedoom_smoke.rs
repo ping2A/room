@@ -15,8 +15,7 @@ use room_net::{
 };
 use room_nodebuild::apply_nodes;
 
-/// Keep IWAD/`ZNODES` trees when present — rebuilt nodes still mis-classify some
-/// sectors (DEMO1 MAP03 ledge west of x=160 → floor 8 instead of 16).
+/// Keep IWAD/`ZNODES` trees when present, as committed demos were recorded on them.
 fn ensure_nodes(map: &mut MapGeometry) {
     if map.game_nodes.is_none() {
         apply_nodes(map);

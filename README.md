@@ -15,6 +15,7 @@ Agents and contributors: start with [`AGENTS.md`](AGENTS.md).
 | [`docs/20-roadmap-testing.md`](docs/20-roadmap-testing.md) | Milestones and acceptance tests |
 | [`docs/21-milestone-progress.md`](docs/21-milestone-progress.md) | Living checklist (engine **M14**; server **S1–S5** done) |
 | [`docs/22-room-server.md`](docs/22-room-server.md) | Multi-room web server |
+| [`docs/23-build-engine.md`](docs/23-build-engine.md) | Duke Nukem 3D (Build engine) support |
 | [`crates/room-server/README.md`](crates/room-server/README.md) | Server CLI, lobby, admin, ICE/TURN |
 
 ## Status
@@ -38,6 +39,9 @@ The web multiplayer server track (**S1–S5**) is complete.
 # Doom 1 E1M1 (needs testdata/doom/doom1.wad)
 ./scripts/play-doom1.sh
 ROOM_TITLE=1 ./scripts/play-doom1.sh          # title menu
+# Duke Nukem 3D E1L1 (needs testdata/duke/duke3d.grp)
+./scripts/play-duke3d.sh
+ROOM_MAP=E2M1 ./scripts/play-duke3d.sh
 # Force OPL (GENMIDI) instead of SoftFont:
 cargo run -p room-app --release -- \
   --iwad testdata/doom/doom1.wad --map E1M1 --play --mididevice opl
@@ -144,6 +148,13 @@ mods. Each one stays disallowed until an admin allows it in the admin console
 downloads and verifies the same mod WAD before the map loads. Production
 servers point `--mods-dir` / `ROOM_MODS_DIR` at a directory of mod WADs
 ([`docs/22-room-server.md`](docs/22-room-server.md) §4 *Mods*).
+
+Duke Nukem 3D: point `--iwad` at a `DUKE3D.GRP` (or open the browser client
+with `?iwad=duke3d.grp`, or pick **Game: Duke Nukem 3D** in the lobby). The GRP
+is converted on load into a UDMF PWAD with the maps, enemies, items, Duke
+weapons, the status bar, sounds, doors, lifts, switches, teleporters and
+multi-tile skies. CON scripts are read for data only; there is no CON VM
+([`docs/23-build-engine.md`](docs/23-build-engine.md)).
 
 The web editor's **Scripts** tab compiles AssemblyScript in the browser and
 reloads it into a running play test on Ctrl+S. Writing mods (usage and full API):

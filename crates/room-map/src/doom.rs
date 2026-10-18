@@ -188,6 +188,7 @@ pub fn parse_sectors(data: &[u8]) -> Result<Vec<RawSector>, MapError> {
             damage_interval: 0,
             leakiness: 0,
             silent: false,
+            sound_sequence: String::new(),
             waterzone: false,
             drop_actors: true,
             no_falling_damage: false,

@@ -245,6 +245,9 @@ pub struct RoomSettings {
     /// Match time limit in minutes; the room closes when it runs out.
     #[serde(default = "default_time_limit")]
     pub time_limit: u16,
+    /// Content every seat loads: `doom` (doom1.wad) or `duke3d` (duke3d.grp).
+    #[serde(default = "default_game")]
+    pub game: String,
 }
 
 impl Default for RoomSettings {
@@ -257,6 +260,7 @@ impl Default for RoomSettings {
             enable_verifier: false,
             game_mod: None,
             time_limit: default_time_limit(),
+            game: default_game(),
         }
     }
 }
@@ -264,6 +268,13 @@ impl Default for RoomSettings {
 fn default_time_limit() -> u16 {
     20
 }
+
+fn default_game() -> String {
+    GAMES[0].into()
+}
+
+/// Games a room can run; the first is the default.
+pub const GAMES: [&str; 2] = ["doom", "duke3d"];
 
 /// `POST /api/rooms` body.
 #[derive(Clone, Debug, Deserialize)]
@@ -289,6 +300,9 @@ pub struct CreateRoomRequest {
     /// Match time limit in minutes (1..=180); absent / 0 = the node default.
     #[serde(default)]
     pub time_limit: Option<u16>,
+    /// One of [`GAMES`]; absent = `doom`.
+    #[serde(default)]
+    pub game: Option<String>,
 }
 
 impl Default for CreateRoomRequest {
@@ -301,6 +315,7 @@ impl Default for CreateRoomRequest {
             enable_verifier: false,
             game_mod: None,
             time_limit: None,
+            game: None,
         }
     }
 }

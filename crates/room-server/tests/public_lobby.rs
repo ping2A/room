@@ -19,6 +19,7 @@ async fn public_list_hides_private_and_serves_lobby() {
             enable_verifier: false,
             game_mod: None,
             time_limit: None,
+            game: None,
         })
         .unwrap();
     let _priv = registry
@@ -30,6 +31,7 @@ async fn public_list_hides_private_and_serves_lobby() {
             enable_verifier: false,
             game_mod: None,
             time_limit: None,
+            game: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -51,6 +53,46 @@ async fn public_list_hides_private_and_serves_lobby() {
     assert!(css.contains("--accent"), "{css}");
     let cfg = http_get(addr, "/api/lobby").await;
     assert!(cfg.contains("play_base"), "{cfg}");
+}
+
+#[tokio::test]
+async fn rooms_list_their_game() {
+    let registry = RoomRegistry::new(ServerConfig {
+        bind: "127.0.0.1:0".into(),
+        ..ServerConfig::default()
+    });
+    let duke = registry
+        .create_room(CreateRoomRequest {
+            game: Some("Duke3D".into()),
+            ..CreateRoomRequest::default()
+        })
+        .unwrap();
+    assert_eq!(duke.settings.game, "duke3d");
+    let doom = registry.create_room(CreateRoomRequest::default()).unwrap();
+    assert_eq!(doom.settings.game, "doom");
+    assert!(
+        registry
+            .create_room(CreateRoomRequest {
+                game: Some("quake".into()),
+                ..CreateRoomRequest::default()
+            })
+            .is_err()
+    );
+    assert!(
+        registry
+            .create_room(CreateRoomRequest {
+                game: Some("duke3d".into()),
+                game_mod: Some("royale".into()),
+                ..CreateRoomRequest::default()
+            })
+            .is_err(),
+        "Doom mods cannot run on Duke content"
+    );
+
+    let (addr, _server) = bind_ephemeral(registry).await.unwrap();
+    let list = http_get(addr, "/api/rooms").await;
+    assert!(list.contains(r#""game":"duke3d""#), "{list}");
+    assert!(list.contains(r#""game":"doom""#), "{list}");
 }
 
 async fn http_get(addr: std::net::SocketAddr, path: &str) -> String {

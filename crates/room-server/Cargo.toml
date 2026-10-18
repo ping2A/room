@@ -31,6 +31,7 @@ verifier = [
   "dep:room-map",
   "dep:room-nodebuild",
   "dep:room-vfs",
+  "dep:room-build",
   "dep:room-decorate",
   "dep:room-sim",
 ]
@@ -50,6 +51,7 @@ room-game = { path = "../room-game", optional = true }
 room-map = { path = "../room-map", optional = true }
 room-nodebuild = { path = "../room-nodebuild", optional = true }
 room-vfs = { path = "../room-vfs", optional = true }
+room-build = { path = "../room-build", optional = true }
 room-decorate = { path = "../room-decorate", optional = true }
 room-sim = { path = "../room-sim", optional = true }
 serde = { workspace = true }

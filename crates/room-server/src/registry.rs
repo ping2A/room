@@ -3,7 +3,7 @@
 use crate::config::ServerConfig;
 use crate::leaderboard::Leaderboard;
 use crate::room::{
-    AdminCmd, CreateRoomRequest, CreateRoomResponse, RoomCmd, RoomHandle, RoomSettings,
+    AdminCmd, CreateRoomRequest, CreateRoomResponse, GAMES, RoomCmd, RoomHandle, RoomSettings,
     make_create_response, new_rng_seed, spawn_room,
 };
 use crate::state::AdminStore;
@@ -39,6 +39,9 @@ pub enum RegistryError {
     /// Requested mod is in the catalog but an admin has not allowed it.
     #[error("mod not allowed")]
     ModNotAllowed,
+    /// Requested game is not one of [`GAMES`].
+    #[error("unknown game")]
+    UnknownGame,
     /// RNG failure.
     #[error("rng failed")]
     Rng,
@@ -300,8 +303,16 @@ impl RoomRegistry {
         if self.rooms.len() >= self.cfg.max_rooms {
             return Err(RegistryError::Full);
         }
+        let game = match req.game.as_deref().map(str::trim) {
+            None | Some("") => GAMES[0],
+            Some(g) => GAMES
+                .into_iter()
+                .find(|known| known.eq_ignore_ascii_case(g))
+                .ok_or(RegistryError::UnknownGame)?,
+        };
         let game_mod = match req.game_mod.as_deref().map(str::trim) {
             None | Some("") => None,
+            Some(_) if game != GAMES[0] => return Err(RegistryError::ModNotAllowed),
             Some(name) => {
                 let entry = self.cfg.mods.get(name).ok_or(RegistryError::UnknownMod)?;
                 if !self.cfg.mods.is_allowed(name) {
@@ -334,6 +345,7 @@ impl RoomRegistry {
                 .filter(|&m| m > 0)
                 .unwrap_or(self.cfg.room_time_limit_mins)
                 .clamp(1, MAX_TIME_LIMIT_MINS),
+            game: game.into(),
         };
         let id = new_room_id().map_err(|_| RegistryError::Rng)?;
         let rng_seed = new_rng_seed();

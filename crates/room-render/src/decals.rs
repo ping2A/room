@@ -262,6 +262,7 @@ pub fn append_decals(
                 texture: d.name.clone(),
                 flip_u: false,
                 anchor_u: 0.5,
+                orient: crate::sprites::SpriteOrient::Billboard,
             },
             camera.forward,
         );
@@ -393,6 +394,7 @@ pub fn emit_decal_quad(d: &DecalInstance, forward: Vec3) -> [WallVertex; 6] {
             texture: d.name.clone(),
             flip_u: false,
             anchor_u: 0.5,
+            orient: crate::sprites::SpriteOrient::Billboard,
         },
         forward,
     )

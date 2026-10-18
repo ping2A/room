@@ -17,8 +17,8 @@ pub use demo::{
 };
 pub use engine_data::{
     EngineData, OPTIONAL_ENGINE_EXTRAS, embedded_engine_vfs, embedded_room_pk3,
-    load_embedded_engine_data, load_engine_data, load_layered_engine_data, mount_embedded_engine,
-    mount_optional_engine_extras,
+    load_embedded_engine_data, load_embedded_engine_data_with, load_engine_data,
+    load_layered_engine_data, mount_embedded_engine, mount_optional_engine_extras,
 };
 pub use headless::{
     GameError, GameOptions, GameState, Headless, IntermissionTallies, Skill,

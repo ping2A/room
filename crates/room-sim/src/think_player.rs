@@ -4,7 +4,7 @@ use crate::actor::ActorId;
 use crate::class::RenderStyle;
 use crate::hitscan::line_attack;
 use crate::physics::try_move;
-use crate::player::{Buttons, Player, PlayerState};
+use crate::player::{Buttons, Player, PlayerState, TicCmd};
 use crate::use_lines::use_lines;
 use crate::world::World;
 use room_core::dmath;
@@ -14,6 +14,106 @@ use room_core::{Angle, DVec3, StateId};
 const MOVE_SCALE: f64 = 1.0 / 2048.0;
 /// Turn rate: yaw units → degrees (`angleturn` style).
 const YAW_TO_DEG: f64 = 360.0 / 65536.0;
+
+/// Duke 30 Hz `falling_counter >= 62` → Room 35 Hz (~72 tics, about 2 s).
+const DUKE_FALL_HURT: u32 = 72;
+
+fn is_duke_player(world: &World, player: &Player) -> bool {
+    world
+        .classes
+        .get(player.cls)
+        .is_some_and(|c| c.name == "DukePlayer")
+}
+
+/// Long fall: half health when `DukePlayer` lands after ~2 s of falling.
+fn apply_duke_fall(world: &mut World, player: &mut Player, mo: ActorId) {
+    if !is_duke_player(world, player) {
+        return;
+    }
+    if player.fly_tics > 0 {
+        player.falling_tics = 0;
+        return;
+    }
+    let Some(a) = world.actors.get(mo) else {
+        return;
+    };
+    if crate::physics::actor_waterlevel(world, a) >= 2
+        || (a.flags & crate::class::FLAG_NOGRAVITY) != 0
+    {
+        player.falling_tics = 0;
+        return;
+    }
+    if player.on_ground {
+        if player.falling_tics >= DUKE_FALL_HURT {
+            let dmg = (a.health / 2).max(1);
+            crate::damage::damage_mobj(world, mo, None, None, dmg);
+        }
+        player.falling_tics = 0;
+        return;
+    }
+    if a.vel.z() < 0.0 {
+        player.falling_tics = player.falling_tics.saturating_add(1);
+    }
+}
+
+/// Duke crouch: hold move-down on the ground (not flying / swimming).
+fn apply_duke_crouch(world: &mut World, player: &mut Player, mo: ActorId, cmd: &TicCmd) {
+    if !is_duke_player(world, player) {
+        return;
+    }
+    let swimming = world
+        .actors
+        .get(mo)
+        .is_some_and(|a| crate::physics::actor_waterlevel(world, a) >= 2);
+    if player.fly_tics > 0 || swimming || player.frozen {
+        if player.crouching {
+            set_duke_stance(world, player, mo, false);
+        }
+        return;
+    }
+    let (stand_h, _) = duke_stance_sizes(world, player);
+    let headroom = world.actors.get(mo).map(|a| {
+        let planes = crate::physics::check_position(world, a, a.pos, Some(mo));
+        planes.ceiling_z - planes.floor_z
+    });
+    let cramped = headroom.is_some_and(|gap| gap < stand_h + 1.0);
+    let want = player.on_ground && cmd.up_move < 0;
+    if want || cramped {
+        set_duke_stance(world, player, mo, true);
+    } else if player.crouching {
+        set_duke_stance(world, player, mo, false);
+    }
+}
+
+fn duke_stance_sizes(world: &World, player: &Player) -> (f64, f64) {
+    world
+        .classes
+        .get(player.cls)
+        .map(|c| {
+            let h = if c.height > 0.0 { c.height } else { 40.0 };
+            let v = if c.view_height > 0.0 {
+                c.view_height
+            } else {
+                36.0
+            };
+            (h, v)
+        })
+        .unwrap_or((40.0, 36.0))
+}
+
+fn set_duke_stance(world: &mut World, player: &mut Player, mo: ActorId, crouch: bool) {
+    let (stand_h, stand_v) = duke_stance_sizes(world, player);
+    let (h, v) = if crouch {
+        ((stand_h * 0.4).max(12.0), (stand_v * 0.4).max(8.0))
+    } else {
+        (stand_h, stand_v)
+    };
+    if let Some(a) = world.actors.get_mut(mo) {
+        a.height = h;
+    }
+    player.view_height = v;
+    player.crouching = crouch;
+}
 
 /// Tick timed powerups toward expiry.
 fn tick_powerups(world: &mut World, player: &mut Player) {
@@ -49,6 +149,17 @@ fn tick_powerups(world: &mut World, player: &mut Player) {
         if player.infrared_tics == 0 {
             player.infrared = false;
         }
+    }
+    if player.fly_tics > 0 {
+        player.fly_tics -= 1;
+        if player.fly_tics == 0 {
+            if let Some(a) = player.mo.and_then(|mo| world.actors.get_mut(mo)) {
+                a.flags &= !crate::class::FLAG_NOGRAVITY;
+            }
+        }
+    }
+    if player.steroid_tics > 0 {
+        player.steroid_tics -= 1;
     }
 }
 
@@ -127,6 +238,7 @@ pub fn player_think(world: &mut World, player: &mut Player) {
     player.damage_count = (player.damage_count - 1).max(0);
     player.bonus_count = (player.bonus_count - 1).max(0);
     tick_powerups(world, player);
+    apply_duke_crouch(world, player, mo, &cmd);
     // Yaw / pitch (same turn units as Doom `angleturn`).
     if cmd.yaw != 0 || cmd.pitch != 0 {
         if let Some(a) = world.actors.get_mut(mo) {
@@ -149,7 +261,7 @@ pub fn player_think(world: &mut World, player: &mut Player) {
     }
     // Jump edge while grounded (`JumpZ` impulse → `z_movement`).
     let jump = cmd.buttons.any(Buttons::JUMP);
-    if jump && !player.jump_down && player.on_ground {
+    if jump && !player.jump_down && player.on_ground && !player.crouching {
         let jump_z = world.actors.get(mo).map(|a| a.jump_z).unwrap_or(8.0);
         if jump_z > 0.0 {
             if let Some(a) = world.actors.get_mut(mo) {
@@ -160,6 +272,20 @@ pub fn player_think(world: &mut World, player: &mut Player) {
         }
     }
     player.jump_down = jump;
+    // GZDoom `P_MovePlayer` flight: `upmove` sets vertical speed; jump climbs at 3.
+    if player.fly_tics > 0 {
+        let vz = if cmd.up_move != 0 {
+            Some((f64::from(cmd.up_move) / 128.0).clamp(-8.0, 8.0))
+        } else if jump {
+            Some(3.0)
+        } else {
+            None
+        };
+        if let (Some(vz), Some(a)) = (vz, world.actors.get_mut(mo)) {
+            a.vel = DVec3::new(a.vel.x(), a.vel.y(), vz);
+            player.on_ground = false;
+        }
+    }
     // `ChangeCamera` revert: any move input restores the player eye.
     if player.camera_revert
         && (cmd.forward_move != 0 || cmd.side_move != 0 || cmd.yaw != 0 || cmd.pitch != 0)
@@ -167,7 +293,87 @@ pub fn player_think(world: &mut World, player: &mut Player) {
         player.camera = None;
         player.camera_revert = false;
     }
-    move_player(world, mo, &cmd);
+    if player.fta_tics > 0 {
+        player.fta_tics -= 1;
+    }
+    if player.invdisp_tics > 0 {
+        player.invdisp_tics -= 1;
+    }
+    if player.hurt_delay_tics > 0 {
+        player.hurt_delay_tics -= 1;
+    }
+    if player.return_to_center > 0 {
+        player.return_to_center -= 1;
+        if let Some(a) = world.actors.get_mut(mo) {
+            let deg = a.pitch.degrees();
+            let next = if deg > 12.0 {
+                deg - 12.0
+            } else if deg < -12.0 {
+                deg + 12.0
+            } else {
+                0.0
+            };
+            a.pitch = Angle::from_degrees(next);
+        }
+    }
+    if player.rotscrnang != 0 {
+        let n = i32::from(player.rotscrnang);
+        let next = if n > 0 {
+            (n - ((n >> 1) + 1)).max(0)
+        } else {
+            (n + (((-n) >> 1) + 1)).min(0)
+        };
+        player.rotscrnang = i16::try_from(next).unwrap_or(0);
+        if let Some(a) = world.actors.get_mut(mo) {
+            a.roll = Angle::from_degrees(f64::from(-(i32::from(player.rotscrnang) * 360) / 2048));
+        }
+    }
+    if player.hard_landing > 0 {
+        let n = player.hard_landing;
+        player.hard_landing -= 1;
+        if let Some(a) = world.actors.get_mut(mo) {
+            let deg = (a.pitch.degrees() - f64::from(n)).clamp(-89.0, 89.0);
+            a.pitch = Angle::from_degrees(deg);
+        }
+    }
+    let transporter_hold = player.transporter_hold_tics > 0;
+    if transporter_hold {
+        player.transporter_hold_tics -= 1;
+    }
+    let tipping = player.tip_incs > 0;
+    if tipping {
+        player.tip_incs -= 1;
+    }
+    let mut move_cmd = cmd;
+    if player.frozen || transporter_hold || tipping {
+        move_cmd.forward_move = 0;
+        move_cmd.side_move = 0;
+        move_cmd.up_move = 0;
+    } else if player.steroid_tics > 0 {
+        move_cmd.forward_move = move_cmd.forward_move.saturating_mul(2);
+        move_cmd.side_move = move_cmd.side_move.saturating_mul(2);
+    }
+    let scale = world
+        .actors
+        .get(mo)
+        .and_then(|a| world.classes.get(a.class))
+        .map(|c| c.forward_move)
+        .filter(|s| *s > 0.0)
+        .unwrap_or(1.0);
+    if (scale - 1.0).abs() > 1e-9 {
+        let scale_i16 = |v: i16| {
+            (f64::from(v) * scale)
+                .round()
+                .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16
+        };
+        move_cmd.forward_move = scale_i16(move_cmd.forward_move);
+        move_cmd.side_move = scale_i16(move_cmd.side_move);
+    }
+    if player.crouching {
+        move_cmd.forward_move /= 2;
+        move_cmd.side_move /= 2;
+    }
+    move_player(world, mo, &move_cmd);
     // Doom `P_MovePlayer` / GZDoom PlayRunning: walk cycle for other players' view.
     update_player_body_sprite(world, mo, &cmd);
     // Automap fog-of-war: reveal linedefs of the sector we stand in (`ML_MAPPED`).
@@ -183,18 +389,33 @@ pub fn player_think(world: &mut World, player: &mut Player) {
         // slot is empty for the duration of `player_think`). Without this,
         // non-door Use specials (Exit, floors, lights, …) are refused as
         // monster uses while doors still work via the monster whitelist.
-        let used = world.with_parked_player(player, |world| use_lines(world, mo));
+        let used = world.with_parked_player(player, |world| {
+            use_lines(world, mo) || crate::use_lines::use_actors(world, mo)
+        });
         // Vanilla: failed use (nothing usable / refused) plays `*noway` / oof.
         if !used {
             play_player_sound(world, mo, "*noway");
         }
     }
     player.use_down = use_btn;
+    let kick_btn = cmd.buttons.any(Buttons::QUICKKICK);
+    if kick_btn && !player.quick_kick_down {
+        start_quick_kick(world, player, mo);
+    }
+    player.quick_kick_down = kick_btn;
+    let inv_btn = cmd.buttons.any(Buttons::INVUSE);
+    if inv_btn {
+        use_inventory(world, player, mo, !player.invuse_down);
+    }
+    player.invuse_down = inv_btn;
     if cmd.weapon_select != 0 {
-        select_weapon_slot(world, player, mo, cmd.weapon_select);
+        player.quick_kick_restore = None;
+        select_weapon_slot(world, player, mo, cmd.weapon_select % 10);
     } else if cmd.buttons.any(Buttons::WEAPONNEXT) {
+        player.quick_kick_restore = None;
         cycle_weapon(world, player, mo, 1);
     } else if cmd.buttons.any(Buttons::WEAPONPREV) {
+        player.quick_kick_restore = None;
         cycle_weapon(world, player, mo, -1);
     }
     // Doom: fire starts from `A_WeaponReady` / `A_ReFire` during psprite advance
@@ -214,6 +435,7 @@ pub fn player_think(world: &mut World, player: &mut Player) {
         if a.vel.z() <= 0.0 {
             player.on_ground = a.pos.z() <= planes.floor_z + 0.1;
         }
+        apply_duke_fall(world, player, mo);
         // Doom-ish bob amplitude from planar speed (`MAXBOB` ≈ 16).
         let speed = dmath::sqrt(a.vel.x() * a.vel.x() + a.vel.y() * a.vel.y());
         player.bob = (speed * 0.5).clamp(0.0, 16.0);
@@ -225,12 +447,70 @@ pub fn player_think(world: &mut World, player: &mut Player) {
             0.0
         };
         let mut view_z = a.pos.z() + player.view_height + bob_z;
+        if let Some(n) = player.pycount {
+            let n = (n.wrapping_add(27)) & 2047;
+            player.pycount = Some(n);
+            let t = f64::from(n) * (std::f64::consts::TAU / 2048.0);
+            view_z += 0.5 * dmath::sin(t);
+        }
         // Keep the eye under the ceiling (Doom clamps to `ceilingz - 4`).
         if view_z > planes.ceiling_z - 4.0 {
             view_z = planes.ceiling_z - 4.0;
         }
         player.view_z = view_z;
     }
+    tick_idle_taunt(world, player, mo, &cmd);
+}
+
+/// Duke `crack_time`: after ~4 s still, play an `IdleTaunt`.
+const IDLE_TAUNT_TICS: i32 = 140;
+
+fn tick_idle_taunt(world: &mut World, player: &mut Player, mo: ActorId, cmd: &TicCmd) {
+    let busy = cmd.forward_move != 0
+        || cmd.side_move != 0
+        || cmd.up_move != 0
+        || cmd.yaw != 0
+        || cmd.pitch != 0
+        || cmd.buttons.any(
+            Buttons::ATTACK
+                | Buttons::USE
+                | Buttons::JUMP
+                | Buttons::WEAPONNEXT
+                | Buttons::WEAPONPREV
+                | Buttons::QUICKKICK
+                | Buttons::INVUSE,
+        )
+        || cmd.weapon_select != 0;
+    if busy || player.player_state != PlayerState::Live || !player.on_ground {
+        player.idle_tics = 0;
+        return;
+    }
+    let Some(class) = world.actors.get(mo).map(|a| a.class) else {
+        return;
+    };
+    if world
+        .classes
+        .get(class)
+        .is_none_or(|c| c.idle_taunts.is_empty())
+    {
+        player.idle_tics = 0;
+        return;
+    }
+    player.idle_tics = player.idle_tics.saturating_add(1);
+    if player.idle_tics < IDLE_TAUNT_TICS {
+        return;
+    }
+    player.idle_tics = 0;
+    let taunts = world
+        .classes
+        .get(class)
+        .map(|c| c.idle_taunts.clone())
+        .unwrap_or_default();
+    if taunts.is_empty() {
+        return;
+    }
+    let i = (world.p_random("pr_idletaunt") as usize) % taunts.len();
+    play_player_sound(world, mo, &taunts[i]);
 }
 
 /// Jump the weapon psprite to a class label (`Ready`, `Fire`, …).
@@ -260,6 +540,7 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                     // Doom `A_ReFire` → `P_FireWeapon` → `P_NoiseAlert`.
                     if player.attack_down
                         && player.pending_weapon.is_none()
+                        && player.quick_kick_restore.is_none()
                         && world.actors.get(mo).is_some_and(|a| a.health > 0)
                     {
                         // Doom `A_ReFire`: `player->refire++` then `P_FireWeapon`.
@@ -267,7 +548,17 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                         world.thinking_refire = player.refire;
                         if let Some(wpn) = player.ready_weapon {
                             if try_consume_ammo(world, mo, wpn) {
-                                if let Some(fire) = world.states.find_label(wpn, "Fire") {
+                                // GZDoom `P_FireWeapon`: the given state, else
+                                // `Hold` while refiring, else `Fire`.
+                                let named = args
+                                    .first()
+                                    .map(|s| s.trim().trim_matches('"'))
+                                    .filter(|s| !s.is_empty())
+                                    .and_then(|l| world.states.find_label(wpn, l));
+                                let target = named
+                                    .or_else(|| world.states.find_label(wpn, "Hold"))
+                                    .or_else(|| world.states.find_label(wpn, "Fire"));
+                                if let Some(fire) = target {
                                     crate::action::noise_alert(world, mo);
                                     // Restart Fire via the outer loop (fresh tics / action).
                                     state = fire;
@@ -304,6 +595,14 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                 "A_Light2" => player.extralight = 2,
                 "A_Light0" | "A_LightDone" => player.extralight = 0,
                 "A_WeaponReady" => {
+                    if let Some(prev) = player.quick_kick_restore.take() {
+                        player.ready_weapon = Some(prev);
+                        player.pspr_y = crate::player::WEAPON_TOP;
+                        if let Some(ready) = world.states.find_label(prev, "Ready") {
+                            state = ready;
+                            continue;
+                        }
+                    }
                     // Chainsaw idle buzz while Ready (Doom `A_WeaponReady` / saw).
                     if player
                         .ready_weapon
@@ -321,9 +620,16 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                     }
                 }
                 other => {
-                    let _ = crate::action::call_action_args(world, mo, other, &args);
+                    world.psprite_weapon = player.ready_weapon;
+                    let args = crate::deco_eval::eval_action_args(world, mo, &args);
+                    let result = crate::action::call_action_args(world, mo, other, &args);
+                    world.psprite_weapon = None;
                     if is_fire_action(other) {
                         start_flash_psprite(world, player);
+                    }
+                    if let crate::action::ActionResult::Jump(j) = result {
+                        state = j;
+                        continue;
                     }
                 }
             }
@@ -638,6 +944,206 @@ fn cycle_weapon(world: &mut World, player: &mut Player, mo: ActorId, dir: i32) {
     request_weapon(world, player, mo, next_wpn);
 }
 
+/// Duke medkit heals 1 HP per tic while held; other items start on a press.
+fn use_inventory(world: &mut World, player: &mut Player, mo: ActorId, pressed: bool) {
+    if pressed
+        && (2..=7).contains(&player.inven_icon)
+        && use_inven_icon(world, player, mo, player.inven_icon)
+    {
+        return;
+    }
+    if let Some(kit) = world.classes.find_name("DukeFirstAid") {
+        if crate::inventory::count_inventory(world, mo, kit) > 0 {
+            let hp = world.actors.get(mo).map(|a| a.health).unwrap_or(100);
+            if hp < 100 {
+                if let Some(a) = world.actors.get_mut(mo) {
+                    a.health = (hp + 1).min(100);
+                }
+                let _ = crate::inventory::take_inventory(world, mo, kit, 1);
+                return;
+            }
+        }
+    }
+    if !pressed {
+        return;
+    }
+    if player.steroid_tics == 0 {
+        if let Some(st) = world.classes.find_name("DukeSteroids") {
+            if crate::inventory::count_inventory(world, mo, st) > 0 {
+                let _ = crate::inventory::take_inventory(world, mo, st, 1);
+                player.steroid_tics = 420;
+                return;
+            }
+        }
+    }
+    if !player.infrared {
+        if let Some(nv) = world.classes.find_name("DukeNightVision") {
+            if crate::inventory::count_inventory(world, mo, nv) > 0 {
+                let _ = crate::inventory::take_inventory(world, mo, nv, 1);
+                player.infrared = true;
+                player.infrared_tics = crate::player::INFRARED_TICS;
+                return;
+            }
+        }
+    }
+    if !player.radsuit {
+        for name in ["DukeScubaGear", "DukeBoots"] {
+            if let Some(gear) = world.classes.find_name(name) {
+                if crate::inventory::count_inventory(world, mo, gear) > 0 {
+                    let _ = crate::inventory::take_inventory(world, mo, gear, 1);
+                    player.radsuit = true;
+                    player.radsuit_tics = crate::player::RADSUIT_TICS;
+                    if name == "DukeScubaGear" {
+                        let t = i32::try_from(world.level.time).unwrap_or(i32::MAX);
+                        player.air_finished = t.saturating_add(60 * crate::player::TICRATE);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+    if let Some(holo) = world.classes.find_name("DukeHoloduke") {
+        if crate::inventory::count_inventory(world, mo, holo) > 0 {
+            if let Some(decoy) = world.classes.find_name("DukeHolodukeDecoy") {
+                if let Some(a) = world.actors.get(mo) {
+                    let pos = a.pos;
+                    let angle = a.angle;
+                    let _ = world.spawn_at(decoy, pos, angle);
+                }
+            }
+            let _ = crate::inventory::take_inventory(world, mo, holo, 1);
+        }
+    }
+}
+
+/// Use the Duke status-bar selection (`inven_icon` 2 steroids … 7 boots).
+fn use_inven_icon(world: &mut World, player: &mut Player, mo: ActorId, icon: u8) -> bool {
+    match icon {
+        2 => {
+            if player.steroid_tics != 0 {
+                return false;
+            }
+            let Some(st) = world.classes.find_name("DukeSteroids") else {
+                return false;
+            };
+            if crate::inventory::count_inventory(world, mo, st) == 0 {
+                return false;
+            }
+            let _ = crate::inventory::take_inventory(world, mo, st, 1);
+            player.steroid_tics = 420;
+            true
+        }
+        3 => {
+            let Some(holo) = world.classes.find_name("DukeHoloduke") else {
+                return false;
+            };
+            if crate::inventory::count_inventory(world, mo, holo) == 0 {
+                return false;
+            }
+            if let Some(decoy) = world.classes.find_name("DukeHolodukeDecoy") {
+                if let Some(a) = world.actors.get(mo) {
+                    let pos = a.pos;
+                    let angle = a.angle;
+                    let _ = world.spawn_at(decoy, pos, angle);
+                }
+            }
+            let _ = crate::inventory::take_inventory(world, mo, holo, 1);
+            true
+        }
+        4 => {
+            if player.fly_tics > 0 {
+                return false;
+            }
+            let Some(jp) = world
+                .classes
+                .find_name("DukeJetpack")
+                .or_else(|| world.classes.find_name("Jetpack"))
+            else {
+                return false;
+            };
+            if crate::inventory::count_inventory(world, mo, jp) == 0 {
+                return false;
+            }
+            player.fly_tics = crate::player::FLIGHT_TICS;
+            if let Some(a) = world.actors.get_mut(mo) {
+                a.flags |= crate::class::FLAG_NOGRAVITY;
+            }
+            true
+        }
+        5 => {
+            if player.infrared {
+                return false;
+            }
+            let Some(nv) = world.classes.find_name("DukeNightVision") else {
+                return false;
+            };
+            if crate::inventory::count_inventory(world, mo, nv) == 0 {
+                return false;
+            }
+            let _ = crate::inventory::take_inventory(world, mo, nv, 1);
+            player.infrared = true;
+            player.infrared_tics = crate::player::INFRARED_TICS;
+            true
+        }
+        6 | 7 => {
+            if player.radsuit {
+                return false;
+            }
+            let name = if icon == 6 {
+                "DukeScubaGear"
+            } else {
+                "DukeBoots"
+            };
+            let Some(gear) = world.classes.find_name(name) else {
+                return false;
+            };
+            if crate::inventory::count_inventory(world, mo, gear) == 0 {
+                return false;
+            }
+            let _ = crate::inventory::take_inventory(world, mo, gear, 1);
+            player.radsuit = true;
+            player.radsuit_tics = crate::player::RADSUIT_TICS;
+            if icon == 6 {
+                let t = i32::try_from(world.level.time).unwrap_or(i32::MAX);
+                player.air_finished = t.saturating_add(60 * crate::player::TICRATE);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn kick_weapon(world: &World) -> Option<room_core::ClassId> {
+    world
+        .classes
+        .find_name("DukeKick")
+        .or_else(|| world.classes.find_name("Fist"))
+}
+
+/// Play the kick Fire overlay, then restore the ready gun (`A_WeaponReady`).
+fn start_quick_kick(world: &mut World, player: &mut Player, mo: ActorId) {
+    if player.quick_kick_restore.is_some() {
+        return;
+    }
+    let Some(kick) = kick_weapon(world) else {
+        return;
+    };
+    if world.inventory.count(mo, kick) == 0 {
+        return;
+    }
+    let Some(fire) = world.states.find_label(kick, "Fire") else {
+        return;
+    };
+    if player.ready_weapon != Some(kick) {
+        player.quick_kick_restore = player.ready_weapon;
+    }
+    player.pending_weapon = None;
+    player.ready_weapon = Some(kick);
+    player.pspr_y = crate::player::WEAPON_TOP;
+    crate::action::noise_alert(world, mo);
+    set_psprite(world, player, mo, fire);
+}
+
 fn fire_weapon(world: &mut World, player: &mut Player, mo: ActorId) {
     // Block fire while switching.
     if player.pending_weapon.is_some() || (player.pspr_y - crate::player::WEAPON_TOP).abs() > 0.5 {
@@ -816,8 +1322,14 @@ fn move_player(world: &mut World, mo: ActorId, cmd: &crate::player::TicCmd) {
     let forward = f64::from(cmd.forward_move) * MOVE_SCALE;
     let side = f64::from(cmd.side_move) * MOVE_SCALE;
     if forward == 0.0 && side == 0.0 {
-        if let Some(a) = world.actors.get_mut(mo) {
-            a.vel = DVec3::new(0.0, 0.0, a.vel.z());
+        // Duke: releasing move in the air keeps XY speed. Doom zeros it.
+        let floor_z = crate::physics::floor_at_xy(world, actor.pos.x(), actor.pos.y())
+            .unwrap_or(actor.pos.z());
+        let airborne = actor.pos.z() > floor_z + 0.1;
+        if !airborne {
+            if let Some(a) = world.actors.get_mut(mo) {
+                a.vel = DVec3::new(0.0, 0.0, a.vel.z());
+            }
         }
         return;
     }
@@ -827,10 +1339,23 @@ fn move_player(world: &mut World, mo: ActorId, cmd: &crate::player::TicCmd) {
     // x += forward*cos(a) + side*sin(a); y += forward*sin(a) − side*cos(a)
     let tx = forward * c + side * s;
     let ty = forward * s - side * c;
+    let floor_z =
+        crate::physics::floor_at_xy(world, actor.pos.x(), actor.pos.y()).unwrap_or(actor.pos.z());
+    let airborne = actor.pos.z() > floor_z + 0.1;
+    let duke = world
+        .classes
+        .get(actor.class)
+        .is_some_and(|c| c.name == "DukePlayer");
+    // Duke: holding move in the air steers; it does not replace XY speed.
+    let (vx, vy) = if duke && airborne {
+        (actor.vel.x() + tx * 0.25, actor.vel.y() + ty * 0.25)
+    } else {
+        (tx, ty)
+    };
     if let Some(a) = world.actors.get_mut(mo) {
-        a.vel = DVec3::new(tx, ty, a.vel.z());
+        a.vel = DVec3::new(vx, vy, a.vel.z());
     }
-    let new_pos = DVec3::new(actor.pos.x() + tx, actor.pos.y() + ty, actor.pos.z());
+    let new_pos = DVec3::new(actor.pos.x() + vx, actor.pos.y() + vy, actor.pos.z());
     if !try_move(world, mo, new_pos) {
         // Vanilla: bumping a wall while moving plays `sfx_oof` / `*noway`.
         play_player_sound(world, mo, "*noway");
@@ -898,6 +1423,201 @@ mod tests {
     }
 
     #[test]
+    fn quick_kick_returns_to_the_ready_gun() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let fist = classes.find_name("Fist").unwrap();
+        let pistol = classes.find_name("Pistol").unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let _ = give_inventory(&mut w, mo, fist, 1);
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.cmd.buttons = Buttons(Buttons::QUICKKICK);
+        player_think(&mut w, &mut player);
+        assert_eq!(player.ready_weapon, Some(fist));
+        assert_eq!(player.quick_kick_restore, Some(pistol));
+        player.cmd.buttons = Buttons(0);
+        for _ in 0..40 {
+            player_think(&mut w, &mut player);
+        }
+        assert_eq!(player.ready_weapon, Some(pistol));
+        assert!(player.quick_kick_restore.is_none());
+        w.players[0] = Some(player);
+    }
+
+    #[test]
+    fn use_inventory_heals_from_the_medkit() {
+        let src = format!(
+            "{}\nactor DukeFirstAid : Actor\n{{\n  Inventory.Amount 1\n  Inventory.MaxAmount 100\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let kit = classes.find_name("DukeFirstAid").unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        w.actors.get_mut(mo).unwrap().health = 50;
+        let _ = give_inventory(&mut w, mo, kit, 20);
+        let mut player = w.players[0].take().unwrap();
+        player.cmd.buttons = Buttons(Buttons::INVUSE);
+        for _ in 0..10 {
+            player_think(&mut w, &mut player);
+        }
+        assert_eq!(w.actors.get(mo).unwrap().health, 60);
+        assert_eq!(crate::inventory::count_inventory(&w, mo, kit), 10);
+        w.players[0] = Some(player);
+    }
+
+    #[test]
+    fn use_inventory_starts_steroids_when_the_medkit_cannot_heal() {
+        let src = format!(
+            "{}\nactor DukeFirstAid : Actor\n{{\n  Inventory.Amount 1\n  Inventory.MaxAmount 100\n}}\n\
+             actor DukeSteroids : Actor\n{{\n  Inventory.Amount 1\n  Inventory.MaxAmount 1\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let kit = classes.find_name("DukeFirstAid").unwrap();
+        let st = classes.find_name("DukeSteroids").unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        w.actors.get_mut(mo).unwrap().health = 100;
+        let _ = give_inventory(&mut w, mo, kit, 5);
+        let _ = give_inventory(&mut w, mo, st, 1);
+        let mut player = w.players[0].take().unwrap();
+        player.cmd.buttons = Buttons(Buttons::INVUSE);
+        player_think(&mut w, &mut player);
+        assert_eq!(player.steroid_tics, 420);
+        assert_eq!(crate::inventory::count_inventory(&w, mo, kit), 5);
+        assert_eq!(crate::inventory::count_inventory(&w, mo, st), 0);
+        player.cmd = TicCmd {
+            forward_move: 25 * 256,
+            buttons: Buttons(0),
+            ..TicCmd::default()
+        };
+        player_think(&mut w, &mut player);
+        let sped =
+            w.actors.get(mo).unwrap().vel.x().abs() + w.actors.get(mo).unwrap().vel.y().abs();
+        w.players[0] = Some(player);
+        assert!(sped > 0.4, "steroid move {sped}");
+    }
+
+    #[test]
+    fn use_inventory_uses_selected_steroids_while_hurt() {
+        let src = format!(
+            "{}\nactor DukeFirstAid : Actor\n{{\n  Inventory.Amount 1\n  Inventory.MaxAmount 100\n}}\n\
+             actor DukeSteroids : Actor\n{{\n  Inventory.Amount 1\n  Inventory.MaxAmount 1\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let kit = classes.find_name("DukeFirstAid").unwrap();
+        let st = classes.find_name("DukeSteroids").unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        w.actors.get_mut(mo).unwrap().health = 50;
+        let _ = give_inventory(&mut w, mo, kit, 5);
+        let _ = give_inventory(&mut w, mo, st, 1);
+        let mut player = w.players[0].take().unwrap();
+        player.inven_icon = 2;
+        player.cmd.buttons = Buttons(Buttons::INVUSE);
+        player_think(&mut w, &mut player);
+        assert_eq!(player.steroid_tics, 420);
+        assert_eq!(w.actors.get(mo).unwrap().health, 50);
+        assert_eq!(crate::inventory::count_inventory(&w, mo, kit), 5);
+        assert_eq!(crate::inventory::count_inventory(&w, mo, st), 0);
+        w.players[0] = Some(player);
+    }
+
+    #[test]
+    fn use_inventory_starts_night_vision_scuba_and_a_holoduke() {
+        let src = format!(
+            "{}\nactor DukeNightVision : Actor\n{{\n  Inventory.Amount 1\n  Inventory.MaxAmount 1\n}}\n\
+             actor DukeScubaGear : Actor\n{{\n  Inventory.Amount 1\n  Inventory.MaxAmount 1\n}}\n\
+             actor DukeHoloduke : Actor\n{{\n  Inventory.Amount 1\n  Inventory.MaxAmount 1\n}}\n\
+             actor DukeHolodukeDecoy\n{{\n  Health 1\n  Radius 16\n  Height 56\n  +SHOOTABLE\n  States\n  {{\n  Spawn:\n    PLAY A -1\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let nv = classes.find_name("DukeNightVision").unwrap();
+        let scuba = classes.find_name("DukeScubaGear").unwrap();
+        let holo = classes.find_name("DukeHoloduke").unwrap();
+        let decoy = classes.find_name("DukeHolodukeDecoy").unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        w.actors.get_mut(mo).unwrap().health = 100;
+        let _ = give_inventory(&mut w, mo, nv, 1);
+        let _ = give_inventory(&mut w, mo, scuba, 1);
+        let _ = give_inventory(&mut w, mo, holo, 1);
+        let mut player = w.players[0].take().unwrap();
+        player.cmd.buttons = Buttons(Buttons::INVUSE);
+        player_think(&mut w, &mut player);
+        assert!(player.infrared);
+        assert_eq!(player.infrared_tics, crate::player::INFRARED_TICS);
+        assert_eq!(crate::inventory::count_inventory(&w, mo, nv), 0);
+        player.cmd.buttons = Buttons(0);
+        player_think(&mut w, &mut player);
+        player.cmd.buttons = Buttons(Buttons::INVUSE);
+        player_think(&mut w, &mut player);
+        assert!(player.radsuit);
+        assert_eq!(player.radsuit_tics, crate::player::RADSUIT_TICS);
+        assert!(player.air_finished > 0);
+        assert_eq!(crate::inventory::count_inventory(&w, mo, scuba), 0);
+        player.cmd.buttons = Buttons(0);
+        player_think(&mut w, &mut player);
+        player.cmd.buttons = Buttons(Buttons::INVUSE);
+        player_think(&mut w, &mut player);
+        assert_eq!(crate::inventory::count_inventory(&w, mo, holo), 0);
+        assert!(
+            w.thinkers
+                .default
+                .iter()
+                .any(|&id| { w.actors.get(id).is_some_and(|a| a.class == decoy) }),
+            "holoduke decoy"
+        );
+        w.players[0] = Some(player);
+    }
+
+    #[test]
     fn change_camera_reverts_on_move() {
         let src = include_str!("../../../testdata/actors/doom_basic.txt");
         let file = parse_decorate(src).unwrap();
@@ -926,6 +1646,197 @@ mod tests {
         player_think(&mut w, &mut player);
         assert!(player.camera.is_none());
         assert!(!player.camera_revert);
+        w.players[0] = Some(player);
+    }
+
+    #[test]
+    fn duke_crouch_lowers_height_and_stands_back_up() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let extra = r#"
+actor DukePlayer : DoomPlayer
+{
+  Height 40
+  ViewHeight 36
+}
+"#;
+        let file = parse_decorate(&format!("{src}\n{extra}")).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let duke = classes.find_name("DukePlayer").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        let mo = player.mo.unwrap();
+        player.cls = duke;
+        player.on_ground = true;
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.class = duke;
+            a.height = 40.0;
+        }
+        player.cmd.up_move = -1;
+        player_think(&mut w, &mut player);
+        assert!(player.crouching);
+        assert!(
+            w.actors.get(mo).unwrap().height < 20.0,
+            "crouch height {}",
+            w.actors.get(mo).unwrap().height
+        );
+        assert!(
+            player.view_height < 20.0,
+            "crouch view {}",
+            player.view_height
+        );
+        player.cmd.up_move = 0;
+        player_think(&mut w, &mut player);
+        assert!(!player.crouching);
+        assert!(
+            (w.actors.get(mo).unwrap().height - 40.0).abs() < 0.1,
+            "stand height {}",
+            w.actors.get(mo).unwrap().height
+        );
+        w.players[0] = Some(player);
+    }
+
+    #[test]
+    fn duke_crouch_fits_a_low_ceiling() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let extra = r#"
+actor DukePlayer : DoomPlayer
+{
+  Height 40
+  ViewHeight 36
+}
+"#;
+        let file = parse_decorate(&format!("{src}\n{extra}")).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 32.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let duke = classes.find_name("DukePlayer").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        let mo = player.mo.unwrap();
+        player.cls = duke;
+        player.on_ground = true;
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.class = duke;
+            a.height = 40.0;
+        }
+        player_think(&mut w, &mut player);
+        assert!(player.crouching);
+        assert!(w.actors.get(mo).unwrap().height < 20.0);
+        let a = w.actors.get(mo).unwrap();
+        let dest = DVec3::new(a.pos.x() + 16.0, a.pos.y(), a.pos.z());
+        assert!(crate::physics::try_move(&mut w, mo, dest));
+        w.players[0] = Some(player);
+    }
+
+    #[test]
+    fn duke_long_fall_takes_half_health() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let extra = "actor DukePlayer : DoomPlayer { }\n";
+        let file = parse_decorate(&format!("{src}\n{extra}")).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let duke = classes.find_name("DukePlayer").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        let mo = player.mo.unwrap();
+        player.cls = duke;
+        player.on_ground = true;
+        player.falling_tics = DUKE_FALL_HURT;
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.class = duke;
+            a.health = 100;
+            a.flags |= crate::class::FLAG_SHOOTABLE;
+        }
+        player_think(&mut w, &mut player);
+        assert_eq!(player.falling_tics, 0);
+        assert_eq!(w.actors.get(mo).unwrap().health, 50);
+        w.players[0] = Some(player);
+    }
+
+    #[test]
+    fn duke_air_coast_keeps_xy_speed() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let extra = "actor DukePlayer : DoomPlayer { JumpZ 10 Player.ForwardMove 1.25 }\n";
+        let file = parse_decorate(&format!("{src}\n{extra}")).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let duke = classes.find_name("DukePlayer").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        let mo = player.mo.unwrap();
+        player.cls = duke;
+        player.on_ground = false;
+        player.cmd = TicCmd::default();
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.class = duke;
+            a.pos = DVec3::new(a.pos.x(), a.pos.y(), a.pos.z() + 24.0);
+            a.vel = DVec3::new(8.0, 0.0, 2.0);
+        }
+        player_think(&mut w, &mut player);
+        let v = w.actors.get(mo).unwrap().vel;
+        assert!(
+            v.x() > 7.0,
+            "airborne coast should keep XY speed, got {v:?}"
+        );
+        w.players[0] = Some(player);
+    }
+
+    #[test]
+    fn duke_air_hold_steers_without_replacing_xy() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let extra = "actor DukePlayer : DoomPlayer { JumpZ 10 Player.ForwardMove 1.25 }\n";
+        let file = parse_decorate(&format!("{src}\n{extra}")).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let duke = classes.find_name("DukePlayer").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        let mo = player.mo.unwrap();
+        player.cls = duke;
+        player.on_ground = false;
+        player.cmd.forward_move = 50 * 256;
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.class = duke;
+            a.angle = Angle::from_degrees(0.0);
+            a.pos = DVec3::new(a.pos.x(), a.pos.y(), a.pos.z() + 24.0);
+            a.vel = DVec3::new(8.0, 0.0, 2.0);
+        }
+        player_think(&mut w, &mut player);
+        let v = w.actors.get(mo).unwrap().vel;
+        assert!(
+            v.x() > 8.0,
+            "airborne hold should add to XY speed, got {v:?}"
+        );
         w.players[0] = Some(player);
     }
 
@@ -1553,6 +2464,45 @@ mod tests {
     }
 
     #[test]
+    fn standing_still_plays_an_idle_taunt() {
+        let ir = parse_decorate(
+            r#"
+actor PlayerPawn : Actor 0
+{
+  Health 100
+  IdleTaunt "duke/crack"
+  States { Spawn: PLAY A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.player_state = PlayerState::Live;
+        player.on_ground = true;
+        player.cmd = TicCmd::default();
+        let _ = w.drain_sound_events();
+        for _ in 0..IDLE_TAUNT_TICS {
+            player_think(&mut w, &mut player);
+            player.on_ground = true;
+        }
+        let sounds: Vec<_> = w.drain_sound_events().into_iter().map(|e| e.name).collect();
+        assert!(
+            sounds.iter().any(|n| n == "duke/crack"),
+            "expected idle taunt, got {sounds:?}"
+        );
+        w.players[0] = Some(player);
+    }
+
+    #[test]
     fn pitch_cmd_updates_actor_pitch() {
         let src = include_str!("../../../testdata/actors/doom_basic.txt");
         let file = parse_decorate(src).unwrap();
@@ -1768,5 +2718,49 @@ actor HighJumper : Actor
             player_think(&mut w, &mut player);
             assert!((w.actors.get(mo).unwrap().vel.z() - 12.0).abs() < 1e-9);
         }
+    }
+
+    #[test]
+    fn forward_move_scales_player_thrust() {
+        let ir = parse_decorate(
+            r#"
+actor FastWalker : Actor
+{
+  Player.ForwardMove 2
+  Height 56
+  Radius 16
+  States { Spawn: PLAY A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let fast = classes.find_name("FastWalker").unwrap();
+        assert!((classes.get(fast).unwrap().forward_move - 2.0).abs() < 1e-9);
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.class = fast;
+        }
+        let x0 = w.actors.get(mo).unwrap().pos.x();
+        if let Some(p) = w.players[0].as_mut() {
+            p.cmd.forward_move = 50 * 256;
+            p.cmd.side_move = 0;
+            let mut player = p.clone();
+            player_think(&mut w, &mut player);
+        }
+        let x1 = w.actors.get(mo).unwrap().pos.x();
+        // 50*256/2048 = 6.25; scaled ×2 → 12.5.
+        assert!(
+            (x1 - x0 - 12.5).abs() < 0.5,
+            "forward-move scale {x0} -> {x1}"
+        );
     }
 }

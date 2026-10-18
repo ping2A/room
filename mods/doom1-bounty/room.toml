@@ -1,0 +1,11 @@
+[mod]
+id = "room.example.doom1-bounty"
+name = "Bounty Hunter"
+version = "0.1.0"
+abi = 1
+
+[[module]]
+file = "BOUNTY"
+scope = "play"
+name = "bounty"
+source = "S_BOUNTY"

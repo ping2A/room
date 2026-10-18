@@ -25,6 +25,10 @@ impl Buttons {
     pub const WEAPONNEXT: u32 = 1 << 5;
     /// Previous owned weapon.
     pub const WEAPONPREV: u32 = 1 << 6;
+    /// Duke quick kick (melee without switching away from the ready gun).
+    pub const QUICKKICK: u32 = 1 << 7;
+    /// Use the carried inventory item (Duke medkit / steroids).
+    pub const INVUSE: u32 = 1 << 8;
 
     /// True if any of `mask` is set.
     #[must_use]
@@ -85,6 +89,10 @@ pub struct Player {
     pub view_z: f64,
     /// On ground this tic.
     pub on_ground: bool,
+    /// Duke crouch (`up_move` down while grounded).
+    pub crouching: bool,
+    /// Consecutive falling tics (`DukePlayer` long-fall damage).
+    pub falling_tics: u32,
     /// Ready weapon inventory class (if any).
     pub ready_weapon: Option<ClassId>,
     /// Weapon being switched to (`WP_NOCHANGE` = `None` while idle).
@@ -111,6 +119,16 @@ pub struct Player {
     pub jump_down: bool,
     /// Use button was held last tic (Doom `player->usedown` edge).
     pub use_down: bool,
+    /// Inventory-use button was held last tic.
+    pub invuse_down: bool,
+    /// Quick-kick button was held last tic.
+    pub quick_kick_down: bool,
+    /// Weapon to restore after a quick kick (`None` = not kicking).
+    pub quick_kick_restore: Option<ClassId>,
+    /// Consecutive idle tics (no move / fire / use / turn). Resets on input.
+    pub idle_tics: i32,
+    /// Duke footstep phase (`walking_snd_toggle`).
+    pub walk_snd_toggle: bool,
     /// `god` / `iddqd` — ignore damage.
     pub god: bool,
     /// `noclip` — pass through walls (`try_move` skips blocking).
@@ -139,6 +157,42 @@ pub struct Player {
     pub infrared: bool,
     /// Remaining infrared tics.
     pub infrared_tics: i32,
+    /// Remaining `PowerFlight` tics (`ArtiFly`); the pawn has `NOGRAVITY` while > 0.
+    pub fly_tics: i32,
+    /// Remaining Duke steroid tics (faster movement).
+    pub steroid_tics: i32,
+    /// Duke selected inventory (`inven_icon`: 0 none, 1 kit … 7 boots).
+    pub inven_icon: u8,
+    /// Inventory-key still held (`toggle_key_flag`).
+    pub toggle_key_flag: bool,
+    /// Remaining HUD inventory-name tics (`invdisptime`, 35 Hz).
+    pub invdisp_tics: u32,
+    /// Previous look pitch from a Duke save (`ohoriz` + `ohorizoff`).
+    pub prev_pitch: Option<i32>,
+    /// Duke footprint shade (`footprintshade`).
+    pub footprint_shade: Option<i16>,
+    /// Remaining Duke footprints (`footprintcount`).
+    pub footprint_count: Option<u8>,
+    /// Duke footprint palette (`footprintpal`).
+    pub footprint_pal: Option<u8>,
+    /// Remaining post-teleport lock tics (`transporter_hold`, 35 Hz).
+    pub transporter_hold_tics: u32,
+    /// Remaining Duke quote display tics (`fta`, 35 Hz).
+    pub fta_tics: u32,
+    /// Duke quote index (`ftq`) while `fta_tics` > 0.
+    pub ftq: i16,
+    /// Remaining hard-land view dip (`hard_landing`).
+    pub hard_landing: u8,
+    /// Duke view-bob phase (`pycount`, 0..=2047) when restored from a save.
+    pub pycount: Option<i16>,
+    /// Remaining Duke pain-flash cooldown (`hurt_delay`, 35 Hz).
+    pub hurt_delay_tics: u32,
+    /// Duke screen tilt (`rotscrnang`, Build ang, decays toward 0).
+    pub rotscrnang: i16,
+    /// Remaining recenter tics (`return_to_center`, 35 Hz).
+    pub return_to_center: u32,
+    /// Remaining tip pose tics (`tipincs`, 35 Hz).
+    pub tip_incs: u32,
     /// Backpack collected — ammo maxes are doubled.
     pub backpack: bool,
     /// Absolute level time when air runs out (ACS `Get/SetAirSupply`; 0 = unset).
@@ -192,6 +246,7 @@ impl Player {
         self.player_state = PlayerState::Live;
         self.view_height = 41.0;
         self.on_ground = true;
+        self.crouching = false;
         self.ready_weapon = None;
         self.pending_weapon = None;
         self.pspr_y = WEAPON_TOP;
@@ -205,6 +260,11 @@ impl Player {
         self.refire = 0;
         self.jump_down = false;
         self.use_down = false;
+        self.invuse_down = false;
+        self.quick_kick_down = false;
+        self.quick_kick_restore = None;
+        self.idle_tics = 0;
+        self.walk_snd_toggle = false;
         self.god = false;
         self.noclip = false;
         self.armor = 0;
@@ -219,6 +279,24 @@ impl Player {
         self.allmap = false;
         self.infrared = false;
         self.infrared_tics = 0;
+        self.fly_tics = 0;
+        self.steroid_tics = 0;
+        self.inven_icon = 0;
+        self.toggle_key_flag = false;
+        self.invdisp_tics = 0;
+        self.prev_pitch = None;
+        self.footprint_shade = None;
+        self.footprint_count = None;
+        self.footprint_pal = None;
+        self.transporter_hold_tics = 0;
+        self.fta_tics = 0;
+        self.ftq = 0;
+        self.hard_landing = 0;
+        self.pycount = None;
+        self.hurt_delay_tics = 0;
+        self.rotscrnang = 0;
+        self.return_to_center = 0;
+        self.tip_incs = 0;
         self.backpack = false;
         self.frozen = false;
         self.notarget = false;
@@ -253,5 +331,9 @@ pub const INVUL_TICS: i32 = 30 * TICRATE;
 pub const BLUR_TICS: i32 = 60 * TICRATE;
 /// Radiation suit duration (60 s).
 pub const RADSUIT_TICS: i32 = 60 * TICRATE;
+/// `PowerFlight` duration (60 s).
+pub const FLIGHT_TICS: i32 = 60 * TICRATE;
+/// GZDoom `FRICTION_FLY` — vertical drag while flying with no thrust.
+pub const FRICTION_FLY: f64 = 0.917_968_75;
 /// Infrared goggles duration (120 s).
 pub const INFRARED_TICS: i32 = 120 * TICRATE;

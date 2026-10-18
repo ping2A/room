@@ -164,10 +164,7 @@ impl<'a> DefinitionsBuilder<'a> {
             }
         }
 
-        if let Some(text) = self
-            .read_all_text("ZMAPINFO")
-            .or_else(|| self.read_all_text("MAPINFO"))
-        {
+        if let Some(text) = self.read_mapinfo_text() {
             match parse_mapinfo(&text) {
                 Ok(m) => defs.mapinfo = m,
                 Err(e) => defs.warnings.push(format!("MAPINFO: {e}")),
@@ -224,7 +221,7 @@ impl<'a> DefinitionsBuilder<'a> {
                                 rand: None,
                             },
                             crate::animdefs::AnimPic {
-                                name: rec.last,
+                                name: format!("RANGE:{}", rec.last),
                                 tics: Some(i64::from(rec.speed)),
                                 rand: None,
                             },
@@ -417,6 +414,38 @@ impl<'a> DefinitionsBuilder<'a> {
         }
         self.read_bytes(name)
             .map(|b| String::from_utf8_lossy(&b).into_owned())
+    }
+
+    /// Every archive's ZMAPINFO, or its MAPINFO when it has none, in load
+    /// order (GZDoom picks per archive, so an IWAD/PWAD MAPINFO still layers
+    /// over the engine's ZMAPINFO).
+    fn read_mapinfo_text(&self) -> Option<String> {
+        let z: Vec<_> = self.vfs.find_all("ZMAPINFO", Namespace::Global).collect();
+        let has_z = |id| {
+            let c = self.vfs.lump(id).map(|l| l.container);
+            z.iter()
+                .any(|&zid| self.vfs.lump(zid).map(|l| l.container) == c)
+        };
+        let mut ids: Vec<_> = self
+            .vfs
+            .find_all("MAPINFO", Namespace::Global)
+            .filter(|&id| !has_z(id))
+            .chain(z.iter().copied())
+            .collect();
+        if ids.is_empty() {
+            return self
+                .read_all_text("ZMAPINFO")
+                .or_else(|| self.read_all_text("MAPINFO"));
+        }
+        ids.sort_by_key(|id| id.0);
+        let mut out = String::new();
+        for id in ids {
+            if let Ok(b) = self.vfs.read(id) {
+                out.push('\n');
+                out.push_str(&String::from_utf8_lossy(&b));
+            }
+        }
+        Some(out)
     }
 
     fn read_all_text(&self, name: &str) -> Option<String> {

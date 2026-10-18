@@ -201,6 +201,7 @@ pub fn call_action_args(
         "A_SetInventory" => a_set_inventory(world, self_id, args),
         "A_DamageSelf" => a_damage_self(world, self_id, args),
         "A_DamageTarget" => a_damage_pointer(world, self_id, args, FacePtr::Target),
+        "A_HealTarget" => a_heal_pointer(world, self_id, args, FacePtr::Target),
         "A_DamageMaster" => a_damage_pointer(world, self_id, args, FacePtr::Master),
         "A_DamageTracer" => a_damage_pointer(world, self_id, args, FacePtr::Tracer),
         "A_DamageChildren" => a_damage_children(world, self_id, args),
@@ -212,6 +213,8 @@ pub fn call_action_args(
         "A_SetFriendlySeeBlocks" => a_set_friendly_see_blocks(world, self_id, args),
         "A_SetConversation" => a_set_conversation(world, self_id, args),
         "A_Respawn" => a_respawn(world, self_id, args),
+        "A_DukeRespawn" => a_duke_respawn(world, self_id),
+        "A_DukeFrameEffect" => a_duke_frame_effect(world, self_id),
         "A_JumpIfNoTarget" => a_jump_if_no_target(world, self_id, args),
         "A_JumpIfTargetInLOS" => a_jump_if_target_in_los(world, self_id, args),
         "A_Die" => a_die(world, self_id, args),
@@ -239,6 +242,8 @@ pub fn call_action_args(
         "A_RearrangePointers" => a_rearrange_pointers(world, self_id, args),
         "A_Warp" => a_warp(world, self_id, args),
         "A_Teleport" => a_teleport(world, self_id, args),
+        "A_RandomTeleport" => a_random_teleport(world, self_id, args),
+        "A_ChangeCameraToNearest" => a_change_camera_to_nearest(world, self_id, args),
         "A_SelectWeapon" => a_select_weapon(world, self_id, args),
         "A_Look" => a_look(world, self_id),
         "A_LookEx" => a_look_ex(world, self_id, args),
@@ -450,7 +455,7 @@ pub fn call_action_args(
             world.dequeue_corpse(self_id);
             ActionResult::Continue
         }
-        "A_Explode" => a_explode(world, self_id),
+        "A_Explode" => a_explode_args(world, self_id, args),
         "A_Detonate" => a_detonate(world, self_id),
         "A_Mushroom" => a_mushroom(world, self_id, args),
         "A_Spawn" => a_mbf_spawn(world, self_id, args),
@@ -480,6 +485,8 @@ pub fn call_action_args(
         "A_RadiusThrust" => a_radius_thrust(world, self_id, args),
         "A_Quake" => a_quake(world, self_id, args),
         "A_QuakeEx" => a_quake_ex(world, self_id, args),
+        "A_JumpIfQuake" => a_jump_if_quake(world, self_id, args),
+        "A_JumpIfLaserHit" => a_jump_if_laser_hit(world, self_id, args),
         "A_SetBlend" => a_set_blend(world, args),
         _ => ActionResult::Continue,
     }
@@ -1445,27 +1452,60 @@ fn a_set_user_array(world: &mut World, self_id: ActorId, args: &[String]) -> Act
     ActionResult::Continue
 }
 
-/// `A_CheckProximity(class, dist, count, flags, "Label")` — jump if enough of `class` in range.
+/// `A_CheckProximity(jump, class, dist [, count [, flags [, ptr]]])` — jump if
+/// enough actors of `class` are in range (GZDoom). Room's older
+/// `(class, dist, count, flags, "Label")` order is still read.
+/// Flags: `CPXF_ANCESTOR`, `CPXF_LESSOREQUAL`, `CPXF_NOZ`, `CPXF_COUNTDEAD`,
+/// `CPXF_DEADONLY`, `CPXF_EXACT`, `CPXF_SETTARGET`.
 fn a_check_proximity(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
-    let class_name = args
-        .first()
-        .map(|s| s.trim_matches('"').to_owned())
-        .unwrap_or_default();
-    let dist = args
-        .get(1)
-        .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
-        .unwrap_or(0.0);
-    let need = args
-        .get(2)
-        .and_then(|s| s.trim_matches('"').parse::<i32>().ok())
-        .unwrap_or(1)
-        .max(1);
-    let label = args
-        .get(4)
-        .or_else(|| args.get(3))
-        .map(|s| s.trim_matches('"').to_owned())
-        .filter(|s| s.parse::<i32>().is_err())
-        .unwrap_or_default();
+    const ANCESTOR: i32 = 1;
+    const LESS_OR_EQUAL: i32 = 1 << 1;
+    const NO_Z: i32 = 1 << 2;
+    const COUNT_DEAD: i32 = 1 << 3;
+    const DEAD_ONLY: i32 = 1 << 4;
+    const EXACT: i32 = 1 << 5;
+    const SET_TARGET: i32 = 1 << 6;
+    let arg = |i: usize| args.get(i).map(|s| s.trim().trim_matches('"').to_owned());
+    let num = |i: usize| arg(i).and_then(|s| s.parse::<f64>().ok());
+    let flag_bits = |i: usize| -> i32 {
+        arg(i).map_or(0, |s| {
+            s.split('|')
+                .map(|f| match f.trim().to_ascii_uppercase().as_str() {
+                    "CPXF_ANCESTOR" => ANCESTOR,
+                    "CPXF_LESSOREQUAL" => LESS_OR_EQUAL,
+                    "CPXF_NOZ" => NO_Z,
+                    "CPXF_COUNTDEAD" => COUNT_DEAD,
+                    "CPXF_DEADONLY" => DEAD_ONLY,
+                    "CPXF_EXACT" => EXACT,
+                    "CPXF_SETTARGET" => SET_TARGET,
+                    other => other.parse().unwrap_or(0),
+                })
+                .fold(0, |a, b| a | b)
+        })
+    };
+    let legacy = arg(0).is_some_and(|c| world.classes.find_name(&c).is_some()) && num(1).is_some();
+    let (label, class_name, dist, need, flags) = if legacy {
+        let label = arg(4)
+            .or_else(|| arg(3))
+            .filter(|s| s.parse::<i32>().is_err())
+            .unwrap_or_default();
+        (
+            label,
+            arg(0).unwrap_or_default(),
+            num(1).unwrap_or(0.0),
+            num(2),
+            0,
+        )
+    } else {
+        (
+            arg(0).unwrap_or_default(),
+            arg(1).unwrap_or_default(),
+            num(2).unwrap_or(0.0),
+            num(3),
+            flag_bits(4),
+        )
+    };
+    let need = need.map_or(1, |n| n as i32);
     if class_name.is_empty() || label.is_empty() {
         return ActionResult::Continue;
     }
@@ -1477,7 +1517,23 @@ fn a_check_proximity(world: &mut World, self_id: ActorId, args: &[String]) -> Ac
     };
     let origin = self_a.pos;
     let d2 = dist * dist;
+    let is_kind = |mut c: room_core::ClassId| {
+        if flags & ANCESTOR == 0 {
+            return c == want;
+        }
+        for _ in 0..64 {
+            if c == want {
+                return true;
+            }
+            match world.classes.get(c).and_then(|d| d.parent) {
+                Some(p) => c = p,
+                None => return false,
+            }
+        }
+        false
+    };
     let mut n = 0i32;
+    let mut closest: Option<(f64, ActorId)> = None;
     for &id in &world.thinkers.default {
         if id == self_id {
             continue;
@@ -1485,20 +1541,45 @@ fn a_check_proximity(world: &mut World, self_id: ActorId, args: &[String]) -> Ac
         let Some(o) = world.actors.get(id) else {
             continue;
         };
-        if o.destroyed || o.health <= 0 || o.class != want {
+        let dead = o.health <= 0;
+        if o.destroyed
+            || (dead && flags & (COUNT_DEAD | DEAD_ONLY) == 0)
+            || (!dead && flags & DEAD_ONLY != 0)
+            || !is_kind(o.class)
+        {
             continue;
         }
         let dx = o.pos.x() - origin.x();
         let dy = o.pos.y() - origin.y();
-        let dz = o.pos.z() - origin.z();
-        if dx * dx + dy * dy + dz * dz <= d2 {
+        let dz = if flags & NO_Z != 0 {
+            0.0
+        } else {
+            o.pos.z() - origin.z()
+        };
+        let d = dx * dx + dy * dy + dz * dz;
+        if d <= d2 {
             n += 1;
-            if n >= need {
-                return jump_to_label(world, self_id, &label);
+            if closest.is_none_or(|(cd, _)| d < cd) {
+                closest = Some((d, id));
             }
         }
     }
-    ActionResult::Continue
+    let hit = if flags & EXACT != 0 {
+        n == need
+    } else if flags & LESS_OR_EQUAL != 0 {
+        n <= need
+    } else {
+        n >= need
+    };
+    if !hit {
+        return ActionResult::Continue;
+    }
+    if flags & SET_TARGET != 0 {
+        if let (Some((_, t)), Some(a)) = (closest, world.actors.get_mut(self_id)) {
+            a.target = Some(t);
+        }
+    }
+    jump_to_label(world, self_id, &label)
 }
 
 /// `A_ChangeVelocity(x, y, z [, flags])` — add (or replace) velocity.
@@ -1606,7 +1687,10 @@ fn jump_to_label(world: &World, self_id: ActorId, label: &str) -> ActionResult {
     if label.is_empty() {
         return ActionResult::Continue;
     }
-    let Some(class) = world.actors.get(self_id).map(|a| a.class) else {
+    let Some(class) = world
+        .psprite_weapon
+        .or_else(|| world.actors.get(self_id).map(|a| a.class))
+    else {
         return ActionResult::Continue;
     };
     if let Some(sid) = world.states.find_label(class, label) {
@@ -1624,8 +1708,31 @@ fn target_is_valid(world: &World, tid: ActorId) -> bool {
     !a.destroyed && a.health > 0 && (a.flags & crate::class::FLAG_NOTARGET) == 0
 }
 
+fn is_holoduke_decoy(world: &World, tid: ActorId) -> bool {
+    world
+        .actors
+        .get(tid)
+        .and_then(|a| world.classes.get(a.class))
+        .is_some_and(|c| c.name.eq_ignore_ascii_case("DukeHolodukeDecoy"))
+}
+
 fn is_player_mo(world: &World, tid: ActorId) -> bool {
-    world.players.iter().flatten().any(|p| p.mo == Some(tid))
+    world.players.iter().flatten().any(|p| p.mo == Some(tid)) || is_holoduke_decoy(world, tid)
+}
+
+fn player_like_mos(world: &World) -> Vec<ActorId> {
+    let mut ids: Vec<ActorId> = world
+        .players
+        .iter()
+        .flatten()
+        .filter_map(|p| p.mo)
+        .collect();
+    for &id in &world.thinkers.default {
+        if is_holoduke_decoy(world, id) && target_is_valid(world, id) && !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
 }
 
 /// Hostile monster for a `+FRIENDLY` actor (shootable, not friendly, not a player).
@@ -1652,10 +1759,7 @@ fn is_enemy_monster(world: &World, tid: ActorId) -> bool {
 fn nearest_player_mo(world: &World, from: ActorId) -> Option<ActorId> {
     let origin = world.actors.get(from)?.pos;
     let mut best: Option<(ActorId, f64)> = None;
-    for p in world.players.iter().flatten() {
-        let Some(mo) = p.mo else {
-            continue;
-        };
+    for mo in player_like_mos(world) {
         let Some(a) = world.actors.get(mo) else {
             continue;
         };
@@ -2634,6 +2738,73 @@ fn a_respawn(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResu
     ActionResult::Continue
 }
 
+/// `A_DukeRespawn` — after `args[1]` tics, spawn doomednum `args[0]` once.
+fn a_duke_respawn(world: &mut World, self_id: ActorId) -> ActionResult {
+    let (ednum, pos, ang) = {
+        let Some(a) = world.actors.get_mut(self_id) else {
+            return ActionResult::Continue;
+        };
+        if a.args[0] == 0 {
+            return ActionResult::Continue;
+        }
+        if a.args[2] <= 0 {
+            a.args[2] = a.args[1].max(1);
+            return ActionResult::Continue;
+        }
+        a.args[2] -= 8;
+        if a.args[2] > 0 {
+            return ActionResult::Continue;
+        }
+        let ednum = a.args[0];
+        a.args[0] = 0;
+        (ednum, a.pos, a.angle)
+    };
+    let Some(cid) = world.classes.find_doomednum(ednum) else {
+        return ActionResult::Continue;
+    };
+    let _ = world.spawn_at(cid, pos, ang);
+    ActionResult::Continue
+}
+
+/// `A_DukeFrameEffect` — copy the nearest living `COUNTKILL`'s sprite and sit on it.
+fn a_duke_frame_effect(world: &mut World, self_id: ActorId) -> ActionResult {
+    let mut best: Option<(ActorId, f64)> = None;
+    for &id in &world.thinkers.default {
+        if id == self_id {
+            continue;
+        }
+        let Some(a) = world.actors.get(id) else {
+            continue;
+        };
+        if a.destroyed || a.health <= 0 || (a.flags & crate::class::FLAG_COUNTKILL) == 0 {
+            continue;
+        }
+        let Some(me) = world.actors.get(self_id) else {
+            return ActionResult::Continue;
+        };
+        let dx = a.pos.x() - me.pos.x();
+        let dy = a.pos.y() - me.pos.y();
+        let d = dx * dx + dy * dy;
+        if best.is_none_or(|(_, bd)| d < bd) {
+            best = Some((id, d));
+        }
+    }
+    let Some((tid, _)) = best else {
+        return ActionResult::Continue;
+    };
+    let Some(src) = world.actors.get(tid).cloned() else {
+        return ActionResult::Continue;
+    };
+    if let Some(a) = world.actors.get_mut(self_id) {
+        a.target = Some(tid);
+        a.sprite = src.sprite;
+        a.frame = src.frame;
+        a.pos = src.pos;
+        a.angle = src.angle;
+    }
+    ActionResult::Continue
+}
+
 /// `A_JumpIfNoTarget("Label")` — jump when target is missing or dead.
 fn a_jump_if_no_target(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
     let label = args
@@ -3529,6 +3700,104 @@ fn a_teleport(world: &mut World, self_id: ActorId, args: &[String]) -> ActionRes
     }
 }
 
+/// `A_RandomTeleport([range])` — warp to a free spot within `range` (default 192).
+fn a_random_teleport(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let range = args
+        .first()
+        .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
+        .filter(|r| *r > 0.0)
+        .unwrap_or(192.0);
+    let Some(a) = world.actors.get(self_id).cloned() else {
+        return ActionResult::Continue;
+    };
+    let rx = f64::from(i32::from(world.p_random("pr_rndtele")) - 128) * range / 128.0;
+    let ry = f64::from(i32::from(world.p_random("pr_rndtele")) - 128) * range / 128.0;
+    let dest = DVec3::new(a.pos.x() + rx, a.pos.y() + ry, a.pos.z());
+    let check = crate::physics::check_position(world, &a, dest, Some(self_id));
+    if !check.ok {
+        return ActionResult::Continue;
+    }
+    let old = a.pos;
+    let at = DVec3::new(dest.x(), dest.y(), check.floor_z);
+    if let Some(m) = world.actors.get_mut(self_id) {
+        m.pos = at;
+        m.vel = DVec3::ZERO;
+    }
+    crate::specials::spawn_teleport_fog(world, old);
+    crate::specials::spawn_teleport_fog(world, at);
+    ActionResult::Continue
+}
+
+/// `A_ChangeCameraToNearest("Class" [, revert])` — look through the nearest
+/// actor of `Class` (the caller's target player, else the caller).
+fn a_change_camera_to_nearest(
+    world: &mut World,
+    self_id: ActorId,
+    args: &[String],
+) -> ActionResult {
+    let class = args
+        .first()
+        .map(|s| s.trim_matches('"').to_owned())
+        .filter(|s| !s.is_empty());
+    let Some(class) = class else {
+        return ActionResult::Continue;
+    };
+    let revert = args
+        .get(1)
+        .and_then(|s| s.trim_matches('"').parse::<i32>().ok())
+        .unwrap_or(1)
+        != 0;
+    let Some(cid) = world.classes.find_name(&class) else {
+        return ActionResult::Continue;
+    };
+    let Some(from) = world.actors.get(self_id).map(|a| a.pos) else {
+        return ActionResult::Continue;
+    };
+    let mut best: Option<(ActorId, f64)> = None;
+    for &id in &world.thinkers.default {
+        if id == self_id {
+            continue;
+        }
+        let Some(a) = world.actors.get(id) else {
+            continue;
+        };
+        if a.destroyed || a.health <= 0 || a.class != cid {
+            continue;
+        }
+        let dx = a.pos.x() - from.x();
+        let dy = a.pos.y() - from.y();
+        let d2 = dx * dx + dy * dy;
+        if best.as_ref().is_none_or(|(_, bd)| d2 < *bd) {
+            best = Some((id, d2));
+        }
+    }
+    let Some((cam, _)) = best else {
+        return ActionResult::Continue;
+    };
+    let who = world
+        .actors
+        .get(self_id)
+        .and_then(|a| a.target)
+        .unwrap_or(self_id);
+    if let Some(p) = world
+        .players
+        .iter_mut()
+        .flatten()
+        .find(|p| p.mo == Some(who))
+    {
+        p.camera = Some(cam);
+        p.camera_revert = revert;
+    }
+    world.camera_textures.insert(
+        "VCAMA0".into(),
+        crate::world::CameraTextureBind {
+            camera: cam,
+            fov: 90.0,
+        },
+    );
+    ActionResult::Continue
+}
+
 /// `A_SelectWeapon("Weapon")` — queue a weapon change on the owning player.
 fn a_select_weapon(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
     let name = args
@@ -3666,13 +3935,7 @@ fn a_look(world: &mut World, self_id: ActorId) -> ActionResult {
                 }
             }
         } else {
-            for slot in &world.players {
-                let Some(p) = slot else {
-                    continue;
-                };
-                let Some(mo) = p.mo else {
-                    continue;
-                };
+            for mo in player_like_mos(world) {
                 if mo == self_id {
                     continue;
                 }
@@ -3832,10 +4095,8 @@ fn a_look_ex(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResu
                 .filter(|&mo| mo != self_id && is_enemy_monster(world, mo))
                 .collect()
         } else {
-            world
-                .players
-                .iter()
-                .filter_map(|p| p.as_ref().and_then(|pl| pl.mo))
+            player_like_mos(world)
+                .into_iter()
                 .filter(|&mo| mo != self_id)
                 .collect()
         };
@@ -4188,6 +4449,15 @@ fn a_chase(world: &mut World, self_id: ActorId) -> ActionResult {
             }
         }
     }
+    // Duke CON `movevel` owns XY/facing this tic (`user_conchase`).
+    if world
+        .actors
+        .get(self_id)
+        .and_then(|a| a.user_vars.get("user_conchase").copied())
+        == Some(1)
+    {
+        return ActionResult::Continue;
+    }
     if len < 1.0 {
         return ActionResult::Continue;
     }
@@ -4354,8 +4624,31 @@ fn chase_move(world: &mut World, self_id: ActorId) -> bool {
         if (a.flags & crate::class::FLAG_CANUSEWALLS) != 0 {
             let _ = crate::use_lines::use_lines(world, self_id);
         }
-        // Doom sets `movedir = DI_NODIR` only in the spechit path; keep dir for retry.
-        return false;
+        // Duke CON actors without `movevel` this tic still hug the wall
+        // (slide left, then right) instead of Doom's NewChaseDir turn.
+        let duke = world
+            .classes
+            .get(a.class)
+            .is_some_and(|c| c.name.starts_with("Duke"));
+        if duke && world.math_mode != crate::vanilla::SimMathMode::VanillaFixed {
+            let ox = a.pos.x();
+            let oy = a.pos.y();
+            let oz = a.pos.z();
+            let dx = dest.x() - ox;
+            let dy = dest.y() - oy;
+            let left = DVec3::new(ox - dy, oy + dx, oz);
+            if crate::physics::try_move(world, self_id, left) {
+                // Fall through to the floor snap below.
+            } else {
+                let right = DVec3::new(ox + dy, oy - dx, oz);
+                if !crate::physics::try_move(world, self_id, right) {
+                    return false;
+                }
+            }
+        } else {
+            // Doom sets `movedir = DI_NODIR` only in the spechit path; keep dir for retry.
+            return false;
+        }
     }
     if (a.flags & crate::class::FLAG_FLOAT) == 0 {
         // Doom `P_Move`: `actor->z = actor->floorz` from the last `P_CheckPosition`.
@@ -4792,6 +5085,42 @@ fn a_damage_self(world: &mut World, self_id: ActorId, args: &[String]) -> Action
     if let Some(old) = prev {
         if let Some(a) = world.actors.get_mut(self_id) {
             a.damage_type = old;
+        }
+    }
+    ActionResult::Continue
+}
+
+/// `A_HealTarget(amount [, max])` — add hit points to the target, capped.
+fn a_heal_pointer(
+    world: &mut World,
+    self_id: ActorId,
+    args: &[String],
+    which: FacePtr,
+) -> ActionResult {
+    let amount = args
+        .first()
+        .and_then(|s| s.trim_matches('"').parse::<i32>().ok())
+        .unwrap_or(1);
+    if amount <= 0 {
+        return ActionResult::Continue;
+    }
+    let cap = args
+        .get(1)
+        .and_then(|s| s.trim_matches('"').parse::<i32>().ok());
+    let Some(tid) = resolve_face_ptr(world, self_id, which) else {
+        return ActionResult::Continue;
+    };
+    let class_max = world
+        .actors
+        .get(tid)
+        .and_then(|a| world.classes.get(a.class))
+        .map(|c| c.health)
+        .filter(|&h| h > 0)
+        .unwrap_or(100);
+    let max = cap.unwrap_or(class_max).clamp(0, class_max);
+    if let Some(a) = world.actors.get_mut(tid) {
+        if a.health < max {
+            a.health = (a.health + amount).min(max);
         }
     }
     ActionResult::Continue
@@ -7201,29 +7530,95 @@ fn radius_attack(
             }
         }
     }
+    radius_damage_lines(world, source, origin, max_damage, distance);
+}
+
+/// GZDoom `P_GeometryRadiusAttack` (lines): destructible linedefs within
+/// `distance` of the blast take damage falling off with the distance to the line.
+fn radius_damage_lines(
+    world: &mut World,
+    source: ActorId,
+    origin: DVec3,
+    max_damage: i32,
+    distance: f64,
+) {
+    let mut hits = Vec::new();
+    for (i, line) in world.map.lines.iter().enumerate() {
+        let health = world
+            .line_health
+            .get(&(i as u32))
+            .copied()
+            .unwrap_or(line.health);
+        if health <= 0 {
+            continue;
+        }
+        let (Some(v1), Some(v2)) = (
+            world.map.vertices.get(line.v1.raw() as usize),
+            world.map.vertices.get(line.v2.raw() as usize),
+        ) else {
+            continue;
+        };
+        let (ax, ay) = (v1.pos.x(), v1.pos.y());
+        let (ex, ey) = (v2.pos.x() - ax, v2.pos.y() - ay);
+        let len2 = ex * ex + ey * ey;
+        let t = if len2 > 0.0 {
+            (((origin.x() - ax) * ex + (origin.y() - ay) * ey) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let (dx, dy) = (origin.x() - (ax + ex * t), origin.y() - (ay + ey * t));
+        let dist = dmath::sqrt(dx * dx + dy * dy);
+        if dist >= distance {
+            continue;
+        }
+        let dmg = ((1.0 - dist / distance) * f64::from(max_damage)) as i32;
+        if dmg > 0 {
+            hits.push((room_core::LineId::from_raw(i as u32), dmg));
+        }
+    }
+    for (lid, dmg) in hits {
+        let _ = crate::specials::damage_linedef(world, lid, Some(source), dmg);
+    }
 }
 
 /// `A_Explode`: radius damage around self (Doom barrel defaults).
 fn a_explode(world: &mut World, self_id: ActorId) -> ActionResult {
-    let Some(self_actor) = world.actors.get(self_id).cloned() else {
-        return ActionResult::Continue;
-    };
-    // Cue DeathSound at the blast (rocket / barrel / …).
+    if let Some(pos) = a_explode_sound(world, self_id) {
+        radius_attack(world, self_id, pos, 128, 128.0);
+    }
+    ActionResult::Continue
+}
+
+/// Cue `DeathSound` at the blast (rocket / barrel / …); returns the blast origin.
+fn a_explode_sound(world: &mut World, self_id: ActorId) -> Option<DVec3> {
+    let self_actor = world.actors.get(self_id)?;
+    let pos = self_actor.pos;
     let death_snd = world
         .classes
         .get(self_actor.class)
         .map(|c| c.death_sound.clone())
         .filter(|s| !s.is_empty());
     if let Some(snd) = death_snd {
-        world.play_sound(
-            &snd,
-            self_actor.pos.x(),
-            self_actor.pos.y(),
-            self_actor.pos.z(),
-            1.0,
-        );
+        world.play_sound(&snd, pos.x(), pos.y(), pos.z(), 1.0);
     }
-    radius_attack(world, self_id, self_actor.pos, 128, 128.0);
+    Some(pos)
+}
+
+/// `A_Explode([damage [, distance]])`: GZDoom defaults 128 damage, distance = damage.
+fn a_explode_args(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let damage = parse_i32_arg(args, 0, -1);
+    if damage <= 0 {
+        return a_explode(world, self_id);
+    }
+    let distance = parse_f64_arg(args, 1, -1.0);
+    let distance = if distance > 0.0 {
+        distance
+    } else {
+        f64::from(damage)
+    };
+    if let Some(pos) = a_explode_sound(world, self_id) {
+        radius_attack(world, self_id, pos, damage, distance);
+    }
     ActionResult::Continue
 }
 
@@ -8052,6 +8447,101 @@ fn a_radius_thrust(world: &mut World, self_id: ActorId, args: &[String]) -> Acti
     ActionResult::Continue
 }
 
+/// `A_JumpIfLaserHit("Label" [, range])` — jump when a shootable actor
+/// crosses a beam along this actor's facing (Duke tripbomb). Draws
+/// `DukeLaserLine` along the ray when that class exists.
+fn a_jump_if_laser_hit(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let label = args
+        .first()
+        .map(|s| s.trim_matches('"').to_owned())
+        .unwrap_or_default();
+    let range = args
+        .get(1)
+        .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
+        .unwrap_or(1024.0)
+        .clamp(8.0, 4096.0);
+    if label.is_empty() {
+        return ActionResult::Continue;
+    }
+    let Some(self_a) = world.actors.get(self_id) else {
+        return ActionResult::Continue;
+    };
+    let origin = self_a.pos;
+    let height = self_a.height.max(4.0);
+    let ang = self_a.angle;
+    let master = self_a.master;
+    let rad = ang.radians();
+    let (dirx, diry) = (dmath::cos(rad), dmath::sin(rad));
+    let beam_z = origin.z() + height * 0.5;
+    let ids: Vec<ActorId> = world.thinkers.default.clone();
+    let mut best: Option<(f64, ActorId)> = None;
+    for id in ids {
+        if id == self_id || master == Some(id) {
+            continue;
+        }
+        let Some(a) = world.actors.get(id) else {
+            continue;
+        };
+        if a.destroyed || a.health <= 0 || (a.flags & crate::class::FLAG_SHOOTABLE) == 0 {
+            continue;
+        }
+        let dx = a.pos.x() - origin.x();
+        let dy = a.pos.y() - origin.y();
+        let along = dx * dirx + dy * diry;
+        if along < 8.0 || along > range {
+            continue;
+        }
+        let across = (-dx * diry + dy * dirx).abs();
+        if across > a.radius + 4.0 {
+            continue;
+        }
+        let top = a.pos.z() + a.height.max(1.0);
+        if beam_z < a.pos.z() - 4.0 || beam_z > top + 4.0 {
+            continue;
+        }
+        if !crate::sight::check_sight(world, self_id, id) {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(d, _)| along < *d) {
+            best = Some((along, id));
+        }
+    }
+    let stop = best.map_or(range, |(d, _)| d);
+    if let Some(line) = world.classes.find_name("DukeLaserLine") {
+        let step = 24.0;
+        let mut t = 16.0;
+        let mut n = 0;
+        while t < stop && n < 24 {
+            let x = origin.x() + dirx * t;
+            let y = origin.y() + diry * t;
+            if crate::physics::floor_at_xy(world, x, y).is_none() {
+                break;
+            }
+            let _ = world.spawn_at(line, DVec3::new(x, y, beam_z), ang);
+            t += step;
+            n += 1;
+        }
+    }
+    if best.is_some() {
+        jump_to_label(world, self_id, &label)
+    } else {
+        ActionResult::Continue
+    }
+}
+
+/// `A_JumpIfQuake("Label")` — jump when a tremor reaches this actor.
+fn a_jump_if_quake(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let label = args
+        .first()
+        .map(|s| s.trim_matches('"').to_owned())
+        .unwrap_or_default();
+    if label.is_empty() || world.quake_intensity_at(self_id) <= 0.0 {
+        ActionResult::Continue
+    } else {
+        jump_to_label(world, self_id, &label)
+    }
+}
+
 /// `A_Quake(intensity, duration, damrad, tremrad [, sound])` — start an earthquake.
 fn a_quake(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
     let intensity = args
@@ -8681,6 +9171,42 @@ actor Floater : Actor 9701
     }
 
     #[test]
+    fn a_chase_skips_walk_when_conchase() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 1024.0, 1024.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let demon = classes.find_name("Demon").unwrap();
+        let id = w
+            .spawn_at(demon, DVec3::new(600.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(id) {
+            a.reaction_time = 0;
+            a.user_vars.insert("user_conchase".to_owned(), 1);
+        }
+        w.level.time = 1;
+        let (x0, y0) = {
+            let a = w.actors.get(id).unwrap();
+            (a.pos.x(), a.pos.y())
+        };
+        assert_eq!(a_chase(&mut w, id), ActionResult::Continue);
+        let a = w.actors.get(id).unwrap();
+        assert!(
+            (a.pos.x() - x0).abs() < 1e-9 && (a.pos.y() - y0).abs() < 1e-9,
+            "CON chase owns XY ({x0},{y0}) -> ({},{})",
+            a.pos.x(),
+            a.pos.y()
+        );
+    }
+
+    #[test]
     fn a_chase_opens_door_when_blocked() {
         use crate::specials::num;
         let src = include_str!("../../../testdata/actors/doom_basic.txt");
@@ -8766,6 +9292,60 @@ actor Floater : Actor 9701
         let a = w.actors.get(id).unwrap();
         assert_ne!(a.move_dir, 0, "blocked east should re-pick chase dir");
         assert!(a.move_dir >= 0);
+    }
+
+    #[test]
+    fn a_chase_slides_along_wall_when_duke_blocked() {
+        // Walk east into the room's east wall; a Duke class hugs north
+        // instead of Doom `P_NewChaseDir`.
+        let ir = parse_decorate(
+            r#"
+actor DukeWallHug : Actor 9301
+{
+  Health 100
+  Radius 16
+  Height 56
+  Speed 16
+  +SHOOTABLE
+  +COUNTKILL
+  States { Spawn: POSS A -1 Stop See: POSS A 1 A_Chase Loop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let hug = classes.find_name("DukeWallHug").unwrap();
+        let id = w
+            .spawn_at(hug, DVec3::new(232.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(id) {
+            a.reaction_time = 0;
+            a.move_dir = 0;
+            a.move_count = 8;
+            a.speed = 16.0;
+        }
+        w.level.time = 1;
+        let (x0, y0) = {
+            let a = w.actors.get(id).unwrap();
+            (a.pos.x(), a.pos.y())
+        };
+        assert_eq!(a_chase(&mut w, id), ActionResult::Continue);
+        let a = w.actors.get(id).unwrap();
+        assert_eq!(a.move_dir, 0, "Duke wall-hug keeps facing");
+        assert!(
+            (a.pos.y() - y0).abs() > 1.0,
+            "blocked Duke chase should slide along the wall ({x0},{y0}) -> ({},{})",
+            a.pos.x(),
+            a.pos.y()
+        );
     }
 
     #[test]
@@ -10165,6 +10745,47 @@ actor Fatso : Actor 3002
     }
 
     #[test]
+    fn a_explode_args_damage_destructible_lines() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(256.0, 256.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let near = map
+            .lines
+            .iter()
+            .position(|l| {
+                let (a, b) = (
+                    map.vertices[l.v1.raw() as usize].pos,
+                    map.vertices[l.v2.raw() as usize].pos,
+                );
+                a.x() == 0.0 && b.x() == 0.0
+            })
+            .unwrap();
+        for l in &mut map.lines {
+            l.health = 50;
+        }
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let barrel = classes.find_name("ExplosiveBarrel").unwrap();
+        let bar = w
+            .spawn_at(barrel, DVec3::new(16.0, 256.0, 0.0), Angle::ZERO)
+            .unwrap();
+        a_explode_args(&mut w, bar, &["100".into(), "64".into()]);
+        let hp = |i: usize| w.line_health.get(&(i as u32)).copied().unwrap_or(50);
+        assert!(hp(near) < 50, "the wall 16 units away takes damage");
+        assert_eq!(
+            (0..w.map.lines.len()).filter(|&i| hp(i) < 50).count(),
+            1,
+            "walls beyond the 64-unit radius are untouched"
+        );
+    }
+
+    #[test]
     fn a_explode_skips_noradiusdmg() {
         let ir = parse_decorate(
             r#"
@@ -10808,6 +11429,47 @@ actor ZombieMan : Actor 3004
                 .iter()
                 .any(|e| e.name == "grunt/sight")
         );
+    }
+
+    #[test]
+    fn a_look_targets_a_holoduke_decoy() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let extra = r#"
+actor DukeHolodukeDecoy : Actor 9941
+{
+  Health 1
+  +SHOOTABLE
+  +FRIENDLY
+  States { Spawn: PLAY A -1 Stop }
+}
+"#;
+        let ir = parse_decorate(&format!("{src}\n{extra}")).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let zom = classes.find_name("ZombieMan").unwrap();
+        let decoy_c = classes.find_name("DukeHolodukeDecoy").unwrap();
+        let id = w
+            .spawn_at(zom, DVec3::new(256.0, 256.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let decoy = w
+            .spawn_at(decoy_c, DVec3::new(280.0, 256.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.flags |= crate::class::FLAG_NOTARGET;
+        }
+        assert_eq!(
+            call_action(&mut w, id, "A_Look"),
+            ActionResult::Jump(w.states.find_label(zom, "See").unwrap())
+        );
+        assert_eq!(w.actors.get(id).unwrap().target, Some(decoy));
     }
 
     #[test]
@@ -11793,6 +12455,172 @@ actor Dummy : Actor 9020
             w.tick();
         }
         assert!(w.quakes.is_empty());
+    }
+
+    #[test]
+    fn a_jump_if_laser_hit_trips_in_front_not_beside() {
+        use crate::{ClassRegistry, StateTable};
+        use room_decorate::parse_decorate;
+        use std::sync::Arc;
+
+        let ir = parse_decorate(
+            r#"
+actor PlayerPawn : Actor 0
+{
+  Health 100
+  +SHOOTABLE
+  States { Spawn: PLAY A -1 Stop }
+}
+actor Mine : Actor 9022
+{
+  Radius 4
+  Height 8
+  +NOGRAVITY
+  States
+  {
+  Spawn:
+    TNT1 A -1
+    Stop
+  Trip:
+    TNT1 A -1
+    Stop
+  }
+}
+actor Victim : Actor 9023
+{
+  Health 20
+  Radius 16
+  Height 56
+  +SHOOTABLE
+  States { Spawn: PLAY A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 72.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        let mine_c = w.classes.find_name("Mine").unwrap();
+        let vic_c = w.classes.find_name("Victim").unwrap();
+        let mine = w
+            .spawn_at(mine_c, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let beside = w
+            .spawn_at(vic_c, DVec3::new(64.0, 120.0, 0.0), Angle::ZERO)
+            .unwrap();
+        assert_eq!(
+            call_action_args(
+                &mut w,
+                mine,
+                "A_JumpIfLaserHit",
+                &["Trip".into(), "256".into()]
+            ),
+            ActionResult::Continue,
+            "a body beside the beam should not trip it"
+        );
+        let _ = beside;
+        let _ = w.spawn_at(vic_c, DVec3::new(160.0, 64.0, 0.0), Angle::ZERO);
+        assert!(
+            matches!(
+                call_action_args(
+                    &mut w,
+                    mine,
+                    "A_JumpIfLaserHit",
+                    &["Trip".into(), "256".into()]
+                ),
+                ActionResult::Jump(_)
+            ),
+            "a body on the beam should trip it"
+        );
+    }
+
+    #[test]
+    fn a_jump_if_quake_spawns_scrap() {
+        let ir = parse_decorate(
+            r#"
+actor PlayerPawn : Actor 0
+{
+  Health 100
+  States { Spawn: PLAY A -1 Stop }
+}
+actor QuakeBits : Actor 9020
+{
+  +NOBLOCKMAP
+  +NOGRAVITY
+  States
+  {
+  Spawn:
+    TNT1 A 1 A_JumpIfQuake("Drop")
+    Loop
+  Drop:
+    TNT1 A 1 A_SpawnItemEx("Chip")
+    Goto Spawn
+  }
+}
+actor Chip : Actor 9021
+{
+  +NOBLOCKMAP
+  States { Spawn: TNT1 A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let bits = w
+            .spawn_at(
+                classes.find_name("QuakeBits").unwrap(),
+                DVec3::new(80.0, 64.0, 64.0),
+                Angle::ZERO,
+            )
+            .unwrap();
+        let chip = classes.find_name("Chip").unwrap();
+        let chips = |w: &World| {
+            w.thinkers
+                .default
+                .iter()
+                .filter(|&&id| {
+                    w.actors
+                        .get(id)
+                        .is_some_and(|a| a.class == chip && !a.destroyed)
+                })
+                .count()
+        };
+        assert_eq!(chips(&w), 0);
+        w.tick();
+        assert_eq!(chips(&w), 0, "no scrap without a quake");
+        assert_eq!(
+            call_action_args(
+                &mut w,
+                bits,
+                "A_Quake",
+                &[
+                    "5".into(),
+                    "32".into(),
+                    "0".into(),
+                    "256".into(),
+                    "world/quake".into(),
+                ],
+            ),
+            ActionResult::Continue
+        );
+        for _ in 0..8 {
+            w.tick();
+        }
+        assert!(chips(&w) >= 1, "quake should drop scrap");
     }
 
     #[test]
@@ -13706,6 +14534,169 @@ actor Scout : Actor 9930
     }
 
     #[test]
+    fn a_duke_respawn_spawns_the_doomednum_once() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let ir = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let zombieman = classes.find_name("ZombieMan").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let mark = w
+            .spawn_at(zombieman, DVec3::new(200.0, 200.0, 0.0), Angle::ZERO)
+            .unwrap();
+        w.actors.get_mut(mark).unwrap().args = [3004, 8, 0, 0, 0];
+        let before = w.thinkers.default.len();
+        assert_eq!(
+            call_action_args(&mut w, mark, "A_DukeRespawn", &[]),
+            ActionResult::Continue
+        );
+        assert_eq!(w.thinkers.default.len(), before, "arm the delay");
+        assert_eq!(
+            call_action_args(&mut w, mark, "A_DukeRespawn", &[]),
+            ActionResult::Continue
+        );
+        assert!(w.thinkers.default.len() > before, "spawned doomednum 3004");
+        assert_eq!(w.actors.get(mark).unwrap().args[0], 0);
+        assert_eq!(
+            call_action_args(&mut w, mark, "A_DukeRespawn", &[]),
+            ActionResult::Continue
+        );
+        assert_eq!(w.thinkers.default.len(), before + 1, "only once");
+    }
+
+    #[test]
+    fn a_duke_frame_effect_copies_the_nearest_countkill() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let ir = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let zombieman = classes.find_name("ZombieMan").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let mob = w
+            .spawn_at(zombieman, DVec3::new(200.0, 200.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let fx = w
+            .spawn_at(zombieman, DVec3::new(80.0, 80.0, 0.0), Angle::ZERO)
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(fx) {
+            a.flags &= !crate::class::FLAG_COUNTKILL;
+            a.sprite = "TNT1".into();
+        }
+        let want = w.actors.get(mob).unwrap();
+        let (sprite, frame, pos) = (want.sprite.clone(), want.frame, want.pos);
+        assert_eq!(
+            call_action_args(&mut w, fx, "A_DukeFrameEffect", &[]),
+            ActionResult::Continue
+        );
+        let got = w.actors.get(fx).unwrap();
+        assert_eq!(got.sprite, sprite);
+        assert_eq!(got.frame, frame);
+        assert!((got.pos.x() - pos.x()).abs() < 1e-6);
+        assert!((got.pos.y() - pos.y()).abs() < 1e-6);
+        assert_eq!(got.target, Some(mob));
+    }
+
+    #[test]
+    fn a_random_teleport_lands_inside_the_range() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let ir = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let zom = classes.find_name("ZombieMan").unwrap();
+        let id = w
+            .spawn_at(zom, DVec3::new(256.0, 256.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let mut from = w.actors.get(id).unwrap().pos;
+        let mut moved = false;
+        for _ in 0..24 {
+            assert_eq!(
+                call_action_args(&mut w, id, "A_RandomTeleport", &["128".into()]),
+                ActionResult::Continue
+            );
+            let p = w.actors.get(id).unwrap().pos;
+            let dx = (p.x() - from.x()).abs();
+            let dy = (p.y() - from.y()).abs();
+            assert!(
+                dx <= 128.0 + 1e-6 && dy <= 128.0 + 1e-6,
+                "teleport ({dx}, {dy}) beyond range"
+            );
+            if dx.hypot(dy) > 8.0 {
+                moved = true;
+            }
+            from = p;
+        }
+        assert!(moved, "never found a free warp");
+    }
+
+    #[test]
+    fn a_change_camera_to_nearest_looks_through_it() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let extra = r#"
+actor DukeCamera : Actor 9942
+{
+  Health 1
+  States { Spawn: POSS A -1 Stop }
+}
+"#;
+        let ir = parse_decorate(&format!("{src}\n{extra}")).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let cam_c = classes.find_name("DukeCamera").unwrap();
+        let cam = w
+            .spawn_at(cam_c, DVec3::new(400.0, 400.0, 32.0), Angle::ZERO)
+            .unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.target = Some(mo);
+        }
+        assert_eq!(
+            call_action_args(
+                &mut w,
+                mo,
+                "A_ChangeCameraToNearest",
+                &["DukeCamera".into(), "1".into()]
+            ),
+            ActionResult::Continue
+        );
+        let p = w.players[0].as_ref().unwrap();
+        assert_eq!(p.camera, Some(cam));
+        assert!(p.camera_revert);
+        assert_eq!(
+            w.camera_textures.get("VCAMA0").map(|b| b.camera),
+            Some(cam),
+            "viewscreen canvas follows the camera you look through"
+        );
+    }
+
+    #[test]
     fn a_teleport_to_dest_and_select_weapon() {
         let src = include_str!("../../../testdata/actors/doom_basic.txt");
         let extra = r#"
@@ -14991,6 +15982,26 @@ actor Scout : Actor 9980
                     "Near".into()
                 ]
             ),
+            ActionResult::Jump(near)
+        );
+        let gz = |w: &mut World, args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+            call_action_args(w, id, "A_CheckProximity", &args)
+        };
+        assert_eq!(
+            gz(&mut w, &["Near", "Buddy", "64"]),
+            ActionResult::Jump(near)
+        );
+        assert_ne!(
+            gz(&mut w, &["Near", "Buddy", "8"]),
+            ActionResult::Jump(near)
+        );
+        assert_ne!(
+            gz(&mut w, &["Near", "Actor", "20"]),
+            ActionResult::Jump(near)
+        );
+        assert_eq!(
+            gz(&mut w, &["Near", "Actor", "20", "1", "CPXF_ANCESTOR"]),
             ActionResult::Jump(near)
         );
         let _ = call_action(&mut w, id, "A_ClearMaster");

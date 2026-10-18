@@ -246,6 +246,7 @@ pub fn append_particles(lists: &mut SceneLists, store: &ParticleStore, camera: &
                 texture: tex.into(),
                 flip_u: false,
                 anchor_u: 0.5,
+                orient: crate::sprites::SpriteOrient::Billboard,
             },
             camera.forward,
         );

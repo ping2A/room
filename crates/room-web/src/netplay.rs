@@ -1595,6 +1595,12 @@ fn sample_input(
     if held.contains("use") {
         keys.push(Key::Use);
     }
+    if held.contains("up") {
+        keys.push(Key::MoveUp);
+    }
+    if held.contains("down") {
+        keys.push(Key::MoveDown);
+    }
     match weapon {
         1 => keys.push(Key::Weapon1),
         2 => keys.push(Key::Weapon2),
@@ -1603,6 +1609,8 @@ fn sample_input(
         5 => keys.push(Key::Weapon5),
         6 => keys.push(Key::Weapon6),
         7 => keys.push(Key::Weapon7),
+        8 => keys.push(Key::Weapon8),
+        9 => keys.push(Key::Weapon9),
         _ => {}
     }
     if *weapon_cycle > 0 {

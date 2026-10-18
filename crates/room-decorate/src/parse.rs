@@ -1559,9 +1559,23 @@ fn read_action_args(sc: &mut Scanner<'_>) -> Result<Vec<String>, DecorateError> 
                     depth -= 1;
                     tok.push(')');
                 }
+                Tok::Punct(Punct::Comma) => tok.push(','),
                 Tok::Punct(Punct::Minus) => tok.push('-'),
                 Tok::Punct(Punct::Plus) => tok.push('+'),
                 Tok::Punct(Punct::Dot) => tok.push('.'),
+                Tok::Punct(Punct::Pipe) => tok.push('|'),
+                Tok::Punct(Punct::Star) => tok.push('*'),
+                Tok::Punct(Punct::Slash) => tok.push('/'),
+                Tok::Punct(Punct::Percent) => tok.push('%'),
+                Tok::Punct(Punct::LBracket) => tok.push('['),
+                Tok::Punct(Punct::RBracket) => tok.push(']'),
+                Tok::Punct(Punct::Lt) => tok.push('<'),
+                Tok::Punct(Punct::Gt) => tok.push('>'),
+                Tok::Punct(Punct::Eq) => tok.push('='),
+                Tok::Punct(Punct::Bang) => tok.push('!'),
+                Tok::Punct(Punct::Tilde) => tok.push('~'),
+                Tok::Punct(Punct::Amp) => tok.push('&'),
+                Tok::Punct(Punct::Caret) => tok.push('^'),
                 Tok::Ident(s) => tok.push_str(s),
                 Tok::String(s) => {
                     tok.push('"');
@@ -1758,6 +1772,24 @@ actor BodyIf
         assert_eq!(lines[0].action_args, vec!["40".to_owned(), "2".to_owned()]);
         assert_eq!(lines[1].action.as_deref(), Some("A_SetSpeed"));
         assert_eq!(lines[2].action.as_deref(), Some("A_Look"));
+    }
+
+    #[test]
+    fn action_args_keep_flag_unions() {
+        let ir = parse_decorate(
+            "actor Mine { States { Spawn: MINE A 2 A_CheckProximity(\"Boom\", \"Actor\", 64, 1, CPXF_ANCESTOR|CPXF_NOZ) Loop } }",
+        )
+        .unwrap();
+        let st = ir.actors[0].states.as_ref().unwrap();
+        let line = st
+            .items
+            .iter()
+            .find_map(|i| match i {
+                StateItem::Line(l) => Some(l),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(line.action_args[4], "CPXF_ANCESTOR|CPXF_NOZ");
     }
 
     #[test]

@@ -30,6 +30,7 @@ Definitions {
         },
         episodes: [],
         clusters: {},
+        skills: [],
     },
     sounds: SoundRegistry {
         sounds: {
@@ -52,6 +53,7 @@ Definitions {
         platform_slots: {},
         environment_slots: {},
         named_slots: {},
+        choices: {},
         warnings: [],
     },
     language: Language {
@@ -122,6 +124,7 @@ Definitions {
         glow_flats: [],
         glow_walls: [],
         materials: {},
+        hardware_shaders: {},
     },
     modeldefs: ModelDefs {
         by_actor: {},

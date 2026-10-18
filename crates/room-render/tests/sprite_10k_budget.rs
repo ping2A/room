@@ -26,6 +26,7 @@ fn append_10k_sprites_under_budget() {
                 texture: "TROOA1".into(),
                 flip_u: false,
                 anchor_u: 0.5,
+                orient: room_render::SpriteOrient::Billboard,
             }
         })
         .collect();

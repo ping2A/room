@@ -1427,6 +1427,17 @@ mod browser {
         };
         s.camera.eye = eye;
         s.camera.forward = forward;
+        {
+            let FrameState { gpu, mode, .. } = &mut *s;
+            match mode {
+                Mode::Play(play)
+                | Mode::Lobby {
+                    prepared: Some(play),
+                    ..
+                } => play.refresh_camera_textures(gpu),
+                _ => {}
+            }
+        }
 
         // One full-frame view, or one viewport per player (spectator grid).
         let fb_w = s.config.width as f32;
@@ -1543,14 +1554,16 @@ mod browser {
             }
             | Mode::Play(play) => {
                 let sizes = play.materials.wall_texel_sizes();
+                let sky = play.sky_texture();
                 let mut lists = build_scene_with_sky_ex_sized(
                     &play.map,
                     cam,
                     Some(sprites.as_slice()),
-                    Some("SKY1"),
+                    Some(sky.as_str()),
                     None,
                     Some(&sizes),
                 );
+                play.animate_textures(&mut lists);
                 lists.dyn_lights = play.collect_dyn_lights();
                 room_render::apply_dyn_lights(&mut lists);
                 lists

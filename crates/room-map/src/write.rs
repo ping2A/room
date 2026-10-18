@@ -123,6 +123,7 @@ impl Default for RawSector {
             damage_interval: 0,
             leakiness: 0,
             silent: false,
+            sound_sequence: String::new(),
             waterzone: false,
             drop_actors: true,
             no_falling_damage: false,
@@ -860,6 +861,9 @@ pub fn write_textmap(map: &RawMap) -> String {
             }
         }
         b.flag("silent", s.silent);
+        if !s.sound_sequence.is_empty() {
+            b.string("soundsequence", &s.sound_sequence);
+        }
         b.flag("waterzone", s.waterzone);
         b.flag("nofallingdamage", s.no_falling_damage);
         if !s.drop_actors {

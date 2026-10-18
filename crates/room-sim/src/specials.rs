@@ -3,7 +3,7 @@
 use crate::actor::ActorId;
 use crate::damage::damage_mobj;
 use crate::world::World;
-use room_core::{Angle, DVec3, Fixed, LineId, SectorId, SideId};
+use room_core::{Angle, DVec3, Fixed, LineId, SectorId, SideId, VertexId, dmath};
 
 /// Vanilla crush damage amount (`P_ChangeSector` / `PIT_ChangeSector`).
 const CRUSH_DAMAGE: i32 = 10;
@@ -122,6 +122,8 @@ pub mod num {
     pub const CEILING_MOVE_TO_VALUE_AND_CRUSH: u16 = 280;
     /// `Polyobj_StopSound` — po.
     pub const POLYOBJ_STOP_SOUND: u16 = 283;
+    /// Room: toggle a Duke `SE 20` stretch (`user_stretch`).
+    pub const SECTOR_STRETCH: u16 = 284;
     /// `Line_Horizon` — paint one-sided wall as horizon.
     pub const LINE_HORIZON: u16 = 9;
     /// `Transfer_WallLight` — tag, side (front/back).
@@ -652,6 +654,109 @@ pub struct FloorScroller {
     pub v: f64,
 }
 
+/// Walkable rotating floor (`user_spin` / `user_spinx` / `user_spiny`).
+#[derive(Clone, Debug)]
+pub struct FloorSpinner {
+    /// Target sector.
+    pub sector: SectorId,
+    /// Pivot X (map units).
+    pub cx: f64,
+    /// Pivot Y (map units).
+    pub cy: f64,
+    /// Radians per tic (signed).
+    pub omega: f64,
+}
+
+/// Locator-following subway / train car (`user_subway`).
+#[derive(Clone, Debug)]
+pub struct FloorSubway {
+    /// Car sector (boarding).
+    pub sector: SectorId,
+    /// Waypoints in visit order.
+    pub points: Vec<(f64, f64)>,
+    /// Index of the waypoint the car is moving toward.
+    pub i: usize,
+    /// Virtual car X.
+    pub x: f64,
+    /// Virtual car Y.
+    pub y: f64,
+    /// Map units per tic.
+    pub speed: f64,
+    /// Moving-wall polyobject, when the car converted as a slab.
+    pub poly: Option<i32>,
+}
+
+/// Duke `SE 20` stretch / shrink (`user_stretch`).
+#[derive(Clone, Debug)]
+pub struct FloorStretch {
+    /// Sector whose vertices move.
+    pub sector: SectorId,
+    /// Linedefs that bound the sector (blockmap refresh).
+    pub lines: Vec<LineId>,
+    /// Unique vertices of those lines.
+    pub verts: Vec<VertexId>,
+    /// Unit direction X.
+    pub dx: f64,
+    /// Unit direction Y.
+    pub dy: f64,
+    /// Travel limit (map units).
+    pub dist: f64,
+    /// Map units per tic.
+    pub speed: f64,
+    /// Distance travelled from rest (0..=dist).
+    pub pos: f64,
+    /// +1 stretching, −1 shrinking, 0 idle.
+    pub sign: i8,
+}
+
+/// Duke `SE 22` teeth prongs (`user_teeth`) that follow a lotag-29 door.
+#[derive(Clone, Debug)]
+pub struct FloorTeeth {
+    /// Sector whose vertices retract.
+    pub sector: SectorId,
+    /// Lotag-29 door whose ceiling drives the prongs.
+    pub door: SectorId,
+    /// Linedefs that bound the sector (blockmap refresh).
+    pub lines: Vec<LineId>,
+    /// Unique vertices of those lines.
+    pub verts: Vec<VertexId>,
+    /// Unit direction X.
+    pub dx: f64,
+    /// Unit direction Y.
+    pub dy: f64,
+    /// Travel limit (map units).
+    pub dist: f64,
+    /// Map units per tic.
+    pub speed: f64,
+    /// Distance travelled from rest (0..=dist).
+    pub pos: f64,
+    /// Door ceiling height when the map started (closed).
+    pub rest_ceil: f64,
+}
+
+/// Duke `SE 16` reactor skew (`user_skew`): vertices oscillate along an axis.
+#[derive(Clone, Debug)]
+pub struct FloorSkew {
+    /// Sector whose vertices shear.
+    pub sector: SectorId,
+    /// Linedefs that bound the sector (blockmap refresh).
+    pub lines: Vec<LineId>,
+    /// Unique vertices of those lines.
+    pub verts: Vec<VertexId>,
+    /// Unit direction X.
+    pub dx: f64,
+    /// Unit direction Y.
+    pub dy: f64,
+    /// Travel limit (map units).
+    pub dist: f64,
+    /// Map units per tic.
+    pub speed: f64,
+    /// Distance travelled from rest (0..=dist).
+    pub pos: f64,
+    /// +1 or −1; reverses at each end.
+    pub sign: i8,
+}
+
 /// Ceiling flat scroller (`Scroll_Ceiling` — texture only, no carry).
 #[derive(Clone, Debug)]
 pub struct CeilingScroller {
@@ -1012,6 +1117,7 @@ pub fn execute_special(
         num::SCROLL_TEXTURE_OFFSETS => scroll_texture_offsets(world, args, line),
         num::SCROLL_TEXTURE_MODEL => scroll_texture_model(world, args),
         num::SCROLL_FLOOR => scroll_floor(world, args, line),
+        num::SECTOR_STRETCH => toggle_stretch(world, args, line),
         num::SCROLL_CEILING => scroll_ceiling(world, args, line),
         num::SECTOR_COPY_SCROLLER => sector_copy_scroller(world, args, line),
         num::LINE_HORIZON => line_horizon(world, line),
@@ -2296,12 +2402,54 @@ pub fn damage_linedef(
     }
     // Activate while health was > 0 before this hit (GZDoom SPAC_Damage).
     if before > 0 {
-        let _ = activate_line(world, line_id, source, ActivationType::Damage);
+        for &ti in &targets {
+            let _ = activate_line(world, LineId::from_raw(ti), source, ActivationType::Damage);
+        }
     }
     if hp == 0 {
-        let _ = activate_line(world, line_id, source, ActivationType::Death);
+        for &ti in &targets {
+            clear_dead_health_line(world, ti);
+            if let Some(bag) = std::sync::Arc::make_mut(&mut world.map)
+                .udmf_user
+                .lines
+                .get_mut(ti as usize)
+            {
+                bag.ints.remove("user_contactdamage");
+            }
+            let _ = activate_line(world, LineId::from_raw(ti), source, ActivationType::Death);
+        }
     }
     hp
+}
+
+/// A dead health wall stays in the BSP but stops blocking and drawing its mid.
+fn clear_dead_health_line(world: &mut World, ti: u32) {
+    const CLEAR: i32 = crate::world::ML_BLOCKING
+        | crate::world::ML_BLOCKMONSTERS
+        | crate::world::ML_BLOCK_PLAYERS
+        | crate::world::ML_BLOCKEVERYTHING
+        | crate::world::ML_BLOCKHITSCAN;
+    let map = std::sync::Arc::make_mut(&mut world.map);
+    let (sides, flags) = {
+        let Some(l) = map.lines.get_mut(ti as usize) else {
+            return;
+        };
+        l.block_projectiles = false;
+        l.block_hitscan = false;
+        l.block_sight = false;
+        l.midtex3d = false;
+        l.midtex3d_impassible = false;
+        l.flags &= !(CLEAR as i16);
+        (l.sides, crate::world::base_line_flags(l) & !CLEAR)
+    };
+    for sid in sides.into_iter().flatten() {
+        if let Some(side) = map.sides.get_mut(sid.raw() as usize) {
+            if !side.middle.is_empty() && side.middle != "-" {
+                side.middle.clear();
+            }
+        }
+    }
+    world.line_flags.insert(ti, flags);
 }
 
 /// UDMF `locknumber` overrides the special's lock argument when non-zero.
@@ -2576,6 +2724,7 @@ fn door_close(world: &mut World, args: &[i32; 5], line: Option<LineId>) -> i32 {
             close_wait_open: false,
             wait_then_raise: false,
         });
+        apply_door_sector_lights(world, sid, false);
     }
     1
 }
@@ -2604,6 +2753,7 @@ fn door_close_wait_open(world: &mut World, args: &[i32; 5], line: Option<LineId>
             close_wait_open: true,
             wait_then_raise: false,
         });
+        apply_door_sector_lights(world, sid, false);
     }
     1
 }
@@ -2623,7 +2773,7 @@ fn door_wait_raise(world: &mut World, args: &[i32; 5], line: Option<LineId>) -> 
         let Some(sec) = world.sectors.get(idx) else {
             continue;
         };
-        let top = (sec.floor_z + 120.0).max(sec.ceiling_z);
+        let top = door_top(world, sid, sec.floor_z).max(sec.ceiling_z);
         world.doors.push(DoorMover {
             sector: sid,
             direction: 0,
@@ -2806,6 +2956,13 @@ pub fn tick_elevators(world: &mut World) {
     }
 }
 
+/// Door open height: `P_FindLowestCeilingSurrounding - 4`, or 120 above the
+/// floor for a sector with no neighbours.
+fn door_top(world: &World, sid: SectorId, floor_z: f64) -> f64 {
+    let (_, _, min_ceil, _) = neighbor_plane_extrema(world, sid);
+    min_ceil.map_or(floor_z + 120.0, |c| c - 4.0)
+}
+
 fn spawn_door(world: &mut World, sid: SectorId, speed: f64, delay: i32, open_only: bool) {
     // Vanilla `EV_VerticalDoor`: if a door thinker already owns the sector,
     // re-trigger reverses it (closing → open; raising/waiting → close now).
@@ -2818,11 +2975,13 @@ fn spawn_door(world: &mut World, sid: SectorId, speed: f64, delay: i32, open_onl
             d.direction = 1;
             d.wait = 0;
             play_sector_sound(world, sid, "doors/open");
+            apply_door_sector_lights(world, sid, true);
         } else {
             // Raising or waiting at top → start closing immediately.
             d.direction = -1;
             d.wait = 0;
             play_sector_sound(world, sid, "doors/close");
+            apply_door_sector_lights(world, sid, false);
         }
         return;
     }
@@ -2830,8 +2989,7 @@ fn spawn_door(world: &mut World, sid: SectorId, speed: f64, delay: i32, open_onl
     let Some(sec) = world.sectors.get(idx) else {
         return;
     };
-    // Raise ceiling toward lowest surrounding ceiling — approximate: +120.
-    let top = sec.floor_z + 120.0;
+    let top = door_top(world, sid, sec.floor_z);
     let bottom = sec.floor_z;
     world.doors.push(DoorMover {
         sector: sid,
@@ -2845,6 +3003,40 @@ fn spawn_door(world: &mut World, sid: SectorId, speed: f64, delay: i32, open_onl
         wait_then_raise: false,
     });
     play_sector_sound(world, sid, "doors/open");
+    apply_door_sector_lights(world, sid, true);
+}
+
+/// Duke `SE 8` / `SE 9`: a ceiling door lights same-tag rooms.
+fn door_light_spec(world: &World, sid: SectorId) -> (i32, i16, bool) {
+    let i = sid.raw() as usize;
+    let Some(bag) = world.map.udmf_user.sectors.get(i) else {
+        return (0, 0, true);
+    };
+    let tag = bag.ints.get("user_doorlight").copied().unwrap_or(0);
+    let bright = bag
+        .ints
+        .get("user_doorbright")
+        .copied()
+        .unwrap_or(0)
+        .clamp(0, 255) as i16;
+    let on_open = bag.ints.get("user_doorlightopen").copied().unwrap_or(1) != 0;
+    (tag, bright, on_open)
+}
+
+fn apply_door_sector_lights(world: &mut World, sid: SectorId, opening: bool) {
+    let (tag, bright, on_open) = door_light_spec(world, sid);
+    if tag == 0 {
+        return;
+    }
+    let use_bright = opening == on_open;
+    for (i, s) in world.map.sectors.iter().enumerate() {
+        if !s.tags.contains(&tag) {
+            continue;
+        }
+        if let Some(dyn_s) = world.sectors.get_mut(i) {
+            dyn_s.light = if use_bright { bright } else { s.light };
+        }
+    }
 }
 
 /// Rough sector origin for positional SFX (average of linedef endpoints).
@@ -2873,16 +3065,31 @@ fn sector_sound_origin(world: &World, sid: SectorId) -> (f64, f64, f64) {
     }
 }
 
+/// Mover sound `name` from sector `sid`, honouring UDMF `silent` and
+/// `soundsequence` (choice 0 when starting / opening, 1 when closing; stop
+/// sounds belong to the sequence).
 fn play_sector_sound(world: &mut World, sid: SectorId, name: &str) {
-    if world
-        .map
-        .sectors
-        .get(sid.raw() as usize)
-        .is_some_and(|s| s.silent)
-    {
+    let Some(geom) = world.map.sectors.get(sid.raw() as usize) else {
+        return;
+    };
+    if geom.silent {
         return;
     }
     let (x, y, z) = sector_sound_origin(world, sid);
+    if !geom.sound_sequence.is_empty() {
+        let choice = match name {
+            "doors/close" => 1,
+            "doors/open" | "platforms/start" | "floors/move" => 0,
+            _ => return,
+        };
+        let seq = world
+            .sndseq
+            .choose(&geom.sound_sequence, choice)
+            .unwrap_or_else(|| geom.sound_sequence.clone());
+        if crate::sndseq::start_sequence(world, &seq, x, y, z) {
+            return;
+        }
+    }
     world.play_sound(name, x, y, z, 1.0);
 }
 
@@ -3240,6 +3447,299 @@ fn scroll_texture(
         y: base_y,
     });
     1
+}
+
+/// During a Duke `.DMO`, lock the view to a `DukeCamera` (`SE 27` / `CAMERA1`).
+/// Prefers a camera that can see the player; otherwise the nearest. Cycles every
+/// 70 tics. Move does not drop the view (`camera_revert` stays off).
+pub fn tick_demo_cameras(world: &mut World) {
+    if !world.demo_cameras {
+        return;
+    }
+    let Some(cid) = world.classes.find_name("DukeCamera") else {
+        return;
+    };
+    let Some(mo) = world.players.iter().flatten().find_map(|p| p.mo) else {
+        return;
+    };
+    let cams: Vec<ActorId> = world
+        .thinkers
+        .default
+        .iter()
+        .copied()
+        .filter(|&id| {
+            world
+                .actors
+                .get(id)
+                .is_some_and(|a| !a.destroyed && a.health > 0 && a.class == cid)
+        })
+        .collect();
+    if cams.is_empty() {
+        return;
+    }
+    let seen: Vec<ActorId> = cams
+        .iter()
+        .copied()
+        .filter(|&id| crate::sight::check_sight(world, id, mo))
+        .collect();
+    let pool = if seen.is_empty() { &cams } else { &seen };
+    let idx = (world.level.time as usize / 70) % pool.len();
+    let cam = pool[idx];
+    for p in world.players.iter_mut().flatten() {
+        p.camera = Some(cam);
+        p.camera_revert = false;
+    }
+    world.camera_textures.insert(
+        "VCAMA0".into(),
+        crate::world::CameraTextureBind {
+            camera: cam,
+            fov: 90.0,
+        },
+    );
+}
+
+/// Bind the first living `DukeCamera` to the viewscreen canvas (`VCAMA0`).
+pub fn init_security_camera_textures(world: &mut World) {
+    let camera = world.thinkers.default.iter().copied().find(|&id| {
+        world.actors.get(id).is_some_and(|a| {
+            !a.destroyed
+                && world
+                    .classes
+                    .get(a.class)
+                    .is_some_and(|c| c.name == "DukeCamera")
+        })
+    });
+    let Some(camera) = camera else {
+        return;
+    };
+    world
+        .camera_textures
+        .entry("VCAMA0".into())
+        .or_insert(crate::world::CameraTextureBind { camera, fov: 90.0 });
+}
+
+/// Seed walkable rotators from UDMF `user_spin` / `user_spinx` / `user_spiny`.
+pub fn init_udmf_floor_spinners(world: &mut World) {
+    for (i, bag) in world.map.udmf_user.sectors.iter().enumerate() {
+        let Some(&speed) = bag.ints.get("user_spin") else {
+            continue;
+        };
+        if speed == 0 {
+            continue;
+        }
+        let cx = f64::from(bag.ints.get("user_spinx").copied().unwrap_or(0));
+        let cy = f64::from(bag.ints.get("user_spiny").copied().unwrap_or(0));
+        world.spinners.push(FloorSpinner {
+            sector: SectorId::from_raw(i as u32),
+            cx,
+            cy,
+            omega: f64::from(speed) / 256.0 * std::f64::consts::TAU,
+        });
+    }
+}
+
+/// Seed locator-following cars from UDMF `user_subway` / `user_sx*` / `user_sy*`.
+pub fn init_udmf_floor_subways(world: &mut World) {
+    for (i, bag) in world.map.udmf_user.sectors.iter().enumerate() {
+        if bag.ints.get("user_subway").copied().unwrap_or(0) == 0 {
+            continue;
+        }
+        let n = bag.ints.get("user_subn").copied().unwrap_or(0).clamp(0, 32) as usize;
+        if n < 2 {
+            continue;
+        }
+        let mut points = Vec::with_capacity(n);
+        for k in 0..n {
+            let Some(&x) = bag.ints.get(&format!("user_sx{k}")) else {
+                continue;
+            };
+            let Some(&y) = bag.ints.get(&format!("user_sy{k}")) else {
+                continue;
+            };
+            points.push((f64::from(x), f64::from(y)));
+        }
+        if points.len() < 2 {
+            continue;
+        }
+        let speed = f64::from(bag.ints.get("user_subspeed").copied().unwrap_or(64)) / 32.0;
+        let x = bag
+            .ints
+            .get("user_subx")
+            .map(|&v| f64::from(v))
+            .unwrap_or(points[0].0);
+        let y = bag
+            .ints
+            .get("user_suby")
+            .map(|&v| f64::from(v))
+            .unwrap_or(points[0].1);
+        world.subways.push(FloorSubway {
+            sector: SectorId::from_raw(i as u32),
+            points,
+            i: 0,
+            x,
+            y,
+            speed: speed.max(0.25),
+            poly: bag.ints.get("user_subpo").copied().filter(|&id| id > 0),
+        });
+    }
+}
+
+/// Seed `SE 20` stretch sectors from UDMF `user_stretch`.
+pub fn init_udmf_floor_stretches(world: &mut World) {
+    for (i, bag) in world.map.udmf_user.sectors.iter().enumerate() {
+        if bag.ints.get("user_stretch").copied().unwrap_or(0) == 0 {
+            continue;
+        }
+        let dx8 = bag.ints.get("user_stdx").copied().unwrap_or(256);
+        let dy8 = bag.ints.get("user_stdy").copied().unwrap_or(0);
+        let dist = f64::from(bag.ints.get("user_stdist").copied().unwrap_or(16)).max(1.0);
+        let speed = f64::from(bag.ints.get("user_stspd").copied().unwrap_or(32)) / 32.0;
+        let sid = SectorId::from_raw(i as u32);
+        let mut lines = Vec::new();
+        let mut verts = Vec::new();
+        if let Some(geom) = world.map.sectors.get(i) {
+            for &lid in &geom.lines {
+                lines.push(lid);
+                if let Some(line) = world.map.lines.get(lid.raw() as usize) {
+                    for v in [line.v1, line.v2] {
+                        if !verts.contains(&v) {
+                            verts.push(v);
+                        }
+                    }
+                }
+            }
+        }
+        if verts.is_empty() {
+            continue;
+        }
+        let len =
+            dmath::sqrt(f64::from(dx8) * f64::from(dx8) + f64::from(dy8) * f64::from(dy8)).max(1.0);
+        world.stretches.push(FloorStretch {
+            sector: sid,
+            lines,
+            verts,
+            dx: f64::from(dx8) / len,
+            dy: f64::from(dy8) / len,
+            dist,
+            speed: speed.max(0.25),
+            pos: 0.0,
+            sign: 0,
+        });
+    }
+}
+
+/// Seed `SE 22` teeth sectors from UDMF `user_teeth`.
+pub fn init_udmf_floor_teeth(world: &mut World) {
+    for (i, bag) in world.map.udmf_user.sectors.iter().enumerate() {
+        if bag.ints.get("user_teeth").copied().unwrap_or(0) == 0 {
+            continue;
+        }
+        let door_i = bag.ints.get("user_thdoor").copied().unwrap_or(-1);
+        if door_i < 0 || door_i as usize >= world.sectors.len() {
+            continue;
+        }
+        let dx8 = bag.ints.get("user_thdx").copied().unwrap_or(256);
+        let dy8 = bag.ints.get("user_thdy").copied().unwrap_or(0);
+        let dist = f64::from(bag.ints.get("user_thdist").copied().unwrap_or(16)).max(1.0);
+        let speed = f64::from(bag.ints.get("user_thspd").copied().unwrap_or(32)) / 32.0;
+        let sid = SectorId::from_raw(i as u32);
+        let mut lines = Vec::new();
+        let mut verts = Vec::new();
+        if let Some(geom) = world.map.sectors.get(i) {
+            for &lid in &geom.lines {
+                lines.push(lid);
+                if let Some(line) = world.map.lines.get(lid.raw() as usize) {
+                    for v in [line.v1, line.v2] {
+                        if !verts.contains(&v) {
+                            verts.push(v);
+                        }
+                    }
+                }
+            }
+        }
+        if verts.is_empty() {
+            continue;
+        }
+        let len =
+            dmath::sqrt(f64::from(dx8) * f64::from(dx8) + f64::from(dy8) * f64::from(dy8)).max(1.0);
+        let rest_ceil = world
+            .sectors
+            .get(door_i as usize)
+            .map(|s| s.ceiling_z)
+            .unwrap_or(0.0);
+        world.teeth.push(FloorTeeth {
+            sector: sid,
+            door: SectorId::from_raw(door_i as u32),
+            lines,
+            verts,
+            dx: f64::from(dx8) / len,
+            dy: f64::from(dy8) / len,
+            dist,
+            speed: speed.max(0.25),
+            pos: 0.0,
+            rest_ceil,
+        });
+    }
+}
+
+/// Seed `SE 16` reactor-skew sectors from UDMF `user_skew`.
+pub fn init_udmf_floor_skews(world: &mut World) {
+    for (i, bag) in world.map.udmf_user.sectors.iter().enumerate() {
+        if bag.ints.get("user_skew").copied().unwrap_or(0) == 0 {
+            continue;
+        }
+        let dx8 = bag.ints.get("user_skdx").copied().unwrap_or(256);
+        let dy8 = bag.ints.get("user_skdy").copied().unwrap_or(0);
+        let dist = f64::from(bag.ints.get("user_skdist").copied().unwrap_or(16)).max(1.0);
+        let speed = f64::from(bag.ints.get("user_skspd").copied().unwrap_or(32)) / 32.0;
+        let sid = SectorId::from_raw(i as u32);
+        let mut lines = Vec::new();
+        let mut verts = Vec::new();
+        if let Some(geom) = world.map.sectors.get(i) {
+            for &lid in &geom.lines {
+                lines.push(lid);
+                if let Some(line) = world.map.lines.get(lid.raw() as usize) {
+                    for v in [line.v1, line.v2] {
+                        if !verts.contains(&v) {
+                            verts.push(v);
+                        }
+                    }
+                }
+            }
+        }
+        if verts.is_empty() {
+            continue;
+        }
+        let len =
+            dmath::sqrt(f64::from(dx8) * f64::from(dx8) + f64::from(dy8) * f64::from(dy8)).max(1.0);
+        world.skews.push(FloorSkew {
+            sector: sid,
+            lines,
+            verts,
+            dx: f64::from(dx8) / len,
+            dy: f64::from(dy8) / len,
+            dist,
+            speed: speed.max(0.25),
+            pos: 0.0,
+            sign: 1,
+        });
+    }
+}
+
+fn toggle_stretch(world: &mut World, args: &[i32; 5], line: Option<LineId>) -> i32 {
+    let sectors = sectors_for_tag(world, args[0], line);
+    let mut n = 0;
+    for sid in sectors {
+        if let Some(st) = world.stretches.iter_mut().find(|s| s.sector == sid) {
+            st.sign = if st.sign == 0 {
+                if st.pos > st.dist * 0.5 { -1 } else { 1 }
+            } else {
+                -st.sign
+            };
+            n += 1;
+        }
+    }
+    n
 }
 
 /// Seed wall scrollers from UDMF sidedef `xscroll` / `yscroll`.
@@ -3863,6 +4363,416 @@ pub fn tick_scrollers(world: &mut World) {
                 id,
                 room_core::DVec3::new(x + dx, y + dy, actor.pos.z()),
             );
+            break;
+        }
+    }
+}
+
+/// Carry on-floor actors around a lotag-30 / `SE 1` pivot.
+pub fn tick_spinners(world: &mut World) {
+    if world.spinners.is_empty() {
+        return;
+    }
+    let spins: Vec<FloorSpinner> = world.spinners.clone();
+    for spin in &spins {
+        let deg = Angle::from_radians(spin.omega).degrees();
+        let idx = spin.sector.raw();
+        let (floor_a, ceil_a) = world.plane_angles.get(&idx).copied().unwrap_or((0.0, 0.0));
+        world
+            .plane_angles
+            .insert(idx, ((floor_a + deg).rem_euclid(360.0), ceil_a));
+    }
+    let ids: Vec<_> = world.thinkers.default.clone();
+    for id in ids {
+        let Some(actor) = world.actors.get(id).cloned() else {
+            continue;
+        };
+        if actor.destroyed {
+            continue;
+        }
+        for spin in &spins {
+            let idx = spin.sector.raw() as usize;
+            let Some(sec) = world.sectors.get(idx) else {
+                continue;
+            };
+            if (actor.pos.z() - sec.floor_z).abs() > 1.0 {
+                continue;
+            }
+            let Some(geom) = world.map.sectors.get(idx) else {
+                continue;
+            };
+            let mut min_x = f64::MAX;
+            let mut max_x = f64::MIN;
+            let mut min_y = f64::MAX;
+            let mut max_y = f64::MIN;
+            for &lid in &geom.lines {
+                let Some(line) = world.map.lines.get(lid.raw() as usize) else {
+                    continue;
+                };
+                for vid in [line.v1, line.v2] {
+                    if let Some(v) = world.map.vertices.get(vid.raw() as usize) {
+                        min_x = min_x.min(v.pos.x());
+                        max_x = max_x.max(v.pos.x());
+                        min_y = min_y.min(v.pos.y());
+                        max_y = max_y.max(v.pos.y());
+                    }
+                }
+            }
+            let x = actor.pos.x();
+            let y = actor.pos.y();
+            if x < min_x || x > max_x || y < min_y || y > max_y {
+                continue;
+            }
+            let s = dmath::sin(spin.omega);
+            let c = dmath::cos(spin.omega);
+            let dx = x - spin.cx;
+            let dy = y - spin.cy;
+            let nx = spin.cx + dx * c - dy * s;
+            let ny = spin.cy + dx * s + dy * c;
+            if let Some(a) = world.actors.get_mut(id) {
+                a.pos = DVec3::new(nx, ny, a.pos.z());
+                let vx = a.vel.x();
+                let vy = a.vel.y();
+                a.vel = DVec3::new(vx * c - vy * s, vx * s + vy * c, a.vel.z());
+                a.angle = Angle::from_degrees(
+                    a.angle.degrees() + Angle::from_radians(spin.omega).degrees(),
+                );
+            }
+            break;
+        }
+    }
+}
+
+/// How close an actor must be to the virtual car to ride it.
+const SUBWAY_CARRY: f64 = 96.0;
+
+/// Carry nearby actors along locator waypoints (`SE 6` / `14` / `30`).
+pub fn tick_subways(world: &mut World) {
+    if world.subways.is_empty() {
+        return;
+    }
+    let mut cars = world.subways.clone();
+    let mut deltas: Vec<(f64, f64, f64, f64)> = Vec::with_capacity(cars.len());
+    for car in &mut cars {
+        if car.points.len() < 2 || car.speed <= 0.0 {
+            deltas.push((car.x, car.y, 0.0, 0.0));
+            continue;
+        }
+        let mut remain = car.speed;
+        let mut dx = 0.0;
+        let mut dy = 0.0;
+        while remain > 1e-9 {
+            let (px, py) = car.points[car.i % car.points.len()];
+            let vx = px - car.x;
+            let vy = py - car.y;
+            let dist = dmath::sqrt(vx * vx + vy * vy);
+            if dist <= 8.0 {
+                car.i = (car.i + 1) % car.points.len();
+                continue;
+            }
+            let step = remain.min(dist);
+            let ux = vx / dist * step;
+            let uy = vy / dist * step;
+            car.x += ux;
+            car.y += uy;
+            dx += ux;
+            dy += uy;
+            remain -= step;
+            if dist - step <= 8.0 {
+                car.i = (car.i + 1) % car.points.len();
+            }
+        }
+        world
+            .floor_scroll_offsets
+            .insert(car.sector.raw(), (car.x, car.y));
+        if let Some(id) = car.poly {
+            let speed = ((car.speed * 8.0).ceil() as i32).max(1);
+            let dest = [id, speed, car.x.round() as i32, car.y.round() as i32, 0];
+            crate::polyobj::polyobj_move_to(world, &dest, true);
+        }
+        deltas.push((car.x, car.y, dx, dy));
+    }
+    world.subways = cars;
+    let ids: Vec<_> = world.thinkers.default.clone();
+    for id in ids {
+        let Some(actor) = world.actors.get(id).cloned() else {
+            continue;
+        };
+        if actor.destroyed {
+            continue;
+        }
+        for &(cx, cy, dx, dy) in &deltas {
+            if dx == 0.0 && dy == 0.0 {
+                continue;
+            }
+            let ax = actor.pos.x() - cx;
+            let ay = actor.pos.y() - cy;
+            if dmath::sqrt(ax * ax + ay * ay) > SUBWAY_CARRY {
+                continue;
+            }
+            if let Some(a) = world.actors.get_mut(id) {
+                a.pos = DVec3::new(a.pos.x() + dx, a.pos.y() + dy, a.pos.z());
+            }
+            break;
+        }
+    }
+}
+
+/// Slide `SE 20` stretch vertices and carry anyone on that floor.
+pub fn tick_stretches(world: &mut World) {
+    if world.stretches.is_empty() {
+        return;
+    }
+    let mut cars = world.stretches.clone();
+    let mut deltas: Vec<(SectorId, f64, f64)> = Vec::new();
+    for st in &mut cars {
+        if st.sign == 0 || st.speed <= 0.0 {
+            continue;
+        }
+        let mut step = st.speed * f64::from(st.sign);
+        let next = st.pos + step;
+        if next >= st.dist {
+            step = st.dist - st.pos;
+            st.pos = st.dist;
+            st.sign = 0;
+        } else if next <= 0.0 {
+            step = -st.pos;
+            st.pos = 0.0;
+            st.sign = 0;
+        } else {
+            st.pos = next;
+        }
+        if step.abs() <= 1e-9 {
+            continue;
+        }
+        let dx = st.dx * step;
+        let dy = st.dy * step;
+        crate::polyobj::translate_vertices(world, &st.verts, &st.lines, dx, dy);
+        deltas.push((st.sector, dx, dy));
+    }
+    world.stretches = cars;
+    if deltas.is_empty() {
+        return;
+    }
+    let ids: Vec<_> = world.thinkers.default.clone();
+    for id in ids {
+        let Some(actor) = world.actors.get(id).cloned() else {
+            continue;
+        };
+        if actor.destroyed {
+            continue;
+        }
+        for &(sid, dx, dy) in &deltas {
+            let idx = sid.raw() as usize;
+            let Some(sec) = world.sectors.get(idx) else {
+                continue;
+            };
+            if (actor.pos.z() - sec.floor_z).abs() > 1.0 {
+                continue;
+            }
+            let Some(geom) = world.map.sectors.get(idx) else {
+                continue;
+            };
+            let mut min_x = f64::MAX;
+            let mut max_x = f64::MIN;
+            let mut min_y = f64::MAX;
+            let mut max_y = f64::MIN;
+            for &lid in &geom.lines {
+                let Some(line) = world.map.lines.get(lid.raw() as usize) else {
+                    continue;
+                };
+                for vid in [line.v1, line.v2] {
+                    if let Some(v) = world.map.vertices.get(vid.raw() as usize) {
+                        min_x = min_x.min(v.pos.x());
+                        max_x = max_x.max(v.pos.x());
+                        min_y = min_y.min(v.pos.y());
+                        max_y = max_y.max(v.pos.y());
+                    }
+                }
+            }
+            let x = actor.pos.x();
+            let y = actor.pos.y();
+            if x < min_x || x > max_x || y < min_y || y > max_y {
+                continue;
+            }
+            if let Some(a) = world.actors.get_mut(id) {
+                a.pos = DVec3::new(a.pos.x() + dx, a.pos.y() + dy, a.pos.z());
+            }
+            break;
+        }
+    }
+}
+
+/// Retract `SE 22` teeth when the linked door ceiling has left its rest height.
+pub fn tick_teeth(world: &mut World) {
+    if world.teeth.is_empty() {
+        return;
+    }
+    let mut cars = world.teeth.clone();
+    let mut deltas: Vec<(SectorId, f64, f64)> = Vec::new();
+    for th in &mut cars {
+        let ceil = world
+            .sectors
+            .get(th.door.raw() as usize)
+            .map(|s| s.ceiling_z)
+            .unwrap_or(th.rest_ceil);
+        let target = if ceil > th.rest_ceil + 1.0 {
+            th.dist
+        } else {
+            0.0
+        };
+        let mut step = (target - th.pos).clamp(-th.speed, th.speed);
+        let next = th.pos + step;
+        if next >= th.dist {
+            step = th.dist - th.pos;
+            th.pos = th.dist;
+        } else if next <= 0.0 {
+            step = -th.pos;
+            th.pos = 0.0;
+        } else {
+            th.pos = next;
+        }
+        if step.abs() <= 1e-9 {
+            continue;
+        }
+        let dx = th.dx * step;
+        let dy = th.dy * step;
+        crate::polyobj::translate_vertices(world, &th.verts, &th.lines, dx, dy);
+        deltas.push((th.sector, dx, dy));
+    }
+    world.teeth = cars;
+    if deltas.is_empty() {
+        return;
+    }
+    let ids: Vec<_> = world.thinkers.default.clone();
+    for id in ids {
+        let Some(actor) = world.actors.get(id).cloned() else {
+            continue;
+        };
+        if actor.destroyed {
+            continue;
+        }
+        for &(sid, dx, dy) in &deltas {
+            let idx = sid.raw() as usize;
+            let Some(sec) = world.sectors.get(idx) else {
+                continue;
+            };
+            if (actor.pos.z() - sec.floor_z).abs() > 1.0 {
+                continue;
+            }
+            let Some(geom) = world.map.sectors.get(idx) else {
+                continue;
+            };
+            let mut min_x = f64::MAX;
+            let mut max_x = f64::MIN;
+            let mut min_y = f64::MAX;
+            let mut max_y = f64::MIN;
+            for &lid in &geom.lines {
+                let Some(line) = world.map.lines.get(lid.raw() as usize) else {
+                    continue;
+                };
+                for vid in [line.v1, line.v2] {
+                    if let Some(v) = world.map.vertices.get(vid.raw() as usize) {
+                        min_x = min_x.min(v.pos.x());
+                        max_x = max_x.max(v.pos.x());
+                        min_y = min_y.min(v.pos.y());
+                        max_y = max_y.max(v.pos.y());
+                    }
+                }
+            }
+            let x = actor.pos.x();
+            let y = actor.pos.y();
+            if x < min_x || x > max_x || y < min_y || y > max_y {
+                continue;
+            }
+            if let Some(a) = world.actors.get_mut(id) {
+                a.pos = DVec3::new(a.pos.x() + dx, a.pos.y() + dy, a.pos.z());
+            }
+            break;
+        }
+    }
+}
+
+/// Oscillate `SE 16` reactor-skew vertices and carry anyone on that floor.
+pub fn tick_skews(world: &mut World) {
+    if world.skews.is_empty() {
+        return;
+    }
+    let mut cars = world.skews.clone();
+    let mut deltas: Vec<(SectorId, f64, f64)> = Vec::new();
+    for sk in &mut cars {
+        if sk.speed <= 0.0 {
+            continue;
+        }
+        let mut step = sk.speed * f64::from(sk.sign);
+        let next = sk.pos + step;
+        if next >= sk.dist {
+            step = sk.dist - sk.pos;
+            sk.pos = sk.dist;
+            sk.sign = -1;
+        } else if next <= 0.0 {
+            step = -sk.pos;
+            sk.pos = 0.0;
+            sk.sign = 1;
+        } else {
+            sk.pos = next;
+        }
+        if step.abs() <= 1e-9 {
+            continue;
+        }
+        let dx = sk.dx * step;
+        let dy = sk.dy * step;
+        crate::polyobj::translate_vertices(world, &sk.verts, &sk.lines, dx, dy);
+        deltas.push((sk.sector, dx, dy));
+    }
+    world.skews = cars;
+    if deltas.is_empty() {
+        return;
+    }
+    let ids: Vec<_> = world.thinkers.default.clone();
+    for id in ids {
+        let Some(actor) = world.actors.get(id).cloned() else {
+            continue;
+        };
+        if actor.destroyed {
+            continue;
+        }
+        for &(sid, dx, dy) in &deltas {
+            let idx = sid.raw() as usize;
+            let Some(sec) = world.sectors.get(idx) else {
+                continue;
+            };
+            if (actor.pos.z() - sec.floor_z).abs() > 1.0 {
+                continue;
+            }
+            let Some(geom) = world.map.sectors.get(idx) else {
+                continue;
+            };
+            let mut min_x = f64::MAX;
+            let mut max_x = f64::MIN;
+            let mut min_y = f64::MAX;
+            let mut max_y = f64::MIN;
+            for &lid in &geom.lines {
+                let Some(line) = world.map.lines.get(lid.raw() as usize) else {
+                    continue;
+                };
+                for vid in [line.v1, line.v2] {
+                    if let Some(v) = world.map.vertices.get(vid.raw() as usize) {
+                        min_x = min_x.min(v.pos.x());
+                        max_x = max_x.max(v.pos.x());
+                        min_y = min_y.min(v.pos.y());
+                        max_y = max_y.max(v.pos.y());
+                    }
+                }
+            }
+            let x = actor.pos.x();
+            let y = actor.pos.y();
+            if x < min_x || x > max_x || y < min_y || y > max_y {
+                continue;
+            }
+            if let Some(a) = world.actors.get_mut(id) {
+                a.pos = DVec3::new(a.pos.x() + dx, a.pos.y() + dy, a.pos.z());
+            }
             break;
         }
     }
@@ -4609,7 +5519,7 @@ fn line_set_automap_flags(world: &mut World, args: &[i32; 5]) -> i32 {
             .line_flags
             .get(&li)
             .copied()
-            .unwrap_or_else(|| i32::from(ld.flags));
+            .unwrap_or_else(|| crate::world::base_line_flags(ld));
         world.line_flags.insert(li, (base | set_ml) & !clear_ml);
         n += 1;
     }
@@ -5925,6 +6835,9 @@ fn blockf_to_ml(bits: i32) -> i32 {
     if bits & blockf::RAILING != 0 {
         ml |= ML_RAILING;
     }
+    if bits & blockf::HITSCAN != 0 {
+        ml |= crate::world::ML_BLOCKHITSCAN;
+    }
     ml
 }
 
@@ -5942,7 +6855,7 @@ fn line_set_blocking(world: &mut World, args: &[i32; 5]) -> i32 {
             // Activating line when id is 0 — bootstrap: first linedef.
             i == 0
         } else {
-            i32::from(ld.tag) == line_id
+            ld.has_id(line_id)
         };
         if !matches {
             continue;
@@ -5952,7 +6865,7 @@ fn line_set_blocking(world: &mut World, args: &[i32; 5]) -> i32 {
             .line_flags
             .get(&li)
             .copied()
-            .unwrap_or_else(|| i32::from(ld.flags));
+            .unwrap_or_else(|| crate::world::base_line_flags(ld));
         world.line_flags.insert(li, (base | set_ml) & !clear_ml);
         n += 1;
     }
@@ -6125,7 +7038,7 @@ fn glass_break(world: &mut World, line: Option<LineId>) -> i32 {
         .line_flags
         .get(&li)
         .copied()
-        .unwrap_or_else(|| i32::from(ld.flags));
+        .unwrap_or_else(|| crate::world::base_line_flags(ld));
     world.line_flags.insert(
         li,
         base & !(crate::world::ML_BLOCKING | crate::world::ML_BLOCKEVERYTHING),
@@ -6298,7 +7211,7 @@ fn line_set_texture_offset(world: &mut World, args: &[i32; 5]) -> i32 {
         let matches = if line_id == 0 {
             i == 0
         } else {
-            i32::from(ld.tag) == line_id
+            ld.has_id(line_id)
         };
         if !matches {
             continue;
@@ -6324,7 +7237,7 @@ fn line_set_texture_scale(world: &mut World, args: &[i32; 5]) -> i32 {
         let matches = if line_id == 0 {
             i == 0
         } else {
-            i32::from(ld.tag) == line_id
+            ld.has_id(line_id)
         };
         if !matches {
             continue;
@@ -6424,7 +7337,7 @@ fn translucent_line(world: &mut World, args: &[i32; 5], line: Option<LineId>) ->
         let matches = if line_id == 0 {
             line.is_some_and(|l| l.raw() as usize == i) || (line.is_none() && i == 0)
         } else {
-            i32::from(ld.tag) == line_id
+            ld.has_id(line_id)
         };
         if !matches {
             continue;
@@ -7233,7 +8146,7 @@ fn line_horizon(world: &mut World, line: Option<LineId>) -> i32 {
             .map
             .lines
             .get(li as usize)
-            .map(|l| i32::from(l.flags))
+            .map(crate::world::base_line_flags)
             .unwrap_or(0)
     });
     world.line_flags.insert(li, base | crate::world::ML_HORIZON);
@@ -8012,6 +8925,7 @@ pub fn tick_doors(world: &mut World) {
                 "doors/open"
             };
             play_sector_sound(world, sector, name);
+            apply_door_sector_lights(world, sector, new_dir > 0);
         }
         if done {
             world.doors.swap_remove(i);
@@ -8399,6 +9313,44 @@ actor PlayerPawn : Actor 0
     }
 
     #[test]
+    fn sector_sound_sequence_picks_open_and_close_choices() {
+        use crate::sndseq::{SndSeqDef, SndSeqStep};
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 72.0)
+            .player_start(128.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        map.sectors[0].tags.push(1);
+        map.sectors[0].sound_sequence = "Hatch".into();
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        for (name, sound) in [("UP", "hatch/up"), ("DOWN", "hatch/down")] {
+            w.sndseq.sequences.insert(
+                name.into(),
+                SndSeqDef {
+                    name: name.into(),
+                    steps: vec![SndSeqStep::Play(sound.into()), SndSeqStep::End],
+                    stopsound: None,
+                },
+            );
+        }
+        w.sndseq
+            .choices
+            .insert("HATCH".into(), vec![(0, "UP".into()), (1, "DOWN".into())]);
+        let heard = |w: &mut World| {
+            crate::sndseq::tick_sequences(w);
+            w.drain_sound_events()
+                .into_iter()
+                .map(|e| e.name)
+                .collect::<Vec<_>>()
+        };
+        execute_special(&mut w, num::DOOR_RAISE, &[1, 16, 150, 0, 0], None, None);
+        assert_eq!(heard(&mut w), ["hatch/up"]);
+        execute_special(&mut w, num::DOOR_RAISE, &[1, 16, 150, 0, 0], None, None);
+        assert_eq!(heard(&mut w), ["hatch/down"]);
+    }
+
+    #[test]
     fn udmf_silent_sector_skips_door_sound() {
         let mut map = MapBuilder::new()
             .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 72.0)
@@ -8443,6 +9395,306 @@ actor PlayerPawn : Actor 0
             "ceiling {z0} -> {}",
             w.sectors[0].ceiling_z
         );
+    }
+
+    #[test]
+    fn door_raise_brightens_se8_rooms_and_restores_them() {
+        let mut map = MapBuilder::new()
+            .room("door", rect(0.0, 0.0, 128.0, 128.0), 0.0, 8.0)
+            .room("room", rect(128.0, 0.0, 256.0, 128.0), 0.0, 72.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        map.sectors[0].tags.push(1);
+        map.sectors[0].light = 80;
+        map.sectors[1].tags.push(3);
+        map.sectors[1].light = 80;
+        if map.udmf_user.sectors.len() < 2 {
+            map.udmf_user.sectors.resize(2, Default::default());
+        }
+        map.udmf_user.sectors[0]
+            .ints
+            .insert("user_doorlight".into(), 3);
+        map.udmf_user.sectors[0]
+            .ints
+            .insert("user_doorbright".into(), 200);
+        map.udmf_user.sectors[0]
+            .ints
+            .insert("user_doorlightopen".into(), 1);
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        assert_eq!(w.sectors[1].light, 80);
+        assert_eq!(
+            execute_special(&mut w, num::DOOR_RAISE, &[1, 16, 150, 0, 0], None, None),
+            1
+        );
+        assert_eq!(w.sectors[1].light, 200);
+        assert_eq!(
+            execute_special(&mut w, num::DOOR_RAISE, &[1, 16, 150, 0, 0], None, None),
+            1
+        );
+        assert_eq!(w.sectors[1].light, 80);
+    }
+
+    #[test]
+    fn door_close_brightens_se9_rooms() {
+        let mut map = MapBuilder::new()
+            .room("door", rect(0.0, 0.0, 128.0, 128.0), 0.0, 72.0)
+            .room("room", rect(128.0, 0.0, 256.0, 128.0), 0.0, 72.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        map.sectors[0].tags.push(1);
+        map.sectors[0].light = 80;
+        map.sectors[1].tags.push(3);
+        map.sectors[1].light = 80;
+        if map.udmf_user.sectors.len() < 2 {
+            map.udmf_user.sectors.resize(2, Default::default());
+        }
+        map.udmf_user.sectors[0]
+            .ints
+            .insert("user_doorlight".into(), 3);
+        map.udmf_user.sectors[0]
+            .ints
+            .insert("user_doorbright".into(), 200);
+        map.udmf_user.sectors[0]
+            .ints
+            .insert("user_doorlightopen".into(), 0);
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        assert_eq!(
+            execute_special(&mut w, num::DOOR_RAISE, &[1, 16, 150, 0, 0], None, None),
+            1
+        );
+        assert_eq!(w.sectors[1].light, 80);
+        assert_eq!(
+            execute_special(&mut w, num::DOOR_CLOSE, &[1, 16, 0, 0, 0], None, None),
+            1
+        );
+        assert_eq!(w.sectors[1].light, 200);
+    }
+
+    #[test]
+    fn rotating_floor_carries_an_actor_around_the_pivot() {
+        let mut map = MapBuilder::new()
+            .room("gear", rect(0.0, 0.0, 256.0, 256.0), 0.0, 72.0)
+            .player_start(192.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        if map.udmf_user.sectors.is_empty() {
+            map.udmf_user.sectors.resize(1, Default::default());
+        }
+        map.udmf_user.sectors[0].ints.insert("user_spin".into(), 27);
+        map.udmf_user.sectors[0]
+            .ints
+            .insert("user_spinx".into(), 128);
+        map.udmf_user.sectors[0]
+            .ints
+            .insert("user_spiny".into(), 128);
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        assert_eq!(w.spinners.len(), 1);
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let (x0, y0) = {
+            let a = w.actors.get(mo).unwrap();
+            (a.pos.x(), a.pos.y())
+        };
+        for _ in 0..35 {
+            tick_spinners(&mut w);
+        }
+        let a = w.actors.get(mo).unwrap();
+        let (x1, y1) = (a.pos.x(), a.pos.y());
+        let d0 = room_core::dmath::sqrt((x0 - 128.0) * (x0 - 128.0) + (y0 - 128.0) * (y0 - 128.0));
+        let d1 = room_core::dmath::sqrt((x1 - 128.0) * (x1 - 128.0) + (y1 - 128.0) * (y1 - 128.0));
+        assert!(
+            (d0 - d1).abs() < 4.0,
+            "stayed on the circle {d0} -> {d1} at ({x1},{y1})"
+        );
+        assert!(
+            (x1 - x0).hypot(y1 - y0) > 8.0,
+            "moved around the pivot ({x0},{y0}) -> ({x1},{y1})"
+        );
+        let (floor_a, _) = w.plane_angles[&0];
+        assert!(floor_a.abs() > 1.0, "floor texture should spin ({floor_a})");
+    }
+
+    #[test]
+    fn subway_carries_an_actor_along_locators() {
+        let mut map = MapBuilder::new()
+            .room("car", rect(0.0, 0.0, 256.0, 256.0), 0.0, 72.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        if map.udmf_user.sectors.is_empty() {
+            map.udmf_user.sectors.resize(1, Default::default());
+        }
+        let bag = &mut map.udmf_user.sectors[0].ints;
+        bag.insert("user_subway".into(), 1);
+        bag.insert("user_subspeed".into(), 64);
+        bag.insert("user_subx".into(), 32);
+        bag.insert("user_suby".into(), 32);
+        bag.insert("user_subn".into(), 2);
+        bag.insert("user_sx0".into(), 200);
+        bag.insert("user_sy0".into(), 32);
+        bag.insert("user_sx1".into(), 200);
+        bag.insert("user_sy1".into(), 200);
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        assert_eq!(w.subways.len(), 1);
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let (x0, y0) = {
+            let a = w.actors.get(mo).unwrap();
+            (a.pos.x(), a.pos.y())
+        };
+        for _ in 0..35 {
+            tick_subways(&mut w);
+        }
+        let a = w.actors.get(mo).unwrap();
+        let (x1, y1) = (a.pos.x(), a.pos.y());
+        assert!(
+            x1 > x0 + 16.0,
+            "rode toward the first locator ({x0},{y0}) -> ({x1},{y1})"
+        );
+        assert!(
+            (y1 - y0).abs() < 8.0,
+            "stayed on the first leg {y0} -> {y1}"
+        );
+    }
+
+    #[test]
+    fn stretch_moves_sector_vertices() {
+        let mut map = MapBuilder::new()
+            .room("bridge", rect(0.0, 0.0, 128.0, 64.0), 0.0, 72.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        map.sectors[0].tags.push(3);
+        if map.udmf_user.sectors.is_empty() {
+            map.udmf_user.sectors.resize(1, Default::default());
+        }
+        let bag = &mut map.udmf_user.sectors[0].ints;
+        bag.insert("user_stretch".into(), 1);
+        bag.insert("user_stdx".into(), 256);
+        bag.insert("user_stdy".into(), 0);
+        bag.insert("user_stdist".into(), 32);
+        bag.insert("user_stspd".into(), 32);
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        assert_eq!(w.stretches.len(), 1);
+        let vid = w.stretches[0].verts[0];
+        let x0 = w.map.vertices[vid.raw() as usize].pos.x();
+        assert_eq!(
+            execute_special(&mut w, num::SECTOR_STRETCH, &[3, 0, 0, 0, 0], None, None),
+            1
+        );
+        for _ in 0..20 {
+            tick_stretches(&mut w);
+        }
+        let x1 = w.map.vertices[vid.raw() as usize].pos.x();
+        assert!(x1 > x0 + 8.0, "stretched {x0} -> {x1}");
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let a = w.actors.get(mo).unwrap();
+        assert!(a.pos.x() > 32.0, "carried with the stretch {}", a.pos.x());
+    }
+
+    #[test]
+    fn teeth_retract_when_the_door_ceiling_opens() {
+        let mut map = MapBuilder::new()
+            .room("door", rect(0.0, 0.0, 128.0, 128.0), 0.0, 16.0)
+            .room("teeth", rect(128.0, 0.0, 192.0, 64.0), 0.0, 72.0)
+            .player_start(140.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        if map.udmf_user.sectors.len() < 2 {
+            map.udmf_user.sectors.resize(2, Default::default());
+        }
+        let bag = &mut map.udmf_user.sectors[1].ints;
+        bag.insert("user_teeth".into(), 1);
+        bag.insert("user_thdx".into(), 256);
+        bag.insert("user_thdy".into(), 0);
+        bag.insert("user_thdist".into(), 32);
+        bag.insert("user_thspd".into(), 32);
+        bag.insert("user_thdoor".into(), 0);
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        assert_eq!(w.teeth.len(), 1);
+        let vid = w.teeth[0].verts[0];
+        let x0 = w.map.vertices[vid.raw() as usize].pos.x();
+        w.sectors[0].ceiling_z = 80.0;
+        for _ in 0..20 {
+            tick_teeth(&mut w);
+        }
+        let x1 = w.map.vertices[vid.raw() as usize].pos.x();
+        assert!(x1 > x0 + 8.0, "teeth retracted {x0} -> {x1}");
+    }
+
+    #[test]
+    fn skew_oscillates_sector_vertices() {
+        let mut map = MapBuilder::new()
+            .room("reactor", rect(0.0, 0.0, 128.0, 64.0), 0.0, 72.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        if map.udmf_user.sectors.is_empty() {
+            map.udmf_user.sectors.resize(1, Default::default());
+        }
+        let bag = &mut map.udmf_user.sectors[0].ints;
+        bag.insert("user_skew".into(), 1);
+        bag.insert("user_skdx".into(), 256);
+        bag.insert("user_skdy".into(), 0);
+        bag.insert("user_skdist".into(), 32);
+        bag.insert("user_skspd".into(), 32);
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        assert_eq!(w.skews.len(), 1);
+        let vid = w.skews[0].verts[0];
+        let x0 = w.map.vertices[vid.raw() as usize].pos.x();
+        for _ in 0..20 {
+            tick_skews(&mut w);
+        }
+        let x1 = w.map.vertices[vid.raw() as usize].pos.x();
+        assert!(x1 > x0 + 8.0, "skewed {x0} -> {x1}");
+        for _ in 0..40 {
+            tick_skews(&mut w);
+        }
+        let x2 = w.map.vertices[vid.raw() as usize].pos.x();
+        assert!(x2 < x1 - 4.0, "skew reversed {x1} -> {x2}");
+    }
+
+    #[test]
+    fn demo_cameras_lock_the_view() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let extra = r#"
+actor DukeCamera : Actor 9942
+{
+  Health 1
+  States { Spawn: POSS A -1 Stop }
+}
+"#;
+        let ir = room_decorate::parse_decorate(&format!("{src}\n{extra}")).unwrap();
+        let classes = std::sync::Arc::new(crate::ClassRegistry::from_decorate(&ir).unwrap());
+        let states = std::sync::Arc::new(crate::StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        let cam_c = w.classes.find_name("DukeCamera").unwrap();
+        let cam = w
+            .spawn_at(
+                cam_c,
+                room_core::DVec3::new(400.0, 400.0, 32.0),
+                room_core::Angle::ZERO,
+            )
+            .unwrap();
+        w.set_demo_cameras(true);
+        tick_demo_cameras(&mut w);
+        let p = w.players[0].as_ref().unwrap();
+        assert_eq!(p.camera, Some(cam));
+        assert!(!p.camera_revert);
+        assert_eq!(w.camera_textures.get("VCAMA0").map(|b| b.camera), Some(cam));
     }
 
     #[test]
@@ -10013,6 +11265,76 @@ actor PlayerPawn : Actor 0
     }
 
     #[test]
+    fn damage_linedef_destroys_healthgroup_peers() {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(128.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        assert!(map.lines.len() >= 2);
+        for i in 0..2 {
+            let l = &mut map.lines[i];
+            l.health = 10;
+            l.health_group = 7;
+            l.activation |= room_map::spac::DEATH;
+            l.special = num::DOOR_OPEN as i16;
+            l.args = [22, 16, 0, 0, 0];
+        }
+        map.sectors[0].tags.push(22);
+        let mut w = World::from_map(map).unwrap();
+        assert_eq!(damage_linedef(&mut w, LineId::from_raw(0), None, 10), 0);
+        assert_eq!(w.line_health.get(&0), Some(&0));
+        assert_eq!(w.line_health.get(&1), Some(&0));
+        assert_eq!(w.map.lines[1].health, 0);
+    }
+
+    #[test]
+    fn dead_health_line_stops_blocking_and_hides_mid() {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .room("b", rect(128.0, 0.0, 256.0, 128.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let lid = map
+            .lines
+            .iter()
+            .position(|l| l.front_sector.is_some() && l.back_sector.is_some())
+            .expect("shared wall");
+        {
+            let l = &mut map.lines[lid];
+            l.health = 1;
+            l.flags |= crate::world::ML_BLOCKING as i16;
+            for sid in l.sides.into_iter().flatten() {
+                map.sides[sid.raw() as usize].middle = "GLASS".into();
+            }
+        }
+        let mut w = World::from_map(map).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let actor = w.actors.get(mo).unwrap().clone();
+        let blocked =
+            crate::physics::check_position(&w, &actor, DVec3::new(128.0, 64.0, 0.0), Some(mo));
+        assert!(!blocked.ok, "health wall should block");
+        assert_eq!(
+            damage_linedef(&mut w, LineId::from_raw(lid as u32), None, 1),
+            0
+        );
+        let flags = w.line_flags(LineId::from_raw(lid as u32));
+        assert_eq!(flags & crate::world::ML_BLOCKING, 0);
+        let actor = w.actors.get(mo).unwrap().clone();
+        let open =
+            crate::physics::check_position(&w, &actor, DVec3::new(128.0, 64.0, 0.0), Some(mo));
+        assert!(open.ok, "dead health wall should be walk-through");
+        let line = &w.map.lines[lid];
+        for sid in line.sides.into_iter().flatten() {
+            let mid = &w.map.sides[sid.raw() as usize].middle;
+            assert!(mid.is_empty() || mid == "-", "{mid}");
+        }
+    }
+
+    #[test]
     fn activate_line_respects_spac_mask() {
         let mut map = MapBuilder::new()
             .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
@@ -10069,6 +11391,25 @@ actor PlayerPawn : Actor 0
             ActivationType::Use
         ));
         assert!(!w.doors.is_empty());
+    }
+
+    #[test]
+    fn door_opens_to_lowest_neighbour_ceiling() {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 72.0)
+            .room("b", rect(128.0, 0.0, 256.0, 128.0), 0.0, 0.0)
+            .room("c", rect(256.0, 0.0, 384.0, 128.0), 0.0, 200.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        map.sectors[1].tags.push(5);
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        assert_eq!(
+            execute_special(&mut w, num::DOOR_OPEN, &[5, 16, 0, 0, 0], None, None),
+            1
+        );
+        assert_eq!(w.doors[0].top_z, 68.0);
     }
 
     #[test]
@@ -12231,6 +13572,27 @@ actor Dummy : Actor 9901
             w.line_flags(LineId::from_raw(0)) & crate::world::ML_BLOCKEVERYTHING,
             0
         );
+    }
+
+    #[test]
+    fn line_set_blocking_finds_moreids_and_clears_hitscan() {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        map.lines[0].extra_ids.push(430_000);
+        map.lines[0].block_hitscan = true;
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        let hitscan = |w: &World| w.line_flags(LineId::from_raw(0)) & crate::world::ML_BLOCKHITSCAN;
+        assert_ne!(hitscan(&w), 0);
+        let args = [430_000, 0, crate::world::blockf::HITSCAN, 0, 0];
+        assert_eq!(
+            execute_special(&mut w, num::LINE_SET_BLOCKING, &args, None, None),
+            1
+        );
+        assert_eq!(hitscan(&w), 0);
     }
 
     #[test]

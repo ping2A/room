@@ -22,11 +22,7 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
         .unwrap_or(1);
     // Vanilla `MF_DROPPED`: ammo (and weapon ammo give) at half amount (min 1).
     let amount = if dropped { (amount / 2).max(1) } else { amount };
-    let class_name = world
-        .classes
-        .get(class)
-        .map(|c| c.name.to_ascii_lowercase())
-        .unwrap_or_default();
+    let class_name = pickup_kind(world, class);
     // Armor pickups set `Player.armor` instead of stacking as inventory.
     let armor_points = match class_name.as_str() {
         "greenarmor" => Some(100),
@@ -51,6 +47,7 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
     let is_invuln = class_name == "invulnerabilitysphere";
     let is_blur = class_name == "blursphere";
     let is_radsuit = class_name == "radsuit";
+    let is_flight = class_name == "artifly";
     let is_allmap = class_name == "allmap";
     let is_infrared = class_name == "infrared";
     let is_backpack = class_name == "backpack";
@@ -170,6 +167,22 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
         }
         if !applied {
             return false;
+        }
+    } else if is_flight {
+        // Flight still starts on pickup (`ArtiFly`); medkit / steroids wait for INVUSE.
+        let mut applied = false;
+        for p in world.players.iter_mut().flatten() {
+            if p.mo != Some(toucher) {
+                continue;
+            }
+            p.fly_tics = crate::player::FLIGHT_TICS;
+            applied = true;
+        }
+        if !applied {
+            return false;
+        }
+        if let Some(a) = world.actors.get_mut(toucher) {
+            a.flags |= crate::class::FLAG_NOGRAVITY;
         }
     } else if is_allmap {
         let mut applied = false;
@@ -293,7 +306,7 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
     } else if !give_inventory(
         world,
         toucher,
-        class,
+        base_ammo(world, class).unwrap_or(class),
         if class_is_ammo(world, class) {
             skill_ammo(world, amount)
         } else {
@@ -389,6 +402,71 @@ pub(crate) fn skill_ammo(world: &World, amount: i32) -> i32 {
     }
 }
 
+/// Built-in pickups whose effect is keyed by class name.
+const PICKUP_KINDS: [&str; 20] = [
+    "greenarmor",
+    "bluearmor",
+    "armorbonus",
+    "stimpack",
+    "medikit",
+    "healthbonus",
+    "soulsphere",
+    "megasphere",
+    "berserk",
+    "invulnerabilitysphere",
+    "blursphere",
+    "radsuit",
+    "artifly",
+    "allmap",
+    "infrared",
+    "backpack",
+    "clipbox",
+    "shellbox",
+    "rocketbox",
+    "cellpack",
+];
+
+/// Lowercase name of the nearest built-in pickup `class` derives from, so a
+/// DECORATE `actor Cola : Stimpack` heals like a stimpack; otherwise the
+/// class's own name.
+fn pickup_kind(world: &World, class: ClassId) -> String {
+    let own = world
+        .classes
+        .get(class)
+        .map(|c| c.name.to_ascii_lowercase())
+        .unwrap_or_default();
+    let mut cur = Some(class);
+    for _ in 0..64 {
+        let Some(def) = cur.and_then(|c| world.classes.get(c)) else {
+            break;
+        };
+        let name = def.name.to_ascii_lowercase();
+        if PICKUP_KINDS.contains(&name.as_str()) {
+            return name;
+        }
+        cur = def.parent;
+    }
+    own
+}
+
+/// The weapon ammo type `class` is (or derives from): picking up a subclass of
+/// `Clip` fills the `Clip` stack, as in GZDoom.
+fn base_ammo(world: &World, class: ClassId) -> Option<ClassId> {
+    let mut cur = Some(class);
+    for _ in 0..64 {
+        let def = cur.and_then(|c| world.classes.get(c))?;
+        if world
+            .classes
+            .iter()
+            .any(|c| c.is_weapon && c.ammo_type.eq_ignore_ascii_case(&def.name))
+        {
+            return Some(def.id);
+        }
+        cur = def.parent;
+    }
+    None
+}
+
 fn class_is_ammo(world: &World, class: ClassId) -> bool {
     let Some(name) = world.classes.get(class).map(|c| c.name.as_str()) else {
         return false;
@@ -457,6 +535,7 @@ fn default_pickup_message(class_name: &str) -> Option<&'static str> {
         "invulnerabilitysphere" => "Invulnerability!",
         "blursphere" => "Partial Invisibility",
         "radsuit" => "Radiation Shielding Suit",
+        "artifly" => "Wings of Wrath",
         "allmap" => "Computer Area Map",
         "infrared" => "Light Amplification Visor",
         _ => return None,
@@ -493,12 +572,10 @@ fn touch_specials_inner(world: &mut World, toucher: ActorId) {
         let Some(def) = world.classes.get(other.class) else {
             continue;
         };
-        let is_armor = matches!(
-            def.name.to_ascii_lowercase().as_str(),
-            "greenarmor" | "bluearmor" | "armorbonus"
-        );
+        let kind = pickup_kind(world, other.class);
+        let is_armor = matches!(kind.as_str(), "greenarmor" | "bluearmor" | "armorbonus");
         let is_health = matches!(
-            def.name.to_ascii_lowercase().as_str(),
+            kind.as_str(),
             "stimpack"
                 | "medikit"
                 | "healthbonus"
@@ -508,12 +585,13 @@ fn touch_specials_inner(world: &mut World, toucher: ActorId) {
                 | "invulnerabilitysphere"
                 | "blursphere"
                 | "radsuit"
+                | "artifly"
                 | "allmap"
                 | "infrared"
                 | "backpack"
         );
         let is_key = matches!(
-            def.name.to_ascii_lowercase().as_str(),
+            kind.as_str(),
             "bluecard" | "yellowcard" | "redcard" | "blueskull" | "yellowskull" | "redskull"
         );
         if !def.is_weapon
@@ -788,6 +866,58 @@ mod tests {
             .unwrap();
         assert!(try_pickup(&mut w, player, item));
         assert!(w.players[0].as_ref().unwrap().radsuit);
+    }
+
+    #[test]
+    fn artifly_grants_timed_flight_driven_by_up_move() {
+        let src = format!(
+            "{}\nactor ArtiFly : Actor {{ Inventory.Amount 1 States {{ Spawn: TNT1 A -1 Stop }} }}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 256.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let fly = classes.find_name("ArtiFly").unwrap();
+        let player = w.players[0].as_ref().unwrap().mo.unwrap();
+        let item = w
+            .spawn_at(fly, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO)
+            .unwrap();
+        assert!(try_pickup(&mut w, player, item));
+        assert_eq!(
+            w.players[0].as_ref().unwrap().fly_tics,
+            crate::player::FLIGHT_TICS
+        );
+        w.players[0].as_mut().unwrap().cmd.up_move = 768;
+        for _ in 0..10 {
+            w.tick();
+        }
+        let z = w.actors.get(player).unwrap().pos.z();
+        assert!(z > 40.0, "up_move should fly the player up, z={z}");
+        w.players[0].as_mut().unwrap().cmd.up_move = 0;
+        for _ in 0..35 {
+            w.tick();
+        }
+        let hover = w.actors.get(player).unwrap().pos.z();
+        assert!(hover > 40.0, "a flying player hovers, z={hover}");
+        w.players[0].as_mut().unwrap().fly_tics = 1;
+        for _ in 0..70 {
+            w.tick();
+        }
+        assert_eq!(
+            w.actors.get(player).unwrap().flags & crate::class::FLAG_NOGRAVITY,
+            0
+        );
+        assert!(
+            w.actors.get(player).unwrap().pos.z() < 1.0,
+            "flight ended: fall"
+        );
     }
 
     #[test]

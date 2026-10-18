@@ -46,6 +46,20 @@ pub enum Key {
     Weapon6,
     /// Weapon slot 7 (BFG).
     Weapon7,
+    /// Weapon slot 8.
+    Weapon8,
+    /// Weapon slot 9.
+    Weapon9,
+    /// Weapon slot 0 (sent as `weapon_select` 10).
+    Weapon0,
+    /// Swim / fly up (`+moveup`).
+    MoveUp,
+    /// Swim / fly down (`+movedown`).
+    MoveDown,
+    /// Duke quick kick (`+quickkick`).
+    QuickKick,
+    /// Use carried inventory (`+invuse`).
+    InvUse,
     /// Cycle to next owned weapon.
     NextWeapon,
     /// Cycle to previous owned weapon.
@@ -80,7 +94,7 @@ pub struct TicCmdBits {
     pub side_move: i16,
     /// Vertical move.
     pub up_move: i16,
-    /// Weapon slot `1..=7`, or `0` if none this tic.
+    /// Weapon slot `1..=9`, `10` for slot 0, or `0` if none this tic.
     pub weapon_select: u8,
 }
 
@@ -97,6 +111,10 @@ impl TicCmdBits {
     pub const BT_WEAPONNEXT: u32 = 1 << 5;
     /// Prev weapon.
     pub const BT_WEAPONPREV: u32 = 1 << 6;
+    /// Duke quick kick.
+    pub const BT_QUICKKICK: u32 = 1 << 7;
+    /// Use carried inventory (Duke medkit / steroids).
+    pub const BT_INVUSE: u32 = 1 << 8;
 }
 
 /// Doom walk / run forward units.
@@ -104,6 +122,9 @@ const FORWARD_WALK: i16 = 25 * 256; // scaled toward classic 2048-space
 const FORWARD_RUN: i16 = 50 * 256;
 const SIDE_WALK: i16 = 24 * 256;
 const SIDE_RUN: i16 = 40 * 256;
+/// GZDoom `flyspeed` (walk, run).
+const FLY_WALK: i16 = 256;
+const FLY_RUN: i16 = 3 * 256;
 /// Mouse counts → `TicCmd` yaw/pitch units.
 ///
 /// Doom's DOS path was roughly `mousex * 8` then `<< 8` into the short ticcmd
@@ -139,6 +160,13 @@ pub fn build_ticcmd(sample: &InputSample) -> TicCmdBits {
     if sample.keys.contains(&Key::MoveLeft) {
         cmd.side_move = cmd.side_move.saturating_sub(side);
     }
+    let fly = if speed { FLY_RUN } else { FLY_WALK };
+    if sample.keys.contains(&Key::MoveUp) {
+        cmd.up_move = cmd.up_move.saturating_add(fly);
+    }
+    if sample.keys.contains(&Key::MoveDown) {
+        cmd.up_move = cmd.up_move.saturating_sub(fly);
+    }
     // Keyboard turning: Doom `angleturn` is added to BAM angle (CCW+).
     // Left → +turn (CCW), Right → −turn (CW).
     if sample.keys.contains(&Key::Left) {
@@ -167,6 +195,9 @@ pub fn build_ticcmd(sample: &InputSample) -> TicCmdBits {
         (Key::Weapon5, 5),
         (Key::Weapon6, 6),
         (Key::Weapon7, 7),
+        (Key::Weapon8, 8),
+        (Key::Weapon9, 9),
+        (Key::Weapon0, 10),
     ] {
         if sample.keys.contains(&key) {
             cmd.weapon_select = slot;
@@ -178,6 +209,12 @@ pub fn build_ticcmd(sample: &InputSample) -> TicCmdBits {
     }
     if sample.keys.contains(&Key::PrevWeapon) {
         cmd.buttons |= TicCmdBits::BT_WEAPONPREV;
+    }
+    if sample.keys.contains(&Key::QuickKick) {
+        cmd.buttons |= TicCmdBits::BT_QUICKKICK;
+    }
+    if sample.keys.contains(&Key::InvUse) {
+        cmd.buttons |= TicCmdBits::BT_INVUSE;
     }
     cmd
 }
@@ -208,6 +245,25 @@ mod tests {
             mouse_pitch: 0,
         };
         assert_eq!(build_ticcmd(&sample).weapon_select, 3);
+        let zero = InputSample {
+            keys: vec![Key::Weapon0],
+            ..InputSample::default()
+        };
+        assert_eq!(build_ticcmd(&zero).weapon_select, 10);
+    }
+
+    #[test]
+    fn move_up_down_fill_up_move() {
+        let up = build_ticcmd(&InputSample {
+            keys: vec![Key::MoveUp],
+            ..InputSample::default()
+        });
+        let down = build_ticcmd(&InputSample {
+            keys: vec![Key::MoveDown, Key::Speed],
+            ..InputSample::default()
+        });
+        assert_eq!(up.up_move, 256);
+        assert_eq!(down.up_move, -768);
     }
 
     #[test]
@@ -257,5 +313,18 @@ mod tests {
             prev.buttons & TicCmdBits::BT_WEAPONPREV,
             TicCmdBits::BT_WEAPONPREV
         );
+        let kick = build_ticcmd(&InputSample {
+            keys: vec![Key::QuickKick],
+            ..InputSample::default()
+        });
+        assert_eq!(
+            kick.buttons & TicCmdBits::BT_QUICKKICK,
+            TicCmdBits::BT_QUICKKICK
+        );
+        let inv = build_ticcmd(&InputSample {
+            keys: vec![Key::InvUse],
+            ..InputSample::default()
+        });
+        assert_eq!(inv.buttons & TicCmdBits::BT_INVUSE, TicCmdBits::BT_INVUSE);
     }
 }

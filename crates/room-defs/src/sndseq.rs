@@ -85,6 +85,9 @@ pub struct SoundSeqRegistry {
     pub environment_slots: BTreeMap<i64, String>,
     /// Named slots (`slot` / `[Name …]`).
     pub named_slots: BTreeMap<String, String>,
+    /// Choice lists (`[Name 0 SeqA 1 SeqB ]`): uppercase name → (choice,
+    /// uppercase sequence). Doors pick 0 opening, 1 closing, 2 / 3 when fast.
+    pub choices: BTreeMap<String, Vec<(i64, String)>>,
     /// Non-fatal parse notes.
     pub warnings: Vec<String>,
 }
@@ -147,6 +150,34 @@ fn parse_bracket_slot(
         return Ok(());
     }
     let slot = rest.to_owned();
+    let tok = sc.next_token()?;
+    let Tok::Int(mut n) = tok else {
+        sc.unget(tok);
+        return parse_slot_target(sc, reg, slot);
+    };
+    let mut list = Vec::new();
+    loop {
+        let seq = read_word(sc)?;
+        if let Some(seq) = seq.strip_suffix(']') {
+            list.push((n, seq.to_ascii_uppercase()));
+            break;
+        }
+        list.push((n, seq.to_ascii_uppercase()));
+        match sc.next_token()? {
+            Tok::Int(m) => n = m,
+            // `]` or end of input.
+            _ => break,
+        }
+    }
+    reg.choices.insert(slot.to_ascii_uppercase(), list);
+    Ok(())
+}
+
+fn parse_slot_target(
+    sc: &mut Scanner<'_>,
+    reg: &mut SoundSeqRegistry,
+    slot: String,
+) -> Result<(), DefsError> {
     let second = read_word(sc)?;
     let target = second
         .strip_suffix(']')
@@ -296,6 +327,17 @@ end
             reg.named_slots.get("AMBIENT").map(String::as_str),
             Some("PLATFORM")
         );
+    }
+
+    #[test]
+    fn choice_lists() {
+        let text = ":Open\n play a\nend\n:Shut\n play b\nend\n\
+                    [Door\n 0 Open\n 1 Shut\n]\n[Tight 0 Open 1 Shut]\n:After\n play c\nend\n";
+        let reg = parse_sndseq(text).unwrap();
+        let want = vec![(0, "OPEN".to_owned()), (1, "SHUT".to_owned())];
+        assert_eq!(reg.choices["DOOR"], want);
+        assert_eq!(reg.choices["TIGHT"], want);
+        assert!(reg.sequences.contains_key("AFTER"));
     }
 
     #[test]

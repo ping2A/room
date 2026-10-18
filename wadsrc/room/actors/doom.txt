@@ -1560,6 +1560,22 @@ actor RadSuit : Actor 2025
   }
 }
 
+// Heretic Wings of Wrath (GZDoom ArtiFly → PowerFlight, 60 s). No editor
+// number here: 83 is the Doom Megasphere. Room has no inventory "use" yet, so
+// flight starts on pickup.
+actor ArtiFly : Actor
+{
+  Inventory.Amount 1
+  Inventory.MaxAmount 1
+  +COUNTITEM
+  States
+  {
+  Spawn:
+    SOAR ABCB 5
+    Loop
+  }
+}
+
 actor Allmap : Actor 2026
 {
   Inventory.Amount 1

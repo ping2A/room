@@ -110,13 +110,15 @@ pub fn bullet_slope(world: &World, source: ActorId) -> f64 {
     let Some(a) = world.actors.get(source) else {
         return 0.0;
     };
-    let base = a.angle.to_bam().0;
-    // `1<<26` BAM = 360/64 = 5.625°.
-    const AIM_SWEEP: u32 = 1 << 26;
-    for d in [0i32, AIM_SWEEP as i32, -(AIM_SWEEP as i32)] {
-        let ang = room_core::Bam(base.wrapping_add(d as u32)).to_angle();
-        if let Some(slope) = aim_line_attack(world, source, ang, 1024.0) {
-            return slope;
+    if world.autoaim {
+        let base = a.angle.to_bam().0;
+        // `1<<26` BAM = 360/64 = 5.625°.
+        const AIM_SWEEP: u32 = 1 << 26;
+        for d in [0i32, AIM_SWEEP as i32, -(AIM_SWEEP as i32)] {
+            let ang = room_core::Bam(base.wrapping_add(d as u32)).to_angle();
+            if let Some(slope) = aim_line_attack(world, source, ang, 1024.0) {
+                return slope;
+            }
         }
     }
     // Clamp so tan stays finite near ±90° (steep shots use the pitch-ray path).
@@ -133,12 +135,14 @@ pub(crate) fn player_missile_aim(
     source: ActorId,
     angle: Angle,
 ) -> (Angle, Option<(f64, ActorId)>) {
-    let base = angle.to_bam().0;
-    const AIM_SWEEP: u32 = 1 << 26;
-    for d in [0i32, AIM_SWEEP as i32, -(AIM_SWEEP as i32)] {
-        let ang = room_core::Bam(base.wrapping_add(d as u32)).to_angle();
-        if let Some(hit) = aim_line_attack_target(world, source, ang, 1024.0) {
-            return (ang, Some(hit));
+    if world.autoaim {
+        let base = angle.to_bam().0;
+        const AIM_SWEEP: u32 = 1 << 26;
+        for d in [0i32, AIM_SWEEP as i32, -(AIM_SWEEP as i32)] {
+            let ang = room_core::Bam(base.wrapping_add(d as u32)).to_angle();
+            if let Some(hit) = aim_line_attack_target(world, source, ang, 1024.0) {
+                return (ang, Some(hit));
+            }
         }
     }
     (angle, None)
@@ -259,7 +263,7 @@ pub(crate) fn aim_line_attack_target(
                 let Some(line) = world.map.lines.get(lid) else {
                     continue;
                 };
-                if line.back_sector.is_none() || line.block_hitscan {
+                if line.back_sector.is_none() || blocks_hitscan(world, lid as u32) {
                     return None; // solid / blockhitscan wall — no target
                 }
                 let Some((open_bottom, open_top)) = line_opening_z(world, line) else {
@@ -625,9 +629,11 @@ pub fn line_attack_with_slope(
                 world.vanilla_rng.prndindex
             );
         }
-        spawn_puff(world, wpos);
-        spawn_wall_bullet_decal(world, source, wpos, Some(lid.raw()));
-        let _ = crate::specials::damage_linedef(world, lid, Some(source), damage);
+        if !wall_hit_is_sky(world, lid.raw(), wpos.z()) {
+            spawn_puff(world, wpos);
+            spawn_wall_bullet_decal(world, source, wpos, Some(lid.raw()));
+            let _ = crate::specials::damage_linedef(world, lid, Some(source), damage);
+        }
         let hit = TraceHit {
             actor: None,
             pos: wpos,
@@ -778,9 +784,11 @@ pub fn rail_attack(
         if let Some((wd, wpos, lid)) =
             nearest_shoot_wall(world, origin, dir_x, dir_y, aim_slope, range)
         {
-            spawn_puff(world, wpos);
-            spawn_wall_bullet_decal(world, source, wpos, Some(lid.raw()));
-            let _ = crate::specials::damage_linedef(world, lid, Some(source), damage);
+            if !wall_hit_is_sky(world, lid.raw(), wpos.z()) {
+                spawn_puff(world, wpos);
+                spawn_wall_bullet_decal(world, source, wpos, Some(lid.raw()));
+                let _ = crate::specials::damage_linedef(world, lid, Some(source), damage);
+            }
             last = TraceHit {
                 actor: None,
                 pos: wpos,
@@ -880,7 +888,7 @@ fn nearest_shoot_wall(
         if dist <= 1e-6 || dist > range {
             continue;
         }
-        if !line_blocks_shot_sloped(world, line, origin.z(), aim_slope, dist) {
+        if !line_blocks_shot_sloped(world, lid, line, origin.z(), aim_slope, dist) {
             continue;
         }
         let hit_z = origin.z() + aim_slope * dist;
@@ -890,6 +898,56 @@ fn nearest_shoot_wall(
         }
     }
     best
+}
+
+fn sector_plane_is_sky(world: &World, sector: usize, ceiling: bool) -> bool {
+    #[allow(clippy::cast_possible_truncation)]
+    let key = sector as u32;
+    let over = if ceiling {
+        world.sector_ceiling_pics.get(&key)
+    } else {
+        world.sector_floor_pics.get(&key)
+    };
+    let pic = over.map(String::as_str).or_else(|| {
+        world.map.sectors.get(sector).map(|s| {
+            if ceiling {
+                s.ceiling_pic.as_str()
+            } else {
+                s.floor_pic.as_str()
+            }
+        })
+    });
+    pic.is_some_and(|n| {
+        let n = n.trim();
+        ["F_SKY1", "F_SKY", "F_SKY001"]
+            .iter()
+            .any(|s| n.eq_ignore_ascii_case(s))
+    })
+}
+
+/// A wall hit at height `z` that is really the sky: above a sky ceiling or
+/// below a sky floor on either side (Doom "don't shoot the sky", which also
+/// covers the invisible upper wall between two sky ceilings). No puff, no decal.
+fn shot_hits_sky(world: &World, line: &room_map::Line, z: f64) -> bool {
+    [line.front_sector, line.back_sector]
+        .into_iter()
+        .flatten()
+        .any(|sid| {
+            let si = sid.raw() as usize;
+            let Some(s) = world.sectors.get(si) else {
+                return false;
+            };
+            (z > s.ceiling_z && sector_plane_is_sky(world, si, true))
+                || (z < s.floor_z && sector_plane_is_sky(world, si, false))
+        })
+}
+
+fn wall_hit_is_sky(world: &World, line: u32, z: f64) -> bool {
+    world
+        .map
+        .lines
+        .get(line as usize)
+        .is_some_and(|l| shot_hits_sky(world, l, z))
 }
 
 fn line_opening_z(world: &World, line: &room_map::Line) -> Option<(f64, f64)> {
@@ -903,14 +961,20 @@ fn line_opening_z(world: &World, line: &room_map::Line) -> Option<(f64, f64)> {
 }
 
 /// Doom `PTR_ShootTraverse` line clip vs `aimslope`.
+/// UDMF `blockhitscan`, as changed at run time by `Line_SetBlocking`.
+fn blocks_hitscan(world: &World, lid: u32) -> bool {
+    world.line_flags(room_core::LineId::from_raw(lid)) & crate::world::ML_BLOCKHITSCAN != 0
+}
+
 fn line_blocks_shot_sloped(
     world: &World,
+    lid: room_core::LineId,
     line: &room_map::Line,
     shootz: f64,
     aim_slope: f64,
     dist: f64,
 ) -> bool {
-    if line.back_sector.is_none() || line.block_hitscan {
+    if line.back_sector.is_none() || blocks_hitscan(world, lid.raw()) {
         return true;
     }
     let Some((open_bottom, open_top)) = line_opening_z(world, line) else {
@@ -1126,8 +1190,8 @@ fn spawn_wall_bullet_decal(world: &mut World, source: ActorId, pos: DVec3, line:
     let generator = hitscan_decal_generator_name(world, source);
     world.spawn_generator_decal(&generator, pos.x(), pos.y(), pos.z(), line);
     if world.decal_events.is_empty() {
-        // Prefer an IWAD puff frame over a missing CHIP* lump name.
-        world.spawn_decal("PUFFB0", pos.x(), pos.y(), pos.z(), line);
+        // Hosts map a `BulletChip` without CHIP* lumps to an IWAD puff frame.
+        world.spawn_decal("BulletChip", pos.x(), pos.y(), pos.z(), line);
     }
 }
 
@@ -1330,6 +1394,57 @@ actor Looker : Actor 0
             up > 0.3,
             "look-up slope should be clearly positive, got {up}"
         );
+    }
+
+    #[test]
+    fn autoaim_off_ignores_a_raised_target() {
+        let ir = parse_decorate(
+            r#"
+actor Looker : Actor 0
+{
+  Health 100
+  Height 56
+  ViewHeight 41
+  +SHOOTABLE
+  States { Spawn: PLAY A -1 Stop }
+}
+actor Dummy : Actor 0
+{
+  Health 20
+  Radius 20
+  Height 56
+  +SHOOTABLE
+  States { Spawn: POSS A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 256.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let looker = classes.find_name("Looker").unwrap();
+        let dummy = classes.find_name("Dummy").unwrap();
+        let id = w
+            .spawn_at(looker, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let _ = w
+            .spawn_at(dummy, DVec3::new(200.0, 64.0, 80.0), Angle::ZERO)
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(id) {
+            a.angle = Angle::ZERO;
+            a.pitch = Angle::ZERO;
+        }
+        let aimed = bullet_slope(&w, id);
+        w.autoaim = false;
+        let free = bullet_slope(&w, id);
+        assert!(aimed > 0.15, "autoaim lifts toward the dummy, got {aimed}");
+        assert!(free.abs() < 0.05, "autoaim off stays level, got {free}");
     }
 
     #[test]

@@ -1,0 +1,10 @@
+[mod]
+id = "room.example.doom1-survival"
+name = "Survival Director"
+version = "0.1.0"
+abi = 1
+
+[[module]]
+file = "SURVIVAL"
+scope = "play"
+name = "survival"

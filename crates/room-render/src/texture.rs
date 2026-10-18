@@ -84,8 +84,8 @@ impl TextureManager {
         playpal: Option<&Playpal>,
     ) -> TextureId {
         let id = self.alloc_id();
-        let (w, h) = (image.width(), image.height());
-        let rgba = expand_image(image, playpal);
+        let (w, h) = (image.width().max(1), image.height().max(1));
+        let levels = mip_chain(w, h, expand_image(image, playpal));
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("tex"),
             size: wgpu::Extent3d {
@@ -93,32 +93,36 @@ impl TextureManager {
                 height: h,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
+            #[allow(clippy::cast_possible_truncation)]
+            mip_level_count: levels.len() as u32,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &rgba,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(w * 4),
-                rows_per_image: Some(h),
-            },
-            wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-        );
+        for (level, (lw, lh, rgba)) in levels.iter().enumerate() {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    #[allow(clippy::cast_possible_truncation)]
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(lw * 4),
+                    rows_per_image: Some(*lh),
+                },
+                wgpu::Extent3d {
+                    width: *lw,
+                    height: *lh,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         self.register(TextureEntry {
             id,
@@ -232,6 +236,79 @@ impl TextureManager {
         });
         id
     }
+
+    /// Copy a GPU texture into a catalog entry (camera canvases; no CPU readback).
+    pub fn upsert_copy(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        id: Option<TextureId>,
+        src: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) -> TextureId {
+        let extent = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let copy = |dst: &wgpu::Texture| {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("tex-copy"),
+            });
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: src,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: dst,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                extent,
+            );
+            queue.submit(Some(encoder.finish()));
+        };
+        if let Some(id) = id {
+            if let Some(entry) = self.entries.get(&id.raw()) {
+                if entry.width == width
+                    && entry.height == height
+                    && matches!(entry.kind, TextureFormatKind::Rgba)
+                {
+                    if let Some(dst) = entry.gpu.as_ref() {
+                        copy(dst);
+                        return id;
+                    }
+                }
+            }
+        }
+        let id = id.unwrap_or_else(|| self.alloc_id());
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("tex-copy"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        copy(&texture);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.register(TextureEntry {
+            id,
+            width,
+            height,
+            kind: TextureFormatKind::Rgba,
+            gpu: Some(texture),
+            view: Some(view),
+        });
+        id
+    }
 }
 
 #[cfg(test)]
@@ -260,6 +337,22 @@ mod tests {
     }
 
     #[test]
+    fn mip_chain_averages_colour_and_keeps_masks_binary() {
+        // 2×2 masked: two red opaque, two holes → 1×1 opaque red.
+        let base = vec![255, 0, 0, 255, 0, 0, 0, 0, 255, 0, 0, 255, 0, 0, 0, 0];
+        let levels = mip_chain(2, 2, base);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[1].2, vec![255, 0, 0, 255]);
+        // 3×1 → 1×1 (odd sizes clamp), one hole of four samples stays opaque.
+        let levels = mip_chain(3, 1, vec![0, 0, 0, 255, 200, 200, 200, 255, 9, 9, 9, 0]);
+        assert_eq!((levels[1].0, levels[1].1), (1, 1));
+        assert_eq!(levels[1].2, vec![100, 100, 100, 255]);
+        // Soft alpha averages.
+        let levels = mip_chain(2, 1, vec![10, 10, 10, 100, 10, 10, 10, 50]);
+        assert_eq!(levels[1].2[3], 75);
+    }
+
+    #[test]
     fn flat_index_zero_stays_opaque() {
         let image = Image {
             left_offset: 0,
@@ -275,6 +368,56 @@ mod tests {
         let rgba = expand_image(&image, None);
         assert_eq!(rgba[3], 255);
     }
+}
+
+/// Box-filtered mip levels down to 1×1, level 0 first. Colour averages the
+/// visible texels. Masked textures (alpha only 0 / 255) stay binary, opaque
+/// when at least half the sources are, so alpha-test cut-outs survive.
+fn mip_chain(w: u32, h: u32, base: Vec<u8>) -> Vec<(u32, u32, Vec<u8>)> {
+    let binary = base.chunks_exact(4).all(|p| p[3] == 0 || p[3] == 255);
+    let mut levels = vec![(w, h, base)];
+    while let Some((pw, ph, prev)) = levels.last() {
+        if *pw <= 1 && *ph <= 1 {
+            break;
+        }
+        let (pw, ph) = (*pw as usize, *ph as usize);
+        let (nw, nh) = ((pw / 2).max(1), (ph / 2).max(1));
+        let mut next = vec![0u8; nw * nh * 4];
+        for y in 0..nh {
+            for x in 0..nw {
+                let mut sum = [0u32; 3];
+                let (mut weight, mut alpha, mut opaque) = (0u32, 0u32, 0u32);
+                for (sx, sy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let (px, py) = ((x * 2 + sx).min(pw - 1), (y * 2 + sy).min(ph - 1));
+                    let o = (py * pw + px) * 4;
+                    let a = u32::from(prev[o + 3]);
+                    alpha += a;
+                    weight += a;
+                    opaque += u32::from(a >= 128);
+                    for c in 0..3 {
+                        sum[c] += u32::from(prev[o + c]) * a;
+                    }
+                }
+                let o = (y * nw + x) * 4;
+                for c in 0..3 {
+                    if let Some(v) = (sum[c] + weight / 2).checked_div(weight) {
+                        next[o + c] = u8::try_from(v).unwrap_or(u8::MAX);
+                    }
+                }
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    next[o + 3] = if binary {
+                        if opaque >= 2 { 255 } else { 0 }
+                    } else {
+                        ((alpha + 2) / 4) as u8
+                    };
+                }
+            }
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        levels.push((nw as u32, nh as u32, next));
+    }
+    levels
 }
 
 fn expand_image(image: &Image, playpal: Option<&Playpal>) -> Vec<u8> {

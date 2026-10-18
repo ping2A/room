@@ -118,6 +118,7 @@ fn e1m1_zombie_sprite_visible_offscreen() {
             texture: tex.clone(),
             flip_u,
             anchor_u: 0.5,
+            orient: room_render::SpriteOrient::Billboard,
         }],
         &camera,
     );
@@ -365,6 +366,7 @@ fn e1m1_zombie_visible_through_open_computer_door() {
         texture: tex.clone(),
         flip_u,
         anchor_u: 0.5,
+        orient: room_render::SpriteOrient::Billboard,
     }];
     let scene = room_render::build_scene_with_sky_ex(&map, &camera, Some(&sprites), None, None);
     eprintln!(

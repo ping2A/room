@@ -146,6 +146,12 @@ impl CvarStore {
             CvarFlags::ARCHIVE,
         );
         self.register(
+            "cl_crosshair",
+            CvarType::Bool,
+            CvarValue::Bool(true),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
             "fullscreen",
             CvarType::Bool,
             CvarValue::Bool(false),
@@ -171,6 +177,12 @@ impl CvarStore {
         );
         self.register(
             "mouse_look",
+            CvarType::Bool,
+            CvarValue::Bool(true),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
+            "autoaim",
             CvarType::Bool,
             CvarValue::Bool(true),
             CvarFlags::ARCHIVE,

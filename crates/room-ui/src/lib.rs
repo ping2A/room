@@ -31,7 +31,7 @@ pub use doom_text::{
     measure_stcfn_string, measure_stt_string,
 };
 pub use draw::{DrawCmd, Rect, Rgba, UiDrawList, Vec2};
-pub use finale::draw_finale;
+pub use finale::{draw_finale, finale_anm_prefix};
 pub use font::{FontId, FontRegistry, SoftFont};
 pub use hud::{HudState, screen_blend};
 pub use i18n::{StringTable, localize};
@@ -43,6 +43,9 @@ pub use menudef_runtime::{
 pub use messages::MessageQueue;
 pub use patches::{PatchCache, SoftPatch};
 pub use sbarinfo_draw::SbarInfoBar;
-pub use statusbar::{DoomStatusBar, StatusBar};
-pub use title::draw_title;
+pub use statusbar::{DoomStatusBar, DukeStatusBar, StatusBar};
+pub use title::{
+    anim_pic, anim_pic_loop, draw_title, parse_titledef, splash_ms, title_anim_pic,
+    title_screen_pic,
+};
 pub use weapon::{draw_weapon, weapon_ready_patch};

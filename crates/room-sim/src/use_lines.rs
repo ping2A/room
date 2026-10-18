@@ -78,6 +78,54 @@ pub fn use_lines(world: &mut World, mo: ActorId) -> bool {
     }
 }
 
+/// Use the nearest `+USESPECIAL` actor in front of `mo` (its `Use` state).
+pub fn use_actors(world: &mut World, mo: ActorId) -> bool {
+    let Some(user) = world.actors.get(mo).cloned() else {
+        return false;
+    };
+    let rad = user.angle.radians();
+    let dir = DVec2::new(dmath::cos(rad), dmath::sin(rad));
+    let origin = DVec2::new(user.pos.x(), user.pos.y());
+    let mut best: Option<(ActorId, f64)> = None;
+    for &id in &world.thinkers.default {
+        if id == mo {
+            continue;
+        }
+        let Some(a) = world.actors.get(id) else {
+            continue;
+        };
+        if a.destroyed || a.health <= 0 || (a.flags & crate::class::FLAG_USESPECIAL) == 0 {
+            continue;
+        }
+        let dx = a.pos.x() - origin.x();
+        let dy = a.pos.y() - origin.y();
+        let dist = dx.hypot(dy);
+        if dist > USE_RANGE + a.radius {
+            continue;
+        }
+        if dx * dir.x() + dy * dir.y() < -8.0 {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(_, d)| dist < *d) {
+            best = Some((id, dist));
+        }
+    }
+    let Some((id, _)) = best else {
+        return false;
+    };
+    if let Some(a) = world.actors.get_mut(id) {
+        a.target = Some(mo);
+    }
+    let Some(class) = world.actors.get(id).map(|a| a.class) else {
+        return false;
+    };
+    let Some(st) = world.states.find_label(class, "Use") else {
+        return false;
+    };
+    world.set_state(id, Some(st), true);
+    true
+}
+
 /// Parametric hit of ray a→b against segment c→d; returns t in [0,1] along a→b.
 fn ray_hits_seg(a: DVec2, b: DVec2, c: DVec2, d: DVec2) -> Option<f64> {
     let r = DVec2::new(b.x() - a.x(), b.y() - a.y());
@@ -184,5 +232,292 @@ actor PlayerPawn : Actor 0
                 .iter()
                 .any(|e| e.name == "switches/normbutn")
         );
+    }
+
+    #[test]
+    fn use_actor_takes_money_and_prints_a_tip() {
+        use crate::{ClassRegistry, StateTable, count_inventory, give_inventory};
+        use room_core::DVec3;
+        use room_decorate::parse_decorate;
+        use std::sync::Arc;
+
+        let ir = parse_decorate(
+            r#"
+actor PlayerPawn : Actor 0
+{
+  Health 100
+  States { Spawn: PLAY A -1 Stop }
+}
+actor DukeMoney : Actor
+{
+  Inventory.Amount 1
+  Inventory.MaxAmount 999
+  +COUNTITEM
+  States { Spawn: CLIP A -1 Stop }
+}
+actor TipBabe : Actor 12345
+{
+  Radius 16
+  Height 56
+  +USESPECIAL
+  States
+  {
+  Spawn:
+    PLAY A -1
+    Stop
+  Use:
+    PLAY A 0 A_JumpIfInTargetInventory("DukeMoney", 1, "Tip")
+    PLAY A 1 A_Print("She wants a tip.")
+    Goto Spawn
+  Tip:
+    PLAY A 0 A_TakeFromTarget("DukeMoney", 1)
+    PLAY A 1 A_Print("You tip her.")
+    Goto Spawn
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 72.0)
+            .player_start(128.0, 32.0, 90)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let babe_c = w.classes.find_name("TipBabe").unwrap();
+        let money = w.classes.find_name("DukeMoney").unwrap();
+        let babe = w
+            .spawn_at(
+                babe_c,
+                DVec3::new(128.0, 80.0, 0.0),
+                Angle::from_degrees(270.0),
+            )
+            .unwrap();
+        assert!(
+            w.actors
+                .get(babe)
+                .is_some_and(|a| a.flags & crate::class::FLAG_USESPECIAL != 0),
+            "babe should carry +USESPECIAL"
+        );
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.angle = Angle::from_degrees(90.0);
+            a.pos = DVec3::new(128.0, 32.0, 0.0);
+        }
+        assert!(give_inventory(&mut w, mo, money, 3));
+        assert_eq!(count_inventory(&w, mo, money), 3);
+        assert!(use_actors(&mut w, mo));
+        assert_eq!(count_inventory(&w, mo, money), 2);
+        assert!(
+            w.drain_messages()
+                .iter()
+                .any(|m| m.contains("You tip her.")),
+            "tip message missing"
+        );
+        assert!(use_actors(&mut w, mo));
+        assert_eq!(count_inventory(&w, mo, money), 1);
+    }
+
+    #[test]
+    fn use_actor_without_money_asks_for_a_tip() {
+        use crate::{ClassRegistry, StateTable};
+        use room_core::DVec3;
+        use room_decorate::parse_decorate;
+        use std::sync::Arc;
+
+        let ir = parse_decorate(
+            r#"
+actor PlayerPawn : Actor 0
+{
+  Health 100
+  States { Spawn: PLAY A -1 Stop }
+}
+actor DukeMoney : Actor
+{
+  Inventory.Amount 1
+  Inventory.MaxAmount 999
+  States { Spawn: CLIP A -1 Stop }
+}
+actor TipBabe : Actor 12345
+{
+  Radius 16
+  Height 56
+  +USESPECIAL
+  States
+  {
+  Spawn:
+    PLAY A -1
+    Stop
+  Use:
+    PLAY A 0 A_JumpIfInTargetInventory("DukeMoney", 1, "Tip")
+    PLAY A 1 A_Print("She wants a tip.")
+    Goto Spawn
+  Tip:
+    PLAY A 0 A_TakeFromTarget("DukeMoney", 1)
+    PLAY A 1 A_Print("You tip her.")
+    Goto Spawn
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 72.0)
+            .player_start(128.0, 32.0, 90)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let babe_c = w.classes.find_name("TipBabe").unwrap();
+        w.spawn_at(
+            babe_c,
+            DVec3::new(128.0, 80.0, 0.0),
+            Angle::from_degrees(270.0),
+        )
+        .unwrap();
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.angle = Angle::from_degrees(90.0);
+            a.pos = DVec3::new(128.0, 32.0, 0.0);
+        }
+        assert!(use_actors(&mut w, mo));
+        assert!(
+            w.drain_messages()
+                .iter()
+                .any(|m| m.contains("She wants a tip.")),
+            "ask-for-tip message missing"
+        );
+    }
+
+    #[test]
+    fn use_fountain_heals_the_player_up_to_the_cap() {
+        use crate::{ClassRegistry, StateTable};
+        use room_core::DVec3;
+        use room_decorate::parse_decorate;
+        use std::sync::Arc;
+
+        let ir = parse_decorate(
+            r#"
+actor PlayerPawn : Actor 0
+{
+  Health 100
+  States { Spawn: PLAY A -1 Stop }
+}
+actor Fountain : Actor 12346
+{
+  Radius 16
+  Height 32
+  +USESPECIAL
+  States
+  {
+  Spawn:
+    PLAY A -1
+    Stop
+  Use:
+    PLAY A 0 A_HealTarget(1, 50)
+    PLAY A 1
+    Goto Spawn
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 72.0)
+            .player_start(128.0, 32.0, 90)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let fountain = w.classes.find_name("Fountain").unwrap();
+        w.spawn_at(
+            fountain,
+            DVec3::new(128.0, 80.0, 0.0),
+            Angle::from_degrees(270.0),
+        )
+        .unwrap();
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.angle = Angle::from_degrees(90.0);
+            a.pos = DVec3::new(128.0, 32.0, 0.0);
+            a.health = 20;
+        }
+        assert!(use_actors(&mut w, mo));
+        assert_eq!(w.actors.get(mo).unwrap().health, 21);
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.health = 80;
+        }
+        assert!(use_actors(&mut w, mo));
+        assert_eq!(w.actors.get(mo).unwrap().health, 80);
+    }
+
+    #[test]
+    fn use_actor_skips_a_dead_fixture() {
+        use crate::{ClassRegistry, StateTable};
+        use room_core::DVec3;
+        use room_decorate::parse_decorate;
+        use std::sync::Arc;
+
+        let ir = parse_decorate(
+            r#"
+actor PlayerPawn : Actor 0
+{
+  Health 100
+  States { Spawn: PLAY A -1 Stop }
+}
+actor Fountain : Actor 12346
+{
+  Radius 16
+  Height 32
+  +USESPECIAL
+  States
+  {
+  Spawn:
+    PLAY A -1
+    Stop
+  Use:
+    PLAY A 0 A_HealTarget(1, 50)
+    PLAY A 1
+    Goto Spawn
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 72.0)
+            .player_start(128.0, 32.0, 90)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let fountain = w.classes.find_name("Fountain").unwrap();
+        let id = w
+            .spawn_at(
+                fountain,
+                DVec3::new(128.0, 80.0, 0.0),
+                Angle::from_degrees(270.0),
+            )
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.angle = Angle::from_degrees(90.0);
+            a.pos = DVec3::new(128.0, 32.0, 0.0);
+            a.health = 20;
+        }
+        if let Some(a) = w.actors.get_mut(id) {
+            a.health = 0;
+        }
+        assert!(!use_actors(&mut w, mo));
+        assert_eq!(w.actors.get(mo).unwrap().health, 20);
     }
 }

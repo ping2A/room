@@ -73,7 +73,7 @@ pub fn spawn_verifier_with_output(
         while let Some(frame) = rt.block_on(rx.recv()) {
             let cmds = frame_to_cmds(&frame, max_players);
             game.tick(&cmds);
-            if frame.tic > 0 && frame.tic.is_multiple_of(35) {
+            if frame.tic > 0 && frame.tic % 35 == 0 {
                 if let Some(checksum) = game.checksum() {
                     if out_tx
                         .try_send(VerifierChecksum {
@@ -100,8 +100,7 @@ fn load_headless(
     max_players: u8,
     time_limit_tics: u32,
 ) -> Result<Headless, String> {
-    let mut builder = VfsBuilder::new()
-        .mount_path(iwad)
+    let mut builder = room_build::mount::mount_path(VfsBuilder::new(), iwad)
         .map_err(|e| format!("mount iwad: {e}"))?;
     if let Some((name, bytes)) = game_mod {
         builder = builder

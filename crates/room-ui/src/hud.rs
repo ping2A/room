@@ -27,11 +27,11 @@ pub struct HudState {
     pub bob_y: f32,
     /// Screenblocks-style: true = fullscreen HUD (no STBAR strip).
     pub fullscreen: bool,
-    /// Owned weapon slots for `STARMS` (bit `n` = slot `n`, 2..=7).
-    pub arms: u8,
+    /// Owned weapon slots (bit `n` = slot `n`, 2..=9; `STARMS` shows 2..=7).
+    pub arms: u16,
     /// `[count, max]` for Clip / Shell / RocketAmmo / Cell.
     pub ammo_table: [[i32; 2]; 4],
-    /// PLAYPAL flash index (0 none, 1..=8 red, 9..=12 gold, 13 green).
+    /// PLAYPAL flash index (0 none, 1..=8 red, 9..=12 gold, 13 green, 14 underwater).
     pub palette: u8,
     /// Doom `fixedcolormap` (32 = invulnerability: invert the weapon too).
     pub colormap: u8,
@@ -55,6 +55,7 @@ pub fn screen_blend(palette: u8) -> Option<crate::draw::Rgba> {
             f32::from(palette - 8) / 8.0,
         )),
         13 => Some(Rgba::new(0.0, 1.0, 0.0, 0.125)),
+        14 => Some(Rgba::new(0.0, 0.25, 0.7, 0.28)),
         _ => None,
     }
 }
@@ -143,7 +144,7 @@ impl HudState {
 
     /// Attach the `STARMS` weapon bits and the four-row ammo table.
     #[must_use]
-    pub fn with_inventory(mut self, arms: u8, ammo_table: [[i32; 2]; 4]) -> Self {
+    pub fn with_inventory(mut self, arms: u16, ammo_table: [[i32; 2]; 4]) -> Self {
         self.arms = arms;
         self.ammo_table = ammo_table;
         self

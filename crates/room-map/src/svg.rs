@@ -187,6 +187,7 @@ mod tests {
             damage_interval: 0,
             leakiness: 0,
             silent: false,
+            sound_sequence: String::new(),
             waterzone: false,
             drop_actors: true,
             no_falling_damage: false,

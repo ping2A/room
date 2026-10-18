@@ -7,7 +7,7 @@ use crate::doom::{
 };
 use crate::error::MapError;
 use crate::geom::Vertex;
-use crate::geom::{MapFormat, MapGeometry, link_geometry};
+use crate::geom::{MapFormat, MapGeometry, link_geometry, link_geometry_at};
 use crate::nodes::{ExtendedNodes, gl_nodes_to_game, load_extended_nodes_lump, load_game_nodes};
 use crate::reject::{build_reject, parse_reject};
 use crate::udmf::parse_udmf;
@@ -38,10 +38,10 @@ pub fn load_map(vfs: &Vfs, name: &str) -> Result<MapGeometry, MapError> {
             out.copy_from_slice(&d);
             out
         };
-        let mut geom = link_geometry(
+        let mut geom = link_geometry_at(
             name,
             MapFormat::Udmf,
-            udmf.vertices,
+            udmf.vertex_pos,
             udmf.linedefs,
             udmf.sidedefs,
             udmf.sectors,

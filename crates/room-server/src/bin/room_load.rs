@@ -93,6 +93,7 @@ async fn main() {
             visibility: "public".into(),
             game_mod: None,
             time_limit: None,
+            game: None,
         }) {
             Ok(r) => room_ids.push(r.id),
             Err(e) => {

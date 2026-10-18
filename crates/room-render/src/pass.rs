@@ -19,6 +19,7 @@ const UNLIT_WGSL: &str = include_str!("shaders/unlit.wgsl");
 
 /// Owns pipelines and per-frame buffers for the unlit pass.
 pub struct UnlitPass {
+    target_format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
     /// Floors/ceilings with back-face cull so elevated floor *undersides* do not
     /// paint over outdoor sky (winding is normalized in `push_flat_tri_oriented`).
@@ -104,6 +105,12 @@ pub struct UnlitPass {
 }
 
 impl UnlitPass {
+    /// Colour format the pipelines render to.
+    #[must_use]
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.target_format
+    }
+
     /// Create pipelines against an existing device.
     pub fn new(gpu: &GpuContext, target_format: wgpu::TextureFormat) -> Self {
         let device = &gpu.device;
@@ -659,6 +666,7 @@ impl UnlitPass {
         let sky_buf = empty_vb(device, "sky", 64 * 32);
         let sprite_buf = empty_vb(device, "sprites", 64 * 32);
         Self {
+            target_format,
             pipeline,
             flats_pipeline,
             sprite_pipeline,

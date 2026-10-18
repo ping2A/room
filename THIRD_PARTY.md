@@ -19,6 +19,10 @@ Room is licensed under GPL-3.0-or-later. Code and tables derived from other proj
 | TERRAIN fixture | GZDoom `wadsrc/static/terrain.txt` | GPL-3.0-or-later | `testdata/terrain/gzdoom_terrain.txt` |
 | DECALDEF fixture | GZDoom `wadsrc/static/decaldef.txt` | GPL-3.0-or-later | `testdata/decaldef/gzdoom_decaldef.txt` |
 | LOCKDEFS fixture | GZDoom `wadsrc/static/lockdefs.txt` | GPL-3.0-or-later | `testdata/lockdefs/gzdoom_lockdefs.txt` |
+| Build formats (GRP, ART, PALETTE.DAT, MAP v7/8) and unit conversion (x/16, −y/16, −z/256) | Ken Silverman BUILDINF.TXT; Raze map-loading unit conventions (behavioural facts) | GPL-2.0-or-later / GPL-3.0-or-later | `crates/room-build/` |
+| Duke Nukem 3D behaviour tables: sector lotags / SE lotags, switch and hurt-floor tile names, `pskyoff` sky layouts, rotation view layouts, action tile/delay rules, weapon HUD positions, status-bar layout (`coolgaugetext`), enemy attack kinds, `LOOKUP.DAT` / VOC formats | 3D Realms Duke Nukem 3D source release (`sector.c`, `premap.c`, `game.c`, `player.c`, `actors.c`) and Raze (behavioural facts) | GPL-2.0-or-later / GPL-3.0-or-later | `crates/room-build/src/{convert,duke,wad,lookup,sprites,condata}.rs`, `crates/room-ui/src/statusbar.rs`, `crates/room-formats/src/sound.rs` |
+| Duke moving sectors, water, bombs: SE0/1/7/10/11/15 and sector lotags 9/23/25 semantics (speeds, distances, pivots, start direction), pipebomb/tripbomb pickups and radii, jetpack | Duke Nukem 3D source release (`sector.c`, `actors.c`, `player.c`) and Raze (behavioural facts) | GPL-2.0-or-later / GPL-3.0-or-later | `crates/room-build/src/{polys,convert,duke}.rs` |
+| Polyobject rules (rotate/door speeds /8, perpetual angle 255, busy/blocked door handling), `PowerFlight` / `FRICTION_FLY`, `A_CheckProximity` flags | GZDoom `src/playsim/po_man.cpp`, `p_user.cpp`, `p_mobj.cpp`, `p_actionfunctions.cpp` (behavioural facts) | GPL-3.0-or-later | `crates/room-sim/src/{polyobj,think_player,physics,action}.rs` |
 | MENUDEF fixture | GZDoom `wadsrc/static/menudef.txt` | GPL-3.0-or-later | `testdata/menudef/gzdoom_menudef.txt` |
 
 See `docs/appendix-a-dependencies.md` for crate policy.

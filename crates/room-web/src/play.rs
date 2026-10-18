@@ -10,25 +10,27 @@ use room_defs::{DefinitionsBuilder, GlDefs};
 use room_game::{
     EngineData, GameOptions, GameState, Headless, Skill, SoundSystem,
     intermission_music_candidates, load_embedded_engine_data, mount_embedded_engine,
-    play_first_music_lump, play_map_music, play_music_lump,
+    play_first_music_lump, play_map_music, play_music_lump, title_music_candidates,
 };
 use room_input::{InputSample, Key, build_ticcmd};
 use room_map::{MapGeometry, load_map};
 use room_music::{GenMidiBank, MidiDevice};
 use room_nodebuild::ensure_nodes;
 use room_render::{
-    Camera, Canvas, DynLightInstance, MaterialCatalog, SpriteInstance, sprite_lump_candidates_rot,
+    Camera, Canvas, DynLightInstance, GpuContext, MaterialCatalog, OffscreenTarget, SpriteInstance,
+    SpriteOrient, UnlitPass, build_scene, render_offscreen, sprite_lump_candidates_rot,
     sprite_rotation_digit,
 };
 use room_sim::{
     Buttons, FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_FLOAT, FLAG_NOGRAVITY, FLAG_SPAWNCEILING, TicCmd,
 };
 use room_ui::{
-    CanvasSink, DoomStatusBar, DrawCmd, HudState, PatchCache, Rect, Rgba, StatusBar, UiDrawList,
-    blit_draw_list_full, draw_stcfn_string, draw_weapon, measure_stcfn_string,
+    CanvasSink, DoomStatusBar, DrawCmd, DukeStatusBar, HudState, MenuCommand, MenuStack,
+    PatchCache, Rect, Rgba, StatusBar, UiDrawList, blit_draw_list_full, draw_stcfn_string,
+    draw_title, draw_weapon, measure_stcfn_string, parse_titledef, splash_ms, title_screen_pic,
 };
 use room_vfs::{Namespace, Vfs, VfsBuilder};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// Running IWAD play session (sim + render map + input).
@@ -47,9 +49,17 @@ pub struct PlaySession {
     pub patches: PatchCache,
     /// GLDEFS (brightmaps / object lights) from the mounted VFS.
     gldefs: GlDefs,
+    /// ANIMDEFS texture / flat animations.
+    tex_anim: room_render::TextureAnimator,
+    /// ANIMDEFS `cameratexture` sizes.
+    camera_tex_sizes: BTreeMap<String, (u32, u32)>,
+    /// Frames since the last security-camera canvas refresh.
+    camera_tex_frame: u32,
+    /// Dedicated RGBA8 pass for camera canvases.
+    cam_pass: Option<UnlitPass>,
     /// Held movement / action keys (`pub(crate)` for [`crate::input_hub`]).
     pub(crate) held: BTreeSet<&'static str>,
-    /// One-shot weapon slot `1..=7`.
+    /// One-shot weapon slot `1..=9`.
     pub(crate) weapon: u8,
     /// Queued weapon cycles (positive = next). One step per sampled tic.
     pub(crate) weapon_cycle: i32,
@@ -96,6 +106,16 @@ pub struct PlaySession {
     skill: Skill,
     /// The match result went to the server already.
     match_reported: bool,
+    /// MAPINFO of the mounted content (sky per map).
+    mapinfo: Arc<room_defs::MapInfo>,
+    /// Title / pause MENUDEF stack.
+    menu: Option<MenuStack>,
+    /// Frames spent on the current title (16 ms steps for ANM).
+    title_frames: u64,
+    title_skip_ms: u64,
+    prev_title_up: bool,
+    prev_title_down: bool,
+    prev_title_ok: bool,
 }
 
 /// Editor fly camera (map units / radians).
@@ -166,6 +186,8 @@ pub struct PlayStartOpts {
     pub pwads: Vec<(String, Vec<u8>)>,
     /// Room match time limit in seconds (0 = none).
     pub time_limit_secs: u32,
+    /// Stay on the title / MENUDEF until New Game (no `?map=`).
+    pub stay_on_title: bool,
 }
 
 impl Default for PlayStartOpts {
@@ -179,6 +201,7 @@ impl Default for PlayStartOpts {
             net: None,
             pwads: Vec::new(),
             time_limit_secs: 0,
+            stay_on_title: false,
         }
     }
 }
@@ -188,9 +211,14 @@ impl PlaySession {
     /// lockstep options).
     pub fn start_with(iwad: &[u8], opts: PlayStartOpts) -> Result<Self, String> {
         let builder = mount_embedded_engine(VfsBuilder::new()).map_err(|e| e.to_string())?;
-        let mut builder = builder
-            .mount_memory("doom1.wad", Bytes::copy_from_slice(iwad))
-            .map_err(|e| e.to_string())?;
+        // Duke Nukem 3D GRP → converted UDMF PWAD (room-build).
+        let mut builder = if room_build::is_grp(iwad) {
+            let wad = room_build::grp_to_wad(iwad).map_err(|e| format!("GRP: {e}"))?;
+            builder.mount_memory("duke3d.wad", Bytes::from(wad))
+        } else {
+            builder.mount_memory("doom1.wad", Bytes::copy_from_slice(iwad))
+        }
+        .map_err(|e| e.to_string())?;
         for (name, bytes) in &opts.pwads {
             builder = builder
                 .mount_memory(name, Bytes::copy_from_slice(bytes))
@@ -198,11 +226,20 @@ impl PlaySession {
         }
         let vfs = builder.build().map_err(|e| e.to_string())?;
 
-        let requested = opts.map_name.as_deref().unwrap_or("").trim();
-        let map_name = resolve_start_map(&vfs, requested);
+        let mut opts = opts;
+        let requested = opts.map_name.as_deref().unwrap_or("").trim().to_owned();
+        if requested.is_empty() && opts.net.is_none() {
+            opts.stay_on_title = true;
+        }
+        let map_name = resolve_start_map(&vfs, &requested);
         let mut map = load_map(&vfs, &map_name).map_err(|e| e.to_string())?;
         ensure_nodes(&mut map);
-        let data = load_embedded_engine_data().map_err(|e| e.to_string())?;
+        let data = room_game::load_layered_engine_data(&vfs)
+            .or_else(|e| {
+                web_sys::console::warn_1(&format!("room-web: PWAD DECORATE: {e}").into());
+                load_embedded_engine_data()
+            })
+            .map_err(|e| e.to_string())?;
         Self::from_parts(vfs, map, opts, data)
     }
 
@@ -225,16 +262,33 @@ impl PlaySession {
         });
 
         let mut gldefs = GlDefs::default();
+        let mut tex_anim = room_render::TextureAnimator::default();
+        let mut camera_tex_sizes = BTreeMap::new();
+        let mut mapinfo = Arc::new(room_defs::MapInfo::default());
         if let Ok(defs) = DefinitionsBuilder::new(&vfs).build() {
             game.set_complevel(defs.complevel);
-            game.set_mapinfo(Arc::new(defs.mapinfo));
+            mapinfo = Arc::new(defs.mapinfo);
+            game.set_mapinfo(Arc::clone(&mapinfo));
             game.set_terrain(&defs.terrain);
             game.set_sndseq(&defs.sndseq);
             game.set_lockdefs(&defs.lockdefs, Some("Doom"));
             game.set_decaldef(&defs.decaldef);
             game.set_keyconf(&defs.keyconf);
+            if let Some(id) = vfs.find_any_ns("CONEVT") {
+                if let Ok(bytes) = vfs.read(id) {
+                    if let Ok(text) = std::str::from_utf8(&bytes) {
+                        game.set_conevt(text);
+                    }
+                }
+            }
             game.set_menudef(defs.menudef.clone());
             gldefs = defs.gldefs;
+            tex_anim = room_render::TextureAnimator::new(&defs.animdefs);
+            for cam in &defs.animdefs.camera_textures {
+                let w = cam.width.clamp(1, 256) as u32;
+                let h = cam.height.clamp(1, 256) as u32;
+                camera_tex_sizes.insert(cam.name.clone(), (w, h));
+            }
             let mut libs = Vec::new();
             for name in &defs.loadacs.libraries {
                 if let Some(id) = vfs
@@ -280,8 +334,12 @@ impl PlaySession {
             }
         }
 
-        game.start_custom_map(map.clone(), skill)
-            .map_err(|e| e.to_string())?;
+        if opts.stay_on_title {
+            game.set_pending_map(map.clone());
+        } else {
+            game.start_custom_map(map.clone(), skill)
+                .map_err(|e| e.to_string())?;
+        }
 
         let patches = PatchCache::from_vfs(&vfs);
         let mut materials = MaterialCatalog::new();
@@ -297,6 +355,11 @@ impl PlaySession {
             }
             materials.set_brightmaps(bm);
         }
+        let menu = opts.stay_on_title.then(|| {
+            MenuStack::from_menudef_or_doom(game.menudef())
+                .with_skills(mapinfo.skills.as_slice())
+                .with_episodes(mapinfo.episodes.as_slice())
+        });
         let mut session = Self {
             vfs,
             game,
@@ -305,6 +368,10 @@ impl PlaySession {
             materials,
             patches,
             gldefs,
+            tex_anim,
+            camera_tex_sizes,
+            camera_tex_frame: 0,
+            cam_pass: None,
             held: BTreeSet::new(),
             weapon: 0,
             weapon_cycle: 0,
@@ -330,6 +397,13 @@ impl PlaySession {
             edit_cam: None,
             skill,
             match_reported: false,
+            mapinfo,
+            menu,
+            title_frames: 0,
+            title_skip_ms: 0,
+            prev_title_up: false,
+            prev_title_down: false,
+            prev_title_ok: false,
         };
         session.sync_camera_from_player();
         Ok(session)
@@ -414,15 +488,31 @@ impl PlaySession {
                         );
                     }
                     music.set_mididevice(device);
-                    let map = self.game.map_name().to_owned();
-                    match play_map_music(&mut music, &self.vfs, &map, None) {
-                        Ok(lump) => {
-                            web_sys::console::log_1(
-                                &format!("room-web: music {lump} ({device:?})").into(),
-                            );
+                    if matches!(self.game.state, GameState::Title) {
+                        match play_first_music_lump(&mut music, &self.vfs, title_music_candidates())
+                        {
+                            Ok(lump) => {
+                                web_sys::console::log_1(
+                                    &format!("room-web: title music {lump} ({device:?})").into(),
+                                );
+                            }
+                            Err(e) => {
+                                web_sys::console::warn_1(
+                                    &format!("room-web: title music: {e}").into(),
+                                );
+                            }
                         }
-                        Err(e) => {
-                            web_sys::console::warn_1(&format!("room-web: music: {e}").into());
+                    } else {
+                        let map = self.game.map_name().to_owned();
+                        match play_map_music(&mut music, &self.vfs, &map, self.game.mapinfo()) {
+                            Ok(lump) => {
+                                web_sys::console::log_1(
+                                    &format!("room-web: music {lump} ({device:?})").into(),
+                                );
+                            }
+                            Err(e) => {
+                                web_sys::console::warn_1(&format!("room-web: music: {e}").into());
+                            }
                         }
                     }
                 }
@@ -507,7 +597,7 @@ impl PlaySession {
                 }
             }
         }
-        names.insert("SKY1".into());
+        names.insert(self.sky_texture());
         for base in ["POSS", "SPOS", "TROO", "BAL1", "PLAY", "PUFF"] {
             for frame in b'A'..=b'H' {
                 let letter = frame as char;
@@ -521,6 +611,81 @@ impl PlaySession {
                 .materials
                 .get_or_upload(device, queue, &self.vfs, &name);
         }
+    }
+
+    /// Render security-camera canvases into materials (throttled; GPU copy).
+    pub fn refresh_camera_textures(&mut self, gpu: &GpuContext) {
+        self.camera_tex_frame = self.camera_tex_frame.wrapping_add(1);
+        if self.camera_tex_frame % 8 != 1 {
+            return;
+        }
+        let binds: Vec<(String, room_sim::CameraTextureBind)> = {
+            let Some(world) = self.game.world() else {
+                return;
+            };
+            if world.camera_textures.is_empty() {
+                return;
+            }
+            world
+                .camera_textures
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        };
+        if self.cam_pass.is_none() {
+            self.cam_pass = Some(UnlitPass::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb));
+        }
+        let Some(pass) = self.cam_pass.as_mut() else {
+            return;
+        };
+        for (name, bind) in binds {
+            let Some(actor) = self
+                .game
+                .world()
+                .and_then(|w| w.actors.get(bind.camera).cloned())
+            else {
+                continue;
+            };
+            let (w, h) = self
+                .camera_tex_sizes
+                .get(&name)
+                .copied()
+                .unwrap_or((64, 64));
+            let aspect = f64::from(w) / f64::from(h.max(1));
+            let cam = Camera::from_actor_view(
+                actor.pos.x(),
+                actor.pos.y(),
+                actor.pos.z() + 41.0,
+                actor.angle.radians(),
+                bind.fov,
+                aspect,
+            );
+            let scene = build_scene(&self.map, &cam, None);
+            let target = OffscreenTarget::new(gpu, w, h);
+            render_offscreen(gpu, pass, &target, &cam, &scene);
+            let _ = self
+                .materials
+                .upsert_copy(&gpu.device, &gpu.queue, &name, &target.color, w, h);
+        }
+    }
+
+    /// Swap animated wall / flat materials of `scene` to the frame due now.
+    pub fn animate_textures(&self, scene: &mut room_render::SceneLists) {
+        let tic = self.game.world().map_or(0, |w| w.level.maptime);
+        self.tex_anim.apply(scene, tic);
+    }
+
+    /// Sky texture: ACS `ChangeSky`, else MAPINFO `sky1` of this map, else `SKY1`.
+    #[must_use]
+    pub fn sky_texture(&self) -> String {
+        if let Some(s) = self.game.world().and_then(|w| w.sky1_override.clone()) {
+            return s;
+        }
+        self.mapinfo
+            .maps
+            .get(&self.map.name.to_ascii_uppercase())
+            .and_then(|m| m.sky1.clone())
+            .unwrap_or_else(|| "SKY1".into())
     }
 
     /// Local seat (debug).
@@ -696,6 +861,11 @@ impl PlaySession {
                         self.intermission_wait = 0;
                         self.advance_intermission();
                     }
+                }
+                GameState::Title => {
+                    self.tic_accum -= TIC;
+                    self.title_frames = self.title_frames.saturating_add(1);
+                    self.tick_title_menu();
                 }
                 _ => {
                     self.tic_accum -= TIC;
@@ -981,6 +1151,18 @@ impl PlaySession {
         if self.held.contains("use") {
             keys.push(Key::Use);
         }
+        if self.held.contains("up") {
+            keys.push(Key::MoveUp);
+        }
+        if self.held.contains("down") {
+            keys.push(Key::MoveDown);
+        }
+        if self.held.contains("kick") {
+            keys.push(Key::QuickKick);
+        }
+        if self.held.contains("invuse") {
+            keys.push(Key::InvUse);
+        }
         match self.weapon {
             1 => keys.push(Key::Weapon1),
             2 => keys.push(Key::Weapon2),
@@ -989,6 +1171,8 @@ impl PlaySession {
             5 => keys.push(Key::Weapon5),
             6 => keys.push(Key::Weapon6),
             7 => keys.push(Key::Weapon7),
+            8 => keys.push(Key::Weapon8),
+            9 => keys.push(Key::Weapon9),
             _ => {}
         }
         self.weapon = 0;
@@ -1074,6 +1258,9 @@ impl PlaySession {
             let mut canvas = Canvas::new();
             canvas.clear([0.0, 0.0, 0.0, 0.0]);
             return canvas;
+        }
+        if matches!(self.game.state, GameState::Title) {
+            return self.build_title_canvas(fb_w, fb_h);
         }
         let panes = self.spectator_views(fb_w, fb_h);
         let show_bar = panes.is_none() && !self.catching_up;
@@ -1408,13 +1595,13 @@ impl PlaySession {
             hud.bob_x,
             hud.bob_y,
         );
-        if !hud.flash_patch.is_empty() {
-            let soft_flash = self.patches.get(&hud.flash_patch);
+        // A flash frame without a lump draws nothing (GZDoom).
+        if let Some(soft_flash) = self.patches.get(&hud.flash_patch) {
             draw_weapon(
                 ui,
                 &hud.flash_patch,
                 hud.fullscreen,
-                soft_flash,
+                Some(soft_flash),
                 hud.bob_x,
                 hud.bob_y,
             );
@@ -1422,7 +1609,11 @@ impl PlaySession {
         if hud.inverse_colormap() {
             ui.invert_since(weapon_cmds);
         }
-        DoomStatusBar.draw(&hud, ui);
+        if self.vfs.find_any_ns(DukeStatusBar::MARKER).is_some() {
+            DukeStatusBar.draw(&hud, ui);
+        } else {
+            DoomStatusBar.draw(&hud, ui);
+        }
     }
 
     /// Doom `fixedcolormap` of `seat`'s player (32 = invulnerability inverse).
@@ -1483,6 +1674,12 @@ impl PlaySession {
         for (&i, name) in &world.sector_ceiling_pics {
             if let Some(sec) = self.map.sectors.get_mut(i as usize) {
                 sec.ceiling_pic = name.clone();
+            }
+        }
+        for (&i, &(floor_a, ceil_a)) in &world.plane_angles {
+            if let Some(sec) = self.map.sectors.get_mut(i as usize) {
+                sec.floor_angle = floor_a;
+                sec.ceiling_angle = ceil_a;
             }
         }
     }
@@ -1655,8 +1852,8 @@ impl PlaySession {
             flags,
         ) in actors
         {
-            let mut w = (radius * 2.0 * scale_x.abs()).clamp(1.0, 256.0);
-            let mut h = (height * scale_y.abs()).clamp(1.0, 256.0);
+            let mut w = (radius * 2.0 * scale_x.abs()).clamp(0.25, 4096.0);
+            let mut h = (height * scale_y.abs()).clamp(0.25, 4096.0);
             let mut texture = String::new();
             let mut flip_u = false;
             let mut anchor_u = 0.5_f32;
@@ -1667,8 +1864,8 @@ impl PlaySession {
                 let candidates = sprite_lump_candidates_rot(&sprite, frame, rot);
                 for (name, flip) in &candidates {
                     if let Some(patch) = self.patches.ensure(&self.vfs, name) {
-                        let pw = (f64::from(patch.width) * scale_x.abs()).clamp(1.0, 256.0);
-                        let ph = (f64::from(patch.height) * scale_y.abs()).clamp(1.0, 256.0);
+                        let pw = (f64::from(patch.width) * scale_x.abs()).clamp(0.25, 4096.0);
+                        let ph = (f64::from(patch.height) * scale_y.abs()).clamp(0.25, 4096.0);
                         let top = f64::from(patch.top_offset) * scale_y.abs();
                         let left = f64::from(patch.left_offset) * scale_x.abs();
                         w = pw;
@@ -1686,18 +1883,20 @@ impl PlaySession {
                         break;
                     }
                 }
-                if texture.is_empty() {
-                    if let Some((name, flip)) = candidates.first() {
-                        texture = name.clone();
-                        flip_u = *flip;
-                    }
-                    if grounded {
-                        z_bottom = z + 1.0;
-                    }
-                }
-            } else if grounded {
-                z_bottom = z + 1.0;
             }
+            // `TNT1` and frames without a lump draw nothing (GZDoom).
+            if texture.is_empty() {
+                continue;
+            }
+            let yaw = angle_deg.to_radians() as f32;
+            let orient = if flags & room_sim::FLAG_FLATSPRITE != 0 {
+                z_bottom = z;
+                SpriteOrient::Flat { yaw }
+            } else if flags & room_sim::FLAG_WALLSPRITE != 0 {
+                SpriteOrient::Wall { yaw }
+            } else {
+                SpriteOrient::Billboard
+            };
             out.push(SpriteInstance {
                 pos: Vec3::new(x as f32, y as f32, z_bottom as f32),
                 width: w as f32,
@@ -1708,6 +1907,7 @@ impl PlaySession {
                 texture,
                 flip_u,
                 anchor_u,
+                orient,
             });
         }
         out
@@ -1739,6 +1939,171 @@ impl PlaySession {
     }
 
     /// `D_DM2INT` / `D_INTER` on the tally screen (desktop parity).
+    fn title_elapsed_ms(&self) -> u64 {
+        self.title_frames
+            .saturating_mul(16)
+            .saturating_add(self.title_skip_ms)
+    }
+
+    fn title_anim_defs(&self) -> (Option<(u32, u16)>, Option<(u32, u16)>) {
+        let read_def = |name: &str| {
+            self.vfs
+                .find_any_ns(name)
+                .and_then(|id| self.vfs.read(id).ok())
+                .and_then(|b| parse_titledef(&String::from_utf8_lossy(&b)))
+        };
+        (read_def("RADLDEF"), read_def("TITLEDEF"))
+    }
+
+    fn title_in_splash(&self) -> bool {
+        let (splash, logo) = self.title_anim_defs();
+        title_screen_pic(splash, logo, self.title_elapsed_ms()).1
+    }
+
+    fn skip_title_splash(&mut self) {
+        let dur = splash_ms(self.title_anim_defs().0);
+        if dur > 0 {
+            self.title_skip_ms = dur;
+        }
+    }
+
+    fn tick_title_menu(&mut self) {
+        let up = self.held.contains("w");
+        let down = self.held.contains("s");
+        let ok = self.attack || self.held.contains("enter") || self.held.contains("use");
+        let any = up || down || ok;
+        if self.title_in_splash() {
+            if any && !self.prev_title_ok {
+                self.skip_title_splash();
+            }
+            self.prev_title_up = up;
+            self.prev_title_down = down;
+            self.prev_title_ok = ok;
+            return;
+        }
+        if let Some(menu) = self.menu.as_mut() {
+            if up && !self.prev_title_up {
+                let _ = menu.move_cursor(-1);
+            }
+            if down && !self.prev_title_down {
+                let _ = menu.move_cursor(1);
+            }
+        }
+        if ok && !self.prev_title_ok {
+            self.activate_title_menu();
+        }
+        self.prev_title_up = up;
+        self.prev_title_down = down;
+        self.prev_title_ok = ok;
+    }
+
+    fn activate_title_menu(&mut self) {
+        let Some((cmd, _)) = self.menu.as_mut().map(MenuStack::activate) else {
+            return;
+        };
+        let Some(cmd) = cmd else {
+            return;
+        };
+        match cmd {
+            MenuCommand::StartSkill(level) => {
+                self.skill = Skill::new(level);
+                self.game.options.skill = self.skill;
+                if let Some(start) = self
+                    .menu
+                    .as_ref()
+                    .and_then(MenuStack::start_map)
+                    .map(str::to_owned)
+                {
+                    if let Ok(mut next) = load_map(&self.vfs, &start) {
+                        ensure_nodes(&mut next);
+                        self.map_base = next.clone();
+                        self.map = next.clone();
+                        self.game.set_pending_map(next);
+                    }
+                }
+                match self.game.begin_pending_map() {
+                    Ok(()) => {
+                        self.menu = None;
+                        self.sync_camera_from_player();
+                        self.start_level_music();
+                    }
+                    Err(e) => {
+                        web_sys::console::warn_1(&format!("room-web: start: {e}").into());
+                    }
+                }
+            }
+            MenuCommand::LoadGame => {
+                self.feed.push("Load Game — desktop only", now_ms());
+            }
+            _ => {}
+        }
+    }
+
+    fn build_title_canvas(&mut self, fb_w: f32, fb_h: f32) -> Canvas {
+        let elapsed_ms = self.title_elapsed_ms();
+        let (splash_def, logo_def) = self.title_anim_defs();
+        let (pic, splash) = if splash_def.is_some() || logo_def.is_some() {
+            let (name, splash) = title_screen_pic(splash_def, logo_def, elapsed_ms);
+            (Some(name), splash)
+        } else if self.vfs.find_any_ns("TITLEPIC").is_some() {
+            (Some("TITLEPIC".into()), false)
+        } else {
+            (None, false)
+        };
+        let mut ui = UiDrawList::new();
+        draw_title(&mut ui, 320.0, 200.0, pic.as_deref());
+        if !splash {
+            if let Some(menu) = &self.menu {
+                menu.draw(&mut ui, self.title_frames as u32, None);
+            }
+        }
+        for cmd in &ui.cmds {
+            if let DrawCmd::Patch { name, .. } = cmd {
+                let _ = self.patches.ensure(&self.vfs, name);
+            }
+        }
+        let mut canvas = Canvas::new();
+        canvas.clear([0.0, 0.0, 0.0, 1.0]);
+        let scale = (fb_w / 320.0).min(fb_h / 200.0);
+        let ox = (fb_w - 320.0 * scale) * 0.5;
+        let oy = (fb_h - 200.0 * scale) * 0.5;
+        struct Sink<'a>(&'a mut Canvas);
+        impl CanvasSink for Sink<'_> {
+            fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+                self.0.fill_rect(x, y, w, h, color);
+            }
+            fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]) {
+                self.0.text(x, y, text, color);
+            }
+        }
+        struct OffsetSink<'a> {
+            inner: Sink<'a>,
+            ox: f32,
+            oy: f32,
+        }
+        impl CanvasSink for OffsetSink<'_> {
+            fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+                self.inner.fill_rect(x + self.ox, y + self.oy, w, h, color);
+            }
+            fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]) {
+                self.inner.text(x + self.ox, y + self.oy, text, color);
+            }
+        }
+        blit_draw_list_full(
+            &ui,
+            320.0 * scale,
+            200.0 * scale,
+            None,
+            Some(&self.patches),
+            &mut OffsetSink {
+                inner: Sink(&mut canvas),
+                ox,
+                oy,
+            },
+        );
+        canvas
+    }
+
     fn start_intermission_music(&mut self) {
         let Some(audio) = self.audio.as_ref() else {
             return;
@@ -1762,7 +2127,7 @@ impl PlaySession {
             return;
         };
         let map = self.game.map_name().to_owned();
-        match play_map_music(&mut music, &self.vfs, &map, None) {
+        match play_map_music(&mut music, &self.vfs, &map, self.game.mapinfo()) {
             Ok(lump) => {
                 web_sys::console::log_1(&format!("room-web: music {lump}").into());
             }

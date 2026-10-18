@@ -114,6 +114,7 @@
     q.set("players", String(room.max_players || 2));
     q.set("name", opts.name || playerName());
     q.set("map", room.map || "E1M1");
+    if (room.game === "duke3d") q.set("iwad", "duke3d.grp");
     if (ticket) q.set("ticket", ticket);
     if (opts.spectate) q.set("spectate", "1");
     return base + "?" + q.toString();
@@ -366,6 +367,9 @@
     }
     const openSeats = Math.max(0, room.max_players - room.occupied);
     body.innerHTML =
+      '<div class="row"><span class="k">Game</span><span>' +
+      escapeHtml(gameLabel(room)) +
+      "</span></div>" +
       '<div class="row"><span class="k">Map</span><span>' +
       escapeHtml(room.map) +
       "</span></div>" +
@@ -400,6 +404,12 @@
     return api("/api/mods").catch(() => []);
   }
 
+  const GAME_LABELS = { doom: "Doom", duke3d: "Duke Nukem 3D" };
+
+  function gameLabel(room) {
+    return GAME_LABELS[room.game] || GAME_LABELS.doom;
+  }
+
   function modLabel(room) {
     return room.mod ? room.mod.title || room.mod.name : "";
   }
@@ -418,6 +428,7 @@
       title: "Open a pit",
       confirmLabel: "Spill blood",
       bodyHtml:
+        '<label class="field"><span>Game</span><select name="game"><option value="doom">Doom</option><option value="duke3d">Duke Nukem 3D (no mods)</option></select></label>' +
         '<label class="field"><span>Map</span><input name="map" value="E1M1" required/></label>' +
         '<label class="field"><span>Skill</span><input name="skill" type="number" min="1" max="5" value="3"/></label>' +
         '<label class="field"><span>Max players</span><input name="max_players" type="number" min="2" max="8" value="2"/></label>' +
@@ -437,7 +448,8 @@
           max_players: Number(data.max_players) || 2,
           visibility: data.visibility || "public",
           time_limit: Number(data.time_limit) || undefined,
-          mod: data.mod || undefined,
+          game: data.game || "doom",
+          mod: data.game === "duke3d" ? undefined : data.mod || undefined,
         }),
       });
       flash("Created " + shortId(created.id));
@@ -448,6 +460,7 @@
         skill: created.settings.skill,
         max_players: created.settings.max_players,
         mod: created.settings.mod,
+        game: created.settings.game,
         time_limit: created.settings.time_limit,
         occupied: 0,
         started: false,
@@ -462,6 +475,51 @@
         flash(err.message || String(err), "error");
       }
     }
+  }
+
+  /** Solo URL: the game client without `ws` runs a local single-player game. */
+  function soloUrl(opts) {
+    let base = (state.config.play_base || "").replace(/\/$/, "");
+    if (base.endsWith("/play")) base += "/";
+    else if (!base.endsWith("/")) base += "/";
+    const q = new URLSearchParams();
+    q.set("map", opts.map || "E1M1");
+    q.set("skill", String(opts.skill || 3));
+    if (opts.game === "duke3d") q.set("iwad", "duke3d.grp");
+    else if (opts.mod) q.set("mod", opts.mod);
+    return base + "?" + q.toString();
+  }
+
+  async function playSolo() {
+    const mods = await loadMods();
+    const modField = mods.length
+      ? '<label class="field"><span>Mod</span><select name="mod"><option value="">None (vanilla)</option>' +
+        mods
+          .map((m) => '<option value="' + escapeHtml(m.name) + '">' + escapeHtml(m.title) + "</option>")
+          .join("") +
+        "</select></label>"
+      : "";
+    const data = await openModal({
+      title: "Play solo",
+      confirmLabel: "Start",
+      bodyHtml:
+        '<p class="muted">A local game in this browser. Nothing is created on the server.</p>' +
+        '<label class="field"><span>Game</span><select name="game"><option value="doom">Doom</option><option value="duke3d">Duke Nukem 3D (no mods)</option></select></label>' +
+        '<label class="field"><span>Map</span><input name="map" value="E1M1" required/></label>' +
+        '<label class="field"><span>Skill</span><input name="skill" type="number" min="1" max="5" value="3"/></label>' +
+        modField +
+        '<p class="muted">Duke maps are ExMy (E1M1 = E1L1). Mods are Doom only.</p>',
+    });
+    if (!data) return;
+    if (!(await ensurePlayBase())) return;
+    goPlay(
+      soloUrl({
+        game: data.game,
+        map: (data.map || "E1M1").trim().toUpperCase(),
+        skill: Number(data.skill) || 3,
+        mod: data.mod,
+      })
+    );
   }
 
   async function joinById() {
@@ -518,6 +576,7 @@
           ? '<span class="badge live">in game</span>'
           : '<span class="badge open">lobby</span>') +
         (full ? '<span class="badge">full</span>' : "") +
+        (room.game === "duke3d" ? '<span class="badge mod">' + escapeHtml(gameLabel(room)) + "</span>" : "") +
         (room.mod ? '<span class="badge mod">' + escapeHtml(modLabel(room)) + "</span>" : "") +
         "</div></div>";
       const actions = document.createElement("div");
@@ -597,6 +656,7 @@
 
   $("btn-create").addEventListener("click", () => createRoom());
   $("btn-join-id").addEventListener("click", () => joinById());
+  $("btn-solo").addEventListener("click", () => playSolo());
   $("btn-refresh").addEventListener("click", () => refresh());
   $("watch-close").addEventListener("click", () => {
     state.watching = null;

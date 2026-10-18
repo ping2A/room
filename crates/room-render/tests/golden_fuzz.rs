@@ -56,6 +56,7 @@ fn fuzz_modulates_sprite_mean() {
             texture: "-".into(),
             flip_u: false,
             anchor_u: 0.5,
+            orient: room_render::SpriteOrient::Billboard,
         },
         camera.forward,
     );

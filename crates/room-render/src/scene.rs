@@ -299,6 +299,7 @@ fn apply_sky(lists: &mut SceneLists, sky_texture: Option<&str>, cubemap: Option<
     if let Some(name) = sky_texture {
         if !name.is_empty() {
             lists.sky_texture = name.to_owned();
+            lists.sky_ranges = crate::sky::cylinder_sky_ranges(name, lists.sky_parts.len());
         }
     }
 }
@@ -389,22 +390,52 @@ pub fn apply_dyn_lights(lists: &mut SceneLists) {
     }
 }
 
+/// Shift a surface sprite a fraction of a unit toward the camera along `normal`.
+fn lift_sprite_off_surface(quad: &mut [crate::mesh::WallVertex], eye: Vec3, normal: Vec3) {
+    let n = normal.normalize_or_zero();
+    if n.length_squared() < 1e-6 {
+        return;
+    }
+    let p = Vec3::from_array(quad[0].pos);
+    let side = if n.dot(eye - p) >= 0.0 { n } else { -n };
+    let shift = side * 0.35;
+    for v in quad {
+        v.pos = (Vec3::from_array(v.pos) + shift).to_array();
+    }
+}
+
 /// Append pre-built sprite instances as Y-billboards facing the camera.
 pub fn append_sprites(lists: &mut SceneLists, sprites: &[SpriteInstance], camera: &Camera) {
     for inst in sprites {
         #[allow(clippy::cast_possible_truncation)]
         let start = lists.sprites.len() as u32;
         let mut quad = emit_sprite_quad(inst.clone(), camera.forward);
-        // Nudge toward the eye so feet/walls cannot win the depth test and bury
-        // the billboard (common HW Doom-port fix; also helps Metal bias quirks).
         let eye = camera.eye;
-        for v in &mut quad {
-            let p = Vec3::from_array(v.pos);
-            let to_eye = eye - p;
-            let dist = to_eye.length();
-            if dist > 1.0 {
-                let pull = (dist * 0.02).clamp(1.5, 8.0);
-                v.pos = (p + to_eye * (pull / dist)).to_array();
+        match inst.orient {
+            // Nudge a billboard toward the eye so feet and walls cannot win the
+            // depth test and bury it (common HW Doom-port fix).
+            crate::sprites::SpriteOrient::Billboard => {
+                // A large pull (the old 1.5–8 unit shove) lifts a face-sprite
+                // tag off the dumpster and parks it in front of the fire.
+                // A fraction of a unit is enough to win the depth test.
+                for v in &mut quad {
+                    let p = Vec3::from_array(v.pos);
+                    let to_eye = eye - p;
+                    let dist = to_eye.length();
+                    if dist > 1.0 {
+                        v.pos = (p + to_eye * (0.35 / dist)).to_array();
+                    }
+                }
+            }
+            // Wall and floor sprites sit on a surface. Pulling them toward the
+            // eye lifts a tag off its wall and turns a marquee into streaks.
+            // A fraction of a unit along the normal only avoids z-fighting.
+            crate::sprites::SpriteOrient::Wall { yaw } => {
+                let n = Vec3::new(-yaw.cos(), -yaw.sin(), 0.0);
+                lift_sprite_off_surface(&mut quad, eye, n);
+            }
+            crate::sprites::SpriteOrient::Flat { .. } => {
+                lift_sprite_off_surface(&mut quad, eye, Vec3::Z);
             }
         }
         lists.sprites.extend_from_slice(&quad);
@@ -471,9 +502,10 @@ pub fn build_scene_from_visible_ex(
     // Sector-outline ear-clip is only for sectors that got zero leaf area.
     let mut flats_needed = vec![false; map.sectors.len()];
     let skip_lines = skip_wall_line_set(map);
+    let parents = BspParents::new(map, nodes);
     for &ss in &vis.subsectors {
         emit_subsector(map, nodes, ss, &mut lists, &mut flats_needed, &skip_lines);
-        for (si, ring) in game_subsector_flat_rings(map, nodes, ss) {
+        for (si, ring) in game_subsector_flat_rings(map, nodes, &parents, ss) {
             emit_flats_for_sector_trusted(map, si, &ring, &mut lists);
         }
     }
@@ -565,6 +597,7 @@ fn emit_thing_sprites(map: &MapGeometry, camera: &Camera, lists: &mut SceneLists
             texture: String::new(),
             flip_u: false,
             anchor_u: 0.5,
+            orient: crate::sprites::SpriteOrient::Billboard,
         };
         #[allow(clippy::cast_possible_truncation)]
         let start = lists.sprites.len() as u32;
@@ -630,6 +663,7 @@ fn sector_from_seg(map: &MapGeometry, seg: &Seg) -> Option<room_core::SectorId> 
 fn game_subsector_flat_rings(
     map: &MapGeometry,
     nodes: &GameNodes,
+    parents: &BspParents,
     ss: u32,
 ) -> Vec<(usize, Vec<(f64, f64)>)> {
     let mut out = Vec::new();
@@ -667,7 +701,7 @@ fn game_subsector_flat_rings(
     if hull.len() >= 3 && ring_abs_area(&hull) > 1.0 {
         out.push((sector_i, hull));
     }
-    if let Some(bsp) = leaf_ring_from_bsp(map, nodes, ss) {
+    if let Some(bsp) = leaf_ring_from_bsp(nodes, parents, ss) {
         if ring_abs_area(&bsp) > 1.0 {
             // Skip near-duplicate of the hull.
             let dup = out.last().is_some_and(|(_, h)| {
@@ -681,29 +715,79 @@ fn game_subsector_flat_rings(
     out
 }
 
+/// Per-frame BSP lookup: `(parent node, child side)` for every node and
+/// subsector, plus the padded map bounds leaf clipping starts from.
+struct BspParents {
+    node: Vec<Option<(usize, usize)>>,
+    leaf: Vec<Option<(usize, usize)>>,
+    bounds: [(f64, f64); 4],
+}
+
+impl BspParents {
+    fn new(map: &MapGeometry, nodes: &GameNodes) -> Self {
+        let mut node = vec![None; nodes.nodes.len()];
+        let mut leaf = vec![None; nodes.subsectors.len()];
+        for (ni, n) in nodes.nodes.iter().enumerate() {
+            for (side, &child) in n.children.iter().enumerate() {
+                let slot = if child & room_map::NF_SUBSECTOR != 0 {
+                    leaf.get_mut((child & !room_map::NF_SUBSECTOR) as usize)
+                } else {
+                    node.get_mut(child as usize)
+                };
+                if let Some(slot) = slot {
+                    *slot = Some((ni, side));
+                }
+            }
+        }
+        let mut min_x = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut min_y = f64::MAX;
+        let mut max_y = f64::MIN;
+        for v in &map.vertices {
+            min_x = min_x.min(v.pos.x());
+            max_x = max_x.max(v.pos.x());
+            min_y = min_y.min(v.pos.y());
+            max_y = max_y.max(v.pos.y());
+        }
+        let pad = 64.0;
+        Self {
+            node,
+            leaf,
+            bounds: [
+                (min_x - pad, min_y - pad),
+                (max_x + pad, min_y - pad),
+                (max_x + pad, max_y + pad),
+                (min_x - pad, max_y + pad),
+            ],
+        }
+    }
+
+    /// Root→leaf path as `(node_index, child_side)` steps.
+    fn path(&self, ss: u32) -> Option<Vec<(usize, usize)>> {
+        let mut path = Vec::new();
+        let mut cur = (*self.leaf.get(ss as usize)?)?;
+        loop {
+            path.push(cur);
+            if path.len() > self.node.len() {
+                return None;
+            }
+            match self.node.get(cur.0).copied().flatten() {
+                Some(up) => cur = up,
+                None => break,
+            }
+        }
+        path.reverse();
+        Some(path)
+    }
+}
+
 /// Clip the map bounding quad by every partition on the path to `ss`.
-fn leaf_ring_from_bsp(map: &MapGeometry, nodes: &GameNodes, ss: u32) -> Option<Vec<(f64, f64)>> {
+fn leaf_ring_from_bsp(nodes: &GameNodes, bsp: &BspParents, ss: u32) -> Option<Vec<(f64, f64)>> {
     if nodes.nodes.is_empty() {
         return None;
     }
-    let path = bsp_path_to_subsector(nodes, ss)?;
-    let mut min_x = f64::MAX;
-    let mut max_x = f64::MIN;
-    let mut min_y = f64::MAX;
-    let mut max_y = f64::MIN;
-    for v in &map.vertices {
-        min_x = min_x.min(v.pos.x());
-        max_x = max_x.max(v.pos.x());
-        min_y = min_y.min(v.pos.y());
-        max_y = max_y.max(v.pos.y());
-    }
-    let pad = 64.0;
-    let mut poly = vec![
-        (min_x - pad, min_y - pad),
-        (max_x + pad, min_y - pad),
-        (max_x + pad, max_y + pad),
-        (min_x - pad, max_y + pad),
-    ];
+    let path = bsp.path(ss)?;
+    let mut poly = bsp.bounds.to_vec();
     for (ni, side) in path {
         let node = nodes.nodes.get(ni)?;
         poly = clip_poly_halfplane(poly, node, side);
@@ -712,27 +796,6 @@ fn leaf_ring_from_bsp(map: &MapGeometry, nodes: &GameNodes, ss: u32) -> Option<V
         }
     }
     (poly.len() >= 3).then_some(poly)
-}
-
-/// Root→leaf path as `(node_index, child_side)` steps.
-fn bsp_path_to_subsector(nodes: &GameNodes, ss: u32) -> Option<Vec<(usize, usize)>> {
-    let target = room_map::NF_SUBSECTOR | ss;
-    let mut stack = vec![(nodes.nodes.len() - 1, Vec::new())];
-    while let Some((ni, so_far)) = stack.pop() {
-        let node = nodes.nodes.get(ni)?;
-        for side in [0usize, 1usize] {
-            let child = node.children[side];
-            let mut next = so_far.clone();
-            next.push((ni, side));
-            if child == target {
-                return Some(next);
-            }
-            if child & room_map::NF_SUBSECTOR == 0 {
-                stack.push((child as usize, next));
-            }
-        }
-    }
-    None
 }
 
 /// Keep the half-plane for `side` of a Doom BSP partition (Sutherland–Hodgman).
@@ -1076,12 +1139,11 @@ fn emit_flats_for_sector(
         None => sec.ceiling_height,
     };
     let skip_floor = is_sky_flat(&sec.floor_pic)
-        || map
-            .setup
-            .portals
-            .sectors
-            .iter()
-            .any(|p| p.sector.raw() as usize == sector_i && p.plane == 0);
+        || map.setup.portals.sectors.iter().any(|p| {
+            p.sector.raw() as usize == sector_i
+                && p.plane == 0
+                && p.kind != room_map::PORTAL_KIND_FALL
+        });
     // `F_SKY1` is a redirect marker — never draw it as a ceiling flat (sky cylinder
     // shows through). Drawing the sky graphic as a horizontal plane looks inverted.
     let skip_ceil = is_sky_flat(&sec.ceiling_pic)
@@ -1188,12 +1250,11 @@ fn emit_flats_for_sector_trusted(
         None => sec.ceiling_height,
     };
     let skip_floor = is_sky_flat(&sec.floor_pic)
-        || map
-            .setup
-            .portals
-            .sectors
-            .iter()
-            .any(|p| p.sector.raw() as usize == sector_i && p.plane == 0);
+        || map.setup.portals.sectors.iter().any(|p| {
+            p.sector.raw() as usize == sector_i
+                && p.plane == 0
+                && p.kind != room_map::PORTAL_KIND_FALL
+        });
     let skip_ceil = is_sky_flat(&sec.ceiling_pic)
         || map
             .setup
@@ -2103,6 +2164,12 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists) {
     let (u1_mid, u2_mid, v_off_mid, sy_mid) = side_tier_uv(side, len, TierLight::Mid);
     let (u1_top, u2_top, v_off_top, sy_top) = side_tier_uv(side, len, TierLight::Top);
     let (u1_bot, u2_bot, v_off_bot, sy_bot) = side_tier_uv(side, len, TierLight::Bottom);
+    let z_at = |si: usize, x: f64, y: f64, ceiling: bool| sector_z_at(map, si, x, y, ceiling);
+    let (ff1, ff2) = (
+        z_at(front_sec, x1, y1, false),
+        z_at(front_sec, x2, y2, false),
+    );
+    let (fc1, fc2) = (z_at(front_sec, x1, y1, true), z_at(front_sec, x2, y2, true));
     let mirror = line_is_mirror(map, line_id);
     let mirror_tex = mirror.then(|| mirror_tex_name(line_id.raw()));
 
@@ -2122,7 +2189,7 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists) {
         } else {
             WallPeg::Top
         };
-        push_wall_quad(
+        push_sloped_wall_quad(
             lists,
             tex,
             WallQuad {
@@ -2146,6 +2213,7 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists) {
                 side_raw,
                 lm_surf: None,
             },
+            (ff1, ff2, fc1, fc2),
         );
         return;
     }
@@ -2158,13 +2226,16 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists) {
     }) else {
         return;
     };
-    let Some(back) = map.sectors.get(other_id.raw() as usize) else {
+    let back_sec = other_id.raw() as usize;
+    let Some(back) = map.sectors.get(back_sec) else {
         return;
     };
+    let (bf1, bf2) = (z_at(back_sec, x1, y1, false), z_at(back_sec, x2, y2, false));
+    let (bc1, bc2) = (z_at(back_sec, x1, y1, true), z_at(back_sec, x2, y2, true));
     // Upper (front ceiling → back ceiling) when front is higher.
     // Doom "sky hack": both sides sky → omit upper (continuous sky silhouette).
     let both_sky = is_sky_flat(&front.ceiling_pic) && is_sky_flat(&back.ceiling_pic);
-    if front.ceiling_height > back.ceiling_height && !is_blank(&side.upper) && !both_sky {
+    if (fc1 > bc1 || fc2 > bc2) && !is_blank(&side.upper) && !both_sky {
         // Default upper pegs to the *lowest* ceiling (door underside) so the face
         // scrolls as the door opens; `ML_DONTPEGTOP` pegs to the highest ceiling.
         let peg = if line.flags & ML_DONTPEGTOP != 0 {
@@ -2172,7 +2243,7 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists) {
         } else {
             WallPeg::Bottom
         };
-        push_wall_quad(
+        push_sloped_wall_quad(
             lists,
             &side.upper,
             WallQuad {
@@ -2195,10 +2266,11 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists) {
                 side_raw,
                 lm_surf: None,
             },
+            (bc1, bc2, fc1, fc2),
         );
     }
     // Lower (back floor → front floor) when front is lower.
-    if front.floor_height < back.floor_height && !is_blank(&side.lower) {
+    if (ff1 < bf1 || ff2 < bf2) && !is_blank(&side.lower) {
         // Default lower pegs to the highest floor (top of the step); `ML_DONTPEGBOTTOM`
         // puts the texture image bottom on the lowest floor (not door-style Bottom).
         let peg = if line.flags & ML_DONTPEGBOTTOM != 0 {
@@ -2206,7 +2278,7 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists) {
         } else {
             WallPeg::Top
         };
-        push_wall_quad(
+        push_sloped_wall_quad(
             lists,
             &side.lower,
             WallQuad {
@@ -2229,6 +2301,7 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists) {
                 side_raw,
                 lm_surf: None,
             },
+            (ff1, ff2, bf1, bf2),
         );
     }
     // Mid texture on two-sided (railings) — mirrors always fill the opening.
@@ -2284,7 +2357,13 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists) {
             } else {
                 WallPeg::Top
             };
-            push_wall_quad(
+            // A wrapping mid fills the opening, which slopes with the planes.
+            let ends = if wrap {
+                (ff1.max(bf1), ff2.max(bf2), fc1.min(bc1), fc2.min(bc2))
+            } else {
+                (z_lo, z_lo, z_hi, z_hi)
+            };
+            push_sloped_wall_quad(
                 lists,
                 &side.middle,
                 WallQuad {
@@ -2308,6 +2387,7 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists) {
                     side_raw,
                     lm_surf: None,
                 },
+                ends,
             );
         }
     }
@@ -2460,8 +2540,33 @@ fn wall_texel_wh(lists: &SceneLists, tex: &str) -> (f32, f32) {
         .unwrap_or((WALL_TEXEL, WALL_TEXEL))
 }
 
+/// Live floor / ceiling Z of sector `si` at `(x, y)`, following its slope.
+fn sector_z_at(map: &MapGeometry, si: usize, x: f64, y: f64, ceiling: bool) -> f64 {
+    let Some(sec) = map.sectors.get(si) else {
+        return 0.0;
+    };
+    match map.setup.planes.get(si) {
+        Some(p) if ceiling => p.ceiling.z_at(x, y) + (sec.ceiling_height - p.base_ceiling),
+        Some(p) => p.floor.z_at(x, y) + (sec.floor_height - p.base_floor),
+        None if ceiling => sec.ceiling_height,
+        None => sec.floor_height,
+    }
+}
+
+/// Wall span heights at each end: `(lo1, lo2, hi1, hi2)`.
+type WallEnds = (f64, f64, f64, f64);
+
 fn push_wall_quad(lists: &mut SceneLists, tex: &str, q: WallQuad) {
-    if q.z_hi <= q.z_lo {
+    let ends = (q.z_lo, q.z_lo, q.z_hi, q.z_hi);
+    push_sloped_wall_quad(lists, tex, q, ends);
+}
+
+/// [`push_wall_quad`] whose bottom and top edges follow sloped planes. The
+/// texture stays anchored to `q.z_lo` / `q.z_hi` (the sector heights).
+fn push_sloped_wall_quad(lists: &mut SceneLists, tex: &str, q: WallQuad, ends: WallEnds) {
+    let (lo1, lo2, hi1, hi2) = ends;
+    let (hi1, hi2) = (hi1.max(lo1), hi2.max(lo2));
+    if hi1 <= lo1 && hi2 <= lo2 {
         return;
     }
     let (tex_w, tex_h) = wall_texel_wh(lists, tex);
@@ -2482,25 +2587,23 @@ fn push_wall_quad(lists: &mut SceneLists, tex: &str, q: WallQuad) {
     // Doom: texture row 0 is the top of the image; V increases downward.
     // Peg-top: V=`v_off` at z_hi. Peg-bottom (door underside): V=`v_off` at z_lo
     // so a rising door scrolls. TexBottom (lower+DONTPEGBOTTOM): V≈1 at z_lo.
-    let (mut v_top, mut v_bot) = if q.single_v {
-        (0.0_f32, 1.0_f32)
-    } else {
+    // V of world height `z`, anchored like the flat quad's edges.
+    let v_at = |z: f64| -> f32 {
         #[allow(clippy::cast_possible_truncation)]
-        let span = ((q.z_hi - q.z_lo) / f64::from(tex_h)) as f32 / vs;
-        match q.peg {
-            WallPeg::Top => (v_off, v_off + span),
-            WallPeg::Bottom => (v_off - span, v_off),
+        let rows = |dz: f64| (dz / f64::from(tex_h)) as f32 / vs;
+        let v = match q.peg {
+            WallPeg::Top => v_off + rows(q.z_hi - z),
+            WallPeg::Bottom => v_off - rows(z - q.z_lo),
             // `vtop = frontfloor + textureheight` (+rowoffset) → bottom of image at z_lo.
-            WallPeg::TexBottom => {
-                let bot = 1.0 - v_off;
-                (bot - span, bot)
-            }
-        }
+            WallPeg::TexBottom => 1.0 - v_off - rows(z - q.z_lo),
+        };
+        if q.clamp_v { v.clamp(0.0, 1.0) } else { v }
     };
-    if q.clamp_v {
-        v_top = v_top.clamp(0.0, 1.0);
-        v_bot = v_bot.clamp(0.0, 1.0);
-    }
+    let (v_bot1, v_bot2, v_top1, v_top2) = if q.single_v {
+        (1.0_f32, 1.0, 0.0, 0.0)
+    } else {
+        (v_at(lo1), v_at(lo2), v_at(hi1), v_at(hi2))
+    };
     let surf_i = q
         .lm_surf
         .or_else(|| lists.lightmap_bindings.resolve(q.side_raw, None));
@@ -2516,16 +2619,16 @@ fn push_wall_quad(lists: &mut SceneLists, tex: &str, q: WallQuad) {
             })
             .unwrap_or(Vec2::ZERO)
     };
-    let mut a = WallVertex::new(p(q.x1, q.y1, q.z_lo), Vec2::new(u1, v_bot), q.light)
+    let mut a = WallVertex::new(p(q.x1, q.y1, lo1), Vec2::new(u1, v_bot1), q.light)
         .with_alpha(q.alpha)
         .with_lm_uv(lm(q.x1, q.y1));
-    let mut b = WallVertex::new(p(q.x2, q.y2, q.z_lo), Vec2::new(u2, v_bot), q.light)
+    let mut b = WallVertex::new(p(q.x2, q.y2, lo2), Vec2::new(u2, v_bot2), q.light)
         .with_alpha(q.alpha)
         .with_lm_uv(lm(q.x2, q.y2));
-    let mut c = WallVertex::new(p(q.x2, q.y2, q.z_hi), Vec2::new(u2, v_top), q.light)
+    let mut c = WallVertex::new(p(q.x2, q.y2, hi2), Vec2::new(u2, v_top2), q.light)
         .with_alpha(q.alpha)
         .with_lm_uv(lm(q.x2, q.y2));
-    let mut d = WallVertex::new(p(q.x1, q.y1, q.z_hi), Vec2::new(u1, v_top), q.light)
+    let mut d = WallVertex::new(p(q.x1, q.y1, hi1), Vec2::new(u1, v_top1), q.light)
         .with_alpha(q.alpha)
         .with_lm_uv(lm(q.x1, q.y1));
     if q.masked {
@@ -3312,6 +3415,7 @@ mod tests {
             texture: "POSSA1".into(),
             flip_u: false,
             anchor_u: 0.5,
+            orient: crate::sprites::SpriteOrient::Billboard,
         }];
         let with_live = build_scene(&map, &cam, Some(&live));
         assert_eq!(with_live.sprites.len(), 6);
@@ -3321,6 +3425,38 @@ mod tests {
         assert!(
             avg_x > 150.0,
             "expected live sprite near 200, avg_x={avg_x}"
+        );
+    }
+
+    #[test]
+    fn wall_sprite_stays_on_its_plane() {
+        let inst = SpriteInstance {
+            pos: Vec3::new(100.0, 0.0, 0.0),
+            width: 64.0,
+            height: 32.0,
+            light: 1.0,
+            alpha: 1.0,
+            fuzz: false,
+            texture: "TAG".into(),
+            flip_u: false,
+            anchor_u: 0.5,
+            orient: crate::sprites::SpriteOrient::Wall { yaw: 0.0 },
+        };
+        let cam = Camera {
+            eye: Vec3::new(140.0, 0.0, 16.0),
+            forward: Vec3::new(-1.0, 0.0, 0.0),
+            ..Camera::default()
+        };
+        let mut lists = SceneLists::default();
+        append_sprites(&mut lists, &[inst], &cam);
+        let max_x = lists
+            .sprites
+            .iter()
+            .map(|v| v.pos[0])
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_x < 101.0,
+            "wall sprite pulled toward the eye, max_x={max_x}"
         );
     }
 
@@ -3460,6 +3596,7 @@ mod tests {
             damage_interval: 0,
             leakiness: 0,
             silent: false,
+            sound_sequence: String::new(),
             waterzone: false,
             drop_actors: true,
             no_falling_damage: false,

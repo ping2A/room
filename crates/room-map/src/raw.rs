@@ -200,6 +200,8 @@ pub struct RawSector {
     pub leakiness: i32,
     /// UDMF `silent` — suppress floor/ceiling/door mover sounds.
     pub silent: bool,
+    /// UDMF `soundsequence` (empty = default).
+    pub sound_sequence: String,
     /// UDMF `waterzone` — sector is underwater (surface = ceiling).
     pub waterzone: bool,
     /// UDMF `dropactors` — actors ride lowering floors (default true).

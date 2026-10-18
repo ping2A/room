@@ -19,6 +19,7 @@ cpal.workspace = true
 room-audio = { path = "../room-audio" }
 room-console = { path = "../room-console" }
 room-decorate = { path = "../room-decorate" }
+room-build = { path = "../room-build" }
 room-defs = { path = "../room-defs" }
 room-game = { path = "../room-game" }
 room-input = { path = "../room-input" }

@@ -272,6 +272,8 @@ pub struct SectorStatic {
     pub leakiness: i32,
     /// UDMF `silent` — suppress mover sounds for this sector.
     pub silent: bool,
+    /// UDMF `soundsequence` — SNDSEQ name for this sector's movers (empty = default).
+    pub sound_sequence: String,
     /// UDMF `waterzone` — filled water; immersion vs dynamic ceiling.
     pub waterzone: bool,
     /// UDMF `dropactors` — ride lowering floors (default true).
@@ -316,13 +318,29 @@ pub fn link_geometry(
     things: Vec<RawThing>,
     md5: [u8; 16],
 ) -> MapGeometry {
-    let nsec = sectors.len();
-    let verts: Vec<Vertex> = vertices
+    let positions = vertices
         .iter()
-        .map(|v| Vertex {
-            pos: DVec2::new(f64::from(v.x), f64::from(v.y)),
-        })
+        .map(|v| DVec2::new(f64::from(v.x), f64::from(v.y)))
         .collect();
+    link_geometry_at(
+        name, format, positions, linedefs, sidedefs, sectors, things, md5,
+    )
+}
+
+/// [`link_geometry`] with exact vertex positions (UDMF float vertices).
+#[allow(clippy::too_many_arguments)]
+pub fn link_geometry_at(
+    name: &str,
+    format: MapFormat,
+    positions: Vec<DVec2>,
+    linedefs: Vec<RawLinedef>,
+    sidedefs: Vec<RawSidedef>,
+    sectors: Vec<RawSector>,
+    things: Vec<RawThing>,
+    md5: [u8; 16],
+) -> MapGeometry {
+    let nsec = sectors.len();
+    let verts: Vec<Vertex> = positions.into_iter().map(|pos| Vertex { pos }).collect();
 
     let mut sides: Vec<Side> = sidedefs
         .iter()
@@ -495,6 +513,7 @@ pub fn link_geometry(
                 damage_interval: s.damage_interval,
                 leakiness: s.leakiness,
                 silent: s.silent,
+                sound_sequence: s.sound_sequence.clone(),
                 waterzone: s.waterzone,
                 drop_actors: s.drop_actors,
                 no_falling_damage: s.no_falling_damage,

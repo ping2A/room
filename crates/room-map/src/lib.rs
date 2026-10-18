@@ -30,7 +30,9 @@ pub use doom::{
     parse_things_hexen, parse_vertexes,
 };
 pub use error::MapError;
-pub use geom::{Line, MapFormat, MapGeometry, SectorStatic, Side, Vertex, link_geometry};
+pub use geom::{
+    Line, MapFormat, MapGeometry, SectorStatic, Side, Vertex, link_geometry, link_geometry_at,
+};
 pub use level_fixes::{LevelFixOp, LevelFixesDatabase, apply_level_fixes};
 pub use loader::load_map;
 pub use nodes::{
@@ -41,8 +43,9 @@ pub use nodes::{
 pub use raw::{RawLinedef, RawSector, RawSidedef, RawThing, RawVertex};
 pub use reject::{Reject, build_reject, build_reject_zero, parse_reject};
 pub use setup::{
-    FFloorStatic, LinePortal, MidtexAttach, PolyobjStatic, PortalGroups, PortalTables, SecPlane,
-    SectorPlanes, SectorPortal, SetupData, apply_attach_3d_midtex, build_setup,
+    FFloorStatic, LinePortal, MidtexAttach, PORTAL_KIND_FALL, PORTAL_KIND_WATER, PolyobjStatic,
+    PortalGroups, PortalTables, SecPlane, SectorPlanes, SectorPortal, SetupData,
+    apply_attach_3d_midtex, build_setup,
 };
 pub use svg::map_to_svg;
 pub use udmf::{UdmfLexer, UdmfMap, UdmfTok, UdmfUserBag, UdmfUserStore, parse_udmf};

@@ -119,11 +119,18 @@ fn eval_ident(world: &World, self_id: ActorId, name: &str) -> EvalValue {
         "radius" => EvalValue::Float(a.radius),
         "height" => EvalValue::Float(a.height),
         "angle" => EvalValue::Float(a.angle.degrees()),
-        "pitch" => EvalValue::Float(a.pitch.degrees()),
+        // GZDoom sign (negative looks up); Room's actor pitch is positive up.
+        "pitch" => EvalValue::Float(-a.pitch.degrees()),
         "velx" | "momx" => EvalValue::Float(a.vel.x()),
         "vely" | "momy" => EvalValue::Float(a.vel.y()),
         "velz" | "momz" => EvalValue::Float(a.vel.z()),
         "tid" => EvalValue::Int(a.tid),
+        // Holding move-down is Duke's crouch (pipebomb roll).
+        "playercrouch" | "crouch" => {
+            let crouched = world.thinking_up_move < 0
+                || world.players.iter().flatten().any(|p| p.cmd.up_move < 0);
+            EvalValue::Int(i32::from(crouched))
+        }
         "alpha" => EvalValue::Float(a.alpha),
         "args" => EvalValue::Int(a.args[0]),
         _ if lower.starts_with("user_") => a
@@ -155,6 +162,28 @@ fn eval_call(world: &mut World, self_id: ActorId, name: &str, args: &[DecoExpr])
             let span = (hi - lo + 1) as u32;
             let r = u32::from(world.p_random("decorate"));
             EvalValue::Int(lo.wrapping_add((r % span) as i32))
+        }
+        "frandom" => {
+            let lo = args
+                .first()
+                .map(|e| eval_expr(world, self_id, e).as_f64())
+                .unwrap_or(0.0);
+            let hi = args
+                .get(1)
+                .map(|e| eval_expr(world, self_id, e).as_f64())
+                .unwrap_or(lo);
+            let r = f64::from(world.p_random("decorate")) / 255.0;
+            EvalValue::Float(lo + (hi - lo) * r)
+        }
+        "countinv" => {
+            let name = match args.first() {
+                Some(DecoExpr::String(s) | DecoExpr::Ident(s)) => s.clone(),
+                _ => return EvalValue::Int(0),
+            };
+            let Some(cid) = world.classes.find_name(&name) else {
+                return EvalValue::Int(0);
+            };
+            EvalValue::Int(crate::inventory::count_inventory(world, self_id, cid))
         }
         _ => EvalValue::Int(0),
     }
@@ -258,5 +287,31 @@ actor Probe : Actor 9001
         assert_eq!(eval_action_arg(&mut w, id, "user_count + 2"), "5");
         assert_eq!(eval_action_arg(&mut w, id, "See"), "See");
         assert_eq!(eval_action_arg(&mut w, id, "10"), "10");
+        for _ in 0..16 {
+            let v: f64 = eval_action_arg(&mut w, id, "frandom(-2, 3) * 2")
+                .parse()
+                .unwrap();
+            assert!((-4.0..=6.0).contains(&v), "{v}");
+        }
+        assert_eq!(eval_action_arg(&mut w, id, "CountInv(\"Probe\") + 1"), "1");
+        if let Some(p) = w.players[0].as_mut() {
+            p.mo = Some(id);
+            p.on_ground = true;
+            p.cmd.up_move = -64;
+        }
+        assert_eq!(eval_action_arg(&mut w, id, "0 + playercrouch"), "1");
+        if let Some(p) = w.players[0].as_mut() {
+            p.cmd.up_move = 0;
+        }
+        assert_eq!(eval_action_arg(&mut w, id, "0 + playercrouch"), "0");
+        if let Some(p) = w.players[0].as_mut() {
+            p.cmd.up_move = -64;
+        }
+        let z = eval_action_arg(
+            &mut w,
+            id,
+            "(0.86 - 0.075 * pitch) * (1 - playercrouch) + (-0.075 * pitch) * playercrouch",
+        );
+        assert_eq!(z, "0");
     }
 }

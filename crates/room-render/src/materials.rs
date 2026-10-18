@@ -241,6 +241,28 @@ impl MaterialCatalog {
         Some(id)
     }
 
+    /// Copy a GPU texture onto `name` (camera canvases; no CPU readback).
+    pub fn upsert_copy(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        name: &str,
+        src: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) -> Option<TextureId> {
+        let key = normalize(name);
+        if key.is_empty() || key == "-" || width == 0 || height == 0 {
+            return None;
+        }
+        let prev = self.by_name.get(&key).copied();
+        let id = self
+            .textures
+            .upsert_copy(device, queue, prev, src, width, height);
+        self.by_name.insert(key, id);
+        Some(id)
+    }
+
     /// Upload `name` from VFS (textures or flats namespace). Returns existing id if cached.
     pub fn get_or_upload(
         &mut self,
@@ -280,9 +302,28 @@ impl MaterialCatalog {
         if key.is_empty() || key == "-" {
             return None;
         }
+        if let Some((sky, top)) = crate::sky::parse_sky_cap_name(&key) {
+            return self.sky_cap_image(vfs, sky, top);
+        }
         load_tx_image(vfs, &key)
             .or_else(|| self.compose_texturex(vfs, &key))
             .or_else(|| load_named_image(vfs, &key))
+    }
+
+    /// Sky cap gradient (see [`crate::sky::sky_cap_image`]).
+    fn sky_cap_image(&self, vfs: &Vfs, sky: &str, top: bool) -> Option<Image> {
+        let (w, h, rgba) = image_to_rgba(&self.source_image(vfs, sky)?, self.playpal.as_ref());
+        let pixels = crate::sky::sky_cap_image(w, h, &rgba, top)?;
+        Some(Image {
+            left_offset: 0,
+            top_offset: 0,
+            has_translucency: false,
+            pixels: ImagePixels::Rgba8(room_formats::image::RgbaImage {
+                width: w,
+                height: crate::sky::CAP_ROWS,
+                pixels,
+            }),
+        })
     }
 
     /// Wall texture names (TEXTUREX composites + `TX_START` lumps, sorted).

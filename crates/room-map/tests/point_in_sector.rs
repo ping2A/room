@@ -141,7 +141,6 @@ fn map03_ledge_sector_west_of_160() {
         floor, 16.0,
         "IWAD game_nodes should report floor 16 at (143,777)"
     );
-    // Nodebuilder still places this sample in the floor-8 subsector; playsim
-    // must prefer IWAD nodes via `ensure_nodes` (see room-game DEMO1 tests).
-    assert_eq!(floor_r, 8.0, "document known rebuild misclassification");
+    // Both sides of a two-sided line once shared a rebuilt leaf (floor 8 here).
+    assert_eq!(floor_r, 16.0, "rebuilt nodes should report floor 16");
 }

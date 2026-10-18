@@ -31,6 +31,16 @@ pub enum HostCommand {
     Screenshot,
     /// Start / stop in-game GIF recording.
     GifToggle,
+    /// Write a Room `.fsave` (`save` / `save <slot>`).
+    Save(Option<String>),
+    /// Restore a Room `.fsave` (`load` / `load <slot>`).
+    Load(Option<String>),
+    /// Start a Room `.fdem` (`record` / `record <slot>`).
+    Record(Option<String>),
+    /// Finish the current Room demo (`stop` / `stopdemo`).
+    StopDemo,
+    /// Replay a Room `.fdem` (`playdemo` / `playdemo <slot>`).
+    PlayDemo(Option<String>),
 }
 
 /// Result of executing a console line.
@@ -243,6 +253,52 @@ impl Console {
                 "gifrecord" | "gifstart" | "gifstop" | "gif" => {
                     host.push(HostCommand::GifToggle);
                     let msg = "GIF record toggle".to_owned();
+                    self.print(&msg);
+                    output.push(msg);
+                }
+                "save" | "savegame" => {
+                    let slot = args.first().cloned();
+                    host.push(HostCommand::Save(slot.clone()));
+                    let msg = match slot.as_deref() {
+                        Some(s) => format!("Save {s}"),
+                        None => "Save".to_owned(),
+                    };
+                    self.print(&msg);
+                    output.push(msg);
+                }
+                "load" | "loadgame" => {
+                    let slot = args.first().cloned();
+                    host.push(HostCommand::Load(slot.clone()));
+                    let msg = match slot.as_deref() {
+                        Some(s) => format!("Load {s}"),
+                        None => "Load".to_owned(),
+                    };
+                    self.print(&msg);
+                    output.push(msg);
+                }
+                "record" => {
+                    let slot = args.first().cloned();
+                    host.push(HostCommand::Record(slot.clone()));
+                    let msg = match slot.as_deref() {
+                        Some(s) => format!("Record {s}"),
+                        None => "Record".to_owned(),
+                    };
+                    self.print(&msg);
+                    output.push(msg);
+                }
+                "stop" | "stopdemo" => {
+                    host.push(HostCommand::StopDemo);
+                    let msg = "Stop demo".to_owned();
+                    self.print(&msg);
+                    output.push(msg);
+                }
+                "playdemo" => {
+                    let slot = args.first().cloned();
+                    host.push(HostCommand::PlayDemo(slot.clone()));
+                    let msg = match slot.as_deref() {
+                        Some(s) => format!("Playdemo {s}"),
+                        None => "Playdemo".to_owned(),
+                    };
                     self.print(&msg);
                     output.push(msg);
                 }
@@ -628,6 +684,39 @@ mod tests {
         assert_eq!(
             r.host,
             vec![HostCommand::Screenshot, HostCommand::GifToggle]
+        );
+    }
+
+    #[test]
+    fn save_and_load_emit_host() {
+        let mut con = Console::with_defaults();
+        let r = con.exec("save; load; save e1; loadgame e1").unwrap();
+        assert_eq!(
+            r.host,
+            vec![
+                HostCommand::Save(None),
+                HostCommand::Load(None),
+                HostCommand::Save(Some("e1".into())),
+                HostCommand::Load(Some("e1".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn record_and_playdemo_emit_host() {
+        let mut con = Console::with_defaults();
+        let r = con
+            .exec("record; stop; playdemo; record e1; playdemo e1")
+            .unwrap();
+        assert_eq!(
+            r.host,
+            vec![
+                HostCommand::Record(None),
+                HostCommand::StopDemo,
+                HostCommand::PlayDemo(None),
+                HostCommand::Record(Some("e1".into())),
+                HostCommand::PlayDemo(Some("e1".into())),
+            ]
         );
     }
 }

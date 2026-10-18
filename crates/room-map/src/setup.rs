@@ -90,7 +90,8 @@ impl SecPlane {
         }
     }
 
-    /// Plane from UDMF / GZDoom `a*x + b*y + c*z = d` coefficients.
+    /// Plane from `a*x + b*y + c*z = d` coefficients (UDMF's `d` has the
+    /// opposite sign).
     #[must_use]
     pub fn from_abcd(a: f64, b: f64, c: f64, d: f64) -> Self {
         let neg_inv_c = if c.abs() > 1e-12 { -1.0 / c } else { 0.0 };
@@ -225,14 +226,36 @@ pub struct SectorPortal {
     pub kind: u8,
     /// `0` = floor plane, `1` = ceiling plane.
     pub plane: u8,
+    /// [`PORTAL_KIND_WATER`] / [`PORTAL_KIND_FALL`] displacement (`args[3]`,
+    /// `args[4]` map units).
+    pub offset: [i32; 2],
+    /// [`PORTAL_KIND_FALL`] source and destination effector heights.
+    pub heights: [i32; 2],
 }
 
+/// Room extension (`docs/23-build-engine.md`): a Build water link (`SE 7`
+/// between above-water and underwater sectors). Only players pass: down
+/// through the floor when swimming down or falling fast, up through the
+/// ceiling when swimming up; they move by [`SectorPortal::offset`].
+pub const PORTAL_KIND_WATER: u8 = 200;
+
+/// Room extension: a Build `SE 7` transporter floating above its floor. A
+/// player whose eye comes within 24 units of the source effector height moves
+/// by [`SectorPortal::offset`] to 24 units below (above, when rising) the
+/// destination effector. `arg2` packs the heights: source in the low 16 bits,
+/// destination in the high 16 (both signed).
+pub const PORTAL_KIND_FALL: u8 = 201;
+
 impl SectorPortal {
-    /// Actors may pass through this plane (teleporter / linked).
+    /// Actors may pass through this plane (teleporter / linked / water link).
     #[must_use]
     pub fn is_traversable(self) -> bool {
-        matches!(self.kind, 1 | 3)
+        matches!(self.kind, 1 | 3 | PORTAL_KIND_WATER | PORTAL_KIND_FALL)
     }
+}
+
+fn unpack_fall_heights(arg: i32) -> [i32; 2] {
+    [i32::from(arg as u16 as i16), arg >> 16]
 }
 
 /// Static 3D floor attached to a control sector.
@@ -309,11 +332,12 @@ pub fn build_setup(map: &crate::geom::MapGeometry) -> SetupData {
         .iter()
         .map(|s| {
             let mut sp = SectorPlanes::flat(s.floor_height, s.ceiling_height);
+            // UDMF planes are `a*x + b*y + c*z + d = 0` (GZDoom `secplane_t`).
             if let Some([a, b, c, d]) = s.floor_plane {
-                sp.floor = SecPlane::from_abcd(a, b, c, d);
+                sp.floor = SecPlane::from_abcd(a, b, c, -d);
             }
             if let Some([a, b, c, d]) = s.ceiling_plane {
-                sp.ceiling = SecPlane::from_abcd(a, b, c, d);
+                sp.ceiling = SecPlane::from_abcd(a, b, c, -d);
             }
             sp
         })
@@ -805,7 +829,13 @@ fn collect_portals(map: &crate::geom::MapGeometry) -> PortalTables {
                     sector: src,
                     target,
                     kind,
-                    plane,
+                    plane: if kind == PORTAL_KIND_FALL { 0 } else { plane },
+                    offset: [line.args[3], line.args[4]],
+                    heights: if kind == PORTAL_KIND_FALL {
+                        unpack_fall_heights(line.args[2])
+                    } else {
+                        [0; 2]
+                    },
                 });
             }
             _ => {}
@@ -966,6 +996,14 @@ mod tests {
     use super::*;
     use crate::{MapFormat, RawLinedef, RawSector, RawSidedef, RawThing, RawVertex, link_geometry};
 
+    #[test]
+    fn fall_portal_heights_are_signed_halves() {
+        let pack = |src: i16, dst: i16| (i32::from(dst) << 16) | i32::from(src as u16);
+        assert_eq!(unpack_fall_heights(pack(140, 276)), [140, 276]);
+        assert_eq!(unpack_fall_heights(pack(-132, -24)), [-132, -24]);
+        assert_eq!(unpack_fall_heights(pack(580, -3000)), [580, -3000]);
+    }
+
     fn square_map_with_line(
         special: i16,
         args: [i32; 5],
@@ -1072,6 +1110,7 @@ mod tests {
             damage_interval: 0,
             leakiness: 0,
             silent: false,
+            sound_sequence: String::new(),
             waterzone: false,
             drop_actors: true,
             no_falling_damage: false,
@@ -1109,6 +1148,19 @@ mod tests {
         let p = SecPlane::horizontal(64.0, true);
         assert!((p.z_at(0.0, 0.0) - 64.0).abs() < 1e-9);
         assert!(!p.is_slope());
+    }
+
+    #[test]
+    fn udmf_planes_use_the_gzdoom_sign_of_d() {
+        // 45° ceiling `0.7071y - 0.7071z + 2752 = 0`: z = y + 3892.
+        let mut map = square_map_with_line(0, [0; 5], Vec::new());
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        map.sectors[0].ceiling_plane = Some([0.0, h, -h, 3892.0 * h]);
+        map.sectors[0].floor_plane = Some([0.0, 0.0, 1.0, -32.0]);
+        let setup = build_setup(&map);
+        assert!((setup.planes[0].ceiling.z_at(0.0, -3684.0) - 208.0).abs() < 1e-6);
+        assert!((setup.planes[0].ceiling.z_at(0.0, -3744.0) - 148.0).abs() < 1e-6);
+        assert!((setup.planes[0].floor.z_at(5.0, 5.0) - 32.0).abs() < 1e-9);
     }
 
     #[test]

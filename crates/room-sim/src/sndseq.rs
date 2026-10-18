@@ -49,9 +49,21 @@ pub struct SndSeqTable {
     pub door_slots: BTreeMap<i32, String>,
     /// Platform slot index → sequence name (uppercase).
     pub platform_slots: BTreeMap<i32, String>,
+    /// Choice lists (`[Name 0 SeqA 1 SeqB ]`): uppercase name → (choice,
+    /// uppercase sequence).
+    pub choices: BTreeMap<String, Vec<(i32, String)>>,
 }
 
 impl SndSeqTable {
+    /// Sequence `choice` of choice list `name`; a fast choice (2 / 3) falls
+    /// back to its normal one (0 / 1). `None` when `name` is not a list.
+    #[must_use]
+    pub fn choose(&self, name: &str, choice: i32) -> Option<String> {
+        let list = self.choices.get(&name.to_ascii_uppercase())?;
+        let pick = |c: i32| list.iter().find(|(n, _)| *n == c).map(|(_, s)| s.clone());
+        pick(choice).or_else(|| pick(choice & 1))
+    }
+
     /// Look up by name (case-insensitive) or numeric door/platform slot.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&SndSeqDef> {

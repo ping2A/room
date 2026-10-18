@@ -155,13 +155,40 @@ pub fn point_in_sector_with(
 ) -> Option<SectorId> {
     let ss = point_in_subsector(nodes, x, y)?;
     let sub = nodes.subsectors.get(ss as usize)?;
-    let seg = nodes.segs.get(sub.first_seg as usize)?;
-    let line = map.lines.get(seg.line?.raw() as usize)?;
-    if seg.side == 0 {
-        line.front_sector
-    } else {
-        line.back_sector
+    let start = sub.first_seg as usize;
+    let segs = nodes
+        .segs
+        .get(start..start.checked_add(sub.num_segs as usize)?)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(nodes.segs.get(start..=start)?);
+    let seg_sector = |seg: &room_map::Seg| {
+        let line = map.lines.get(seg.line?.raw() as usize)?;
+        if seg.side == 0 {
+            line.front_sector
+        } else {
+            line.back_sector
+        }
+    };
+    let first = seg_sector(&segs[0]);
+    if segs.iter().all(|s| seg_sector(s) == first) {
+        return first;
     }
+    // A degenerate leaf holding both sides of a line: the nearest seg that
+    // has the point on its inner (right) side owns it.
+    segs.iter()
+        .filter_map(|seg| {
+            let a = map.vertices.get(seg.v1.raw() as usize)?.pos;
+            let b = map.vertices.get(seg.v2.raw() as usize)?.pos;
+            let (dx, dy) = (b.x() - a.x(), b.y() - a.y());
+            let len = dx.hypot(dy);
+            if len < 1e-9 {
+                return None;
+            }
+            let cross = (dx * (y - a.y()) - dy * (x - a.x())) / len;
+            (cross <= 0.0).then(|| (-cross, seg_sector(seg)))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map_or(first, |(_, s)| s)
 }
 
 /// Result of [`validate_subsectors`].
@@ -553,6 +580,7 @@ mod tests {
             damage_interval: 0,
             leakiness: 0,
             silent: false,
+            sound_sequence: String::new(),
             waterzone: false,
             drop_actors: true,
             no_falling_damage: false,

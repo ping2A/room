@@ -97,6 +97,8 @@ pub struct PublicRoom {
     pub game_mod: Option<room_proto::RoomModRef>,
     /// Match time limit (minutes).
     pub time_limit: u16,
+    /// `doom` or `duke3d`.
+    pub game: String,
     /// Relative v2 WebSocket path.
     pub ws_v2: String,
     /// Relative legacy WebSocket path.
@@ -127,6 +129,7 @@ pub async fn list_public_rooms(
             visibility: h.settings.visibility.clone(),
             game_mod: h.settings.game_mod.clone(),
             time_limit: h.settings.time_limit,
+            game: h.settings.game.clone(),
             ws_v2: format!("/v2/rooms/{id}/ws"),
             ws_legacy: format!("/ws/{id}"),
         });

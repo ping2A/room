@@ -126,13 +126,13 @@ pub fn resolve_map_music(map: &str, mapinfo: Option<&MapInfo>) -> Option<String>
 /// Doom II title theme, then Doom 1 intro lumps.
 #[must_use]
 pub fn title_music_candidates() -> &'static [&'static str] {
-    &["D_DM2TTL", "D_INTRO", "D_INTROA"]
+    &["GRABBAG", "D_DM2TTL", "D_INTRO", "D_INTROA"]
 }
 
 /// Intermission / end-of-level music candidates.
 #[must_use]
 pub fn intermission_music_candidates() -> &'static [&'static str] {
-    &["D_DM2INT", "D_INTER"]
+    &["D_DM2INT", "D_INTER", "GRABBAG"]
 }
 
 /// Load a named music lump from `vfs` into `player` (MUS preferred; raw MIDI if `MThd`).
@@ -215,11 +215,14 @@ mod tests {
         assert_eq!(player.current.as_ref().unwrap().name, "D_RUNNIN");
         let title = play_first_music_lump(&mut player, &vfs, title_music_candidates()).unwrap();
         assert!(
-            title == "D_DM2TTL" || title == "D_INTRO" || title == "D_INTROA",
+            title == "GRABBAG" || title == "D_DM2TTL" || title == "D_INTRO" || title == "D_INTROA",
             "title={title}"
         );
         let inter =
             play_first_music_lump(&mut player, &vfs, intermission_music_candidates()).unwrap();
-        assert!(inter == "D_DM2INT" || inter == "D_INTER", "inter={inter}");
+        assert!(
+            inter == "D_DM2INT" || inter == "D_INTER" || inter == "GRABBAG",
+            "inter={inter}"
+        );
     }
 }

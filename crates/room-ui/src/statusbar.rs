@@ -115,6 +115,79 @@ impl StatusBar for DoomStatusBar {
     }
 }
 
+/// Duke Nukem 3D bottom bar from the `room-build` GRP conversion: `DUKEBAR`
+/// (320×34 at y=166), `DKNUM*` big digits, `DKSM*` weapon numbers and the
+/// `DKKEY[BYR]` access cards. Positions follow Duke's `coolgaugetext`.
+#[derive(Clone, Debug, Default)]
+pub struct DukeStatusBar;
+
+impl DukeStatusBar {
+    /// Lump that marks a converted Duke WAD.
+    pub const MARKER: &'static str = "DUKEBAR";
+}
+
+/// Duke `digitalnumber`: digits centred on `x`, 8 px advance.
+fn duke_number(list: &mut UiDrawList, x: f32, y: f32, n: i32) {
+    let s = n.clamp(0, 999).to_string();
+    let mut dx = x - (s.len() as f32 * 8.0 - 1.0) / 2.0;
+    for c in s.chars() {
+        list.picture(&format!("DKNUM{c}"), Vec2::new(dx.floor(), y));
+        dx += 8.0;
+    }
+}
+
+fn duke_keys(list: &mut UiDrawList, keys: u8, at: [(f32, f32); 3]) {
+    for ((bits, suffix), (x, y)) in [(1 | 8, 'B'), (2 | 16, 'Y'), (4 | 32, 'R')]
+        .into_iter()
+        .zip(at)
+    {
+        if keys & bits != 0 {
+            list.picture(&format!("DKKEY{suffix}"), Vec2::new(x, y));
+        }
+    }
+}
+
+impl StatusBar for DukeStatusBar {
+    fn draw(&self, hud: &HudState, list: &mut UiDrawList) {
+        if hud.fullscreen {
+            duke_number(list, 24.0, 186.0, hud.health);
+            if hud.armor > 0 {
+                duke_number(list, 56.0, 186.0, hud.armor);
+            }
+            if hud.ammo >= 0 {
+                duke_number(list, 296.0, 186.0, hud.ammo);
+            }
+            duke_keys(
+                list,
+                hud.keys,
+                [(296.0, 160.0), (306.0, 160.0), (301.0, 170.0)],
+            );
+            return;
+        }
+        list.fill(Rect::new(0.0, 166.0, 320.0, 34.0), Rgba::STBAR_BG);
+        list.patch(Self::MARKER, Vec2::new(0.0, 166.0), Vec2::new(320.0, 34.0));
+        duke_number(list, 32.0, 183.0, hud.health);
+        duke_number(list, 64.0, 183.0, hud.armor);
+        if hud.ammo >= 0 {
+            duke_number(list, 207.0, 183.0, hud.ammo);
+        }
+        for slot in 2u8..=9 {
+            if hud.arms & (1 << slot) != 0 {
+                let i = f32::from(slot - 2);
+                list.picture(
+                    &format!("DKSM{slot}"),
+                    Vec2::new(96.0 + (i / 3.0).floor() * 39.0, 182.0 + (i % 3.0) * 6.0),
+                );
+            }
+        }
+        duke_keys(
+            list,
+            hud.keys,
+            [(275.0, 182.0), (288.0, 182.0), (281.0, 189.0)],
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -316,6 +389,42 @@ mod tests {
                 .any(|(n, p, _)| n.starts_with("STTNUM") && p.x < 44.5),
             "no big ammo digits for am_noammo weapons"
         );
+    }
+
+    #[test]
+    fn duke_bar_draws_numbers_weapons_and_cards() {
+        let mut hud = HudState::doom_default();
+        hud.health = 100;
+        hud.armor = 0;
+        hud.ammo = 48;
+        hud.arms = (1 << 2) | (1 << 9);
+        hud.keys = 1 | 4;
+        let mut list = UiDrawList::new();
+        DukeStatusBar.draw(&hud, &mut list);
+        let names = patch_names(&list);
+        let has = |n: &str, x: f32, y: f32| {
+            names
+                .iter()
+                .any(|(m, p, _)| m == n && (p.x - x).abs() < 1e-3 && (p.y - y).abs() < 1e-3)
+        };
+        assert!(has("DUKEBAR", 0.0, 166.0));
+        // "100" centred on x=32: 23 px wide, starts at 20.
+        assert!(has("DKNUM1", 20.0, 183.0), "{names:?}");
+        assert!(has("DKNUM0", 36.0, 183.0));
+        assert!(has("DKNUM4", 199.0, 183.0), "ammo 48 centred on 207");
+        assert!(has("DKSM2", 96.0, 182.0));
+        assert!(has("DKSM9", 174.0, 188.0), "slot 9 in the third column");
+        assert!(!names.iter().any(|(n, ..)| n == "DKSM3"));
+        assert!(has("DKKEYB", 275.0, 182.0));
+        assert!(has("DKKEYR", 281.0, 189.0));
+        assert!(!names.iter().any(|(n, ..)| n == "DKKEYY"));
+
+        hud.fullscreen = true;
+        let mut list = UiDrawList::new();
+        DukeStatusBar.draw(&hud, &mut list);
+        let names = patch_names(&list);
+        assert!(!names.iter().any(|(n, ..)| n == "DUKEBAR"));
+        assert!(names.iter().any(|(n, ..)| n.starts_with("DKNUM")));
     }
 
     #[test]

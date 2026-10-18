@@ -47,7 +47,7 @@ pub use keyconf::{KeyConf, KeyConfCmd, parse_keyconf};
 pub use language::{Language, parse_language};
 pub use loadacs::{LoadAcs, parse_loadacs};
 pub use lockdefs::{LockDef, LockDefs, LockKeyReq, parse_lockdefs};
-pub use mapinfo::{ClusterDef, EpisodeDef, MapDef, MapInfo, parse_mapinfo};
+pub use mapinfo::{ClusterDef, EpisodeDef, MapDef, MapInfo, SkillDef, parse_mapinfo};
 pub use menudef::{MenuBlock, MenuBlockKind, MenuCmd, MenuDef, parse_menudef};
 pub use modeldef::{ModelDef, ModelDefs, ModelFrameBind, parse_modeldef};
 pub use sbarinfo::{MugshotDef, SbarCmd, SbarInfo, StatusBarDef, parse_sbarinfo};

@@ -210,9 +210,16 @@ fn update_face(world: &mut World, pl: &mut Player) {
 }
 
 /// `ST_doPaletteStuff` PLAYPAL index: `0` normal, `1..=8` red (pain /
-/// berserk), `9..=12` gold (pickup), `13` green (radiation suit).
+/// berserk), `9..=12` gold (pickup), `13` green (radiation suit / night
+/// vision), `14` blue (Duke underwater, not a Doom PLAYPAL slot).
 #[must_use]
 pub fn palette_index(pl: &Player) -> u8 {
+    palette_for(pl, 0)
+}
+
+/// Like [`palette_index`], with `waterlevel` 3+ for a full-submersion tint.
+#[must_use]
+pub fn palette_for(pl: &Player, waterlevel: i32) -> u8 {
     let mut cnt = pl.damage_count;
     if pl.berserk {
         cnt = cnt.max(12 - (pl.berserk_tics >> 6));
@@ -223,9 +230,17 @@ pub fn palette_index(pl: &Player) -> u8 {
         ((pl.bonus_count + 7) >> 3).min(3) as u8 + 9
     } else if pl.radsuit_tics > 4 * 32 || pl.radsuit_tics & 8 != 0 {
         13
+    } else if pl.infrared && infrared_palette_on(pl.infrared_tics) {
+        13
+    } else if waterlevel >= 3 {
+        14
     } else {
         0
     }
+}
+
+fn infrared_palette_on(tics: i32) -> bool {
+    tics <= 0 || tics > 4 * 32 || tics & 8 != 0
 }
 
 #[cfg(test)]
@@ -280,10 +295,20 @@ mod tests {
         assert_eq!(palette_index(&p), 13);
         p.radsuit_tics = 100; // blinking: bit 3 clear → off
         assert_eq!(palette_index(&p), 0);
+        p.infrared = true;
+        p.infrared_tics = 1000;
+        assert_eq!(palette_index(&p), 13);
+        p.infrared_tics = 100; // blinking: bit 3 clear → off
+        assert_eq!(palette_index(&p), 0);
+        p.infrared = false;
         p.berserk = true;
         p.berserk_tics = 1;
         assert_eq!(palette_index(&p), 3);
         p.berserk_tics = 64 * 12;
         assert_eq!(palette_index(&p), 0);
+        p.berserk = false;
+        assert_eq!(palette_for(&p, 3), 14);
+        p.damage_count = 20;
+        assert_eq!(palette_for(&p, 3), 4);
     }
 }

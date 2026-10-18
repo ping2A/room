@@ -1,0 +1,19 @@
+[package]
+name = "room-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Build engine (Duke Nukem 3D) GRP / ART / MAP readers and a converter to a Room UDMF WAD."
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+room-formats = { path = "../room-formats" }
+room-vfs = { path = "../room-vfs" }
+
+[dev-dependencies]
+room-map = { path = "../room-map" }
+room-nodebuild = { path = "../room-nodebuild" }

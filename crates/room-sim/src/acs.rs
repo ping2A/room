@@ -2191,7 +2191,7 @@ impl AcsHost for WorldAcsHost<'_> {
                 .map
                 .lines
                 .get(li as usize)
-                .map(|l| i32::from(l.flags))
+                .map(crate::world::base_line_flags)
                 .unwrap_or(0);
             let mut flags = self.world.line_flags.get(&li).copied().unwrap_or(base);
             flags &= !mask;
@@ -2479,7 +2479,7 @@ impl AcsHost for WorldAcsHost<'_> {
                 .map
                 .lines
                 .get(li as usize)
-                .map(|l| i32::from(l.flags))
+                .map(crate::world::base_line_flags)
                 .unwrap_or(0);
             let cur = self.world.line_flags.get(&li).copied().unwrap_or(base);
             let next = if repeat > 0 {

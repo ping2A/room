@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 bytes = { workspace = true, optional = true }
 room-audio = { path = "../room-audio", optional = true }
+room-build = { path = "../room-build", optional = true }
 room-defs = { path = "../room-defs", optional = true }
 room-formats = { path = "../room-formats", optional = true }
 room-game = { path = "../room-game", optional = true }
@@ -93,6 +94,7 @@ browser = [
     "dep:js-sys",
     "dep:console_error_panic_hook",
     "dep:room-audio",
+    "dep:room-build",
     "dep:room-defs",
     "dep:room-formats",
     "dep:serde_json",

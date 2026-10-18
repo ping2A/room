@@ -281,6 +281,8 @@ pub struct UdmfMap {
     pub namespace: String,
     /// Vertices.
     pub vertices: Vec<RawVertex>,
+    /// Exact (fractional) vertex positions, parallel to `vertices`.
+    pub vertex_pos: Vec<room_core::DVec2>,
     /// Linedefs.
     pub linedefs: Vec<RawLinedef>,
     /// Sidedefs.
@@ -326,7 +328,13 @@ pub fn parse_udmf(text: &str) -> Result<UdmfMap, MapError> {
                         map.sectors.push(sector_from_fields(&fields));
                         map.user.sectors.push(user);
                     }
-                    "vertex" => map.vertices.push(vertex_from_fields(&fields)),
+                    "vertex" => {
+                        map.vertices.push(vertex_from_fields(&fields));
+                        map.vertex_pos.push(room_core::DVec2::new(
+                            float_field(&fields, "x", 0.0),
+                            float_field(&fields, "y", 0.0),
+                        ));
+                    }
                     _ => {} // ignore unknown blocks
                 }
             }
@@ -1002,6 +1010,11 @@ fn sector_from_fields(fields: &BTreeMap<String, UdmfTok<'_>>) -> RawSector {
         damage_interval: int_field(fields, "damageinterval", 0) as i32,
         leakiness: int_field(fields, "leakiness", 0) as i32,
         silent: bool_field(fields, "silent", false),
+        sound_sequence: match fields.get("soundsequence") {
+            Some(UdmfTok::String(s)) => s.to_string(),
+            Some(UdmfTok::Ident(s)) => (*s).to_owned(),
+            _ => String::new(),
+        },
         waterzone: bool_field(fields, "waterzone", false),
         drop_actors: bool_field(fields, "dropactors", true),
         no_falling_damage: bool_field(fields, "nofallingdamage", false),

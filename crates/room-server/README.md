@@ -81,7 +81,7 @@ curl -s -X POST http://127.0.0.1:8765/api/rooms/<id>/join \
 
 | Path | Purpose |
 |------|---------|
-| `/` or `/lobby` | Public lobby UI |
+| `/` or `/lobby` | Public lobby UI (rooms, join by id, **Play solo**: game / map / skill straight into `/play/` with no room) |
 | `/api/lobby` | `{ play_base, node_id, draining }` |
 | `/api/rooms` | `GET` public directory · `POST` create |
 | `/api/rooms/{id}/join` | Mint join ticket |

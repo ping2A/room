@@ -43,11 +43,12 @@ mod world;
 pub use action::{ActionResult, call_action, call_action_args};
 pub use actor::{Actor, ActorArena, ActorId};
 pub use class::{
-    ClassDef, ClassError, ClassRegistry, FLAG_AMBUSH, FLAG_BOSS, FLAG_CORPSE, FLAG_COUNTITEM,
-    FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_DONTTHRUST, FLAG_DROPOFF, FLAG_FLOAT, FLAG_FLOATBOB,
-    FLAG_FLOORCLIP, FLAG_FRIENDLY, FLAG_INVULNERABLE, FLAG_MISSILE, FLAG_NOBLOCKMAP, FLAG_NOBLOOD,
-    FLAG_NODAMAGE, FLAG_NOGRAVITY, FLAG_NORADIUSDMG, FLAG_NOTARGET, FLAG_RIPPER, FLAG_SHOOTABLE,
-    FLAG_SOLID, FLAG_SPAWNCEILING, RenderStyle,
+    ClassDef, ClassError, ClassRegistry, FLAG_AMBUSH, FLAG_BOSS, FLAG_BOUNCEONFLOORS,
+    FLAG_BOUNCEONWALLS, FLAG_CORPSE, FLAG_COUNTITEM, FLAG_COUNTKILL, FLAG_DONTDRAW,
+    FLAG_DONTTHRUST, FLAG_DROPOFF, FLAG_FLATSPRITE, FLAG_FLOAT, FLAG_FLOATBOB, FLAG_FLOORCLIP,
+    FLAG_FRIENDLY, FLAG_INVULNERABLE, FLAG_MISSILE, FLAG_NOBLOCKMAP, FLAG_NOBLOOD, FLAG_NODAMAGE,
+    FLAG_NOGRAVITY, FLAG_NORADIUSDMG, FLAG_NOTARGET, FLAG_RIPPER, FLAG_SHOOTABLE, FLAG_SOLID,
+    FLAG_SPAWNCEILING, FLAG_USESPECIAL, FLAG_WALLSPRITE, RenderStyle,
 };
 pub use compat::{
     COMPATF_BOOMSCROLL, COMPATF_MBFMONSTERMOVE, COMPATF_TRACE, COMPATF2_NOMBF21, CompatFlags,
@@ -58,25 +59,27 @@ pub use damage::damage_mobj;
 pub use hitscan::{TraceHit, line_attack};
 pub use inventory::{
     InvItem, InventoryBags, cheat_give, count_inventory, give_inventory, set_inventory,
+    take_inventory,
 };
 pub use level::LevelState;
 pub use locks::{LockKeyReq, LockSpec, LockTable};
-pub use mugshot::{MugShot, palette_index};
+pub use mugshot::{MugShot, palette_for, palette_index};
 pub use physics::{
     CheckResult, actor_light_level, actor_waterlevel, ceiling_at_xy, check_position, floor_at_xy,
-    try_move, xy_movement, z_movement,
+    sector_at_xy, try_move, xy_movement, z_movement,
 };
 pub use pickup::{touch_specials, try_pickup};
 pub use player::{Buttons, INVERSE_COLORMAP, MAX_PLAYERS, Player, PlayerState, TicCmd};
-pub use polyobj::{PolyMotion, PolyMotionResume, PolyobjDynamic};
+pub use polyobj::{PolyDoor, PolyMotion, PolyMotionResume, PolyobjDynamic, tick_polyobjs};
 pub use script_host::{ModuleMemorySnapshot, ScriptHost};
 pub use sight::check_sight;
 pub use sndseq::{ActiveSndSeq, SndSeqDef, SndSeqStep, SndSeqTable, start_sequence, stop_sequence};
 pub use specials::{
     ActivationType, CeilingMover, CeilingScroller, DoorMover, ElevatorMover, FloorMover,
-    FloorScroller, HeightTransfer, LightFade, LightFlicker, LightGlow, LightStrobe, LightTransfer,
-    PlaneWaggle, PlatMover, PointForce, TextureScroller, activate_line, execute_special,
-    tick_doors, tick_plats,
+    FloorScroller, FloorSkew, FloorSpinner, FloorStretch, FloorSubway, FloorTeeth, HeightTransfer,
+    LightFade, LightFlicker, LightGlow, LightStrobe, LightTransfer, PlaneWaggle, PlatMover,
+    PointForce, TextureScroller, activate_line, damage_linedef, execute_special, tick_demo_cameras,
+    tick_doors, tick_plats, tick_skews, tick_spinners, tick_stretches, tick_subways, tick_teeth,
 };
 pub use state::{State, StateTable};
 pub use terrain::{SplashSpec, TerrainSpec, TerrainTable};

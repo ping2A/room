@@ -7,7 +7,8 @@
 use room_core::{LineId, VertexId};
 use room_map::{GameNodes, MapGeometry, NF_SUBSECTOR, Node, Seg, Subsector};
 
-const MAX_SEGS: usize = 64;
+/// Recursion guard against splits that keep straddling after vertex snapping.
+const MAX_DEPTH: u32 = 256;
 const SPLIT_COST: i32 = 8;
 const AA_PREFERENCE: i32 = 16;
 
@@ -21,11 +22,17 @@ struct WorkSeg {
     v2y: f64,
     line: Option<LineId>,
     side: i16,
+    /// Sector on this seg's side (`u32::MAX` when the side has none).
+    sector: u32,
 }
 
 struct Builder {
     /// Growing vertex pool (map verts + split verts); coords are 16.16-snapped.
     verts: Vec<(f64, f64)>,
+    /// Sectors lie right of their lines (Doom winding): collinear segs facing
+    /// the other way go behind the splitter. Outward-wound maps (fronts on the
+    /// left) keep both sides together.
+    opposite_back: bool,
 }
 
 impl Builder {
@@ -54,7 +61,10 @@ pub fn build_bsp(map: &MapGeometry) -> GameNodes {
         .map(|v| snap_fixed(v.pos.x(), v.pos.y()))
         .collect();
     let orig_vert_count = verts.len();
-    let mut b = Builder { verts };
+    let mut b = Builder {
+        verts,
+        opposite_back: false,
+    };
 
     let mut work = Vec::new();
     for (li, line) in map.lines.iter().enumerate() {
@@ -77,8 +87,9 @@ pub fn build_bsp(map: &MapGeometry) -> GameNodes {
             v2y: by,
             line: Some(LineId::from_raw(li as u32)),
             side: 0,
+            sector: line.front_sector.map_or(u32::MAX, |s| s.raw()),
         });
-        if line.back_sector.is_some() {
+        if let Some(back) = line.back_sector {
             work.push(WorkSeg {
                 v1: line.v2,
                 v2: line.v1,
@@ -88,9 +99,19 @@ pub fn build_bsp(map: &MapGeometry) -> GameNodes {
                 v2y: ay,
                 line: Some(LineId::from_raw(li as u32)),
                 side: 1,
+                sector: back.raw(),
             });
         }
     }
+
+    // Twice the signed area of every sector seen from its segs: negative when
+    // sectors are on the right (clockwise in y-up map space).
+    let area: f64 = work
+        .iter()
+        .filter(|s| s.sector != u32::MAX)
+        .map(|s| s.v1x * s.v2y - s.v2x * s.v1y)
+        .sum();
+    b.opposite_back = area < 0.0;
 
     let mut segs = Vec::new();
     let mut subsectors = Vec::new();
@@ -98,7 +119,7 @@ pub fn build_bsp(map: &MapGeometry) -> GameNodes {
     if work.is_empty() {
         return GameNodes::default();
     }
-    let _ = build_node(&mut b, &work, &mut segs, &mut subsectors, &mut nodes);
+    let _ = build_node(&mut b, &work, &mut segs, &mut subsectors, &mut nodes, 0);
 
     let extra_vertices = b
         .verts
@@ -121,6 +142,7 @@ fn build_node(
     out_segs: &mut Vec<Seg>,
     out_ss: &mut Vec<Subsector>,
     out_nodes: &mut Vec<Node>,
+    depth: u32,
 ) -> u32 {
     if segs_in.is_empty() {
         let first = out_segs.len() as u32;
@@ -131,11 +153,11 @@ fn build_node(
         return NF_SUBSECTOR | (out_ss.len() as u32 - 1);
     }
 
-    if segs_in.len() <= 2 || (segs_in.len() <= MAX_SEGS && best_split(segs_in).is_none()) {
+    if segs_in.len() <= 1 || depth >= MAX_DEPTH {
         return make_subsector(segs_in, out_segs, out_ss);
     }
 
-    let Some(si) = best_split(segs_in) else {
+    let Some(si) = best_split(segs_in, b.opposite_back) else {
         return make_subsector(segs_in, out_segs, out_ss);
     };
     let splitter = segs_in[si];
@@ -146,7 +168,7 @@ fn build_node(
             right.push(*s);
             continue;
         }
-        match classify(splitter, *s) {
+        match classify(splitter, *s, b.opposite_back) {
             Side::Front => right.push(*s),
             Side::Back => left.push(*s),
             Side::On => right.push(*s),
@@ -173,8 +195,8 @@ fn build_node(
         return make_subsector(segs_in, out_segs, out_ss);
     }
 
-    let right_child = build_node(b, &right, out_segs, out_ss, out_nodes);
-    let left_child = build_node(b, &left, out_segs, out_ss, out_nodes);
+    let right_child = build_node(b, &right, out_segs, out_ss, out_nodes, depth + 1);
+    let left_child = build_node(b, &left, out_segs, out_ss, out_nodes, depth + 1);
 
     let dx = splitter.v2x - splitter.v1x;
     let dy = splitter.v2y - splitter.v1y;
@@ -211,6 +233,7 @@ fn split_seg(b: &mut Builder, splitter: WorkSeg, s: WorkSeg) -> Option<(WorkSeg,
         v2y: my,
         line: s.line,
         side: s.side,
+        sector: s.sector,
     };
     let c = WorkSeg {
         v1: mid,
@@ -221,6 +244,7 @@ fn split_seg(b: &mut Builder, splitter: WorkSeg, s: WorkSeg) -> Option<(WorkSeg,
         v2y: s.v2y,
         line: s.line,
         side: s.side,
+        sector: s.sector,
     };
     // Front piece first in the returned pair.
     if s1 >= 0 { Some((a, c)) } else { Some((c, a)) }
@@ -284,11 +308,20 @@ enum Side {
     Split,
 }
 
-fn classify(splitter: WorkSeg, s: WorkSeg) -> Side {
+/// Collinear segs facing the splitter's way are in front; with
+/// `opposite_back`, opposite ones are behind (ZDBSP), so the two sides of a
+/// line never share a leaf.
+fn classify(splitter: WorkSeg, s: WorkSeg, opposite_back: bool) -> Side {
     let a = point_side(splitter, s.v1x, s.v1y);
     let b = point_side(splitter, s.v2x, s.v2y);
     if a == 0 && b == 0 {
-        Side::On
+        let dot = (splitter.v2x - splitter.v1x) * (s.v2x - s.v1x)
+            + (splitter.v2y - splitter.v1y) * (s.v2y - s.v1y);
+        if opposite_back && dot < 0.0 {
+            Side::Back
+        } else {
+            Side::On
+        }
     } else if a >= 0 && b >= 0 {
         Side::Front
     } else if a <= 0 && b <= 0 {
@@ -311,7 +344,20 @@ fn point_side(splitter: WorkSeg, x: f64, y: f64) -> i8 {
     }
 }
 
-fn best_split(segs: &[WorkSeg]) -> Option<usize> {
+/// A convex single-sector set is a leaf. A convex set mixing sectors (both
+/// sides of a line, either winding) is still split on a seg with segs behind it.
+fn best_split(segs: &[WorkSeg], opposite_back: bool) -> Option<usize> {
+    best_split_by(segs, false, opposite_back).or_else(|| {
+        let mixed = segs.iter().any(|s| s.sector != segs[0].sector);
+        if mixed {
+            best_split_by(segs, true, opposite_back)
+        } else {
+            None
+        }
+    })
+}
+
+fn best_split_by(segs: &[WorkSeg], force: bool, opposite_back: bool) -> Option<usize> {
     let mut best_i = None;
     let mut best_cost = i32::MAX;
     for (i, cand) in segs.iter().enumerate() {
@@ -322,13 +368,13 @@ fn best_split(segs: &[WorkSeg]) -> Option<usize> {
             if i == j {
                 continue;
             }
-            match classify(*cand, *s) {
+            match classify(*cand, *s, opposite_back) {
                 Side::Front | Side::On => right += 1,
                 Side::Back => left += 1,
                 Side::Split => splits += 1,
             }
         }
-        if left == 0 || right == 0 {
+        if left == 0 || (right == 0 && splits == 0 && !force) {
             continue;
         }
         let mut cost = splits * SPLIT_COST + (left - right).abs();
@@ -395,6 +441,7 @@ mod tests {
         MapFormat, RawLinedef, RawSector, RawSidedef, RawThing, RawVertex, link_geometry,
     };
     use room_testkit::{MapBuilder, rect};
+    use std::collections::BTreeSet;
 
     #[test]
     fn two_sided_square_builds_tree() {
@@ -499,6 +546,7 @@ mod tests {
             damage_interval: 0,
             leakiness: 0,
             silent: false,
+            sound_sequence: String::new(),
             waterzone: false,
             drop_actors: true,
             no_falling_damage: false,
@@ -548,6 +596,40 @@ mod tests {
         assert!(!nodes.subsectors.is_empty());
         // Extra verts only if a split actually occurred.
         let _ = nodes.extra_vertices.len();
+    }
+
+    #[test]
+    fn two_sided_line_sides_never_share_a_leaf() {
+        let map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .room("b", rect(256.0, 0.0, 512.0, 256.0), 32.0, 128.0)
+            .room("c", rect(512.0, 0.0, 768.0, 256.0), 64.0, 128.0)
+            .room("d", rect(256.0, 256.0, 512.0, 512.0), 16.0, 128.0)
+            .player_start(64.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        // Doom winding (sectors right of their lines); `MapBuilder` winds outward.
+        let mut map = map;
+        for line in &mut map.lines {
+            std::mem::swap(&mut line.v1, &mut line.v2);
+            line.delta = -line.delta;
+            if let (Some(front), Some(back)) = (line.front_sector, line.back_sector) {
+                line.sides.swap(0, 1);
+                (line.front_sector, line.back_sector) = (Some(back), Some(front));
+            }
+        }
+        let nodes = build_bsp(&map);
+        for (i, ss) in nodes.subsectors.iter().enumerate() {
+            let first = ss.first_seg as usize;
+            let mut seen = BTreeSet::new();
+            for s in &nodes.segs[first..first + ss.num_segs as usize] {
+                let line = s.line.unwrap().raw();
+                assert!(
+                    seen.insert(line),
+                    "subsector {i} holds both sides of line {line}"
+                );
+            }
+        }
     }
 
     #[test]

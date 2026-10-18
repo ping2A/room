@@ -25,6 +25,7 @@ async fn admin_summary_and_close_audited() {
             visibility: "public".into(),
             game_mod: None,
             time_limit: None,
+            game: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry.clone()).await.unwrap();
@@ -140,6 +141,7 @@ async fn admin_notice_reaches_v2_client() {
             visibility: "public".into(),
             game_mod: None,
             time_limit: None,
+            game: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -218,6 +220,7 @@ async fn ban_by_name_blocks_join_and_hello() {
             visibility: "public".into(),
             game_mod: None,
             time_limit: None,
+            game: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -300,6 +303,7 @@ async fn ban_name_regex_and_auth_key_scopes() {
             visibility: "public".into(),
             game_mod: None,
             time_limit: None,
+            game: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
