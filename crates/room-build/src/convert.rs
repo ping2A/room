@@ -553,10 +553,37 @@ struct Plane {
     d: f64,
 }
 
+/// Mean luma of opaque pixels, or 0 when the tile or palette is missing.
+fn tile_luma(tiles: &TileSet<'_>, palette: Option<&crate::palette::Palette>, pic: i16) -> u32 {
+    let (Some(palette), Some(tile)) = (palette, tiles.get(i32::from(pic))) else {
+        return 0;
+    };
+    let px = tile.pixels;
+    if px.is_empty() {
+        return 0;
+    }
+    let step = (px.len() / 48).max(1);
+    let mut sum = 0u32;
+    let mut n = 0u32;
+    let mut i = 0;
+    while i < px.len() {
+        let v = usize::from(px[i]);
+        if v != usize::from(crate::art::TRANSPARENT) && v < 256 {
+            let o = v * 3;
+            sum += u32::from(palette.rgb[o])
+                + u32::from(palette.rgb[o + 1])
+                + u32::from(palette.rgb[o + 2]);
+            n += 1;
+        }
+        i += step;
+    }
+    if n == 0 { 0 } else { sum / n }
+}
+
 /// Convert one map's geometry, starts and specials (no other sprites).
 /// `tiles` supplies tile sizes for panning.
 pub fn convert_map(map: &BuildMap, tiles: &TileSet<'_>) -> Result<ConvertedMap, BuildError> {
-    convert_map_with(map, tiles, &GameTiles::default(), &mut NoSprites)
+    convert_map_with(map, tiles, &GameTiles::default(), &mut NoSprites, None)
 }
 
 /// Convert one map; `game` names the gameplay tiles and `sprites` turns map
@@ -566,6 +593,7 @@ pub fn convert_map_with(
     tiles: &TileSet<'_>,
     game: &GameTiles,
     sprites: &mut dyn SpriteMapper,
+    palette: Option<&crate::palette::Palette>,
 ) -> Result<ConvertedMap, BuildError> {
     let n = map.walls.len();
     if map.sectors.is_empty() || n == 0 {
@@ -1131,10 +1159,18 @@ pub fn convert_map_with(
     let mut break_spots: Vec<(i32, i32, (f64, f64), f64)> = Vec::new();
     let mut sides = String::with_capacity(n * 300);
     let mut side_count = 0usize;
-    let mut side = |wi: usize, s: usize, two: Option<usize>, len: f64, used: &mut ConvertedMap| {
+    let mut side = |wi: usize,
+                    s: usize,
+                    two: Option<usize>,
+                    _len: f64,
+                    used: &mut ConvertedMap,
+                    door: bool| {
         let wl = &map.walls[wi];
-        let xr = f64::from(wl.xrepeat.max(1)) * 8.0;
-        let sx = len / xr;
+        // xrepeat 8 is one texel per map unit (1024 build units per 64
+        // texels). Scale must not depend on the wall length: folding
+        // `len` in stretches one copy of the tile across a long wall, and
+        // the cinema front becomes a black slab.
+        let sx = 8.0 / f64::from(wl.xrepeat.max(1));
         let sy = 8.0 / f64::from(wl.yrepeat.max(1));
         let (_, th) = tile_size(wl.picnum);
         let ox = (f64::from(wl.xpanning) * sx).round();
@@ -1147,11 +1183,20 @@ pub fn convert_map_with(
                 } else {
                     "-".to_owned()
                 };
-                let low = if wl.cstat & 2 != 0 {
+                let mut low = if wl.cstat & 2 != 0 {
                     map.walls[j].picnum
                 } else {
                     wl.picnum
                 };
+                // A swing door's own tile can be the dark glass (the street
+                // sees a black panel). The other side of the same wall is the
+                // lit face; use that when it is actually brighter.
+                if door {
+                    let other = map.walls[j].picnum;
+                    if tile_luma(tiles, palette, other) > tile_luma(tiles, palette, low) {
+                        low = other;
+                    }
+                }
                 (tex(wl.picnum, used), mid, tex(low, used))
             }
         };
@@ -1225,8 +1270,9 @@ pub fn convert_map_with(
         let len = (bx - ax).hypot(by - ay);
 
         for (v1, v2) in pieces {
-            let front = side(i, sec, partner, len, &mut out);
-            let back = partner.map(|j| side(j, ssec(j).unwrap_or(sec), Some(i), len, &mut out));
+            let front = side(i, sec, partner, len, &mut out, false);
+            let back =
+                partner.map(|j| side(j, ssec(j).unwrap_or(sec), Some(i), len, &mut out, false));
 
             let _ = write!(t, "linedef {{ v1 = {v1}; v2 = {v2}; sidefront = {front};");
             if let Some(b) = back {
@@ -1379,7 +1425,7 @@ pub fn convert_map_with(
             continue;
         };
         let len = f64::from(to.0 - from.0).hypot(f64::from(to.1 - from.1)) / XY_SCALE;
-        let front = side(wi, s, None, len, &mut out);
+        let front = side(wi, s, None, len, &mut out, false);
         let _ = writeln!(
             t,
             "linedef {{ v1 = {v1}; v2 = {v2}; sidefront = {front}; blocking = true; }}"
@@ -1430,13 +1476,14 @@ pub fn convert_map_with(
             let (front, back) = match *pw {
                 crate::polys::PolyWall::Wall(w) => {
                     let partner = partner_of(w);
-                    let front = side(w, p.sector, partner, len, &mut out);
-                    let back = partner
-                        .map(|j| side(j, ssec(j).unwrap_or(p.sector), Some(w), len, &mut out));
+                    let front = side(w, p.sector, partner, len, &mut out, true);
+                    let back = partner.map(|j| {
+                        side(j, ssec(j).unwrap_or(p.sector), Some(w), len, &mut out, true)
+                    });
                     (front, back)
                 }
                 crate::polys::PolyWall::Closer { tex, .. } => {
-                    (side(tex, p.sector, None, len, &mut out), None)
+                    (side(tex, p.sector, None, len, &mut out, false), None)
                 }
             };
             let _ = write!(t, "linedef {{ v1 = {v1}; v2 = {v2}; sidefront = {front};");
@@ -1848,7 +1895,16 @@ pub fn convert_map_with(
         })
         .collect();
     for &(k, sp, s, th) in &placed {
-        let (sx, sy) = (f64::from(sp.xrepeat) / 64.0, f64::from(sp.yrepeat) / 64.0);
+        // Face sprites: Build's screen width is `tilesiz * xrepeat / 5` build
+        // units (map units `/ 80`). Height is `yrepeat * tilesiz / 64` map
+        // units, which matches wall and floor sprites (`/ 64` on both axes).
+        let face = sp.cstat & 48 == 0;
+        let sx = if face {
+            f64::from(sp.xrepeat) / 80.0
+        } else {
+            f64::from(sp.xrepeat) / 64.0
+        };
+        let sy = f64::from(sp.yrepeat) / 64.0;
         let bottom = bottom_of(sp);
         let (mut x, mut y) = into_sector(map, &wsec, s, pos(sp.x, sp.y));
         let floor = floor_z_at(map, s, x, y);

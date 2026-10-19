@@ -701,6 +701,21 @@ pub struct TryMoveResult {
     pub blocking_actor: Option<ActorId>,
 }
 
+/// Another line of the same polyobject that actually has a cross special.
+/// `Polyobj_StartLine` itself does not open the door.
+fn poly_cross_line(world: &World, lid: LineId) -> Option<LineId> {
+    let po = world.polyobjs.iter().find(|p| p.lines.contains(&lid))?;
+    po.lines.iter().copied().find(|&other| {
+        other != lid
+            && world
+                .map
+                .lines
+                .get(other.raw() as usize)
+                .is_some_and(|ln| ln.special == crate::specials::num::ACS_EXECUTE as i16)
+            && world.line_activation(other) & room_map::spac::CROSS != 0
+    })
+}
+
 /// `P_TryMove` subset: relocate if [`check_position`] succeeds.
 pub fn try_move(world: &mut World, actor_id: ActorId, new_pos: DVec3) -> bool {
     try_move_ex(world, actor_id, new_pos).ok
@@ -726,19 +741,29 @@ pub fn try_move_ex(world: &mut World, actor_id: ActorId, new_pos: DVec3) -> TryM
             // A door the player is walking into never gets a cross event,
             // because the move stops on the panel. Run it anyway.
             if let Some(lid) = check.blocking_line {
-                let cross = world.line_activation(lid) & room_map::spac::CROSS != 0;
                 let player = world
                     .players
                     .iter()
                     .flatten()
                     .any(|p| p.mo == Some(actor_id));
-                if cross && player {
-                    let _ = crate::specials::activate_line(
-                        world,
-                        lid,
-                        Some(actor_id),
-                        crate::specials::ActivationType::Cross,
-                    );
+                if player {
+                    // The poly's first line is only `Polyobj_StartLine`, so it
+                    // has no cross action. The other edges run the swing
+                    // script. Walking into the tagged edge should open it too.
+                    let cross = world.line_activation(lid) & room_map::spac::CROSS != 0;
+                    let door = if cross {
+                        Some(lid)
+                    } else {
+                        poly_cross_line(world, lid)
+                    };
+                    if let Some(lid) = door {
+                        let _ = crate::specials::activate_line(
+                            world,
+                            lid,
+                            Some(actor_id),
+                            crate::specials::ActivationType::Cross,
+                        );
+                    }
                 }
             }
             return TryMoveResult {

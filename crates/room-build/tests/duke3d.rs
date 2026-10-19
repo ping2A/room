@@ -62,38 +62,6 @@ fn e1l1_start_sector_is_tall_enough_to_stand() {
     let s = m.sectors[usize::try_from(m.start_sector).unwrap()];
     let gap = f64::from(s.floorz - s.ceilingz) / 256.0;
     assert!(gap >= 40.0, "start gap {gap}");
-    let out = convert_grp(&bytes).unwrap();
-    let vfs = VfsBuilder::new()
-        .mount_memory("duke3d.wad", out.wad)
-        .unwrap()
-        .build()
-        .unwrap();
-    let map = load_map(&vfs, "E1M1").unwrap();
-    for (i, line) in map.lines.iter().enumerate() {
-        let a = map.vertices[line.v1.0 as usize].pos;
-        let b = map.vertices[line.v2.0 as usize].pos;
-        let midy = (a.y() + b.y()) * 0.5;
-        let midx = (a.x() + b.x()) * 0.5;
-        if (midy + 3664.0).abs() > 20.0 || !(900.0..=1200.0).contains(&midx) {
-            continue;
-        }
-        let side = line.sides[0].and_then(|s| map.sides.get(s.0 as usize));
-        let px = 1100.0 - a.x();
-        let py = -3720.0 - a.y();
-        let cross = (b.x() - a.x()) * py - (b.y() - a.y()) * px;
-        eprintln!(
-            "L{i} ({:.0},{:.0})-({:.0},{:.0}) flags {} back {} light {:?} mid {:?} up {:?}",
-            a.x(),
-            a.y(),
-            b.x(),
-            b.y(),
-            line.flags,
-            line.back_sector.is_some(),
-            side.map(|s| s.light),
-            side.map(|s| s.middle.as_str()),
-            side.map(|s| s.upper.as_str())
-        );
-    }
 }
 
 #[test]
@@ -121,6 +89,28 @@ fn e1l1_has_doors_an_exit_slopes_and_a_sky() {
         "charge fuse"
     );
     assert!(map.lines.iter().any(|l| l.special == 243), "Exit_Normal");
+    let pig = map
+        .things
+        .iter()
+        .find(|t| t.type_id == 22000)
+        .expect("pig cop");
+    assert!(
+        (pig.scale_x - 0.5).abs() < 1e-4 && (pig.scale_y - 0.625).abs() < 1e-4,
+        "pig cop face scale {} {}",
+        pig.scale_x,
+        pig.scale_y
+    );
+    let dark_door = map.lines.iter().filter(|l| l.special == 1).any(|l| {
+        l.sides.iter().flatten().any(|sid| {
+            map.sides
+                .get(sid.raw() as usize)
+                .is_some_and(|s| s.lower == "BT0877")
+        })
+    });
+    assert!(
+        !dark_door,
+        "a swing door still uses the dark glass tile as its face"
+    );
     assert!(map.sectors.iter().any(|s| s.ceiling_pic == "F_SKY1"));
     let info = vfs.read(vfs.find_any_ns("MAPINFO").unwrap()).unwrap();
     let info = String::from_utf8_lossy(&info);
@@ -151,6 +141,17 @@ fn e1l1_has_doors_an_exit_slopes_and_a_sky() {
     assert!(
         deco.contains("A_JumpIfLaserHit") && deco.contains("actor DukeLaserLine"),
         "tripbomb laser"
+    );
+    assert!(
+        deco.contains("actor DukeThrownPipebomb")
+            && deco.contains("XScale 0.1125")
+            && deco.contains("YScale 0.140625"),
+        "thrown pipebomb is Duke's xrepeat 9"
+    );
+    assert!(
+        deco.contains("+NOGRAVITY\n  +DONTTHRUST")
+            || deco.contains("+NOGRAVITY\n  +SOLID\n  +DONTTHRUST"),
+        "gas can dies in place on the first shot"
     );
     assert!(
         deco.contains("actor DukeFirstAid : Actor")

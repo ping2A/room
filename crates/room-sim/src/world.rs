@@ -471,6 +471,8 @@ pub struct World {
     pub sky_mist_speed: f64,
     /// HUD messages produced this tic (drained by the shell).
     pub messages: Vec<HudMessage>,
+    /// Diagnostic lines for the drop-down console (drained by the shell).
+    pub debug_log: Vec<String>,
     /// Deaths since the last [`World::drain_kill_events`] (shell-only).
     pub kill_events: Vec<KillEvent>,
     /// Pause flag (menu / pause key).
@@ -1287,6 +1289,7 @@ impl World {
             sky_speed2: 0.0,
             sky_mist_speed: 0.0,
             messages: Vec::new(),
+            debug_log: Vec::new(),
             kill_events: Vec::new(),
             paused: false,
             deathmatch: false,
@@ -3886,6 +3889,146 @@ impl World {
     /// Drain ACS `SpawnParticle` events since the last call.
     pub fn drain_particle_events(&mut self) -> Vec<SimParticleEvent> {
         std::mem::take(&mut self.particle_events)
+    }
+
+    /// Queue a console diagnostic line.
+    pub fn push_debug(&mut self, text: impl Into<String>) {
+        self.debug_log.push(text.into());
+    }
+
+    /// Drain console diagnostics since the last call.
+    pub fn drain_debug(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.debug_log)
+    }
+
+    /// Where the player is, what they face, and which sectors or doors moved.
+    pub fn push_view_debug(&mut self, why: &str) {
+        let Some(mo) = self
+            .players
+            .first()
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            self.push_debug(format!("{why}: no player"));
+            return;
+        };
+        let Some(actor) = self.actors.get(mo) else {
+            return;
+        };
+        let (x, y, z) = (actor.pos.x(), actor.pos.y(), actor.pos.z());
+        let yaw = actor.angle.radians();
+        let (fx, fy) = (yaw.cos(), yaw.sin());
+        self.push_debug(format!(
+            "{why}: pos ({x:.0},{y:.0},{z:.0}) ang {:.0}",
+            actor.angle.degrees()
+        ));
+        match crate::physics::sector_at_xy(self, x, y) {
+            Some(sid) => {
+                let st = &self.map.sectors[sid];
+                let floor = self.sectors.get(sid).map_or(st.floor_height, |s| s.floor_z);
+                let ceil = self
+                    .sectors
+                    .get(sid)
+                    .map_or(st.ceiling_height, |s| s.ceiling_z);
+                self.push_debug(format!(
+                    "sector {sid} floor {floor:.0} (map {:.0}) ceil {ceil:.0} (map {:.0}) gap {:.0} special {} floor {} ceil {}",
+                    st.floor_height,
+                    st.ceiling_height,
+                    ceil - floor,
+                    st.special,
+                    st.floor_pic,
+                    st.ceiling_pic
+                ));
+            }
+            None => self.push_debug("sector none — outside the map"),
+        }
+        let mut best: Option<(f64, usize)> = None;
+        for (i, line) in self.map.lines.iter().enumerate() {
+            let Some(v1) = self.map.vertices.get(line.v1.raw() as usize) else {
+                continue;
+            };
+            let Some(v2) = self.map.vertices.get(line.v2.raw() as usize) else {
+                continue;
+            };
+            let mx = (v1.pos.x() + v2.pos.x()) * 0.5;
+            let my = (v1.pos.y() + v2.pos.y()) * 0.5;
+            let dx = mx - x;
+            let dy = my - y;
+            let dist = dx.hypot(dy);
+            if !(1.0..180.0).contains(&dist) {
+                continue;
+            }
+            if dx / dist * fx + dy / dist * fy < 0.65 {
+                continue;
+            }
+            if best.is_none_or(|(d, _)| dist < d) {
+                best = Some((dist, i));
+            }
+        }
+        let facing = if let Some((dist, i)) = best {
+            let line = &self.map.lines[i];
+            let face = |slot: usize| {
+                line.sides[slot]
+                    .and_then(|sid| self.map.sides.get(sid.raw() as usize))
+                    .map(|s| format!("top={} mid={} bot={}", s.upper, s.middle, s.lower))
+                    .unwrap_or_else(|| "-".into())
+            };
+            format!(
+                "facing line {i} dist {dist:.0} special {} front [{}] back [{}]",
+                line.special,
+                face(0),
+                face(1)
+            )
+        } else {
+            "facing line none".to_owned()
+        };
+        self.push_debug(facing);
+        let mut moved_lines = Vec::new();
+        let mut moved = 0u32;
+        for (i, dyn_s) in self.sectors.iter().enumerate() {
+            let Some(st) = self.map.sectors.get(i) else {
+                continue;
+            };
+            let df = (dyn_s.floor_z - st.floor_height).abs();
+            let dc = (dyn_s.ceiling_z - st.ceiling_height).abs();
+            if df > 48.0 || dc > 48.0 {
+                moved += 1;
+                if moved <= 8 {
+                    moved_lines.push(format!(
+                        "moved sector {i} floor {:.0}->{:.0} ceil {:.0}->{:.0}",
+                        st.floor_height, dyn_s.floor_z, st.ceiling_height, dyn_s.ceiling_z
+                    ));
+                }
+            }
+        }
+        for line in moved_lines {
+            self.push_debug(line);
+        }
+        if moved > 8 {
+            self.push_debug(format!("{moved} sectors have moved"));
+        }
+        let polys: Vec<String> = self
+            .polyobjs
+            .iter()
+            .filter(|po| {
+                (po.center.x() - x).hypot(po.center.y() - y) < 700.0
+                    || po.angle.abs() > 0.05
+                    || po.motion.is_some()
+            })
+            .map(|po| {
+                format!(
+                    "poly {} ang {:.0} deg at ({:.0},{:.0}) moving {}",
+                    po.id,
+                    po.angle.to_degrees(),
+                    po.center.x(),
+                    po.center.y(),
+                    po.motion.is_some()
+                )
+            })
+            .collect();
+        for line in polys {
+            self.push_debug(line);
+        }
     }
 
     /// Queue a HUD message for the shell.

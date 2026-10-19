@@ -124,7 +124,10 @@ pub fn emit_sprite_quad(inst: SpriteInstance, view_forward: Vec3) -> [WallVertex
             let fwd = Vec3::new(view_forward.x, view_forward.y, 0.0).normalize_or_zero();
             (Vec3::new(-fwd.y, fwd.x, 0.0), Vec3::Z)
         }
-        SpriteOrient::Wall { yaw } => (Vec3::new(yaw.sin(), -yaw.cos(), 0.0), Vec3::Z),
+        // Build wall sprites face their angle (0 = +X). `right × up` is that
+        // normal, so the lettering reads from the front. The opposite sign
+        // showed the back of the quad and mirrored "POLICE LINE".
+        SpriteOrient::Wall { yaw } => (Vec3::new(yaw.sin(), yaw.cos(), 0.0), Vec3::Z),
         SpriteOrient::Flat { yaw } => (
             Vec3::new(yaw.sin(), -yaw.cos(), 0.0),
             Vec3::new(yaw.cos(), yaw.sin(), 0.0),
@@ -192,6 +195,32 @@ mod tests {
         let ys: Vec<f32> = q.iter().map(|v| v.pos[1]).collect();
         assert!(ys.iter().any(|&y| (y - 16.0).abs() < 0.01));
         assert!(ys.iter().any(|&y| (y + 16.0).abs() < 0.01));
+    }
+
+    #[test]
+    fn wall_sprite_front_faces_plus_x_at_yaw_zero() {
+        let q = emit_sprite_quad(
+            SpriteInstance {
+                pos: Vec3::ZERO,
+                width: 32.0,
+                height: 8.0,
+                light: 1.0,
+                alpha: 1.0,
+                fuzz: false,
+                texture: String::new(),
+                flip_u: false,
+                anchor_u: 0.5,
+                orient: SpriteOrient::Wall { yaw: 0.0 },
+            },
+            Vec3::Y,
+        );
+        let a = Vec3::from_array(q[0].pos);
+        let b = Vec3::from_array(q[1].pos);
+        let c = Vec3::from_array(q[2].pos);
+        let n = (b - a).cross(c - a);
+        assert!(n.x > 0.0, "front should face +X, normal {n:?}");
+        // U grows along +right, which is +Y at yaw 0, so the left edge is -Y.
+        assert!(a.y < b.y, "u=0 is the left edge when looking along +X");
     }
 
     #[test]

@@ -140,4 +140,112 @@ fn duke3d_e1l1_renders_from_the_start() {
         };
         std::fs::write(out_dir.join(name), png).unwrap();
     }
+
+    // Swing doors are parked off-map until the playsim moves them. Place them
+    // and look at the cinema from the street.
+    place_polyobjs(&mut map);
+    let camera = Camera {
+        eye: Vec3::new(1045.0, -3965.0, 4.0),
+        forward: Vec3::new(0.0, 1.0, 0.0),
+        aspect: f64::from(w) / f64::from(h),
+        ..Camera::default()
+    };
+    let scene =
+        build_scene_with_sky_ex_sized(&map, &camera, None, sky.as_deref(), None, Some(&sizes));
+    pass.prepare(&gpu, &camera, &scene);
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("cinema"),
+        });
+    {
+        let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("cinema-rp"),
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &target.color_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &target.stencil_aux_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Discard,
+                    },
+                }),
+            ],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &target.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.draw_materials(&gpu, &mut rp, &scene, &mut mats, &vfs);
+    }
+    gpu.queue.submit(Some(encoder.finish()));
+    let rgba = read_rgba(&gpu, &target).expect("readback");
+    let mut png = Vec::new();
+    encode_png(w, h, &rgba, &mut png).unwrap();
+    std::fs::write(out_dir.join("e1l1_cinema.png"), png).unwrap();
+    // The closed doors sit in the middle of this view. A missing face is the
+    // clear color; the door tile is dark glass with a brighter frame.
+    let x0 = w as usize / 3;
+    let x1 = 2 * w as usize / 3;
+    let y0 = h as usize / 3;
+    let y1 = 2 * h as usize / 3;
+    let mut lit = 0u32;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let p = &rgba[(y * w as usize + x) * 4..][..3];
+            if p.iter().any(|&c| c > 24) {
+                lit += 1;
+            }
+        }
+    }
+    assert!(
+        lit > 40,
+        "cinema doors are missing from the street view ({lit} lit pixels)"
+    );
+}
+
+fn place_polyobjs(map: &mut room_map::MapGeometry) {
+    let polys = map.setup.polyobjects.clone();
+    for po in polys {
+        let mut spawn = None;
+        let mut anchor = None;
+        for th in &map.things {
+            if i32::from(th.angle) != po.id {
+                continue;
+            }
+            let p = glam::DVec2::new(f64::from(th.x), f64::from(th.y));
+            if th.type_id == 9301 {
+                spawn = Some(p);
+            } else if th.type_id == 9300 {
+                anchor = Some(p);
+            }
+        }
+        let (Some(spawn), Some(anchor)) = (spawn, anchor) else {
+            continue;
+        };
+        let dx = spawn.x - anchor.x;
+        let dy = spawn.y - anchor.y;
+        for vid in &po.vertices {
+            if let Some(v) = map.vertices.get_mut(vid.raw() as usize) {
+                v.pos = room_core::DVec2::new(v.pos.x() + dx, v.pos.y() + dy);
+            }
+        }
+    }
 }

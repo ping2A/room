@@ -164,7 +164,9 @@ pub fn convert_grp_with_maps(
             warnings.push(format!("{file}: name is not a map lump"));
             continue;
         };
-        match parse_map(body).and_then(|m| convert_map_with(&m, &tiles, &game, &mut duke)) {
+        match parse_map(body)
+            .and_then(|m| convert_map_with(&m, &tiles, &game, &mut duke, Some(&palette)))
+        {
             Ok(c) => {
                 used.extend(c.tiles.iter().copied());
                 let info = levels

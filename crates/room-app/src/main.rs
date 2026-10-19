@@ -2667,6 +2667,10 @@ impl ViewerApp {
                 }
                 if let Some(world) = game.world_mut() {
                     msgs = world.drain_messages();
+                    for line in world.drain_debug() {
+                        eprintln!("room: {line}");
+                        self.console.print(line);
+                    }
                     if let Some(name) = world.take_slideshow_request() {
                         msgs.push(format!("Slideshow: {name}"));
                     }
@@ -4257,6 +4261,17 @@ impl ViewerApp {
                 HostCommand::Idmypos => {
                     if let Some(game) = self.play.as_mut() {
                         let _ = game.cheat_idmypos(0);
+                    }
+                }
+                HostCommand::Look => {
+                    if let Some(game) = self.play.as_mut() {
+                        if let Some(world) = game.world_mut() {
+                            world.push_view_debug("look");
+                            for line in world.drain_debug() {
+                                eprintln!("room: {line}");
+                                self.console.print(line);
+                            }
+                        }
                     }
                 }
                 HostCommand::Pause => self.toggle_pause(),

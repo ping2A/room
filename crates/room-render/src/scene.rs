@@ -569,11 +569,13 @@ fn emit_polyobj_walls(map: &MapGeometry, lists: &mut SceneLists) {
                 side: 0,
                 offset: 0,
             };
-            emit_seg_walls(map, &fake, lists);
+            // Poly doors keep the raised floor on the near side, so the step
+            // texture faces the far sector. Paint it on this face too.
+            emit_seg_walls(map, &fake, lists, true);
             if line.sides[1].is_some() {
                 let mut back = fake;
                 back.side = 1;
-                emit_seg_walls(map, &back, lists);
+                emit_seg_walls(map, &back, lists, true);
             }
         }
     }
@@ -642,7 +644,7 @@ fn emit_subsector(
                 continue;
             }
         }
-        emit_seg_walls(map, seg, lists);
+        emit_seg_walls(map, seg, lists, false);
     }
 }
 
@@ -2113,7 +2115,7 @@ fn rebuild_sprites_clipped(
     lists.sprite_ranges = new_ranges;
 }
 
-fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists) {
+fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists, step_on_high_side: bool) {
     let Some(line_id) = seg.line else {
         return;
     };
@@ -2278,6 +2280,18 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists) {
         } else {
             WallPeg::Top
         };
+        // A closed poly door is a thin slab near the ceiling. The step face
+        // stops at that floor, and the street sees clear color through the
+        // rest of the opening. Carry the door picture up to the ceiling.
+        let slab = back.floor_height > front.floor_height + 16.0
+            && back.ceiling_height - back.floor_height
+                < (back.floor_height - front.floor_height) + 8.0;
+        let (z_hi, top1, top2) = if step_on_high_side && slab {
+            let z = front.ceiling_height.min(back.ceiling_height);
+            (z, fc1.min(bc1), fc2.min(bc2))
+        } else {
+            (back.floor_height, bf1, bf2)
+        };
         push_sloped_wall_quad(
             lists,
             &side.lower,
@@ -2287,7 +2301,7 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists) {
                 z_lo: front.floor_height,
                 x2,
                 y2,
-                z_hi: back.floor_height,
+                z_hi,
                 u1: u1_bot,
                 u2: u2_bot,
                 v_off: v_off_bot,
@@ -2301,7 +2315,49 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists) {
                 side_raw,
                 lm_surf: None,
             },
-            (ff1, ff2, bf1, bf2),
+            (ff1, ff2, top1, top2),
+        );
+    } else if step_on_high_side
+        && (ff1 > bf1 || ff2 > bf2)
+        && !is_blank(&side.lower)
+        && front.floor_height > back.floor_height + 16.0
+        && front.ceiling_height - front.floor_height
+            < (front.floor_height - back.floor_height) + 8.0
+    {
+        // Closed poly door: the walkable floor is the far sector, so the step
+        // face would otherwise point away from the street and the opening is
+        // the clear color. Paint this side's lower texture from that floor up
+        // to the door ceiling.
+        let peg = if line.flags & ML_DONTPEGBOTTOM != 0 {
+            WallPeg::TexBottom
+        } else {
+            WallPeg::Top
+        };
+        let z_hi = front.ceiling_height.min(back.ceiling_height);
+        push_sloped_wall_quad(
+            lists,
+            &side.lower,
+            WallQuad {
+                x1,
+                y1,
+                z_lo: back.floor_height,
+                x2,
+                y2,
+                z_hi,
+                u1: u1_bot,
+                u2: u2_bot,
+                v_off: v_off_bot,
+                v_scale: sy_bot,
+                light: light_bot,
+                alpha: 1.0,
+                masked: false,
+                clamp_v: false,
+                single_v: false,
+                peg,
+                side_raw,
+                lm_surf: None,
+            },
+            (bf1, bf2, fc1.min(bc1), fc2.min(bc2)),
         );
     }
     // Mid texture on two-sided (railings) — mirrors always fill the opening.

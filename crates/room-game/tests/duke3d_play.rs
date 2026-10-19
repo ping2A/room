@@ -523,6 +523,71 @@ fn cinema_mouth_admits_the_player_and_the_door_swings() {
     assert!(turned, "cinema swing door did not open");
 }
 
+/// The door's first linedef is only the polyobject anchor. Walking into that
+/// edge still has to run the swing script on the other edges.
+#[test]
+fn walking_into_the_cinema_door_opens_it() {
+    let Some(bytes) = grp() else {
+        return;
+    };
+    let wad = room_build::grp_to_wad(&bytes).unwrap();
+    let vfs = mount_embedded_engine(VfsBuilder::new())
+        .unwrap()
+        .mount_memory("duke3d.wad", Bytes::from(wad))
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut game = start(&vfs, "E1M1");
+    let w = game.world_mut().unwrap();
+    let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+    let start = w.polyobjs.iter().map(|p| p.angle).collect::<Vec<_>>();
+    let spot = w.polyobjs.iter().find_map(|p| {
+        if (p.center.y() + 3659.0).abs() > 200.0 {
+            return None;
+        }
+        let lid = p
+            .lines
+            .iter()
+            .copied()
+            .find(|l| w.map.lines[l.raw() as usize].special == 1)?;
+        let line = &w.map.lines[lid.raw() as usize];
+        let v1 = w.map.vertices[line.v1.raw() as usize].pos;
+        let v2 = w.map.vertices[line.v2.raw() as usize].pos;
+        let mid = (v1 + v2) * 0.5;
+        // Street is south of the marquee doors.
+        Some(room_core::DVec2::new(mid.x(), mid.y() - 48.0))
+    });
+    let Some(spot) = spot else {
+        panic!("no cinema start line");
+    };
+    let z = floor_at_xy(w, spot.x(), spot.y()).unwrap();
+    {
+        let a = w.actors.get_mut(mo).unwrap();
+        a.pos = room_core::DVec3::new(spot.x(), spot.y(), z);
+        a.angle = room_core::Angle::from_degrees(90.0);
+    }
+    let cmd = TicCmd {
+        forward_move: 25 * 256,
+        ..TicCmd::default()
+    };
+    for _ in 0..45 {
+        game.tick(&[cmd]);
+    }
+    let w = game.world().unwrap();
+    let turned = w
+        .polyobjs
+        .iter()
+        .zip(start)
+        .any(|(p, a)| (p.angle - a).abs() > 0.2);
+    let a = w.actors.get(mo).unwrap();
+    assert!(
+        turned,
+        "door stayed shut, player at ({:.0},{:.0})",
+        a.pos.x(),
+        a.pos.y()
+    );
+}
+
 fn start(vfs: &room_vfs::Vfs, map_name: &str) -> Headless {
     let data = load_layered_engine_data(vfs).unwrap();
     let defs = DefinitionsBuilder::new(vfs).build().unwrap();

@@ -27,6 +27,8 @@ pub enum HostCommand {
     Summon(String),
     /// Print player coordinates (`idmypos`).
     Idmypos,
+    /// Print sector, facing textures, moved sectors and nearby doors (`look`).
+    Look,
     /// Capture a PNG screenshot of the next presented frame.
     Screenshot,
     /// Start / stop in-game GIF recording.
@@ -238,6 +240,9 @@ impl Console {
                     self.print(&msg);
                     output.push(msg);
                 }
+                "look" => {
+                    host.push(HostCommand::Look);
+                }
                 "pause" => {
                     host.push(HostCommand::Pause);
                     let msg = "Pause".to_owned();
@@ -392,6 +397,7 @@ impl Console {
                         "idbehold",
                         "iddt",
                         "idmypos",
+                        "look",
                         "idclev",
                         "pause",
                         "screenshot",

@@ -1200,9 +1200,14 @@ impl<'a> Duke<'a> {
             .unwrap_or_else(|| "weapons/rocklx".into());
         let bounce = self.sound("PIPEBOMB_BOUNCE").unwrap_or_default();
         let mut s = format!(
-            "actor DukeThrownPipebomb\n{{\n  Health 1\n  Radius 4\n  Height 4\n  +SHOOTABLE\n  \
+            "actor DukeThrownPipebomb\n{{\n  Health 1\n  Radius 4\n  Height 4\n  \
+             XScale {}\n  YScale {}\n  +SHOOTABLE\n  \
              +NOBLOOD\n  +DROPOFF\n  +BOUNCEONFLOORS\n  +BOUNCEONWALLS\n  BounceFactor 0.5\n  \
              BounceSound \"{bounce}\"\n  DeathSound \"{pipe_boom}\"\n  States\n  {{\n  Spawn:\n",
+            // Duke `EGS` spawns HEAVYHBOMB at xrepeat/yrepeat 9. Face sprites
+            // are `xrepeat/80` wide and `yrepeat/64` tall.
+            9.0 / 80.0,
+            9.0 / 64.0
         );
         push_loop(&mut s, &bomb);
         boom(&mut s, pipe_damage, pipe_radius);
@@ -1880,10 +1885,25 @@ impl<'a> Duke<'a> {
             format!("DukeProp{ednum}")
         };
         let frames = self.anim_frames(&class, tile, sp.pal);
-        let health = match kind {
-            PROP_FORCE => 40,
-            PROP_BABE | PROP_EGG => 1,
-            _ => 10,
+        // A gas can has no CON actor. Duke blows it up on the first hit.
+        // Health 10 survived a pistol shot (strength 6) and the knockback,
+        // with `+NOGRAVITY`, left it hanging in the air until the next shot.
+        let gas_can = [
+            "CANWITHSOMETHING",
+            "CANWITHSOMETHING2",
+            "CANWITHSOMETHING3",
+            "CANWITHSOMETHING4",
+        ]
+        .iter()
+        .any(|n| self.con.value(n) == Some(tile));
+        let health = if gas_can {
+            1
+        } else {
+            match kind {
+                PROP_FORCE => 40,
+                PROP_BABE | PROP_EGG => 1,
+                _ => 10,
+            }
         };
         let solid = sp.cstat & 1 != 0 && kind != PROP_BABE && kind != PROP_EGG;
         let mut s = format!(
@@ -1897,6 +1917,9 @@ impl<'a> Duke<'a> {
         }
         if kind == PROP_FORCE {
             s.push_str("  ContactDamage 8\n");
+        }
+        if gas_can {
+            s.push_str("  +DONTTHRUST\n");
         }
         if kind == PROP_BABE {
             s.push_str("  +USESPECIAL\n");
