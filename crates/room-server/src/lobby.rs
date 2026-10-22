@@ -46,10 +46,13 @@ async fn lobby_css() -> impl IntoResponse {
 
 async fn lobby_js() -> impl IntoResponse {
     (
-        [(
-            header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
         LOBBY_JS,
     )
 }

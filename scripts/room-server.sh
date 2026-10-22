@@ -137,6 +137,10 @@ build_room_web() {
       break
     fi
   done
+  mkdir -p "$out/mods"
+  if [[ -f testdata/voxel/cheello_voxels.zip ]]; then
+    cp testdata/voxel/cheello_voxels.zip "$out/mods/voxel.pk3"
+  fi
   if [[ -f testdata/doom/doom1.wad ]]; then
     cp testdata/doom/doom1.wad "$out/doom1.wad"
   elif [[ -f testdata/freedoom/freedoom1.wad ]]; then

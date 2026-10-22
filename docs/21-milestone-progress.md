@@ -48,6 +48,13 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 
 ### Log
 
+- `2026-10-19` — **Web FPS**. The play page shows painted frames per second in the corner, including while the mouse is captured.
+- `2026-10-19` — **WebGL2 blend**. The unlit MRT pipelines use the same blend and write mask on both colour targets. WebGL2 has no independent blend; the extra target is discarded.
+- `2026-10-19` — **WebGL2 surface size**. The canvas bitmap is clamped to the adapter's max texture (2048 on that Linux WebGL2 path). A 2× window at 2833×1668 no longer fails `Surface::configure`.
+- `2026-10-19` — **WebGL2 when WebGPU has no adapter**. Chrome on Linux exposes `navigator.gpu` even when `requestAdapter` fails; the instance now probes that and falls back to WebGL2 instead of staying on WebGPU.
+- `2026-10-19` — **WebGL2 fallback**. `room-web` enables wgpu's `webgl` feature so a browser with no WebGPU adapter still gets a GL backend. Voxel Doom is fetched as `mods/voxel.pk3` only.
+- `2026-10-19` — **Web solo Voxel Doom**. The play page mod list (`?mod=voxel`) mounts `mods/voxel.pk3` the same way Survival / Royale mount a wad. Monsters stay; it is a local match, not a room.
+- `2026-10-19` — **Voxel Doom** (`testdata/voxel`). VOXELDEF accepts GZDoom `sprite = "file" { PlacedSpin … }` (default angle +90°). KVX uses the length-prefixed mip chain. Sprites with a voxel draw the mesh instead of the billboard (spin, palette, Doom 2 `filter/`). ZScript actor replacements in that pack are not run.
 - `2026-10-18` — **Duke wall repeat** (`docs/23-build-engine.md`). Wall `xrepeat` 8 is one texel per map unit. The old scale folded in the wall length, so a long cinema wall stretched one dark tile into a black slab.
 - `2026-10-18` — **Duke secret console dump, cinema door face** (`docs/23-build-engine.md`). A secret writes the player sector, the facing wall textures, moved sectors and nearby doors to the console (`look` repeats it). A swing door whose own tile is the dark glass uses the brighter picture on the other side of that wall.
 - `2026-10-18` — **Duke pig scale and swing-door edge** (`docs/23-build-engine.md`). Face sprites use Build's width (`xrepeat/80`) so a pig cop is not a doorway wide. Walking into the polyobject's first edge opens the cinema doors. Tests: `e1l1_has_doors_an_exit_slopes_and_a_sky`, `walking_into_the_cinema_door_opens_it`.

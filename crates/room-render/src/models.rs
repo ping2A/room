@@ -77,13 +77,22 @@ impl ModelMesh {
     /// Expand indexed tris to unlit [`WallVertex`] list (GPU draw via existing pass).
     #[must_use]
     pub fn to_wall_vertices(&self, origin: Vec3, scale: Vec3, light: f32) -> Vec<WallVertex> {
+        self.to_wall_vertices_transformed(
+            Mat4::from_translation(origin) * Mat4::from_scale(scale),
+            light,
+        )
+    }
+
+    /// Same as [`Self::to_wall_vertices`] with a full model-to-world matrix.
+    #[must_use]
+    pub fn to_wall_vertices_transformed(&self, model: Mat4, light: f32) -> Vec<WallVertex> {
         let light = light.clamp(0.0, 1.0);
         let mut out = Vec::with_capacity(self.indices.len());
         for &i in &self.indices {
             let Some(v) = self.vertices.get(i as usize) else {
                 continue;
             };
-            let p = Vec3::from_array(v.pos) * scale + origin;
+            let p = model.transform_point3(Vec3::from_array(v.pos));
             out.push(WallVertex::new(p, Vec2::from_array(v.uv), light));
         }
         out

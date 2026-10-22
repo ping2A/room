@@ -80,7 +80,9 @@ web-sys = { version = "0.3", optional = true, features = [
     "Response",
 ] }
 console_error_panic_hook = { version = "0.1", optional = true }
-wgpu = { workspace = true, optional = true }
+# `webgl` is the wasm WebGL2 backend. Default `gles` does not compile it in,
+# so a browser with no WebGPU adapter cannot start.
+wgpu = { workspace = true, optional = true, features = ["webgl"] }
 libm = { workspace = true, optional = true }
 
 [features]

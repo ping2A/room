@@ -41,71 +41,122 @@ pub struct KvxModel {
 
 /// Parse a KVX file (mip 0 only).
 ///
-/// Layout (Ken Silverman): `x_size,y_size,z_size` + pivots + `xoffset[x+1]` +
-/// per-column slab RLE. Trailing 768-byte palette optional.
+/// SLAB6 / GZDoom layout: each mip starts with `int32 numbytes` (the mip
+/// payload, not including that dword). The payload is the Ken header
+/// (`xsiz,ysiz,zsiz` + pivots + `xoffset` + `xyoffset` + slabs). `xoffset`
+/// values are relative to the start of the x-offset table, and `xoffset[0]`
+/// equals that table's size. The last 768 bytes of the file are the palette.
 pub fn parse_kvx(data: &[u8]) -> Result<KvxModel, ModelError> {
-    if data.len() < 28 {
+    if data.len() <= 768 + 4 {
         return Err(ModelError::Message("KVX truncated header".into()));
     }
-    let x_size = u32::from_le_bytes(data[0..4].try_into().unwrap());
-    let y_size = u32::from_le_bytes(data[4..8].try_into().unwrap());
-    let z_size = u32::from_le_bytes(data[8..12].try_into().unwrap());
-    if x_size == 0 || y_size == 0 || z_size == 0 || x_size > 256 || y_size > 256 || z_size > 256 {
+    let mut raw = 0usize;
+    let mut maxmip = data.len() - 768 - 4;
+    let mut mip0: Option<(KvxHeader, Vec<KvxVoxel>)> = None;
+    let mut mips = 0u32;
+    // GZDoom `MAXVOXMIPS`.
+    for _ in 0..5 {
+        if raw + 4 > data.len() {
+            break;
+        }
+        let numbytes = read_i32(data, raw)?;
+        if numbytes < 24 || numbytes as usize > maxmip {
+            break;
+        }
+        let numbytes = numbytes as usize;
+        let base = raw + 4;
+        let header = read_mip(data, base, numbytes)?;
+        if mips == 0 {
+            mip0 = Some(header);
+        }
+        raw += 4 + numbytes;
+        maxmip = maxmip.saturating_sub(numbytes + 4);
+        mips += 1;
+    }
+    if mips == 0 || raw != data.len() - 768 {
+        return Err(ModelError::Message("KVX bad mip chain".into()));
+    }
+    let (header, voxels) = mip0.ok_or_else(|| ModelError::Message("KVX empty".into()))?;
+    let mut palette = [0u8; 768];
+    palette.copy_from_slice(&data[data.len() - 768..]);
+    Ok(KvxModel {
+        header: Some(header),
+        voxels,
+        palette: Some(palette),
+    })
+}
+
+fn read_mip(
+    data: &[u8],
+    base: usize,
+    numbytes: usize,
+) -> Result<(KvxHeader, Vec<KvxVoxel>), ModelError> {
+    if base + 24 > data.len() {
+        return Err(ModelError::Message("KVX truncated header".into()));
+    }
+    let x_size = read_i32(data, base)?;
+    let y_size = read_i32(data, base + 4)?;
+    let z_size = read_i32(data, base + 8)?;
+    if x_size <= 0 || y_size <= 0 || z_size <= 0 || x_size > 256 || y_size > 256 || z_size > 256 {
         return Err(ModelError::Message("KVX bad dimensions".into()));
     }
-    let xpivot = i32::from_le_bytes(data[12..16].try_into().unwrap()) as f32 / 256.0;
-    let ypivot = i32::from_le_bytes(data[16..20].try_into().unwrap()) as f32 / 256.0;
-    let zpivot = i32::from_le_bytes(data[20..24].try_into().unwrap()) as f32 / 256.0;
-    // Next: xoffset[x_size+1] as i32 — relative to start of xoffset table.
-    let xoff_base = 24usize;
-    let xoff_bytes = (x_size as usize + 1) * 4;
-    if data.len() < xoff_base + xoff_bytes {
+    let xs = x_size as usize;
+    let ys = y_size as usize;
+    let zs = z_size as usize;
+    let xpivot = read_i32(data, base + 12)? as f32 / 256.0;
+    let ypivot = read_i32(data, base + 16)? as f32 / 256.0;
+    let zpivot = read_i32(data, base + 20)? as f32 / 256.0;
+    let offsetsize = (xs + 1) * 4 + xs * (ys + 1) * 2;
+    if numbytes < 24 + offsetsize {
+        return Err(ModelError::Message("KVX offsets truncated".into()));
+    }
+    let voxdatasize = numbytes - 24 - offsetsize;
+    let xoff0 = read_i32(data, base + 24)?;
+    if xoff0 != offsetsize as i32 {
+        return Err(ModelError::Message("KVX bad xoffset".into()));
+    }
+    let xlast_at = base + 24 + xs * 4;
+    if xlast_at + 4 > data.len() {
         return Err(ModelError::Message("KVX xoffset truncated".into()));
     }
-    let mut xoffsets = Vec::with_capacity(x_size as usize + 1);
-    for i in 0..=x_size as usize {
-        let o = xoff_base + i * 4;
-        xoffsets.push(i32::from_le_bytes(data[o..o + 4].try_into().unwrap()) as usize);
+    let xlast = read_i32(data, xlast_at)?;
+    if xlast != (offsetsize + voxdatasize) as i32 {
+        return Err(ModelError::Message("KVX bad xoffset".into()));
     }
-    // After xoffsets: yoffset[x_size][y_size+1] as u16 — size x*(y+1)*2
-    let yoff_base = xoff_base + xoff_bytes;
-    let yoff_bytes = x_size as usize * (y_size as usize + 1) * 2;
-    if data.len() < yoff_base + yoff_bytes {
+    let mut xoffsets = Vec::with_capacity(xs + 1);
+    for i in 0..=xs {
+        let o = base + 24 + i * 4;
+        xoffsets.push(read_i32(data, o)? as usize);
+    }
+    let yoff_base = base + 24 + (xs + 1) * 4;
+    if yoff_base + xs * (ys + 1) * 2 > data.len() {
         return Err(ModelError::Message("KVX yoffset truncated".into()));
     }
-    // Slab data starts after yoffsets; xoffsets are relative to slab start.
-    let slab_base = yoff_base + yoff_bytes;
     let mut voxels = Vec::new();
-    for x in 0..x_size as usize {
+    for x in 0..xs {
         let x0 = xoffsets[x];
         let x1 = xoffsets[x + 1];
-        if x1 < x0 || slab_base + x1 > data.len() {
+        if x1 < x0 {
             return Err(ModelError::Message("KVX bad xoffset".into()));
         }
-        // yoffsets for this x
-        let yo = yoff_base + x * (y_size as usize + 1) * 2;
-        for y in 0..y_size as usize {
-            let ystart =
-                u16::from_le_bytes(data[yo + y * 2..yo + y * 2 + 2].try_into().unwrap()) as usize;
-            let yend = u16::from_le_bytes(
-                data[yo + (y + 1) * 2..yo + (y + 1) * 2 + 2]
-                    .try_into()
-                    .unwrap(),
-            ) as usize;
-            if yend < ystart {
+        let yo = yoff_base + x * (ys + 1) * 2;
+        for y in 0..ys {
+            let ystart = usize::from(read_u16(data, yo + y * 2)?);
+            let yend = usize::from(read_u16(data, yo + (y + 1) * 2)?);
+            if yend < ystart || x0 + yend > xoffsets[xs] {
                 return Err(ModelError::Message("KVX bad yoffset".into()));
             }
-            let mut p = slab_base + x0 + ystart;
-            let end = slab_base + x0 + yend;
-            while p + 3 <= end && p + 3 <= data.len() {
+            // `xoffset` is relative to the x-offset table at `base + 24`.
+            let mut p = base + 24 + x0 + ystart;
+            let end = base + 24 + x0 + yend;
+            if end > data.len() {
+                return Err(ModelError::Message("KVX slab OOB".into()));
+            }
+            while p + 3 <= end {
                 let ztop = data[p] as usize;
                 let zleng = data[p + 1] as usize;
-                // data[p+2] = unused / vis face flags
                 p += 3;
-                if ztop.saturating_add(zleng) > z_size as usize {
-                    return Err(ModelError::Message("KVX slab OOB".into()));
-                }
-                if p + zleng > end || p + zleng > data.len() {
+                if ztop.saturating_add(zleng) > zs || p + zleng > end {
                     return Err(ModelError::Message("KVX slab colours truncated".into()));
                 }
                 for dz in 0..zleng {
@@ -120,34 +171,24 @@ pub fn parse_kvx(data: &[u8]) -> Result<KvxModel, ModelError> {
             }
         }
     }
-
-    // Optional palette at end (768 bytes) — only if leftover matches.
-    let palette = if data.len() >= 768 {
-        let start = data.len() - 768;
-        // Heuristic: if trailing 768 doesn't overlap slab (always at end in official KVX).
-        let mut pal = [0u8; 768];
-        pal.copy_from_slice(&data[start..]);
-        Some(pal)
-    } else {
-        None
-    };
-
-    Ok(KvxModel {
-        header: Some(KvxHeader {
-            x_size,
-            y_size,
-            z_size,
+    Ok((
+        KvxHeader {
+            x_size: x_size as u32,
+            y_size: y_size as u32,
+            z_size: z_size as u32,
             pivot: [xpivot, ypivot, zpivot],
-        }),
+        },
         voxels,
-        palette,
-    })
+    ))
 }
 
 /// Emit a triangle mesh for solid voxels (greedy face merge).
 ///
 /// Positions are centred on the KVX pivot; 1 voxel = 1 map unit. Adjacent
 /// exposed faces of the same palette index are merged into larger quads.
+///
+/// Axes match GZDoom's voxel model in Room's Z-up world: KVX X stays X,
+/// KVX Y becomes −Y, KVX Z becomes −Z (their Y-up mesh, then swapped).
 #[must_use]
 pub fn kvx_to_mesh(kvx: &KvxModel) -> ModelMesh {
     kvx_to_mesh_greedy(kvx)
@@ -162,9 +203,10 @@ pub fn kvx_to_mesh_naive(kvx: &KvxModel) -> ModelMesh {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     for vox in &kvx.voxels {
-        let ox = f32::from(vox.x) - h.pivot[0];
-        let oy = f32::from(vox.y) - h.pivot[1];
-        let oz = f32::from(vox.z) - h.pivot[2];
+        let [ox, oy, oz] = kvx_point_to_room(
+            [f32::from(vox.x), f32::from(vox.y), f32::from(vox.z)],
+            h.pivot,
+        );
         let u = (f32::from(vox.color) + 0.5) / 256.0;
         push_cube(&mut vertices, &mut indices, ox, oy, oz, u);
     }
@@ -329,16 +371,18 @@ fn push_greedy_quad(
         p[u_axis as usize] = uu as f32;
         p[v_axis as usize] = vv as f32;
         p[axis as usize] = face as f32;
-        corners[i] = [p[0] - px, p[1] - py, p[2] - pz];
+        corners[i] = kvx_point_to_room(p, [px, py, pz]);
     }
-    // Winding: outward normal along `sign` on `axis`.
+    // Winding: outward normal along `sign` on `axis`. Two axis flips
+    // (Y and Z) keep the triangle orientation.
     let order: [usize; 6] = if sign > 0 {
         [0, 1, 2, 0, 2, 3]
     } else {
         [0, 3, 2, 0, 2, 1]
     };
-    let mut normal = [0.0f32; 3];
-    normal[axis as usize] = sign as f32;
+    let mut kn = [0.0f32; 3];
+    kn[axis as usize] = sign as f32;
+    let normal = [kn[0], -kn[1], -kn[2]];
     let base = vertices.len() as u32;
     for c in &corners {
         vertices.push(ModelVertex {
@@ -350,6 +394,32 @@ fn push_greedy_quad(
     for &i in &order {
         indices.push(base + i as u32);
     }
+}
+
+/// KVX voxel corner → Room map space (X east, Y north, Z up).
+fn read_i32(data: &[u8], at: usize) -> Result<i32, ModelError> {
+    let s = data
+        .get(at..at + 4)
+        .ok_or_else(|| ModelError::Message("KVX truncated".into()))?;
+    let mut b = [0u8; 4];
+    b.copy_from_slice(s);
+    Ok(i32::from_le_bytes(b))
+}
+
+fn read_u16(data: &[u8], at: usize) -> Result<u16, ModelError> {
+    let s = data
+        .get(at..at + 2)
+        .ok_or_else(|| ModelError::Message("KVX truncated".into()))?;
+    let mut b = [0u8; 2];
+    b.copy_from_slice(s);
+    Ok(u16::from_le_bytes(b))
+}
+
+fn kvx_point_to_room(p: [f32; 3], pivot: [f32; 3]) -> [f32; 3] {
+    let kx = p[0] - pivot[0];
+    let ky = p[1] - pivot[1];
+    let kz = p[2] - pivot[2];
+    [kx, -ky, -kz]
 }
 
 fn push_cube(
@@ -404,6 +474,44 @@ mod tests {
     #[test]
     fn empty_kvx_rejected() {
         assert!(parse_kvx(&[0u8; 8]).is_err());
+    }
+
+    #[test]
+    fn slab6_length_prefix_one_voxel() {
+        // 1×1×1, colour 4 at z = 0, pivot 0.5, plus a 768-byte palette.
+        let xs = 1i32;
+        let ys = 1i32;
+        let zs = 1i32;
+        let offsetsize = (xs + 1) * 4 + xs * (ys + 1) * 2;
+        let slab = [0u8, 1, 0, 4];
+        let numbytes = 24 + offsetsize + slab.len() as i32;
+        let mut data = Vec::new();
+        data.extend_from_slice(&numbytes.to_le_bytes());
+        data.extend_from_slice(&xs.to_le_bytes());
+        data.extend_from_slice(&ys.to_le_bytes());
+        data.extend_from_slice(&zs.to_le_bytes());
+        data.extend_from_slice(&128i32.to_le_bytes());
+        data.extend_from_slice(&128i32.to_le_bytes());
+        data.extend_from_slice(&0i32.to_le_bytes());
+        data.extend_from_slice(&offsetsize.to_le_bytes());
+        data.extend_from_slice(&(offsetsize + slab.len() as i32).to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&(slab.len() as u16).to_le_bytes());
+        data.extend_from_slice(&slab);
+        data.extend_from_slice(&[1u8; 768]);
+        let kvx = parse_kvx(&data).unwrap();
+        assert_eq!(kvx.voxels.len(), 1);
+        assert_eq!(kvx.voxels[0].color, 4);
+        assert!((kvx.header.as_ref().unwrap().pivot[0] - 0.5).abs() < 1e-4);
+        let mesh = kvx_to_mesh(&kvx);
+        assert_eq!(mesh.indices.len(), 36);
+        // Room Z is up: the voxel sits on the negative Z side of a 0 pivot.
+        let max_z = mesh
+            .vertices
+            .iter()
+            .map(|v| v.pos[2])
+            .fold(f32::MIN, f32::max);
+        assert!(max_z <= 0.01, "{max_z}");
     }
 
     #[test]

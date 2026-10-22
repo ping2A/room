@@ -16,7 +16,7 @@ use glam::Vec3;
 use midi_device::{MidiBackend, load_genmidi, resolve_midi_device};
 use room_console::{Console, HostCommand};
 use room_decorate::parse_decorate;
-use room_defs::{DefinitionsBuilder, DynLightKind, GlDefs, ModelDefs};
+use room_defs::{DefinitionsBuilder, DynLightKind, GlDefs, ModelDefs, VoxelDefs};
 use room_game::{
     DemoPlayer, DemoRecorder, GameOptions, GameState, Headless, Skill, SoundSystem,
     intermission_music_candidates, keyconf_alias_lines, keyconf_default_binds,
@@ -30,15 +30,15 @@ use room_render::{
     Camera, Canvas, CanvasGpu, CubemapFaces, DecalStore, DynLightInstance, GpuContext, LightMode,
     MaterialCatalog, MaterialMaps, ModelActorPose, ModelCatalog, OffscreenTarget, PARTICLE_TEX,
     ParticleStore, SceneLists, SpriteInstance, SpriteOrient, TextureAnimator, UnlitPass,
-    append_actor_models, append_decals, append_particles, apply_glow_fullbright, build_scene,
-    build_scene_with_sky_ex_sized, clip_scene_to_mirror_line, mirror_clip_plane, read_rgba,
-    read_texture_rgba, render_offscreen, scroll_sky_u, sprite_lump_candidates_rot,
-    sprite_rotation_digit,
+    VoxelActorPose, VoxelCatalog, append_actor_models, append_decals, append_particles,
+    apply_glow_fullbright, build_scene, build_scene_with_sky_ex_sized, clip_scene_to_mirror_line,
+    mirror_clip_plane, read_rgba, read_texture_rgba, render_offscreen, scroll_sky_u,
+    sprite_lump_candidates_rot, sprite_rotation_digit, voxel_spin_degrees, voxel_view_angles,
 };
 use room_sim::{
-    ActorId, Buttons, ClassRegistry, FLAG_CORPSE, FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_FLOAT,
-    FLAG_MISSILE, FLAG_NOGRAVITY, FLAG_SPAWNCEILING, RenderStyle, ShotKind, StateTable, TicCmd,
-    actor_light_level, check_sight,
+    ActorId, Buttons, ClassRegistry, FLAG_CORPSE, FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_DROPPED,
+    FLAG_FLOAT, FLAG_MISSILE, FLAG_NOGRAVITY, FLAG_SPAWNCEILING, RenderStyle, ShotKind, StateTable,
+    TicCmd, actor_light_level, check_sight,
 };
 use room_testkit::{MapBuilder, combat_arena, rect};
 use room_ui::{
@@ -354,6 +354,7 @@ fn main() {
     let (skyboxes, initial_sky, initial_cube) = load_sky_defs(vfs.as_ref(), &args.map);
     let gldefs = load_gldefs(vfs.as_ref());
     let modeldefs = load_modeldefs(vfs.as_ref());
+    let voxeldefs = load_voxeldefs(vfs.as_ref());
     let (camera_tex_sizes, tex_anim) = load_animdefs(vfs.as_ref());
     let mut materials = MaterialCatalog::new();
     {
@@ -406,6 +407,9 @@ fn main() {
         gldefs,
         modeldefs,
         models: ModelCatalog::new(),
+        voxeldefs,
+        voxels: VoxelCatalog::new(),
+        voxel_poses: Vec::new(),
         camera_tex_sizes,
         tex_anim,
         camera_tex_frame: 0,
@@ -884,13 +888,21 @@ struct ViewerApp {
     modeldefs: ModelDefs,
     /// Cached MODELDEF meshes.
     models: ModelCatalog,
+    /// VOXELDEF registry.
+    voxeldefs: VoxelDefs,
+    /// Cached KVX meshes.
+    voxels: VoxelCatalog,
+    /// Voxel poses from the latest [`Self::collect_live_sprites`].
+    voxel_poses: Vec<VoxelActorPose>,
     /// ANIMDEFS `cameratexture` sizes (uppercase name → w×h).
     camera_tex_sizes: std::collections::BTreeMap<String, (u32, u32)>,
     /// ANIMDEFS texture / flat animations.
     tex_anim: TextureAnimator,
     /// Frame counter for throttling camera-texture refreshes.
     camera_tex_frame: u32,
-    window: Option<Arc<Window>>,
+    /// GPU objects drop in declaration order, before [`Self::window`]. On
+    /// Wayland, destroying the window first frees the `wl_surface` that EGL
+    /// still uses and `wl_proxy_marshal` segfaults during process exit.
     surface: Option<wgpu::Surface<'static>>,
     config: Option<wgpu::SurfaceConfiguration>,
     gpu: Option<GpuContext>,
@@ -901,6 +913,7 @@ struct ViewerApp {
     /// Colour buffer with `COPY_SRC` (surface itself often cannot be read back).
     frame_color: Option<(wgpu::Texture, wgpu::TextureView)>,
     canvas_gpu: Option<CanvasGpu>,
+    window: Option<Arc<Window>>,
     camera: Camera,
     /// Capture PNG of the next presented frame.
     pending_screenshot: bool,
@@ -1025,6 +1038,16 @@ fn animated_light_radius(
             if pick { size } else { sec }
         }
     }
+}
+
+fn load_voxeldefs(vfs: Option<&Vfs>) -> VoxelDefs {
+    let Some(vfs) = vfs else {
+        return VoxelDefs::default();
+    };
+    DefinitionsBuilder::new(vfs)
+        .build()
+        .map(|d| d.voxeldefs)
+        .unwrap_or_default()
 }
 
 fn load_modeldefs(vfs: Option<&Vfs>) -> ModelDefs {
@@ -2119,6 +2142,18 @@ impl ViewerApp {
                     append_actor_models(&mut scene, &mut self.models, vfs, &self.modeldefs, &poses);
                 }
             }
+            if let Some(vfs) = self.vfs.as_ref() {
+                if !self.voxel_poses.is_empty() {
+                    let uploads = self.voxels.append_poses(&mut scene, vfs, &self.voxel_poses);
+                    if let Some(gpu) = &self.gpu {
+                        for (name, rgba) in &uploads {
+                            self.materials
+                                .upsert_rgba(&gpu.device, &gpu.queue, name, 256, 1, rgba);
+                            self.voxels.mark_palette_uploaded(name);
+                        }
+                    }
+                }
+            }
         }
         self.refresh_mirror_textures(&scene.mirrors);
         self.refresh_portal_textures(&scene.linked_portals);
@@ -3124,6 +3159,86 @@ impl ViewerApp {
         out
     }
 
+    fn fill_voxel_poses(&mut self) {
+        self.voxel_poses.clear();
+        let Some(world) = self.play.as_ref().and_then(|g| g.world()) else {
+            return;
+        };
+        if self.voxeldefs.by_name.is_empty() {
+            return;
+        }
+        let Some(vfs) = self.vfs.as_ref() else {
+            return;
+        };
+        let local_mo = world
+            .players
+            .get(usize::from(self.local_seat))
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo);
+        let tic = world.level.maptime as f32;
+        let actors: Vec<_> = world.thinkers.default.iter().copied().collect();
+        for id in actors {
+            let Some(a) = world.actors.get(id) else {
+                continue;
+            };
+            let class_flags = world.classes.get(a.class).map(|c| c.flags).unwrap_or(0);
+            let flags = a.flags | class_flags;
+            if a.destroyed || Some(id) == local_mo || (flags & FLAG_DONTDRAW) != 0 {
+                continue;
+            }
+            let Some(def) = self.voxeldefs.for_sprite(&a.sprite, a.frame) else {
+                continue;
+            };
+            if !self.voxels.has_file(vfs, &def.file, def.override_palette) {
+                continue;
+            }
+            let dropped = (flags & FLAG_DROPPED) != 0;
+            let spin_n = if dropped {
+                def.dropped_spin
+            } else {
+                def.placed_spin
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            let yaw = a.angle.degrees() as f32;
+            #[allow(clippy::cast_possible_truncation)]
+            let (pitch, roll) = voxel_view_angles(
+                yaw,
+                a.pitch.degrees() as f32,
+                a.roll.degrees() as f32,
+                [a.vel.x() as f32, a.vel.y() as f32, a.vel.z() as f32],
+                def.pitch_from_momentum,
+                def.use_actor_pitch,
+                def.use_actor_roll,
+            );
+            let light = (actor_light_level(world, a) as f32 / 255.0).clamp(0.2, 1.0);
+            #[allow(clippy::cast_possible_truncation)]
+            self.voxel_poses.push(VoxelActorPose {
+                file: def.file.clone(),
+                override_palette: def.override_palette,
+                origin: Vec3::new(a.pos.x() as f32, a.pos.y() as f32, a.pos.z() as f32),
+                yaw_deg: yaw,
+                pitch_deg: pitch,
+                roll_deg: roll,
+                spin_deg: voxel_spin_degrees(spin_n, tic),
+                actor_scale: [a.scale_x as f32, a.scale_y as f32],
+                voxel_scale: def.scale,
+                angle_offset: def.angle_offset,
+                offset: def.offset,
+                light,
+            });
+        }
+    }
+
+    fn sprite_replaced_by_voxel(&mut self, sprite: &str, frame: u8) -> bool {
+        let Some(def) = self.voxeldefs.for_sprite(sprite, frame) else {
+            return false;
+        };
+        let Some(vfs) = self.vfs.as_ref() else {
+            return false;
+        };
+        self.voxels.has_file(vfs, &def.file, def.override_palette)
+    }
+
     /// Actors that have a MODELDEF entry (drawn as meshes when files resolve).
     fn collect_model_poses(&self) -> Vec<ModelActorPose> {
         let Some(world) = self.play.as_ref().and_then(|g| g.world()) else {
@@ -3526,6 +3641,7 @@ impl ViewerApp {
 
     /// Live actor billboards for play mode (`None` in free-fly viewer).
     fn collect_live_sprites(&mut self) -> Option<Vec<SpriteInstance>> {
+        self.fill_voxel_poses();
         let game = self.play.as_ref()?;
         let world = game.world()?;
         let local_mo = world
@@ -3607,6 +3723,9 @@ impl ViewerApp {
             flags,
         ) in actors
         {
+            if self.sprite_replaced_by_voxel(&sprite, frame) {
+                continue;
+            }
             // Prefer patch pixel size (1 map unit per texel). Floor items / monsters
             // must keep Doom topoffset math — do not inflate height independently.
             let mut w = (radius * 2.0 * scale_x.abs()).clamp(0.25, 4096.0);

@@ -50,6 +50,7 @@ pub mod ssao;
 pub mod texanim;
 pub mod texture;
 pub mod ue1;
+pub mod voxel_draw;
 
 pub use bloom::{BLOOM_LEVELS, BloomPass};
 pub use bsp_walk::{VisibleSet, walk_bsp};
@@ -129,3 +130,4 @@ pub use ssao::{
 pub use texanim::TextureAnimator;
 pub use texture::{TextureEntry, TextureFormatKind, TextureManager};
 pub use ue1::{Ue1Model, Ue1Tri, decompress_ue1_vertex, parse_ue1};
+pub use voxel_draw::{VoxelActorPose, VoxelCatalog, voxel_spin_degrees, voxel_view_angles};

@@ -6,7 +6,7 @@ use crate::web_audio::WebAudio;
 use bytes::Bytes;
 use glam::Vec3;
 use room_audio::ENGINE_SAMPLE_RATE;
-use room_defs::{DefinitionsBuilder, GlDefs};
+use room_defs::{DefinitionsBuilder, GlDefs, VoxelDefs};
 use room_game::{
     EngineData, GameOptions, GameState, Headless, Skill, SoundSystem,
     intermission_music_candidates, load_embedded_engine_data, mount_embedded_engine,
@@ -17,12 +17,14 @@ use room_map::{MapGeometry, load_map};
 use room_music::{GenMidiBank, MidiDevice};
 use room_nodebuild::ensure_nodes;
 use room_render::{
-    Camera, Canvas, DynLightInstance, GpuContext, MaterialCatalog, OffscreenTarget, SpriteInstance,
-    SpriteOrient, UnlitPass, build_scene, render_offscreen, sprite_lump_candidates_rot,
-    sprite_rotation_digit,
+    Camera, Canvas, DynLightInstance, GpuContext, MaterialCatalog, OffscreenTarget, SceneLists,
+    SpriteInstance, SpriteOrient, UnlitPass, VoxelActorPose, VoxelCatalog, build_scene,
+    render_offscreen, sprite_lump_candidates_rot, sprite_rotation_digit, voxel_spin_degrees,
+    voxel_view_angles,
 };
 use room_sim::{
-    Buttons, FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_FLOAT, FLAG_NOGRAVITY, FLAG_SPAWNCEILING, TicCmd,
+    Buttons, FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_DROPPED, FLAG_FLOAT, FLAG_NOGRAVITY,
+    FLAG_SPAWNCEILING, TicCmd,
 };
 use room_ui::{
     CanvasSink, DoomStatusBar, DrawCmd, DukeStatusBar, HudState, MenuCommand, MenuStack,
@@ -49,6 +51,12 @@ pub struct PlaySession {
     pub patches: PatchCache,
     /// GLDEFS (brightmaps / object lights) from the mounted VFS.
     gldefs: GlDefs,
+    /// VOXELDEF registry.
+    voxeldefs: VoxelDefs,
+    /// Cached KVX meshes.
+    voxels: VoxelCatalog,
+    /// Poses filled by [`Self::collect_live_sprites_for`].
+    voxel_poses: Vec<VoxelActorPose>,
     /// ANIMDEFS texture / flat animations.
     tex_anim: room_render::TextureAnimator,
     /// ANIMDEFS `cameratexture` sizes.
@@ -262,6 +270,7 @@ impl PlaySession {
         });
 
         let mut gldefs = GlDefs::default();
+        let mut voxeldefs = VoxelDefs::default();
         let mut tex_anim = room_render::TextureAnimator::default();
         let mut camera_tex_sizes = BTreeMap::new();
         let mut mapinfo = Arc::new(room_defs::MapInfo::default());
@@ -283,6 +292,7 @@ impl PlaySession {
             }
             game.set_menudef(defs.menudef.clone());
             gldefs = defs.gldefs;
+            voxeldefs = defs.voxeldefs;
             tex_anim = room_render::TextureAnimator::new(&defs.animdefs);
             for cam in &defs.animdefs.camera_textures {
                 let w = cam.width.clamp(1, 256) as u32;
@@ -368,6 +378,9 @@ impl PlaySession {
             materials,
             patches,
             gldefs,
+            voxeldefs,
+            voxels: VoxelCatalog::new(),
+            voxel_poses: Vec::new(),
             tex_anim,
             camera_tex_sizes,
             camera_tex_frame: 0,
@@ -1781,6 +1794,105 @@ impl PlaySession {
         }
     }
 
+    fn fill_voxel_poses(&mut self, seat: u8) {
+        self.voxel_poses.clear();
+        if self.voxeldefs.by_name.is_empty() {
+            return;
+        }
+        let Some(world) = self.game.world() else {
+            return;
+        };
+        let seat = usize::from(seat);
+        let local_mo = world
+            .players
+            .get(seat)
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo);
+        let tic = world.level.maptime as f32;
+        let actors: Vec<_> = world.thinkers.default.iter().copied().collect();
+        for id in actors {
+            let Some(a) = world.actors.get(id) else {
+                continue;
+            };
+            let class_flags = world.classes.get(a.class).map(|c| c.flags).unwrap_or(0);
+            let flags = a.flags | class_flags;
+            if a.destroyed || Some(id) == local_mo || (flags & FLAG_DONTDRAW) != 0 {
+                continue;
+            }
+            let Some(def) = self.voxeldefs.for_sprite(&a.sprite, a.frame) else {
+                continue;
+            };
+            let file = def.file.clone();
+            let override_palette = def.override_palette;
+            let dropped = (flags & FLAG_DROPPED) != 0;
+            let spin_n = if dropped {
+                def.dropped_spin
+            } else {
+                def.placed_spin
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            let yaw = a.angle.degrees() as f32;
+            #[allow(clippy::cast_possible_truncation)]
+            let (pitch, roll) = voxel_view_angles(
+                yaw,
+                a.pitch.degrees() as f32,
+                a.roll.degrees() as f32,
+                [a.vel.x() as f32, a.vel.y() as f32, a.vel.z() as f32],
+                def.pitch_from_momentum,
+                def.use_actor_pitch,
+                def.use_actor_roll,
+            );
+            #[allow(clippy::cast_possible_truncation)]
+            let pose = VoxelActorPose {
+                file,
+                override_palette,
+                origin: Vec3::new(a.pos.x() as f32, a.pos.y() as f32, a.pos.z() as f32),
+                yaw_deg: yaw,
+                pitch_deg: pitch,
+                roll_deg: roll,
+                spin_deg: voxel_spin_degrees(spin_n, tic),
+                actor_scale: [a.scale_x as f32, a.scale_y as f32],
+                voxel_scale: def.scale,
+                angle_offset: def.angle_offset,
+                offset: def.offset,
+                light: 1.0,
+            };
+            if self
+                .voxels
+                .has_file(&self.vfs, &pose.file, pose.override_palette)
+            {
+                self.voxel_poses.push(pose);
+            }
+        }
+    }
+
+    fn sprite_replaced_by_voxel(&mut self, sprite: &str, frame: u8) -> bool {
+        let Some(def) = self.voxeldefs.for_sprite(sprite, frame) else {
+            return false;
+        };
+        let file = def.file.clone();
+        let override_palette = def.override_palette;
+        self.voxels.has_file(&self.vfs, &file, override_palette)
+    }
+
+    /// Draw voxel poses gathered by the latest sprite collect.
+    pub fn append_voxel_poses(&mut self, lists: &mut SceneLists) -> Vec<(String, Vec<u8>)> {
+        if self.voxel_poses.is_empty() {
+            return Vec::new();
+        }
+        self.voxels
+            .append_poses(lists, &self.vfs, &self.voxel_poses)
+    }
+
+    /// Upload palette strips returned by [`Self::append_voxel_poses`].
+    pub fn upload_voxel_palettes(&mut self, gpu: &GpuContext, uploads: &[(String, Vec<u8>)]) {
+        for (name, rgba) in uploads {
+            self.materials
+                .upsert_rgba(&gpu.device, &gpu.queue, name, 256, 1, rgba);
+            self.voxels.mark_palette_uploaded(name);
+        }
+    }
+
     /// Live actor billboards for `build_scene` (SoftPatch size + topoffset, same as desktop).
     pub fn collect_live_sprites(&mut self, camera: &Camera) -> Vec<SpriteInstance> {
         self.collect_live_sprites_for(camera, self.local_seat)
@@ -1788,6 +1900,7 @@ impl PlaySession {
 
     /// Like [`Self::collect_live_sprites`], hiding `seat`'s own body.
     pub fn collect_live_sprites_for(&mut self, camera: &Camera, seat: u8) -> Vec<SpriteInstance> {
+        self.fill_voxel_poses(seat);
         let Some(world) = self.game.world() else {
             return Vec::new();
         };
@@ -1852,6 +1965,9 @@ impl PlaySession {
             flags,
         ) in actors
         {
+            if self.sprite_replaced_by_voxel(&sprite, frame) {
+                continue;
+            }
             let mut w = (radius * 2.0 * scale_x.abs()).clamp(0.25, 4096.0);
             let mut h = (height * scale_y.abs()).clamp(0.25, 4096.0);
             let mut texture = String::new();

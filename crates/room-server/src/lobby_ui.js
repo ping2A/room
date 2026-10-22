@@ -101,12 +101,46 @@
     return proto + "//" + location.host;
   }
 
-  function playUrl(room, ticket, opts = {}) {
+  function isLoopbackHost(host) {
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  }
+
+  /**
+   * Game-client origin for links and the reachability probe.
+   * `play_base` is often `http://127.0.0.1:8765/play` while the lobby was
+   * opened as `http://localhost:8765`. Those are different origins, and the
+   * lobby CSP (`connect-src 'self'`) blocks the probe even when `/play/` is
+   * served by this process. Stay on the host the page was opened with.
+   */
+  function clientBase() {
     let base = (state.config.play_base || "").replace(/\/$/, "");
     // Same-origin `/play` must keep the trailing directory slash so relative
     // wasm/js assets resolve under `/play/…` (not the site root).
     if (base.endsWith("/play")) base += "/";
-    else if (!base.endsWith("/")) base += "/";
+    else if (base && !base.endsWith("/")) base += "/";
+    try {
+      const configured = new URL(base, location.href);
+      const here = new URL(location.href);
+      const samePort =
+        (configured.port || (configured.protocol === "https:" ? "443" : "80")) ===
+        (here.port || (here.protocol === "https:" ? "443" : "80"));
+      const sameLoopback =
+        isLoopbackHost(configured.hostname) && isLoopbackHost(here.hostname);
+      if (
+        (configured.pathname === "/play" || configured.pathname === "/play/") &&
+        samePort &&
+        (configured.hostname === here.hostname || sameLoopback)
+      ) {
+        return here.origin + "/play/";
+      }
+      return configured.href;
+    } catch (_) {
+      return base;
+    }
+  }
+
+  function playUrl(room, ticket, opts = {}) {
+    const base = clientBase();
     const path = room.ws_v2.startsWith("/") ? room.ws_v2 : "/" + room.ws_v2;
     const ws = room.ws_v2.startsWith("ws") ? room.ws_v2 : wsOrigin() + path;
     const q = new URLSearchParams();
@@ -121,8 +155,7 @@
   }
 
   async function ensurePlayBase() {
-    const base = (state.config.play_base || "").replace(/\/$/, "");
-    const probe = base.endsWith("/play") ? base + "/" : base + "/";
+    const probe = clientBase();
     try {
       const r = await fetch(probe, { method: "GET", cache: "no-store" });
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -479,9 +512,7 @@
 
   /** Solo URL: the game client without `ws` runs a local single-player game. */
   function soloUrl(opts) {
-    let base = (state.config.play_base || "").replace(/\/$/, "");
-    if (base.endsWith("/play")) base += "/";
-    else if (!base.endsWith("/")) base += "/";
+    const base = clientBase();
     const q = new URLSearchParams();
     q.set("map", opts.map || "E1M1");
     q.set("skill", String(opts.skill || 3));
@@ -492,13 +523,14 @@
 
   async function playSolo() {
     const mods = await loadMods();
-    const modField = mods.length
-      ? '<label class="field"><span>Mod</span><select name="mod"><option value="">None (vanilla)</option>' +
-        mods
-          .map((m) => '<option value="' + escapeHtml(m.name) + '">' + escapeHtml(m.title) + "</option>")
-          .join("") +
-        "</select></label>"
-      : "";
+    const modOptions =
+      '<option value="">None (vanilla)</option>' +
+      mods
+        .map((m) => '<option value="' + escapeHtml(m.name) + '">' + escapeHtml(m.title) + "</option>")
+        .join("") +
+      '<option value="voxel">Voxel Doom (vs monsters)</option>';
+    const modField =
+      '<label class="field"><span>Mod</span><select name="mod">' + modOptions + "</select></label>";
     const data = await openModal({
       title: "Play solo",
       confirmLabel: "Start",
@@ -647,7 +679,7 @@
       $("drain-pill").classList.toggle("hidden", !cfg.draining);
       $("drain-pill").classList.toggle("warn", !!cfg.draining);
       $("play-base-label").textContent = cfg.play_base || "—";
-      if (cfg.play_base) $("btn-editor").href = `${cfg.play_base.replace(/\/$/, "")}/editor.html`;
+      if (cfg.play_base) $("btn-editor").href = `${clientBase()}editor.html`;
       renderRooms();
     } catch (err) {
       flash(err.message || String(err), "error");

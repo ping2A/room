@@ -159,11 +159,17 @@ mod browser {
     async fn init_loop() -> Result<(), String> {
         let canvas = find_canvas()?;
         // Match backing-store size to CSS box so we never stretch 16:9 into a tall window.
-        let (width, height) = fit_canvas_buffer(&canvas);
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL,
-            ..Default::default()
-        });
+        let (css_width, css_height) = fit_canvas_buffer(&canvas, u32::MAX);
+        // `navigator.gpu` exists on Chrome/Linux even when `requestAdapter`
+        // returns null. `Instance::new` then locks the instance to WebGPU and
+        // never tries WebGL2. Probe first and drop that backend when it fails.
+        let instance = wgpu::util::new_instance_with_webgpu_detection(
+            &wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL,
+                ..Default::default()
+            },
+        )
+        .await;
         let surface = instance
             .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
             .map_err(|e| e.to_string())?;
@@ -178,6 +184,19 @@ mod browser {
         let gpu = GpuContext::from_adapter(instance, adapter)
             .await
             .map_err(|e| e.to_string())?;
+        // WebGL2's guaranteed max texture is 2048. A 2× backing store on a
+        // large desktop window (2833×1668) is over that and Surface::configure
+        // panics. CSS size stays the window; the bitmap is scaled down.
+        let max_dim = gpu.device.limits().max_texture_dimension_2d;
+        let (width, height) = fit_canvas_buffer(&canvas, max_dim);
+        if width != css_width || height != css_height {
+            web_sys::console::log_1(
+                &format!(
+                    "room-web: backing store {css_width}×{css_height} clamped to {width}×{height} (max texture {max_dim})"
+                )
+                .into(),
+            );
+        }
         let caps = surface.get_capabilities(&gpu.adapter);
         let format = pick_web_surface_format(&caps)?;
         let alpha = caps
@@ -1343,8 +1362,10 @@ mod browser {
         let holder: RafCallback = Rc::new(RefCell::new(None));
         let holder2 = holder.clone();
         let state2 = state;
-        let cb = Closure::new(move |_t: f64| {
+        let meter = Rc::new(RefCell::new(FpsMeter::default()));
+        let cb = Closure::new(move |t: f64| {
             draw_frame(&state2);
+            note_fps(&meter, t);
             if let Some(w) = window() {
                 if let Some(cb) = holder2.borrow().as_ref() {
                     let _ = w.request_animation_frame(cb.as_ref().unchecked_ref());
@@ -1546,7 +1567,8 @@ mod browser {
             _ => false,
         };
         s.pass.inverse_colormap = inverse_colormap;
-        let scene: SceneLists = match &s.mode {
+        let mut voxel_uploads = Vec::new();
+        let scene: SceneLists = match &mut s.mode {
             Mode::Demo { map, .. } => build_scene_with_sky(map, cam, None, None),
             Mode::Lobby {
                 prepared: Some(play),
@@ -1566,10 +1588,22 @@ mod browser {
                 play.animate_textures(&mut lists);
                 lists.dyn_lights = play.collect_dyn_lights();
                 room_render::apply_dyn_lights(&mut lists);
+                voxel_uploads = play.append_voxel_poses(&mut lists);
                 lists
             }
             Mode::Lobby { demo, .. } => build_scene_with_sky(demo, cam, None, None),
         };
+        if !voxel_uploads.is_empty() {
+            let FrameState { gpu, mode, .. } = &mut *s;
+            if let Mode::Play(play)
+            | Mode::Lobby {
+                prepared: Some(play),
+                ..
+            } = mode
+            {
+                play.upload_voxel_palettes(gpu, &voxel_uploads);
+            }
+        }
 
         {
             let FrameState { gpu, pass, .. } = &mut *s;
@@ -1674,7 +1708,7 @@ mod browser {
     /// Caps ultrawide panels so FOV matches desktop (~90° H at 16:9), and
     /// letterboxes portrait phones at 4:3 so the view does not shrink to a
     /// slit. Buffer and CSS share the same aspect; `camera.aspect = w/h`.
-    fn fit_canvas_buffer(canvas: &HtmlCanvasElement) -> (u32, u32) {
+    fn fit_canvas_buffer(canvas: &HtmlCanvasElement, max_dim: u32) -> (u32, u32) {
         const MAX_ASPECT: f64 = 16.0 / 9.0;
         const MIN_ASPECT: f64 = 4.0 / 3.0;
         let win = window();
@@ -1724,8 +1758,17 @@ mod browser {
         let style = canvas.style();
         let _ = style.set_property("width", &format!("{css_w:.0}px"));
         let _ = style.set_property("height", &format!("{css_h:.0}px"));
-        let w = (css_w * dpr).round().clamp(320.0, 3840.0) as u32;
-        let h = (css_h * dpr).round().clamp(240.0, 2160.0) as u32;
+        let mut w = (css_w * dpr).round().clamp(320.0, 3840.0);
+        let mut h = (css_h * dpr).round().clamp(240.0, 2160.0);
+        let max_dim = f64::from(max_dim.max(1));
+        let longest = w.max(h);
+        if longest > max_dim {
+            let scale = max_dim / longest;
+            w = (w * scale).floor().max(1.0);
+            h = (h * scale).floor().max(1.0);
+        }
+        let w = w as u32;
+        let h = h as u32;
         if canvas.width() != w {
             canvas.set_width(w);
         }
@@ -1736,7 +1779,8 @@ mod browser {
     }
 
     fn sync_surface_size(canvas: &HtmlCanvasElement, s: &mut FrameState) {
-        let (w, h) = fit_canvas_buffer(canvas);
+        let max_dim = s.gpu.device.limits().max_texture_dimension_2d;
+        let (w, h) = fit_canvas_buffer(canvas, max_dim);
         s.camera.aspect = f64::from(w) / f64::from(h.max(1));
         // Match desktop: ~90° horizontal at 16:9.
         s.camera.fov_y_deg = 58.715;
@@ -1759,6 +1803,40 @@ mod browser {
             .and_then(|w| w.performance())
             .map(|p| p.now())
             .unwrap_or(0.0)
+    }
+
+    #[derive(Default)]
+    struct FpsMeter {
+        window_start_ms: f64,
+        frames: u32,
+    }
+
+    /// Painted frames over the last half-second, shown in `#fps`.
+    fn note_fps(meter: &Rc<RefCell<FpsMeter>>, now_ms: f64) {
+        let mut m = meter.borrow_mut();
+        if m.window_start_ms == 0.0 {
+            m.window_start_ms = now_ms;
+        }
+        m.frames += 1;
+        let elapsed = now_ms - m.window_start_ms;
+        if elapsed < 500.0 {
+            return;
+        }
+        let rate = f64::from(m.frames) * 1000.0 / elapsed;
+        m.window_start_ms = now_ms;
+        m.frames = 0;
+        drop(m);
+        let Some(win) = window() else {
+            return;
+        };
+        let Some(doc) = win.document() else {
+            return;
+        };
+        if let Some(el) = doc.get_element_by_id("fps") {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let shown = rate.round().clamp(0.0, 999.0) as u32;
+            el.set_text_content(Some(&format!("{shown} fps")));
+        }
     }
 
     fn set_status(msg: &str) {

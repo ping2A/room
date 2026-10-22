@@ -225,6 +225,13 @@
     }
     #matchclock.low { color: #ffb0a0; border-color: rgba(220, 90, 70, 0.7); }
     #matchclock[hidden], #matchover[hidden] { display: none; }
+    #fps {
+      position: fixed; top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right));
+      z-index: 6; padding: 3px 8px; border-radius: 4px; background: rgba(8, 10, 14, 0.55);
+      font: 600 13px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #d5dbe6; pointer-events: none; user-select: none; font-variant-numeric: tabular-nums;
+    }
+    body.touch #fps { right: calc(156px + env(safe-area-inset-right)); }
     #matchover {
       position: fixed; inset: 0; z-index: 9; display: flex; align-items: center; justify-content: center;
       background: radial-gradient(ellipse at center, rgba(40, 10, 10, 0.78), rgba(4, 4, 8, 0.92));
@@ -274,6 +281,7 @@
         <option value="survival">Survival Director (Rust)</option>
         <option value="bounty">Bounty Hunter (AssemblyScript)</option>
         <option value="royale">Battle Royale practice (Rust)</option>
+        <option value="voxel">Voxel Doom (vs monsters)</option>
       </select>
     </label>
     <a href="editor.html" title="Map editor — Scripts tab for WASM mods">Editor ↗</a>
@@ -324,6 +332,7 @@
       <button type="submit" id="callsign-go" disabled>Join</button>
     </form>
   </div>
+  <div id="fps" aria-hidden="true">— fps</div>
   <div id="matchclock" hidden></div>
   <div id="matchover" hidden role="dialog" aria-modal="true" aria-labelledby="matchover-title">
     <div class="panel">
@@ -560,12 +569,32 @@
         params.get("ws") || dukeUrl ? "" : (params.get("mod") || "").replace(/[^a-z0-9_-]/gi, "");
       if (modName) {
         try {
-          let res = await fetch(`mods/${modName}.wad`, { cache: "no-cache" });
-          // Served by room-server (lobby "Play solo"): mods live under /api/mods.
-          if (!res.ok) res = await fetch(`/api/mods/${modName}.wad`, { cache: "no-cache" });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          mod.roomAddPwad(`${modName}.wad`, new Uint8Array(await res.arrayBuffer()));
-          console.log(`room-web: mod ${modName}.wad mounted`);
+          // WASM gameplay mods are `<name>.wad`. Voxel Doom is only a pk3, so
+          // requesting `mods/voxel.wad` would 404 in the console before the pack
+          // loads. room-server coop still serves `/api/mods/<name>.wad`.
+          const urls =
+            modName === "voxel"
+              ? [`mods/${modName}.pk3`, `mods/${modName}.zip`]
+              : [
+                  `mods/${modName}.wad`,
+                  `mods/${modName}.pk3`,
+                  `mods/${modName}.zip`,
+                  `/api/mods/${modName}.wad`,
+                ];
+          let res = null;
+          let url = "";
+          for (const candidate of urls) {
+            const got = await fetch(candidate, { cache: "no-cache" });
+            if (got.ok) {
+              res = got;
+              url = candidate;
+              break;
+            }
+          }
+          if (!res) throw new Error("not found");
+          const file = url.split("/").pop();
+          mod.roomAddPwad(file, new Uint8Array(await res.arrayBuffer()));
+          console.log(`room-web: mod ${file} mounted`);
         } catch (e) {
           console.warn(`room-web: mod ${modName} unavailable`, e);
           status.textContent = `Mod ${modName} unavailable (run ./scripts/room-server.sh mods)`;

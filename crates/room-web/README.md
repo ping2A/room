@@ -40,8 +40,9 @@ adaptive 25–160 ms target (grows on underrun, shrinks when stable); inspect it
 `roomAudioStats()` in the console.
 
 The play page's top-left bar picks the **skill** (`?skill=1..5`) and a **mod**
-(`?mod=survival` / `?mod=bounty` mounts `mods/<name>.wad` via `roomAddPwad`,
-single-player only);
+(`?mod=survival` / `?mod=bounty` / `?mod=royale` mounts `mods/<name>.wad`;
+`?mod=voxel` mounts `mods/voxel.pk3`, the Voxel Doom pack, and you still
+fight the map's monsters) via `roomAddPwad`, single-player only;
 changing either reloads into a new game. It hides while the mouse is captured.
 
 ### Editor (`editor.html`)

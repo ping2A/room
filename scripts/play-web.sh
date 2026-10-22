@@ -72,6 +72,14 @@ cp crates/room-web/editor-scripts.js "$OUT/editor-scripts.js"
 mkdir -p "$OUT/mods"
 cp mods/doom1-survival/survival.wad "$OUT/mods/survival.wad"
 cp mods/doom1-bounty/bounty.wad "$OUT/mods/bounty.wad"
+if [[ -f mods/doom1-royale/royale.wad ]]; then
+  cp mods/doom1-royale/royale.wad "$OUT/mods/royale.wad"
+fi
+# Voxel Doom: same solo picker as the WASM mods, but the map's monsters stay.
+if [[ -f testdata/voxel/cheello_voxels.zip ]]; then
+  cp testdata/voxel/cheello_voxels.zip "$OUT/mods/voxel.pk3"
+  echo "room: serving Voxel Doom as /mods/voxel.pk3"
+fi
 # AssemblyScript live mods: the game API library + a vendored compiler
 # (falls back to the jsDelivr CDN in the editor when absent).
 mkdir -p "$OUT/as"

@@ -1277,7 +1277,7 @@ fn make_mrt_pipeline(
     depth_write: bool,
     cull_mode: Option<wgpu::Face>,
     color0_writes: wgpu::ColorWrites,
-    color1_writes: wgpu::ColorWrites,
+    _color1_writes: wgpu::ColorWrites,
     stencil: wgpu::StencilState,
     depth_compare: wgpu::CompareFunction,
 ) -> wgpu::RenderPipeline {
@@ -1304,6 +1304,8 @@ fn make_mrt_pipeline(
             module: shader,
             entry_point: Some(fs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
+            // WebGL2 has no independent blend: both targets must share blend
+            // and write mask. Slot 1 is a discarded dummy, so it copies slot 0.
             targets: &[
                 Some(wgpu::ColorTargetState {
                     format: color_format,
@@ -1313,7 +1315,7 @@ fn make_mrt_pipeline(
                 Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::R8Unorm,
                     blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: color1_writes,
+                    write_mask: color0_writes,
                 }),
             ],
         }),
@@ -1408,6 +1410,8 @@ fn make_unlit_pipeline_bias(
             // MRT: colour + dummy R8 so the main pass matches stencil pipelines.
             entry_point: Some("fs_main_mrt"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
+            // Same blend and write mask on both targets. WebGL2 rejects
+            // independent blend, and slot 1 is discarded after the pass.
             targets: &[
                 Some(wgpu::ColorTargetState {
                     format: target_format,
@@ -1416,8 +1420,8 @@ fn make_unlit_pipeline_bias(
                 }),
                 Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::R8Unorm,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::empty(),
+                    blend: Some(blend),
+                    write_mask,
                 }),
             ],
         }),
