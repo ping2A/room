@@ -70,6 +70,16 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 
 ### Log
 
+- `2026-10-26` — **Voxel pack map-switch panic**. Cheello KVX expanded into the unlit `walls` VB past WebGPU’s 256 MiB limit → panic → map load `RuntimeError: unreachable`. Cap mesh size + per-frame vert budget (sprite fallback); clamp `ensure_vb`.
+- `2026-10-26` — **Editor unmount packs**. `roomEditorRemovePwad`; IWAD page + toolbar chips Remove / × for mounted PWADs (base IWAD stays).
+- `2026-10-26` — **Editor content packs**. Opt-in only via **+ Pack…** / Open… / drop (`.pk3`/`.zip`); remounts when VOXELDEF archives are added; IWAD page lists mounted packs.
+- `2026-10-26` — **Editor IWAD page**. Browser tab + details doc: detected game (IWADINFO), size/magic, mount stack with MD5, lump kind/namespace counts, maps; toolbar IWAD label opens it.
+- `2026-10-26` — **Editor Visual mode (M)**. Doom Builder–style immersive 3D edit (hide browser/inspector, 3D-only); toolbar Visual button; optional Voxels checkbox / `?pack=voxel` mounts `mods/voxel.pk3` for KVX in the 3D view.
+- `2026-10-26` — **Thing edit Sounds panel**. Sprite/thing edit side panel (and Actors inspector) lists See/Attack/Pain/Death/Active with waveform, duration, rate, play, and record — no separate Things-list sound popup.
+- `2026-10-26` — **Editor sound record + dark capture UI**. Record/import audio over See/Attack/Pain/Death/Active lumps (`sound-record.js`, `roomEditorResolveSound`); face/place dialogs use dark readable buttons (no white native chrome).
+- `2026-10-26` — **Face place-on-sprite**. After camera/photo capture, drag/resize the circular face on the sprite (Shift-drag pans the crop); live head-circle guide on the webcam preview.
+- `2026-10-26` — **Things browser → sprite edit**. Double-click, right-click, or click the icon on a Things list entry opens that actor’s sprite painter (same idea as right-click on a texture).
+- `2026-10-26` — **Web editor face scripts**. `package-web.sh` / `room-server.sh` copy `face-capture.js` (and gallery/share/worker/settings-faces) into the play root so Camera face… no longer 404s.
 - `2026-10-26` — **D6** DEMO1 **0–750 bitexact**: TEMP snaps/pads 664–750 (batch). Frontier **tic751**.
 - `2026-10-26` — **D6** DEMO1 **0–650 bitexact**: TEMP snaps/pads 551–650 (batch). Frontier **tic651**.
 - `2026-10-26` — **D6** DEMO1 **0–602 bitexact**: TEMP snaps/pads 551–602 (batch); continuing toward 650. Frontier **tic603**.

@@ -315,18 +315,27 @@ export function install(ctx) {
     }
 
     /**
-     * Draw `src` (canvas / video / ImageBitmap) into the sprite.
-     * `mode`:
-     *   - `full` — stretch over the whole frame
-     *   - `face` — circular crop pasted into the upper-centre (enemy head)
-     * `faceScale` is the paste diameter as a fraction of min(w,h) (0.35–0.95).
+     * Draw `src` into the sprite.
+     * `mode`: `full` stretches; `face` pastes a circular crop.
+     * Face placement: `faceScale` (0.2–1), `cx`/`cy` paste centre in sprite
+     * pixels, `panX`/`panY` (−1…1) shift which part of the photo is used.
      */
-    function applyCameraSource(src, { mode = "face", faceScale = 0.55, sw, sh, mirror = true } = {}) {
+    function applyCameraSource(src, {
+      mode = "face",
+      faceScale = 0.55,
+      cx = null,
+      cy = null,
+      panX = 0,
+      panY = 0,
+      sw,
+      sh,
+      mirror = true,
+      label,
+    } = {}) {
       const srcW = sw || src.videoWidth || src.width || 0;
       const srcH = sh || src.videoHeight || src.height || 0;
       if (!(srcW > 0 && srcH > 0)) throw new Error("empty camera frame");
 
-      // Snapshot (+ optional mirror to match the mirrored selfie preview).
       const snap = document.createElement("canvas");
       snap.width = srcW;
       snap.height = srcH;
@@ -346,15 +355,15 @@ export function install(ctx) {
       if (mode === "full") {
         g.drawImage(snap, 0, 0, srcW, srcH, 0, 0, P.w, P.h);
       } else {
-        // Keep existing sprite under the face patch.
         pctx.putImageData(imgData, 0, 0);
         g.drawImage(pixels, 0, 0);
         const side = Math.min(srcW, srcH);
-        const sx = (srcW - side) / 2;
-        const sy = (srcH - side) / 2;
+        const maxOff = (Math.max(srcW, srcH) - side) / 2;
+        const sx = (srcW - side) / 2 + panX * maxOff;
+        const sy = (srcH - side) / 2 + panY * maxOff;
         const diam = Math.max(4, Math.round(Math.min(P.w, P.h) * faceScale));
-        const dx = Math.round((P.w - diam) / 2);
-        const dy = Math.max(0, Math.round(P.h * 0.06));
+        const dx = Math.round((cx == null ? P.w / 2 : cx) - diam / 2);
+        const dy = Math.round((cy == null ? P.h * 0.06 + diam / 2 : cy) - diam / 2);
         g.save();
         g.beginPath();
         g.arc(dx + diam / 2, dy + diam / 2, diam / 2, 0, Math.PI * 2);
@@ -365,10 +374,188 @@ export function install(ctx) {
       }
       applyImageData(
         g.getImageData(0, 0, P.w, P.h).data,
-        mode === "full"
-          ? `Camera → ${P.w}×${P.h} (full frame)`
-          : `Camera face → ${P.name}`,
+        label
+          || (mode === "full"
+            ? `Camera → ${P.w}×${P.h} (full frame)`
+            : `Camera face → ${P.name}`),
       );
+    }
+
+    /**
+     * After capture: drag the face on the sprite, resize, and pan the photo
+     * crop so the head lands on the right pixels.
+     */
+    async function placeFaceOnSprite(srcCanvas) {
+      const { ensureDlgStyles } = await import("./sound-record.js");
+      ensureDlgStyles();
+      const overlay = document.createElement("div");
+      overlay.className = "room-dlg-back room-face-place";
+      const maxPrev = Math.min(360, Math.max(160, Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.55)));
+      const scale = Math.max(1, Math.floor(maxPrev / Math.max(P.w, P.h)));
+      const pw = P.w * scale;
+      const ph = P.h * scale;
+      overlay.innerHTML = `
+        <div class="room-dlg" role="dialog" aria-label="Place face">
+          <h2>Place face</h2>
+          <p class="hint">Drag the circle onto the head. Scroll or use Size to scale. Hold Shift and drag to pan inside the photo.</p>
+          <canvas data-prev width="${pw}" height="${ph}" style="width:100%;max-width:${pw}px;height:auto;cursor:grab;touch-action:none;image-rendering:pixelated"></canvas>
+          <label class="check" style="margin:.75rem 0;width:100%">
+            Size
+            <input data-size type="range" min="20" max="95" value="55" style="flex:1;accent-color:#e0573a" />
+            <span data-size-val style="min-width:2.5rem;font-variant-numeric:tabular-nums;color:#c9ced6">55%</span>
+          </label>
+          <div class="foot">
+            <button type="button" data-act="cancel">Cancel</button>
+            <button type="button" class="go" data-act="apply">Apply</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+
+      const prev = overlay.querySelector("[data-prev]");
+      const sizeIn = overlay.querySelector("[data-size]");
+      const sizeVal = overlay.querySelector("[data-size-val]");
+      const pg = prev.getContext("2d");
+      pg.imageSmoothingEnabled = false;
+
+      pctx.putImageData(imgData, 0, 0);
+      let faceScale = 0.55;
+      let cx = P.w / 2;
+      let cy = P.h * 0.06 + Math.min(P.w, P.h) * faceScale / 2;
+      let panX = 0;
+      let panY = 0;
+      let drag = null;
+
+      const srcW = srcCanvas.width;
+      const srcH = srcCanvas.height;
+      const side = Math.min(srcW, srcH);
+
+      function paintPreview() {
+        pg.clearRect(0, 0, pw, ph);
+        pg.fillStyle = "#111";
+        pg.fillRect(0, 0, pw, ph);
+        // Checker under transparent pixels.
+        for (let y = 0; y < ph; y += 8) {
+          for (let x = 0; x < pw; x += 8) {
+            pg.fillStyle = ((x ^ y) & 8) ? "#1c1c1c" : "#141414";
+            pg.fillRect(x, y, 8, 8);
+          }
+        }
+        pg.drawImage(pixels, 0, 0, P.w, P.h, 0, 0, pw, ph);
+        const diam = Math.max(4, Math.min(P.w, P.h) * faceScale);
+        const dx = cx - diam / 2;
+        const dy = cy - diam / 2;
+        const maxOff = (Math.max(srcW, srcH) - side) / 2;
+        const sx = (srcW - side) / 2 + panX * maxOff;
+        const sy = (srcH - side) / 2 + panY * maxOff;
+        pg.save();
+        pg.beginPath();
+        pg.arc(cx * scale, cy * scale, (diam / 2) * scale, 0, Math.PI * 2);
+        pg.closePath();
+        pg.clip();
+        pg.imageSmoothingEnabled = true;
+        pg.drawImage(srcCanvas, sx, sy, side, side, dx * scale, dy * scale, diam * scale, diam * scale);
+        pg.restore();
+        pg.imageSmoothingEnabled = false;
+        pg.strokeStyle = "rgba(255,220,120,.95)";
+        pg.lineWidth = 2;
+        pg.beginPath();
+        pg.arc(cx * scale, cy * scale, (diam / 2) * scale, 0, Math.PI * 2);
+        pg.stroke();
+        pg.strokeStyle = "rgba(0,0,0,.55)";
+        pg.lineWidth = 1;
+        pg.stroke();
+      }
+      paintPreview();
+
+      function clientToSprite(ev) {
+        const r = prev.getBoundingClientRect();
+        const x = ((ev.clientX - r.left) / r.width) * P.w;
+        const y = ((ev.clientY - r.top) / r.height) * P.h;
+        return { x, y };
+      }
+
+      function onPointerDown(ev) {
+        ev.preventDefault();
+        prev.setPointerCapture(ev.pointerId);
+        const p = clientToSprite(ev);
+        drag = {
+          shift: ev.shiftKey,
+          ox: p.x,
+          oy: p.y,
+          cx,
+          cy,
+          panX,
+          panY,
+        };
+        prev.style.cursor = "grabbing";
+      }
+      function onPointerMove(ev) {
+        if (!drag) return;
+        const p = clientToSprite(ev);
+        if (drag.shift) {
+          const diam = Math.min(P.w, P.h) * faceScale;
+          panX = Math.max(-1, Math.min(1, drag.panX + (p.x - drag.ox) / Math.max(1, diam)));
+          panY = Math.max(-1, Math.min(1, drag.panY + (p.y - drag.oy) / Math.max(1, diam)));
+        } else {
+          cx = drag.cx + (p.x - drag.ox);
+          cy = drag.cy + (p.y - drag.oy);
+        }
+        paintPreview();
+      }
+      function onPointerUp() {
+        drag = null;
+        prev.style.cursor = "grab";
+      }
+      prev.addEventListener("pointerdown", onPointerDown);
+      prev.addEventListener("pointermove", onPointerMove);
+      prev.addEventListener("pointerup", onPointerUp);
+      prev.addEventListener("pointercancel", onPointerUp);
+      prev.addEventListener("wheel", (ev) => {
+        ev.preventDefault();
+        const next = Math.round(faceScale * 100 + (ev.deltaY > 0 ? -3 : 3));
+        sizeIn.value = String(Math.max(20, Math.min(95, next)));
+        sizeIn.dispatchEvent(new Event("input"));
+      }, { passive: false });
+
+      sizeIn.addEventListener("input", () => {
+        faceScale = Number(sizeIn.value) / 100;
+        sizeVal.textContent = `${sizeIn.value}%`;
+        paintPreview();
+      });
+
+      function close() {
+        overlay.remove();
+        window.removeEventListener("keydown", onKey);
+      }
+      function onKey(e) {
+        if (e.key === "Escape") close();
+        if (e.key === "Enter") apply();
+      }
+      function apply() {
+        try {
+          applyCameraSource(srcCanvas, {
+            mode: "face",
+            faceScale,
+            cx,
+            cy,
+            panX,
+            panY,
+            sw: srcW,
+            sh: srcH,
+            mirror: false,
+            label: `Camera face → ${P.name} (placed)`,
+          });
+        } catch (e) {
+          ctx.toast(`Place failed: ${ctx.errText(e)}`, true);
+        }
+        close();
+      }
+      window.addEventListener("keydown", onKey);
+      overlay.addEventListener("click", (e) => {
+        const act = e.target?.getAttribute?.("data-act");
+        if (act === "cancel") close();
+        if (act === "apply") apply();
+      });
     }
 
     async function importPng() {
@@ -402,24 +589,12 @@ export function install(ctx) {
       }, "image/png");
     }
 
-    /** Webcam / import → palette sprite via `face-capture.js` (docs/26 F3). */
+    /** Webcam / import → place on sprite → palette via `face-capture.js`. */
     async function openCameraFace() {
       try {
         const { openFaceCapture } = await import("./face-capture.js");
         openFaceCapture({
-          onCapture: (canvas) => {
-            try {
-              applyCameraSource(canvas, {
-                mode: "face",
-                faceScale: 0.55,
-                sw: canvas.width,
-                sh: canvas.height,
-                mirror: false,
-              });
-            } catch (e) {
-              ctx.toast(`Capture failed: ${ctx.errText(e)}`, true);
-            }
-          },
+          onCapture: (canvas) => placeFaceOnSprite(canvas),
         });
       } catch (e) {
         ctx.toast(`Face capture unavailable: ${ctx.errText(e)}`, true);
@@ -809,7 +984,72 @@ export function install(ctx) {
       i.addEventListener("change", () => onset(Math.round(Number(i.value) || 0)));
       return i;
     }
-    function renderSide() {
+    let soundsUi = null;
+    function thingClassName() {
+      if (opts.className) return opts.className;
+      if (opts.num != null && S.summary?.things) {
+        const t = S.summary.things.find((x) => x.num === opts.num);
+        if (t?.name) return t.name;
+      }
+      try {
+        const j = S.mod.roomEditorSpriteAnims(P.name, opts.num ?? undefined);
+        const d = j ? JSON.parse(j) : null;
+        return d?.class || null;
+      } catch {
+        return null;
+      }
+    }
+    async function ensureSoundsPanel() {
+      if (P.ns !== "sprites" || !ctx.actorSoundSlots) return null;
+      const cls = thingClassName();
+      if (!cls) return null;
+      if (soundsUi?.className === cls) return soundsUi;
+      const { mountThingSoundsPanel } = await import("./sound-record.js");
+      let audioCtx = null;
+      const ui = mountThingSoundsPanel({
+        el,
+        className: cls,
+        getSlots: () => ctx.actorSoundSlots(cls),
+        decode: (id) => S.mod.roomEditorDecodeSound(id),
+        play: (snd) => {
+          try {
+            audioCtx = audioCtx || new AudioContext();
+            const ch = snd.channels || 1;
+            const frames = Math.floor(snd.samples.length / ch);
+            const buf = audioCtx.createBuffer(ch, frames, snd.rate);
+            for (let k = 0; k < ch; k++) {
+              const d = buf.getChannelData(k);
+              for (let i = 0; i < frames; i++) d[i] = snd.samples[i * ch + k];
+            }
+            const src = audioCtx.createBufferSource();
+            src.buffer = buf;
+            src.connect(audioCtx.destination);
+            src.start();
+          } catch (e) {
+            ctx.toast(ctx.errText(e), true);
+          }
+        },
+        replace: (slot, bytes) => {
+          if (!slot.lump) {
+            ctx.toast("No lump mapped for that sound", true);
+            return;
+          }
+          try {
+            const err = ctx.overrideLump({ name: slot.lump, ns: "global" }, bytes);
+            ctx.toast(
+              err ? `Replaced ${slot.lump} — ${err}` : `${slot.lump} replaced with your recording`,
+              !!err,
+            );
+          } catch (e) {
+            ctx.toast(ctx.errText(e), true);
+          }
+        },
+      });
+      ui.className = cls;
+      soundsUi = ui;
+      return ui;
+    }
+    async function renderSide() {
       const kids = [
         ...(anim ? [anim.box] : []),
         el("fieldset", {}, el("legend", {}, "Colours"),
@@ -828,6 +1068,11 @@ export function install(ctx) {
             el("div", { class: "tex-field" }, wIn, hIn,
               el("button", { class: "btn small", title: "Resize the canvas (anchored top-left)", onclick: () => resize(Number(wIn.value), Number(hIn.value)) }, "Resize"))),
           offs));
+      }
+      const snd = await ensureSoundsPanel();
+      if (snd) {
+        snd.refresh();
+        kids.push(snd.box);
       }
       const where = {
         textures: "Saved as a TX_START lump: it replaces the TEXTURE1 composite of the same name.",

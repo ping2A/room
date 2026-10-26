@@ -151,6 +151,10 @@ cp crates/room-web/editor-tools.js "$OUT/editor-tools.js"
 cp crates/room-web/editor-paint.js "$OUT/editor-paint.js"
 cp crates/room-web/editor-scripts.js "$OUT/editor-scripts.js"
 cp crates/room-web/editor.css "$OUT/editor.css"
+# Face-swap UI (docs/26): editor-paint dynamically imports face-capture.js.
+cp crates/room-web/face-capture.js crates/room-web/face-gallery.js \
+  crates/room-web/face-share.js crates/room-web/face-worker.js \
+  crates/room-web/settings-faces.js crates/room-web/sound-record.js "$OUT/"
 
 # Play mods (survival / bounty / royale). Names must match index.html options.
 mkdir -p "$OUT/mods"
@@ -163,8 +167,10 @@ while IFS= read -r -d '' wad; do
 done < <(find mods -mindepth 2 -maxdepth 2 -name '*.wad' -print0 2>/dev/null | sort -z)
 
 if [[ -f testdata/voxel/cheello_voxels.zip ]]; then
+  # Play + editor fetch either name (GZDoom-style .pk3 alias or the upstream zip).
   cp testdata/voxel/cheello_voxels.zip "$OUT/mods/voxel.pk3"
-  echo "room: mod  /mods/voxel.pk3"
+  cp testdata/voxel/cheello_voxels.zip "$OUT/mods/cheello_voxels.zip"
+  echo "room: mod  /mods/voxel.pk3 (+ cheello_voxels.zip)"
   MOD_COUNT=$((MOD_COUNT + 1))
 fi
 
@@ -207,6 +213,9 @@ sed_inplace \
   -e "s|./editor-paint.js|./editor-paint.js?v=${CACHE_TS}|g" \
   -e "s|./editor-scripts.js|./editor-scripts.js?v=${CACHE_TS}|g" \
   "$OUT/editor.js"
+sed_inplace "s|./face-capture.js|./face-capture.js?v=${CACHE_TS}|g" "$OUT/editor-paint.js"
+sed_inplace "s|./sound-record.js|./sound-record.js?v=${CACHE_TS}|g" "$OUT/editor.js" "$OUT/editor-paint.js"
+sed_inplace "s|./settings-faces.js|./settings-faces.js?v=${CACHE_TS}|g" "$OUT/face-share.js"
 sed_inplace \
   -e "s|./editor.js|./editor.js?v=${CACHE_TS}|g" \
   -e "s|./editor.css|./editor.css?v=${CACHE_TS}|g" \

@@ -14,8 +14,8 @@
         IWAD…<input id="file-iwad" type="file" accept=".wad,.iwad,.grp,application/octet-stream" hidden />
       </label>
       <span id="iwad-label" class="iwad-label" title="Base IWAD / GRP">—</span>
-      <label class="btn" title="Add PWADs, PK3s or Duke .MAP files on top of the IWAD (or drop files anywhere)">
-        Open…<input id="file-open" type="file" accept=".wad,.pk3,.zip,.pwad,.map" multiple hidden />
+      <label class="btn" title="Add PWADs, PK3s, ZIPs, or Duke .MAP files on top of the IWAD (or drop files anywhere)">
+        Open…<input id="file-open" type="file" accept=".wad,.pk3,.zip,.pwad,.map,application/zip" multiple hidden />
       </label>
       <select id="map-select" title="Map"></select>
       <button id="btn-new-map" class="btn" title="New map">New map</button>
@@ -64,12 +64,19 @@
       <button data-layout="2d" class="btn" title="2D only">2D</button>
       <button data-layout="split" class="btn active" title="2D + 3D">Split</button>
       <button data-layout="3d" class="btn" title="3D only">3D</button>
+      <button id="btn-visual" class="btn" title="Visual mode — immersive 3D edit (M), like Doom Builder">Visual</button>
+    </div>
+    <div class="group packs">
+      <button id="btn-add-pack" type="button" class="btn" title="Mount a content pack (.pk3 / .zip)">+ Pack…</button>
+      <input id="file-pack" type="file" accept=".pk3,.zip,.pk7,application/zip" multiple hidden />
+      <span id="packs-label" class="iwad-label" title="Mounted content packs">—</span>
     </div>
   </header>
 
   <main id="workspace">
     <aside id="browser">
       <nav class="tabs" id="browser-tabs">
+        <button data-tab="iwad" title="Loaded IWAD / game details">IWAD</button>
         <button data-tab="maps" class="active">Maps</button>
         <button data-tab="things">Things</button>
         <button data-tab="textures">Textures</button>

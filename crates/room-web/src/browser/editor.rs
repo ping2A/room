@@ -22,7 +22,7 @@ use room_sim::{
     FLAG_MISSILE, FLAG_NOBLOCKMAP, FLAG_NOBLOOD, FLAG_NODAMAGE, FLAG_NOGRAVITY, FLAG_NORADIUSDMG,
     FLAG_NOTARGET, FLAG_RIPPER, FLAG_SHOOTABLE, FLAG_SOLID, FLAG_SPAWNCEILING,
 };
-use room_vfs::{Namespace, Vfs, VfsBuilder, WadWriter};
+use room_vfs::{ContainerKind, Namespace, Vfs, VfsBuilder, WadWriter, detect_iwad};
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -502,8 +502,67 @@ impl Editor {
                 .collect();
             json!({ "grp": grp, "userMaps": user })
         });
+        let mut kind_counts = BTreeMap::<String, u32>::new();
+        let mut ns_counts = BTreeMap::<String, u32>::new();
+        let mut src_bytes = BTreeMap::<String, u64>::new();
+        let mut src_lumps = BTreeMap::<String, u32>::new();
+        for l in &lumps {
+            let kind = l["kind"].as_str().unwrap_or("data");
+            *kind_counts.entry(kind.to_owned()).or_default() += 1;
+            let ns = l["ns"].as_str().unwrap_or("global");
+            *ns_counts.entry(ns.to_owned()).or_default() += 1;
+            let src = l["src"].as_str().unwrap_or("");
+            let size = l["size"].as_u64().unwrap_or(0);
+            *src_bytes.entry(src.to_owned()).or_default() += size;
+            *src_lumps.entry(src.to_owned()).or_default() += 1;
+        }
+        let mut containers = Vec::new();
+        for i in 0..self.vfs.container_count() as u32 {
+            let id = room_vfs::ContainerId(i);
+            let Some(c) = self.vfs.container(id) else {
+                continue;
+            };
+            let kind = match c.kind {
+                ContainerKind::Wad => "wad",
+                ContainerKind::Zip => "pk3",
+                ContainerKind::SevenZ => "pk7",
+                ContainerKind::Directory => "dir",
+                ContainerKind::LooseFile => "file",
+            };
+            containers.push(json!({
+                "name": c.name,
+                "kind": kind,
+                "md5": c.md5.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                "lumps": src_lumps.get(&c.name).copied().unwrap_or(0),
+                "bytes": src_bytes.get(&c.name).copied().unwrap_or(0),
+            }));
+        }
+        let detected = self.data.iwadinfo.as_ref().and_then(|info| {
+            detect_iwad(&self.vfs, info).map(|m| {
+                json!({
+                    "name": m.record.name,
+                    "game": m.record.game,
+                    "autoname": m.record.autoname,
+                    "config": m.record.config,
+                    "mustContain": m.record.must_contain,
+                    "names": m.record.names,
+                    "filters": m.filters,
+                })
+            })
+        });
+        let magic = if self.iwad.1.len() >= 4 {
+            String::from_utf8_lossy(&self.iwad.1[..4]).into_owned()
+        } else {
+            String::new()
+        };
         json!({
             "iwad": self.iwad.0,
+            "iwadBytes": self.iwad.1.len() as u64,
+            "iwadMagic": magic,
+            "iwadDetected": detected,
+            "containers": containers,
+            "kindCounts": kind_counts,
+            "nsCounts": ns_counts,
             "duke": duke,
             "pwads": self.pwads.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
             "lumps": lumps,
@@ -859,6 +918,33 @@ pub fn room_editor_add_pwad(data: &[u8], name: &str) -> Result<String, JsValue> 
     })
 }
 
+/// Unmount a previously added PWAD / PK3 by name (case-insensitive).
+/// Returns the new summary JSON.
+#[wasm_bindgen(js_name = roomEditorRemovePwad)]
+pub fn room_editor_remove_pwad(name: &str) -> Result<String, JsValue> {
+    with_editor(|ed| {
+        let before = ed.pwads.len();
+        ed.pwads
+            .retain(|(n, _)| !n.eq_ignore_ascii_case(name));
+        if ed.pwads.len() == before {
+            // Also allow removing a Duke user .MAP that was folded into the GRP convert.
+            if let Some((grp_name, grp, maps)) = ed.duke.as_mut() {
+                let file = name.to_ascii_uppercase();
+                let had = maps.len();
+                maps.retain(|(n, _)| !n.eq_ignore_ascii_case(&file));
+                if maps.len() == had {
+                    return Err(format!("not mounted: {name}"));
+                }
+                ed.iwad = duke_base(grp_name, grp, maps)?;
+            } else {
+                return Err(format!("not mounted: {name}"));
+            }
+        }
+        ed.rebuild()?;
+        Ok(ed.summary().to_string())
+    })
+}
+
 /// Resource summary JSON (lumps, maps, textures, flats, thing types, overrides).
 #[wasm_bindgen(js_name = roomEditorSummary)]
 pub fn room_editor_summary() -> Result<String, JsValue> {
@@ -942,6 +1028,69 @@ pub fn room_editor_decode_sound(id: u32) -> Result<JsValue, JsValue> {
             &"samples".into(),
             &js_sys::Float32Array::from(snd.samples.as_slice()).into(),
         );
+        Ok(o.into())
+    })
+}
+
+/// Resolve a logical SNDINFO name to a lump: `{lump, id}` (`id` null if missing).
+#[wasm_bindgen(js_name = roomEditorResolveSound)]
+pub fn room_editor_resolve_sound(logical: &str) -> Result<JsValue, JsValue> {
+    with_editor(|ed| {
+        let mut combined = String::new();
+        for id in ed.vfs.find_all("SNDINFO", Namespace::Global) {
+            if let Ok(bytes) = ed.vfs.read(id) {
+                combined.push_str(&String::from_utf8_lossy(&bytes));
+                combined.push('\n');
+            }
+        }
+        if combined.is_empty() {
+            if let Some(id) = ed.vfs.find_any_ns("SNDINFO") {
+                if let Ok(bytes) = ed.vfs.read(id) {
+                    combined.push_str(&String::from_utf8_lossy(&bytes));
+                }
+            }
+        }
+        let reg = if combined.is_empty() {
+            room_defs::SoundRegistry::default()
+        } else {
+            room_defs::parse_sndinfo(&combined).unwrap_or_default()
+        };
+        let mut lump = reg
+            .resolve_lump(logical, 0)
+            .map(|s| s.to_ascii_uppercase());
+        if lump.is_none() {
+            let cand = logical.to_ascii_uppercase();
+            if ed.vfs.find(&cand, Namespace::Sounds).is_some()
+                || ed.vfs.find(&cand, Namespace::Global).is_some()
+                || ed.vfs.find_any_ns(&cand).is_some()
+            {
+                lump = Some(cand);
+            }
+        }
+        let id = lump.as_ref().and_then(|n| {
+            ed.vfs
+                .find(n, Namespace::Sounds)
+                .or_else(|| ed.vfs.find(n, Namespace::Global))
+                .or_else(|| ed.vfs.find_any_ns(n))
+                .map(|lid| lid.0)
+        });
+        let o = js_sys::Object::new();
+        match &lump {
+            Some(n) => {
+                let _ = js_sys::Reflect::set(&o, &"lump".into(), &n.into());
+            }
+            None => {
+                let _ = js_sys::Reflect::set(&o, &"lump".into(), &JsValue::NULL);
+            }
+        }
+        match id {
+            Some(i) => {
+                let _ = js_sys::Reflect::set(&o, &"id".into(), &JsValue::from_f64(f64::from(i)));
+            }
+            None => {
+                let _ = js_sys::Reflect::set(&o, &"id".into(), &JsValue::NULL);
+            }
+        }
         Ok(o.into())
     })
 }

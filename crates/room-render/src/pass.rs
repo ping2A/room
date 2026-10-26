@@ -1443,10 +1443,14 @@ fn make_unlit_pipeline_bias(
     })
 }
 
+/// Stay under WebGPU's common `maxBufferSize` (256 MiB). Doubling past that
+/// used to panic (`walls` at 512 MiB) and kill the WASM session.
+const MAX_VB_BYTES: u64 = 240 * 1024 * 1024;
+
 fn empty_vb(device: &wgpu::Device, label: &str, bytes: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
-        size: bytes.max(64),
+        size: bytes.max(64).min(MAX_VB_BYTES),
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
@@ -1463,9 +1467,16 @@ fn ensure_vb<T: Pod>(
     if data.is_empty() {
         return old.clone();
     }
+    let elem = std::mem::size_of::<T>().max(1);
+    let max_elems = (MAX_VB_BYTES as usize) / elem;
+    let data = if data.len() > max_elems {
+        &data[..max_elems]
+    } else {
+        data
+    };
     let need = std::mem::size_of_val(data) as u64;
     let buf = if need > *cap {
-        *cap = need.next_power_of_two();
+        *cap = need.next_power_of_two().min(MAX_VB_BYTES).max(need);
         empty_vb(device, label, *cap)
     } else {
         old.clone()

@@ -5,7 +5,18 @@ use crate::models::{ModelError, ModelMesh};
 use crate::scene::SceneLists;
 use glam::{Mat4, Vec3};
 use room_vfs::{Namespace, Vfs};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Soft cap on voxel-contributed wall verts per frame (~76 MiB at 40 B/vert).
+///
+/// Cheello packs expand KVX into the unlit wall VB; without a budget, a few
+/// spider/cyber frames push past WebGPU's 256 MiB buffer limit and panic the
+/// session (map switches then fail with `RuntimeError: unreachable`).
+pub const MAX_VOXEL_WALL_VERTS_PER_FRAME: usize = 2_000_000;
+
+/// Reject a single KVX whose expanded index count would dominate the frame.
+/// Spider walk frames (~600k) still load; death/gib megameshes fall back to sprites.
+const MAX_VOXEL_MESH_INDICES: usize = 750_000;
 
 /// One actor whose current sprite frame is a voxel.
 #[derive(Clone, Debug)]
@@ -51,6 +62,8 @@ struct CachedVoxel {
 #[derive(Clone, Debug, Default)]
 pub struct VoxelCatalog {
     meshes: BTreeMap<String, CachedVoxel>,
+    /// Keys that failed to load or exceeded [`MAX_VOXEL_MESH_INDICES`].
+    failed: BTreeSet<String>,
 }
 
 impl VoxelCatalog {
@@ -69,9 +82,23 @@ impl VoxelCatalog {
         }
     }
 
-    /// `true` when `file` parses. Failures stay uncached so a sprite can show.
+    /// `true` when `file` parses and fits the mesh budget.
+    ///
+    /// Missing / oversize / corrupt files are cached as failed so the sprite
+    /// path stays cheap on later frames.
     pub fn has_file(&mut self, vfs: &Vfs, file: &str, override_palette: bool) -> bool {
         self.ensure(vfs, file, override_palette).is_ok()
+    }
+
+    /// Expanded wall-vertex count for a cached mesh (`None` if unloadable).
+    pub fn wall_vert_cost(
+        &mut self,
+        vfs: &Vfs,
+        file: &str,
+        override_palette: bool,
+    ) -> Option<usize> {
+        let key = self.ensure(vfs, file, override_palette).ok()?;
+        self.meshes.get(&key).map(|e| e.mesh.indices.len())
     }
 
     /// Append posed voxels into the opaque wall list.
@@ -183,11 +210,38 @@ impl VoxelCatalog {
         if self.meshes.contains_key(&key) {
             return Ok(key);
         }
-        let bytes = read_voxel(vfs, file)?;
-        let kvx = parse_kvx(&bytes)?;
+        if self.failed.contains(&key) {
+            return Err(ModelError::Message(format!("voxel unavailable `{file}`")));
+        }
+        let fail = |s: &mut Self, key: &str, err: ModelError| -> Result<String, ModelError> {
+            s.failed.insert(key.to_owned());
+            Err(err)
+        };
+        let bytes = match read_voxel(vfs, file) {
+            Ok(b) => b,
+            Err(e) => return fail(self, &key, e),
+        };
+        let kvx = match parse_kvx(&bytes) {
+            Ok(k) => k,
+            Err(e) => return fail(self, &key, e),
+        };
         let mesh = kvx_to_mesh(&kvx);
         if mesh.indices.is_empty() {
-            return Err(ModelError::Message(format!("empty voxel `{file}`")));
+            return fail(
+                self,
+                &key,
+                ModelError::Message(format!("empty voxel `{file}`")),
+            );
+        }
+        if mesh.indices.len() > MAX_VOXEL_MESH_INDICES {
+            return fail(
+                self,
+                &key,
+                ModelError::Message(format!(
+                    "voxel `{file}` too dense ({} indices)",
+                    mesh.indices.len()
+                )),
+            );
         }
         let rgba = palette_rgba(kvx.palette.as_ref(), override_palette, &game_palette(vfs));
         let palette_name = format!("__VOXEL{key}");
@@ -358,6 +412,12 @@ mod tests {
         let mut cat = VoxelCatalog::new();
         assert!(cat.has_file(&vfs, &poss.file, false));
         assert!(cat.has_file(&vfs, &shell.file, false));
+        // Dense spider death frame must fall back to sprites (GPU wall VB budget).
+        assert!(
+            !cat.has_file(&vfs, "spidp", false),
+            "oversized KVX should be rejected"
+        );
+        assert!(!cat.has_file(&vfs, "spidp", false)); // cached failure
         let mut kvx_count = 0u32;
         for (id, info) in vfs.iter() {
             if !info.full_path.ends_with(".kvx") {

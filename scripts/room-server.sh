@@ -122,7 +122,9 @@ build_room_web() {
   wasm-bindgen "$wasm" --out-dir "$out" --target web --no-typescript
   cp crates/room-web/index.html crates/room-web/voice.js crates/room-web/rtc.js \
     crates/room-web/netgraph.js crates/room-web/touch.js crates/room-web/settings.js crates/room-web/mixer-worklet.js \
-    crates/room-web/editor.html crates/room-web/editor.js crates/room-web/editor-tools.js crates/room-web/editor-paint.js crates/room-web/editor-scripts.js crates/room-web/editor.css "$out/"
+    crates/room-web/editor.html crates/room-web/editor.js crates/room-web/editor-tools.js crates/room-web/editor-paint.js crates/room-web/editor-scripts.js crates/room-web/editor.css \
+    crates/room-web/face-capture.js crates/room-web/face-gallery.js crates/room-web/face-share.js \
+    crates/room-web/face-worker.js crates/room-web/settings-faces.js crates/room-web/sound-record.js "$out/"
   cp -R crates/room-web/as "$out/as"
   # Version every module URL so browsers never run a stale wasm / JS mix
   # (the server sends no cache headers).
@@ -132,6 +134,8 @@ build_room_web() {
   sed -i.bak -E "s#\./(room_web|editor-tools|editor-paint|editor-scripts|netgraph|touch|rtc|voice)\.js#./\1.js?v=${v}#g" \
     "$out/editor.js" "$out/index.html"
   sed -i.bak -E "s#\./editor\.(js|css)#./editor.\1?v=${v}#g" "$out/editor.html"
+  sed -i.bak "s|./face-capture.js|./face-capture.js?v=${v}|g" "$out/editor-paint.js"
+  sed -i.bak "s|./sound-record.js|./sound-record.js?v=${v}|g" "$out/editor.js" "$out/editor-paint.js"
   rm -f "$out"/*.bak
   # GM SoundFont for web music (same search order as the desktop shell).
   for sf in soundfonts/room.sf2 soundfonts/TimGM6mb.sf2 soundfonts/default.sf2 soundfonts/gzdoom.sf2 soundfonts/FluidR3_GM.sf2; do
@@ -143,6 +147,7 @@ build_room_web() {
   mkdir -p "$out/mods"
   if [[ -f testdata/voxel/cheello_voxels.zip ]]; then
     cp testdata/voxel/cheello_voxels.zip "$out/mods/voxel.pk3"
+    cp testdata/voxel/cheello_voxels.zip "$out/mods/cheello_voxels.zip"
   fi
   if [[ -f testdata/doom/doom1.wad ]]; then
     cp testdata/doom/doom1.wad "$out/doom1.wad"

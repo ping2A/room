@@ -18,9 +18,9 @@ use room_music::{GenMidiBank, MidiDevice};
 use room_nodebuild::ensure_nodes;
 use room_render::{
     Camera, Canvas, DynLightInstance, GpuContext, MaterialCatalog, OffscreenTarget, SceneLists,
-    SpriteInstance, SpriteOrient, UnlitPass, VoxelActorPose, VoxelCatalog, build_scene,
-    render_offscreen, sprite_lump_candidates_rot, sprite_rotation_digit, voxel_spin_degrees,
-    voxel_view_angles,
+    MAX_VOXEL_WALL_VERTS_PER_FRAME, SpriteInstance, SpriteOrient, UnlitPass, VoxelActorPose,
+    VoxelCatalog, build_scene, render_offscreen, sprite_lump_candidates_rot,
+    sprite_rotation_digit, voxel_spin_degrees, voxel_view_angles,
 };
 use room_sim::{
     Buttons, FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_DROPPED, FLAG_FLOAT, FLAG_NOGRAVITY,
@@ -57,6 +57,8 @@ pub struct PlaySession {
     voxels: VoxelCatalog,
     /// Poses filled by [`Self::collect_live_sprites_for`].
     voxel_poses: Vec<VoxelActorPose>,
+    /// Actors that received a voxel pose this frame (sprite suppressed).
+    voxel_pose_actors: BTreeSet<(u32, u32)>,
     /// ANIMDEFS texture / flat animations.
     tex_anim: room_render::TextureAnimator,
     /// ANIMDEFS `cameratexture` sizes.
@@ -381,6 +383,7 @@ impl PlaySession {
             voxeldefs,
             voxels: VoxelCatalog::new(),
             voxel_poses: Vec::new(),
+            voxel_pose_actors: BTreeSet::new(),
             tex_anim,
             camera_tex_sizes,
             camera_tex_frame: 0,
@@ -1794,8 +1797,9 @@ impl PlaySession {
         }
     }
 
-    fn fill_voxel_poses(&mut self, seat: u8) {
+    fn fill_voxel_poses(&mut self, seat: u8, eye: Vec3) {
         self.voxel_poses.clear();
+        self.voxel_pose_actors.clear();
         if self.voxeldefs.by_name.is_empty() {
             return;
         }
@@ -1810,6 +1814,7 @@ impl PlaySession {
             .and_then(|p| p.mo);
         let tic = world.level.maptime as f32;
         let actors: Vec<_> = world.thinkers.default.iter().copied().collect();
+        let mut cands = Vec::new();
         for id in actors {
             let Some(a) = world.actors.get(id) else {
                 continue;
@@ -1824,6 +1829,9 @@ impl PlaySession {
             };
             let file = def.file.clone();
             let override_palette = def.override_palette;
+            let Some(cost) = self.voxels.wall_vert_cost(&self.vfs, &file, override_palette) else {
+                continue;
+            };
             let dropped = (flags & FLAG_DROPPED) != 0;
             let spin_n = if dropped {
                 def.dropped_spin
@@ -1843,10 +1851,12 @@ impl PlaySession {
                 def.use_actor_roll,
             );
             #[allow(clippy::cast_possible_truncation)]
+            let origin = Vec3::new(a.pos.x() as f32, a.pos.y() as f32, a.pos.z() as f32);
+            let dist2 = origin.distance_squared(eye);
             let pose = VoxelActorPose {
                 file,
                 override_palette,
-                origin: Vec3::new(a.pos.x() as f32, a.pos.y() as f32, a.pos.z() as f32),
+                origin,
                 yaw_deg: yaw,
                 pitch_deg: pitch,
                 roll_deg: roll,
@@ -1857,22 +1867,24 @@ impl PlaySession {
                 offset: def.offset,
                 light: 1.0,
             };
-            if self
-                .voxels
-                .has_file(&self.vfs, &pose.file, pose.override_palette)
-            {
-                self.voxel_poses.push(pose);
+            cands.push((dist2, id, cost, pose));
+        }
+        cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut used = 0usize;
+        for (_, id, cost, pose) in cands {
+            if used.saturating_add(cost) > MAX_VOXEL_WALL_VERTS_PER_FRAME {
+                continue;
             }
+            used += cost;
+            self.voxel_pose_actors
+                .insert((id.index(), id.generation()));
+            self.voxel_poses.push(pose);
         }
     }
 
-    fn sprite_replaced_by_voxel(&mut self, sprite: &str, frame: u8) -> bool {
-        let Some(def) = self.voxeldefs.for_sprite(sprite, frame) else {
-            return false;
-        };
-        let file = def.file.clone();
-        let override_palette = def.override_palette;
-        self.voxels.has_file(&self.vfs, &file, override_palette)
+    fn actor_draws_voxel(&self, id: room_sim::ActorId) -> bool {
+        self.voxel_pose_actors
+            .contains(&(id.index(), id.generation()))
     }
 
     /// Draw voxel poses gathered by the latest sprite collect.
@@ -1900,7 +1912,7 @@ impl PlaySession {
 
     /// Like [`Self::collect_live_sprites`], hiding `seat`'s own body.
     pub fn collect_live_sprites_for(&mut self, camera: &Camera, seat: u8) -> Vec<SpriteInstance> {
-        self.fill_voxel_poses(seat);
+        self.fill_voxel_poses(seat, camera.eye);
         let Some(world) = self.game.world() else {
             return Vec::new();
         };
@@ -1932,6 +1944,7 @@ impl PlaySession {
                     light = 1.0;
                 }
                 Some((
+                    id,
                     a.pos.x(),
                     a.pos.y(),
                     a.pos.z(),
@@ -1950,6 +1963,7 @@ impl PlaySession {
             .collect();
         let mut out = Vec::with_capacity(actors.len());
         for (
+            id,
             x,
             y,
             z,
@@ -1965,7 +1979,7 @@ impl PlaySession {
             flags,
         ) in actors
         {
-            if self.sprite_replaced_by_voxel(&sprite, frame) {
+            if self.actor_draws_voxel(id) {
                 continue;
             }
             let mut w = (radius * 2.0 * scale_x.abs()).clamp(0.25, 4096.0);

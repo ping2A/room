@@ -31,10 +31,11 @@ use room_render::{
     Camera, Canvas, CanvasGpu, CubemapFaces, DecalStore, DynLightInstance, GpuContext, LightMode,
     MaterialCatalog, MaterialMaps, ModelActorPose, ModelCatalog, OffscreenTarget, PARTICLE_TEX,
     ParticleStore, SceneLists, SpriteInstance, SpriteOrient, TextureAnimator, UnlitPass,
-    VoxelActorPose, VoxelCatalog, append_actor_models, append_decals, append_particles,
-    apply_glow_fullbright, build_scene, build_scene_with_sky_ex_sized, clip_scene_to_mirror_line,
-    mirror_clip_plane, read_rgba, read_texture_rgba, render_offscreen, scroll_sky_u,
-    sprite_lump_candidates_rot, sprite_rotation_digit, voxel_spin_degrees, voxel_view_angles,
+    MAX_VOXEL_WALL_VERTS_PER_FRAME, VoxelActorPose, VoxelCatalog, append_actor_models,
+    append_decals, append_particles, apply_glow_fullbright, build_scene,
+    build_scene_with_sky_ex_sized, clip_scene_to_mirror_line, mirror_clip_plane, read_rgba,
+    read_texture_rgba, render_offscreen, scroll_sky_u, sprite_lump_candidates_rot,
+    sprite_rotation_digit, voxel_spin_degrees, voxel_view_angles,
 };
 use room_sim::{
     ActorId, Buttons, ClassRegistry, FLAG_CORPSE, FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_DROPPED,
@@ -411,6 +412,7 @@ fn main() {
         voxeldefs,
         voxels: VoxelCatalog::new(),
         voxel_poses: Vec::new(),
+        voxel_pose_actors: std::collections::BTreeSet::new(),
         camera_tex_sizes,
         tex_anim,
         camera_tex_frame: 0,
@@ -895,6 +897,8 @@ struct ViewerApp {
     voxels: VoxelCatalog,
     /// Voxel poses from the latest [`Self::collect_live_sprites`].
     voxel_poses: Vec<VoxelActorPose>,
+    /// Actors that received a voxel pose this frame (sprite suppressed).
+    voxel_pose_actors: std::collections::BTreeSet<(u32, u32)>,
     /// ANIMDEFS `cameratexture` sizes (uppercase name → w×h).
     camera_tex_sizes: std::collections::BTreeMap<String, (u32, u32)>,
     /// ANIMDEFS texture / flat animations.
@@ -3162,6 +3166,7 @@ impl ViewerApp {
 
     fn fill_voxel_poses(&mut self) {
         self.voxel_poses.clear();
+        self.voxel_pose_actors.clear();
         let Some(world) = self.play.as_ref().and_then(|g| g.world()) else {
             return;
         };
@@ -3177,7 +3182,9 @@ impl ViewerApp {
             .and_then(|p| p.as_ref())
             .and_then(|p| p.mo);
         let tic = world.level.maptime as f32;
+        let eye = self.camera.eye;
         let actors: Vec<_> = world.thinkers.default.iter().copied().collect();
+        let mut cands = Vec::new();
         for id in actors {
             let Some(a) = world.actors.get(id) else {
                 continue;
@@ -3190,9 +3197,12 @@ impl ViewerApp {
             let Some(def) = self.voxeldefs.for_sprite(&a.sprite, a.frame) else {
                 continue;
             };
-            if !self.voxels.has_file(vfs, &def.file, def.override_palette) {
+            let Some(cost) = self
+                .voxels
+                .wall_vert_cost(vfs, &def.file, def.override_palette)
+            else {
                 continue;
-            }
+            };
             let dropped = (flags & FLAG_DROPPED) != 0;
             let spin_n = if dropped {
                 def.dropped_spin
@@ -3213,31 +3223,44 @@ impl ViewerApp {
             );
             let light = (actor_light_level(world, a) as f32 / 255.0).clamp(0.2, 1.0);
             #[allow(clippy::cast_possible_truncation)]
-            self.voxel_poses.push(VoxelActorPose {
-                file: def.file.clone(),
-                override_palette: def.override_palette,
-                origin: Vec3::new(a.pos.x() as f32, a.pos.y() as f32, a.pos.z() as f32),
-                yaw_deg: yaw,
-                pitch_deg: pitch,
-                roll_deg: roll,
-                spin_deg: voxel_spin_degrees(spin_n, tic),
-                actor_scale: [a.scale_x as f32, a.scale_y as f32],
-                voxel_scale: def.scale,
-                angle_offset: def.angle_offset,
-                offset: def.offset,
-                light,
-            });
+            let origin = Vec3::new(a.pos.x() as f32, a.pos.y() as f32, a.pos.z() as f32);
+            let dist2 = origin.distance_squared(eye);
+            cands.push((
+                dist2,
+                id,
+                cost,
+                VoxelActorPose {
+                    file: def.file.clone(),
+                    override_palette: def.override_palette,
+                    origin,
+                    yaw_deg: yaw,
+                    pitch_deg: pitch,
+                    roll_deg: roll,
+                    spin_deg: voxel_spin_degrees(spin_n, tic),
+                    actor_scale: [a.scale_x as f32, a.scale_y as f32],
+                    voxel_scale: def.scale,
+                    angle_offset: def.angle_offset,
+                    offset: def.offset,
+                    light,
+                },
+            ));
+        }
+        cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut used = 0usize;
+        for (_, id, cost, pose) in cands {
+            if used.saturating_add(cost) > MAX_VOXEL_WALL_VERTS_PER_FRAME {
+                continue;
+            }
+            used += cost;
+            self.voxel_pose_actors
+                .insert((id.index(), id.generation()));
+            self.voxel_poses.push(pose);
         }
     }
 
-    fn sprite_replaced_by_voxel(&mut self, sprite: &str, frame: u8) -> bool {
-        let Some(def) = self.voxeldefs.for_sprite(sprite, frame) else {
-            return false;
-        };
-        let Some(vfs) = self.vfs.as_ref() else {
-            return false;
-        };
-        self.voxels.has_file(vfs, &def.file, def.override_palette)
+    fn actor_draws_voxel(&self, id: ActorId) -> bool {
+        self.voxel_pose_actors
+            .contains(&(id.index(), id.generation()))
     }
 
     /// Actors that have a MODELDEF entry (drawn as meshes when files resolve).
@@ -3690,6 +3713,7 @@ impl ViewerApp {
                 #[allow(clippy::cast_possible_truncation)]
                 let alpha = alpha as f32;
                 Some((
+                    id,
                     a.pos.x(),
                     a.pos.y(),
                     a.pos.z(),
@@ -3708,6 +3732,7 @@ impl ViewerApp {
             })
             .collect();
         for (
+            id,
             x,
             y,
             z,
@@ -3724,7 +3749,7 @@ impl ViewerApp {
             flags,
         ) in actors
         {
-            if self.sprite_replaced_by_voxel(&sprite, frame) {
+            if self.actor_draws_voxel(id) {
                 continue;
             }
             // Prefer patch pixel size (1 map unit per texel). Floor items / monsters

@@ -121,6 +121,10 @@ const S = {
   lumpTabs: new Map(),
   actors: null,
   actorSel: null,
+  /** Doom Builder–style immersive 3D edit (M). */
+  visual: false,
+  /** Layout before entering visual mode (`2d` / `split` / `3d`). */
+  layoutBeforeVisual: "split",
 };
 
 // ---------------------------------------------------------------- engine boot
@@ -198,14 +202,166 @@ function setSummary(json) {
   }
   if (S.summary.decorateError) toast(`DECORATE: ${S.summary.decorateError}`, true);
   S.actors = null;
+  syncPacksUi();
   renderBrowser();
 }
 
 function setIwadLabel(name) {
-  const el = $("#iwad-label");
-  if (!el) return;
-  el.textContent = name || "—";
-  el.title = name ? `Base IWAD / GRP: ${name}` : "No IWAD loaded — use IWAD…";
+  const label = $("#iwad-label");
+  if (!label) return;
+  label.textContent = name || "—";
+  label.title = name ? `Base IWAD / GRP: ${name} — click for details` : "No IWAD loaded — use IWAD…";
+  label.style.cursor = name ? "pointer" : "";
+  label.onclick = name ? () => { S.tab = "iwad"; syncBrowserTab(); renderBrowser(); openIwadPage(); } : null;
+}
+
+function syncBrowserTab() {
+  document.querySelectorAll("#browser-tabs button").forEach((x) => {
+    x.classList.toggle("active", x.dataset.tab === S.tab);
+  });
+}
+
+function openIwadPage() {
+  if (!S.summary) { toast("Open an IWAD first", true); return; }
+  const id = "iwad-info";
+  const view = buildIwadPage();
+  S.lumpTabs.set(id, { title: "IWAD", view });
+  selectDocTab(id);
+}
+
+function buildIwadPage() {
+  const sm = S.summary;
+  const det = sm.iwadDetected;
+  const wrap = el("div", { class: "iwad-page" });
+  wrap.append(
+    el("div", { class: "doc-head" },
+      el("h2", { class: "iwad-title" }, det?.name || sm.iwad || "IWAD"),
+      el("span", { class: "kind map" }, det?.game || (sm.duke ? "Duke" : "unknown"))),
+    el("div", { class: "iwad-sub" },
+      sm.iwad || "—",
+      sm.iwadMagic ? ` · ${sm.iwadMagic}` : "",
+      ` · ${fmtSize(sm.iwadBytes || 0)}`,
+      det?.autoname ? ` · ${det.autoname}` : ""));
+
+  const stats = [
+    ["Maps", sm.maps?.length || 0],
+    ["Lumps", sm.lumps?.length || 0],
+    ["Textures", sm.textures?.length || 0],
+    ["Flats", Array.isArray(sm.flats) ? sm.flats.length : Object.keys(sm.flats || {}).length],
+    ["Patches", Array.isArray(sm.patches) ? sm.patches.length : Object.keys(sm.patches || {}).length],
+    ["Things", sm.things?.length || 0],
+    ["PWADs", sm.pwads?.length || 0],
+    ["Overrides", sm.overrides?.length || 0],
+  ];
+  wrap.append(el("div", { class: "iwad-grid" },
+    ...stats.map(([l, n]) => el("div", { class: "iwad-stat" }, el("div", { class: "n" }, n), el("div", { class: "l" }, l)))));
+
+  const kv = (rows) => el("table", { class: "iwad-kv" },
+    ...rows.filter(([, v]) => v != null && v !== "").map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", {}, v instanceof Node ? v : String(v)))));
+
+  wrap.append(el("fieldset", {}, el("legend", {}, "Identity"), kv([
+    ["File", sm.iwad],
+    ["Size", fmtSize(sm.iwadBytes || 0)],
+    ["Magic", sm.iwadMagic || "—"],
+    ["Detected", det?.name || "No IWADINFO match"],
+    ["Game", det?.game || (sm.duke ? "Duke Nukem 3D" : "—")],
+    ["Autoname", det?.autoname || "—"],
+    ["Config", det?.config || "—"],
+    ["Filters", det?.filters?.length ? el("div", { class: "iwad-chips" }, ...det.filters.map((f) => el("span", {}, f))) : "—"],
+    ["Must contain", det?.mustContain?.length ? el("div", { class: "iwad-chips" }, ...det.mustContain.map((f) => el("span", {}, f))) : "—"],
+    ["Known names", det?.names?.length ? el("div", { class: "iwad-chips" }, ...det.names.map((f) => el("span", {}, f))) : "—"],
+  ])));
+
+  if (sm.duke) {
+    wrap.append(el("fieldset", {}, el("legend", {}, "Duke Nukem 3D"), kv([
+      ["GRP", sm.duke.grp],
+      ["User maps", (sm.duke.userMaps || []).join(", ") || "—"],
+    ])));
+  }
+
+  const removable = listRemovableArchives();
+  const packBox = el("fieldset", {}, el("legend", {}, "Mounted archives"),
+    el("p", { class: "muted" }, "Add with Open…, drop, or + Pack…. Remove undoes a PWAD / pack (not the base IWAD)."));
+  if (!removable.length) {
+    packBox.append(el("p", { class: "muted" }, "No extra archives mounted."));
+  } else {
+    const list = el("div", { class: "iwad-pack-list" });
+    for (const name of removable) {
+      list.append(el("div", { class: "iwad-pack-row" },
+        el("span", { class: "name" }, name),
+        el("button", {
+          class: "btn small danger",
+          type: "button",
+          title: `Unmount ${name}`,
+          onclick: () => removePwad(name),
+        }, "Remove")));
+    }
+    packBox.append(list);
+  }
+  packBox.append(el("div", { class: "actions" },
+    el("button", {
+      class: "btn small",
+      onclick: () => $("#file-pack")?.click(),
+    }, "+ Add pack…")));
+  wrap.append(packBox);
+
+  if (sm.decorateError) {
+    wrap.append(el("div", { class: "err-box" }, `DECORATE: ${sm.decorateError}`));
+  }
+
+  const mounts = sm.containers || [];
+  if (mounts.length) {
+    const remSet = new Set(removable.map((n) => n.toLowerCase()));
+    const rows = mounts.map((c) => {
+      const canRemove = remSet.has(String(c.name || "").toLowerCase());
+      return el("tr", {},
+        el("td", {}, c.name),
+        el("td", {}, c.kind),
+        el("td", {}, String(c.lumps)),
+        el("td", {}, fmtSize(c.bytes || 0)),
+        el("td", { style: "font-size:10px" }, (c.md5 || "").slice(0, 16) + (c.md5 ? "…" : "")),
+        el("td", {}, canRemove
+          ? el("button", {
+            class: "btn small danger",
+            type: "button",
+            onclick: () => removePwad(c.name),
+          }, "Remove")
+          : el("span", { class: "muted" }, "—")));
+    });
+    wrap.append(el("fieldset", {}, el("legend", {}, "All containers"),
+      el("table", { class: "iwad-kv" },
+        el("tr", {}, el("th", {}, "Name"), el("th", {}, "Kind"), el("th", {}, "Lumps"), el("th", {}, "Bytes"), el("th", {}, "MD5"), el("th", {}, "")),
+        ...rows)));
+  }
+
+  const kindEntries = Object.entries(sm.kindCounts || {}).sort((a, b) => b[1] - a[1]);
+  if (kindEntries.length) {
+    wrap.append(el("fieldset", {}, el("legend", {}, "Lumps by kind"),
+      el("div", { class: "iwad-chips" },
+        ...kindEntries.map(([k, n]) => el("span", {}, `${k} ${n}`)))));
+  }
+  const nsEntries = Object.entries(sm.nsCounts || {}).sort((a, b) => b[1] - a[1]);
+  if (nsEntries.length) {
+    wrap.append(el("fieldset", {}, el("legend", {}, "Lumps by namespace"),
+      el("div", { class: "iwad-chips" },
+        ...nsEntries.map(([k, n]) => el("span", {}, `${k} ${n}`)))));
+  }
+
+  if (sm.maps?.length) {
+    wrap.append(el("fieldset", {}, el("legend", {}, `Maps (${sm.maps.length})`),
+      el("div", { class: "iwad-maps" },
+        ...sm.maps.map((m) => el("button", {
+          class: `btn small${S.doc?.name === m ? " active" : ""}`,
+          onclick: () => loadMapOrDoc(m),
+        }, m)))));
+  }
+
+  wrap.append(el("div", { class: "actions" },
+    el("button", { class: "btn small", onclick: () => { S.tab = "lumps"; syncBrowserTab(); renderBrowser(); } }, "Browse lumps"),
+    el("button", { class: "btn small", onclick: () => { S.tab = "things"; syncBrowserTab(); renderBrowser(); } }, "Thing types"),
+    el("button", { class: "btn small", onclick: openIwadPage }, "Refresh")));
+
+  return wrap;
 }
 
 function openIwad(bytes, name) {
@@ -245,20 +401,107 @@ async function openIwadFile(file) {
   if (first) loadMap(first);
 }
 
+/** Archive that may carry VOXELDEF / extra content. */
+function isContentPackName(name) {
+  return /\.(pk3|pk7|zip)$/i.test(String(name || ""));
+}
+
+/** True if bytes look like a ZIP/PK3 that includes a VOXELDEF lump path. */
+function bytesHaveVoxeldef(bytes) {
+  if (!bytes || bytes.length < 32) return false;
+  // Local headers + central directory (often near EOF) both store entry names.
+  const needle = [0x56, 0x4f, 0x58, 0x45, 0x4c, 0x44, 0x45, 0x46]; // VOXELDEF
+  const windows = [];
+  windows.push([0, Math.min(bytes.length, 512 * 1024)]);
+  if (bytes.length > 512 * 1024) {
+    windows.push([Math.max(0, bytes.length - 512 * 1024), bytes.length]);
+  }
+  for (const [lo, hi] of windows) {
+    outer: for (let i = lo; i <= hi - needle.length; i++) {
+      for (let j = 0; j < needle.length; j++) {
+        const c = bytes[i + j];
+        // Case-insensitive ASCII.
+        if (c !== needle[j] && c !== (needle[j] | 0x20)) continue outer;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+function shouldRemountForPack(name, bytes) {
+  return isContentPackName(name) || bytesHaveVoxeldef(bytes);
+}
+
+/** PWADs / packs the user can unmount (not the base IWAD). */
+function listRemovableArchives() {
+  return [...(S.summary?.pwads || [])];
+}
+
+function syncPacksUi() {
+  const label = $("#packs-label");
+  if (!label) return;
+  const packs = listRemovableArchives();
+  label.replaceChildren();
+  if (!packs.length) {
+    label.textContent = "—";
+    label.title = "No extra archives — use + Pack… or Open…";
+    return;
+  }
+  label.title = `Mounted: ${packs.join(", ")}`;
+  for (const name of packs) {
+    const chip = el("span", { class: "pack-chip", title: name },
+      el("span", {}, name.length > 18 ? `${name.slice(0, 16)}…` : name),
+      el("button", {
+        type: "button",
+        class: "pack-chip-x",
+        title: `Remove ${name}`,
+        onclick: (e) => { e.stopPropagation(); removePwad(name); },
+      }, "×"));
+    label.append(chip);
+  }
+}
+
 function addPwad(bytes, name) {
   try {
     const before = new Set(S.summary?.duke?.userMaps || []);
+    const mapBefore = S.doc?.name;
+    if (S.doc) S.docs[S.doc.name] = S.doc;
+    const remount = shouldRemountForPack(name, bytes);
     setSummary(S.mod.roomEditorAddPwad(bytes, name));
     status(`Mounted ${name}`);
+    syncPacksUi();
     if (/\.map$/i.test(name) && S.summary.duke) {
       const added = S.summary.duke.userMaps.find((m) => !before.has(m)) || S.summary.duke.userMaps.at(-1);
       if (added) loadMap(added);
       return;
     }
     const own = S.summary.lumps.filter((l) => l.src === name && l.kind === "map").map((l) => l.name);
-    if (own.length) loadMap(own[0]);
+    if (own.length) {
+      loadMap(own[0]);
+      return;
+    }
+    // VOXELDEF/KVX (and other defs) apply after the live session remounts.
+    if (remount && mapBefore) loadMap(mapBefore);
   } catch (e) {
     toast(`Mount failed: ${errText(e)}`, true);
+  }
+}
+
+function removePwad(name) {
+  if (!name || !S.mod) return;
+  try {
+    const mapBefore = S.doc?.name;
+    if (S.doc) S.docs[S.doc.name] = S.doc;
+    setSummary(S.mod.roomEditorRemovePwad(name));
+    status(`Removed ${name}`);
+    toast(`Unmounted ${name}`);
+    syncPacksUi();
+    if (mapBefore && (S.summary.maps || []).includes(mapBefore)) loadMap(mapBefore);
+    else if (S.summary.maps?.[0]) loadMap(S.summary.maps[0]);
+    if (S.tab === "iwad" || S.lumpTabs.has("iwad-info")) openIwadPage();
+  } catch (e) {
+    toast(`Remove failed: ${errText(e)}`, true);
   }
 }
 
@@ -1275,11 +1518,58 @@ function setPlaying(on, mode) {
 function syncPlayUi() {
   $("#btn-stop").disabled = !S.playing;
   const b = $("#badge3d");
-  b.textContent = S.playing ? "PLAYING" : "EDIT";
+  b.textContent = S.playing ? "PLAYING" : (S.visual ? "VISUAL" : "EDIT");
   b.classList.toggle("playing", S.playing);
   $("#hint3d").textContent = S.playing
     ? "Playing — WASD move · mouse look · wheel weapon · Ctrl/LMB fire · E/Space use · edits apply live"
-    : "Click: select · Double-click / P: edit pixels · Right-drag: look · WASD/Q/Z: fly · Shift: fast · PgUp/PgDn height · T paint · +/- light";
+    : S.visual
+      ? "Visual mode (M exits) — Click: select · Double-click / P: edit pixels · Right-drag: look · WASD/Q/Z: fly · PgUp/PgDn height · T paint · +/- light"
+      : "Click: select · Double-click / P: edit pixels · Right-drag: look · WASD/Q/Z: fly · Shift: fast · PgUp/PgDn height · T paint · +/- light · M visual";
+}
+
+function currentLayout() {
+  const active = document.querySelector(".layout .btn.active[data-layout]");
+  return active?.dataset.layout || "split";
+}
+
+function applyLayout(layout) {
+  const mv = $("#map-view");
+  document.querySelectorAll(".layout .btn[data-layout]").forEach((x) => {
+    x.classList.toggle("active", x.dataset.layout === layout);
+  });
+  mv.className = { "2d": "only2d", split: "split", "3d": "only3d" }[layout] || "split";
+  render2d();
+}
+
+/** Doom Builder–style visual mode: full-bleed 3D edit (toggle with M). */
+function setVisualMode(on) {
+  const next = !!on;
+  if (S.visual === next) return;
+  if (next) {
+    S.layoutBeforeVisual = currentLayout();
+    S.visual = true;
+    document.body.classList.add("visual-mode");
+    applyLayout("3d");
+    room.focus();
+    status("Visual mode — fly and edit in 3D · M or Visual to exit");
+  } else {
+    S.visual = false;
+    document.body.classList.remove("visual-mode");
+    applyLayout(S.layoutBeforeVisual || "split");
+    status("Classic edit");
+  }
+  syncPlayUi();
+}
+
+async function addPackFiles(files) {
+  if (!S.summary) {
+    toast("Open an IWAD first", true);
+    return;
+  }
+  for (const f of files || []) {
+    const buf = new Uint8Array(await f.arrayBuffer());
+    addPwad(buf, f.name);
+  }
 }
 
 function pollCamera() {
@@ -1637,7 +1927,27 @@ function renderBrowser() {
   S.actorSel = S.tab === "actors" ? S.actorSel : null;
   if (!S.summary) { body.append(el("p", { class: "muted", style: "padding:10px" }, "No WAD open.")); return; }
   const sm = S.summary;
-  if (S.tab === "maps") {
+  if (S.tab === "iwad") {
+    const det = sm.iwadDetected;
+    body.append(
+      el("p", { class: "muted", style: "padding:6px 10px;margin:0" }, "Game archive currently loaded. Open the details page for counts, MD5, and maps."),
+      el("div", { class: "list-item active", onclick: openIwadPage, title: "Open IWAD details" },
+        el("div", {},
+          el("div", {}, det?.name || sm.iwad || "IWAD"),
+          el("div", { class: "sub" }, det ? `${det.game} · ${det.autoname || "—"}` : (sm.duke ? `Duke GRP · ${sm.duke.grp}` : "Undetected / custom"))),
+        el("span", { class: "meta" }, fmtSize(sm.iwadBytes || 0))),
+      el("div", { class: "actions", style: "padding:8px 10px" },
+        el("button", { class: "btn small primary", onclick: openIwadPage }, "Open details…"),
+        el("button", { class: "btn small", onclick: () => { S.tab = "maps"; syncBrowserTab(); renderBrowser(); } }, "Maps")));
+    const kinds = Object.entries(sm.kindCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    if (kinds.length) {
+      body.append(el("div", { class: "section-head" }, "Lump kinds"));
+      for (const [k, n] of kinds) {
+        body.append(el("div", { class: "list-item", onclick: () => { S.tab = "lumps"; $("#browser-filter").value = k; syncBrowserTab(); renderBrowser(); } },
+          el("span", { class: `kind ${k}` }, k), el("span", { class: "meta" }, n)));
+      }
+    }
+  } else if (S.tab === "maps") {
     body.append(el("div", { class: "section-head" }, "Maps"));
     const names = [...new Set([...sm.maps, ...Object.keys(S.docs)])];
     for (const m of names.filter((m) => !q || m.includes(q))) {
@@ -1646,22 +1956,39 @@ function renderBrowser() {
         el("span", { class: "name" }, m), S.docs[m] ? el("span", { class: "kind map" }, "edited") : null, el("span", { class: "meta" }, src)));
     }
   } else if (S.tab === "things") {
-    body.append(el("p", { class: "muted", style: "padding:6px 10px;margin:0" }, "Pick a type, then double-click in Things mode (or press Insert). Selected things change type."));
+    body.append(el("p", { class: "muted", style: "padding:6px 10px;margin:0" },
+      "Click: pick type · Double-click / right-click / icon: edit sprite + sounds"));
     for (const cat of CAT_ORDER) {
       const list = sm.things.filter((t) => t.cat === cat && (!q || t.title.toUpperCase().includes(q) || String(t.num).includes(q)));
       if (!list.length) continue;
       body.append(el("div", { class: "section-head" }, `${cat} (${list.length})`));
       for (const t of list.sort((a, b) => a.title.localeCompare(b.title))) {
-        const icon = el("canvas", { class: "thing-icon", "data-name": t.sprite || "" });
-        if (t.sprite) lazy.observe(icon);
-        body.append(el("div", {
+        const openSprite = () => {
+          if (!t.sprite) { toast(`${t.title} has no sprite to edit`); return; }
+          paint.open("sprites", t.sprite, { num: t.num, className: t.name });
+        };
+        const icon = el("canvas", {
+          class: "thing-icon",
+          "data-name": t.sprite || "",
+          title: t.sprite ? `Edit ${t.sprite} sprite & sounds` : "No sprite",
+          style: t.sprite ? "cursor:pointer" : "",
+        });
+        if (t.sprite) {
+          lazy.observe(icon);
+          icon.addEventListener("click", (e) => { e.stopPropagation(); openSprite(); });
+        }
+        const row = el("div", {
           class: `list-item${S.thingType === t.num ? " active" : ""}`,
+          title: t.sprite ? `${t.title} — edit sprite & sounds` : t.title,
           onclick: () => {
             S.thingType = t.num;
             if (S.mode === "things" && S.sel.size) { snapshot(); S.sel.forEach((i) => { S.doc.things[i].type_id = t.num; }); commit(); }
             renderBrowser();
           },
-        }, icon, el("div", {}, el("div", {}, t.title), el("div", { class: "sub" }, t.name)), el("span", { class: "meta" }, t.num)));
+        }, icon, el("div", {}, el("div", {}, t.title), el("div", { class: "sub" }, t.name)), el("span", { class: "meta" }, t.num));
+        row.addEventListener("dblclick", (e) => { e.preventDefault(); openSprite(); });
+        row.addEventListener("contextmenu", (e) => { e.preventDefault(); openSprite(); });
+        body.append(row);
       }
     }
   } else if (S.tab === "textures" || S.tab === "flats") {
@@ -1740,10 +2067,40 @@ function loadMapOrDoc(name) {
   fitView(); renderInspector(); renderBrowser();
 }
 
-// ---------------------------------------------------------------- actors
+// ---------------------------------------------------------------- actors / thing sounds
 
-function renderActorInspector(body, title) {
-  const a = S.actors?.find((x) => x.name === S.actorSel);
+const ACTOR_SOUND_KEYS = ["see_sound", "attack_sound", "pain_sound", "death_sound", "active_sound"];
+
+function resolveSoundLogical(logical) {
+  if (!logical || typeof S.mod.roomEditorResolveSound !== "function") {
+    return { lump: null, id: null };
+  }
+  try {
+    return S.mod.roomEditorResolveSound(String(logical)) || { lump: null, id: null };
+  } catch {
+    return { lump: null, id: null };
+  }
+}
+
+function actorSoundSlots(actorName) {
+  if (!S.actors) {
+    try { S.actors = JSON.parse(S.mod.roomEditorActors()); } catch { S.actors = []; }
+  }
+  const a = S.actors.find((x) => x.name === actorName);
+  if (!a) return [];
+  const slots = [];
+  for (const key of ACTOR_SOUND_KEYS) {
+    const logical = a.props?.[key];
+    if (logical == null || logical === "") continue;
+    const resolved = resolveSoundLogical(logical);
+    slots.push({ key, logical: String(logical), lump: resolved.lump || null, id: resolved.id ?? null });
+  }
+  return slots;
+}
+
+async function renderActorInspector(body, title) {
+  const sel = S.actorSel;
+  const a = S.actors?.find((x) => x.name === sel);
   if (!a) { S.actorSel = null; renderInspector(); return; }
   title.textContent = `Actor ${a.name}`;
   const edited = new Set(a.edited || []);
@@ -1751,11 +2108,44 @@ function renderActorInspector(body, title) {
     el("button", { class: "btn small", onclick: () => { S.actorSel = null; renderInspector(); renderBrowser(); } }, "← Map"),
     el("button", { class: "btn small", onclick: restartLevel }, "Restart level")));
   body.append(el("p", { class: "muted" }, `Parent: ${a.parent || "—"} · DoomEdNum: ${a.num ?? "—"}`));
+  const { mountThingSoundsPanel } = await import("./sound-record.js");
+  if (S.actorSel !== sel) return;
+  const sounds = mountThingSoundsPanel({
+    el,
+    getSlots: () => actorSoundSlots(a.name),
+    decode: (id) => S.mod.roomEditorDecodeSound(id),
+    play: (snd) => {
+      try {
+        audioCtx = audioCtx || new AudioContext();
+        const ch = snd.channels || 1;
+        const frames = Math.floor(snd.samples.length / ch);
+        const buf = audioCtx.createBuffer(ch, frames, snd.rate);
+        for (let k = 0; k < ch; k++) {
+          const d = buf.getChannelData(k);
+          for (let i = 0; i < frames; i++) d[i] = snd.samples[i * ch + k];
+        }
+        const src = audioCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(audioCtx.destination);
+        src.start();
+      } catch (e) { toast(errText(e), true); }
+    },
+    replace: (slot, bytes) => {
+      if (!slot.lump) { toast("No lump mapped for that sound", true); return; }
+      try {
+        const err = overrideLump({ name: slot.lump, ns: "global" }, bytes);
+        toast(err ? `Replaced ${slot.lump} — ${err}` : `${slot.lump} replaced`, !!err);
+        sounds.refresh();
+      } catch (e) { toast(errText(e), true); }
+    },
+  });
+  body.append(sounds.box);
   const fs = el("fieldset", {}, el("legend", {}, "Properties"));
   const flags = el("fieldset", {}, el("legend", {}, "Flags"));
   const fl = el("div", { class: "flags" });
   flags.append(fl);
   for (const [k, v] of Object.entries(a.props)) {
+    if (ACTOR_SOUND_KEYS.includes(k)) continue; // shown in Sounds panel above
     const setVal = (val) => {
       try {
         S.mod.roomEditorSetActor(a.name, k, JSON.stringify(val));
@@ -1949,7 +2339,23 @@ function soundView(l) {
     for (let k = 0; k < ch; k++) { const d = buf.getChannelData(k); for (let i = 0; i < frames; i++) d[i] = s[i * ch + k]; }
     const src = audioCtx.createBufferSource(); src.buffer = buf; src.connect(audioCtx.destination); src.start();
   };
-  return el("div", {}, el("div", { class: "actions" }, el("button", { class: "btn go", onclick: play }, "▶ Play"),
+  const record = el("button", {
+    class: "btn go",
+    onclick: async () => {
+      const { openSoundRecord } = await import("./sound-record.js");
+      openSoundRecord({
+        title: `Record · ${l.name}`,
+        onDone: (bytes) => {
+          try {
+            const err = overrideLump(l, bytes);
+            toast(err ? `Replaced — DECORATE: ${err}` : `${l.name} replaced with recording`, !!err);
+            openLump(l);
+          } catch (e) { toast(errText(e), true); }
+        },
+      });
+    },
+  }, "🎤 Record…");
+  return el("div", {}, el("div", { class: "actions" }, el("button", { class: "btn go", onclick: play }, "▶ Play"), record,
     el("span", { class: "muted" }, `${snd.rate} Hz · ${ch} ch · ${(frames / snd.rate).toFixed(2)} s · Replace accepts WAV or DMX`)), c);
 }
 
@@ -2060,17 +2466,25 @@ function setMode(m) {
 }
 
 document.querySelectorAll("#modes .btn").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
-document.querySelectorAll(".layout .btn").forEach((b) => b.addEventListener("click", () => {
-  document.querySelectorAll(".layout .btn").forEach((x) => x.classList.toggle("active", x === b));
-  const mv = $("#map-view");
-  mv.className = { "2d": "only2d", split: "split", "3d": "only3d" }[b.dataset.layout];
-  render2d();
+document.querySelectorAll(".layout .btn[data-layout]").forEach((b) => b.addEventListener("click", () => {
+  if (S.visual) setVisualMode(false);
+  applyLayout(b.dataset.layout);
 }));
+$("#btn-visual")?.addEventListener("click", () => setVisualMode(!S.visual));
+$("#btn-add-pack")?.addEventListener("click", () => {
+  if (!S.summary) { toast("Open an IWAD first", true); return; }
+  $("#file-pack")?.click();
+});
+$("#file-pack")?.addEventListener("change", (e) => {
+  addPackFiles([...e.target.files]);
+  e.target.value = "";
+});
 document.querySelectorAll("#browser-tabs button").forEach((b) => b.addEventListener("click", () => {
-  document.querySelectorAll("#browser-tabs button").forEach((x) => x.classList.toggle("active", x === b));
   S.tab = b.dataset.tab;
+  syncBrowserTab();
   if (S.tab !== "actors" && S.actorSel) { S.actorSel = null; renderInspector(); }
   renderBrowser();
+  if (S.tab === "iwad") openIwadPage();
 }));
 let filterTimer = 0;
 $("#browser-filter").addEventListener("input", () => { clearTimeout(filterTimer); filterTimer = setTimeout(renderBrowser, 120); });
@@ -2132,6 +2546,12 @@ window.addEventListener("keydown", (e) => {
   if (typing) return;
   if (mod && e.code === "KeyZ") { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
   if (mod && e.code === "KeyY") { e.preventDefault(); redo(); return; }
+  // Visual mode (M) works from 2D or 3D focus — same idea as Doom Builder W / GZDB visual.
+  if (!mod && e.code === "KeyM" && S.doc) {
+    e.preventDefault();
+    setVisualMode(!S.visual);
+    return;
+  }
   if (!S.doc) return;
   if (tools.onKey(e, { mod, in3d: document.activeElement === room })) return;
   if (document.activeElement === room) {
@@ -2202,6 +2622,7 @@ const tools = installTools({
 const paint = installPaint({
   S, el, toast, errText, selectDocTab, setSummary, render2d, renderInspector, thumb,
   clearThumbs: () => thumbs.clear(),
+  actorSoundSlots, overrideLump,
 });
 const scripts = installScripts({
   S, el, toast, errText, selectDocTab, setSummary, setPlaying, renderBrowser, rowEl, download, pickFile, addPwad,
