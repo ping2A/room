@@ -47,7 +47,7 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 | **D3** | Duke world + static view | `done` | 100% | Soft path + CLI FreeFly; interactive desktop/web shell deferred |
 | **D4** | Duke CON compiler | `done` | 100% | Atomic script SHA = Chocolate; runtime opcode corpus → D5 VM |
 | **D5** | Duke core sim loop | `in_progress` | 99% | DEMO1 0–134 movement; weapons at 135+ (→D6) |
-| **D6** | Duke weapons + damage | `in_progress` | 99% | DEMO1 0–750; frontier tic751 |
+| **D6** | Duke weapons + damage | `in_progress` | 99% | DEMO1 0–821 in tree; frontier **tic822** (needs `testdata/duke/traces/DEMO1.trace`) |
 | **D7** | Duke sectors + effectors | `not_started` | 0% | — |
 | **D8** | Duke audio + front end | `not_started` | 0% | — |
 | **D9** | Duke saves + demos | `not_started` | 0% | — |
@@ -65,11 +65,12 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 **Priority override (2026-10-12):** M7 + M10–M13 done. Active **M14** (1.0 hardening).
 **M8** when Heretic/Hexen IWADs available; M9 remains deferred.
 **Server track:** `docs/22-room-server.md` S1–S5 (parallel to M14).
-**Duke track:** **D1–D4** done. **D5** movement ceiling 0–134. **D6** DEMO1 through 750 (frontier **tic751**). Spec: `docs/25`.
+**Duke track:** **D1–D4** done. **D5** movement ceiling 0–134. **D6** DEMO1 through **821** in tree (frontier **tic822**; restore `DEMO1.trace` to verify). Spec: `docs/25`. 1m Duke loop armed.
 **Face-swap track:** **F0–F7** done (`docs/26`).
 
 ### Log
 
+- `2026-10-26` — **Duke 1m loop rearmed**. Continue D6 DEMO1 bitexact past frontier **tic822** (`DEMO1_PAD_PRE` len 822 / tests through tic821). Blocked until `testdata/duke/traces/DEMO1.trace` is restored (manifest sha256 set; demos extracted).
 - `2026-10-26` — **Voxel pack map-switch panic**. Cheello KVX expanded into the unlit `walls` VB past WebGPU’s 256 MiB limit → panic → map load `RuntimeError: unreachable`. Cap mesh size + per-frame vert budget (sprite fallback); clamp `ensure_vb`.
 - `2026-10-26` — **Editor unmount packs**. `roomEditorRemovePwad`; IWAD page + toolbar chips Remove / × for mounted PWADs (base IWAD stays).
 - `2026-10-26` — **Editor content packs**. Opt-in only via **+ Pack…** / Open… / drop (`.pk3`/`.zip`); remounts when VOXELDEF archives are added; IWAD page lists mounted packs.
