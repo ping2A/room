@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Room — development entry point (same commands as dist-vps/room).
+#
+#   ./room start|stop|restart|status|logs|health
+#   ./room package [--zip]     # → scripts/package-vps.sh
+#   ./room push user@host:~/room/
+#
+# On a VPS tree the packaged ./room is a copy of scripts/vps/room.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+export ROOM_ROOT="$ROOT"
+
+case "${1:-}" in
+  package)
+    shift
+    exec "$ROOT/scripts/package-vps.sh" "$@"
+    ;;
+  push)
+    shift
+    exec "$ROOT/scripts/push-vps.sh" "$@"
+    ;;
+  *)
+    exec "$ROOT/scripts/vps/room" "$@"
+    ;;
+esac
