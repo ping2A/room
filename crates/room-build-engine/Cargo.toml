@@ -1,0 +1,19 @@
+[package]
+name = "room-build-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Build engine world model and clean-room primitives (no Duke game knowledge)."
+
+[lints]
+workspace = true
+
+[dependencies]
+room-core = { path = "../room-core" }
+room-build = { path = "../room-build" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }

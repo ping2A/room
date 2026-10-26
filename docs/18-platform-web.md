@@ -54,7 +54,8 @@ Platforms: Windows 10+ (x86-64, aarch64), macOS 11+ (aarch64, x86-64), Linux (x8
 
 ### 3.3 Input
 
-- Pointer Lock API for mouse look (requested on canvas click), `movementX/Y`; keyboard via `KeyboardEvent.code` mapped to `KEY_*`; prevent default for game keys while captured; Gamepad API polled each frame; Fullscreen API (`F11`/menu option).
+- Pointer Lock API for mouse look (requested on canvas click), `movementX/Y`; keyboard via `KeyboardEvent.code` mapped to game actions; prevent default for game keys while captured; Gamepad API polled each frame; Fullscreen API (`F11`/Settings).
+- **Settings menu** (☰ → *Settings*, solo and multi): window size (CSS playfield scale), render resolution cap, mouse sensitivity / invert Y, remappable keys, fullscreen. Stored in `localStorage` (`room/web-settings`) and applied through `roomApplySettings` (`settings.js`).
 - **Touch (phones / tablets)** — `crates/room-web/touch.js`, enabled for `(pointer: coarse)` or at the first `touchstart` (`?touch=1|0` overrides). Pointer Events, multi-touch: floating left stick → `KeyW/S/A/D` with a 0.28 dead zone, `ShiftLeft` (run) past 85 % deflection; right-half drag and drag-on-FIRE → look (0.3 mouse counts per CSS px × `localStorage.roomTouchLook`, fractional remainder carried; pitch × 0.6); FIRE / USE / scores hold buttons, ‹ › weapon cycle, fullscreen + `screen.orientation.lock("landscape")` where allowed, ☰ shows the skill / mod bar. Everything goes through `roomInputKey` / `roomInputLook` / `roomInputWeaponCycle` into the same input hub as the keyboard, so netplay tic commands are identical. Keys are released on `blur` / `visibilitychange` / `pointercancel`. The page disables pinch / double-tap zoom, pull-to-refresh and long-press callouts, respects `env(safe-area-inset-*)`, and letterboxes the view at ≥ 4:3 in portrait. Audio unlocks on `touchend` / `click` too (iOS Safari).
 
 ### 3.4 Audio
@@ -80,6 +81,8 @@ Platforms: Windows 10+ (x86-64, aarch64), macOS 11+ (aarch64, x86-64), Linux (x8
 ### 3.7 URL & embedding API
 
 `index.html?iwad=freedoom2.wad&file=mod.pk3&warp=1&skill=3&+sv_cheats=1` maps to command-line semantics. A small JS API (`window.room.start({ args, files })`) allows embedding Room in other pages (e.g. mod showcase sites).
+
+**Static site package.** `./scripts/package-web.sh` (optional `--zip`, `--iwad freedoom`) writes a self-contained tree under `dist/room-web` with the WASM client, play/editor assets, and `mods/*.wad` (survival / bounty / royale, plus voxel when present). Upload that folder (or the zip) to any static HTTPS host. Commercial IWADs are never included unless you pass `--iwad /path/to.wad` yourself. Visitors can still switch to retail Doom (or Duke) with the **IWAD** control in the game bar — the file stays in the browser. Local preview still uses `./scripts/play-web.sh`.
 
 ## 4. Headless (`room-game::Headless`)
 

@@ -3,6 +3,9 @@ id = "room.example.doom1-royale"
 name = "Battle Royale"
 version = "0.1.0"
 abi = 1
+# Multiplayer / room-server only — omitted from lobby "Play solo".
+solo = false
+description = "Last player standing: no monsters, fists only, loot drops, closing zone, one life. Best with 2–4 players (multiplayer rooms only)."
 
 [[module]]
 file = "ROYALE"

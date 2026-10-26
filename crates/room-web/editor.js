@@ -183,7 +183,8 @@ async function boot() {
       console.warn("editor: autoload", url, e);
     }
   }
-  status("Open an IWAD or DUKE3D.GRP (Open… or drop a file) to start editing");
+  setIwadLabel("");
+  status("Choose IWAD… (or drop a Doom / Freedoom / Duke file) to start editing");
 }
 
 function setSummary(json) {
@@ -200,10 +201,18 @@ function setSummary(json) {
   renderBrowser();
 }
 
+function setIwadLabel(name) {
+  const el = $("#iwad-label");
+  if (!el) return;
+  el.textContent = name || "—";
+  el.title = name ? `Base IWAD / GRP: ${name}` : "No IWAD loaded — use IWAD…";
+}
+
 function openIwad(bytes, name) {
   try {
     setSummary(S.mod.roomEditorOpen(bytes, name));
     S.docs = {};
+    setIwadLabel(name);
     // Play-test skills 1–5 run as Duke 1, 1, 2, 3, 4 for a GRP.
     const labels = S.summary.duke
       ? ["Cake-", "Cake", "Rock", "Some", "Damn"]
@@ -213,6 +222,27 @@ function openIwad(bytes, name) {
   } catch (e) {
     toast(`Open failed: ${errText(e)}`, true);
   }
+}
+
+/** Replace the base IWAD / GRP from a file picker (retail Doom over Freedoom, etc.). */
+async function openIwadFile(file) {
+  if (!file) return;
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const magic4 = String.fromCharCode(...buf.slice(0, 4));
+  const isGrp = String.fromCharCode(...buf.slice(0, 12)) === "KenSilverman";
+  if (!isGrp && magic4 !== "IWAD" && magic4 !== "PWAD") {
+    toast("Pick a Doom / Freedoom IWAD (.wad) or Duke DUKE3D.GRP", true);
+    return;
+  }
+  if (magic4 === "PWAD" && !isGrp) {
+    toast("That file is a PWAD — use Open… to mount it on top of an IWAD", true);
+    return;
+  }
+  status(isGrp ? `Converting ${file.name}…` : `Loading ${file.name}…`);
+  openIwad(buf, file.name);
+  const maps = S.summary?.maps || [];
+  const first = maps.find((m) => m === "E1M1" || m === "MAP01") || maps[0];
+  if (first) loadMap(first);
 }
 
 function addPwad(bytes, name) {
@@ -1438,9 +1468,19 @@ function renderInspector() {
       icon.style.cursor = "pointer";
       icon.addEventListener("click", () => paint.open("sprites", info.sprite, { num: objs[0].type_id }));
     }
+    const faceBtn = info?.sprite
+      ? el("button", {
+        class: "btn small",
+        title: "Open the sprite painter and capture a webcam face onto this enemy",
+        onclick: () => paint.open("sprites", info.sprite, { num: objs[0].type_id, camera: true }),
+      }, "Camera face…")
+      : null;
     const angles = { 0: "East", 45: "NE", 90: "North", 135: "NW", 180: "West", 225: "SW", 270: "South", 315: "SE" };
     body.append(
-      el("fieldset", {}, el("legend", {}, "Type"), el("div", { class: "tex-field" }, icon, typeSel), rowEl("type_id", fieldFor(objs, "type_id"))),
+      el("fieldset", {}, el("legend", {}, "Type"),
+        el("div", { class: "tex-field" }, icon, typeSel),
+        ...(faceBtn ? [faceBtn] : []),
+        rowEl("type_id", fieldFor(objs, "type_id"))),
       fieldset("Placement", objs, ["x", "y", "z", "angle"], { fields: { angle: { options: angles } } }),
       el("fieldset", {}, el("legend", {}, "Flags"), fieldFor(objs, "flags", { flags: isHexen() ? HEXEN_THING_FLAGS : DOOM_THING_FLAGS })),
       ...((isHexen() || isUdmf()) ? [fieldset("Action", objs, ["tid", "special", "args"], { fields: { special: { options: HEXEN_LINE_SPECIALS } } })] : []),
@@ -2034,6 +2074,11 @@ document.querySelectorAll("#browser-tabs button").forEach((b) => b.addEventListe
 }));
 let filterTimer = 0;
 $("#browser-filter").addEventListener("input", () => { clearTimeout(filterTimer); filterTimer = setTimeout(renderBrowser, 120); });
+$("#file-iwad").addEventListener("change", (e) => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = "";
+  openIwadFile(f);
+});
 $("#file-open").addEventListener("change", (e) => { openFiles([...e.target.files]); e.target.value = ""; });
 $("#map-select").addEventListener("change", (e) => loadMapOrDoc(e.target.value));
 $("#btn-new-map").addEventListener("click", newMap);

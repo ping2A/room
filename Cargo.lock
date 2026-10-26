@@ -4521,12 +4521,14 @@ dependencies = [
  "clap",
  "cpal",
  "glam",
+ "image",
  "pollster",
  "room-audio",
  "room-build",
  "room-console",
  "room-decorate",
  "room-defs",
+ "room-faceswap",
  "room-game",
  "room-input",
  "room-map",
@@ -4538,6 +4540,7 @@ dependencies = [
  "room-testkit",
  "room-ui",
  "room-vfs",
+ "thiserror 2.0.21",
  "wgpu",
  "winit",
 ]
@@ -4562,13 +4565,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "room-build-engine"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "room-build",
+ "room-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "room-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "png 0.17.16",
+ "room-build",
+ "room-build-engine",
  "room-decorate",
  "room-defs",
+ "room-duke",
+ "room-faceswap",
+ "room-formats",
  "room-game",
  "room-map",
  "room-nodebuild",
@@ -4620,6 +4640,31 @@ version = "0.1.0"
 dependencies = [
  "room-decorate",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "room-duke"
+version = "0.1.0"
+dependencies = [
+ "room-build",
+ "room-build-engine",
+ "room-core",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "room-faceswap"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "room-formats",
+ "room-sc",
+ "room-vfs",
+ "serde",
+ "thiserror 2.0.21",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -4928,6 +4973,7 @@ dependencies = [
  "room-audio",
  "room-build",
  "room-defs",
+ "room-faceswap",
  "room-formats",
  "room-game",
  "room-input",

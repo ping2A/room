@@ -189,6 +189,8 @@ pub struct NetJoinConfig {
     pub spectate: bool,
     /// Gameplay mod named by the server's `welcome` (v2); mounted after the IWAD.
     pub game_mod: Option<room_proto::RoomModRef>,
+    /// Content packs from `welcome.room.packs` (e.g. `voxel`).
+    pub packs: Vec<String>,
     /// Match time limit in seconds from `welcome` (0 = none).
     pub time_limit: u32,
 }
@@ -312,6 +314,12 @@ impl NetLobby {
     #[must_use]
     pub fn game_mod(&self) -> Option<&room_proto::RoomModRef> {
         self.cfg.game_mod.as_ref()
+    }
+
+    /// Content packs from `welcome` (e.g. `voxel`).
+    #[must_use]
+    pub fn packs(&self) -> &[String] {
+        &self.cfg.packs
     }
 
     /// Match time limit in seconds (known after `welcome`; 0 = none).
@@ -467,6 +475,7 @@ impl NetLobby {
                 self.cfg.skill = w.room.skill;
                 self.cfg.players = w.room.max_players;
                 self.cfg.game_mod = w.room.game_mod.clone();
+                self.cfg.packs = w.room.packs.clone();
                 self.cfg.time_limit = w.room.time_limit;
                 transport.set_peer_count(w.room.max_players);
                 for seat in &w.roster {
@@ -509,6 +518,7 @@ impl NetLobby {
                     self.cfg.skill = room.skill;
                     self.cfg.players = room.max_players;
                     self.cfg.game_mod = room.game_mod.clone();
+                    self.cfg.packs = room.packs.clone();
                     self.cfg.time_limit = room.time_limit;
                     t.set_peer_count(room.max_players);
                     for seat in roster {

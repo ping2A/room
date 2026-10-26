@@ -6,6 +6,9 @@ Browser shell (`wasm-bindgen` + `web-sys` + wgpu).
 # One-shot: build wasm, bindgen, serve on http://127.0.0.1:8080/
 ./scripts/play-web.sh
 
+# Standalone site for upload (mods included; optional --zip / --iwad freedoom)
+./scripts/package-web.sh --zip
+
 cargo test -p room-web
 cargo build -p room-web --target wasm32-unknown-unknown --features browser
 ```
@@ -66,7 +69,9 @@ document; `editor-tools.js` adds:
 graphics (✎ next to texture fields, right-click a browser tile, double-click or P on a 3D surface or thing, or
 "✎ Edit pixels" on a picture lump). It paints in the IWAD palette with pencil / eraser /
 fill / line / rect / picker, brush size, mouse-wheel zoom around the cursor, grid, a 3×3 tiling preview, flip / rotate /
-half-shift, resize, offsets, PNG import (palette-quantized) and export, plus undo/redo.
+half-shift, resize, offsets, PNG import (palette-quantized) and export, **Camera face…**
+(webcam → circular paste onto an enemy sprite, or full-frame replace), plus undo/redo.
+From a selected thing, the inspector also has **Camera face…**.
 Every edit shows in the running view while you paint: textures and flats on the
 walls and floors, patches by recomposing every texture that uses them, sprites on
 actors (size and offsets included), and HUD / status-bar / menu graphics in play

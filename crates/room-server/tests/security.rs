@@ -47,6 +47,7 @@ async fn require_tickets_rejects_bare_room_id() {
             enable_verifier: false,
             visibility: "public".into(),
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         })
@@ -93,6 +94,7 @@ async fn seat_hijack_without_resume_token_rejected() {
             enable_verifier: false,
             visibility: "public".into(),
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         })
@@ -195,6 +197,7 @@ async fn message_flood_disconnects() {
             enable_verifier: false,
             visibility: "public".into(),
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         })

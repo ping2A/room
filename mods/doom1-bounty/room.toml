@@ -3,6 +3,7 @@ id = "room.example.doom1-bounty"
 name = "Bounty Hunter"
 version = "0.1.0"
 abi = 1
+description = "Hunt marked bounties for score and gear; compass hints, kill combos, then a Warden finale when the map is clear. AssemblyScript example mod."
 
 [[module]]
 file = "BOUNTY"

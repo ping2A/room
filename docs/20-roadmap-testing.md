@@ -8,6 +8,9 @@ Track execution status in [`21-milestone-progress.md`](21-milestone-progress.md)
 
 **Active order (override):** M0–M7 + M10–**M13** complete. Active → **M14** (1.0
 hardening). **M8** when Heretic/Hexen IWADs available; M9 deferred (see `21`).
+**Duke track (parallel):** **D0–D11** native Build runtime
+(`docs/25-duke3d-full-support.md`); converter path stays until D11.
+**Face-swap track (parallel):** **F0–F7** (`docs/26-face-swap.md`).
 
 ## 1. Milestones
 
@@ -80,6 +83,45 @@ hardening). **M8** when Heretic/Hexen IWADs available; M9 deferred (see `21`).
 
 ### M14 — 1.0 hardening
 - 24h fuzz campaigns on all parsers; save/load fuzz; compatibility corpus run with report; performance profiling pass; documentation (user manual, modding guide, ZScript migration guide).
+
+### D0–D11 — Duke native Build runtime (parallel to M14)
+
+Spec: [`25-duke3d-full-support.md`](25-duke3d-full-support.md). ADR:
+[`decisions/0004-native-build-runtime.md`](decisions/0004-native-build-runtime.md).
+Do not start a D milestone before the previous one's acceptance passes.
+
+| # | Milestone | Deliverables | Acceptance |
+|---|-----------|--------------|------------|
+| **D0** | ADR + scaffolding | ADR 0004; crates `room-build-engine` / `room-duke` (empty, CI + wasm); `GameRuntime` in `room-game` with Doom `Headless` behind it; configurable tic rate | Existing tests pass; Doom demos still verify |
+| **D1** | Reference traces | Out-of-tree patched reference; `docs/duke-trace-format.md`; `room-cli duke trace-diff` | DEMO1–3 traces + committed manifest |
+| **D2** | Engine primitives (clean-room) | Specs in `docs/build-engine-primitives/`; impl + unit + fuzz | Golden tests vs black-box reference on 50+ maps |
+| **D3** | World load + static view | `BuildWorld` from `.MAP`; classic Build renderer path; free-fly | E1L1–E4L11 render; overlapping sectors correct; goldens |
+| **D4** | CON compiler | Full 1.5 compiler, script image | Script image hash equals reference for Atomic `GAME.CON` |
+| **D5** | Core sim loop | 30 Hz, movement, spawn, lists, CON VM, RNG, sprites | DEMO1 sync for first 300 tics (or first diverge logged) |
+| **D6** | Weapons + damage | shoot, weapons, hitradius, HUD weapon | DEMO1 in sync to the end |
+| **D7** | Sectors + effectors | operatesectors, SE 0–36, animations, transports, … | DEMO2 + DEMO3 in sync; SE scenario tests |
+| **D8** | Audio + front end | Sound semantics, menus, HUD, bonus, ANM, automap, cheats | UI checklist + goldens (T1.6, T1.7) |
+| **D9** | Saves + demos | Native `.fsave`, `GAME#.SAV` round-trip, `.DMO` / `.fdem` | T1.8; recorded `.DMO` syncs in reference |
+| **D10** | Multiplayer + server | `DukeInput` in proto, lockstep, coop/DukeMatch, verifier | T1.9, T1.10 |
+| **D11** | Full campaign + user content | Route `.DMO`s, user maps, `-x` CON, add-on GRPs; switch shells to native; converter → `export/` | T1.2, T1.3, T1.11 |
+
+Tier 2 (1.3D, add-ons, World Tour) and tier 3 (EDuke32) are separate tracks after D11.
+
+### F0–F7 — Face swap (parallel)
+
+Spec: [`26-face-swap.md`](26-face-swap.md). Pure-Rust `room-faceswap` + web/desktop
+UI. Does not touch the playsim.
+
+| # | Milestone | Deliverables | Acceptance |
+|---|-----------|--------------|------------|
+| **F0** | Scaffold + front composite | `room-faceswap`, `FaceProfile`, manual align, front compositor | Golden on Freedoom `TROOA1`; deterministic |
+| **F1** | Anchors | `HEADANCHORS` parser + fuzz, estimator, editor mode, Freedoom anchors | Anchor coverage (Freedoom) |
+| **F2** | Bake | Class bake, Faces panel, PK3 export, `room-cli faceswap bake` | Bake budget; face on every rotation |
+| **F3** | Capture UI | Detection, photo import + consent, gallery, OPFS, forget-all | UI + no-network tests |
+| **F4** | Live mode | Static live overlays, assignment rules, settings | Sim isolation; Live ≡ Bake pixels |
+| **F5** | Multi-angle + webcam live | Guided capture, side/back, live webcam faces | Checklist + perf |
+| **F6** | Multiplayer sharing | Opt-in peer share + server toggle | Sharing tests |
+| **F7** | Duke + polish | Duke palette/`pal`, Doom/Duke anchors, optional desktop camera / GPU | Duke goldens |
 
 ### Stretch (post-1.0)
 Classic software renderer · ZScript→Rust/WASM transpiler · bots · rollback netcode · Timidity/GUS, ADLMIDI/OPNMIDI, GME ports · HRTF · component-model ABI v2 · mobile (Android/iOS) shells · join-in-progress.

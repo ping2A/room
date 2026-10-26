@@ -1,0 +1,44 @@
+{
+  "name": "choc_inside_s128_p6",
+  "op": "inside",
+  "walls": [
+    {
+      "x": 0,
+      "y": 0,
+      "point2": 1,
+      "nextsector": -1
+    },
+    {
+      "x": 128,
+      "y": 0,
+      "point2": 2,
+      "nextsector": -1
+    },
+    {
+      "x": 128,
+      "y": 128,
+      "point2": 3,
+      "nextsector": -1
+    },
+    {
+      "x": 0,
+      "y": 128,
+      "point2": 0,
+      "nextsector": -1
+    }
+  ],
+  "sectors": [
+    {
+      "wallptr": 0,
+      "wallnum": 4
+    }
+  ],
+  "input": {
+    "x": 129,
+    "y": 64,
+    "sect": 0
+  },
+  "expect": {
+    "inside": false
+  }
+}

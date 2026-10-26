@@ -16,6 +16,8 @@ Agents and contributors: start with [`AGENTS.md`](AGENTS.md).
 | [`docs/21-milestone-progress.md`](docs/21-milestone-progress.md) | Living checklist (engine **M14**; server **S1–S5** done) |
 | [`docs/22-room-server.md`](docs/22-room-server.md) | Multi-room web server |
 | [`docs/23-build-engine.md`](docs/23-build-engine.md) | Duke Nukem 3D (Build engine) support |
+| [`docs/25-duke3d-full-support.md`](docs/25-duke3d-full-support.md) | Duke Nukem 3D full support — native runtime spec |
+| [`docs/26-face-swap.md`](docs/26-face-swap.md) | Face swap: camera or photo onto enemy heads |
 | [`crates/room-server/README.md`](crates/room-server/README.md) | Server CLI, lobby, admin, ICE/TURN |
 
 ## Status
@@ -39,9 +41,13 @@ The web multiplayer server track (**S1–S5**) is complete.
 # Doom 1 E1M1 (needs testdata/doom/doom1.wad)
 ./scripts/play-doom1.sh
 ROOM_TITLE=1 ./scripts/play-doom1.sh          # title menu
-# Duke Nukem 3D E1L1 (needs testdata/duke/duke3d.grp)
+# Duke Nukem 3D E1L1 — converter path (needs testdata/duke/duke3d.grp)
 ./scripts/play-duke3d.sh
 ROOM_MAP=E2M1 ./scripts/play-duke3d.sh
+# Native Build runtime track (docs/25 / room-duke) — tests + DEMO1 frontier
+./scripts/test-duke-native.sh
+./scripts/test-duke-native.sh soft-view   # E1L1 soft FP → soft-view.pgm
+
 # Force OPL (GENMIDI) instead of SoftFont:
 cargo run -p room-app --release -- \
   --iwad testdata/doom/doom1.wad --map E1M1 --play --mididevice opl

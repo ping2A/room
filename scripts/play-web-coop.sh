@@ -147,6 +147,7 @@ cp crates/room-web/voice.js "$OUT/voice.js"
 cp crates/room-web/rtc.js "$OUT/rtc.js"
 cp crates/room-web/netgraph.js "$OUT/netgraph.js"
 cp crates/room-web/touch.js "$OUT/touch.js"
+cp crates/room-web/settings.js "$OUT/settings.js"
 cp crates/room-web/mixer-worklet.js "$OUT/mixer-worklet.js"
 CACHE_TS="$(date +%s)"
 if [[ "$(uname)" == Darwin ]]; then

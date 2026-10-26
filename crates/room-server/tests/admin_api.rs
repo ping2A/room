@@ -24,6 +24,7 @@ async fn admin_summary_and_close_audited() {
             enable_verifier: false,
             visibility: "public".into(),
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         })
@@ -140,6 +141,7 @@ async fn admin_notice_reaches_v2_client() {
             enable_verifier: false,
             visibility: "public".into(),
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         })
@@ -219,6 +221,7 @@ async fn ban_by_name_blocks_join_and_hello() {
             enable_verifier: false,
             visibility: "public".into(),
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         })
@@ -302,6 +305,7 @@ async fn ban_name_regex_and_auth_key_scopes() {
             enable_verifier: false,
             visibility: "public".into(),
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         })

@@ -7,6 +7,7 @@ mod engine_data;
 mod headless;
 mod mods;
 mod music;
+mod runtime;
 mod save;
 mod sound;
 mod vanilla_lmp;
@@ -30,6 +31,7 @@ pub use music::{
     doom1_music_lump, doom2_music_lump, intermission_music_candidates, play_first_music_lump,
     play_map_music, play_music_lump, resolve_map_music, title_music_candidates,
 };
+pub use runtime::{GameCmd, GameRuntime};
 pub use save::{SaveError, SaveInfo, load_world, read_save_info, save_world, validate_world_bin};
 pub use sound::SoundSystem;
 pub use vanilla_lmp::VanillaLmp;

@@ -1,0 +1,52 @@
+{
+  "name": "choc_clip_s200_block",
+  "op": "clipmove_xy",
+  "walls": [
+    {
+      "x": 0,
+      "y": 0,
+      "point2": 1,
+      "nextsector": -1
+    },
+    {
+      "x": 200,
+      "y": 0,
+      "point2": 2,
+      "nextsector": -1
+    },
+    {
+      "x": 200,
+      "y": 200,
+      "point2": 3,
+      "nextsector": -1
+    },
+    {
+      "x": 0,
+      "y": 200,
+      "point2": 0,
+      "nextsector": -1
+    }
+  ],
+  "sectors": [
+    {
+      "wallptr": 0,
+      "wallnum": 4
+    }
+  ],
+  "input": {
+    "x": 100,
+    "y": 100,
+    "z": -1024,
+    "sect": 0,
+    "xvect": 200,
+    "yvect": 0,
+    "walldist": 16
+  },
+  "expect": {
+    "x": 183,
+    "y": 100,
+    "z": -1024,
+    "sect": 0,
+    "hit": 32769
+  }
+}

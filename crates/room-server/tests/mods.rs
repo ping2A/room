@@ -190,6 +190,23 @@ async fn http_body(addr: std::net::SocketAddr, line: &str) -> String {
         .unwrap_or(resp)
 }
 
+#[tokio::test]
+async fn rooms_accept_known_packs_and_reject_unknown() {
+    let registry = RoomRegistry::new(ServerConfig::default());
+    let bad = registry.create_room(CreateRoomRequest {
+        packs: vec!["not-a-pack".into()],
+        ..CreateRoomRequest::default()
+    });
+    assert!(matches!(bad, Err(RegistryError::UnknownPack)), "{bad:?}");
+    let ok = registry
+        .create_room(CreateRoomRequest {
+            packs: vec!["voxel".into(), "voxel".into()],
+            ..CreateRoomRequest::default()
+        })
+        .unwrap();
+    assert_eq!(ok.settings.packs, vec!["voxel".to_owned()]);
+}
+
 #[test]
 fn catalog_loads_built_example_mods() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods/doom1-bounty");

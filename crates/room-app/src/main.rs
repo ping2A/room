@@ -4,6 +4,7 @@
 
 mod audio_out;
 mod crash;
+mod face_import;
 mod launcher;
 mod midi_device;
 mod netplay;
@@ -18,7 +19,7 @@ use room_console::{Console, HostCommand};
 use room_decorate::parse_decorate;
 use room_defs::{DefinitionsBuilder, DynLightKind, GlDefs, ModelDefs, VoxelDefs};
 use room_game::{
-    DemoPlayer, DemoRecorder, GameOptions, GameState, Headless, Skill, SoundSystem,
+    DemoPlayer, DemoRecorder, GameOptions, GameRuntime, GameState, Headless, Skill, SoundSystem,
     intermission_music_candidates, keyconf_alias_lines, keyconf_default_binds,
     mount_embedded_engine, mount_optional_engine_extras, play_first_music_lump, play_map_music,
     play_music_lump, read_save_info, title_music_candidates,
@@ -2606,12 +2607,12 @@ impl ViewerApp {
         }
     }
 
-    /// Drive Headless at 35 Hz from keyboard / mouse samples.
+    /// Drive Headless from keyboard / mouse samples at [`GameRuntime::tic_rate`].
     fn tick_play(&mut self, dt: f32) {
-        const TIC: f32 = 1.0 / 35.0;
+        let tic = 1.0 / self.play.as_ref().map(GameRuntime::tic_rate).unwrap_or(35) as f32;
         self.tic_accum += dt;
-        while self.tic_accum >= TIC {
-            self.tic_accum -= TIC;
+        while self.tic_accum >= tic {
+            self.tic_accum -= tic;
             let sample = self.sample_input();
             let bits = build_ticcmd(&sample);
             let cmd = TicCmd {
@@ -2865,7 +2866,7 @@ impl ViewerApp {
                 self.start_intermission_music();
             }
             // Render lerp between previous and current plane Z.
-            let frac = (self.tic_accum / TIC).clamp(0.0, 1.0) as f64;
+            let frac = (self.tic_accum / tic).clamp(0.0, 1.0) as f64;
             for (i, (fz, cz, light, pfz, pcz)) in planes.into_iter().enumerate() {
                 if let Some(sec) = self.map.sectors.get_mut(i) {
                     sec.floor_height = pfz + (fz - pfz) * frac;
@@ -3076,9 +3077,9 @@ impl ViewerApp {
             self.messages.tick();
             self.sync_forward();
         }
-        // Smooth eye XYZ between tics so stair steps don't snap every 1/35s.
+        // Smooth eye XYZ between tics so stair steps don't snap every tic.
         // Yaw/pitch are locked to the sim after each tic; mouse still previews mid-tic.
-        let frac = (self.tic_accum / TIC).clamp(0.0, 1.0);
+        let frac = (self.tic_accum / tic).clamp(0.0, 1.0);
         if let (Some(prev), Some(curr)) = (self.cam_prev, self.cam_curr) {
             let lerp = |a: f32, b: f32| a + (b - a) * frac;
             self.camera.eye = Vec3::new(

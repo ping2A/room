@@ -1,5 +1,11 @@
 # 23 — Build engine games (Duke Nukem 3D)
 
+> For what "full" support requires and the plan to get there, see
+> [`25-duke3d-full-support.md`](25-duke3d-full-support.md). Architecture ADR:
+> [`decisions/0004-native-build-runtime.md`](decisions/0004-native-build-runtime.md)
+> (native `room-build-engine` / `room-duke` track; this converter path stays
+> for play until D11, then remains as an export tool).
+
 Room plays Duke Nukem 3D content in the same way [Raze](https://github.com/ZDoom/Raze)
 brings Build games to the GZDoom backend. The crate `room-build` reads the
 Build formats and converts a `DUKE3D.GRP` into an in-memory **UDMF PWAD**, so

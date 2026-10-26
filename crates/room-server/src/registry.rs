@@ -42,6 +42,9 @@ pub enum RegistryError {
     /// Requested game is not one of [`GAMES`].
     #[error("unknown game")]
     UnknownGame,
+    /// Requested content pack is not supported (see `room_proto::KNOWN_PACKS`).
+    #[error("unknown pack")]
+    UnknownPack,
     /// RNG failure.
     #[error("rng failed")]
     Rng,
@@ -321,6 +324,25 @@ impl RoomRegistry {
                 Some(entry.info.clone())
             }
         };
+        let packs = {
+            let mut out = Vec::new();
+            for raw in &req.packs {
+                let name = raw.trim().to_ascii_lowercase();
+                if name.is_empty() {
+                    continue;
+                }
+                if game != GAMES[0] {
+                    return Err(RegistryError::ModNotAllowed);
+                }
+                if !room_proto::is_known_pack(&name) {
+                    return Err(RegistryError::UnknownPack);
+                }
+                if !out.iter().any(|p: &String| p == &name) {
+                    out.push(name);
+                }
+            }
+            out
+        };
         let want_verifier = req.enable_verifier && self.cfg.enable_verifier;
         if want_verifier {
             let cur = self.verified_rooms.load(Ordering::Relaxed);
@@ -340,6 +362,7 @@ impl RoomRegistry {
             visibility,
             enable_verifier: want_verifier,
             game_mod,
+            packs,
             time_limit: req
                 .time_limit
                 .filter(|&m| m > 0)

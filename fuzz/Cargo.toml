@@ -1,0 +1,99 @@
+[package]
+name = "room-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# `7z` required by `sevenz_header`; other targets ignore unused archive kinds.
+room-vfs = { path = "../crates/room-vfs", default-features = false, features = ["7z"] }
+room-defs = { path = "../crates/room-defs" }
+room-formats = { path = "../crates/room-formats" }
+room-game = { path = "../crates/room-game" }
+room-proto = { path = "../crates/room-proto" }
+room-build-engine = { path = "../crates/room-build-engine" }
+room-faceswap = { path = "../crates/room-faceswap" }
+
+[[bin]]
+name = "wad_directory"
+path = "fuzz_targets/wad_directory.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zip_central_directory"
+path = "fuzz_targets/zip_central_directory.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sevenz_header"
+path = "fuzz_targets/sevenz_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mapinfo"
+path = "fuzz_targets/mapinfo.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mus_to_midi"
+path = "fuzz_targets/mus_to_midi.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "image_lumps"
+path = "fuzz_targets/image_lumps.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "save_info"
+path = "fuzz_targets/save_info.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "save_world_bin"
+path = "fuzz_targets/save_world_bin.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "room_proto_binary"
+path = "fuzz_targets/room_proto_binary.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "build_primitives"
+path = "fuzz_targets/build_primitives.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "headanchors"
+path = "fuzz_targets/headanchors.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

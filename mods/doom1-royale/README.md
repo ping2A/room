@@ -54,10 +54,12 @@ shows callsigns. Doom coop has four player starts, so rooms take 2–4 players.
 curl -X POST http://127.0.0.1:8765/api/rooms -H 'Content-Type: application/json' \
   -d '{"map":"E1M1","skill":3,"max_players":4,"mod":"royale"}'
 
-# Practice round on the desktop
+# Practice round on the desktop (not offered in lobby "Play solo")
 cargo run -p room-app --release -- --iwad testdata/doom/doom1.wad \
   --file mods/doom1-royale/royale.wad --map E1M1 --play
 ```
+
+`room.toml` sets `solo = false` so the lobby *Play solo* picker skips this mod.
 
 Every player in the room downloads `royale.wad` from the server and checks
 its fingerprint before the map loads (docs/22 §4 *Mods*).

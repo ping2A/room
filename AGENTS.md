@@ -76,8 +76,9 @@ that clean-room implementation is possible.
   `docs/21-milestone-progress.md` in sync: check off items, bump Status/%, and
   append a short Log line when a chunk of work lands.
 - **Current priority override:** M7 + M10–M13 done; active **M14** (1.0 hardening).
-  **M8** when Heretic/Hexen IWADs available; M9 remains deferred (see
-  `docs/21-milestone-progress.md` §0).
+ **M8** when Heretic/Hexen IWADs available; M9 remains deferred. **Duke track:**
+ D6 DEMO1 sync (frontier tic751; face-swap F0–F7 done).
+ **Face-swap track:** **F0–F7** done (`docs/26-face-swap.md`, `docs/21` §0).
 - Each crate has its own `README.md` stating its responsibility and public API
   surface. Keep public APIs small; prefer `pub(crate)`.
 - When a spec is ambiguous, look at the GZDoom source at
@@ -120,6 +121,8 @@ docs/
   21-milestone-progress.md     living progress checklists for M0–M14 (update often)
   22-room-server.md            multi-room web server (room-proto / room-server)
   23-build-engine.md           Duke Nukem 3D / Build: GRP→UDMF conversion, roadmap
+  25-duke3d-full-support.md    Duke Nukem 3D full support: native Build runtime spec (D0–D11)
+  26-face-swap.md              your face / a photo on enemy sprite heads: capture, anchors, compositing (F0–F7)
   appendix-a-dependencies.md   allowed crates and policy
   appendix-b-gzdoom-source-map.md  GZDoom source → Room crate mapping
   appendix-c-glossary.md       terms

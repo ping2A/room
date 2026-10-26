@@ -1,0 +1,51 @@
+{
+  "name": "gen_getz_flat_s256_c0_f8192_85_170",
+  "op": "getzsofslope",
+  "walls": [
+    {
+      "x": 0,
+      "y": 0,
+      "point2": 1,
+      "nextsector": -1
+    },
+    {
+      "x": 256,
+      "y": 0,
+      "point2": 2,
+      "nextsector": -1
+    },
+    {
+      "x": 256,
+      "y": 256,
+      "point2": 3,
+      "nextsector": -1
+    },
+    {
+      "x": 0,
+      "y": 256,
+      "point2": 0,
+      "nextsector": -1
+    }
+  ],
+  "sector_z": [
+    {
+      "wallptr": 0,
+      "wallnum": 4,
+      "ceilingz": 0,
+      "floorz": 8192,
+      "ceilingstat": 0,
+      "floorstat": 0,
+      "ceilingheinum": 0,
+      "floorheinum": 0
+    }
+  ],
+  "input": {
+    "x": 85,
+    "y": 170,
+    "sect": 0
+  },
+  "expect": {
+    "ceilz": 0,
+    "florz": 8192
+  }
+}

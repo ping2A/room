@@ -21,6 +21,7 @@ async fn drain_rejects_creates_and_readyz_503() {
             enable_verifier: false,
             visibility: "public".into(),
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         })

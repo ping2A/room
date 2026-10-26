@@ -209,6 +209,7 @@ async fn list_rooms(
                 "rng_seed": h.rng_seed,
                 "enable_verifier": h.settings.enable_verifier,
                 "mod": h.settings.game_mod.as_ref().map(|m| m.name.clone()),
+                "packs": h.settings.packs.clone(),
                 "occupied": h.occupied.load(std::sync::atomic::Ordering::Relaxed),
                 "started": h.started.load(std::sync::atomic::Ordering::Relaxed),
                 "node_id": state.registry.locate_room(&id).unwrap_or_default(),

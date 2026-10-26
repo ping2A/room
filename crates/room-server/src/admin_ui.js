@@ -365,7 +365,7 @@
     $("stat-msgs").textContent = fmtNum(m.room_server_ws_msgs_total);
     $("stat-frames").textContent = fmtNum(m.room_server_tic_frames_total);
     $("stat-violations").textContent = fmtNum(m.room_server_violations_total);
-    $("node-chip").textContent = "node " + (s.node_id || "—");
+    $("node-chip").textContent = s.node_id || "—";
     $("drain-status").textContent = s.draining
       ? "Draining — new rooms blocked"
       : "Node accepting rooms";

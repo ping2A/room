@@ -1,0 +1,8159 @@
+// HEADANCHORS — Freedoom Phase 2 (estimated; hash 0 = accept any art)
+// Generated for Room F1. Re-author in the Anchors editor as needed.
+
+Anchor "PLAYPAL" hash 0
+{
+    Center 0.0, 1388.5
+    Radius 2.0, 1389.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOSSBACK" hash 0
+{
+    Center 159.5, 34.5
+    Radius 160.0, 35.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOS2A1" hash 0
+{
+    Center 25.0, 8.0
+    Radius 23.5, 8.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOS2A2" hash 0
+{
+    Center 25.5, 8.5
+    Radius 19.0, 9.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2A3" hash 0
+{
+    Center 21.5, 11.0
+    Radius 22.0, 11.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2A4" hash 0
+{
+    Center 23.0, 12.0
+    Radius 23.5, 12.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2A5" hash 0
+{
+    Center 24.0, 12.0
+    Radius 24.5, 12.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2A6" hash 0
+{
+    Center 27.5, 11.0
+    Radius 19.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2A7" hash 0
+{
+    Center 27.0, 11.0
+    Radius 21.5, 11.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2A8" hash 0
+{
+    Center 24.0, 12.0
+    Radius 23.5, 12.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2B1" hash 0
+{
+    Center 27.0, 12.5
+    Radius 25.5, 13.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOS2B2" hash 0
+{
+    Center 18.5, 12.5
+    Radius 19.0, 13.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2B3" hash 0
+{
+    Center 20.0, 11.5
+    Radius 20.5, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2B4" hash 0
+{
+    Center 21.0, 11.5
+    Radius 18.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2B5" hash 0
+{
+    Center 24.5, 6.0
+    Radius 23.0, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2B6" hash 0
+{
+    Center 18.0, 11.5
+    Radius 18.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2B7" hash 0
+{
+    Center 22.0, 11.5
+    Radius 20.5, 12.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2B8" hash 0
+{
+    Center 18.5, 12.5
+    Radius 19.0, 13.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2C1" hash 0
+{
+    Center 23.0, 7.0
+    Radius 23.5, 7.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOS2C2" hash 0
+{
+    Center 28.0, 12.0
+    Radius 22.5, 12.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2C3" hash 0
+{
+    Center 19.5, 11.0
+    Radius 20.0, 11.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2C4" hash 0
+{
+    Center 18.5, 11.0
+    Radius 19.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2C5" hash 0
+{
+    Center 24.0, 12.0
+    Radius 23.5, 12.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2C6" hash 0
+{
+    Center 23.0, 12.0
+    Radius 22.5, 12.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2C7" hash 0
+{
+    Center 30.5, 11.0
+    Radius 21.0, 11.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2C8" hash 0
+{
+    Center 21.5, 8.5
+    Radius 19.0, 9.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2D1" hash 0
+{
+    Center 26.5, 12.5
+    Radius 26.0, 13.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOS2D2" hash 0
+{
+    Center 18.5, 12.5
+    Radius 19.0, 13.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2D3" hash 0
+{
+    Center 20.0, 11.5
+    Radius 20.5, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2D4" hash 0
+{
+    Center 21.0, 11.5
+    Radius 18.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2D5" hash 0
+{
+    Center 24.5, 6.0
+    Radius 23.0, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2D6" hash 0
+{
+    Center 18.0, 11.5
+    Radius 18.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2D7" hash 0
+{
+    Center 25.0, 11.5
+    Radius 20.5, 12.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2D8" hash 0
+{
+    Center 18.5, 12.5
+    Radius 19.0, 13.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2E1" hash 0
+{
+    Center 26.5, 12.5
+    Radius 27.0, 13.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOS2E2" hash 0
+{
+    Center 33.0, 8.5
+    Radius 33.5, 9.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2E3" hash 0
+{
+    Center 26.5, 9.5
+    Radius 27.0, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2E4" hash 0
+{
+    Center 18.5, 8.5
+    Radius 19.0, 9.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2E5" hash 0
+{
+    Center 24.0, 11.5
+    Radius 22.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2E6" hash 0
+{
+    Center 29.0, 9.5
+    Radius 29.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2E7" hash 0
+{
+    Center 35.0, 11.5
+    Radius 31.5, 12.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2E8" hash 0
+{
+    Center 28.5, 9.5
+    Radius 20.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2F1" hash 0
+{
+    Center 36.0, 7.0
+    Radius 24.5, 7.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOS2F2" hash 0
+{
+    Center 33.0, 8.5
+    Radius 33.5, 9.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2F3" hash 0
+{
+    Center 26.5, 9.5
+    Radius 27.0, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2F4" hash 0
+{
+    Center 18.5, 8.5
+    Radius 19.0, 9.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2F5" hash 0
+{
+    Center 24.0, 11.5
+    Radius 22.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2F6" hash 0
+{
+    Center 29.0, 9.5
+    Radius 29.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2F7" hash 0
+{
+    Center 35.0, 11.5
+    Radius 31.5, 12.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2F8" hash 0
+{
+    Center 28.5, 9.5
+    Radius 20.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2G1" hash 0
+{
+    Center 38.5, 12.5
+    Radius 25.0, 13.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOS2G2" hash 0
+{
+    Center 33.0, 8.5
+    Radius 33.5, 9.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2G3" hash 0
+{
+    Center 26.5, 9.5
+    Radius 27.0, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2G4" hash 0
+{
+    Center 18.5, 8.5
+    Radius 19.0, 9.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2G5" hash 0
+{
+    Center 24.0, 11.5
+    Radius 22.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2G6" hash 0
+{
+    Center 29.0, 9.5
+    Radius 29.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2G7" hash 0
+{
+    Center 35.0, 11.5
+    Radius 31.5, 12.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2G8" hash 0
+{
+    Center 28.5, 9.5
+    Radius 20.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2H1" hash 0
+{
+    Center 28.5, 12.5
+    Radius 27.0, 13.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOS2H2" hash 0
+{
+    Center 33.0, 9.5
+    Radius 19.5, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2H3" hash 0
+{
+    Center 23.5, 9.5
+    Radius 19.0, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOS2H4" hash 0
+{
+    Center 20.0, 8.5
+    Radius 20.5, 9.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2H5" hash 0
+{
+    Center 24.0, 6.0
+    Radius 21.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2H6" hash 0
+{
+    Center 17.5, 7.5
+    Radius 18.0, 8.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOS2H7" hash 0
+{
+    Center 19.0, 12.0
+    Radius 19.5, 12.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2H8" hash 0
+{
+    Center 24.5, 12.5
+    Radius 24.0, 13.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOS2I0" hash 0
+{
+    Hidden
+}
+
+Anchor "BOS2J0" hash 0
+{
+    Hidden
+}
+
+Anchor "BOS2K0" hash 0
+{
+    Hidden
+}
+
+Anchor "BOS2L0" hash 0
+{
+    Hidden
+}
+
+Anchor "BOS2M0" hash 0
+{
+    Hidden
+}
+
+Anchor "BOS2N0" hash 0
+{
+    Hidden
+}
+
+Anchor "BOS2O0" hash 0
+{
+    Hidden
+}
+
+Anchor "BSPIA1D1" hash 0
+{
+    Center 64.0, 9.0
+    Radius 13.5, 8.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BSPIA2A8" hash 0
+{
+    Center 70.0, 9.5
+    Radius 35.5, 9.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPIA3A7" hash 0
+{
+    Center 74.5, 9.5
+    Radius 47.0, 9.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPIA4A6" hash 0
+{
+    Center 73.0, 7.0
+    Radius 36.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPIA5D5" hash 0
+{
+    Center 63.5, 6.5
+    Radius 15.0, 6.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPIB1E1" hash 0
+{
+    Center 64.0, 9.0
+    Radius 13.5, 8.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BSPIB2B8" hash 0
+{
+    Center 70.0, 9.5
+    Radius 35.5, 9.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPIB3B7" hash 0
+{
+    Center 74.5, 9.5
+    Radius 47.0, 9.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPIB4B6" hash 0
+{
+    Center 73.0, 7.0
+    Radius 36.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPIB5E5" hash 0
+{
+    Center 63.5, 6.5
+    Radius 15.0, 6.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPIC1F1" hash 0
+{
+    Center 64.0, 9.0
+    Radius 13.5, 8.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BSPIC2C8" hash 0
+{
+    Center 70.0, 9.5
+    Radius 35.5, 9.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPIC3C7" hash 0
+{
+    Center 74.5, 9.5
+    Radius 47.0, 9.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPIC4C6" hash 0
+{
+    Center 73.0, 7.0
+    Radius 36.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPIC5F5" hash 0
+{
+    Center 63.5, 6.5
+    Radius 15.0, 6.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPID2D8" hash 0
+{
+    Center 70.0, 9.5
+    Radius 35.5, 9.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPID3D7" hash 0
+{
+    Center 74.5, 9.5
+    Radius 47.0, 9.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPID4D6" hash 0
+{
+    Center 73.0, 7.0
+    Radius 36.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPIE2E8" hash 0
+{
+    Center 70.0, 9.5
+    Radius 35.5, 9.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPIE3E7" hash 0
+{
+    Center 74.5, 9.5
+    Radius 47.0, 9.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPIE4E6" hash 0
+{
+    Center 73.0, 7.0
+    Radius 36.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPIF2F8" hash 0
+{
+    Center 70.0, 9.5
+    Radius 35.5, 9.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPIF3F7" hash 0
+{
+    Center 74.5, 9.5
+    Radius 47.0, 9.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPIF4F6" hash 0
+{
+    Center 73.0, 7.0
+    Radius 36.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPIG1" hash 0
+{
+    Center 64.0, 16.0
+    Radius 13.5, 9.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BSPIG2G8" hash 0
+{
+    Center 59.0, 16.0
+    Radius 36.5, 9.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPIG3G7" hash 0
+{
+    Center 78.5, 10.5
+    Radius 30.0, 5.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPIG4G6" hash 0
+{
+    Center 75.0, 8.5
+    Radius 24.5, 4.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPIG5" hash 0
+{
+    Center 63.5, 9.5
+    Radius 14.0, 6.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPIH1" hash 0
+{
+    Center 64.0, 16.0
+    Radius 13.5, 9.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BSPIH2H8" hash 0
+{
+    Center 58.0, 13.0
+    Radius 37.5, 6.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPIH3H7" hash 0
+{
+    Center 78.5, 10.0
+    Radius 30.0, 4.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPIH4H6" hash 0
+{
+    Center 75.0, 8.5
+    Radius 24.5, 4.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPIH5" hash 0
+{
+    Center 63.5, 9.5
+    Radius 14.0, 6.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPII1" hash 0
+{
+    Center 67.0, 9.0
+    Radius 14.5, 9.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BSPII2I8" hash 0
+{
+    Center 66.5, 5.5
+    Radius 32.0, 6.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPII3I7" hash 0
+{
+    Center 67.0, 6.0
+    Radius 36.5, 5.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BSPII4I6" hash 0
+{
+    Center 72.0, 10.0
+    Radius 30.5, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPII5" hash 0
+{
+    Center 59.5, 11.0
+    Radius 16.0, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BSPIJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "BSPIK0" hash 0
+{
+    Hidden
+}
+
+Anchor "BSPIL0" hash 0
+{
+    Hidden
+}
+
+Anchor "BSPIM0" hash 0
+{
+    Hidden
+}
+
+Anchor "BSPIN0" hash 0
+{
+    Hidden
+}
+
+Anchor "BSPIO0" hash 0
+{
+    Hidden
+}
+
+Anchor "BSPIP0" hash 0
+{
+    Hidden
+}
+
+Anchor "CPOSA1" hash 0
+{
+    Center 17.5, 9.5
+    Radius 18.0, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CPOSB1" hash 0
+{
+    Center 17.5, 9.5
+    Radius 18.0, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CPOSC1" hash 0
+{
+    Center 17.5, 9.5
+    Radius 18.0, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CPOSD1" hash 0
+{
+    Center 17.5, 9.5
+    Radius 18.0, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CPOSE1" hash 0
+{
+    Center 13.0, 9.5
+    Radius 13.5, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CPOSF1" hash 0
+{
+    Center 13.0, 9.5
+    Radius 13.5, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CPOSG1" hash 0
+{
+    Center 13.5, 9.5
+    Radius 14.0, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CPOSA2A8" hash 0
+{
+    Center 12.0, 8.0
+    Radius 12.5, 8.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "CPOSB2B8" hash 0
+{
+    Center 16.5, 9.5
+    Radius 13.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "CPOSC2C8" hash 0
+{
+    Center 14.0, 9.0
+    Radius 14.5, 9.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "CPOSD2D8" hash 0
+{
+    Center 12.5, 9.5
+    Radius 13.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "CPOSE2E8" hash 0
+{
+    Center 29.5, 9.5
+    Radius 15.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "CPOSF2F8" hash 0
+{
+    Center 23.5, 9.5
+    Radius 21.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "CPOSG2G8" hash 0
+{
+    Center 24.5, 6.0
+    Radius 11.0, 6.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "CPOSA3A7" hash 0
+{
+    Center 15.5, 8.0
+    Radius 10.0, 8.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "CPOSB3B7" hash 0
+{
+    Center 20.0, 7.5
+    Radius 10.5, 8.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "CPOSC3C7" hash 0
+{
+    Center 13.0, 7.5
+    Radius 10.5, 8.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "CPOSD3D7" hash 0
+{
+    Center 20.0, 7.5
+    Radius 10.5, 8.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "CPOSE3E7" hash 0
+{
+    Center 41.5, 9.5
+    Radius 19.0, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "CPOSF3F7" hash 0
+{
+    Center 32.5, 9.5
+    Radius 28.0, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "CPOSG3G7" hash 0
+{
+    Center 22.5, 9.5
+    Radius 18.0, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "CPOSA4A6" hash 0
+{
+    Center 22.5, 9.5
+    Radius 12.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CPOSB4B6" hash 0
+{
+    Center 24.0, 9.5
+    Radius 11.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CPOSC4C6" hash 0
+{
+    Center 25.5, 9.5
+    Radius 11.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CPOSD4D6" hash 0
+{
+    Center 24.0, 9.5
+    Radius 11.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CPOSE4E6" hash 0
+{
+    Center 24.5, 9.5
+    Radius 18.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CPOSF4F6" hash 0
+{
+    Center 24.5, 9.5
+    Radius 18.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CPOSG4G6" hash 0
+{
+    Center 27.5, 9.5
+    Radius 16.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CPOSA5" hash 0
+{
+    Center 24.0, 7.0
+    Radius 18.5, 7.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CPOSB5" hash 0
+{
+    Center 24.5, 7.0
+    Radius 19.0, 7.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CPOSC5" hash 0
+{
+    Center 25.0, 7.0
+    Radius 18.5, 7.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CPOSD5" hash 0
+{
+    Center 24.5, 7.0
+    Radius 19.0, 7.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CPOSE5" hash 0
+{
+    Center 14.5, 9.5
+    Radius 15.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CPOSF5" hash 0
+{
+    Center 14.5, 9.5
+    Radius 15.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CPOSG5" hash 0
+{
+    Center 20.0, 9.5
+    Radius 20.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CPOSH0" hash 0
+{
+    Center 21.5, 10.0
+    Radius 22.0, 10.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CPOSI0" hash 0
+{
+    Hidden
+}
+
+Anchor "CPOSJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "CPOSK0" hash 0
+{
+    Hidden
+}
+
+Anchor "CPOSL0" hash 0
+{
+    Hidden
+}
+
+Anchor "CPOSM0" hash 0
+{
+    Hidden
+}
+
+Anchor "CPOSN0" hash 0
+{
+    Hidden
+}
+
+Anchor "CPOSO0" hash 0
+{
+    Hidden
+}
+
+Anchor "CPOSP0" hash 0
+{
+    Hidden
+}
+
+Anchor "CPOSQ0" hash 0
+{
+    Hidden
+}
+
+Anchor "CPOSR0" hash 0
+{
+    Hidden
+}
+
+Anchor "CPOSS0" hash 0
+{
+    Hidden
+}
+
+Anchor "CPOST0" hash 0
+{
+    Hidden
+}
+
+Anchor "FATTA1" hash 0
+{
+    Center 28.5, 11.0
+    Radius 28.0, 11.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "FATTA2A8" hash 0
+{
+    Center 33.0, 11.0
+    Radius 17.5, 11.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTA3A7" hash 0
+{
+    Center 31.5, 11.0
+    Radius 25.0, 11.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTA4A6" hash 0
+{
+    Center 30.5, 10.5
+    Radius 24.0, 11.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTA5" hash 0
+{
+    Center 34.0, 11.5
+    Radius 30.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTB1" hash 0
+{
+    Center 48.0, 11.0
+    Radius 35.5, 11.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "FATTB2B8" hash 0
+{
+    Center 28.0, 11.0
+    Radius 20.5, 11.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTB3B7" hash 0
+{
+    Center 25.5, 11.5
+    Radius 20.0, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTB4B6" hash 0
+{
+    Center 28.0, 11.5
+    Radius 28.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTB5" hash 0
+{
+    Center 38.0, 11.0
+    Radius 33.5, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTC1" hash 0
+{
+    Center 43.5, 11.0
+    Radius 37.0, 11.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "FATTC2C8" hash 0
+{
+    Center 32.0, 11.5
+    Radius 27.5, 12.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTC3C7" hash 0
+{
+    Center 28.0, 11.5
+    Radius 27.5, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTC4C6" hash 0
+{
+    Center 34.5, 11.5
+    Radius 31.0, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTC5" hash 0
+{
+    Center 38.5, 11.0
+    Radius 36.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTD1" hash 0
+{
+    Center 38.0, 11.0
+    Radius 35.5, 11.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "FATTD2D8" hash 0
+{
+    Center 31.0, 11.5
+    Radius 31.5, 12.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTD3D7" hash 0
+{
+    Center 35.5, 11.5
+    Radius 25.0, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTD4D6" hash 0
+{
+    Center 34.0, 11.0
+    Radius 29.5, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTD5" hash 0
+{
+    Center 31.5, 11.0
+    Radius 32.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTE1" hash 0
+{
+    Center 43.5, 12.0
+    Radius 33.0, 12.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "FATTE2E8" hash 0
+{
+    Center 28.0, 11.5
+    Radius 24.5, 12.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTE3E7" hash 0
+{
+    Center 26.5, 12.0
+    Radius 21.0, 12.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTE4E6" hash 0
+{
+    Center 31.0, 11.0
+    Radius 31.5, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTE5" hash 0
+{
+    Center 41.5, 10.5
+    Radius 35.0, 11.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTF1" hash 0
+{
+    Center 32.0, 12.5
+    Radius 30.5, 13.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "FATTF2F8" hash 0
+{
+    Center 26.0, 11.5
+    Radius 25.5, 12.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTF3F7" hash 0
+{
+    Center 35.0, 9.5
+    Radius 20.5, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTF4F6" hash 0
+{
+    Center 29.0, 10.5
+    Radius 27.5, 11.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTF5" hash 0
+{
+    Center 45.5, 11.0
+    Radius 40.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTG1" hash 0
+{
+    Center 44.5, 11.0
+    Radius 40.0, 11.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "FATTG2G8" hash 0
+{
+    Center 44.0, 12.0
+    Radius 34.5, 12.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTG3G7" hash 0
+{
+    Center 33.5, 9.5
+    Radius 16.0, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTG4G6" hash 0
+{
+    Center 28.0, 8.5
+    Radius 28.5, 9.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTG5" hash 0
+{
+    Center 41.5, 12.0
+    Radius 37.0, 12.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTH1" hash 0
+{
+    Center 41.5, 11.0
+    Radius 41.0, 11.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "FATTH2H8" hash 0
+{
+    Center 34.5, 12.0
+    Radius 35.0, 12.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTH3H7" hash 0
+{
+    Center 23.5, 8.5
+    Radius 24.0, 9.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTH4H6" hash 0
+{
+    Center 29.0, 11.0
+    Radius 29.5, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTH5" hash 0
+{
+    Center 42.5, 12.0
+    Radius 43.0, 12.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTI1" hash 0
+{
+    Center 42.5, 6.0
+    Radius 38.0, 6.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "FATTI2I8" hash 0
+{
+    Center 13.5, 3.0
+    Radius 11.0, 3.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTI3I7" hash 0
+{
+    Center 18.0, 6.0
+    Radius 14.5, 6.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTI4I6" hash 0
+{
+    Center 41.5, 1.0
+    Radius 8.0, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTI5" hash 0
+{
+    Center 37.0, 1.5
+    Radius 28.5, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTJ1" hash 0
+{
+    Center 35.0, 11.5
+    Radius 32.5, 12.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "FATTJ2" hash 0
+{
+    Center 27.0, 11.5
+    Radius 23.5, 12.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTJ3" hash 0
+{
+    Center 24.5, 11.0
+    Radius 21.0, 11.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "FATTJ4" hash 0
+{
+    Center 19.5, 11.5
+    Radius 19.0, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTJ5" hash 0
+{
+    Center 38.0, 10.0
+    Radius 31.5, 10.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTJ6" hash 0
+{
+    Center 40.5, 11.5
+    Radius 19.0, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "FATTJ7" hash 0
+{
+    Center 50.0, 11.0
+    Radius 21.5, 11.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "FATTJ8" hash 0
+{
+    Center 59.0, 11.5
+    Radius 23.5, 12.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "FATTK0" hash 0
+{
+    Hidden
+}
+
+Anchor "FATTL0" hash 0
+{
+    Hidden
+}
+
+Anchor "FATTM0" hash 0
+{
+    Hidden
+}
+
+Anchor "FATTN0" hash 0
+{
+    Hidden
+}
+
+Anchor "FATTO0" hash 0
+{
+    Hidden
+}
+
+Anchor "FATTP0" hash 0
+{
+    Hidden
+}
+
+Anchor "FATTQ0" hash 0
+{
+    Hidden
+}
+
+Anchor "FATTR0" hash 0
+{
+    Hidden
+}
+
+Anchor "FATTS0" hash 0
+{
+    Hidden
+}
+
+Anchor "FATTT0" hash 0
+{
+    Hidden
+}
+
+Anchor "KEENA0" hash 0
+{
+    Center 10.0, 7.5
+    Radius 10.5, 8.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "KEENB0" hash 0
+{
+    Center 10.0, 7.5
+    Radius 10.5, 8.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "KEENC0" hash 0
+{
+    Center 10.0, 7.5
+    Radius 10.5, 8.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "KEEND0" hash 0
+{
+    Center 14.0, 10.5
+    Radius 11.5, 11.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "KEENE0" hash 0
+{
+    Center 13.0, 9.0
+    Radius 10.5, 9.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "KEENF0" hash 0
+{
+    Center 14.0, 9.0
+    Radius 10.5, 9.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "KEENG0" hash 0
+{
+    Center 19.0, 9.0
+    Radius 10.5, 9.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "KEENH0" hash 0
+{
+    Center 19.0, 11.0
+    Radius 11.5, 11.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "KEENI0" hash 0
+{
+    Hidden
+}
+
+Anchor "KEENJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "KEENK0" hash 0
+{
+    Hidden
+}
+
+Anchor "KEENL0" hash 0
+{
+    Hidden
+}
+
+Anchor "KEENM0" hash 0
+{
+    Hidden
+}
+
+Anchor "PAINA1" hash 0
+{
+    Center 36.5, 2.5
+    Radius 22.0, 3.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PAINA2A8" hash 0
+{
+    Center 26.0, 1.0
+    Radius 17.5, 2.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "PAINA3A7" hash 0
+{
+    Center 47.5, 11.5
+    Radius 46.0, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "PAINA4A6" hash 0
+{
+    Center 31.5, 2.5
+    Radius 25.0, 3.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PAINA5" hash 0
+{
+    Center 33.5, 2.0
+    Radius 24.0, 2.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PAINB1" hash 0
+{
+    Center 36.5, 2.5
+    Radius 22.0, 3.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PAINB2B8" hash 0
+{
+    Center 26.0, 1.0
+    Radius 17.5, 2.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "PAINB3B7" hash 0
+{
+    Center 47.0, 11.5
+    Radius 46.5, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "PAINB4B6" hash 0
+{
+    Center 31.5, 2.5
+    Radius 25.0, 3.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PAINB5" hash 0
+{
+    Center 33.5, 2.0
+    Radius 24.0, 2.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PAINC1" hash 0
+{
+    Center 36.5, 2.5
+    Radius 22.0, 3.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PAINC2C8" hash 0
+{
+    Center 26.0, 1.0
+    Radius 17.5, 2.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "PAINC3C7" hash 0
+{
+    Center 47.0, 11.5
+    Radius 46.5, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "PAINC4C6" hash 0
+{
+    Center 31.5, 2.5
+    Radius 25.0, 3.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PAINC5" hash 0
+{
+    Center 33.5, 2.0
+    Radius 24.0, 2.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PAIND1" hash 0
+{
+    Center 36.5, 2.5
+    Radius 22.0, 3.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PAIND2D8" hash 0
+{
+    Center 32.5, 1.0
+    Radius 4.0, 2.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "PAIND3D7" hash 0
+{
+    Center 47.5, 10.5
+    Radius 47.0, 11.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "PAIND4D6" hash 0
+{
+    Center 26.0, 3.0
+    Radius 24.5, 3.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PAIND5" hash 0
+{
+    Center 33.5, 2.0
+    Radius 24.0, 2.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PAINE1" hash 0
+{
+    Center 36.5, 2.5
+    Radius 22.0, 3.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PAINE2E8" hash 0
+{
+    Center 26.0, 1.0
+    Radius 17.5, 2.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "PAINE3E7" hash 0
+{
+    Center 47.5, 12.0
+    Radius 47.0, 12.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "PAINE4E6" hash 0
+{
+    Center 31.5, 2.5
+    Radius 25.0, 3.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PAINE5" hash 0
+{
+    Center 33.5, 2.0
+    Radius 24.0, 2.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PAINF1" hash 0
+{
+    Center 36.5, 2.5
+    Radius 23.0, 3.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PAINF2F8" hash 0
+{
+    Center 32.5, 3.0
+    Radius 17.0, 3.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "PAINF3F7" hash 0
+{
+    Center 46.5, 10.5
+    Radius 45.0, 11.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "PAINF4F6" hash 0
+{
+    Center 33.5, 2.5
+    Radius 25.0, 3.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PAINF5" hash 0
+{
+    Center 33.5, 2.0
+    Radius 24.0, 2.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PAING1" hash 0
+{
+    Center 33.5, 4.0
+    Radius 22.0, 4.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PAING2G8" hash 0
+{
+    Center 29.5, 1.5
+    Radius 17.0, 2.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "PAING3G7" hash 0
+{
+    Center 47.5, 11.5
+    Radius 46.0, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "PAING4G6" hash 0
+{
+    Center 33.5, 2.5
+    Radius 25.0, 3.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PAING5" hash 0
+{
+    Center 35.5, 2.5
+    Radius 24.0, 3.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PAINH0" hash 0
+{
+    Center 33.5, 4.0
+    Radius 22.0, 4.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PAINI0" hash 0
+{
+    Hidden
+}
+
+Anchor "PAINJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "PAINK0" hash 0
+{
+    Hidden
+}
+
+Anchor "PAINL0" hash 0
+{
+    Hidden
+}
+
+Anchor "PAINM0" hash 0
+{
+    Hidden
+}
+
+Anchor "SKELA1D1" hash 0
+{
+    Center 21.0, 11.0
+    Radius 21.5, 11.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKELA2D8" hash 0
+{
+    Center 21.0, 11.0
+    Radius 20.5, 11.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SKELA3D7" hash 0
+{
+    Center 33.5, 11.0
+    Radius 14.0, 11.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SKELA4D6" hash 0
+{
+    Center 26.5, 9.5
+    Radius 16.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELA5D5" hash 0
+{
+    Center 20.5, 11.0
+    Radius 21.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELA6D4" hash 0
+{
+    Center 31.5, 11.5
+    Radius 19.0, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELA7D3" hash 0
+{
+    Center 20.5, 11.0
+    Radius 15.0, 11.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SKELA8D2" hash 0
+{
+    Center 16.5, 9.0
+    Radius 15.0, 9.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SKELB1E1" hash 0
+{
+    Center 23.0, 3.5
+    Radius 11.5, 4.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKELB2E8" hash 0
+{
+    Center 23.5, 11.5
+    Radius 15.0, 12.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SKELB3E7" hash 0
+{
+    Center 21.0, 11.5
+    Radius 15.5, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SKELB4E6" hash 0
+{
+    Center 21.0, 3.0
+    Radius 13.5, 3.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELB5E5" hash 0
+{
+    Center 22.5, 11.5
+    Radius 22.0, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELB6E4" hash 0
+{
+    Center 23.5, 9.5
+    Radius 16.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELB7E3" hash 0
+{
+    Center 22.0, 11.5
+    Radius 14.5, 12.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SKELB8E2" hash 0
+{
+    Center 23.0, 11.5
+    Radius 18.5, 12.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SKELC1F1" hash 0
+{
+    Center 17.5, 11.5
+    Radius 18.0, 12.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKELC2F8" hash 0
+{
+    Center 26.0, 4.5
+    Radius 13.5, 5.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SKELC3F7" hash 0
+{
+    Center 18.0, 11.5
+    Radius 18.5, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SKELC4F6" hash 0
+{
+    Center 22.0, 11.5
+    Radius 21.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELC5F5" hash 0
+{
+    Center 21.5, 11.5
+    Radius 19.0, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELC6F4" hash 0
+{
+    Center 21.0, 3.0
+    Radius 13.5, 3.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELC7F3" hash 0
+{
+    Center 22.5, 11.5
+    Radius 18.0, 12.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SKELC8F2" hash 0
+{
+    Center 23.5, 11.5
+    Radius 22.0, 12.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SKELG1" hash 0
+{
+    Center 19.5, 11.0
+    Radius 20.0, 11.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKELG5" hash 0
+{
+    Center 25.0, 11.0
+    Radius 19.5, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELG6G4" hash 0
+{
+    Center 28.5, 9.0
+    Radius 16.0, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELG7G3" hash 0
+{
+    Center 14.0, 9.0
+    Radius 13.5, 9.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SKELG8G2" hash 0
+{
+    Center 21.0, 11.0
+    Radius 21.5, 11.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SKELH1" hash 0
+{
+    Center 23.5, 11.0
+    Radius 24.0, 11.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKELH5" hash 0
+{
+    Center 19.5, 10.5
+    Radius 20.0, 11.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELH6H4" hash 0
+{
+    Center 36.0, 10.0
+    Radius 26.5, 10.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELH7H3" hash 0
+{
+    Center 26.0, 9.0
+    Radius 24.5, 9.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SKELH8H2" hash 0
+{
+    Center 22.5, 10.5
+    Radius 18.0, 11.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SKELI1" hash 0
+{
+    Center 22.5, 10.0
+    Radius 19.0, 10.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKELI5" hash 0
+{
+    Center 17.5, 9.0
+    Radius 18.0, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELI6I4" hash 0
+{
+    Center 25.0, 9.5
+    Radius 20.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELI7I3" hash 0
+{
+    Center 19.5, 9.5
+    Radius 18.0, 10.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SKELI8I2" hash 0
+{
+    Center 23.0, 9.0
+    Radius 13.5, 9.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SKELJ1" hash 0
+{
+    Center 21.5, 1.0
+    Radius 12.0, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKELJ5" hash 0
+{
+    Center 22.5, 1.0
+    Radius 12.0, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELJ6J4" hash 0
+{
+    Center 31.5, 3.0
+    Radius 17.0, 3.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELJ7J3" hash 0
+{
+    Center 27.5, 9.0
+    Radius 18.0, 9.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SKELJ8J2" hash 0
+{
+    Center 31.5, 5.0
+    Radius 18.0, 5.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SKELK1" hash 0
+{
+    Center 23.0, 11.0
+    Radius 22.5, 11.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKELK5" hash 0
+{
+    Center 21.0, 3.0
+    Radius 11.5, 3.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELK6K4" hash 0
+{
+    Center 25.5, 9.0
+    Radius 16.0, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELK7K3" hash 0
+{
+    Center 13.5, 10.0
+    Radius 14.0, 10.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SKELK8K2" hash 0
+{
+    Center 20.0, 10.5
+    Radius 17.5, 11.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SKELL1" hash 0
+{
+    Center 30.0, 10.5
+    Radius 23.5, 11.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKELL5" hash 0
+{
+    Center 23.5, 11.5
+    Radius 22.0, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELL6L4" hash 0
+{
+    Center 22.5, 11.5
+    Radius 20.0, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKELL7L3" hash 0
+{
+    Center 15.0, 11.0
+    Radius 15.5, 11.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SKELL8L2" hash 0
+{
+    Center 20.0, 4.0
+    Radius 11.5, 4.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SKELM0" hash 0
+{
+    Hidden
+}
+
+Anchor "SKELN0" hash 0
+{
+    Hidden
+}
+
+Anchor "SKELO0" hash 0
+{
+    Hidden
+}
+
+Anchor "SKELP0" hash 0
+{
+    Hidden
+}
+
+Anchor "SKELQ0" hash 0
+{
+    Hidden
+}
+
+Anchor "SSWVA1" hash 0
+{
+    Center 16.5, 1.0
+    Radius 6.0, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SSWVA2A8" hash 0
+{
+    Center 11.5, 11.5
+    Radius 12.0, 12.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVA3A7" hash 0
+{
+    Center 11.5, 6.0
+    Radius 6.0, 6.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVA4A6" hash 0
+{
+    Center 16.5, 5.0
+    Radius 6.0, 5.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVA5" hash 0
+{
+    Center 20.0, 3.0
+    Radius 6.5, 3.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVB1" hash 0
+{
+    Center 18.5, 1.5
+    Radius 7.0, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SSWVB2B8" hash 0
+{
+    Center 18.5, 5.0
+    Radius 6.0, 5.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVB3B7" hash 0
+{
+    Center 19.0, 5.0
+    Radius 6.5, 5.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVB4B6" hash 0
+{
+    Center 14.5, 3.5
+    Radius 6.0, 4.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVB5" hash 0
+{
+    Center 19.0, 3.5
+    Radius 6.5, 4.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVC1" hash 0
+{
+    Center 15.0, 1.0
+    Radius 6.5, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SSWVC2C8" hash 0
+{
+    Center 12.5, 11.0
+    Radius 12.0, 11.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVC3C7" hash 0
+{
+    Center 14.5, 4.5
+    Radius 7.0, 5.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVC4C6" hash 0
+{
+    Center 14.5, 3.0
+    Radius 6.0, 3.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVC5" hash 0
+{
+    Center 18.5, 4.0
+    Radius 7.0, 4.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVD1" hash 0
+{
+    Center 18.0, 1.5
+    Radius 6.5, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SSWVD2D8" hash 0
+{
+    Center 14.0, 4.5
+    Radius 6.5, 5.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVD3D7" hash 0
+{
+    Center 19.5, 2.5
+    Radius 5.0, 3.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVD4D6" hash 0
+{
+    Center 19.0, 4.5
+    Radius 5.5, 5.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVD5" hash 0
+{
+    Center 19.0, 4.0
+    Radius 7.5, 4.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVE1" hash 0
+{
+    Center 14.0, 1.0
+    Radius 5.5, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SSWVE2E8" hash 0
+{
+    Center 18.0, 3.0
+    Radius 6.5, 3.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVE3E7" hash 0
+{
+    Center 16.0, 5.5
+    Radius 7.5, 6.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVE4E6" hash 0
+{
+    Center 14.5, 3.5
+    Radius 7.0, 4.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVE5" hash 0
+{
+    Center 12.5, 2.0
+    Radius 7.0, 2.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVF1" hash 0
+{
+    Center 17.0, 5.5
+    Radius 6.5, 6.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SSWVF2F8" hash 0
+{
+    Center 21.5, 6.0
+    Radius 8.0, 6.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVF3F7" hash 0
+{
+    Center 33.0, 3.5
+    Radius 6.5, 4.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVF4F6" hash 0
+{
+    Center 20.0, 5.5
+    Radius 6.5, 6.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVF5" hash 0
+{
+    Center 12.5, 2.0
+    Radius 7.0, 2.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVG1" hash 0
+{
+    Center 17.0, 5.5
+    Radius 6.5, 6.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SSWVG2G8" hash 0
+{
+    Center 24.5, 6.0
+    Radius 8.0, 6.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVG3G7" hash 0
+{
+    Center 38.0, 3.5
+    Radius 6.5, 4.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVG4G6" hash 0
+{
+    Center 25.0, 5.5
+    Radius 6.5, 6.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVG5" hash 0
+{
+    Center 12.5, 2.0
+    Radius 7.0, 2.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVH1" hash 0
+{
+    Center 20.0, 5.5
+    Radius 6.5, 6.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SSWVH2H8" hash 0
+{
+    Center 20.0, 5.0
+    Radius 8.5, 5.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVH3H7" hash 0
+{
+    Center 14.5, 1.5
+    Radius 6.0, 2.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SSWVH4H6" hash 0
+{
+    Center 17.5, 4.5
+    Radius 7.0, 5.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVH5" hash 0
+{
+    Center 14.0, 5.0
+    Radius 9.5, 5.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SSWVI0" hash 0
+{
+    Hidden
+}
+
+Anchor "SSWVJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "SSWVK0" hash 0
+{
+    Hidden
+}
+
+Anchor "SSWVL0" hash 0
+{
+    Hidden
+}
+
+Anchor "SSWVM0" hash 0
+{
+    Hidden
+}
+
+Anchor "SSWVN0" hash 0
+{
+    Hidden
+}
+
+Anchor "SSWVO0" hash 0
+{
+    Hidden
+}
+
+Anchor "SSWVP0" hash 0
+{
+    Hidden
+}
+
+Anchor "SSWVQ0" hash 0
+{
+    Hidden
+}
+
+Anchor "SSWVR0" hash 0
+{
+    Hidden
+}
+
+Anchor "SSWVS0" hash 0
+{
+    Hidden
+}
+
+Anchor "SSWVT0" hash 0
+{
+    Hidden
+}
+
+Anchor "SSWVU0" hash 0
+{
+    Hidden
+}
+
+Anchor "SSWVV0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEA1D1" hash 0
+{
+    Center 19.0, 12.5
+    Radius 19.5, 13.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "VILEA2D8" hash 0
+{
+    Center 24.0, 12.5
+    Radius 23.5, 13.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "VILEA3D7" hash 0
+{
+    Center 24.5, 6.5
+    Radius 18.0, 7.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "VILEA4D6" hash 0
+{
+    Center 18.0, 12.5
+    Radius 18.5, 13.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "VILEA5D5" hash 0
+{
+    Center 19.5, 12.5
+    Radius 20.0, 13.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "VILEA6D4" hash 0
+{
+    Center 23.5, 12.5
+    Radius 22.0, 13.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "VILEA7D3" hash 0
+{
+    Center 30.0, 10.5
+    Radius 20.5, 11.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "VILEA8D2" hash 0
+{
+    Center 29.0, 12.5
+    Radius 17.5, 13.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "VILEB1E1" hash 0
+{
+    Center 22.0, 12.5
+    Radius 22.5, 13.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "VILEB2E8" hash 0
+{
+    Center 20.5, 13.0
+    Radius 21.0, 13.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "VILEB3E7" hash 0
+{
+    Center 20.0, 13.0
+    Radius 20.5, 13.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "VILEB4E6" hash 0
+{
+    Center 18.5, 12.5
+    Radius 19.0, 13.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "VILEB5E5" hash 0
+{
+    Center 22.0, 12.5
+    Radius 22.5, 13.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "VILEB6E4" hash 0
+{
+    Center 24.0, 12.5
+    Radius 20.5, 13.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "VILEB7E3" hash 0
+{
+    Center 36.0, 8.5
+    Radius 19.5, 9.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "VILEB8E2" hash 0
+{
+    Center 25.0, 12.5
+    Radius 19.5, 13.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "VILEC1F1" hash 0
+{
+    Center 25.5, 12.5
+    Radius 25.0, 13.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "VILEC2F8" hash 0
+{
+    Center 18.5, 12.5
+    Radius 19.0, 13.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "VILEC3F7" hash 0
+{
+    Center 18.5, 13.0
+    Radius 19.0, 13.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "VILEC4F6" hash 0
+{
+    Center 19.5, 12.5
+    Radius 20.0, 13.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "VILEC5F5" hash 0
+{
+    Center 23.5, 12.5
+    Radius 23.0, 13.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "VILEC6F4" hash 0
+{
+    Center 24.0, 12.5
+    Radius 18.5, 13.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "VILEC7F3" hash 0
+{
+    Center 23.5, 12.5
+    Radius 19.0, 13.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "VILEC8F2" hash 0
+{
+    Center 22.5, 12.5
+    Radius 22.0, 13.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "VILEG0" hash 0
+{
+    Center 36.0, 15.0
+    Radius 36.5, 15.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "VILEH0" hash 0
+{
+    Center 45.0, 15.0
+    Radius 23.5, 6.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "VILEI0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEK0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEL0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEM0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEN0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEO0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEP0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEQ0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILER0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILES0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILET0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEU0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEV0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEW0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEX0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEY0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILEZ0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILE[0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILE\0" hash 0
+{
+    Hidden
+}
+
+Anchor "VILE]0" hash 0
+{
+    Hidden
+}
+
+Anchor "BOSSA1" hash 0
+{
+    Center 23.0, 8.0
+    Radius 23.5, 8.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOSSA2" hash 0
+{
+    Center 23.0, 12.0
+    Radius 23.5, 12.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSA3" hash 0
+{
+    Center 21.0, 11.0
+    Radius 21.5, 11.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSA4" hash 0
+{
+    Center 18.5, 11.0
+    Radius 19.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSA5" hash 0
+{
+    Center 24.0, 12.0
+    Radius 24.5, 12.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSA6" hash 0
+{
+    Center 23.0, 12.0
+    Radius 23.5, 12.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSA7" hash 0
+{
+    Center 29.5, 11.0
+    Radius 22.0, 11.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSA8" hash 0
+{
+    Center 21.5, 8.5
+    Radius 19.0, 9.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSB1" hash 0
+{
+    Center 25.0, 12.5
+    Radius 25.5, 13.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOSSB2" hash 0
+{
+    Center 18.5, 12.5
+    Radius 19.0, 13.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSB3" hash 0
+{
+    Center 20.0, 11.5
+    Radius 20.5, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSB4" hash 0
+{
+    Center 22.0, 11.5
+    Radius 18.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSB5" hash 0
+{
+    Center 25.5, 6.0
+    Radius 23.0, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSB6" hash 0
+{
+    Center 18.0, 11.5
+    Radius 18.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSB7" hash 0
+{
+    Center 25.0, 11.5
+    Radius 20.5, 12.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSB8" hash 0
+{
+    Center 18.5, 12.5
+    Radius 19.0, 13.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSC1" hash 0
+{
+    Center 26.0, 7.0
+    Radius 23.5, 7.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOSSC2" hash 0
+{
+    Center 25.5, 8.5
+    Radius 19.0, 9.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSC3" hash 0
+{
+    Center 22.5, 11.0
+    Radius 21.0, 11.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSC4" hash 0
+{
+    Center 23.0, 12.0
+    Radius 22.5, 12.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSC5" hash 0
+{
+    Center 23.0, 12.0
+    Radius 23.5, 12.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSC6" hash 0
+{
+    Center 27.5, 11.0
+    Radius 19.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSC7" hash 0
+{
+    Center 27.5, 11.0
+    Radius 20.0, 11.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSC8" hash 0
+{
+    Center 22.0, 12.0
+    Radius 22.5, 12.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSD1" hash 0
+{
+    Center 26.5, 12.5
+    Radius 26.0, 13.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOSSD2" hash 0
+{
+    Center 18.5, 12.5
+    Radius 19.0, 13.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSD3" hash 0
+{
+    Center 20.0, 11.5
+    Radius 20.5, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSD4" hash 0
+{
+    Center 22.0, 11.5
+    Radius 18.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSD5" hash 0
+{
+    Center 25.5, 6.0
+    Radius 23.0, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSD6" hash 0
+{
+    Center 18.0, 11.5
+    Radius 18.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSD7" hash 0
+{
+    Center 22.0, 11.5
+    Radius 20.5, 12.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSD8" hash 0
+{
+    Center 18.5, 12.5
+    Radius 19.0, 13.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSE1" hash 0
+{
+    Center 26.5, 12.5
+    Radius 27.0, 13.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOSSE2" hash 0
+{
+    Center 24.5, 9.5
+    Radius 20.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSE3" hash 0
+{
+    Center 31.0, 11.5
+    Radius 31.5, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSE4" hash 0
+{
+    Center 29.0, 9.5
+    Radius 29.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSE5" hash 0
+{
+    Center 22.0, 11.5
+    Radius 22.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSE6" hash 0
+{
+    Center 18.5, 8.5
+    Radius 19.0, 9.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSE7" hash 0
+{
+    Center 31.5, 9.5
+    Radius 27.0, 10.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSE8" hash 0
+{
+    Center 33.0, 8.5
+    Radius 33.5, 9.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSF1" hash 0
+{
+    Center 26.0, 7.0
+    Radius 24.5, 7.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOSSF2" hash 0
+{
+    Center 24.5, 9.5
+    Radius 20.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSF3" hash 0
+{
+    Center 31.0, 11.5
+    Radius 31.5, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSF4" hash 0
+{
+    Center 29.0, 9.5
+    Radius 29.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSF5" hash 0
+{
+    Center 22.0, 11.5
+    Radius 22.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSF6" hash 0
+{
+    Center 18.5, 8.5
+    Radius 19.0, 9.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSF7" hash 0
+{
+    Center 31.5, 9.5
+    Radius 27.0, 10.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSF8" hash 0
+{
+    Center 33.0, 8.5
+    Radius 33.5, 9.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSG1" hash 0
+{
+    Center 24.5, 12.5
+    Radius 25.0, 13.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOSSG2" hash 0
+{
+    Center 24.5, 9.5
+    Radius 20.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSG3" hash 0
+{
+    Center 31.0, 11.5
+    Radius 31.5, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSG4" hash 0
+{
+    Center 29.0, 9.5
+    Radius 29.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSG5" hash 0
+{
+    Center 22.0, 11.5
+    Radius 22.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSG6" hash 0
+{
+    Center 18.5, 8.5
+    Radius 19.0, 9.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSG7" hash 0
+{
+    Center 31.5, 9.5
+    Radius 27.0, 10.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSG8" hash 0
+{
+    Center 33.0, 8.5
+    Radius 33.5, 9.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSH1" hash 0
+{
+    Center 26.5, 12.5
+    Radius 27.0, 13.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "BOSSH2" hash 0
+{
+    Center 27.5, 12.5
+    Radius 24.0, 13.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSH3" hash 0
+{
+    Center 24.0, 12.0
+    Radius 19.5, 12.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "BOSSH4" hash 0
+{
+    Center 25.5, 7.5
+    Radius 18.0, 8.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSH5" hash 0
+{
+    Center 21.0, 6.0
+    Radius 21.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSH6" hash 0
+{
+    Center 28.0, 8.5
+    Radius 20.5, 9.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "BOSSH7" hash 0
+{
+    Center 22.5, 9.5
+    Radius 19.0, 10.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSH8" hash 0
+{
+    Center 19.0, 9.5
+    Radius 19.5, 10.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "BOSSI0" hash 0
+{
+    Hidden
+}
+
+Anchor "BOSSJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "BOSSK0" hash 0
+{
+    Hidden
+}
+
+Anchor "BOSSL0" hash 0
+{
+    Hidden
+}
+
+Anchor "BOSSM0" hash 0
+{
+    Hidden
+}
+
+Anchor "BOSSN0" hash 0
+{
+    Hidden
+}
+
+Anchor "BOSSO0" hash 0
+{
+    Hidden
+}
+
+Anchor "POSSA1" hash 0
+{
+    Center 25.5, 7.5
+    Radius 15.0, 8.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "POSSA2" hash 0
+{
+    Center 26.5, 8.5
+    Radius 11.0, 9.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "POSSA3" hash 0
+{
+    Center 15.5, 7.5
+    Radius 15.0, 7.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "POSSA4" hash 0
+{
+    Center 17.5, 10.5
+    Radius 18.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSA5" hash 0
+{
+    Center 21.5, 11.0
+    Radius 16.0, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSA6" hash 0
+{
+    Center 24.5, 9.5
+    Radius 20.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSA7" hash 0
+{
+    Center 27.5, 12.5
+    Radius 18.0, 10.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "POSSA8" hash 0
+{
+    Center 17.0, 8.5
+    Radius 13.5, 8.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "POSSB1" hash 0
+{
+    Center 20.5, 10.5
+    Radius 20.0, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "POSSB2" hash 0
+{
+    Center 24.5, 10.5
+    Radius 14.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "POSSB3" hash 0
+{
+    Center 19.0, 11.0
+    Radius 14.5, 8.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "POSSB4" hash 0
+{
+    Center 17.5, 8.5
+    Radius 18.0, 7.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSB5" hash 0
+{
+    Center 19.5, 10.5
+    Radius 18.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSB6" hash 0
+{
+    Center 22.5, 7.0
+    Radius 23.0, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSB7" hash 0
+{
+    Center 28.0, 11.5
+    Radius 17.5, 10.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "POSSB8" hash 0
+{
+    Center 15.5, 9.5
+    Radius 15.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "POSSC1" hash 0
+{
+    Center 19.0, 9.5
+    Radius 18.5, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "POSSC2" hash 0
+{
+    Center 20.0, 11.5
+    Radius 18.5, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "POSSC3" hash 0
+{
+    Center 18.5, 13.5
+    Radius 19.0, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "POSSC4" hash 0
+{
+    Center 17.0, 10.5
+    Radius 17.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSC5" hash 0
+{
+    Center 19.0, 10.5
+    Radius 19.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSC6" hash 0
+{
+    Center 26.0, 6.0
+    Radius 19.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSC7" hash 0
+{
+    Center 29.5, 2.5
+    Radius 16.0, 3.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "POSSC8" hash 0
+{
+    Center 12.0, 9.5
+    Radius 12.5, 10.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "POSSD1" hash 0
+{
+    Center 20.0, 10.5
+    Radius 20.5, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "POSSD2" hash 0
+{
+    Center 19.5, 10.5
+    Radius 19.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "POSSD3" hash 0
+{
+    Center 18.0, 11.5
+    Radius 17.5, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "POSSD4" hash 0
+{
+    Center 20.0, 11.5
+    Radius 20.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSD5" hash 0
+{
+    Center 20.0, 8.5
+    Radius 18.5, 9.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSD6" hash 0
+{
+    Center 24.5, 5.0
+    Radius 21.0, 4.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSD7" hash 0
+{
+    Center 26.5, 10.5
+    Radius 17.0, 10.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "POSSD8" hash 0
+{
+    Center 13.5, 10.5
+    Radius 13.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "POSSE1" hash 0
+{
+    Center 10.5, 9.5
+    Radius 11.0, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "POSSE2" hash 0
+{
+    Center 22.0, 9.0
+    Radius 22.5, 9.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "POSSE3" hash 0
+{
+    Center 23.5, 6.0
+    Radius 24.0, 6.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "POSSE4" hash 0
+{
+    Center 17.0, 6.0
+    Radius 17.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSE5" hash 0
+{
+    Center 13.0, 6.0
+    Radius 10.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSE6" hash 0
+{
+    Center 15.5, 8.5
+    Radius 16.0, 9.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSE7" hash 0
+{
+    Center 25.5, 6.0
+    Radius 24.0, 6.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "POSSE8" hash 0
+{
+    Center 23.5, 9.5
+    Radius 24.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "POSSF1" hash 0
+{
+    Center 9.5, 8.5
+    Radius 10.0, 9.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "POSSF2" hash 0
+{
+    Center 20.0, 8.0
+    Radius 20.5, 8.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "POSSF3" hash 0
+{
+    Center 25.0, 8.0
+    Radius 25.5, 8.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "POSSF4" hash 0
+{
+    Center 22.5, 7.5
+    Radius 23.0, 8.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSF5" hash 0
+{
+    Center 14.5, 9.0
+    Radius 11.0, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSF6" hash 0
+{
+    Center 18.5, 5.0
+    Radius 18.0, 5.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSF7" hash 0
+{
+    Center 29.0, 3.0
+    Radius 26.5, 3.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "POSSF8" hash 0
+{
+    Center 28.0, 4.0
+    Radius 27.5, 4.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "POSSG1" hash 0
+{
+    Center 20.5, 2.0
+    Radius 8.0, 2.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "POSSG2" hash 0
+{
+    Center 17.5, 6.0
+    Radius 11.0, 6.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "POSSG3" hash 0
+{
+    Center 30.5, 4.0
+    Radius 7.0, 4.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "POSSG4" hash 0
+{
+    Center 24.5, 7.5
+    Radius 11.0, 8.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSG5" hash 0
+{
+    Center 17.0, 9.0
+    Radius 13.5, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSG6" hash 0
+{
+    Center 15.5, 7.5
+    Radius 11.0, 8.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "POSSG7" hash 0
+{
+    Center 7.5, 4.0
+    Radius 7.0, 4.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "POSSG8" hash 0
+{
+    Center 20.5, 6.0
+    Radius 11.0, 6.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "POSSH0" hash 0
+{
+    Center 26.0, 3.5
+    Radius 10.5, 4.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "POSSI0" hash 0
+{
+    Hidden
+}
+
+Anchor "POSSJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "POSSK0" hash 0
+{
+    Hidden
+}
+
+Anchor "POSSL0" hash 0
+{
+    Hidden
+}
+
+Anchor "POSSM0" hash 0
+{
+    Hidden
+}
+
+Anchor "POSSN0" hash 0
+{
+    Hidden
+}
+
+Anchor "POSSO0" hash 0
+{
+    Hidden
+}
+
+Anchor "POSSP0" hash 0
+{
+    Hidden
+}
+
+Anchor "POSSQ0" hash 0
+{
+    Hidden
+}
+
+Anchor "POSSR0" hash 0
+{
+    Hidden
+}
+
+Anchor "POSSS0" hash 0
+{
+    Hidden
+}
+
+Anchor "POSST0" hash 0
+{
+    Hidden
+}
+
+Anchor "POSSU0" hash 0
+{
+    Hidden
+}
+
+Anchor "SARGA1" hash 0
+{
+    Center 14.5, 7.5
+    Radius 12.0, 8.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SARGA2A8" hash 0
+{
+    Center 21.5, 7.5
+    Radius 22.0, 8.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGA3A7" hash 0
+{
+    Center 20.5, 5.5
+    Radius 21.0, 6.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGA4A6" hash 0
+{
+    Center 16.5, 9.0
+    Radius 17.0, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGA5" hash 0
+{
+    Center 22.5, 7.5
+    Radius 12.0, 8.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGB1" hash 0
+{
+    Center 15.5, 7.5
+    Radius 12.0, 8.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SARGB2B8" hash 0
+{
+    Center 20.0, 8.5
+    Radius 20.5, 9.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGB3B7" hash 0
+{
+    Center 21.0, 10.0
+    Radius 21.5, 10.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGB4B6" hash 0
+{
+    Center 16.0, 6.0
+    Radius 16.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGB5" hash 0
+{
+    Center 17.5, 7.5
+    Radius 12.0, 8.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGC1" hash 0
+{
+    Center 22.5, 7.5
+    Radius 12.0, 8.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SARGC2C8" hash 0
+{
+    Center 19.0, 8.0
+    Radius 19.5, 8.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGC3C7" hash 0
+{
+    Center 18.5, 5.5
+    Radius 19.0, 6.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGC4C6" hash 0
+{
+    Center 16.5, 9.0
+    Radius 17.0, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGC5" hash 0
+{
+    Center 14.5, 7.5
+    Radius 12.0, 8.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGD1" hash 0
+{
+    Center 19.5, 7.5
+    Radius 12.0, 8.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SARGD2D8" hash 0
+{
+    Center 20.0, 7.5
+    Radius 20.5, 8.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGD3D7" hash 0
+{
+    Center 21.0, 9.5
+    Radius 21.5, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGD4D6" hash 0
+{
+    Center 17.0, 6.0
+    Radius 17.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGD5" hash 0
+{
+    Center 15.5, 7.5
+    Radius 12.0, 8.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGE1" hash 0
+{
+    Center 16.5, 7.5
+    Radius 16.0, 8.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SARGE2E8" hash 0
+{
+    Center 21.5, 8.5
+    Radius 22.0, 9.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGE3E7" hash 0
+{
+    Center 19.5, 2.5
+    Radius 19.0, 3.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGE4E6" hash 0
+{
+    Center 17.5, 6.5
+    Radius 18.0, 7.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGE5" hash 0
+{
+    Center 15.5, 2.0
+    Radius 11.0, 2.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGF1" hash 0
+{
+    Center 18.0, 7.0
+    Radius 18.5, 7.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SARGF2F8" hash 0
+{
+    Center 19.0, 2.5
+    Radius 19.5, 3.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGF3F7" hash 0
+{
+    Center 21.0, 1.5
+    Radius 19.5, 2.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGF4F6" hash 0
+{
+    Center 19.0, 6.5
+    Radius 19.5, 7.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGF5" hash 0
+{
+    Center 15.0, 2.0
+    Radius 11.5, 2.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGG1" hash 0
+{
+    Center 17.5, 7.5
+    Radius 12.0, 8.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SARGG2G8" hash 0
+{
+    Center 18.5, 10.0
+    Radius 19.0, 10.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGG3G7" hash 0
+{
+    Center 18.5, 7.0
+    Radius 19.0, 7.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGG4G6" hash 0
+{
+    Center 15.0, 9.0
+    Radius 15.5, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGG5" hash 0
+{
+    Center 15.5, 10.5
+    Radius 9.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGH1" hash 0
+{
+    Center 20.5, 7.0
+    Radius 12.0, 7.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SARGH2H8" hash 0
+{
+    Center 18.5, 7.5
+    Radius 19.0, 8.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGH3H7" hash 0
+{
+    Center 17.5, 8.0
+    Radius 18.0, 8.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SARGH4H6" hash 0
+{
+    Center 16.0, 8.5
+    Radius 16.5, 9.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGH5" hash 0
+{
+    Center 11.5, 7.5
+    Radius 12.0, 8.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SARGI0" hash 0
+{
+    Hidden
+}
+
+Anchor "SARGJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "SARGK0" hash 0
+{
+    Hidden
+}
+
+Anchor "SARGL0" hash 0
+{
+    Hidden
+}
+
+Anchor "SARGM0" hash 0
+{
+    Hidden
+}
+
+Anchor "SARGN0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPOSA1" hash 0
+{
+    Center 17.0, 9.5
+    Radius 13.5, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPOSA2A8" hash 0
+{
+    Center 12.0, 9.5
+    Radius 11.5, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPOSA3A7" hash 0
+{
+    Center 16.5, 6.0
+    Radius 10.0, 6.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPOSA4A6" hash 0
+{
+    Center 22.0, 5.5
+    Radius 9.5, 6.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPOSA5" hash 0
+{
+    Center 19.5, 8.5
+    Radius 11.0, 9.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPOSB1" hash 0
+{
+    Center 16.5, 9.5
+    Radius 12.0, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPOSB2B8" hash 0
+{
+    Center 10.5, 9.5
+    Radius 11.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPOSB3B7" hash 0
+{
+    Center 11.0, 6.0
+    Radius 9.5, 6.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPOSB4B6" hash 0
+{
+    Center 20.0, 5.5
+    Radius 9.5, 6.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPOSB5" hash 0
+{
+    Center 17.0, 9.0
+    Radius 11.5, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPOSC1" hash 0
+{
+    Center 15.0, 9.5
+    Radius 11.5, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPOSC2C8" hash 0
+{
+    Center 11.5, 9.5
+    Radius 11.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPOSC3C7" hash 0
+{
+    Center 16.0, 6.0
+    Radius 9.5, 6.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPOSC4C6" hash 0
+{
+    Center 19.5, 5.0
+    Radius 10.0, 5.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPOSC5" hash 0
+{
+    Center 18.0, 9.5
+    Radius 11.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPOSD1" hash 0
+{
+    Center 16.0, 9.5
+    Radius 12.5, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPOSD2D8" hash 0
+{
+    Center 10.5, 9.5
+    Radius 10.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPOSD3D7" hash 0
+{
+    Center 10.5, 6.0
+    Radius 9.0, 6.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPOSD4D6" hash 0
+{
+    Center 18.0, 5.5
+    Radius 8.5, 6.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPOSD5" hash 0
+{
+    Center 17.0, 9.0
+    Radius 13.5, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPOSE1" hash 0
+{
+    Center 9.0, 9.5
+    Radius 9.5, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPOSE2E8" hash 0
+{
+    Center 22.5, 5.5
+    Radius 8.0, 6.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPOSE3E7" hash 0
+{
+    Center 27.0, 5.5
+    Radius 10.5, 6.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPOSE4E6" hash 0
+{
+    Center 21.0, 9.0
+    Radius 12.5, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPOSE5" hash 0
+{
+    Center 13.5, 5.5
+    Radius 8.0, 6.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPOSF1" hash 0
+{
+    Center 11.0, 9.5
+    Radius 9.5, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPOSF2F8" hash 0
+{
+    Center 30.0, 6.0
+    Radius 10.5, 6.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPOSF3F7" hash 0
+{
+    Center 34.0, 5.5
+    Radius 10.5, 6.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPOSF4F6" hash 0
+{
+    Center 23.5, 9.0
+    Radius 12.0, 9.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPOSF5" hash 0
+{
+    Center 12.5, 5.5
+    Radius 8.0, 6.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPOSG1" hash 0
+{
+    Center 13.5, 1.5
+    Radius 7.0, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPOSG2G8" hash 0
+{
+    Center 16.5, 1.0
+    Radius 10.0, 2.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPOSG3G7" hash 0
+{
+    Center 26.0, 2.5
+    Radius 14.5, 3.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPOSG4G6" hash 0
+{
+    Center 22.5, 4.5
+    Radius 11.0, 5.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPOSG5" hash 0
+{
+    Center 17.5, 2.5
+    Radius 9.0, 3.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPOSH0" hash 0
+{
+    Center 16.0, 10.0
+    Radius 16.5, 10.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPOSI0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPOSJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPOSK0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPOSL0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPOSM0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPOSN0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPOSO0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPOSP0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPOSQ0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPOSR0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPOSS0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPOST0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPOSU0" hash 0
+{
+    Hidden
+}
+
+Anchor "TROOA1" hash 0
+{
+    Center 21.0, 7.0
+    Radius 14.5, 7.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "TROOA2A8" hash 0
+{
+    Center 22.0, 9.0
+    Radius 15.5, 9.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOA3A7" hash 0
+{
+    Center 25.5, 5.0
+    Radius 18.0, 5.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOA4A6" hash 0
+{
+    Center 30.5, 4.5
+    Radius 14.0, 5.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOA5" hash 0
+{
+    Center 24.5, 6.0
+    Radius 13.0, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOB1" hash 0
+{
+    Center 23.5, 3.0
+    Radius 14.0, 3.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "TROOB2B8" hash 0
+{
+    Center 19.0, 9.0
+    Radius 14.5, 9.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOB3B7" hash 0
+{
+    Center 19.5, 2.5
+    Radius 18.0, 3.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOB4B6" hash 0
+{
+    Center 19.5, 11.0
+    Radius 20.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOB5" hash 0
+{
+    Center 25.5, 6.0
+    Radius 16.0, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOC1" hash 0
+{
+    Center 26.0, 7.0
+    Radius 14.5, 7.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "TROOC2C8" hash 0
+{
+    Center 23.5, 9.0
+    Radius 15.0, 9.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOC3C7" hash 0
+{
+    Center 25.5, 5.5
+    Radius 18.0, 6.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOC4C6" hash 0
+{
+    Center 24.5, 4.5
+    Radius 14.0, 5.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOC5" hash 0
+{
+    Center 19.5, 6.5
+    Radius 13.0, 7.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOD1" hash 0
+{
+    Center 25.5, 3.0
+    Radius 14.0, 3.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "TROOD2D8" hash 0
+{
+    Center 14.0, 9.5
+    Radius 14.5, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOD3D7" hash 0
+{
+    Center 19.0, 11.0
+    Radius 19.5, 11.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOD4D6" hash 0
+{
+    Center 20.5, 11.0
+    Radius 20.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOD5" hash 0
+{
+    Center 23.5, 6.0
+    Radius 16.0, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOE1" hash 0
+{
+    Center 14.5, 3.0
+    Radius 14.0, 3.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "TROOE2E8" hash 0
+{
+    Center 16.0, 10.0
+    Radius 16.5, 10.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOE3E7" hash 0
+{
+    Center 19.0, 11.0
+    Radius 19.5, 11.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOE4E6" hash 0
+{
+    Center 19.0, 10.5
+    Radius 19.5, 11.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOE5" hash 0
+{
+    Center 17.5, 10.0
+    Radius 18.0, 10.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOF1" hash 0
+{
+    Center 26.5, 10.5
+    Radius 27.0, 11.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "TROOF2F8" hash 0
+{
+    Center 17.5, 11.0
+    Radius 16.0, 11.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOF3F7" hash 0
+{
+    Center 23.0, 3.5
+    Radius 20.5, 4.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOF4F6" hash 0
+{
+    Center 20.0, 10.5
+    Radius 20.5, 11.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOF5" hash 0
+{
+    Center 20.0, 10.0
+    Radius 20.5, 10.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOG1" hash 0
+{
+    Center 66.0, 1.0
+    Radius 4.5, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "TROOG2G8" hash 0
+{
+    Center 32.0, 2.5
+    Radius 22.5, 3.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOG3G7" hash 0
+{
+    Center 17.5, 5.5
+    Radius 18.0, 6.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOG4G6" hash 0
+{
+    Center 19.5, 4.5
+    Radius 20.0, 5.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOG5" hash 0
+{
+    Center 21.0, 1.0
+    Radius 21.5, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOH1" hash 0
+{
+    Center 24.0, 11.0
+    Radius 24.5, 11.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "TROOH2H8" hash 0
+{
+    Center 27.5, 10.5
+    Radius 22.0, 11.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOH3H7" hash 0
+{
+    Center 32.0, 8.0
+    Radius 22.5, 8.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "TROOH4H6" hash 0
+{
+    Center 35.5, 4.5
+    Radius 14.0, 5.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOH5" hash 0
+{
+    Center 22.0, 7.5
+    Radius 18.5, 8.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "TROOI0" hash 0
+{
+    Hidden
+}
+
+Anchor "TROOJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "TROOK0" hash 0
+{
+    Hidden
+}
+
+Anchor "TROOL0" hash 0
+{
+    Hidden
+}
+
+Anchor "TROOM0" hash 0
+{
+    Hidden
+}
+
+Anchor "TROON0" hash 0
+{
+    Hidden
+}
+
+Anchor "TROOO0" hash 0
+{
+    Hidden
+}
+
+Anchor "TROOP0" hash 0
+{
+    Hidden
+}
+
+Anchor "TROOQ0" hash 0
+{
+    Hidden
+}
+
+Anchor "TROOR0" hash 0
+{
+    Hidden
+}
+
+Anchor "TROOS0" hash 0
+{
+    Hidden
+}
+
+Anchor "TROOT0" hash 0
+{
+    Hidden
+}
+
+Anchor "TROOU0" hash 0
+{
+    Hidden
+}
+
+Anchor "CYBRA1" hash 0
+{
+    Center 47.5, 17.5
+    Radius 21.0, 18.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CYBRA2A8" hash 0
+{
+    Center 49.0, 18.0
+    Radius 21.5, 18.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "CYBRA3A7" hash 0
+{
+    Center 35.0, 14.5
+    Radius 23.5, 15.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "CYBRA4A6" hash 0
+{
+    Center 26.5, 18.5
+    Radius 20.0, 19.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CYBRA5" hash 0
+{
+    Center 31.5, 18.5
+    Radius 21.0, 19.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CYBRB1" hash 0
+{
+    Center 50.0, 18.0
+    Radius 22.5, 18.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CYBRB2B8" hash 0
+{
+    Center 49.0, 17.0
+    Radius 21.5, 17.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "CYBRB3B7" hash 0
+{
+    Center 57.0, 14.5
+    Radius 23.5, 15.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "CYBRB4B6" hash 0
+{
+    Center 53.0, 18.0
+    Radius 19.5, 18.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CYBRB5" hash 0
+{
+    Center 51.5, 18.0
+    Radius 22.0, 18.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CYBRC1" hash 0
+{
+    Center 42.5, 17.5
+    Radius 21.0, 18.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CYBRC2C8" hash 0
+{
+    Center 33.0, 18.5
+    Radius 21.5, 19.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "CYBRC3C7" hash 0
+{
+    Center 35.0, 14.5
+    Radius 23.5, 15.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "CYBRC4C6" hash 0
+{
+    Center 42.5, 18.5
+    Radius 20.0, 19.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CYBRC5" hash 0
+{
+    Center 47.5, 18.5
+    Radius 21.0, 19.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CYBRD1" hash 0
+{
+    Center 48.5, 18.0
+    Radius 22.0, 18.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CYBRD2D8" hash 0
+{
+    Center 37.0, 18.0
+    Radius 21.5, 18.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "CYBRD3D7" hash 0
+{
+    Center 48.0, 14.5
+    Radius 23.5, 15.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "CYBRD4D6" hash 0
+{
+    Center 33.0, 18.0
+    Radius 19.5, 18.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CYBRD5" hash 0
+{
+    Center 36.5, 18.0
+    Radius 22.0, 18.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CYBRE1" hash 0
+{
+    Center 48.0, 18.5
+    Radius 22.5, 19.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CYBRE2E8" hash 0
+{
+    Center 37.0, 18.5
+    Radius 21.5, 19.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "CYBRE3E7" hash 0
+{
+    Center 48.0, 14.5
+    Radius 23.5, 15.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "CYBRE4E6" hash 0
+{
+    Center 42.5, 18.5
+    Radius 20.0, 19.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CYBRE5" hash 0
+{
+    Center 47.5, 18.5
+    Radius 21.0, 19.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CYBRF1" hash 0
+{
+    Center 53.0, 18.0
+    Radius 28.5, 18.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CYBRF2F8" hash 0
+{
+    Center 35.0, 18.0
+    Radius 21.5, 18.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "CYBRF3F7" hash 0
+{
+    Center 48.0, 14.5
+    Radius 23.5, 15.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "CYBRF4F6" hash 0
+{
+    Center 43.0, 18.0
+    Radius 20.5, 18.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CYBRF5" hash 0
+{
+    Center 44.5, 18.0
+    Radius 21.0, 18.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CYBRG1" hash 0
+{
+    Center 53.0, 18.0
+    Radius 28.5, 18.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CYBRG2G8" hash 0
+{
+    Center 35.0, 18.0
+    Radius 21.5, 18.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "CYBRG3G7" hash 0
+{
+    Center 48.0, 14.5
+    Radius 23.5, 15.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "CYBRG4G6" hash 0
+{
+    Center 43.0, 18.0
+    Radius 20.5, 18.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CYBRG5" hash 0
+{
+    Center 44.5, 18.0
+    Radius 21.0, 18.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "CYBRH0" hash 0
+{
+    Center 53.0, 18.0
+    Radius 28.5, 18.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "CYBRI0" hash 0
+{
+    Hidden
+}
+
+Anchor "CYBRJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "CYBRK0" hash 0
+{
+    Hidden
+}
+
+Anchor "CYBRL0" hash 0
+{
+    Hidden
+}
+
+Anchor "CYBRM0" hash 0
+{
+    Hidden
+}
+
+Anchor "CYBRN0" hash 0
+{
+    Hidden
+}
+
+Anchor "CYBRO0" hash 0
+{
+    Hidden
+}
+
+Anchor "CYBRP0" hash 0
+{
+    Hidden
+}
+
+Anchor "HEADA1" hash 0
+{
+    Center 31.0, 11.5
+    Radius 29.5, 12.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "HEADA2A8" hash 0
+{
+    Center 28.5, 2.0
+    Radius 17.0, 2.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "HEADA3A7" hash 0
+{
+    Center 33.5, 1.5
+    Radius 10.0, 2.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "HEADA4A6" hash 0
+{
+    Center 34.5, 1.0
+    Radius 19.0, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "HEADA5" hash 0
+{
+    Center 31.0, 11.5
+    Radius 29.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "HEADB1" hash 0
+{
+    Center 29.5, 11.5
+    Radius 28.0, 12.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "HEADB2B8" hash 0
+{
+    Center 29.0, 1.5
+    Radius 16.5, 2.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "HEADB3B7" hash 0
+{
+    Center 33.0, 1.0
+    Radius 8.5, 2.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "HEADB4B6" hash 0
+{
+    Center 30.5, 11.5
+    Radius 28.0, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "HEADB5" hash 0
+{
+    Center 31.5, 11.5
+    Radius 30.0, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "HEADC1" hash 0
+{
+    Center 31.5, 11.5
+    Radius 30.0, 12.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "HEADC2C8" hash 0
+{
+    Center 29.0, 2.0
+    Radius 17.5, 2.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "HEADC3C7" hash 0
+{
+    Center 34.5, 1.0
+    Radius 8.0, 2.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "HEADC4C6" hash 0
+{
+    Center 32.5, 2.0
+    Radius 21.0, 2.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "HEADC5" hash 0
+{
+    Center 31.0, 11.5
+    Radius 29.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "HEADD1" hash 0
+{
+    Center 31.5, 11.5
+    Radius 30.0, 12.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "HEADD2D8" hash 0
+{
+    Center 29.0, 2.5
+    Radius 18.5, 3.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "HEADD3D7" hash 0
+{
+    Center 32.5, 11.5
+    Radius 29.0, 12.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "HEADD4D6" hash 0
+{
+    Center 22.0, 1.5
+    Radius 8.5, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "HEADD5" hash 0
+{
+    Center 31.0, 11.5
+    Radius 30.5, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "HEADE1" hash 0
+{
+    Center 30.5, 11.5
+    Radius 30.0, 12.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "HEADE2E8" hash 0
+{
+    Center 29.0, 2.0
+    Radius 16.5, 2.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "HEADE3E7" hash 0
+{
+    Center 35.0, 1.5
+    Radius 11.5, 2.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "HEADE4E6" hash 0
+{
+    Center 34.5, 3.5
+    Radius 21.0, 4.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "HEADE5" hash 0
+{
+    Center 30.5, 11.5
+    Radius 29.0, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "HEADF1" hash 0
+{
+    Center 30.0, 11.5
+    Radius 28.5, 12.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "HEADF2F8" hash 0
+{
+    Center 30.5, 3.0
+    Radius 19.0, 3.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "HEADF3F7" hash 0
+{
+    Center 36.0, 1.0
+    Radius 10.5, 2.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "HEADF4F6" hash 0
+{
+    Center 34.5, 3.0
+    Radius 21.0, 3.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "HEADF5" hash 0
+{
+    Center 30.5, 11.5
+    Radius 30.0, 12.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "HEADG0" hash 0
+{
+    Center 29.5, 11.5
+    Radius 28.0, 12.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "HEADH0" hash 0
+{
+    Center 39.0, 11.5
+    Radius 37.5, 12.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "HEADI0" hash 0
+{
+    Hidden
+}
+
+Anchor "HEADJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "HEADK0" hash 0
+{
+    Hidden
+}
+
+Anchor "HEADL0" hash 0
+{
+    Hidden
+}
+
+Anchor "SKULA1" hash 0
+{
+    Center 14.5, 6.5
+    Radius 15.0, 7.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKULA8A2" hash 0
+{
+    Center 14.5, 6.5
+    Radius 15.0, 7.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SKULA7A3" hash 0
+{
+    Center 15.0, 6.5
+    Radius 15.5, 7.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SKULA6A4" hash 0
+{
+    Center 15.0, 6.5
+    Radius 15.5, 7.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKULA5" hash 0
+{
+    Center 14.5, 6.5
+    Radius 15.0, 7.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKULB1" hash 0
+{
+    Center 14.5, 6.0
+    Radius 15.0, 6.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKULB8B2" hash 0
+{
+    Center 14.5, 6.0
+    Radius 15.0, 6.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SKULB7B3" hash 0
+{
+    Center 15.0, 6.0
+    Radius 15.5, 6.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SKULB6B4" hash 0
+{
+    Center 15.5, 6.0
+    Radius 15.0, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKULB5" hash 0
+{
+    Center 14.5, 6.0
+    Radius 15.0, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKULC1" hash 0
+{
+    Center 16.5, 6.0
+    Radius 15.0, 6.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKULC8C2" hash 0
+{
+    Center 17.5, 6.0
+    Radius 15.0, 6.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SKULC7C3" hash 0
+{
+    Center 15.0, 6.5
+    Radius 15.5, 7.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SKULC6C4" hash 0
+{
+    Center 19.0, 6.0
+    Radius 15.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKULC5" hash 0
+{
+    Center 17.0, 6.0
+    Radius 15.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKULD1" hash 0
+{
+    Center 16.0, 6.0
+    Radius 15.5, 6.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKULD8D2" hash 0
+{
+    Center 16.5, 6.0
+    Radius 15.0, 6.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SKULD7D3" hash 0
+{
+    Center 17.0, 6.5
+    Radius 15.5, 7.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SKULD6D4" hash 0
+{
+    Center 18.0, 6.0
+    Radius 15.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKULD5" hash 0
+{
+    Center 16.0, 6.0
+    Radius 14.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKULE1" hash 0
+{
+    Center 16.5, 6.0
+    Radius 15.0, 6.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKULE8E2" hash 0
+{
+    Center 17.5, 6.0
+    Radius 15.0, 6.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SKULE7E3" hash 0
+{
+    Center 15.0, 6.5
+    Radius 15.5, 7.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SKULE6E4" hash 0
+{
+    Center 19.0, 6.0
+    Radius 15.5, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKULE5" hash 0
+{
+    Center 16.5, 6.0
+    Radius 15.0, 6.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SKULF0" hash 0
+{
+    Center 19.5, 2.0
+    Radius 5.0, 2.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKULG0" hash 0
+{
+    Center 16.0, 7.0
+    Radius 15.5, 7.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKULH0" hash 0
+{
+    Center 20.0, 4.5
+    Radius 15.5, 5.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SKULI0" hash 0
+{
+    Hidden
+}
+
+Anchor "SKULJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "SKULK0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPIDA1" hash 0
+{
+    Center 126.5, 1.0
+    Radius 16.0, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPIDA2" hash 0
+{
+    Center 122.5, 11.0
+    Radius 22.0, 11.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDA3" hash 0
+{
+    Center 146.0, 17.0
+    Radius 30.5, 17.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDA4" hash 0
+{
+    Center 123.5, 11.0
+    Radius 23.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDA5" hash 0
+{
+    Center 126.5, 1.0
+    Radius 17.0, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDA6" hash 0
+{
+    Center 130.5, 11.0
+    Radius 23.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDA7" hash 0
+{
+    Center 108.0, 17.0
+    Radius 30.5, 17.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDA8" hash 0
+{
+    Center 132.5, 11.0
+    Radius 22.0, 11.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDB1" hash 0
+{
+    Center 126.5, 1.0
+    Radius 16.0, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPIDB2" hash 0
+{
+    Center 122.0, 10.5
+    Radius 21.5, 11.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDB3" hash 0
+{
+    Center 146.0, 17.0
+    Radius 30.5, 17.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDB4" hash 0
+{
+    Center 125.0, 11.0
+    Radius 23.5, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDB5" hash 0
+{
+    Center 126.5, 1.0
+    Radius 17.0, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDB6" hash 0
+{
+    Center 130.5, 11.0
+    Radius 23.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDB7" hash 0
+{
+    Center 108.0, 17.0
+    Radius 30.5, 17.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDB8" hash 0
+{
+    Center 129.0, 11.0
+    Radius 25.5, 11.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDC1" hash 0
+{
+    Center 126.5, 1.0
+    Radius 16.0, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPIDC2" hash 0
+{
+    Center 122.0, 11.0
+    Radius 21.5, 11.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDC3" hash 0
+{
+    Center 146.0, 17.0
+    Radius 30.5, 17.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDC4" hash 0
+{
+    Center 126.0, 11.0
+    Radius 24.5, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDC5" hash 0
+{
+    Center 126.5, 1.0
+    Radius 17.0, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDC6" hash 0
+{
+    Center 130.5, 11.0
+    Radius 23.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDC7" hash 0
+{
+    Center 108.0, 17.0
+    Radius 30.5, 17.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDC8" hash 0
+{
+    Center 125.5, 11.0
+    Radius 23.0, 11.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDD1" hash 0
+{
+    Center 126.5, 1.0
+    Radius 16.0, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPIDD2" hash 0
+{
+    Center 122.5, 11.0
+    Radius 22.0, 11.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDD3" hash 0
+{
+    Center 146.0, 17.0
+    Radius 30.5, 17.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDD4" hash 0
+{
+    Center 123.5, 11.0
+    Radius 23.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDD5" hash 0
+{
+    Center 126.5, 1.0
+    Radius 17.0, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDD6" hash 0
+{
+    Center 130.5, 11.0
+    Radius 23.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDD7" hash 0
+{
+    Center 108.0, 17.0
+    Radius 30.5, 17.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDD8" hash 0
+{
+    Center 132.5, 11.0
+    Radius 22.0, 11.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDE1" hash 0
+{
+    Center 126.5, 1.0
+    Radius 16.0, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPIDE2" hash 0
+{
+    Center 126.0, 11.0
+    Radius 25.5, 11.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDE3" hash 0
+{
+    Center 146.0, 17.0
+    Radius 30.5, 17.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDE4" hash 0
+{
+    Center 123.5, 11.0
+    Radius 23.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDE5" hash 0
+{
+    Center 126.5, 1.0
+    Radius 17.0, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDE6" hash 0
+{
+    Center 129.0, 11.0
+    Radius 23.5, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDE7" hash 0
+{
+    Center 108.0, 17.0
+    Radius 30.5, 17.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDE8" hash 0
+{
+    Center 133.0, 11.0
+    Radius 21.5, 11.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDF1" hash 0
+{
+    Center 126.5, 1.0
+    Radius 16.0, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPIDF2" hash 0
+{
+    Center 129.5, 11.0
+    Radius 23.0, 11.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDF3" hash 0
+{
+    Center 144.5, 17.0
+    Radius 30.0, 17.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDF4" hash 0
+{
+    Center 123.5, 11.0
+    Radius 23.0, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDF5" hash 0
+{
+    Center 126.5, 1.0
+    Radius 17.0, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDF6" hash 0
+{
+    Center 128.0, 11.0
+    Radius 24.5, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDF7" hash 0
+{
+    Center 109.5, 15.0
+    Radius 30.0, 15.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDF8" hash 0
+{
+    Center 133.0, 11.0
+    Radius 21.5, 11.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDG1" hash 0
+{
+    Center 126.5, 1.0
+    Radius 16.0, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPIDG2" hash 0
+{
+    Center 122.0, 11.0
+    Radius 21.5, 11.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDG3" hash 0
+{
+    Center 130.0, 8.5
+    Radius 14.5, 9.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDG4" hash 0
+{
+    Center 124.0, 11.0
+    Radius 22.5, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDG5" hash 0
+{
+    Center 126.5, 1.0
+    Radius 17.0, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDG6" hash 0
+{
+    Center 130.0, 11.0
+    Radius 22.5, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDG7" hash 0
+{
+    Center 125.0, 9.0
+    Radius 14.5, 9.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDG8" hash 0
+{
+    Center 133.0, 11.0
+    Radius 21.5, 11.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDH1" hash 0
+{
+    Center 126.5, 1.0
+    Radius 16.0, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPIDH2" hash 0
+{
+    Center 122.0, 11.0
+    Radius 21.5, 11.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDH3" hash 0
+{
+    Center 130.0, 8.5
+    Radius 14.5, 9.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDH4" hash 0
+{
+    Center 124.0, 11.0
+    Radius 22.5, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDH5" hash 0
+{
+    Center 126.5, 1.0
+    Radius 17.0, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDH6" hash 0
+{
+    Center 130.0, 11.0
+    Radius 22.5, 11.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDH7" hash 0
+{
+    Center 125.0, 9.5
+    Radius 14.5, 10.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDH8" hash 0
+{
+    Center 133.0, 11.0
+    Radius 21.5, 11.5
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDI1" hash 0
+{
+    Center 126.5, 2.0
+    Radius 16.0, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPIDI2" hash 0
+{
+    Center 121.0, 12.5
+    Radius 21.5, 12.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDI3" hash 0
+{
+    Center 131.0, 13.0
+    Radius 17.5, 11.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDI4" hash 0
+{
+    Center 124.5, 12.5
+    Radius 21.0, 13.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDI5" hash 0
+{
+    Center 94.0, 4.5
+    Radius 58.5, 5.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDI6" hash 0
+{
+    Center 129.5, 12.0
+    Radius 21.0, 12.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDI7" hash 0
+{
+    Center 123.0, 12.0
+    Radius 17.5, 11.5
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDI8" hash 0
+{
+    Center 134.0, 12.5
+    Radius 21.5, 12.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDJ1" hash 0
+{
+    Center 126.5, 2.0
+    Radius 16.0, 2.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "SPIDJ2" hash 0
+{
+    Center 102.5, 3.0
+    Radius 33.0, 2.5
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDJ3" hash 0
+{
+    Center 114.5, 8.0
+    Radius 29.0, 6.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "SPIDJ4" hash 0
+{
+    Center 124.5, 12.0
+    Radius 21.0, 12.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDJ5" hash 0
+{
+    Center 127.0, 1.0
+    Radius 17.5, 2.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDJ6" hash 0
+{
+    Center 144.5, 5.5
+    Radius 36.0, 6.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "SPIDJ7" hash 0
+{
+    Center 139.5, 7.5
+    Radius 29.0, 7.0
+    Roll 0
+    Yaw ProfileRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDJ8" hash 0
+{
+    Center 126.5, 8.5
+    Radius 28.0, 8.0
+    Roll 0
+    Yaw ThreeQuarterRight
+    KeepTop 0.2
+}
+
+Anchor "SPIDK0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPIDL0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPIDM0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPIDN0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPIDO0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPIDP0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPIDQ0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPIDR0" hash 0
+{
+    Hidden
+}
+
+Anchor "SPIDS0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYA1" hash 0
+{
+    Center 17.5, 9.5
+    Radius 18.0, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PLAYA2A8" hash 0
+{
+    Center 12.5, 9.5
+    Radius 13.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "PLAYA3A7" hash 0
+{
+    Center 18.0, 9.5
+    Radius 9.5, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "PLAYA4A6" hash 0
+{
+    Center 16.5, 9.5
+    Radius 12.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PLAYA5" hash 0
+{
+    Center 18.5, 7.0
+    Radius 19.0, 7.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PLAYB1" hash 0
+{
+    Center 18.0, 9.5
+    Radius 17.5, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PLAYB2B8" hash 0
+{
+    Center 17.0, 7.5
+    Radius 10.5, 8.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "PLAYB3B7" hash 0
+{
+    Center 22.5, 8.0
+    Radius 11.0, 8.5
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "PLAYB4B6" hash 0
+{
+    Center 18.0, 9.5
+    Radius 15.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PLAYB5" hash 0
+{
+    Center 16.5, 9.5
+    Radius 17.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PLAYC1" hash 0
+{
+    Center 17.5, 9.5
+    Radius 18.0, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PLAYC2C8" hash 0
+{
+    Center 12.5, 9.5
+    Radius 13.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "PLAYC3C7" hash 0
+{
+    Center 18.5, 9.5
+    Radius 9.0, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "PLAYC4C6" hash 0
+{
+    Center 16.5, 9.5
+    Radius 12.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PLAYC5" hash 0
+{
+    Center 17.5, 7.0
+    Radius 18.0, 7.5
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PLAYD1" hash 0
+{
+    Center 16.0, 9.5
+    Radius 16.5, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PLAYD2D8" hash 0
+{
+    Center 15.0, 9.5
+    Radius 15.5, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "PLAYD3D7" hash 0
+{
+    Center 18.0, 7.5
+    Radius 11.5, 8.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "PLAYD4D6" hash 0
+{
+    Center 17.0, 9.5
+    Radius 11.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PLAYD5" hash 0
+{
+    Center 16.0, 9.5
+    Radius 16.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PLAYE1" hash 0
+{
+    Center 14.0, 9.5
+    Radius 14.5, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PLAYE2E8" hash 0
+{
+    Center 23.0, 5.5
+    Radius 10.5, 6.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "PLAYE3E7" hash 0
+{
+    Center 23.0, 9.5
+    Radius 23.5, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "PLAYE4E6" hash 0
+{
+    Center 20.0, 9.5
+    Radius 20.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PLAYE5" hash 0
+{
+    Center 14.5, 9.5
+    Radius 15.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PLAYF1" hash 0
+{
+    Center 14.0, 9.5
+    Radius 14.5, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PLAYF2F8" hash 0
+{
+    Center 29.5, 5.5
+    Radius 11.0, 6.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "PLAYF3F7" hash 0
+{
+    Center 27.0, 9.5
+    Radius 27.5, 10.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "PLAYF4F6" hash 0
+{
+    Center 23.0, 9.5
+    Radius 23.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PLAYF5" hash 0
+{
+    Center 14.5, 9.5
+    Radius 15.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PLAYG1" hash 0
+{
+    Center 13.5, 9.5
+    Radius 14.0, 10.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PLAYG2G8" hash 0
+{
+    Center 15.5, 9.5
+    Radius 16.0, 10.0
+    Roll 0
+    Yaw ThreeQuarterLeft
+    KeepTop 0.2
+}
+
+Anchor "PLAYG3G7" hash 0
+{
+    Center 20.0, 5.5
+    Radius 20.5, 6.0
+    Roll 0
+    Yaw ProfileLeft
+    KeepTop 0.2
+}
+
+Anchor "PLAYG4G6" hash 0
+{
+    Center 16.5, 9.5
+    Radius 17.0, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PLAYG5" hash 0
+{
+    Center 14.0, 9.5
+    Radius 14.5, 10.0
+    Roll 0
+    Yaw Back
+    KeepTop 0.2
+}
+
+Anchor "PLAYH0" hash 0
+{
+    Center 15.5, 7.0
+    Radius 16.0, 7.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}
+
+Anchor "PLAYI0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYJ0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYK0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYL0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYM0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYN0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYO0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYP0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYQ0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYR0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYS0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYT0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYU0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYV0" hash 0
+{
+    Hidden
+}
+
+Anchor "PLAYW0" hash 0
+{
+    Hidden
+}
+
+Anchor "SKULFACE" hash 0
+{
+    Center 24.0, 10.0
+    Radius 22.5, 10.5
+    Roll 0
+    Yaw Front
+    KeepTop 0.2
+}

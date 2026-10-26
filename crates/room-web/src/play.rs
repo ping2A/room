@@ -8,7 +8,7 @@ use glam::Vec3;
 use room_audio::ENGINE_SAMPLE_RATE;
 use room_defs::{DefinitionsBuilder, GlDefs, VoxelDefs};
 use room_game::{
-    EngineData, GameOptions, GameState, Headless, Skill, SoundSystem,
+    EngineData, GameOptions, GameRuntime, GameState, Headless, Skill, SoundSystem,
     intermission_music_candidates, load_embedded_engine_data, mount_embedded_engine,
     play_first_music_lump, play_map_music, play_music_lump, title_music_candidates,
 };
@@ -792,9 +792,9 @@ impl PlaySession {
         )
     }
 
-    /// Advance sim at 35 Hz; returns `true` if at least one tic ran.
+    /// Advance sim at [`GameRuntime::tic_rate`]; returns `true` if at least one tic ran.
     pub fn tick_play(&mut self, dt: f32) -> bool {
-        const TIC: f32 = 1.0 / 35.0;
+        let tic = 1.0 / self.game.tic_rate() as f32;
         if self.edit_cam.is_some() {
             self.fly_edit_cam(dt);
             return false;
@@ -815,13 +815,13 @@ impl PlaySession {
             return self.fast_forward(now);
         }
         self.catching_up = false;
-        self.tic_accum = (self.tic_accum + dt).min(TIC * 3.0);
+        self.tic_accum = (self.tic_accum + dt).min(tic * 3.0);
         // Drain a jitter backlog gradually instead of staying behind forever.
         if backlog > 2 {
-            self.tic_accum += TIC * (backlog - 2).min(3) as f32;
+            self.tic_accum += tic * (backlog - 2).min(3) as f32;
         }
         let mut stepped = false;
-        while self.tic_accum >= TIC {
+        while self.tic_accum >= tic {
             match self.game.state {
                 GameState::Level => {
                     let cmds = if let Some(net) = self.net.as_mut() {
@@ -850,7 +850,7 @@ impl PlaySession {
                             weapon_select: bits.weapon_select,
                         }]
                     };
-                    self.tic_accum -= TIC;
+                    self.tic_accum -= tic;
                     stepped = true;
                     self.game.tick(&cmds);
                     self.process_tic_events(false);
@@ -866,7 +866,7 @@ impl PlaySession {
                     }
                 }
                 GameState::Intermission => {
-                    self.tic_accum -= TIC;
+                    self.tic_accum -= tic;
                     stepped = true;
                     self.intermission_wait = self.intermission_wait.saturating_add(1);
                     // ~1.5s then enter next map (or stay if episode end).
@@ -876,12 +876,12 @@ impl PlaySession {
                     }
                 }
                 GameState::Title => {
-                    self.tic_accum -= TIC;
+                    self.tic_accum -= tic;
                     self.title_frames = self.title_frames.saturating_add(1);
                     self.tick_title_menu();
                 }
                 _ => {
-                    self.tic_accum -= TIC;
+                    self.tic_accum -= tic;
                 }
             }
         }
@@ -1779,7 +1779,7 @@ impl PlaySession {
             self.cur_eyes.get(i).copied().flatten(),
         ) {
             (Some(prev), Some(cur)) => {
-                let alpha = (self.tic_accum * 35.0).clamp(0.0, 1.0);
+                let alpha = (self.tic_accum * self.game.tic_rate() as f32).clamp(0.0, 1.0);
                 Some(prev.lerp(cur, alpha))
             }
             _ => self.sim_eye(seat),

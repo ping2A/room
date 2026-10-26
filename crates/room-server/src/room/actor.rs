@@ -214,6 +214,9 @@ pub struct RoomInspect {
     /// Gameplay mod name.
     #[serde(rename = "mod", skip_serializing_if = "Option::is_none")]
     pub game_mod: Option<String>,
+    /// Content packs (e.g. `voxel`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packs: Vec<String>,
     /// Occupied (live) seats.
     pub occupied: usize,
     /// Per-seat detail.
@@ -242,6 +245,9 @@ pub struct RoomSettings {
     /// Gameplay mod from the node's catalog (every seat mounts it).
     #[serde(default, rename = "mod", skip_serializing_if = "Option::is_none")]
     pub game_mod: Option<RoomModRef>,
+    /// Content packs stacked with the IWAD / gameplay mod (e.g. `voxel`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packs: Vec<String>,
     /// Match time limit in minutes; the room closes when it runs out.
     #[serde(default = "default_time_limit")]
     pub time_limit: u16,
@@ -259,6 +265,7 @@ impl Default for RoomSettings {
             visibility: "public".into(),
             enable_verifier: false,
             game_mod: None,
+            packs: Vec::new(),
             time_limit: default_time_limit(),
             game: default_game(),
         }
@@ -297,6 +304,9 @@ pub struct CreateRoomRequest {
     /// Catalog mod name (`GET /api/mods`); empty / absent = vanilla.
     #[serde(default, rename = "mod")]
     pub game_mod: Option<String>,
+    /// Content packs (`voxel`, …); stacked with the gameplay mod.
+    #[serde(default)]
+    pub packs: Vec<String>,
     /// Match time limit in minutes (1..=180); absent / 0 = the node default.
     #[serde(default)]
     pub time_limit: Option<u16>,
@@ -314,6 +324,7 @@ impl Default for CreateRoomRequest {
             visibility: default_visibility(),
             enable_verifier: false,
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         }
@@ -757,6 +768,32 @@ fn on_v2_control(state: &mut RoomState, conn: ConnId, msg: ControlMsg) {
                 broadcast_all(state, Bytes::from(s.into_bytes()));
             }
         }
+        ControlMsg::FaceShare {
+            name,
+            face_id,
+            rgba_b64,
+            ..
+        } => {
+            // docs/26 §8: opt-in share; never persist; default off on public lobbies.
+            if !state.cfg.face_share_enabled {
+                return;
+            }
+            let Some(&seat) = state.conn_seat.get(&conn) else {
+                return;
+            };
+            if rgba_b64.len() > 96_000 || name.chars().count() > 64 {
+                return;
+            }
+            let out = ControlMsg::FaceShare {
+                from: Some(seat),
+                name: name.chars().take(64).collect(),
+                face_id,
+                rgba_b64,
+            };
+            if let Ok(s) = encode_control(&out) {
+                broadcast_all(state, Bytes::from(s.into_bytes()));
+            }
+        }
         ControlMsg::Result {
             winner,
             time_up,
@@ -1073,6 +1110,7 @@ fn welcome_room(state: &RoomState) -> WelcomeRoom {
         rng_seed: state.rng_seed,
         delay: 0,
         game_mod: state.settings.game_mod.clone(),
+        packs: state.settings.packs.clone(),
         time_limit: u32::from(state.settings.time_limit) * 60,
     }
 }
@@ -1775,6 +1813,7 @@ fn build_room_inspect(state: &RoomState) -> RoomInspect {
         iwad_fingerprint: state.iwad_fingerprint.clone(),
         enable_verifier: state.settings.enable_verifier,
         game_mod: state.settings.game_mod.as_ref().map(|m| m.name.clone()),
+        packs: state.settings.packs.clone(),
         occupied: state.occupied.load(std::sync::atomic::Ordering::Relaxed),
         seats,
         spectators: state

@@ -1,0 +1,4 @@
+DUKE_TRACE 1
+meta demo=DEMO1 players=1 engine=fixture
+{"tic":0,"randomseed":1,"global_random":2,"numsprites":0,"players":[{"posx":0,"posy":0,"posz":0,"ang":0,"horiz":100,"extra":100,"curr_weapon":1,"ammo":[48,0,0,0,0,0,0,0,0,0,0,0]}],"sprite_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+{"tic":1,"randomseed":3,"global_random":4,"numsprites":0,"players":[{"posx":16,"posy":0,"posz":0,"ang":0,"horiz":100,"extra":100,"curr_weapon":1,"ammo":[48,0,0,0,0,0,0,0,0,0,0,0]}],"sprite_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}

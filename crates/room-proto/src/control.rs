@@ -54,6 +54,10 @@ pub struct WelcomeRoom {
     /// Gameplay mod every seat mounts after the IWAD (absent = vanilla).
     #[serde(default, rename = "mod", skip_serializing_if = "Option::is_none")]
     pub game_mod: Option<RoomModRef>,
+    /// Extra content packs every seat mounts after the IWAD / gameplay mod
+    /// (e.g. `voxel`). Served from `/play/mods/{name}.pk3`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packs: Vec<String>,
     /// Match time limit in seconds (0 = none). Every seat's sim ends the match
     /// when it runs out; the server closes the room shortly after.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -112,6 +116,15 @@ pub fn is_valid_mod_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+}
+
+/// Content packs clients can stack with a gameplay mod (`welcome.room.packs`).
+pub const KNOWN_PACKS: &[&str] = &["voxel"];
+
+/// `true` when `name` is a known content pack (e.g. `voxel`).
+#[must_use]
+pub fn is_known_pack(name: &str) -> bool {
+    KNOWN_PACKS.iter().any(|p| *p == name)
 }
 
 /// One ICE server entry (STUN/TURN) for `welcome.media`.
@@ -300,6 +313,20 @@ pub enum ControlMsg {
         /// Current roster.
         roster: Vec<RosterSeat>,
     },
+    /// Opt-in face-share blob (`docs/26` §8). Wire RGBA is 64×64 (fits control
+    /// size after base64); local gallery may keep 128×128. Server relays when
+    /// `face_share_enabled`; never persists.
+    FaceShare {
+        /// Sender seat (filled by server on relay).
+        #[serde(default)]
+        from: Option<u8>,
+        /// Gallery label.
+        name: String,
+        /// Face id bits as decimal string (JS-safe).
+        face_id: String,
+        /// Base64 of raw 64×64×4 RGBA.
+        rgba_b64: String,
+    },
 }
 
 /// Parse a JSON control message from UTF-8 text.
@@ -350,10 +377,13 @@ mod tests {
             rng_seed: 7,
             delay: 0,
             game_mod: None,
+            packs: Vec::new(),
             time_limit: 0,
         };
         let plain = serde_json::to_string(&room).unwrap();
-        assert!(!plain.contains("mod") && !plain.contains("time_limit"));
+        assert!(
+            !plain.contains("mod") && !plain.contains("time_limit") && !plain.contains("packs")
+        );
         assert_eq!(serde_json::from_str::<WelcomeRoom>(&plain).unwrap(), room);
         room.game_mod = Some(RoomModRef {
             name: "bounty".into(),
@@ -361,9 +391,17 @@ mod tests {
             fingerprint: format!("{:016x}", content_fingerprint(b"PWAD")),
             size: 4,
         });
+        room.packs = vec!["voxel".into()];
         let modded = serde_json::to_string(&room).unwrap();
         assert!(modded.contains("\"mod\":{\"name\":\"bounty\""));
+        assert!(modded.contains("\"packs\":[\"voxel\"]"));
         assert_eq!(serde_json::from_str::<WelcomeRoom>(&modded).unwrap(), room);
+    }
+
+    #[test]
+    fn known_packs() {
+        assert!(is_known_pack("voxel"));
+        assert!(!is_known_pack("survival"));
     }
 
     #[test]

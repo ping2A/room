@@ -1,0 +1,13 @@
+{
+  "name": "choc_map_E4L3.MAP_inside",
+  "op": "inside",
+  "map": "E4L3.MAP",
+  "input": {
+    "x": -5527,
+    "y": 16245,
+    "sect": 153
+  },
+  "expect": {
+    "inside": true
+  }
+}

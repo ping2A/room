@@ -42,3 +42,14 @@ rustc-ice-*.txt
 
 # Local deploy secrets (copy from deploy/.env.example)
 deploy/.env
+
+# Standalone / VPS package trees (scripts/package-web.sh, package-vps.sh)
+dist/
+dist-vps/
+dist-vps.tar.gz
+
+# cargo-fuzz runtime
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/target/
+testdata/duke/maps/

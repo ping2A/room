@@ -32,7 +32,10 @@ room-sim = { path = "../room-sim" }
 room-testkit = { path = "../room-testkit" }
 room-ui = { path = "../room-ui" }
 room-vfs = { path = "../room-vfs" }
+room-faceswap = { path = "../room-faceswap" }
 glam.workspace = true
+image.workspace = true
 pollster.workspace = true
+thiserror.workspace = true
 wgpu.workspace = true
 winit.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "room-duke"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Duke Nukem 3D native runtime: CON compiler/VM, game logic, 30 Hz tic."
+
+[lints]
+workspace = true
+
+[dependencies]
+room-build = { path = "../room-build" }
+room-build-engine = { path = "../room-build-engine" }
+room-core = { path = "../room-core" }
+serde = { workspace = true }
+serde_json.workspace = true
+sha2.workspace = true

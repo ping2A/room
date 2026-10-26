@@ -1,0 +1,456 @@
+#!/usr/bin/env bash
+# Room control plane — works in the git repo (via ./room) and in dist-vps/.
+#
+# Dev:  builds with cargo, pid/log under target/room-server/
+# VPS:  runs bin/room-server, loads .env, pid/log under run/ + logs/
+set -euo pipefail
+
+# Repo root: set by ./room (ROOM_ROOT) or inferred from script location.
+if [[ -n "${ROOM_ROOT:-}" ]]; then
+  ROOT="$ROOM_ROOT"
+else
+  ROOT="$(cd "$(dirname "$0")" && pwd)"
+  # scripts/vps/room → climb to workspace root
+  if [[ -f "$ROOT/../../Cargo.toml" && -d "$ROOT/../../crates/room-server" ]]; then
+    ROOT="$(cd "$ROOT/../.." && pwd)"
+  fi
+fi
+cd "$ROOT"
+export ROOM_ROOT="${ROOM_ROOT:-$ROOT}"
+
+DEV_REPO=0
+if [[ -f "$ROOT/Cargo.toml" && -d "$ROOT/crates/room-server" && ! -x "$ROOT/bin/room-server" ]]; then
+  DEV_REPO=1
+fi
+
+if [[ "$DEV_REPO" -eq 1 ]]; then
+  RUN_DIR="${ROOM_SERVER_RUN_DIR:-$ROOT/target/room-server}"
+  PID_DIR="$RUN_DIR"
+  LOG_DIR="${ROOM_LOG_DIR:-$RUN_DIR}"
+  PID_FILE="$RUN_DIR/room-server.pid"
+  LOG_FILE="$RUN_DIR/room-server.log"
+  BIND_FILE="$RUN_DIR/bind"
+  ADMIN_BIND_FILE="$RUN_DIR/admin_bind"
+  ENV_FILE="$ROOT/.env"
+  DEV_CTL="$ROOT/scripts/room-server.sh"
+else
+  BIN="$ROOT/bin/room-server"
+  RUN_DIR="$ROOT/run"
+  PID_DIR="$RUN_DIR/pids"
+  LOG_DIR="${ROOM_LOG_DIR:-$ROOT/logs}"
+  PID_FILE="$PID_DIR/room-server.pid"
+  LOG_FILE="$LOG_DIR/room-server.log"
+  ENV_FILE="$ROOT/.env"
+fi
+
+if [[ -t 1 ]]; then
+  C_RESET=$'\033[0m'
+  C_DIM=$'\033[2m'
+  C_BOLD=$'\033[1m'
+  C_RED=$'\033[31m'
+  C_GREEN=$'\033[32m'
+  C_YELLOW=$'\033[33m'
+  C_CYAN=$'\033[36m'
+else
+  C_RESET= C_DIM= C_BOLD= C_RED= C_GREEN= C_YELLOW= C_CYAN=
+fi
+
+ok()   { printf '%s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*" >&2; }
+warn() { printf '%s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
+err()  { printf '%s✗%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
+info() { printf '%s·%s %s\n' "$C_DIM" "$C_RESET" "$*" >&2; }
+
+banner() {
+  printf '%s' "$C_CYAN"
+  if [[ "$DEV_REPO" -eq 1 ]]; then
+    cat <<'EOF'
+ ╔══════════════════════════════════════╗
+ ║              R O O M                 ║
+ ║         development stack            ║
+ ╚══════════════════════════════════════╝
+EOF
+  else
+    cat <<'EOF'
+ ╔══════════════════════════════════════╗
+ ║              R O O M                 ║
+ ║         VPS control plane            ║
+ ╚══════════════════════════════════════╝
+EOF
+  fi
+  printf '%s' "$C_RESET"
+}
+
+usage() {
+  if [[ "$DEV_REPO" -eq 1 ]]; then
+    cat <<EOF
+${C_BOLD}Usage:${C_RESET} ./room <command>
+
+${C_BOLD}Commands${C_RESET}
+  start [opts…]   Build + run room-server (see ./scripts/room-server.sh)
+  stop            Stop the background process
+  restart         stop then start
+  status          Process + health overview
+  logs [-n N]     Tail the service log (default follow)
+  health          Curl lobby + admin once
+  mods            Build gameplay mods only
+  package […]     ./scripts/package-vps.sh
+  push […]        ./scripts/push-vps.sh
+
+${C_BOLD}Local URLs${C_RESET} (defaults)
+  Lobby   http://127.0.0.1:8765/
+  Play    http://127.0.0.1:8765/play/
+  Admin   http://127.0.0.1:8766/admin   (admin / admin on first run)
+
+${C_BOLD}Notes${C_RESET}
+  Pid/log: target/room-server/
+  Optional repo .env is loaded by room-server via ROOM_* env vars.
+  Same as: ./scripts/room-server.sh start|stop|…
+EOF
+    return
+  fi
+  cat <<EOF
+${C_BOLD}Usage:${C_RESET} ./room <command>
+
+${C_BOLD}Commands${C_RESET}
+  start       Start room-server (loads .env)
+  stop        Stop room-server
+  restart     stop then start
+  status      Process + health overview
+  logs [-n N] Tail the service log (default follow)
+  health      Curl lobby + admin once
+  env-check   Print resolved bind / play / admin URLs
+
+${C_BOLD}Setup${C_RESET}
+  cp env.example .env   # edit secrets and YOUR_VPS_IP
+  ./room start
+
+${C_BOLD}URLs${C_RESET} (from .env)
+  Lobby   http://<host>:8765/
+  Play    http://<host>:8765/play/
+  Admin   http://<host>:8766/admin
+EOF
+}
+
+load_env_vps() {
+  if [[ -f "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+  else
+    warn "no .env — using defaults (copy env.example → .env for production)"
+  fi
+  export ROOM_WEB_ROOT="${ROOM_WEB_ROOT:-$ROOT/web}"
+  export ROOM_DATA_DIR="${ROOM_DATA_DIR:-$ROOT/data}"
+  export ROOM_MODS_DIR="${ROOM_MODS_DIR:-$ROOT/mods}"
+  [[ "$ROOM_WEB_ROOT" = /* ]] || ROOM_WEB_ROOT="$ROOT/$ROOM_WEB_ROOT"
+  [[ "$ROOM_DATA_DIR" = /* ]] || ROOM_DATA_DIR="$ROOT/$ROOM_DATA_DIR"
+  [[ "$ROOM_MODS_DIR" = /* ]] || ROOM_MODS_DIR="$ROOT/$ROOM_MODS_DIR"
+  export ROOM_WEB_ROOT ROOM_DATA_DIR ROOM_MODS_DIR
+  export ROOM_BIND="${ROOM_BIND:-0.0.0.0:8765}"
+  export ROOM_ADMIN_BIND="${ROOM_ADMIN_BIND:-0.0.0.0:8766}"
+}
+
+read_pid() {
+  [[ -f "$PID_FILE" ]] || return 1
+  local pid
+  pid="$(tr -d '[:space:]' <"$PID_FILE")"
+  [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] || return 1
+  if kill -0 "$pid" 2>/dev/null; then
+    printf '%s' "$pid"
+    return 0
+  fi
+  return 1
+}
+
+bind_host_port() {
+  local b="${1:-127.0.0.1:8765}"
+  local host="${b%:*}"
+  local port="${b##*:}"
+  [[ "$host" == "0.0.0.0" || "$host" == "::" || "$host" == "[::]" ]] && host="127.0.0.1"
+  printf '%s:%s' "$host" "$port"
+}
+
+dev_binds() {
+  local bind="127.0.0.1:8765" admin="127.0.0.1:8766"
+  [[ -f "$BIND_FILE" ]] && bind="$(tr -d '[:space:]' <"$BIND_FILE")"
+  [[ -f "$ADMIN_BIND_FILE" ]] && admin="$(tr -d '[:space:]' <"$ADMIN_BIND_FILE")"
+  printf '%s %s' "$bind" "$admin"
+}
+
+# ── dev: delegate lifecycle to room-server.sh ────────────────────────────
+
+cmd_dev_start() {
+  banner
+  if [[ -f "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+    info "loaded $ENV_FILE"
+  fi
+  exec "$DEV_CTL" start "$@"
+}
+
+cmd_dev_stop() {
+  exec "$DEV_CTL" stop "$@"
+}
+
+cmd_dev_restart() {
+  exec "$DEV_CTL" restart "$@"
+}
+
+cmd_dev_status() {
+  banner
+  "$DEV_CTL" status "$@" || true
+}
+
+cmd_dev_mods() {
+  exec "$DEV_CTL" mods "$@"
+}
+
+cmd_dev_health() {
+  local bind admin
+  # shellcheck disable=SC2086
+  set -- $(dev_binds)
+  bind="$1"
+  admin="$2"
+  local game="http://$(bind_host_port "$bind")"
+  local adm="http://$(bind_host_port "$admin")"
+  local ok_g=0 ok_a=0
+  if curl -fsS -o /dev/null --max-time 2 "$game/healthz" 2>/dev/null; then
+    ok "lobby  $game/healthz"
+    ok_g=1
+  else
+    err "lobby  $game/healthz  (unreachable)"
+  fi
+  if curl -fsS -o /dev/null --max-time 2 "$adm/healthz" 2>/dev/null; then
+    ok "admin  $adm/healthz"
+    ok_a=1
+  else
+    err "admin  $adm/healthz  (unreachable)"
+  fi
+  [[ "$ok_g" -eq 1 && "$ok_a" -eq 1 ]]
+}
+
+cmd_dev_env_check() {
+  if [[ -f "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+  fi
+  local bind admin
+  # shellcheck disable=SC2086
+  set -- $(dev_binds)
+  bind="$1"
+  admin="$2"
+  echo "mode=dev"
+  echo "ROOM_BIND=${ROOM_BIND:-$bind}"
+  echo "ROOM_ADMIN_BIND=${ROOM_ADMIN_BIND:-$admin}"
+  echo "pid_file=$PID_FILE"
+  echo "log_file=$LOG_FILE"
+  echo "web_root=${ROOM_WEB_ROOT:-$ROOT/target/room-web}"
+  echo "data_dir=${ROOM_DATA_DIR:-$RUN_DIR/data}"
+}
+
+# ── VPS packaged tree ────────────────────────────────────────────────────
+
+cmd_vps_start() {
+  banner
+  load_env_vps
+  mkdir -p "$PID_DIR" "$LOG_DIR" "$ROOM_DATA_DIR"
+
+  if [[ ! -x "$BIN" ]]; then
+    err "missing $BIN — rebuild with ./room package"
+    exit 1
+  fi
+  if pid="$(read_pid)"; then
+    warn "already running (pid $pid)"
+    exit 0
+  fi
+
+  if [[ ! -f "$ENV_FILE" ]]; then
+    warn "starting without .env (dev defaults)"
+  elif grep -q 'change-me\|YOUR_VPS_IP\|admin:admin$' "$ENV_FILE" 2>/dev/null; then
+    warn ".env still has placeholder secrets — change them before exposing the VPS"
+  fi
+
+  info "bind ${ROOM_BIND}  admin ${ROOM_ADMIN_BIND}"
+  info "web  $ROOM_WEB_ROOT"
+  info "data $ROOM_DATA_DIR"
+  info "log  $LOG_FILE"
+
+  nohup "$BIN" \
+    --bind "$ROOM_BIND" \
+    --admin-bind "$ROOM_ADMIN_BIND" \
+    --web-root "$ROOM_WEB_ROOT" \
+    --data-dir "$ROOM_DATA_DIR" \
+    --mods-dir "$ROOM_MODS_DIR" \
+    >>"$LOG_FILE" 2>&1 &
+  local pid=$!
+  echo "$pid" >"$PID_FILE"
+  sleep 0.4
+  if ! kill -0 "$pid" 2>/dev/null; then
+    err "process exited — see $LOG_FILE"
+    rm -f "$PID_FILE"
+    exit 1
+  fi
+  ok "room-server started (pid $pid)"
+  local pub="${ROOM_PLAY_BASE:-http://$(bind_host_port "$ROOM_BIND")/play}"
+  local adm="${ROOM_ADMIN_RP_ORIGIN:-http://$(bind_host_port "$ROOM_ADMIN_BIND")}"
+  info "play  $pub"
+  info "admin ${adm}/admin"
+}
+
+cmd_vps_stop() {
+  load_env_vps
+  if ! pid="$(read_pid)"; then
+    info "not running"
+    rm -f "$PID_FILE"
+    return 0
+  fi
+  info "stopping pid $pid"
+  kill "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.2
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    warn "SIGKILL $pid"
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+  ok "stopped"
+}
+
+cmd_vps_status() {
+  banner
+  load_env_vps
+  if pid="$(read_pid)"; then
+    ok "running  pid $pid"
+  else
+    err "not running"
+  fi
+  info "bind  $ROOM_BIND"
+  info "admin $ROOM_ADMIN_BIND"
+  info "web   $ROOM_WEB_ROOT"
+  info "data  $ROOM_DATA_DIR"
+  if [[ -f "$LOG_FILE" ]]; then
+    info "log   $LOG_FILE ($(du -h "$LOG_FILE" | awk '{print $1}'))"
+  fi
+  cmd_vps_health || true
+}
+
+cmd_vps_health() {
+  load_env_vps
+  local game admin
+  game="http://$(bind_host_port "$ROOM_BIND")"
+  admin="http://$(bind_host_port "$ROOM_ADMIN_BIND")"
+  local ok_g=0 ok_a=0
+  if curl -fsS -o /dev/null --max-time 2 "$game/healthz" 2>/dev/null; then
+    ok "lobby  $game/healthz"
+    ok_g=1
+  else
+    err "lobby  $game/healthz  (unreachable)"
+  fi
+  if curl -fsS -o /dev/null --max-time 2 "$admin/healthz" 2>/dev/null; then
+    ok "admin  $admin/healthz"
+    ok_a=1
+  else
+    err "admin  $admin/healthz  (unreachable)"
+  fi
+  [[ "$ok_g" -eq 1 && "$ok_a" -eq 1 ]]
+}
+
+cmd_vps_env_check() {
+  load_env_vps
+  echo "mode=vps"
+  echo "ROOM_BIND=$ROOM_BIND"
+  echo "ROOM_ADMIN_BIND=$ROOM_ADMIN_BIND"
+  echo "ROOM_PLAY_BASE=${ROOM_PLAY_BASE:-}"
+  echo "ROOM_ORIGIN=${ROOM_ORIGIN:-}"
+  echo "ROOM_ADMIN_RP_ID=${ROOM_ADMIN_RP_ID:-}"
+  echo "ROOM_ADMIN_RP_ORIGIN=${ROOM_ADMIN_RP_ORIGIN:-}"
+  echo "ROOM_WEB_ROOT=$ROOM_WEB_ROOT"
+  echo "ROOM_DATA_DIR=$ROOM_DATA_DIR"
+  echo "ROOM_MODS_DIR=$ROOM_MODS_DIR"
+  echo "ticket_secret_set=$([[ -n ${ROOM_TICKET_SECRET:-} ]] && echo yes || echo no)"
+  echo "bootstrap_set=$([[ -n ${ROOM_ADMIN_BOOTSTRAP:-} ]] && echo yes || echo no)"
+}
+
+cmd_logs() {
+  mkdir -p "$(dirname "$LOG_FILE")"
+  touch "$LOG_FILE"
+  if [[ "${1:-}" == "-n" ]]; then
+    shift
+    tail -n "${1:-100}" "$LOG_FILE"
+  else
+    exec tail -n 80 -f "$LOG_FILE"
+  fi
+}
+
+cmd="${1:-}"
+shift || true
+case "$cmd" in
+  start)
+    if [[ "$DEV_REPO" -eq 1 ]]; then cmd_dev_start "$@"
+    else cmd_vps_start "$@"
+    fi
+    ;;
+  stop)
+    if [[ "$DEV_REPO" -eq 1 ]]; then cmd_dev_stop "$@"
+    else cmd_vps_stop "$@"
+    fi
+    ;;
+  restart)
+    if [[ "$DEV_REPO" -eq 1 ]]; then cmd_dev_restart "$@"
+    else cmd_vps_stop; cmd_vps_start "$@"
+    fi
+    ;;
+  status)
+    if [[ "$DEV_REPO" -eq 1 ]]; then cmd_dev_status "$@"
+    else cmd_vps_status "$@"
+    fi
+    ;;
+  health)
+    if [[ "$DEV_REPO" -eq 1 ]]; then cmd_dev_health "$@"
+    else cmd_vps_health "$@"
+    fi
+    ;;
+  logs) cmd_logs "$@" ;;
+  env-check|env)
+    if [[ "$DEV_REPO" -eq 1 ]]; then cmd_dev_env_check "$@"
+    else cmd_vps_env_check "$@"
+    fi
+    ;;
+  mods)
+    if [[ "$DEV_REPO" -eq 1 ]]; then cmd_dev_mods "$@"
+    else
+      err "mods: only available in the git repo (./room mods)"
+      exit 1
+    fi
+    ;;
+  package)
+    if [[ "$DEV_REPO" -eq 1 ]]; then
+      exec "$ROOT/scripts/package-vps.sh" "$@"
+    else
+      err "package: run from the git repo"
+      exit 1
+    fi
+    ;;
+  push)
+    if [[ "$DEV_REPO" -eq 1 ]]; then
+      exec "$ROOT/scripts/push-vps.sh" "$@"
+    else
+      err "push: run from the git repo"
+      exit 1
+    fi
+    ;;
+  ""|-h|--help|help) usage ;;
+  *)
+    err "unknown command: $cmd"
+    usage >&2
+    exit 1
+    ;;
+esac

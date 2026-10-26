@@ -29,13 +29,20 @@ export function paintNs(l) {
 export function install(ctx) {
   const { S, el } = ctx;
 
-  /** `opts.num`: editor number of the thing being edited (picks its animations). */
+  /**
+   * `opts.num`: editor number of the thing being edited (picks its animations).
+   * `opts.camera`: open the webcam face capture as soon as the tab is ready.
+   */
   function open(ns, name, opts = {}) {
     if (!S.mod || !S.summary) { ctx.toast("Open a WAD first", true); return; }
     name = String(name || "").trim().toUpperCase();
     if (!name || name === "-") { ctx.toast("Nothing to edit here (no texture)", true); return; }
     const id = `paint:${ns}:${name}`;
-    if (S.lumpTabs.has(id)) { ctx.selectDocTab(id); return; }
+    if (S.lumpTabs.has(id)) {
+      ctx.selectDocTab(id);
+      if (opts.camera) S.lumpTabs.get(id).view._openCamera?.();
+      return;
+    }
     let img;
     try { img = S.mod.roomEditorImageGet(ns, name); } catch (e) { ctx.toast(ctx.errText(e), true); return; }
     if (!img) { ctx.toast(`${name}: no picture found in ${ns}`, true); return; }
@@ -43,6 +50,7 @@ export function install(ctx) {
     S.lumpTabs.set(id, { title: `🎨 ${name}`, view });
     ctx.selectDocTab(id);
     view.querySelector(".px-canvas")?.focus();
+    if (opts.camera) queueMicrotask(() => view._openCamera?.());
   }
 
   function build(ns, name, img, opts) {
@@ -287,6 +295,82 @@ export function install(ctx) {
       refreshPixels(); draw(); renderSide();
       changed();
     }
+    /** Map RGBA `ImageData` (size `P.w×P.h`) onto the palette canvas. */
+    function applyImageData(data, label) {
+      pushUndo();
+      for (let i = 0; i < P.w * P.h; i++) {
+        const o = i * 4;
+        if (data[o + 3] < 128 && !P.opaque) {
+          P.alpha[i] = 0;
+          P.idx[i] = 0;
+        } else {
+          P.alpha[i] = 255;
+          P.idx[i] = nearest(data[o], data[o + 1], data[o + 2]);
+        }
+      }
+      refreshPixels();
+      draw();
+      changed();
+      if (label) ctx.toast(label);
+    }
+
+    /**
+     * Draw `src` (canvas / video / ImageBitmap) into the sprite.
+     * `mode`:
+     *   - `full` — stretch over the whole frame
+     *   - `face` — circular crop pasted into the upper-centre (enemy head)
+     * `faceScale` is the paste diameter as a fraction of min(w,h) (0.35–0.95).
+     */
+    function applyCameraSource(src, { mode = "face", faceScale = 0.55, sw, sh, mirror = true } = {}) {
+      const srcW = sw || src.videoWidth || src.width || 0;
+      const srcH = sh || src.videoHeight || src.height || 0;
+      if (!(srcW > 0 && srcH > 0)) throw new Error("empty camera frame");
+
+      // Snapshot (+ optional mirror to match the mirrored selfie preview).
+      const snap = document.createElement("canvas");
+      snap.width = srcW;
+      snap.height = srcH;
+      const sg = snap.getContext("2d");
+      if (mirror) {
+        sg.translate(srcW, 0);
+        sg.scale(-1, 1);
+      }
+      sg.drawImage(src, 0, 0);
+
+      const out = document.createElement("canvas");
+      out.width = P.w;
+      out.height = P.h;
+      const g = out.getContext("2d");
+      g.imageSmoothingEnabled = true;
+
+      if (mode === "full") {
+        g.drawImage(snap, 0, 0, srcW, srcH, 0, 0, P.w, P.h);
+      } else {
+        // Keep existing sprite under the face patch.
+        pctx.putImageData(imgData, 0, 0);
+        g.drawImage(pixels, 0, 0);
+        const side = Math.min(srcW, srcH);
+        const sx = (srcW - side) / 2;
+        const sy = (srcH - side) / 2;
+        const diam = Math.max(4, Math.round(Math.min(P.w, P.h) * faceScale));
+        const dx = Math.round((P.w - diam) / 2);
+        const dy = Math.max(0, Math.round(P.h * 0.06));
+        g.save();
+        g.beginPath();
+        g.arc(dx + diam / 2, dy + diam / 2, diam / 2, 0, Math.PI * 2);
+        g.closePath();
+        g.clip();
+        g.drawImage(snap, sx, sy, side, side, dx, dy, diam, diam);
+        g.restore();
+      }
+      applyImageData(
+        g.getImageData(0, 0, P.w, P.h).data,
+        mode === "full"
+          ? `Camera → ${P.w}×${P.h} (full frame)`
+          : `Camera face → ${P.name}`,
+      );
+    }
+
     async function importPng() {
       const inp = el("input", { type: "file", accept: "image/*" });
       inp.addEventListener("change", async () => {
@@ -295,18 +379,15 @@ export function install(ctx) {
         try {
           const bmp = await createImageBitmap(f);
           const c = document.createElement("canvas");
-          c.width = P.w; c.height = P.h;
+          c.width = P.w;
+          c.height = P.h;
           const g = c.getContext("2d");
           g.imageSmoothingEnabled = false;
           g.drawImage(bmp, 0, 0, P.w, P.h);
-          const d = g.getImageData(0, 0, P.w, P.h).data;
-          pushUndo();
-          for (let i = 0; i < P.w * P.h; i++) {
-            const o = i * 4;
-            if (d[o + 3] < 128 && !P.opaque) { P.alpha[i] = 0; P.idx[i] = 0; } else { P.alpha[i] = 255; P.idx[i] = nearest(d[o], d[o + 1], d[o + 2]); }
-          }
-          refreshPixels(); draw(); changed();
-          ctx.toast(`Imported ${f.name} → ${P.w}×${P.h}, mapped to the palette`);
+          applyImageData(
+            g.getImageData(0, 0, P.w, P.h).data,
+            `Imported ${f.name} → ${P.w}×${P.h}, mapped to the palette`,
+          );
         } catch (e) { ctx.toast(`Import failed: ${ctx.errText(e)}`, true); }
       });
       inp.click();
@@ -320,6 +401,31 @@ export function install(ctx) {
         setTimeout(() => URL.revokeObjectURL(url), 2000);
       }, "image/png");
     }
+
+    /** Webcam / import → palette sprite via `face-capture.js` (docs/26 F3). */
+    async function openCameraFace() {
+      try {
+        const { openFaceCapture } = await import("./face-capture.js");
+        openFaceCapture({
+          onCapture: (canvas) => {
+            try {
+              applyCameraSource(canvas, {
+                mode: "face",
+                faceScale: 0.55,
+                sw: canvas.width,
+                sh: canvas.height,
+                mirror: false,
+              });
+            } catch (e) {
+              ctx.toast(`Capture failed: ${ctx.errText(e)}`, true);
+            }
+          },
+        });
+      } catch (e) {
+        ctx.toast(`Face capture unavailable: ${ctx.errText(e)}`, true);
+      }
+    }
+    view._openCamera = openCameraFace;
 
     // ---------------------------------------------------------------- render
     const PAD = 12;
@@ -752,6 +858,13 @@ export function install(ctx) {
         el("button", { class: "btn small", title: "Rotate 90° (square pictures)", onclick: () => transformImage("rot") }, "⟳"),
         el("button", { class: "btn small", title: "Wrap by half the size to check tiling seams", onclick: () => transformImage("shift") }, "½"),
         el("button", { class: "btn small", onclick: importPng }, "Import image…"),
+        ...(P.ns === "sprites"
+          ? [el("button", {
+            class: "btn small",
+            title: "Webcam → paste a face onto this enemy sprite (live)",
+            onclick: openCameraFace,
+          }, "Camera face…")]
+          : []),
         el("button", { class: "btn small", onclick: exportPng }, "Export PNG"),
         el("button", { class: "btn small", onclick: () => { S[P.ns === "flats" ? "flat" : "texture"] = P.name; ctx.renderInspector(); ctx.toast(`Paint ${P.ns === "flats" ? "flat" : "texture"}: ${P.name}`); } }, "Use as paint"),
         el("button", { class: "btn small danger", onclick: revert }, "Revert"),

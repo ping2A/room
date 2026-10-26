@@ -277,7 +277,17 @@ export function initTouchControls(mod, params = new URLSearchParams(location.sea
   };
   tapButton($(".wnext"), () => mod.roomInputWeaponCycle(1));
   tapButton($(".wprev"), () => mod.roomInputWeaponCycle(-1));
-  tapButton($(".menu"), () => document.body.classList.toggle("menu-open"));
+  tapButton($(".menu"), () => {
+    document.body.classList.toggle("menu-open");
+    // Drop mouse lock if a desktop hybrid still has it, so the bar is usable.
+    if (document.body.classList.contains("menu-open") && document.pointerLockElement) {
+      try {
+        document.exitPointerLock();
+      } catch (_) {
+        /* ignore */
+      }
+    }
+  });
 
   const fullBtn = $(".full");
   const canFullscreen = !!(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen);

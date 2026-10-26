@@ -17,6 +17,7 @@ bytes = { workspace = true, optional = true }
 room-audio = { path = "../room-audio", optional = true }
 room-build = { path = "../room-build", optional = true }
 room-defs = { path = "../room-defs", optional = true }
+room-faceswap = { path = "../room-faceswap", optional = true }
 room-formats = { path = "../room-formats", optional = true }
 room-game = { path = "../room-game", optional = true }
 room-input = { path = "../room-input", optional = true }
@@ -98,6 +99,7 @@ browser = [
     "dep:room-audio",
     "dep:room-build",
     "dep:room-defs",
+    "dep:room-faceswap",
     "dep:room-formats",
     "dep:serde_json",
     "dep:room-game",

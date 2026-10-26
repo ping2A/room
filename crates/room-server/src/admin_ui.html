@@ -4,14 +4,13 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="color-scheme" content="dark"/>
-  <title>ROOM — Ops Pit</title>
+  <title>ROOM — Fleet</title>
   <link rel="stylesheet" href="/admin/assets/app.css"/>
 </head>
 <body>
   <div id="auth-gate" class="gate hidden" aria-live="polite">
     <div class="gate-panel">
-      <p class="brand-mark">ROOM</p>
-      <h1>Ops pit</h1>
+      <p class="login-brand">ROOM<small>FLEET CONTROL</small></p>
       <p class="lede" id="gate-lede">Sign in with your admin password.</p>
 
       <div id="gate-step-bootstrap" class="gate-step hidden">
@@ -65,11 +64,8 @@
   </div>
 
   <div id="shell" class="shell hidden">
-    <aside class="sidebar">
-      <div class="brand">
-        <span class="brand-mark">ROOM</span>
-        <span class="brand-sub">ops pit</span>
-      </div>
+    <header class="topbar">
+      <div class="mark">ROOM <span>FLEET</span></div>
       <nav class="nav" aria-label="Sections">
         <button type="button" class="nav-item active" data-view="dashboard">Dashboard</button>
         <button type="button" class="nav-item" data-view="rooms">Rooms</button>
@@ -77,22 +73,18 @@
         <button type="button" class="nav-item" data-view="audit">Audit</button>
         <button type="button" class="nav-item" data-view="settings">Settings</button>
       </nav>
-      <div class="sidebar-foot">
-        <div id="node-chip" class="chip">node —</div>
-        <div id="live-chip" class="chip live">live</div>
+      <div class="strip">
+        <span class="strip-stat"><i>NODE</i><b id="node-chip">—</b></span>
+        <span id="live-chip" class="feed live">live</span>
+        <span id="whoami" class="who">signed out</span>
+        <button type="button" id="refresh" class="btn small">Refresh</button>
       </div>
-    </aside>
+    </header>
 
-    <div class="main">
-      <header class="topbar">
-        <div>
-          <h1 id="view-title">Dashboard</h1>
-          <p id="view-sub" class="muted">Cluster pulse for this node</p>
-        </div>
-        <div class="top-actions">
-          <span id="whoami" class="chip">signed out</span>
-          <button type="button" id="refresh" class="btn">Refresh</button>
-        </div>
+    <div class="views">
+      <header class="page-head">
+        <h1 id="view-title">Dashboard</h1>
+        <p id="view-sub" class="muted">Cluster pulse for this node</p>
       </header>
 
       <div id="flash" class="flash hidden" role="status"></div>
@@ -231,7 +223,7 @@
               <button type="submit" class="btn primary">Add ban</button>
             </div>
           </form>
-          <p class="muted" style="margin:0.5rem 1rem 0;font-size:0.8rem">
+          <p class="muted ban-hint">
             Patterns use <code>*</code> / <code>?</code> (case-insensitive). Bans are enforced on join ticket mint and WebSocket hello.
           </p>
         </div>
@@ -281,7 +273,7 @@
         <div class="panel">
           <div class="panel-head">
             <h2>Mods</h2>
-            <span class="muted">Gameplay mods players may create rooms with (every player downloads the room's mod)</span>
+            <span class="muted">Gameplay mods players may create rooms with</span>
           </div>
           <p class="muted" id="mods-status">—</p>
           <ul id="mods-list" class="keys-list mods-list"></ul>

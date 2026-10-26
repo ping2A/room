@@ -50,18 +50,20 @@ pub use demo_map::load_embedded_demo_map;
 #[cfg(all(feature = "browser", target_arch = "wasm32"))]
 mod browser {
     mod editor;
+    mod faces;
 
     use crate::input_hub;
     use crate::load_embedded_demo_map;
     use crate::netplay::{NetJoinConfig, NetLobby, NetPlay, iwad_fingerprint};
     use crate::play::{PlaySession, PlayStartOpts};
     use glam::Vec3;
+    use room_game::GameRuntime;
     use room_nodebuild::apply_nodes;
     use room_render::{
         Camera, CanvasGpu, GpuContext, LightMode, SceneLists, UnlitPass, build_scene_with_sky,
         build_scene_with_sky_ex_sized,
     };
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
@@ -134,6 +136,12 @@ mod browser {
         static PLAY_INTERVAL: RefCell<Option<i32>> = const { RefCell::new(None) };
         /// Download of the coop room's mod (`welcome.room.mod`).
         static NET_MOD: RefCell<NetModState> = const { RefCell::new(NetModState::Idle) };
+        /// Content packs (`welcome.room.packs`), keyed by joined names.
+        static NET_PACKS: RefCell<NetPacksState> = const { RefCell::new(NetPacksState::Idle) };
+        /// Soft cap on the longest canvas edge (Settings → Resolution). 0 = device max.
+        static RENDER_CAP: Cell<u32> = const { Cell::new(0) };
+        /// CSS playfield scale vs fitted viewport (Settings → Window size). 1.0 = full.
+        static WINDOW_SCALE: Cell<f64> = const { Cell::new(1.0) };
     }
 
     enum NetModState {
@@ -141,6 +149,14 @@ mod browser {
         Fetching,
         /// Catalog name + verified bytes.
         Ready(String, Vec<u8>),
+        Failed(String),
+    }
+
+    enum NetPacksState {
+        Idle,
+        Fetching(String),
+        /// Key (sorted pack names) + file name/bytes pairs.
+        Ready(String, Vec<(String, Vec<u8>)>),
         Failed(String),
     }
 
@@ -163,12 +179,10 @@ mod browser {
         // `navigator.gpu` exists on Chrome/Linux even when `requestAdapter`
         // returns null. `Instance::new` then locks the instance to WebGPU and
         // never tries WebGL2. Probe first and drop that backend when it fails.
-        let instance = wgpu::util::new_instance_with_webgpu_detection(
-            &wgpu::InstanceDescriptor {
-                backends: wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL,
-                ..Default::default()
-            },
-        )
+        let instance = wgpu::util::new_instance_with_webgpu_detection(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL,
+            ..Default::default()
+        })
         .await;
         let surface = instance
             .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
@@ -187,7 +201,7 @@ mod browser {
         // WebGL2's guaranteed max texture is 2048. A 2× backing store on a
         // large desktop window (2833×1668) is over that and Surface::configure
         // panics. CSS size stays the window; the bitmap is scaled down.
-        let max_dim = gpu.device.limits().max_texture_dimension_2d;
+        let max_dim = render_max_dim(gpu.device.limits().max_texture_dimension_2d);
         let (width, height) = fit_canvas_buffer(&canvas, max_dim);
         if width != css_width || height != css_height {
             web_sys::console::log_1(
@@ -373,6 +387,7 @@ mod browser {
             ticket,
             spectate,
             game_mod: None,
+            packs: Vec::new(),
             time_limit: 0,
         };
         NET_MOD.with(|n| *n.borrow_mut() = NetModState::Idle);
@@ -451,7 +466,8 @@ mod browser {
                 return;
             }
             input_hub::drain_into(play);
-            let _ = play.tick_play(1.0 / 35.0);
+            let dt = 1.0 / play.game.tic_rate() as f32;
+            let _ = play.tick_play(dt);
         }) as Box<dyn FnMut()>);
         match win
             .set_interval_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), 16)
@@ -670,18 +686,90 @@ mod browser {
     /// Named PWAD files (`name`, bytes).
     type NamedPwads = Vec<(String, Vec<u8>)>;
 
-    /// PWADs for the room's mod: `Some` once ready (empty = vanilla room),
-    /// `None` while the download runs.
+    /// PWADs for the room's mod + packs: `Some` once ready (empty = vanilla),
+    /// `None` while a download runs.
     fn coop_mod_pwads(state: &Shared) -> Result<Option<NamedPwads>, JsValue> {
-        let (game_mod, ws_url) = {
+        let (game_mod, packs, ws_url) = {
             let s = state.borrow();
             let Mode::Lobby { lobby, .. } = &s.mode else {
                 return Ok(Some(Vec::new()));
             };
-            (lobby.game_mod().cloned(), lobby.ws_url().to_owned())
+            (
+                lobby.game_mod().cloned(),
+                lobby.packs().to_vec(),
+                lobby.ws_url().to_owned(),
+            )
         };
+        if let Err(e) = kick_coop_mod_download(game_mod.as_ref(), &ws_url) {
+            set_status(&format!("Mod download failed: {e}"));
+            set_lobby_html(&format!(
+                "<h2>Mod download failed</h2><p class=\"err\">{}</p>",
+                html_escape(&e)
+            ));
+            return Err(JsValue::from_str(&e));
+        }
+        if let Err(e) = kick_coop_packs_download(&packs, &ws_url) {
+            set_status(&format!("Pack download failed: {e}"));
+            set_lobby_html(&format!(
+                "<h2>Pack download failed</h2><p class=\"err\">{}</p>",
+                html_escape(&e)
+            ));
+            return Err(JsValue::from_str(&e));
+        }
+        let mod_pwads = match &game_mod {
+            None => Some(Vec::new()),
+            Some(m) => NET_MOD.with(|n| match &*n.borrow() {
+                NetModState::Ready(name, bytes) if *name == m.name => {
+                    Some(vec![(format!("{name}.wad"), bytes.clone())])
+                }
+                NetModState::Failed(e) => {
+                    let _ = e;
+                    None
+                }
+                _ => None,
+            }),
+        };
+        let pack_key = packs_key(&packs);
+        let pack_pwads = if packs.is_empty() {
+            Some(Vec::new())
+        } else {
+            NET_PACKS.with(|n| match &*n.borrow() {
+                NetPacksState::Ready(key, files) if *key == pack_key => Some(files.clone()),
+                _ => None,
+            })
+        };
+        match (mod_pwads, pack_pwads) {
+            (Some(mut m), Some(p)) => {
+                m.extend(p);
+                Ok(Some(m))
+            }
+            _ => {
+                // Surface a failed mod/pack that already finished.
+                if let Some(e) = NET_MOD.with(|n| match &*n.borrow() {
+                    NetModState::Failed(e) => Some(e.clone()),
+                    _ => None,
+                }) {
+                    set_status(&format!("Mod download failed: {e}"));
+                    return Err(JsValue::from_str(&e));
+                }
+                if let Some(e) = NET_PACKS.with(|n| match &*n.borrow() {
+                    NetPacksState::Failed(e) => Some(e.clone()),
+                    _ => None,
+                }) {
+                    set_status(&format!("Pack download failed: {e}"));
+                    return Err(JsValue::from_str(&e));
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    fn kick_coop_mod_download(
+        game_mod: Option<&room_proto::RoomModRef>,
+        ws_url: &str,
+    ) -> Result<(), String> {
         let Some(m) = game_mod else {
-            return Ok(Some(Vec::new()));
+            return Ok(());
         };
         let start = NET_MOD.with(|n| {
             let mut n = n.borrow_mut();
@@ -694,14 +782,6 @@ mod browser {
                     Ok(true)
                 }
             }
-        });
-        let start = start.map_err(|e| {
-            set_status(&format!("Mod download failed: {e}"));
-            set_lobby_html(&format!(
-                "<h2>Mod download failed</h2><p class=\"err\">{}</p>",
-                html_escape(&e)
-            ));
-            JsValue::from_str(&e)
         })?;
         if start {
             set_status(&format!("Downloading mod {}…", m.title));
@@ -710,7 +790,7 @@ mod browser {
                 html_escape(&m.title),
                 m.size.div_ceil(1024)
             ));
-            let url = mod_download_url(&ws_url, &m.name);
+            let url = mod_download_url(ws_url, &m.name);
             let m = m.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let result = fetch_bytes(&url).await.and_then(|bytes| {
@@ -732,20 +812,70 @@ mod browser {
                 });
             });
         }
-        Ok(NET_MOD.with(|n| match &*n.borrow() {
-            NetModState::Ready(name, bytes) if *name == m.name => {
-                Some(vec![(format!("{name}.wad"), bytes.clone())])
-            }
-            _ => None,
-        }))
+        Ok(())
     }
 
-    /// The downloaded coop mod, if any.
+    fn packs_key(packs: &[String]) -> String {
+        let mut v = packs.to_vec();
+        v.sort();
+        v.join(",")
+    }
+
+    fn kick_coop_packs_download(packs: &[String], ws_url: &str) -> Result<(), String> {
+        if packs.is_empty() {
+            return Ok(());
+        }
+        let key = packs_key(packs);
+        let start = NET_PACKS.with(|n| {
+            let mut n = n.borrow_mut();
+            match &*n {
+                NetPacksState::Ready(k, _) if *k == key => Ok(false),
+                NetPacksState::Fetching(k) if *k == key => Ok(false),
+                NetPacksState::Failed(e) => Err(e.clone()),
+                _ => {
+                    *n = NetPacksState::Fetching(key.clone());
+                    Ok(true)
+                }
+            }
+        })?;
+        if start {
+            set_status(&format!("Downloading packs ({key})…"));
+            let packs = packs.to_vec();
+            let ws = ws_url.to_owned();
+            let key_owned = key.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let mut files = Vec::new();
+                for name in &packs {
+                    match fetch_pack_bytes(&ws, name).await {
+                        Ok((file, bytes)) => files.push((file, bytes)),
+                        Err(e) => {
+                            NET_PACKS.with(|n| {
+                                *n.borrow_mut() = NetPacksState::Failed(e);
+                            });
+                            return;
+                        }
+                    }
+                }
+                NET_PACKS.with(|n| {
+                    *n.borrow_mut() = NetPacksState::Ready(key_owned, files);
+                });
+            });
+        }
+        Ok(())
+    }
+
+    /// The downloaded coop mod + packs, if any.
     fn ready_mod_pwads() -> Vec<(String, Vec<u8>)> {
-        NET_MOD.with(|n| match &*n.borrow() {
+        let mut out = NET_MOD.with(|n| match &*n.borrow() {
             NetModState::Ready(name, bytes) => vec![(format!("{name}.wad"), bytes.clone())],
             _ => Vec::new(),
-        })
+        });
+        NET_PACKS.with(|n| {
+            if let NetPacksState::Ready(_, files) = &*n.borrow() {
+                out.extend(files.iter().map(|(f, b)| (f.clone(), b.clone())));
+            }
+        });
+        out
     }
 
     /// `ws[s]://host/v2/…` → `http[s]://host/api/mods/{name}.wad` (the relay serves its mods).
@@ -759,6 +889,50 @@ mod browser {
         };
         let host = rest.split('/').next().unwrap_or(rest);
         format!("{scheme}://{host}/api/mods/{name}.wad")
+    }
+
+    /// Content packs live under `/play/mods/` on the game bind (same host as the WS).
+    fn pack_download_urls(ws_url: &str, name: &str) -> Vec<String> {
+        let (scheme, rest) = if let Some(r) = ws_url.strip_prefix("wss://") {
+            ("https", r)
+        } else if let Some(r) = ws_url.strip_prefix("ws://") {
+            ("http", r)
+        } else {
+            return vec![
+                format!("./mods/{name}.pk3"),
+                format!("./mods/{name}.zip"),
+                format!("/play/mods/{name}.pk3"),
+                format!("/play/mods/{name}.zip"),
+            ];
+        };
+        let host = rest.split('/').next().unwrap_or(rest);
+        vec![
+            format!("{scheme}://{host}/play/mods/{name}.pk3"),
+            format!("{scheme}://{host}/play/mods/{name}.zip"),
+            format!("./mods/{name}.pk3"),
+            format!("./mods/{name}.zip"),
+        ]
+    }
+
+    async fn fetch_pack_bytes(ws_url: &str, name: &str) -> Result<(String, Vec<u8>), String> {
+        let mut last = format!("pack {name} not found");
+        for url in pack_download_urls(ws_url, name) {
+            match fetch_bytes(&url).await {
+                Ok(bytes) => {
+                    let file = url
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(name)
+                        .split('?')
+                        .next()
+                        .unwrap_or(name)
+                        .to_owned();
+                    return Ok((file, bytes));
+                }
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
     }
 
     async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
@@ -1746,7 +1920,7 @@ mod browser {
                     f64::from(p.client_height()).max(1.0),
                 )
             });
-        let (css_w, css_h) = if let Some(size) = parent_box {
+        let (mut css_w, mut css_h) = if let Some(size) = parent_box {
             size
         } else if vw / vh > MAX_ASPECT {
             (vh * MAX_ASPECT, vh)
@@ -1755,6 +1929,12 @@ mod browser {
         } else {
             (vw, vh)
         };
+        // Editor panes (`data-fit=parent`) keep the layout box; play uses Window size.
+        if parent_box.is_none() {
+            let scale = WINDOW_SCALE.get().clamp(0.35, 1.0);
+            css_w = (css_w * scale).max(160.0);
+            css_h = (css_h * scale).max(120.0);
+        }
         let style = canvas.style();
         let _ = style.set_property("width", &format!("{css_w:.0}px"));
         let _ = style.set_property("height", &format!("{css_h:.0}px"));
@@ -1778,8 +1958,17 @@ mod browser {
         (w, h)
     }
 
+    fn render_max_dim(device_max: u32) -> u32 {
+        let cap = RENDER_CAP.get();
+        if cap == 0 {
+            device_max
+        } else {
+            device_max.min(cap)
+        }
+    }
+
     fn sync_surface_size(canvas: &HtmlCanvasElement, s: &mut FrameState) {
-        let max_dim = s.gpu.device.limits().max_texture_dimension_2d;
+        let max_dim = render_max_dim(s.gpu.device.limits().max_texture_dimension_2d);
         let (w, h) = fit_canvas_buffer(canvas, max_dim);
         s.camera.aspect = f64::from(w) / f64::from(h.max(1));
         // Match desktop: ~90° horizontal at 16:9.
@@ -1915,6 +2104,61 @@ mod browser {
     #[wasm_bindgen(js_name = roomInputKey)]
     pub fn room_input_key(code: &str, down: bool) {
         input_hub::set_key(code, down);
+    }
+
+    /// Apply Settings menu values. `binds_json` is `{ "KeyW": "w", … }` or `""` / `"{}"` for defaults.
+    /// `render_cap` is the longest canvas edge in pixels (`0` = native / device max).
+    /// `window_scale` is the CSS playfield size vs the fitted viewport (`1.0` = full).
+    #[wasm_bindgen(js_name = roomApplySettings)]
+    pub fn room_apply_settings(
+        mouse_sens: f64,
+        invert_y: bool,
+        render_cap: u32,
+        window_scale: f64,
+        binds_json: &str,
+    ) -> Result<(), JsValue> {
+        input_hub::set_mouse_sens(mouse_sens);
+        input_hub::set_mouse_invert_y(invert_y);
+        RENDER_CAP.set(render_cap);
+        WINDOW_SCALE.set(window_scale.clamp(0.35, 1.0));
+        let binds = if binds_json.trim().is_empty() || binds_json.trim() == "{}" {
+            std::collections::BTreeMap::new()
+        } else {
+            serde_json::from_str::<std::collections::BTreeMap<String, String>>(binds_json)
+                .map_err(|e| JsValue::from_str(&format!("binds json: {e}")))?
+        };
+        input_hub::set_binds(binds);
+        // Resize immediately when the surface exists.
+        if let Some(win) = window() {
+            if let Some(doc) = win.document() {
+                if let Some(el) = doc.get_element_by_id("room") {
+                    if let Ok(canvas) = el.dyn_into::<HtmlCanvasElement>() {
+                        APP.with(|app| {
+                            if let Some(shared) = app.borrow().as_ref() {
+                                if let Ok(mut s) = shared.try_borrow_mut() {
+                                    sync_surface_size(&canvas, &mut s);
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Default key bindings as JSON (`KeyboardEvent.code` → action).
+    #[wasm_bindgen(js_name = roomDefaultBindsJson)]
+    #[must_use]
+    pub fn room_default_binds_json() -> String {
+        serde_json::to_string(&input_hub::default_binds()).unwrap_or_else(|_| "{}".into())
+    }
+
+    /// Current effective binds as JSON.
+    #[wasm_bindgen(js_name = roomBindsJson)]
+    #[must_use]
+    pub fn room_binds_json() -> String {
+        serde_json::to_string(&input_hub::effective_binds()).unwrap_or_else(|_| "{}".into())
     }
 
     /// On-screen controls: look by whole mouse counts (≈1.4° each; +x right, +y down).

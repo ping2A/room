@@ -1,0 +1,22 @@
+[package]
+name = "room-faceswap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Face capture alignment and sprite-head compositing (pure Rust, no I/O)"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+libm.workspace = true
+room-sc = { path = "../room-sc" }
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+xxhash-rust.workspace = true
+
+[dev-dependencies]
+room-formats = { path = "../room-formats" }
+room-vfs = { path = "../room-vfs" }

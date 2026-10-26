@@ -209,14 +209,84 @@
     #netGraph .ng-hint {
       margin: 4px 0 0; font: 9px/1.2 system-ui, sans-serif; color: #5a6474;
     }
+    #gamebar-toggle {
+      position: fixed; top: max(8px, env(safe-area-inset-top)); left: max(8px, env(safe-area-inset-left));
+      z-index: 32; width: 40px; height: 40px; border-radius: 8px; cursor: pointer;
+      border: 2px solid rgba(220, 225, 235, 0.4); background: rgba(12, 14, 20, 0.82);
+      color: rgba(240, 242, 248, 0.95); font: 600 18px/1 system-ui, sans-serif;
+      display: flex; align-items: center; justify-content: center; padding: 0;
+    }
+    #gamebar-toggle:hover { border-color: rgba(255, 255, 255, 0.7); }
+    body.touch #gamebar-toggle { display: none; } /* phones already have ☰ in the touch pad */
     #gamebar {
-      position: fixed; top: 8px; left: 8px; z-index: 30; display: flex; gap: 10px; align-items: center;
+      position: fixed; top: max(8px, env(safe-area-inset-top)); left: calc(52px + env(safe-area-inset-left));
+      z-index: 30; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; max-width: min(92vw, 52rem);
       padding: 6px 10px; background: rgba(12, 14, 20, 0.82); border: 1px solid #2a3040; border-radius: 6px;
       font: 12px system-ui, sans-serif; color: #aab;
     }
     #gamebar.locked { display: none; }
+    body.menu-open #gamebar { display: flex !important; }
     #gamebar select { background: #1a1e28; color: #dde; border: 1px solid #3a4258; border-radius: 4px; font: inherit; padding: 2px 4px; }
+    #gamebar input[type="file"] { max-width: 11rem; font: inherit; color: #dde; }
     #gamebar a { color: #8fb4ff; text-decoration: none; }
+    #gamebar button.settings-open-btn {
+      appearance: none; cursor: pointer; font: inherit; color: #dde;
+      background: #1a1e28; border: 1px solid #3a4258; border-radius: 4px; padding: 2px 8px;
+    }
+    #gamebar button.settings-open-btn:hover { border-color: #6a7890; }
+    #settings {
+      position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center;
+      background: rgba(4, 6, 10, 0.72); backdrop-filter: blur(3px);
+    }
+    #settings[hidden] { display: none !important; }
+    .settings-panel {
+      box-sizing: border-box; width: min(28rem, calc(100vw - 1.25rem)); max-height: calc(100dvh - 1.5rem);
+      overflow: auto; background: #12141c; border: 1px solid #2a3040; border-radius: 10px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.55); color: #d8dee9; font: 14px/1.4 system-ui, sans-serif;
+    }
+    .settings-head, .settings-foot {
+      display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+      padding: 0.85rem 1rem; border-bottom: 1px solid #2a3040;
+    }
+    .settings-foot { border-bottom: 0; border-top: 1px solid #2a3040; justify-content: flex-end; }
+    .settings-head h2 { margin: 0; font-size: 1.1rem; letter-spacing: 0.04em; text-transform: uppercase; }
+    .settings-close {
+      width: 2rem; height: 2rem; border: 1px solid #3a4258; background: transparent; color: #dde;
+      border-radius: 4px; cursor: pointer; font-size: 1.25rem; line-height: 1;
+    }
+    .settings-body { padding: 0.75rem 1rem 1rem; display: flex; flex-direction: column; gap: 1.1rem; }
+    .settings-body h3 {
+      margin: 0 0 0.45rem; font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; color: #7a8494;
+    }
+    .settings-row {
+      display: flex; align-items: center; gap: 0.65rem; flex-wrap: wrap; color: #aab; font-size: 0.85rem;
+    }
+    .settings-row select, .settings-row input[type="range"] { flex: 1; min-width: 8rem; }
+    .settings-row select {
+      background: #1a1e28; color: #dde; border: 1px solid #3a4258; border-radius: 4px; padding: 0.35rem 0.5rem; font: inherit;
+    }
+    .settings-check { display: flex; align-items: center; gap: 0.45rem; color: #c8ced8; font-size: 0.9rem; }
+    .settings-hint { margin: 0.35rem 0 0; color: #6a7384; font-size: 0.78rem; }
+    .settings-binds { display: flex; flex-direction: column; gap: 0.35rem; }
+    .settings-bind-row {
+      display: grid; grid-template-columns: 8.5rem 1fr; gap: 0.5rem; align-items: center;
+    }
+    .settings-bind-label { color: #9aa3b2; font-size: 0.82rem; }
+    .settings-bind-btn {
+      text-align: left; cursor: pointer; font: 600 0.82rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #e8ecf4; background: #1a1e28; border: 1px solid #3a4258; border-radius: 4px; padding: 0.4rem 0.55rem;
+    }
+    .settings-bind-btn.listening {
+      border-color: #e01828; box-shadow: inset 0 0 18px rgba(224, 24, 40, 0.18); color: #ffb8b0;
+    }
+    .settings-btn {
+      appearance: none; cursor: pointer; font: inherit; border-radius: 5px; padding: 0.45rem 0.85rem;
+      border: 1px solid #3a4258; background: #1a1e28; color: #dde;
+    }
+    .settings-btn.primary { background: #3a5a2a; border-color: #4a6e36; color: #e8ffe0; }
+    .settings-btn.ghost { background: transparent; }
+    .settings-btn:hover { filter: brightness(1.08); }
+    #settings-sens-val { font-variant-numeric: tabular-nums; min-width: 2.5rem; color: #dde; }
     #matchclock {
       position: fixed; top: max(8px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 6;
       padding: 4px 12px; border-radius: 999px; background: rgba(8, 10, 14, 0.72);
@@ -265,7 +335,9 @@
   <div id="stage">
     <canvas id="room" width="1" height="1" tabindex="0"></canvas>
   </div>
+  <button type="button" id="gamebar-toggle" title="Skill / mod / IWAD / Settings (Esc)" aria-label="Game options">☰</button>
   <div id="gamebar">
+    <button type="button" id="open-settings" class="settings-open-btn" title="Resolution, mouse, keys">Settings</button>
     <label>Skill
       <select id="game-skill">
         <option value="1">I'm too young to die</option>
@@ -280,9 +352,15 @@
         <option value="">None</option>
         <option value="survival">Survival Director (Rust)</option>
         <option value="bounty">Bounty Hunter (AssemblyScript)</option>
-        <option value="royale">Battle Royale practice (Rust)</option>
-        <option value="voxel">Voxel Doom (vs monsters)</option>
+        <option value="voxel">Voxel sprites only</option>
       </select>
+    </label>
+    <label title="Stack Cheello voxel meshes with the gameplay mod">
+      <input id="game-voxel" type="checkbox" />
+      Voxel sprites
+    </label>
+    <label title="Load your own Doom / Freedoom IWAD or Duke GRP (commercial WADs stay on your machine)">IWAD
+      <input id="game-iwad" type="file" accept=".wad,.grp,application/octet-stream" />
     </label>
     <a href="editor.html" title="Map editor — Scripts tab for WASM mods">Editor ↗</a>
   </div>
@@ -304,7 +382,7 @@
           <option value="5">Nightmare!</option>
         </select>
       </label>
-      <p class="hint">Or run <code>./scripts/play-web.sh</code> with <code>testdata/doom/doom1.wad</code> present — it will be served as <code>/doom1.wad</code> and load automatically. Coop: <code>./scripts/play-web-coop.sh</code> or add <code>?ws=ws://127.0.0.1:8765&amp;players=2</code>. Press a key or click to unlock audio; click the canvas for mouse look. Coop voice: hold <kbd>V</kbd> to talk (push-to-talk). Phones / tablets: left thumb moves (push to the edge to run), right thumb drags to look, plus FIRE / USE / weapon buttons; play sideways.</p>
+      <p class="hint">Freedoom may load automatically when packaged with the site. To play retail Doom (or switch games), pick your own <code>doom1.wad</code> / <code>doom.wad</code> / <code>doom2.wad</code> / <code>DUKE3D.GRP</code> above — or use <strong>IWAD</strong> in the bar after the game starts. Files stay in the browser; commercial IWADs are never uploaded. Coop: add <code>?ws=…&amp;players=2</code>. Press a key or click to unlock audio; click the canvas for mouse look.</p>
     </div>
   </div>
   <div id="lobby" aria-live="polite">
@@ -526,6 +604,15 @@
         console.warn("room-web: touch controls unavailable", e);
       }
 
+      let settingsApi = null;
+      try {
+        const { initSettings } = await import("./settings.js");
+        // openGamebar filled in after the bar helpers exist
+        settingsApi = { _init: initSettings, mod };
+      } catch (e) {
+        console.warn("room-web: settings unavailable", e);
+      }
+
       const params = new URLSearchParams(location.search);
       initMatchOverlay(mod, params);
       // Skill / mod changes reload with new URL params (a fresh game).
@@ -544,11 +631,94 @@
       bindParamSelect("skill-select", "skill", "3");
       bindParamSelect("game-skill", "skill", "3");
       bindParamSelect("game-mod", "mod", "");
+      {
+        const voxelBox = document.getElementById("game-voxel");
+        if (voxelBox) {
+          const on =
+            params.get("voxel") === "1" ||
+            params.get("voxel") === "true" ||
+            (params.get("pack") || "").split(",").includes("voxel") ||
+            params.get("mod") === "voxel";
+          voxelBox.checked = on;
+          voxelBox.addEventListener("change", () => {
+            let packs = (params.get("pack") || "")
+              .split(",")
+              .map((p) => p.trim())
+              .filter(Boolean);
+            packs = packs.filter((p) => p !== "voxel");
+            if (voxelBox.checked) packs.push("voxel");
+            if (packs.length) params.set("pack", packs.join(","));
+            else params.delete("pack");
+            params.delete("voxel");
+            if (params.get("mod") === "voxel") params.delete("mod");
+            location.search = params.toString();
+          });
+          voxelBox.addEventListener("keydown", (ev) => ev.stopPropagation());
+        }
+      }
       const gamebar = document.getElementById("gamebar");
-      document.addEventListener("pointerlockchange", () => {
-        gamebar.classList.toggle("locked", !!document.pointerLockElement);
-      });
-      if (params.get("ws")) gamebar.querySelector("#game-mod").closest("label").hidden = true;
+      const gamebarToggle = document.getElementById("gamebar-toggle");
+      const openGamebar = () => {
+        if (document.pointerLockElement) {
+          try {
+            document.exitPointerLock();
+          } catch (_) {
+            /* ignore */
+          }
+        }
+        document.body.classList.add("menu-open");
+        gamebar.classList.remove("locked");
+      };
+      const syncGamebarLock = () => {
+        const locked = !!document.pointerLockElement;
+        if (locked) {
+          // A fresh lock means they clicked back into the game — dismiss the bar.
+          document.body.classList.remove("menu-open");
+          gamebar.classList.add("locked");
+        } else if (!document.body.classList.contains("menu-open")) {
+          gamebar.classList.remove("locked");
+        }
+      };
+      document.addEventListener("pointerlockchange", syncGamebarLock);
+      if (gamebarToggle) {
+        gamebarToggle.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (document.body.classList.contains("menu-open") && !gamebar.classList.contains("locked")) {
+            document.body.classList.remove("menu-open");
+            syncGamebarLock();
+          } else {
+            openGamebar();
+          }
+        });
+      }
+      if (settingsApi && settingsApi._init) {
+        settingsApi = settingsApi._init(settingsApi.mod, { openGamebar });
+        const openBtn = document.getElementById("open-settings");
+        if (openBtn) {
+          openBtn.addEventListener("click", (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            settingsApi.open();
+          });
+        }
+      }
+      // Esc always drops mouse look and shows the bar (browsers exit lock too;
+      // we force the panel open so IWAD / skill stay reachable).
+      window.addEventListener(
+        "keydown",
+        (ev) => {
+          if (ev.code !== "Escape") return;
+          if (settingsApi && settingsApi.isOpen && settingsApi.isOpen()) return;
+          openGamebar();
+        },
+        true
+      );
+      if (params.get("ws")) {
+        gamebar.querySelector("#game-mod").closest("label").hidden = true;
+        const vx = gamebar.querySelector("#game-voxel");
+        if (vx) vx.closest("label").hidden = true;
+      }
       // Duke Nukem 3D: Duke skill names (room-build plays skills 1–5 as Duke
       // 1, 1, 2, 3, 4); the Doom gameplay mods don't apply.
       const DUKE_SKILLS = ["Piece Of Cake (easy)", "Piece Of Cake", "Let's Rock", "Come Get Some", "Damn I'm Good"];
@@ -559,28 +729,39 @@
           [...sel.options].forEach((o, i) => (o.textContent = DUKE_SKILLS[i] || o.textContent));
         }
         gamebar.querySelector("#game-mod").closest("label").hidden = true;
+        const vx = gamebar.querySelector("#game-voxel");
+        if (vx) vx.closest("label").hidden = true;
       };
       const isGrpBytes = (buf) =>
         buf.byteLength >= 12 && String.fromCharCode(...buf.subarray(0, 12)) === "KenSilverman";
       const dukeUrl = /\.grp$/i.test(params.get("iwad") || "");
       if (dukeUrl) useDukeUi();
 
-      const modName =
-        params.get("ws") || dukeUrl ? "" : (params.get("mod") || "").replace(/[^a-z0-9_-]/gi, "");
-      if (modName) {
-        try {
-          // WASM gameplay mods are `<name>.wad`. Voxel Doom is only a pk3, so
-          // requesting `mods/voxel.wad` would 404 in the console before the pack
-          // loads. room-server coop still serves `/api/mods/<name>.wad`.
-          const urls =
-            modName === "voxel"
-              ? [`mods/${modName}.pk3`, `mods/${modName}.zip`]
-              : [
-                  `mods/${modName}.wad`,
-                  `mods/${modName}.pk3`,
-                  `mods/${modName}.zip`,
-                  `/api/mods/${modName}.wad`,
-                ];
+      // Gameplay WASM mod (`?mod=survival`) plus optional content packs
+      // (`?pack=voxel` or `?voxel=1`). `mod=voxel` alone still means pack-only.
+      const mountSoloAssets = async () => {
+        if (params.get("ws") || dukeUrl) return;
+        const rawMod = (params.get("mod") || "").replace(/[^a-z0-9_-]/gi, "");
+        const packs = new Set();
+        for (const p of (params.get("pack") || "").split(",")) {
+          const n = p.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+          if (n) packs.add(n);
+        }
+        if (params.get("voxel") === "1" || params.get("voxel") === "true") packs.add("voxel");
+        let gameplay = rawMod;
+        if (rawMod === "voxel") {
+          packs.add("voxel");
+          gameplay = "";
+        }
+        const voxelBox = gamebar.querySelector("#game-voxel");
+        if (voxelBox) voxelBox.checked = packs.has("voxel");
+        const modSel = gamebar.querySelector("#game-mod");
+        if (modSel && gameplay) modSel.value = gameplay;
+        else if (modSel && !gameplay && packs.has("voxel") && !rawMod) {
+          /* leave None; voxel is the checkbox */
+        } else if (modSel && rawMod === "voxel") modSel.value = "voxel";
+
+        const tryMount = async (name, urls) => {
           let res = null;
           let url = "";
           for (const candidate of urls) {
@@ -591,15 +772,40 @@
               break;
             }
           }
-          if (!res) throw new Error("not found");
-          const file = url.split("/").pop();
+          if (!res) throw new Error(`${name} not found`);
+          const file = url.split("/").pop().split("?")[0];
           mod.roomAddPwad(file, new Uint8Array(await res.arrayBuffer()));
-          console.log(`room-web: mod ${file} mounted`);
-        } catch (e) {
-          console.warn(`room-web: mod ${modName} unavailable`, e);
-          status.textContent = `Mod ${modName} unavailable (run ./scripts/room-server.sh mods)`;
+          console.log(`room-web: mounted ${file}`);
+        };
+
+        if (gameplay) {
+          try {
+            await tryMount(gameplay, [
+              `mods/${gameplay}.wad`,
+              `mods/${gameplay}.pk3`,
+              `mods/${gameplay}.zip`,
+              `/api/mods/${gameplay}.wad`,
+            ]);
+          } catch (e) {
+            console.warn(`room-web: mod ${gameplay} unavailable`, e);
+            status.textContent = `Mod ${gameplay} unavailable (run ./scripts/room-server.sh mods)`;
+          }
         }
-      }
+        for (const pack of packs) {
+          try {
+            await tryMount(pack, [
+              `mods/${pack}.pk3`,
+              `mods/${pack}.zip`,
+              `/play/mods/${pack}.pk3`,
+              `/play/mods/${pack}.zip`,
+            ]);
+          } catch (e) {
+            console.warn(`room-web: pack ${pack} unavailable`, e);
+            status.textContent = `Pack ${pack} unavailable`;
+          }
+        }
+      };
+      await mountSoloAssets();
       // Coop / spectate always needs a callsign before the IWAD boots the session.
       if (params.get("ws") && !(params.get("name") || "").trim()) {
         const watching = !!params.get("spectate") && params.get("spectate") !== "0";
@@ -679,8 +885,7 @@
         status.textContent = "Choose a Doom IWAD or DUKE3D.GRP to play in the browser";
       }
 
-      fileInput.addEventListener("change", async () => {
-        const file = fileInput.files && fileInput.files[0];
+      const loadIwadFile = async (file, fromBoot) => {
         if (!file) return;
         try {
           const buf = new Uint8Array(await file.arrayBuffer());
@@ -689,9 +894,20 @@
           console.error(err);
           status.textContent = "Failed to load IWAD: " + (err && err.message ? err.message : err);
           status.style.color = "#f66";
-          boot.classList.add("error");
+          if (fromBoot) boot.classList.add("error");
         }
+      };
+      fileInput.addEventListener("change", async () => {
+        await loadIwadFile(fileInput.files && fileInput.files[0], true);
       });
+      const gameIwad = document.getElementById("game-iwad");
+      if (gameIwad) {
+        gameIwad.addEventListener("change", async () => {
+          await loadIwadFile(gameIwad.files && gameIwad.files[0], false);
+          gameIwad.value = "";
+        });
+        gameIwad.addEventListener("keydown", (ev) => ev.stopPropagation());
+      }
     } catch (err) {
       console.error(err);
       status.textContent = "Failed to start: " + (err && err.message ? err.message : err);

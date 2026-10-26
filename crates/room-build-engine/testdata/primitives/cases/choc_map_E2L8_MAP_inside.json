@@ -1,0 +1,13 @@
+{
+  "name": "choc_map_E2L8.MAP_inside",
+  "op": "inside",
+  "map": "E2L8.MAP",
+  "input": {
+    "x": -2304,
+    "y": -12372,
+    "sect": 360
+  },
+  "expect": {
+    "inside": true
+  }
+}

@@ -23,6 +23,7 @@ pub mod capture;
 pub mod clipper;
 pub mod decals;
 pub mod device;
+pub mod faces;
 pub mod fonts;
 pub mod fuzz;
 pub mod glsl_translate;
@@ -128,6 +129,7 @@ pub use ssao::{
     SsaoPass, SsaoUniforms, depth_only_view, ssao_bilateral_weight, ssao_edge_occlusion,
 };
 pub use texanim::TextureAnimator;
+pub use faces::{FaceTextureKey, upsert_face_rgba};
 pub use texture::{TextureEntry, TextureFormatKind, TextureManager};
 pub use ue1::{Ue1Model, Ue1Tri, decompress_ue1_vertex, parse_ue1};
 pub use voxel_draw::{VoxelActorPose, VoxelCatalog, voxel_spin_degrees, voxel_view_angles};

@@ -1,0 +1,51 @@
+{
+  "name": "choc_getz_s64_z4",
+  "op": "getzsofslope",
+  "walls": [
+    {
+      "x": 0,
+      "y": 0,
+      "point2": 1,
+      "nextsector": -1
+    },
+    {
+      "x": 64,
+      "y": 0,
+      "point2": 2,
+      "nextsector": -1
+    },
+    {
+      "x": 64,
+      "y": 64,
+      "point2": 3,
+      "nextsector": -1
+    },
+    {
+      "x": 0,
+      "y": 64,
+      "point2": 0,
+      "nextsector": -1
+    }
+  ],
+  "sector_z": [
+    {
+      "wallptr": 0,
+      "wallnum": 4,
+      "ceilingz": -1000,
+      "floorz": 1000,
+      "ceilingstat": 0,
+      "floorstat": 0,
+      "ceilingheinum": 0,
+      "floorheinum": 0
+    }
+  ],
+  "input": {
+    "x": 32,
+    "y": 32,
+    "sect": 0
+  },
+  "expect": {
+    "ceilz": -1000,
+    "florz": 1000
+  }
+}

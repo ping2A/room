@@ -1,0 +1,51 @@
+{
+  "name": "choc_getz_s1024_z2",
+  "op": "getzsofslope",
+  "walls": [
+    {
+      "x": 0,
+      "y": 0,
+      "point2": 1,
+      "nextsector": -1
+    },
+    {
+      "x": 1024,
+      "y": 0,
+      "point2": 2,
+      "nextsector": -1
+    },
+    {
+      "x": 1024,
+      "y": 1024,
+      "point2": 3,
+      "nextsector": -1
+    },
+    {
+      "x": 0,
+      "y": 1024,
+      "point2": 0,
+      "nextsector": -1
+    }
+  ],
+  "sector_z": [
+    {
+      "wallptr": 0,
+      "wallnum": 4,
+      "ceilingz": -4096,
+      "floorz": -2048,
+      "ceilingstat": 0,
+      "floorstat": 0,
+      "ceilingheinum": 0,
+      "floorheinum": 0
+    }
+  ],
+  "input": {
+    "x": 512,
+    "y": 512,
+    "sect": 0
+  },
+  "expect": {
+    "ceilz": -4096,
+    "florz": -2048
+  }
+}

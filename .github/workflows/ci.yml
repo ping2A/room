@@ -75,6 +75,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --target wasm32-unknown-unknown -p room-web --features browser
       - run: cargo build --target wasm32-unknown-unknown -p room-core -p room-script-abi -p room-script-sdk
+      - run: cargo build --target wasm32-unknown-unknown -p room-build-engine -p room-duke
 
   web-browser-tests:
     runs-on: ubuntu-latest
@@ -94,6 +95,8 @@ jobs:
           tar -xzf geckodriver.tgz
           chmod +x geckodriver
           echo "$PWD" >> "$GITHUB_PATH"
+      - name: face-swap JS no-network
+        run: node --test crates/room-web/tests/face_no_network.test.mjs
       - name: wasm-bindgen-test (Firefox)
         env:
           WASM_BINDGEN_TEST_TIMEOUT: "120"
@@ -212,3 +215,5 @@ jobs:
         run: cargo +nightly fuzz run save_world_bin --fuzz-dir fuzz -- -max_total_time=60
       - name: fuzz room_proto_binary 60s
         run: cargo +nightly fuzz run room_proto_binary --fuzz-dir fuzz -- -max_total_time=60
+      - name: fuzz build_primitives 60s
+        run: cargo +nightly fuzz run build_primitives --fuzz-dir fuzz -- -max_total_time=60

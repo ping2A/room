@@ -28,6 +28,7 @@ async fn legacy_two_peers_stamped_data() {
             enable_verifier: false,
             visibility: "public".into(),
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         })
@@ -121,6 +122,7 @@ async fn v2_tic_frame_two_seats() {
             enable_verifier: false,
             visibility: "public".into(),
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         })
@@ -227,6 +229,7 @@ async fn many_rooms_create_and_pair() {
                     enable_verifier: false,
                     visibility: "public".into(),
                     game_mod: None,
+                    packs: Vec::new(),
                     time_limit: None,
                     game: None,
                 })
@@ -285,6 +288,7 @@ async fn soak_1000_rooms_v2_tic_frames() {
                     enable_verifier: false,
                     visibility: "public".into(),
                     game_mod: None,
+                    packs: Vec::new(),
                     time_limit: None,
                     game: None,
                 })
@@ -422,6 +426,7 @@ async fn origin_allowlist_rejects_unknown() {
             enable_verifier: false,
             visibility: "public".into(),
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         })
@@ -461,6 +466,7 @@ async fn join_ticket_round_trip_and_replay_rejected() {
             enable_verifier: false,
             visibility: "public".into(),
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         })

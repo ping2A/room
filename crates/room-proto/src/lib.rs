@@ -10,9 +10,9 @@ mod ftr2;
 mod tic;
 
 pub use control::{
-    ControlMsg, HelloMsg, IceServerEntry, MediaInfo, RejectMsg, ResultRow, RoomModRef, RosterSeat,
-    SeatState, WelcomeMsg, WelcomeRoom, content_fingerprint, encode_control, is_valid_mod_name,
-    parse_control, parse_control_bytes,
+    ControlMsg, HelloMsg, IceServerEntry, KNOWN_PACKS, MediaInfo, RejectMsg, ResultRow, RoomModRef,
+    RosterSeat, SeatState, WelcomeMsg, WelcomeRoom, content_fingerprint, encode_control,
+    is_known_pack, is_valid_mod_name, parse_control, parse_control_bytes,
 };
 pub use error::ProtoError;
 pub use ftr2::{

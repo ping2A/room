@@ -30,14 +30,10 @@ build_native() {
 }
 
 build_web() {
-  echo "==> building web (wasm32)"
-  if ! command -v wasm-pack >/dev/null 2>&1; then
-    echo "wasm-pack not found; skipping web bundle (install wasm-pack to enable)"
-    return 0
-  fi
-  (cd crates/room-web && wasm-pack build --target web --out-dir ../../"${OUT}/web" -- --features browser)
-  cp crates/room-web/index.html "${OUT}/web/" 2>/dev/null || true
-  echo "    -> ${OUT}/web"
+  echo "==> building web (wasm32 + mods)"
+  # Full static site (HTML/JS/WASM/mods); same layout as ./scripts/package-web.sh
+  ROOM_WEB_OUT="${OUT}/web" ./scripts/package-web.sh --out "${OUT}/web" --iwad none
+  echo "    -> ${OUT}/web  (zip with: ./scripts/package-web.sh --zip)"
 }
 
 case "${TARGET:-host}" in

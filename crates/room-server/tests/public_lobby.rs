@@ -18,6 +18,7 @@ async fn public_list_hides_private_and_serves_lobby() {
             visibility: "public".into(),
             enable_verifier: false,
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         })
@@ -30,6 +31,7 @@ async fn public_list_hides_private_and_serves_lobby() {
             visibility: "private".into(),
             enable_verifier: false,
             game_mod: None,
+            packs: Vec::new(),
             time_limit: None,
             game: None,
         })
@@ -83,6 +85,7 @@ async fn rooms_list_their_game() {
             .create_room(CreateRoomRequest {
                 game: Some("duke3d".into()),
                 game_mod: Some("royale".into()),
+                packs: Vec::new(),
                 ..CreateRoomRequest::default()
             })
             .is_err(),

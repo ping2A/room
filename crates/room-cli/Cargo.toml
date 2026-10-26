@@ -16,10 +16,16 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+room-build = { path = "../room-build" }
+room-build-engine = { path = "../room-build-engine" }
 room-decorate = { path = "../room-decorate" }
 room-defs = { path = "../room-defs" }
+room-duke = { path = "../room-duke" }
+room-faceswap = { path = "../room-faceswap" }
+room-formats = { path = "../room-formats" }
 room-game = { path = "../room-game" }
 room-map = { path = "../room-map" }
 room-nodebuild = { path = "../room-nodebuild" }
 room-sim = { path = "../room-sim" }
 room-vfs = { path = "../room-vfs" }
+png.workspace = true

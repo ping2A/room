@@ -1,0 +1,56 @@
+{
+  "name": "choc_inside_L_p10",
+  "op": "inside",
+  "walls": [
+    {
+      "x": 0,
+      "y": 0,
+      "point2": 1,
+      "nextsector": -1
+    },
+    {
+      "x": 200,
+      "y": 0,
+      "point2": 2,
+      "nextsector": -1
+    },
+    {
+      "x": 200,
+      "y": 100,
+      "point2": 3,
+      "nextsector": -1
+    },
+    {
+      "x": 100,
+      "y": 100,
+      "point2": 4,
+      "nextsector": -1
+    },
+    {
+      "x": 100,
+      "y": 200,
+      "point2": 5,
+      "nextsector": -1
+    },
+    {
+      "x": 0,
+      "y": 200,
+      "point2": 0,
+      "nextsector": -1
+    }
+  ],
+  "sectors": [
+    {
+      "wallptr": 0,
+      "wallnum": 6
+    }
+  ],
+  "input": {
+    "x": 175,
+    "y": 75,
+    "sect": 0
+  },
+  "expect": {
+    "inside": true
+  }
+}

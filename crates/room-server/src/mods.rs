@@ -30,6 +30,10 @@ pub struct ModEntry {
     pub bytes: Bytes,
     /// On-disk path (verifier mounts it); `None` for in-memory entries.
     pub path: Option<PathBuf>,
+    /// Offered in the lobby "Play solo" picker (`[mod] solo`, default true).
+    pub solo: bool,
+    /// Short player-facing blurb (`[mod] description`).
+    pub description: String,
 }
 
 /// Public listing row for `GET /api/mods`.
@@ -45,6 +49,11 @@ pub struct ModListing {
     pub size: u64,
     /// Download path.
     pub url: String,
+    /// Suitable for a local single-player run (lobby *Play solo*).
+    pub solo: bool,
+    /// Short blurb for lobby / play pickers.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 /// Admin listing row: every catalog mod with its allow state.
@@ -207,7 +216,8 @@ impl ModCatalog {
             return Err(format!("{} bytes exceeds {MAX_MOD_BYTES}", bytes.len()));
         }
         let manifest = find_wad_lump(&bytes, "ROOMMOD").ok_or("no ROOMMOD manifest lump")?;
-        let title = manifest_title(manifest).unwrap_or_else(|| name.to_owned());
+        let meta = manifest_meta(manifest);
+        let title = meta.title.unwrap_or_else(|| name.to_owned());
         let info = RoomModRef {
             name: name.to_owned(),
             title,
@@ -220,6 +230,8 @@ impl ModCatalog {
                 info: info.clone(),
                 bytes: Bytes::from(bytes),
                 path,
+                solo: meta.solo,
+                description: meta.description,
             },
         );
         Ok(info)
@@ -253,6 +265,8 @@ impl ModCatalog {
                     fingerprint: e.info.fingerprint.clone(),
                     size: e.info.size,
                     url: format!("/api/mods/{}.wad", e.info.name),
+                    solo: e.solo,
+                    description: e.description.clone(),
                 },
                 allowed: self.is_allowed(&e.info.name),
             })
@@ -312,29 +326,58 @@ fn find_wad_lump<'a>(wad: &'a [u8], name: &str) -> Option<&'a [u8]> {
     None
 }
 
-/// `name = "…"` from the manifest's `[mod]` table.
-fn manifest_title(toml: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(toml).ok()?;
+struct ManifestMeta {
+    title: Option<String>,
+    /// Default true when the key is omitted.
+    solo: bool,
+    description: String,
+}
+
+/// `[mod] name` / `solo` / `description` from the ROOMMOD manifest.
+fn manifest_meta(toml: &[u8]) -> ManifestMeta {
+    let mut meta = ManifestMeta {
+        title: None,
+        solo: true,
+        description: String::new(),
+    };
+    let Ok(text) = std::str::from_utf8(toml) else {
+        return meta;
+    };
     let mut in_mod = false;
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
             in_mod = line == "[mod]";
             continue;
         }
-        let Some(rest) = line.strip_prefix("name") else {
+        if !in_mod {
             continue;
-        };
-        let Some(value) = rest.trim_start().strip_prefix('=') else {
+        }
+        if let Some(rest) = line.strip_prefix("description") {
+            if let Some(value) = rest.trim_start().strip_prefix('=') {
+                let v = value.trim().trim_matches('"').trim();
+                if !v.is_empty() {
+                    meta.description = v.chars().take(280).collect();
+                }
+            }
             continue;
-        };
-        if in_mod {
-            let v = value.trim().trim_matches('"').trim();
-            if !v.is_empty() {
-                return Some(v.chars().take(64).collect());
+        }
+        if let Some(rest) = line.strip_prefix("name") {
+            if let Some(value) = rest.trim_start().strip_prefix('=') {
+                let v = value.trim().trim_matches('"').trim();
+                if !v.is_empty() {
+                    meta.title = Some(v.chars().take(64).collect());
+                }
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("solo") {
+            if let Some(value) = rest.trim_start().strip_prefix('=') {
+                let v = value.trim().trim_matches('"').to_ascii_lowercase();
+                meta.solo = v != "false" && v != "0" && v != "no";
             }
         }
     }
-    None
+    meta
 }
 
 #[cfg(test)]
@@ -377,6 +420,27 @@ pub(crate) mod tests {
             format!("{:016x}", content_fingerprint(&wad))
         );
         assert_eq!(cat.listing()[0].url, "/api/mods/bounty.wad");
+        assert!(cat.listing()[0].solo);
+    }
+
+    #[test]
+    fn catalog_reads_solo_false() {
+        let manifest =
+            b"[mod]\nname = \"Battle Royale\"\nsolo = false\n[[module]]\nname = \"royale\"\n";
+        let wad = pwad(&[("ROOMMOD", manifest), ("ROYALE", b"\0asm")]);
+        let mut cat = ModCatalog::default();
+        cat.insert("royale", wad, None).unwrap();
+        assert!(!cat.listing()[0].solo);
+        assert_eq!(cat.listing()[0].title, "Battle Royale");
+    }
+
+    #[test]
+    fn catalog_reads_description() {
+        let manifest = b"[mod]\nname = \"Survival Director\"\ndescription = \"Waves and bosses.\"\n[[module]]\nname = \"survival\"\n";
+        let wad = pwad(&[("ROOMMOD", manifest), ("SURVIVAL", b"\0asm")]);
+        let mut cat = ModCatalog::default();
+        cat.insert("survival", wad, None).unwrap();
+        assert_eq!(cat.listing()[0].description, "Waves and bosses.");
     }
 
     #[test]

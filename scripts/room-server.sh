@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Manage a local room-server daemon (docs/22).
 #
+# Prefer the repo entry point (same thing):
+#   ./room start|stop|restart|status|mods|logs|health
+#
 #   ./scripts/room-server.sh start
 #   ./scripts/room-server.sh stop
 #   ./scripts/room-server.sh restart
@@ -8,7 +11,7 @@
 #   ./scripts/room-server.sh mods      # only build the gameplay mods (mods/*)
 #
 # Extra server flags after `--`:
-#   ./scripts/room-server.sh start --bind 127.0.0.1:8765 -- \
+#   ./room start --bind 127.0.0.1:8765 -- \
 #       --admin-token secret --origin http://127.0.0.1:8080
 set -euo pipefail
 
@@ -118,7 +121,7 @@ build_room_web() {
   mkdir -p "$out"
   wasm-bindgen "$wasm" --out-dir "$out" --target web --no-typescript
   cp crates/room-web/index.html crates/room-web/voice.js crates/room-web/rtc.js \
-    crates/room-web/netgraph.js crates/room-web/touch.js crates/room-web/mixer-worklet.js \
+    crates/room-web/netgraph.js crates/room-web/touch.js crates/room-web/settings.js crates/room-web/mixer-worklet.js \
     crates/room-web/editor.html crates/room-web/editor.js crates/room-web/editor-tools.js crates/room-web/editor-paint.js crates/room-web/editor-scripts.js crates/room-web/editor.css "$out/"
   cp -R crates/room-web/as "$out/as"
   # Version every module URL so browsers never run a stale wasm / JS mix
@@ -330,6 +333,21 @@ do_start() {
     echo "room-server: first-run admin → user admin, password admin"
   fi
 
+  # Fail fast if something else already owns the game/admin ports
+  # (otherwise healthz succeeds against the stale process and we look "up").
+  local port game_port admin_port
+  game_port="${BIND##*:}"
+  admin_port="${ADMIN_BIND##*:}"
+  for port in "$game_port" "$admin_port"; do
+    if command -v lsof >/dev/null 2>&1; then
+      if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+        echo "room-server: port ${port} already in use — stop the other process first" >&2
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN >&2 || true
+        exit 1
+      fi
+    fi
+  done
+
   echo "room-server: starting ${start_args[*]}${EXTRA_ARGS[*]:+ ${EXTRA_ARGS[*]}}"
   printf '%s\n' "$BIND" >"$BIND_FILE"
   printf '%s\n' "$ADMIN_BIND" >"$ADMIN_BIND_FILE"
@@ -349,6 +367,17 @@ do_start() {
     fi
     if curl -sf "${base}/healthz" >/dev/null 2>&1 \
       && curl -sf "${admin_base}/healthz" >/dev/null 2>&1; then
+      # Confirm our pid is the one listening (not a leftover).
+      if command -v lsof >/dev/null 2>&1; then
+        local listeners
+        listeners="$(lsof -nP -tiTCP:"$game_port" -sTCP:LISTEN 2>/dev/null || true)"
+        if [[ -n "$listeners" && "$listeners" != *"$pid"* ]]; then
+          echo "room-server: healthz ok but pid ${pid} is not listening on ${BIND} (found ${listeners}); see ${LOG_FILE}" >&2
+          kill "$pid" 2>/dev/null || true
+          rm -f "$PID_FILE"
+          exit 1
+        fi
+      fi
       echo "room-server: started pid=${pid}"
       echo "  lobby: ${base}/"
       echo "  play:  ${PLAY_BASE}/"

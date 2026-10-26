@@ -98,6 +98,9 @@ pub struct PublicRoom {
     /// Gameplay mod (name + title), if any.
     #[serde(rename = "mod", skip_serializing_if = "Option::is_none")]
     pub game_mod: Option<room_proto::RoomModRef>,
+    /// Content packs (e.g. `voxel`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packs: Vec<String>,
     /// Match time limit (minutes).
     pub time_limit: u16,
     /// `doom` or `duke3d`.
@@ -131,6 +134,7 @@ pub async fn list_public_rooms(
             node_id: state.registry.locate_room(&id).unwrap_or_default(),
             visibility: h.settings.visibility.clone(),
             game_mod: h.settings.game_mod.clone(),
+            packs: h.settings.packs.clone(),
             time_limit: h.settings.time_limit,
             game: h.settings.game.clone(),
             ws_v2: format!("/v2/rooms/{id}/ws"),

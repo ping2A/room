@@ -211,14 +211,118 @@
     return ct.includes("json") ? res.json() : res.text();
   }
 
-  function openModal({ title, bodyHtml, confirmLabel = "Confirm" }) {
+  function openModal({ title, bodyHtml, confirmLabel = "Confirm", onReady }) {
     return new Promise((resolve) => {
       state.modalResolve = resolve;
       $("modal-title").textContent = title;
       $("modal-body").innerHTML = bodyHtml;
       $("modal-confirm").textContent = confirmLabel;
       $("modal").showModal();
+      if (typeof onReady === "function") {
+        try {
+          onReady($("modal-body"));
+        } catch (_) {
+          /* ignore UI wiring errors */
+        }
+      }
     });
+  }
+
+  const VANILLA_MOD_INFO = {
+    title: "None (vanilla)",
+    description: "Classic Doom / Freedoom — no gameplay mod.",
+  };
+  /** Lookup table for mod blurbs (API rows). */
+  function modInfoByName(mods) {
+    const map = { "": VANILLA_MOD_INFO };
+    for (const m of mods) {
+      map[m.name] = {
+        title: m.title || m.name,
+        description: m.description || "",
+        solo: m.solo !== false,
+      };
+    }
+    return map;
+  }
+
+  function paintModBlurb(el, info) {
+    if (!el) return;
+    if (!info || (!info.description && !info.title)) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    el.hidden = false;
+    const title = info.title ? escapeHtml(info.title) : "";
+    const desc = info.description ? escapeHtml(info.description) : "";
+    el.innerHTML =
+      (title ? '<strong class="mod-blurb-title">' + title + "</strong>" : "") +
+      (desc ? '<p class="mod-blurb-text">' + desc + "</p>" : "");
+  }
+
+  /** Mod `<select>` + live blurb + optional Voxel pack checkbox. */
+  function modPickerHtml(mods, { name = "mod", voxelPack = true } = {}) {
+    const options =
+      '<option value="">None (vanilla)</option>' +
+      mods
+        .map(
+          (m) =>
+            '<option value="' +
+            escapeHtml(m.name) +
+            '">' +
+            escapeHtml(m.title || m.name) +
+            "</option>"
+        )
+        .join("");
+    const packHtml = voxelPack
+      ? '<label class="field check"><span><input type="checkbox" name="voxel" value="1"/> Voxel sprites</span>' +
+        '<span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0.02em">Cheello voxel meshes — stacks with the gameplay mod above</span></label>'
+      : "";
+    const html =
+      '<label class="field"><span>Mod</span><select name="' +
+      escapeHtml(name) +
+      '">' +
+      options +
+      "</select></label>" +
+      '<div class="mod-blurb" data-mod-blurb hidden></div>' +
+      packHtml;
+    const info = modInfoByName(mods);
+    function wire(body) {
+      const sel = body.querySelector('select[name="' + name + '"]');
+      const blurb = body.querySelector("[data-mod-blurb]");
+      const game = body.querySelector('select[name="game"]');
+      const voxel = body.querySelector('input[name="voxel"]');
+      const refresh = () => {
+        if (game && game.value === "duke3d") {
+          paintModBlurb(blurb, {
+            title: "Duke Nukem 3D",
+            description: "Build engine — mods are Doom only; this run is vanilla Duke.",
+          });
+          if (sel) sel.disabled = true;
+          if (voxel) {
+            voxel.checked = false;
+            voxel.disabled = true;
+          }
+          return;
+        }
+        if (sel) sel.disabled = false;
+        if (voxel) voxel.disabled = false;
+        let blurbInfo = info[sel ? sel.value : ""] || VANILLA_MOD_INFO;
+        if (voxel && voxel.checked) {
+          const packNote = " + Voxel sprites (Cheello meshes).";
+          blurbInfo = {
+            title: blurbInfo.title,
+            description: (blurbInfo.description || "") + packNote,
+          };
+        }
+        paintModBlurb(blurb, blurbInfo);
+      };
+      if (sel) sel.addEventListener("change", refresh);
+      if (game) game.addEventListener("change", refresh);
+      if (voxel) voxel.addEventListener("change", refresh);
+      refresh();
+    }
+    return { html, wire };
   }
 
   $("modal-form").addEventListener("submit", (ev) => {
@@ -412,6 +516,11 @@
       (room.mod
         ? '<div class="row"><span class="k">Mod</span><span>' + escapeHtml(modLabel(room)) + "</span></div>"
         : "") +
+      (room.packs && room.packs.length
+        ? '<div class="row"><span class="k">Packs</span><span>' +
+          escapeHtml(room.packs.join(", ")) +
+          "</span></div>"
+        : "") +
       '<div class="row"><span class="k">Seats</span><span>' +
       room.occupied +
       " / " +
@@ -450,13 +559,7 @@
   async function createRoom() {
     if (!requireCallsign()) return;
     const mods = await loadMods();
-    const modField = mods.length
-      ? '<label class="field"><span>Mod</span><select name="mod"><option value="">None (vanilla)</option>' +
-        mods
-          .map((m) => '<option value="' + escapeHtml(m.name) + '">' + escapeHtml(m.title) + "</option>")
-          .join("") +
-        "</select></label>"
-      : "";
+    const picker = modPickerHtml(mods, { voxelPack: true });
     const data = await openModal({
       title: "Open a pit",
       confirmLabel: "Spill blood",
@@ -469,10 +572,12 @@
         escapeHtml(state.config.room_time_limit_mins || 20) +
         '"/></label>' +
         '<label class="field"><span>Visibility</span><select name="visibility"><option value="public">public</option><option value="private">private</option></select></label>' +
-        modField,
+        picker.html,
+      onReady: picker.wire,
     });
     if (!data) return;
     try {
+      const doom = data.game !== "duke3d";
       const created = await api("/api/rooms", {
         method: "POST",
         body: JSON.stringify({
@@ -482,7 +587,8 @@
           visibility: data.visibility || "public",
           time_limit: Number(data.time_limit) || undefined,
           game: data.game || "doom",
-          mod: data.game === "duke3d" ? undefined : data.mod || undefined,
+          mod: doom ? data.mod || undefined : undefined,
+          packs: doom && data.voxel ? ["voxel"] : [],
         }),
       });
       flash("Created " + shortId(created.id));
@@ -493,6 +599,7 @@
         skill: created.settings.skill,
         max_players: created.settings.max_players,
         mod: created.settings.mod,
+        packs: created.settings.packs || [],
         game: created.settings.game,
         time_limit: created.settings.time_limit,
         occupied: 0,
@@ -517,20 +624,20 @@
     q.set("map", opts.map || "E1M1");
     q.set("skill", String(opts.skill || 3));
     if (opts.game === "duke3d") q.set("iwad", "duke3d.grp");
-    else if (opts.mod) q.set("mod", opts.mod);
+    else {
+      if (opts.mod) q.set("mod", opts.mod);
+      if (opts.packs && opts.packs.length) q.set("pack", opts.packs.join(","));
+    }
     return base + "?" + q.toString();
   }
 
   async function playSolo() {
     const mods = await loadMods();
-    const modOptions =
-      '<option value="">None (vanilla)</option>' +
-      mods
-        .map((m) => '<option value="' + escapeHtml(m.name) + '">' + escapeHtml(m.title) + "</option>")
-        .join("") +
-      '<option value="voxel">Voxel Doom (vs monsters)</option>';
-    const modField =
-      '<label class="field"><span>Mod</span><select name="mod">' + modOptions + "</select></label>";
+    // Multiplayer-only: `[mod] solo = false`, or known names if an old server omits the field.
+    const soloMods = mods.filter(
+      (m) => m.solo !== false && m.name !== "royale"
+    );
+    const picker = modPickerHtml(soloMods, { voxelPack: true });
     const data = await openModal({
       title: "Play solo",
       confirmLabel: "Start",
@@ -539,17 +646,20 @@
         '<label class="field"><span>Game</span><select name="game"><option value="doom">Doom</option><option value="duke3d">Duke Nukem 3D (no mods)</option></select></label>' +
         '<label class="field"><span>Map</span><input name="map" value="E1M1" required/></label>' +
         '<label class="field"><span>Skill</span><input name="skill" type="number" min="1" max="5" value="3"/></label>' +
-        modField +
-        '<p class="muted">Duke maps are ExMy (E1M1 = E1L1). Mods are Doom only.</p>',
+        picker.html +
+        '<p class="muted">Duke maps are ExMy (E1M1 = E1L1). Mods and Voxel are Doom only.</p>',
+      onReady: picker.wire,
     });
     if (!data) return;
     if (!(await ensurePlayBase())) return;
+    const doom = data.game !== "duke3d";
     goPlay(
       soloUrl({
         game: data.game,
         map: (data.map || "E1M1").trim().toUpperCase(),
         skill: Number(data.skill) || 3,
-        mod: data.mod,
+        mod: doom ? data.mod : "",
+        packs: doom && data.voxel ? ["voxel"] : [],
       })
     );
   }
@@ -610,6 +720,9 @@
         (full ? '<span class="badge">full</span>' : "") +
         (room.game === "duke3d" ? '<span class="badge mod">' + escapeHtml(gameLabel(room)) + "</span>" : "") +
         (room.mod ? '<span class="badge mod">' + escapeHtml(modLabel(room)) + "</span>" : "") +
+        (room.packs && room.packs.length
+          ? '<span class="badge mod">' + escapeHtml(room.packs.join("+")) + "</span>"
+          : "") +
         "</div></div>";
       const actions = document.createElement("div");
       actions.className = "room-actions";

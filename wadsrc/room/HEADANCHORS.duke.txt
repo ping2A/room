@@ -1,0 +1,20 @@
+// Duke / Build head anchors (docs/26 F7). Placeholders (hash 0) until Atomic
+// tile hashes are measured from a legal GRP fixture.
+
+Anchor "LIZTROOP" hash 0
+{
+    Center 32.0, 28.0
+    Radius 14.0, 18.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.0
+}
+
+Anchor "PIGCOP" hash 0
+{
+    Center 32.0, 28.0
+    Radius 14.0, 18.0
+    Roll 0
+    Yaw Front
+    KeepTop 0.0
+}

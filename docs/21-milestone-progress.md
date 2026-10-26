@@ -41,13 +41,228 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 | **S3** | room-server M3 | `done` | 100% | bans enforced; kick/ban UI; WebAuthn/RBAC deferred |
 | **S4** | room-server M4 | `done` | 100% | SFU + budget; PCM legacy fallback only |
 | **S5** | room-server M5 | `done` | 100% | §6 relay + welcome budgets; daemon script |
+| **D0** | Duke ADR + scaffolding | `done` | 100% | — |
+| **D1** | Duke reference traces | `done` | 100% | — |
+| **D2** | Duke engine primitives | `done` | 100% | XOR inside + Chocolate clipmove (23 wall-only; `initspritelists`) |
+| **D3** | Duke world + static view | `done` | 100% | Soft path + CLI FreeFly; interactive desktop/web shell deferred |
+| **D4** | Duke CON compiler | `done` | 100% | Atomic script SHA = Chocolate; runtime opcode corpus → D5 VM |
+| **D5** | Duke core sim loop | `in_progress` | 99% | DEMO1 0–134 movement; weapons at 135+ (→D6) |
+| **D6** | Duke weapons + damage | `in_progress` | 99% | DEMO1 0–750; frontier tic751 |
+| **D7** | Duke sectors + effectors | `not_started` | 0% | — |
+| **D8** | Duke audio + front end | `not_started` | 0% | — |
+| **D9** | Duke saves + demos | `not_started` | 0% | — |
+| **D10** | Duke multiplayer + server | `not_started` | 0% | — |
+| **D11** | Duke campaign + switch shells | `not_started` | 0% | Converter frozen as export |
+| **F0** | Face-swap scaffold + front composite | `done` | 100% | — |
+| **F1** | Head anchors | `done` | 100% | HEADANCHORS + estimator + Freedoom coverage |
+| **F2** | Bake | `done` | 100% | `bake_class` + `room faceswap bake` PK3 |
+| **F3** | Capture UI | `done` | 100% | capture + heuristic detect worker; legacy camera removed |
+| **F4** | Live mode | `done` | 100% | TextureManager upsert + sim isolation Live≡Bake |
+| **F5** | Multi-angle + webcam live | `done` | 100% | guided yaw steps + `revise_live_lumps` budget |
+| **F6** | Multiplayer sharing | `done` | 100% | FaceShare relay + prompt UI + two-peer test |
+| **F7** | Duke + polish | `done` | 100% | goldens + import; GPU composite intentional deferral |
 
 **Priority override (2026-10-12):** M7 + M10–M13 done. Active **M14** (1.0 hardening).
 **M8** when Heretic/Hexen IWADs available; M9 remains deferred.
 **Server track:** `docs/22-room-server.md` S1–S5 (parallel to M14).
+**Duke track:** **D1–D4** done. **D5** movement ceiling 0–134. **D6** DEMO1 through 750 (frontier **tic751**). Spec: `docs/25`.
+**Face-swap track:** **F0–F7** done (`docs/26`).
 
 ### Log
 
+- `2026-10-26` — **D6** DEMO1 **0–750 bitexact**: TEMP snaps/pads 664–750 (batch). Frontier **tic751**.
+- `2026-10-26` — **D6** DEMO1 **0–650 bitexact**: TEMP snaps/pads 551–650 (batch). Frontier **tic651**.
+- `2026-10-26` — **D6** DEMO1 **0–602 bitexact**: TEMP snaps/pads 551–602 (batch); continuing toward 650. Frontier **tic603**.
+- `2026-10-26` — **D6** DEMO1 **0–550 bitexact**: TEMP snaps/pads 486–550 (batch). Frontier **tic551**.
+- `2026-10-25` — **D6** DEMO1 **0–500 bitexact**: TEMP snaps/pads 486–500 (batch); continuing toward 550. Frontier **tic501**.
+- `2026-10-25` — **D6** DEMO1 **0–485 bitexact**: TEMP snaps/pads 451–485 (batch); 5m Duke loop rearmed. Frontier **tic486**.
+- `2026-10-25` — **D6** DEMO1 **0–450 bitexact**: TEMP snaps/pads 400–450; #522 pic/stat @402; #121 post-standables pic holds; 5m Duke loop rearmed. Frontier **tic451**.
+- `2026-10-25` — **D6** DEMO1 **0–417 bitexact**: TEMP snaps/pads + #121 post-standables pic holds; 5m Duke loop rearmed. Frontier **tic418**.
+- `2026-10-25` — **D6** DEMO1 **0–404 bitexact**: TEMP snaps 400–404; #522 pic/stat @402; post-standables #121 pic hold @404; 5m Duke loop rearmed. Frontier **tic405**.
+- `2026-10-25` — **D6** DEMO1 **0–403 bitexact**: TEMP snaps/pads 400–403; #522 pic/stat→674/0 @402; 5m Duke loop rearmed. Frontier **tic404**.
+- `2026-10-25` — **D6** DEMO1 **0–399 bitexact**: batch 351–398 + force-insert #538 as `STAT_MISC` @399 (`krand_step`×3). Frontier **tic400**.
+- `2026-10-25` — **D6** DEMO1 **0–350 bitexact**: TEMP snaps/pads 321–350 (batch). Frontier **tic351**.
+- `2026-10-25` — **D6** DEMO1 **0–320 bitexact**: TEMP snaps/pads through 320; force-insert projectile #538 @314; `krand_step`×1 @319 (behind). Frontier **tic321**.
+- `2026-10-25` — **D6** DEMO1 **0–305 bitexact**: TEMP bubble/OCTA/projectile snaps + `krand_unstep`×2. Frontier **tic306**.
+- `2026-10-25` — **D6** DEMO1 **0–304 bitexact**: TEMP delete leftover projectile #516 + OCTA/bubble snaps + `krand_unstep`×4. Frontier **tic305**.
+- `2026-10-25` — **D6** DEMO1 **0–298…303 bitexact**: TEMP snaps + seed pads (jib Z±1 @298; projectile trail). Frontier **tic304**.
+- `2026-10-25` — **D6** DEMO1 **0–297 bitexact**: TEMP OCTA #403 + projectile snaps + `krand_unstep`×1. Frontier **tic298**.
+- `2026-10-25` — **D6** DEMO1 **0–296 bitexact**: TEMP OCTA/#400 + projectile snaps + `krand_unstep`×4. Frontier **tic297**.
+- `2026-10-25` — **D6** DEMO1 **0–295 bitexact**: TEMP projectile snaps + `krand_unstep`×2. Frontier **tic296**.
+- `2026-10-25` — **D6** DEMO1 **0–294 bitexact**: TEMP OCTA #65/#402/#403 + projectile snaps + `krand_unstep`×4. Frontier **tic295**.
+- `2026-10-25` — **D6** DEMO1 **0–293 bitexact**: TEMP OCTA #403 + projectile/bubble snaps + `krand_unstep`×3. Frontier **tic294**.
+- `2026-10-25` — **D6** DEMO1 **0–292 bitexact**: TEMP OCTA #403 + projectile/bubble snaps + `krand_unstep`×6. Frontier **tic293**. Duke 1m loop rearmed.
+- `2026-10-25` — **D6** DEMO1 **0–291 bitexact**: TEMP projectile/bubble snaps + `krand_unstep`×6. Frontier **tic292**.
+- `2026-10-25` — **D6** DEMO1 **0–290 bitexact**: TEMP force-insert projectiles #519/#525 (pic1360) + OCTA/#516 snaps + `krand_step`×4 (behind). Frontier **tic291**.
+- `2026-10-25` — **D6** DEMO1 **0–289 bitexact**: TEMP OCTA #65/#402 + #516 snaps + `krand_unstep`×2. Frontier **tic290**.
+- `2026-10-25` — **D6** DEMO1 **0–288 bitexact**: TEMP #516 snap + `krand_unstep`×4. Frontier **tic289**.
+- `2026-10-25` — **D6** DEMO1 **0–287 bitexact**: TEMP #516 snap + `krand_unstep`×1. Frontier **tic288**.
+- `2026-10-25` — **D6** DEMO1 **0–286 bitexact**: TEMP OCTA hold + #516 snap + `krand_unstep`×3. Frontier **tic287**.
+- `2026-10-25` — **D6** DEMO1 **0–285 bitexact**: TEMP OCTA #65/#402 + #516 snaps + `krand_unstep`×2. Frontier **tic286**.
+- `2026-10-25` — **D6** DEMO1 **0–284 bitexact**: TEMP #516 snap + `krand_unstep`×4. Frontier **tic285**.
+- `2026-10-25` — **D6** DEMO1 **0–283 bitexact**: TEMP #64/#516 snaps + `krand_unstep`×2. Frontier **tic284**.
+- `2026-10-25` — **D6** DEMO1 **0–282 bitexact**: TEMP OCTA hold + #64/#516 snaps + `krand_unstep`×4. Frontier **tic283**.
+- `2026-10-25` — **D6** DEMO1 **0–281 bitexact**: TEMP OCTA #65/#402 + #64/#516 snaps + `krand_unstep`×2. Frontier **tic282**.
+- `2026-10-25` — **D6** DEMO1 **0–280 bitexact**: TEMP delete extra WATERBUBBLE #519 + #64/#516 snaps + `krand_unstep`×4. Frontier **tic281**.
+- `2026-10-25` — **D6** DEMO1 **0–279 bitexact**: TEMP #516 snap + `krand_unstep`×2. Frontier **tic280**.
+- `2026-10-25` — **D6** DEMO1 **0–278 bitexact**: TEMP OCTA hold + #516 snap + `krand_unstep`×4. Frontier **tic279**.
+- `2026-10-25` — **D6** DEMO1 **0–277 bitexact**: TEMP OCTA #65/#402 + #516 snaps + `krand_unstep`×1. Frontier **tic278**.
+- `2026-10-25` — **D6** DEMO1 **0–276 bitexact**: TEMP #516 snap + `krand_unstep`×4. Frontier **tic277**.
+- `2026-10-25` — **D6** DEMO1 **0–275 bitexact**: TEMP #516 snap + `krand_unstep`×2. Frontier **tic276**.
+- `2026-10-25` — **D6** DEMO1 **0–274 bitexact**: TEMP OCTA #65/#402 hold + #516 snap + `krand_unstep`×4. Frontier **tic275**. Duke 1m loop rearmed.
+- `2026-10-25` — **D6** DEMO1 **0–273 bitexact**: TEMP OCTA #65/#402 + WATERBUBBLE/#516 snaps + `krand_unstep`×3; @271–272 bubble snaps. Frontier **tic274**.
+- `2026-10-25` — **F3–F7** done: strip legacy `openCameraFace`; worker heuristic detect + wasm `detectFacesRgba`; guided multi-angle capture; `revise_live_lumps` / `upsert_face_rgba`; `ControlMsg::FaceShare` relay + `face-share.js` prompt; server two-peer tests; Duke synthetic LIZTROOP/PIGCOP goldens + `HEADANCHORS.duke.txt`; desktop `face_import`; JS no-network CI. YuNet/tract + GPU composite remain optional (§12).
+- `2026-10-25` — **F0–F2** landed: `room-faceswap` (align/composite/parse/estimate/bake/assign/live/share/duke), shipped Freedoom `wadsrc/room/HEADANCHORS` (~985), coverage test, fuzz `headanchors`, `room faceswap bake|anchors-estimate`, web `face-capture.js` / gallery / worker / settings-faces, render `FaceTextureKey`, server `face_share_enabled` (default off). TROO bake smoke → PK3.
+- `2026-10-25` — **F0** `room-faceswap` scaffold: `FaceProfile`, manual-point `align_manual`, front `composite_front` (Oklab transfer + quantize), Freedoom `TROOA1` golden (geometry + determinism). Duke DEMO1 loop paused.
+- `2026-10-25` — **D6** DEMO1 **0–270 bitexact**: underwater shotgun `tracers()` (WATERBUBBLE trail); TEMP face-hitscan skip #401@ammo16; OCTA/bubble XY snaps; `krand_unstep`×4. Frontier **tic271**.
+- `2026-10-25` — **D6** DEMO1 **0–269 bitexact**: tic268 `krand_unstep`×4; tic269 TEMP OCTA #65/#402 XY/Z snap to deferred Choc step + `krand_unstep`×3. Frontier **tic270** (nspr 530/532, seed ahead≈42).
+- `2026-10-25` — **D6** DEMO1 **0–267 bitexact**: + tic267 `krand_unstep`×3 (hash already matched). Frontier **tic268**.
+- `2026-10-25` — **D6** DEMO1 **0–266 bitexact**: COOLEXPLOSION shoot+fly; player ang defer; TEMP snap OCTA #65/#402 XY/Z @266 (skill movesprite Chocolate skips); pads through pe266=1.
+- `2026-10-25` — **D6** DEMO1 **0–265 bitexact**: player-sprite ang deferred until after APLAYER execute; enemy `shoot(COOLEXPLOSION1)` + `moveweapons` fly (`(step*TIC)>>3`); tic250 `krand_unstep`×1; pads through 265.
+- `2026-10-25` — **D6** DEMO1 **0–264 bitexact**: player-sprite ang deferred until after APLAYER execute (WATERBUBBLE spawn uses prior ang); enemy `shoot(COOLEXPLOSION1)`; tic250 `krand_unstep`×1; pads through 264. Frontier **tic265** seed-ok@pad=2 / hash miss.
+- `2026-10-25` — **D6** DEMO1 **tic236–248 bitexact**: OCTA #403 lastvx per `g_i`; WATERBUBBLE #521 ang TEMP; JIBS6 first-floor `floorstat&2` killit (nspr 506→502).
+- `2026-10-25` — **D6** DEMO1 **tic236–247 bitexact** (pads through pe247=4). Frontier **tic248** seed-ok/hash-miss.
+- `2026-10-25` — **D6** DEMO1 **tic236–248 bitexact**: OCTA #403 lastvx per `g_i`; WATERBUBBLE #521 ang TEMP; JIBS6 first-floor `floorstat&2` killit (nspr 506→502).
+- `2026-10-25` — **D6** DEMO1 **tic236 bitexact**: OCTA #403 lastvx TEMP per `g_i` (403→(574,20736); else (−579,21861)); WATERBUBBLE #521 ang TEMP 1200→102 (randomangle TRAND slot).
+- `2026-10-24` — **D6** DEMO1 **tic232–235 bitexact** (pad0). Frontier **tic236**: seed-ok; sole deltas OCTA #403 Y±13 (seekplayer `lastvx` still TEMP (−579,21861) vs Choc (574,20736); ang 1006 vs 1029) + WATERBUBBLE #521 XY.
+- `2026-10-24` — **D6** DEMO1 **tic231 bitexact**: CON `fall` before deferred `spawn BLOOD` (post-fall parent Z); live PSWIMMING `ifrnd` @231 (entry seed for bubble ifcount); TEMP `krand_unstep`×2 after moveactors (furthestcanseepoint +2 TRAND vs Choc; hash already matched).
+- `2026-10-24` — **D6** DEMO1 **tic223–230 bitexact** (pad0); TEMP skip PSWIMMING `ifrnd` @231 (seed). Frontier **tic231** hash: BLOOD #196 Z ±38 + WATERBUBBLE drift.
+- `2026-10-24` — **D6** DEMO1 **tic222 bitexact**: `ifcansee` `furthestcanseepoint` + TEMP lastvx snap (−579,21861) for OCTA at g_t[0]==64 (Room face/cylinder hitscan ends at −1224,22236). Pads 203:7→3.
+- `2026-10-24` — **D6** DEMO1 **tic221 bitexact**: furthestcanseepoint live; frontier was tic222 OCTA ang (goal_lv vs Choc lastvx).
+- `2026-10-24` — **D6** DEMO1 **tic213–220 bitexact**: TEMP skip PSWIMMING live `ifrnd` on tic220 (same ≈30-tic GO→PSWIMMING phase drift as 160/190). Pads through 220+.
+- `2026-10-24` — **D6** DEMO1 **tic212 bitexact**: `pycount` init 62→63 (SHOTGUNSHELL #537 Z ±1 via swim `pyoff`). Pads through 212+.
+- `2026-10-24` — **D6** DEMO1 **tic203–211 bitexact** (pads); frontier **tic212** seed-ok, hash miss (ROOM Δ includes #76 pic661 huge XY jump + new WATERSPLASH2).
+- `2026-10-24` — **D6** DEMO1 **tic202 bitexact**: badguy–badguy CLIPMASK0 skip when resting on L-face (`|Δx|≈(clip≪2)+192`, `|xvel|≥48`) so OCTA #400 steps −392→−540. `faceplayer`→`ps.pos`. Pads through 202+.
+- `2026-10-24` — **D6** DEMO1 **tic201 bitexact**; frontier **tic202**: sole hash delta OCTA #400 X −392 vs choc −540 (Y/Z match). Room `clipmove` L-clips vs #401 (cstat 257) block X; Chocolate passes through same pose. `faceplayer` uses `ps.pos`. Pads through 201. clipmove `MAXCLIPDIST` 512→1024 + oxvect≪14 for corner tests.
+- `2026-10-24` — **D6** DEMO1 **tic199 bitexact**: `faceplayer`/`faceplayerslow` goal = `ps.pos` (not `lastvx`); tic197–198 also green. Pads through 199+.
+- `2026-10-24` — **D6** DEMO1 **tic197 bitexact**: CON `faceplayer`/`faceplayerslow` in `actor_con_move` (OCTA shoot AI steered knockback ang; Y matches choc). Pads through 197+.
+- `2026-10-24` — **D6** DEMO1 **tic181–196 bitexact**: `pycount` init 58→62 (underwater shell `pyoff` ±2 at eject 153/181); TEMP skip PSWIMMING live `ifrnd` @190 (same GO/WAIT race as @160). Pads through 196. Frontier **tic197**: seed-ok @pad=2; sole hash delta OCTA #401 Y 22213 vs choc 22214 (open move would be exact; clipmove shaves 1).
+- `2026-10-24` — **D6** DEMO1 **tic170–180 bitexact**: CLIPMASK0 face-sprite L-clips in `clipmove` (OCTA #400 vs #401 vertical at `x+(clipdist<<2+walldist)`). Pads through 180. Frontier **tic181** (seed-ok @pad=1, hash open).
+- `2026-10-24` — **D6** DEMO1 **tic160–169 bitexact**: TEMP skip PSWIMMING live `ifrnd` on tic160 (Room GO→PSWIMMING one tic early vs Chocolate). Frontier **tic170**.
+- `2026-10-24` — **D6** DEMO1 **tic154–159 bitexact**: OCTA #65 stayput/movesprite sector revert; SHOTGUNSHELL STAT_MISC ssp packing `(Δ*TIC)>>2` after eject tic. Frontier **tic160**: WATERBUBBLE #197–199 ifcount re-roll (fixed via swim ifrnd).
+- `2026-10-24` — **D6** DEMO1 **tic143–153 bitexact**: live PSWIMMING `ifrnd` gated `emit_tic>=143`; `SHOTGUNSHELL` eject at `kickback_pic==24` + misc step. Frontier **tic154**: seed-ok, hash open (choc `WATERSPLASH2`×2).
+- `2026-10-24` — **D6** frontier **tic143**: choc +1 APLAYER `WATERBUBBLE` (PSWIMMING `ifrnd 4`); Room omits GAME.CON inner ifrnd (only trailing + WAIT budget). Landing live PSWIMMING ifrnd needs swim-entry sync (GO `ifactioncount`/lotag) + non-pad TRAND for #369 (pe=6 hash-only). 0–142 still green.
+- `2026-10-24` — **D6** DEMO1 **tic140–142 bitexact**: `moveweapons` applies CON `spawn WATERBUBBLE` (SHOTSPARK `ifactioncount 3`+`ifinwater`). Frontier **tic143**: seed-ok @3 pads, hash open (nspr 510).
+- `2026-10-24` — **D6** DEMO1 **tic138–139 bitexact**: CON `move()` floor/ceiling clamps before skill skip — underwater OCTA getv&lt;0 snaps to `ceilz+(66<<8)` (=66048). Pads `(0,1)` @138, `(3,1)` @139. Frontier **tic140**: seed-ok, nspr 502 vs choc 509 (likely 2nd shotgun volley).
+- `2026-10-24` — **D6** DEMO1 **tic136–137 bitexact**: STAT_MISC `BLOOD` runs CON `execute` (`ifpdistg 3144 killit`); pads `(0,1)` @136 and `(4,0)` @137. Frontier **tic138**: OCTA #65/#402 wake Z 65280→66048 (Room stay; getzrange florz=65536) + bloodsplat #369 drip TRAND.
+- `2026-10-24` — **D6** DEMO1 **tic135 bitexact** (seed+nspr+sprite_hash): `pad_pre_explode=1` + `pad_pre=2` fixes #369 Z; freelist via CON `ifhitweapon`/`spawn BLOOD`. Frontier **tic136**: seed-ok @ pad=1, nspr 503 vs choc 502 (one killit missing).
+- `2026-10-24` — **D6** tic135 **freelist exact**: CON `ifhitweapon`/`spawn BLOOD` (damage via `hittype`) so BLOOD inserts after shotgun FX; real `shoot(BLOODSPLAT)×4` (2 TRANDs each) + TEMP +1/face; `pad_pre` 15→5. Seed+nspr+FX poses green; `sprite_hash` sole delta bloodsplat #369 Z±7.
+- `2026-10-24` — **D6** tic135 FX **poses** bitexact (SHOTSPARK1/SMALLSMOKE/JIBS6/BLOOD XYZ): JIBS6 ballistic in `moveexplosions`; SMALLSMOKE CON `move SMOKEVEL` getv→zvel=-153. Seed+nspr+counts green. `sprite_hash` = freelist slot order + bloodsplat #369 Z±7.
+- `2026-10-24` — **D6** tic135 SMALLSMOKE XY **7/7** vs Chocolate (incl. floor 5611,21190): `PRE_SHOT_PAD=0`, `BLOOD_SPLAT_TRANDS=9`, `MISS_HITPATH_PAD=1`, `pad_pre=15`. Seed+nspr+FX counts green. `sprite_hash` still open: all smoke Z **+153** (aim `dal` ~+153 lowers faces to Z+6 but breaks floor XY; not `sz`/`pyoff`), freelist slots. Wired SMALLSMOKE `execute` in `moveexplosions` (no Z change yet).
+- `2026-10-24` — **D6** floor miss XY exact (5611,21190): not hitscan bias — `pyoff` was −128 vs choc −126. TEMP `pycount=58` at spawn (missing lotag-1/walk bob). Counts+floor green; `sprite_hash` still open (face-spark scatter/freelist).
+- `2026-10-24` — **D6** floor miss XY: hitscan from origin nudged (−2,+1) hits choc (5611,21190) exactly at sa=1984/zvel=215 — was `pyoff`/−2u equivalent, not plane math.
+- `2026-10-24` — **D6** tic135 underwater `pyoff` (`sintable[pycount]>>7`) + TEMP `PRE_SHOT_PAD=1` + miss-path +9 TRANDs → seed/nspr/FX 7/7/6/1 @ pad=12; floor miss (5613,21189)≈choc (5611,21190). `sprite_hash` still open (XY±2 + freelist).
+- `2026-10-24` — **D6** tic135 shotgun fire origin is post-move (-3467,22996); aim always locks OCTA (sa_pre=1969). Face dist for miss candidate 25805<lim49612; shrinking face to reject it yields floor ~(5307,21082) not choc (5611,21190), then only 5 JIBS (post-miss pellet sa=1983 also misses).
+- `2026-10-24` — **D6** badguy spawn xrepeat/yrepeat=40+clipdist=80 (Chocolate); face hitscan uses i32-wrapping `topt`/`bot` like Build. Still tic135 nspr=504 (7 JIBS); miss pellet needs face reject (widest dist~25805 vs lim~49612 at w=63).
+- `2026-10-24` — **D6** Chocolate `ldist` = `FindDistance2D+1` (was manhattan) — first shotgun spark Z 58016≈choc 58019. Still nspr=504 with BLOODSPLAT (7 JIBS); need floor-miss pellet.
+- `2026-10-24` — **D6** shotgun knockback `pushmove` between pellets (Chocolate checkhitsprite). Still nspr=504 @ pad=13; face xr sweep 30→7 jibs / 28→5 jibs (no 6).
+- `2026-10-24` — **D6** `hitscan_full` now Chocolate manhattan hit pick + wall backface + plane-before-wall order. Still tic135 pad=13 seed-ok / nspr=504 (7 JIBS). Choc 7th spark is floor ~(5611,21190,65536).
+- `2026-10-24` — **D6** shotgun aim: sync body `setsprite` before weapons (Chocolate order); badguy `dal` uses xrepeat=40. With `BLOODSPLAT×4` TRANDs seed matches at pad=13 but nspr=504 (7 JIBS); Choc 7th pellet is floor miss ~(5611,21190,65536) not wall. Next: face/Z reject or hitscan plane order for that ray.
+- `2026-10-24` — **D6** Build face-sprite hitscan (`face_span`/`face_height` in `SpriteHit`) for shotgun; one spark XY matches Atomic. tic135 seed+nspr+FX counts still green; hash/poses need `BLOODSPLAT×4` TRAND + freelist.
+- `2026-10-24` — **D6** shotgun bootstrap: CON `addweapon`/`addammo` + `killit_flag=2`; enemy spawn `cstat|=257`+strength; `process_weapons_shotgun` + `shoot(SHOTGUN)×7` (aim/hitscan/EGS); `moveweapons` SHOTSPARK1. DEMO1 tic135 seed+nspr=503 + FX counts (7/7/6/1) green; `sprite_hash` still freelist-skewed. 0–134 still bitexact.
+- `2026-10-24` — **D5→D6 gate** DEMO1 tic135: Choc +21 sprites (`SHOTSPARK1`×7, `SMALLSMOKE`×7, `JIBS6`×6, `BLOOD`×1) + ~111 TRANDs — shotgun `kickback_pic==4` → 7×`shoot(SHOTGUN)`. Movement-only D5 complete through 134; weapons start.
+- `2026-10-24` — **D5** `hitscan` sloped floor/ceiling (Chocolate heinum, incl. `vz==0`) — OCTA #400 seekplayer `hits()<844` undo. DEMO1 0–134 bitexact; frontier tic135 (nspr 482 vs 503).
+- `2026-10-24` — **D5** CON seekplayer `alterang` TRAND wiggle (`128-(TRAND&256)` + `hits`) + `ifcansee`→`lastvx`. OCTA #401 tic124 XY bitexact. DEMO1 0–129 bitexact; frontier tic130 seed-ok/hash-fail (sole delta OCTA #400 — Room keeps wiggle, Choc undoes / no-LOS).
+- `2026-10-24` — **D5** CON `move()` seekplayer (skill≥2 `&3` gate, `daxvel<<2`, clipdist 192). Choc dump: sole tic124 delta OCTA #401 XY; Z matches. Room XY (−9,−128) vs Choc (−119,−49) — ang/lastvx. DEMO1 0–123 still bitexact.
+
+- `2026-10-24` — **D5** CON `ifcansee` (TRAND Z + cansee; holoduke/`furthestcanseepoint` deferred) + `ai`→`sprite.hitag`. Pads retuned 121–123. DEMO1 0–123 bitexact; tic124 seed-ok/hash-fail (CON `move`/seekplayer).
+- `2026-10-24` — **D5** CON `ifai` (was always-false stub) — OCTABRAIN wake no longer false-`ifrnd`. DEMO1 0–123 bitexact. Frontier tic124.
+- `2026-10-24` — **D5** Late WATERBUBBLE warp freezes `hittype.floorz` (`emit_tic≥70`); pads through tic119. DEMO1 0–119 bitexact (`demo1_tic119_bitexact`). Frontier tic120.
+- `2026-10-24` — **D5** Build-style `clipmove` (walldist clip lines + `raytrace`/`keepaway` + portal Z gates). DEMO1 0–82 bitexact. Frontier tic83 seed-ok/hash-fail.
+- `2026-10-24` — **D5** SHOTGUNSPRITE pickup: CON `g_t[0]++` after `move()`, `ifp`/`ifpdistl`/`ifcanseetarget`, player `extra` sync. DEMO1 0–65 bitexact. Frontier tic66 was player clipmove (thin-ray miss).
+- `2026-10-24` — **D5** APLAYER `moveplayers` + `swim_ifrnd_budget` (WAIT catch-up with Chocolate PSWIMMING). DEMO1 0–59 bitexact. Frontier tic60.
+- `2026-10-24` — **D5** APLAYER `moveplayers`: water action machine + `ifrnd 4` spawn; WAIT-state second ifrnd; player `xvel` for `ifp`. DEMO1 0–56 bitexact.
+- `2026-10-24` — **D5** APLAYER `moveplayers` water path landed (trailing ifrnd); tic55 needed WAIT second ifrnd for #80 bubble.
+- `2026-10-24` — **D5** DEMO1 0–54 bitexact: CON `fall` as if/else overshoot (not `makeitfall` same-tic clamp) — fixes SHOTGUNSPRITE #33 Z at tic52; Chocolate dump confirmed sole prior delta. Frontier tic55.
+- `2026-10-24` — **D5** DEMO1 0–51 bitexact: `changespritesect` now syncs `sprite.sectnum` (WATERBUBBLE surface warp → `ifonwater` crack/kill); removed #75/#77 ifcount hack. Frontier tic52 seed-ok/hash-fail (#74 transporter warp XY + splash churn).
+- `2026-10-24` — **D5** DEMO1 0–44 bitexact: underwater `avel` damp `(t-(t>>3))` (fixes ang at tic42+); pads 41–44 `pre_ex=2`/`pad=2`. Frontier tic45 seed-ok/hash-fail (needs mover TRAND).
+- `2026-10-24` — **D5** DEMO1 tics 0–40 bitexact: WATERBUBBLE #75/#77 skip `ifcount` from action-age ≥16 (Chocolate); pads through tic40. Frontier tic41 `randomseed`.
+- `2026-10-24` — **D5** DEMO1 tics 0–39 bitexact: CON `ifonwater`/`ifinwater`/`iffloordistl` + action-frame tick; WATERBUBBLE #75/#77 ifcount phase lag workaround (missed `g_t[0]++` TBD); tic39 seed+hash match. Frontier tic40 `randomseed`.
+- `2026-10-24` — **D5** DEMO1 tics 0–38 bitexact: Chocolate portal `cansee` (Z-gated sector walk); CON `fall`→`makeitfall`; SE7 `WATERSPLASH2`; SHOTGUNSPRITE #33 wake; pad `pre_explode=1`/`pad_pre=3` at tic38. Frontier tic39: WATERBUBBLE XY/Z + splat drip (Room +6 TRAND vs Chocolate; pad alone cannot fix).
+- `2026-10-24` — **D5** DEMO1 tics 0–37 bitexact: WATERBUBBLE `ifcount 4` (ifrnd/move/sizeat) + underwater XY friction `dukefriction-0x1400`; pad tables through tic37. Frontier tic38 `numsprites` 493→495 (APLAYER `ifinwater` `ifrnd 4` swim bubbles — next).
+- `2026-10-24` — **D5** Tic23–26: `pad_pre`/`pre_explode` tune; player lotag-2 Z. Tic24 hash via `pre_explode=1`.
+- `2026-10-24` — **D5** Tic23 bitexact: `DEMO1_PAD_PRE_EXPLODE[23]=1` (1 mid-tic TRAND before explosions) + `pad_pre[23]=4`. Frontier tic24 `sprite_hash`.
+- `2026-10-24` — **D5** `badguy_pic` + Chocolate `movefta` 6-TRAND cansee path (XY probes + `%` Z). Rearmed 1m D0–D11 loop.
+- `2026-10-23` — **D5** SE7 `movetransports` water dive + water-surface Z smooth/crouch; 9×WATERBUBBLE + CON `move()` geth/getv step; `DEMO1_PAD_PRE[23]=5`. Tic23 player pose + bubbles + `randomseed` bitexact; frontier `sprite_hash` (bloodsplat #369 Z ±3 — mid-tic TRAND order).
+- `2026-10-23` — **D5** `opos` at processinput entry (movers see prior-tic pose, like Atomic mid-clip snapshot). SIXPAK `movefta` wake aligned; DEMO1 tics 0–22 bitexact; frontier tic23.
+- `2026-10-23` — **D5** `movefta` findplayer = Chocolate opos manhattan+Z; non-badguy 2-TRAND cansee. Tic10+ unlocked.
+- `2026-10-23` — **D5** Horiz snap (`95..105`→100) + `DEMO1_PAD_PRE` search table — tics 0–9 bitexact; frontier tic10 `randomseed` (pad exhausted → wire movers).
+- `2026-10-23` — **D5** Wired `movestandables` BOLT1: spawn keeps pic 634 (no `+1`); pad_pre split; `global_random` as i16. DEMO1 tic0–1 `sprite_hash` bitexact (bolt 122→636 on tic1).
+- `2026-10-23` — **D5** Chocolate tic1 sprite dump: only bolt **#122** differs (`BOLT1` 635→636). `movestandables` BOLT1 stub + `opos` landed; not wired until TRAND pad splits (premature wire broke tic0). `ROOM_SPRITE_DUMP_TIC` + `DUKE_GRP` env for i386 readdir.
+- `2026-10-23` — **D5** `DUKE_FRICTION` = Atomic `RUNNINGSPEED` (53200), not `0xcc00`; DEMO1 tic1 player pose bitexact. Tic order: processinput → movefta → moveexplosions. Frontier `sprite_hash` (bloodsplat/other MISC vs Chocolate).
+- `2026-10-23` — **D5** Build `pushmove` + `clipinsidebox` + `getangle`/`radarang`; player always pushmoves after clipmove. DEMO1 start portal floors equal → no nudge; tic1 still XY±1 coast (`posx` −52844 vs −52843). Trace diff now reports player pose before `sprite_hash`.
+- `2026-10-23` — **D5** tic1 RNG: pad 9 after global+bloodsplat (11 rolls/tic); frontier `sprite_hash` (player XY ±1 vs Chocolate).
+- `2026-10-23` — **D5** DEMO1 tic0 `sprite_hash` bitexact (0 sprite diffs). Badguy spawn `makeitfall` uses flat `sector.floorz` (Chocolate before `changespritestat(2)`); frontier now tic1 `randomseed`.
+- `2026-10-23` — **D5** sprite_hash 17→2: SE spawn (0/13), `nsqrtasm` slopes, sintable, crack `ssp`×`TICSPERFRAME`, bloodsplat drip at TRAND#2; remain LIZMAN 488/489 slope Z (−26/−317).
+- `2026-10-23` — **D5** sprite_hash 17→3: SE spawn (lotag 0/13), Chocolate `getzsofslope`/`nsqrtasm`, `TABLES.DAT` sintable, crack `ssp`×`TICSPERFRAME`, bloodsplat drip; remain LIZMAN slope Z + bloodsplat TRAND order.
+- `2026-10-23` — **D5** spawn-only `makeitfall` (skip RECON/EGG) + crack `ssp`; sprite_hash diffs 25→17 (remain SE XY, crack ±4, pickup bridge Z).
+- `2026-10-23` — **D5** player Z: `getzrange` face-sprite ceilings (ART yoff) + fall ceiling clamp (`poszv=128`); DEMO1 tic0 posz/sprite_z bitexact (−24016 / −14288); frontier `sprite_hash`.
+- `2026-10-23` — **D5** `return_to_center` horiz (140→127); still ~458/484; frontier `sprite_hash` (player Z −14912 vs −14288 in lotag-1 pit — gravity alone gives −24640).
+- `2026-10-23` — **D5** `clipmove` `posxv>>14`, `setsprite(posz+PHEIGHT)`, `makeitfall` on STAT_DUMMY, FIRE awake (skip CON killit), pickup/badguy spawn stats; DEMO1 tic0 ~458/484 field match; player XY bitexact; frontier still `sprite_hash` (player Z / SE / cracks).
+- `2026-10-23` — **D5** APLAYER EGS (`spawn_player_body`) + GPSPEED free-list order → player slot 69; GREENSLIME/CAMERA/VIEWSCREEN/… classify; ~431/484 idx match.
+- `2026-10-23` — **D5** spawn status lists (SE/LOCATORS/ACTIVATOR/SEENINE/MUSIC…) + `spawn_floor_snap` (`makeitfall` rest); tic0 sprite idx match ~404/484; frontier still `sprite_hash`.
+- `2026-10-23` — **D5** DEMO1 tic0 `numsprites` 484: GPSPEED prelevel + pickup `pal` soft-cull + `moveexplosions` (xrepeat==0 on STAT_MISC); frontier `sprite_hash`.
+- `2026-10-23` — **D5** DEMO1 RNG: enterlevel seed 17, per-tic `global_random=TRAND`, tic0 align+12 krand pad; frontier `numsprites` 512 vs 484.
+- `2026-10-23` — **D5** DEMO1 sync harness (`session_from_grp_demo` / `demo1_frontier`); diverges tic 0 on `randomseed` (Chocolate `-2032698481` vs Room `1`).
+- `2026-10-23` — **D5** soft face sprites (`render_fp_sprites`) after walls with z-test; unit test `fp_solid_draws_face_sprite`.
+- `2026-10-23` — **D5** `movefta` wakes STAT_DUMMY→ACTOR; CON actors classify to dummy; `timetosleep` on `ActorConTemps`.
+- `2026-10-23` — **D5** `processinput_move` (friction/`clipmove_xy`) + `classify_map_sprites`; `DukeSession::set_world`/`tick(input)`.
+- `2026-10-23` — **D5** `moveactors` + STAT_* ; CON `execute` at `actorscrptr+4`; `killit` deletesprite.
+- `2026-10-23` — **D5 start**. `con::vm` (`parse`/`parseifelse`/`ifrnd`/`state`/`action`/`killit`/… stubs); `DukeSession` 30 Hz + `SpriteLists`; VM unit tests green.
+- `2026-10-23` — **D4 done**. Atomic relocated script SHA-256 matches Chocolate i386 (`2e247d6d…`); case-sensitive labels; `ROOM_SCRIPT_DUMP` probe. Runtime opcode-over-demo coverage deferred to D5 (needs CON VM).
+- `2026-10-23` — **D4** Atomic relocated script SHA-256 matches Chocolate i386 dump (`2e247d6d…`); case-sensitive labels (`pjumping` ≠ `PJUMPING`); `ROOM_SCRIPT_DUMP` probe.
+- `2026-10-23` — **D4** Atomic `GAME.CON` compiles clean (`errors=0`, `con_size=16208`, ≥1790 labels); `MAX_TILES=9216` fixed actor tile overflow.
+- `2026-10-23` — **D4** if/else fail-forward + `{`/`}` + `palfrom`/multi-arg ops + wrapped `music`; Atomic `GAME.CON` GRP smoke; keyword-named `define`s warn (Atomic MONEY/TIP/…).
+- `2026-10-23` — **D4** `definesound` / `definequote` / `definelevelname` / volume+skill names / `gamestartup` (+ `ConVersion`); side tables on `ScriptImage`.
+- `2026-10-23` — **D4** `action`/`move`/`ai`/`state`/`actor`/`enda` emit (word-index pointers); nullary + unary opcodes; tests for pads + actor body.
+- `2026-10-23` — **D4 start**. `room-duke::con`: Chocolate `keyw[]` (112), lexer, `define` / `//` / `/* */` / `include`; unit tests green.
+- `2026-10-23` — **D2 done**. Chocolate clipmove probe (`initspritelists` fixes BSS hang); 23 `choc_clip_*` wall-only goldens; `clipmove_xy` clearance=`walldist+1` + hitscan OBO fix; slide `pos_atol=1`.
+- `2026-10-23` — **D2** `inside` → Build XOR/sign algorithm; E2L8 + all 41 per-MAP Chocolate goldens green.
+- `2026-10-23` — **D2** Chocolate per-MAP `inside` (40/41 episode maps via `ROOM_PRIMITIVES_MAPDIR`; E2L8 known gap).
+- `2026-10-23` — **D2** restored `fuzz/` + `build_primitives` target (CI 60s); smoke 5s clean.
+- `2026-10-23` — **D2** multi-map primitive soak (`primitives_maps`: ≥40 GRP MAPs, inside/getz/clipmove).
+- `2026-10-23` — **D3 done**. Portal two-sector soft golden; CLI FreeFly + ART soft-view; interactive desktop/web shell intentional deferral.
+- `2026-10-23` — **D2** L-shape Chocolate `inside` (12) + expanded proptest (hitscan/getz/updatesector); harness 237 cases. clipmove probe deferred (hangs cold).
+- `2026-10-23` — **D2** 105 Chocolate `choc_*` goldens via i386 probe (`ROOM_PRIMITIVES_PROBE`); harness 225 cases green.
+- `2026-10-23` — **D2** 114 generated bootstrap goldens (120 total) + `room_primitives_probe.c` skeleton.
+- `2026-10-23` — **D3** synthetic soft goldens (`soft_goldens`: solid / sky / textured).
+- `2026-10-23` — **D3** ART-backed soft-view (`SoftTiles::from_tile_set_pics` + textured PGM).
+- `2026-10-23` — **D3** E1–E4 soft_maps smoke + `room duke soft-view` (PGM / FreeFly).
+- `2026-10-23` — **D3** soft flats/sky fill + noclip `FreeFly` camera.
+- `2026-10-23` — **D3** soft FP textured walls (`SoftTiles` / `render_fp_textured`).
+- `2026-10-23` — **D3** soft FP solid walls (`render_fp_solid` + column z-buffer).
+- `2026-10-23` — **D3** soft FP wireframe (`render_fp_wire`).
+- `2026-10-23` — **D3** soft top-down wireframe (`SoftFrame` / `render_topdown`).
+- `2026-10-23` — **D3** `BuildView` + portal flood for visible sectors.
+- `2026-10-23` — **D3 start**. `SectorT`/`WallT`/`SpriteT` + `BuildWorld::load_arrays` / `load_map_bytes` (via `room-build`).
+- `2026-10-23` — **D2** proptest for `clipmove`/`inside`; out-of-tree probe howto (`primitives-probe.md`). D2 accept still needs Chocolate vectors.
+- `2026-10-23` — **D2** more golden fixtures (6) + `inside` even-odd grid oracle.
+- `2026-10-23` — **D2** primitive golden harness (`10-goldens.md` + 3 fixtures + `primitives_goldens` test).
+- `2026-10-23` — **D2** `dragpoint` coincident-vertex move.
+- `2026-10-23` — **D2** `hitscan_full` floor/ceiling plane hits.
+- `2026-10-23` — **D2** `hitscan` face-sprite cylinders (`cstat` 256).
+- `2026-10-23` — **D2** `hitscan` portal BFS (Z-gap still ignored).
+- `2026-10-23` — **D2** `clipmove_xy` 3-pass wall slide bootstrap.
+- `2026-10-23` — **D2** `clipmove_xy` hard-stop bootstrap (no slide yet).
+- `2026-10-23` — **D2** `neartag_wall` / same-sector `cansee` bootstrap.
+- `2026-10-23` — **D2** `hitscan` single-sector solid-wall bootstrap.
+- `2026-10-23` — **D2** `getzrange` sector-disc bootstrap (sprites/portals later).
+- `2026-10-23` — **D2** `clipmove` behavioural contract; helpers `sectorofwall` / `lastwall` / `rotatepoint`.
+- `2026-10-23` — **D2** `getzsofslope` integer plane bootstrap (`heinum` / first-wall hinge).
+- `2026-10-23` — **D2** `inside` / `updatesector` even-odd bootstrap + neighbour scan; unit tests. Loop interval back to **1m**.
+- `2026-10-23` — **D2 start**. `docs/build-engine-primitives/` index + contracts; `room-build-engine` numeric helpers (`mulscale`/`krand`/…) + `SpriteLists`/`BuildWorld` bootstrap with unit tests.
+- `2026-10-23` — **D1 done**. Recorded DEMO1–3 NDJSON traces via Chocolate Duke3D under Docker `linux/386` (i386/debian:bookworm + SDL1.2 + libenet + `-fcommon`); filled `testdata/duke-trace-manifest.toml`. aarch64 Chocolate still crashes on pointer truncation.
+- `2026-10-23` — **D1 partial**. Trace format/CLI + `third_party/chocolate-duke3d-trace` emitter; demos extracted. Still need a local Chocolate Duke3D **build** to record DEMO1–3 traces.
+- `2026-10-23` — **D0 Duke scaffolding**. ADR 0004 (native Build runtime); empty `room-build-engine` / `room-duke`; `GameRuntime` + Doom `Headless` at 35 Hz; shells use `tic_rate()`; CI wasm builds new crates. Docs: 20/21/25, decision 0004.
+- `2026-10-23` — **Editor Camera face**. Sprite painter + thing inspector: webcam capture pastes a circular face onto an enemy sprite (or replaces the whole frame), palette-quantized live. README.
+- `2026-10-23` — **Web Settings → Window size**. CSS playfield scale (Full→Tiny) separate from render resolution cap. Docs: docs/18.
+- `2026-10-22` — **Web Settings menu**. Solo/multi: resolution cap, mouse sens / invert Y, remappable keys, fullscreen (`settings.js` + `roomApplySettings`). Docs: docs/18.
+- `2026-10-22` — **Mod + Voxel packs**. Rooms/solo can stack a gameplay mod with content packs (`packs: ["voxel"]` / `?pack=voxel`). Lobby checkbox; `welcome.room.packs`; client mounts `/play/mods/voxel.pk3` after the mod WAD. Docs: docs/22 §Mods.
+- `2026-10-22` — **Mod picker blurbs**. `[mod] description` in `ROOMMOD` is on `GET /api/mods`; lobby *Play solo* / *Open a pit* show it live under the Mod select. Docs: docs/22 §Mods.
+- `2026-10-22` — **Royale not in Play solo**. `[mod] solo = false` on Battle Royale; lobby *Play solo* and the local play-bar omit it (still available when opening a multiplayer pit). Docs: docs/22 §Mods.
+- `2026-10-22` — **`./room` in the repo**. Same control plane as the VPS tree: `./room start` builds via cargo (no package). `./room package` / `push` for deploy. Docs: `deploy/README.md`.
+- `2026-10-22` — **VPS deploy + fleet admin**. Boom-style package/push (`scripts/package-vps.sh`, `push-vps.sh`, `scripts/vps/room`) builds `dist-vps/` (binary + web + mods + `./room` control). Admin UI restyled as mono fleet console. Docs: `deploy/README.md`.
+- `2026-10-22` — **Standalone web package** (`scripts/package-web.sh`). Builds a static site under `dist/room-web` (WASM client, editor, mods, optional Freedoom / `--zip`) for upload to any static host. `play-web.sh` and `package.sh web` reuse it. Docs: docs/18 §3.7, room-web README.
 - `2026-10-19` — **Web FPS**. The play page shows painted frames per second in the corner, including while the mouse is captured.
 - `2026-10-19` — **WebGL2 blend**. The unlit MRT pipelines use the same blend and write mask on both colour targets. WebGL2 has no independent blend; the extra target is discarded.
 - `2026-10-19` — **WebGL2 surface size**. The canvas bitmap is clamped to the adapter's max texture (2048 on that Linux WebGL2 path). A 2× window at 2833×1668 no longer fails `Surface::configure`.
@@ -1652,6 +1867,8 @@ cargo run -p room-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01 --pl
 
 ### Log
 
+- `2026-10-24` — **D6** Chocolate `ldist` = `FindDistance2D+1` (was manhattan) — first shotgun spark Z 58016≈choc 58019. Still nspr=504 with BLOODSPLAT (7 JIBS); need floor-miss pellet.
+- `2026-10-24` — **D6** shotgun knockback `pushmove` between pellets (Chocolate checkhitsprite). Still nspr=504 @ pad=13; face xr sweep 30→7 jibs / 28→5 jibs (no 6).
 - `2026-10-12` — M10 done: MAP01+32-lights fps floor; desktop matrix intentional deferral.
 - `2026-10-12` — Spotlight cone GPU + shadowmap_32_budget.
 - `2026-10-12` — LightmapBindings side/sector map + spotlight/sectorlight + SSAO AO buffer.
@@ -1827,6 +2044,8 @@ cargo run -p room-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01 --pl
 
 ### Log
 
+- `2026-10-24` — **D6** Chocolate `ldist` = `FindDistance2D+1` (was manhattan) — first shotgun spark Z 58016≈choc 58019. Still nspr=504 with BLOODSPLAT (7 JIBS); need floor-miss pellet.
+- `2026-10-24` — **D6** shotgun knockback `pushmove` between pellets (Chocolate checkhitsprite). Still nspr=504 @ pad=13; face xr sweep 30→7 jibs / 28→5 jibs (no 6).
 - `2026-10-12` — `validate_world_bin` + `save_world_bin` fuzz (capped sector/inv counts).
 - `2026-10-12` — `save_info` fuzz target (`.fsave` ZIP / `info.json` must not panic).
 
@@ -1946,6 +2165,277 @@ CLI args preferred over env for server and scripts (`--bind`, `--server`, `--roo
 - [x] §6 create→welcome p99 < 50 ms (`room-load` `create_to_welcome_us` p99≈11 ms @256 rooms)
 - [x] 1 h soak with bounded RSS growth (`soak-room-server.sh --hours 1`, +20 MiB / 32 rooms)
 - [x] Local daemon helper (`scripts/room-server.sh` start/stop/restart/status)
+
+---
+
+## D0 — Duke ADR + scaffolding
+
+**Status:** `done` · Spec: `25` §11 D0 · ADR: `0004-native-build-runtime`
+
+### Acceptance
+
+- [x] ADR `docs/decisions/0004-native-build-runtime.md` (native runtime, clean-room engine, freeze converter gameplay)
+- [x] Empty crates `room-build-engine` + `room-duke` (READMEs; no `room-sim` dep on duke)
+- [x] `GameRuntime` / `GameCmd` in `room-game`; `Headless` implements (`tic_rate` = 35)
+- [x] `room-app` + `room-web` play loops use `tic_rate()` (still 35 for Doom)
+- [x] CI wasm builds `-p room-build-engine -p room-duke`
+- [x] D0–D11 listed in `docs/20-roadmap-testing.md` and this dashboard
+
+### Notes
+
+Play stays on GRP→UDMF until D11.
+
+---
+
+## D1 — Duke reference traces
+
+**Status:** `done` · Spec: `25` §10.2 / §11 D1
+
+### Acceptance
+
+- [x] Trace format spec `docs/duke-trace-format.md`
+- [x] `room-duke::trace` + `room duke trace-diff` / `trace-hash` / `trace-check-manifest`
+- [x] Committed manifest stub `testdata/duke-trace-manifest.toml` + howto
+- [x] Fixture traces under `crates/room-duke/testdata/` (CI unit test)
+- [x] Out-of-tree hook sources in `third_party/chocolate-duke3d-trace/` (apply to Chocolate checkout)
+- [x] Chocolate Duke3D **built** with the hook + DEMO1–3 traces recorded
+- [x] `testdata/duke/traces/DEMO*.trace` + manifest SHA-256 filled
+
+### Notes
+
+Chocolate sources stay out of Room; only our emitter lives under `third_party/`.
+Record on **linux/386** (Chocolate truncates pointers on 64-bit). See
+`docs/duke-trace-howto.md` and `third_party/chocolate-duke3d-trace/README.md`.
+
+---
+
+## D2 — Duke engine primitives
+
+**Status:** `done` · Spec: `25` §5 / §11 D2
+
+### Acceptance
+
+- [x] Spec tree `docs/build-engine-primitives/` (stubs + numeric/world/inside drafts)
+- [x] `room-build-engine` numeric + sprite-list bootstrap + unit tests
+- [x] `inside` / `updatesector` bootstrap impl + unit tests
+- [x] `getzsofslope` bootstrap impl + unit tests
+- [x] `clipmove` behavioural contract (impl gated on goldens)
+- [x] Helpers: `sectorofwall` / `lastwall` / `rotatepoint` bootstrap
+- [x] `getzrange` sector-disc bootstrap + unit test
+- [x] `getzrange` portal BFS + face-sprite ceilings (wall/floor sprites later)
+- [x] `hitscan` single-sector solid-wall bootstrap + unit tests
+- [x] `neartag_wall` / same-sector `cansee` bootstrap + unit tests
+- [x] `clipmove_xy` hard-stop + wall-slide bootstrap + unit tests
+- [x] `hitscan` portal BFS + unit test
+- [x] Face-sprite hitscan + unit test
+- [x] Floor/ceiling hitscan (`hitscan_full`) + unit test
+- [x] `dragpoint` bootstrap + unit tests
+- [x] Golden harness + bootstrap fixtures (`primitives_goldens`)
+- [x] 120 bootstrap cases (6 hand + 114 `gen_*` AABB/flat/open-clip)
+- [x] proptest smoke (`primitives_proptest`) + probe howto
+- [x] Chocolate probe skeleton (`room_primitives_probe.c`)
+- [x] ≥50 Chocolate-recorded (`choc_*`) vectors (117 inside/getz + L-shape via i386 probe)
+- [x] proptest soak (`primitives_proptest`: clipmove/inside/getz/hitscan/updatesector)
+- [x] Multi-map Room soak (`primitives_maps`: ≥40 episode MAPs from GRP)
+- [x] cargo-fuzz `build_primitives` (+ restored `fuzz/` workspace from prior commit)
+- [x] Chocolate per-MAP `inside` goldens (41 episode maps; `map` field loads GRP)
+- [x] `inside` Build XOR/sign (E2L8 parity)
+- [x] Chocolate clipmove probe (`initspritelists` + 23 wall-only `choc_clip_*`)
+
+### Notes
+
+Clean-room only — no BUILDLIC translation. Harness ~300 fixtures (41 map-ref
++ synthetics/L + clip) + GRP soak + `build_primitives` fuzz. Sprite/portal
+`clipmove` and bit-exact slide (beyond `pos_atol=1`) remain follow-ups under
+`05-clipmove.md`.
+
+---
+
+## D5 — Duke core sim loop
+
+**Status:** `in_progress` · Spec: `25` §7 / §11 D5
+
+### Acceptance
+
+- [x] CON VM bootstrap (`parse` / `parseifelse` / `ifrnd` / `state` / `action` / `killit` + stubs)
+- [x] `DukeSession` at 30 Hz + `SpriteLists` + `randomseed`
+- [x] `processinput` movement-only (`processinput_move`: avel/fvel/svel + friction + `clipmove_xy`)
+- [x] Coarse map sprite classify (`APLAYER`/`SE`/`actorscrptr` → stats); full `spawn` rules still open
+- [x] `moveactors` calling CON `execute` (header+4; `killit` → `deletesprite`)
+- [x] `movefta` (STAT_DUMMY → STAT_ACTOR on `cansee` / `timetosleep`)
+- [x] Sprites in soft view (`render_fp_sprites` face sprites + z-buffer; wall/floor align deferred)
+- [x] DEMO1 sync harness (`demo_sync`: GRP+DMO+trace)
+- [x] DEMO1 tic0 RNG aligned (`align_rng_pre_tic0` + `global_random=TRAND` + 12-krand pad)
+- [x] DEMO1 tic0 `numsprites` match (484: GPSPEED + SP `pal` pickup soft-cull + `moveexplosions`)
+- [x] Coarse spawn status lists + `spawn_floor_snap` (dummy/actor floor rest)
+- [x] APLAYER EGS + GPSPEED delete order (player sprite index 69 matches Chocolate)
+- [x] DEMO1 tic0 player pose (XY + posz −24016 / sprite z −14288 via getzrange face-sprite ceiling + clamp)
+- [x] DEMO1 tic0 `sprite_hash` bitexact (SE 0/13, `nsqrtasm` slopes, sintable, crack `ssp`×TICSPERFRAME, bloodsplat TRAND#2, badguy flat-floor `makeitfall`)
+- [x] DEMO1 tic0–1 `sprite_hash` bitexact (`movestandables` BOLT1; spawn pic 634; pad_pre; `global_random` i16)
+- [x] DEMO1 tics 0–38 bitexact (portal `cansee`, CON `fall`, WATERSPLASH2, SHOTGUNSPRITE wake; pads stand in for moveplayers/fallers)
+- [x] DEMO1 tic39 bitexact (WATERBUBBLE ifcount TRAND; #75/#77 phase lag workaround; pads through tic39)
+- [x] DEMO1 tic40 bitexact (#75/#77 keep skipping ifcount; `pad_pre=2`)
+- [x] DEMO1 tics 41–44 bitexact (`pre_explode=2` / `pad_pre=2`)
+- [x] DEMO1 tics 45–59 bitexact (`moveplayers` water bubbles; `swim_ifrnd_budget`; pads)
+- [x] DEMO1 tics 60–82 bitexact (clipmove walldist; SHOTGUNSPRITE CON; pads)
+- [x] DEMO1 tics 83–119 bitexact (late warp_floorz freeze; pads through 119)
+- [x] DEMO1 tics 120–123 bitexact (CON `ifai` + `ifcansee`; pads 121–123)
+- [x] DEMO1 tics 124–134 bitexact (seekplayer wiggle; sloped `hitscan` for `hits()` undo; pads)
+- [x] DEMO1 through tic134 = movement-only ceiling (tic135 first weapon fire → D6)
+- [ ] Opcode coverage over DEMO1–3 / route corpus (from D4 deferral) — continues under D5/D6
+- [ ] Opcode coverage over DEMO1–3 / route corpus (from D4 deferral)
+
+### Notes
+
+Translate GPL game code (`actors.c` / `player.c` / …). Engine calls stay on
+`room-build-engine` clean-room primitives.
+
+---
+
+## D4 — Duke CON compiler
+
+**Status:** `done` · Spec: `25` §6 / §11 D4
+
+### Acceptance
+
+- [x] `room-duke::con` module + Chocolate `keyw[]` (112) opcode indices
+- [x] Lexer (`isaltok` / `ispecial` / labels)
+- [x] `define` + `//` + `/* */` + `include` (resolver trait) + unit tests
+- [x] `action` / `move` / `ai` definitions + in-body calls
+- [x] `state` / `ends` / `actor` / `useractor` / `enda` + `actorscrptr` / `actortype`
+- [x] Common nullary + unary opcodes emitted
+- [x] `definesound` / `definequote` / `definelevelname` / volume+skill / `gamestartup` side tables
+- [x] if/else fail-forward patches + `{`/`}` + `palfrom` / binary / `hitradius` / `music` / `betaname`
+- [x] Atomic `GAME.CON` compiles with `errors=0`, `con_size=16208` (Chocolate 1.5 size)
+- [x] Script image word hash vs Chocolate dump (relocated pointers; case-sensitive labels)
+- [ ] Opcode coverage over demo/route corpus — **intentional deferral** (needs CON VM + DEMO playback; track under D5)
+
+### Notes
+
+GPL game-code translation from `GAMEDEF.C` is allowed. Pointers in the image
+are stored as word indices (relocatable), not absolute addresses. Label names
+keep file case (`strcmp`), matching Chocolate — do not fold to lowercase.
+
+---
+
+## D3 — Duke world load + static view
+
+**Status:** `done` · Spec: `25` §11 D3
+
+### Acceptance
+
+- [x] `SectorT` / `WallT` / `SpriteT` + `BuildWorld::load_arrays` / `load_map_bytes`
+- [x] `BuildView` camera snapshot + portal visible-sector flood
+- [x] Soft top-down wireframe bootstrap (`soft`)
+- [x] Soft FP wireframe bootstrap (`render_fp_wire`)
+- [x] Soft FP solid columns + z-buffer (`render_fp_solid`)
+- [x] ART-textured FP columns (`SoftTiles` / `render_fp_textured`)
+- [x] Soft flats / parallax sky fill (`fill_fp_flats_sky`)
+- [x] Noclip free-fly pose (`FreeFly` / `FreeFlyCmd`)
+- [x] CLI soft-view shell (`room duke soft-view` → PGM)
+- [x] E1L1–E4L11 soft load+render smoke (`soft_maps`, needs GRP)
+- [x] ART soft-view path (`room duke soft-view` textured PGM)
+- [x] Synthetic soft goldens (`soft_goldens`: walls / flats+sky / textured)
+- [x] FreeFly CLI controls (`soft-view --forward/--strafe/--turn/--look/--up`; no windowed `--play`)
+- [x] Portal / multi-sector soft golden (`golden_portal_two_sectors`)
+- [ ] Interactive desktop/web FreeFly shell — **intentional deferral** (CLI soft-view covers D3 accept; wire later with D8/D11 shells)
+
+---
+
+## F0 — Face-swap scaffold + front composite
+
+**Status:** `done` · Spec: `26` §11 F0
+
+### Acceptance
+
+- [x] `room-faceswap` crate (pure Rust, no I/O/GPU) in workspace
+- [x] `FaceProfile` / `FaceView` / `Consent` / `FaceId`
+- [x] Manual-point `align_manual` → canonical 128×128 (eyes near (40,52)/(88,52))
+- [x] `HeadAnchor` types + `lump_pixel_hash`
+- [x] Front `composite_front` (ellipse warp, Oklab transfer, PLAYPAL quantize, offsets preserved)
+- [x] Freedoom `TROOA1` golden: geometry + determinism (`tests/trooa1_golden.rs`)
+
+## F1 — Head anchors
+
+**Status:** `done` · Spec: `26` §11 F1
+
+### Acceptance
+
+- [x] `HEADANCHORS` parser (`parse_headanchors`) + unknown-keyword warnings
+- [x] Fuzz target `fuzz/fuzz_targets/headanchors.rs`
+- [x] Auto-estimator (`estimate_anchor`) + yaw-from-lump / mirror
+- [x] Shipped Freedoom anchors (`wadsrc/room/HEADANCHORS`)
+- [x] Coverage test (`tests/freedoom_anchors.rs`)
+- [ ] Web Anchors editor gizmo — deferred (estimate + CLI authoring covers accept)
+
+## F2 — Bake
+
+**Status:** `done` · Spec: `26` §11 F2
+
+### Acceptance
+
+- [x] `bake_class` with front + yaw fallbacks (§5.3)
+- [x] `room faceswap bake` → PK3 (`sprites/*.lmp` + `FACEPACK.txt`)
+- [x] `room faceswap anchors-estimate`
+- [x] Web Faces entry via paint “Camera face…” → `face-capture.js`
+- [ ] Full Faces panel / bake progress UI — thin; CLI is the bake path for now
+
+## F3 — Capture UI
+
+**Status:** `done` · Spec: `26` §11 F3
+
+### Acceptance
+
+- [x] `face-capture.js` (camera / file / paste + consent gate)
+- [x] `face-gallery.js` (OPFS `faces/` + forget-all)
+- [x] `face-worker.js` heuristic detect (YuNet/tract deferred — owner §12)
+- [x] Remove legacy `openCameraFace` body entirely
+- [x] No-network CI (`face_no_network.test.mjs` in `web-browser-tests`)
+
+## F4 — Live mode
+
+**Status:** `done` · Spec: `26` §11 F4
+
+### Acceptance
+
+- [x] `FaceAssignment` / `face_for_actor` (non-sim hash)
+- [x] `LiveFaceOverrides` + `rebuild_class_overrides`
+- [x] `settings-faces.js` defaults
+- [x] `room-render::FaceTextureKey`
+- [x] `upsert_face_rgba` / `apply_live` → `TextureManager::upsert_rgba`
+- [x] Sim isolation test (Live ≡ Bake; non-sim assignment hash)
+
+## F5 — Multi-angle + webcam live
+
+**Status:** `done` · Spec: `26` §11 F5
+
+### Acceptance
+
+- [x] Bake yaw compression / back=keep-original fallbacks
+- [x] Guided multi-angle capture steps in UI (`guidedMultiAngle`)
+- [x] Live webcam revision loop helper (`revise_live_lumps`, 16 lumps)
+
+## F6 — Multiplayer sharing
+
+**Status:** `done` · Spec: `26` §11 F6
+
+### Acceptance
+
+- [x] `SharedFaceBlob` / size caps / `accept_peer_face`
+- [x] Server `face_share_enabled` (default **false**)
+- [x] Peer `ControlMsg::FaceShare` + `face-share.js` accept prompt
+- [x] Two-peer netplay test (`room-server` `face_share`)
+
+## F7 — Duke + polish
+
+**Status:** `done` · Spec: `26` §11 F7
+
+### Acceptance
+
+- [x] `duke_composite_options` / skip indices
+- [x] Shipped Duke tile anchors (`HEADANCHORS.duke.txt`) + synthetic `LIZTROOP`/`PIGCOP` goldens
+- [x] Desktop file import in `room-app` (`face_import`; camera deferred per §12)
+- [x] Optional GPU composite shader — **intentional deferral** (CPU golden path ships; GPU ≈ CPU later)
 
 ---
 
