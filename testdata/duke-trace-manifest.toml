@@ -1,0 +1,20 @@
+# Expected SHA-256 of reference Duke sync traces (docs/duke-trace-format.md).
+# Trace files live under testdata/duke/traces/ (git-ignored with the GRP).
+# Generate out of tree with a patched Chocolate Duke3D, copy here, then:
+#   room duke trace-hash testdata/duke/traces/DEMO1.trace
+# and fill the sha256 fields below (lowercase hex). Empty sha256 = not yet generated.
+
+[[trace]]
+demo = "DEMO1"
+path = "testdata/duke/traces/DEMO1.trace"
+sha256 = "177ec96025a5b1a58d76d0965ba445d938464e46020282ba2ae9c1f1806db184"
+
+[[trace]]
+demo = "DEMO2"
+path = "testdata/duke/traces/DEMO2.trace"
+sha256 = "0cde60675047b41591ac62dd336ca0acf92a0c50487bbcaba1038034490b5e18"
+
+[[trace]]
+demo = "DEMO3"
+path = "testdata/duke/traces/DEMO3.trace"
+sha256 = "6926c608b16c02f5067715780f104901aae626c14486187e8a09c3efc63c7de6"

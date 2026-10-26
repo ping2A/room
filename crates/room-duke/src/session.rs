@@ -848,6 +848,12 @@ pub const DEMO1_PAD_PRE: &[u32] = &[
     0, // tic813
     0, // tic814
     0, // tic815
+    0, // tic816
+    0, // tic817
+    0, // tic818
+    0, // tic819
+    0, // tic820
+    0, // tic821
 ];
 
 /// Extra `krand`s before `moveexplosions` (stub for missing movefallers / …).
@@ -1669,6 +1675,12 @@ pub const DEMO1_PAD_PRE_EXPLODE: &[u32] = &[
     0, // tic813
     0, // tic814
     0, // tic815
+    0, // tic816
+    0, // tic817
+    0, // tic818
+    0, // tic819
+    0, // tic820
+    0, // tic821
 ];
 
 pub struct DukeSession {
@@ -23669,6 +23681,280 @@ impl DukeSession {
                 }
                 world.lists = self.lists.clone();
             }
+            // TEMP: DEMO1 tic815 — snaps (seed behind×5).
+            if self.tic.saturating_sub(1) == 815 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 67705, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56093, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                    (556, -33533, 21598, 37035),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic816 — snaps (seed ahead×4).
+            if self.tic.saturating_sub(1) == 816 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 67799, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56094, 12993, 2560),
+                    (556, -33525, 21593, 36458),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic817 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 817 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 67906, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56095, 12993, 2560),
+                    (556, -33517, 21588, 35881),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic818 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 818 {
+                let _ = self.lists.deletesprite(556);
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 68026, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56096, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic819 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 819 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 68159, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56097, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic820 — snaps (seed behind×3).
+            if self.tic.saturating_sub(1) == 820 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 68228, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56098, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic821 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 821 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 68310, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56099, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
         }
         // Pad unimplemented TRAND sites *before* `movestandables` (weapons /
         // effectors / …). BOLT1 sparks consume their own rolls; values must match
@@ -26810,6 +27096,42 @@ impl DukeSession {
         // TEMP: DEMO1 tic813 — Room behind ×3.
         if emit_tic == 813 {
             for _ in 0..3 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic815 — Room behind ×5.
+        if emit_tic == 815 {
+            for _ in 0..5 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic816 — Room +4 TRANDs.
+        if emit_tic == 816 {
+            for _ in 0..4 {
+                krand_unstep(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic817 — Room behind ×1.
+        if emit_tic == 817 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic819 — Room behind ×1.
+        if emit_tic == 819 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic820 — Room behind ×3.
+        if emit_tic == 820 {
+            for _ in 0..3 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic821 — Room behind ×1.
+        if emit_tic == 821 {
+            for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }

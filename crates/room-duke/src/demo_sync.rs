@@ -3965,6 +3965,41 @@ mod tests {
         demo1_bitexact_through(814);
     }
 
+    #[test]
+    fn demo1_tic815_bitexact() {
+        demo1_bitexact_through(815);
+    }
+
+    #[test]
+    fn demo1_tic816_bitexact() {
+        demo1_bitexact_through(816);
+    }
+
+    #[test]
+    fn demo1_tic817_bitexact() {
+        demo1_bitexact_through(817);
+    }
+
+    #[test]
+    fn demo1_tic818_bitexact() {
+        demo1_bitexact_through(818);
+    }
+
+    #[test]
+    fn demo1_tic819_bitexact() {
+        demo1_bitexact_through(819);
+    }
+
+    #[test]
+    fn demo1_tic820_bitexact() {
+        demo1_bitexact_through(820);
+    }
+
+    #[test]
+    fn demo1_tic821_bitexact() {
+        demo1_bitexact_through(821);
+    }
+
                                                                                                                                                                             #[test]
     fn demo1_tic238_pad_search() {
         use crate::player::DukeInput;
@@ -3977,7 +4012,7 @@ mod tests {
         let dmo_b = std::fs::read(root.join("demos/DEMO1.DMO")).unwrap();
         let choc = load_trace(&root.join("traces/DEMO1.trace")).unwrap();
         let step = |mut s: i32| { let _ = krand_step(&mut s); s };
-        for tic in 815..816usize {
+        for tic in 821..822usize {
             let (mut session, dmo) = session_from_grp_demo(&grp_b, &dmo_b).unwrap();
             align_rng_pre_tic0(&mut session, &choc);
             session.rng_pad_per_tic = DEMO1_TIC0_EXTRA_KRANDS;
