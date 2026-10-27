@@ -77,7 +77,7 @@ that clean-room implementation is possible.
   append a short Log line when a chunk of work lands.
 - **Current priority override:** M7 + M10–M13 done; active **M14** (1.0 hardening).
  **M8** when Heretic/Hexen IWADs available; M9 remains deferred. **Duke track:**
- D6 DEMO1 sync (frontier tic751; face-swap F0–F7 done).
+ D6 DEMO1 sync (frontier tic1051; face-swap F0–F7 done).
  **Face-swap track:** **F0–F7** done (`docs/26-face-swap.md`, `docs/21` §0).
 - Each crate has its own `README.md` stating its responsibility and public API
   surface. Keep public APIs small; prefer `pub(crate)`.

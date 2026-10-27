@@ -35,14 +35,12 @@ access (pure Rust, no GPU, no I/O), so the web editor, the desktop app,
 ## 1. Current state (what you inherit)
 
 - `crates/room-web/editor-paint.js`:
-  - `openCameraFace()`: modal with a `<video>`, a circular guide, two modes
-    (`face` = circular paste, `full` = replace whole frame), a size slider
-    (35–90 %), Capture/Cancel, Esc/Enter keys. It requests
-    `getUserMedia({ video: { facingMode: "user", 720×720 } })` and stops
-    the tracks on close.
-  - `applyCameraSource(src, {mode, faceScale, mirror})`: snapshot (mirrored),
-    centre square crop, paste clipped to a circle at
-    `dx = (w − diam)/2, dy = 0.06·h`, then `applyImageData` →
+  - `openCameraFace()` → `face-capture.js`, then `placeFaceOnSprite()`: live
+    three-panel place UI (**sprite target** / **your face** / **PLAYPAL
+    pixelized**), drag any panel, Shift-pan crop, scroll/size slider, Apply
+    → `applyCameraSource`.
+  - `applyCameraSource(src, {mode, faceScale, cx, cy, panX, panY, mirror})`:
+    snapshot, square crop (+ pan), circular paste, then `applyImageData` →
     `nearest()` palette quantize → lump override via `roomEditorImagePut`.
   - `importPng()`: replaces the *whole* picture (no face mode).
 - `crates/room-web/editor.js:1475`: thing inspector "Camera face…" opens

@@ -6,6 +6,11 @@ import { install as installTools, HEXEN_LINE_SPECIALS } from "./editor-tools.js"
 import { install as installPaint, paintNs } from "./editor-paint.js";
 import { install as installScripts } from "./editor-scripts.js";
 
+/** Flip to `true` to re-expose Duke Nukem 3D GRP / .MAP UI (code paths kept). */
+const ROOM_UI_SHOW_DUKE = false;
+const isDukeGrpBytes = (buf) =>
+  buf && buf.length >= 12 && String.fromCharCode(...buf.slice(0, 12)) === "KenSilverman";
+
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, attrs = {}, ...kids) => {
   const e = document.createElement(tag);
@@ -188,7 +193,9 @@ async function boot() {
     }
   }
   setIwadLabel("");
-  status("Choose IWAD… (or drop a Doom / Freedoom / Duke file) to start editing");
+  status(ROOM_UI_SHOW_DUKE
+    ? "Choose IWAD… (or drop a Doom / Freedoom / Duke file) to start editing"
+    : "Choose IWAD… (or drop a Doom / Freedoom WAD) to start editing");
 }
 
 function setSummary(json) {
@@ -210,7 +217,9 @@ function setIwadLabel(name) {
   const label = $("#iwad-label");
   if (!label) return;
   label.textContent = name || "—";
-  label.title = name ? `Base IWAD / GRP: ${name} — click for details` : "No IWAD loaded — use IWAD…";
+  label.title = name
+    ? (ROOM_UI_SHOW_DUKE ? `Base IWAD / GRP: ${name} — click for details` : `Base IWAD: ${name} — click for details`)
+    : "No IWAD loaded — use IWAD…";
   label.style.cursor = name ? "pointer" : "";
   label.onclick = name ? () => { S.tab = "iwad"; syncBrowserTab(); renderBrowser(); openIwadPage(); } : null;
 }
@@ -264,7 +273,7 @@ function buildIwadPage() {
     ["Size", fmtSize(sm.iwadBytes || 0)],
     ["Magic", sm.iwadMagic || "—"],
     ["Detected", det?.name || "No IWADINFO match"],
-    ["Game", det?.game || (sm.duke ? "Duke Nukem 3D" : "—")],
+    ["Game", det?.game || (ROOM_UI_SHOW_DUKE && sm.duke ? "Duke Nukem 3D" : "—")],
     ["Autoname", det?.autoname || "—"],
     ["Config", det?.config || "—"],
     ["Filters", det?.filters?.length ? el("div", { class: "iwad-chips" }, ...det.filters.map((f) => el("span", {}, f))) : "—"],
@@ -272,7 +281,8 @@ function buildIwadPage() {
     ["Known names", det?.names?.length ? el("div", { class: "iwad-chips" }, ...det.names.map((f) => el("span", {}, f))) : "—"],
   ])));
 
-  if (sm.duke) {
+  // Duke GRP summary — kept; gated so Doom-only UI stays clean.
+  if (ROOM_UI_SHOW_DUKE && sm.duke) {
     wrap.append(el("fieldset", {}, el("legend", {}, "Duke Nukem 3D"), kv([
       ["GRP", sm.duke.grp],
       ["User maps", (sm.duke.userMaps || []).join(", ") || "—"],
@@ -370,7 +380,7 @@ function openIwad(bytes, name) {
     S.docs = {};
     setIwadLabel(name);
     // Play-test skills 1–5 run as Duke 1, 1, 2, 3, 4 for a GRP.
-    const labels = S.summary.duke
+    const labels = (ROOM_UI_SHOW_DUKE && S.summary.duke)
       ? ["Cake-", "Cake", "Rock", "Some", "Damn"]
       : ["ITYTD", "HNTR", "HMP", "UV", "NM"];
     [...$("#skill").options].forEach((o, i) => (o.textContent = labels[i]));
@@ -385,9 +395,15 @@ async function openIwadFile(file) {
   if (!file) return;
   const buf = new Uint8Array(await file.arrayBuffer());
   const magic4 = String.fromCharCode(...buf.slice(0, 4));
-  const isGrp = String.fromCharCode(...buf.slice(0, 12)) === "KenSilverman";
+  const isGrp = isDukeGrpBytes(buf);
+  if (isGrp && !ROOM_UI_SHOW_DUKE) {
+    toast("Duke Nukem 3D is hidden in this UI — pick a Doom / Freedoom IWAD (.wad)", true);
+    return;
+  }
   if (!isGrp && magic4 !== "IWAD" && magic4 !== "PWAD") {
-    toast("Pick a Doom / Freedoom IWAD (.wad) or Duke DUKE3D.GRP", true);
+    toast(ROOM_UI_SHOW_DUKE
+      ? "Pick a Doom / Freedoom IWAD (.wad) or Duke DUKE3D.GRP"
+      : "Pick a Doom / Freedoom IWAD (.wad)", true);
     return;
   }
   if (magic4 === "PWAD" && !isGrp) {
@@ -471,7 +487,7 @@ function addPwad(bytes, name) {
     setSummary(S.mod.roomEditorAddPwad(bytes, name));
     status(`Mounted ${name}`);
     syncPacksUi();
-    if (/\.map$/i.test(name) && S.summary.duke) {
+    if (ROOM_UI_SHOW_DUKE && /\.map$/i.test(name) && S.summary.duke) {
       const added = S.summary.duke.userMaps.find((m) => !before.has(m)) || S.summary.duke.userMaps.at(-1);
       if (added) loadMap(added);
       return;
@@ -509,7 +525,11 @@ async function openFiles(files) {
   for (const f of files) {
     const buf = new Uint8Array(await f.arrayBuffer());
     const magic = String.fromCharCode(...buf.slice(0, 4));
-    if (String.fromCharCode(...buf.slice(0, 12)) === "KenSilverman") {
+    if (isDukeGrpBytes(buf)) {
+      if (!ROOM_UI_SHOW_DUKE) {
+        toast("Duke Nukem 3D is hidden in this UI — pick a Doom / Freedoom IWAD (.wad)", true);
+        continue;
+      }
       status(`Converting ${f.name}…`);
       openIwad(buf, f.name);
       const m = S.summary?.maps.find((x) => x === "E1M1") || S.summary?.maps[0];
@@ -521,6 +541,8 @@ async function openFiles(files) {
       if (m) loadMap(m);
     } else if (!S.summary) {
       toast("Open an IWAD first", true);
+    } else if (!ROOM_UI_SHOW_DUKE && /\.map$/i.test(f.name)) {
+      toast("Duke .MAP files are hidden in this UI", true);
     } else {
       addPwad(buf, f.name);
     }
@@ -1934,7 +1956,9 @@ function renderBrowser() {
       el("div", { class: "list-item active", onclick: openIwadPage, title: "Open IWAD details" },
         el("div", {},
           el("div", {}, det?.name || sm.iwad || "IWAD"),
-          el("div", { class: "sub" }, det ? `${det.game} · ${det.autoname || "—"}` : (sm.duke ? `Duke GRP · ${sm.duke.grp}` : "Undetected / custom"))),
+          el("div", { class: "sub" }, det
+            ? `${det.game} · ${det.autoname || "—"}`
+            : (ROOM_UI_SHOW_DUKE && sm.duke ? `Duke GRP · ${sm.duke.grp}` : "Undetected / custom"))),
         el("span", { class: "meta" }, fmtSize(sm.iwadBytes || 0))),
       el("div", { class: "actions", style: "padding:8px 10px" },
         el("button", { class: "btn small primary", onclick: openIwadPage }, "Open details…"),

@@ -382,27 +382,93 @@ export function install(ctx) {
     }
 
     /**
-     * After capture: drag the face on the sprite, resize, and pan the photo
-     * crop so the head lands on the right pixels.
+     * After capture: live triple preview (sprite target, face crop, pixelized
+     * result). Pixelized is the primary canvas; drag/resize/pan to place.
      */
     async function placeFaceOnSprite(srcCanvas) {
       const { ensureDlgStyles } = await import("./sound-record.js");
       ensureDlgStyles();
+      if (!document.getElementById("room-face-place-css")) {
+        const s = document.createElement("style");
+        s.id = "room-face-place-css";
+        s.textContent = `
+.room-face-place .room-dlg{max-width:min(560px,94vw);padding:1.15rem 1.25rem 1.2rem}
+.room-face-place .fp-head{display:flex;align-items:baseline;justify-content:space-between;gap:.75rem;margin:0 0 .85rem}
+.room-face-place .fp-head h2{margin:0;font-size:1.05rem;font-weight:600;color:#eef0f3}
+.room-face-place .fp-keys{display:flex;flex-wrap:wrap;gap:.3rem;margin:0;padding:0;list-style:none}
+.room-face-place .fp-keys li{
+  font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#aeb6c0;
+  background:#242830;border:1px solid #343a44;border-radius:999px;padding:.28rem .55rem}
+.room-face-place .fp-stage{
+  display:grid;grid-template-columns:1.35fr .85fr;gap:.7rem;align-items:start;margin:0 0 .9rem}
+.room-face-place .fp-main,.room-face-place .fp-side{display:flex;flex-direction:column;gap:.45rem;min-width:0}
+.room-face-place .fp-side{gap:.55rem}
+.room-face-place .fp-card{
+  position:relative;background:#101216;border:1px solid #2c323b;border-radius:6px;overflow:hidden}
+.room-face-place .fp-card.primary{border-color:#4a5564;box-shadow:inset 0 0 0 1px rgba(255,255,255,.03)}
+.room-face-place .fp-tag{
+  position:absolute;left:.45rem;top:.45rem;z-index:1;
+  font:10px/1.1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em;text-transform:uppercase;
+  color:#d7dbe0;background:rgba(16,18,22,.82);border:1px solid #3a414c;border-radius:4px;padding:.28rem .4rem}
+.room-face-place .fp-card canvas{
+  display:block;width:100%!important;height:auto!important;max-width:100%;margin:0;border:0;border-radius:0;
+  cursor:grab;touch-action:none;image-rendering:pixelated;background:#0a0a0a}
+.room-face-place .fp-card canvas:active{cursor:grabbing}
+.room-face-place .fp-size{
+  display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:.65rem;
+  margin:0 0 .95rem;font-size:.8rem;color:#c9ced6}
+.room-face-place .fp-size input[type=range]{width:100%;accent-color:#c45a3a}
+.room-face-place .fp-size output{font:12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#d7dbe0;min-width:2.6rem;text-align:right}
+.room-face-place .foot{margin-top:0}
+@media (max-width:560px){
+  .room-face-place .fp-stage{grid-template-columns:1fr}
+  .room-face-place .fp-head{flex-direction:column;align-items:flex-start}
+}
+`;
+        document.head.appendChild(s);
+      }
       const overlay = document.createElement("div");
       overlay.className = "room-dlg-back room-face-place";
-      const maxPrev = Math.min(360, Math.max(160, Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.55)));
+      const maxPrev = Math.min(320, Math.max(140, Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.42)));
       const scale = Math.max(1, Math.floor(maxPrev / Math.max(P.w, P.h)));
       const pw = P.w * scale;
       const ph = P.h * scale;
+      const sideMax = Math.min(180, Math.max(96, Math.round(maxPrev * 0.55)));
+      const sideScale = Math.max(1, Math.floor(sideMax / Math.max(P.w, P.h)));
+      const sw = P.w * sideScale;
+      const sh = P.h * sideScale;
       overlay.innerHTML = `
         <div class="room-dlg" role="dialog" aria-label="Place face">
-          <h2>Place face</h2>
-          <p class="hint">Drag the circle onto the head. Scroll or use Size to scale. Hold Shift and drag to pan inside the photo.</p>
-          <canvas data-prev width="${pw}" height="${ph}" style="width:100%;max-width:${pw}px;height:auto;cursor:grab;touch-action:none;image-rendering:pixelated"></canvas>
-          <label class="check" style="margin:.75rem 0;width:100%">
-            Size
-            <input data-size type="range" min="20" max="95" value="55" style="flex:1;accent-color:#e0573a" />
-            <span data-size-val style="min-width:2.5rem;font-variant-numeric:tabular-nums;color:#c9ced6">55%</span>
+          <div class="fp-head">
+            <h2>Place face · ${P.name}</h2>
+            <ul class="fp-keys" aria-label="Controls">
+              <li>Drag</li>
+              <li>Shift pan</li>
+              <li>Scroll size</li>
+            </ul>
+          </div>
+          <div class="fp-stage">
+            <div class="fp-main">
+              <div class="fp-card primary">
+                <span class="fp-tag">Pixelized</span>
+                <canvas data-pix width="${pw}" height="${ph}"></canvas>
+              </div>
+            </div>
+            <div class="fp-side">
+              <div class="fp-card">
+                <span class="fp-tag">Sprite</span>
+                <canvas data-bg width="${sw}" height="${sh}"></canvas>
+              </div>
+              <div class="fp-card">
+                <span class="fp-tag">Face</span>
+                <canvas data-face width="${sw}" height="${sh}"></canvas>
+              </div>
+            </div>
+          </div>
+          <label class="fp-size">
+            <span>Size</span>
+            <input data-size type="range" min="20" max="95" value="55" />
+            <output data-size-val>55%</output>
           </label>
           <div class="foot">
             <button type="button" data-act="cancel">Cancel</button>
@@ -411,11 +477,15 @@ export function install(ctx) {
         </div>`;
       document.body.appendChild(overlay);
 
-      const prev = overlay.querySelector("[data-prev]");
+      const bgC = overlay.querySelector("[data-bg]");
+      const faceC = overlay.querySelector("[data-face]");
+      const pixC = overlay.querySelector("[data-pix]");
       const sizeIn = overlay.querySelector("[data-size]");
       const sizeVal = overlay.querySelector("[data-size-val]");
-      const pg = prev.getContext("2d");
-      pg.imageSmoothingEnabled = false;
+      const bg = bgC.getContext("2d");
+      const fc = faceC.getContext("2d");
+      const px = pixC.getContext("2d");
+      for (const g of [bg, fc, px]) g.imageSmoothingEnabled = false;
 
       pctx.putImageData(imgData, 0, 0);
       let faceScale = 0.55;
@@ -424,106 +494,194 @@ export function install(ctx) {
       let panX = 0;
       let panY = 0;
       let drag = null;
+      let paintQueued = 0;
 
       const srcW = srcCanvas.width;
       const srcH = srcCanvas.height;
       const side = Math.min(srcW, srcH);
+      const compose = document.createElement("canvas");
+      compose.width = P.w;
+      compose.height = P.h;
+      const cg = compose.getContext("2d");
 
-      function paintPreview() {
-        pg.clearRect(0, 0, pw, ph);
-        pg.fillStyle = "#111";
-        pg.fillRect(0, 0, pw, ph);
-        // Checker under transparent pixels.
-        for (let y = 0; y < ph; y += 8) {
-          for (let x = 0; x < pw; x += 8) {
-            pg.fillStyle = ((x ^ y) & 8) ? "#1c1c1c" : "#141414";
-            pg.fillRect(x, y, 8, 8);
+      function paintChecker(g, cw, ch) {
+        g.fillStyle = "#0d0f12";
+        g.fillRect(0, 0, cw, ch);
+        const cell = Math.max(4, Math.round(Math.min(cw, ch) / 16));
+        for (let y = 0; y < ch; y += cell) {
+          for (let x = 0; x < cw; x += cell) {
+            g.fillStyle = ((x / cell ^ y / cell) & 1) ? "#16191e" : "#101318";
+            g.fillRect(x, y, cell, cell);
           }
         }
-        pg.drawImage(pixels, 0, 0, P.w, P.h, 0, 0, pw, ph);
+      }
+
+      function strokeGuide(g, sc) {
+        const rad = (Math.max(4, Math.min(P.w, P.h) * faceScale) / 2) * sc;
+        g.strokeStyle = "rgba(232, 196, 110, .92)";
+        g.lineWidth = Math.max(1.5, sc * 0.15);
+        g.beginPath();
+        g.arc(cx * sc, cy * sc, rad, 0, Math.PI * 2);
+        g.stroke();
+        g.strokeStyle = "rgba(0,0,0,.5)";
+        g.lineWidth = 1;
+        g.stroke();
+      }
+
+      function placement() {
         const diam = Math.max(4, Math.min(P.w, P.h) * faceScale);
         const dx = cx - diam / 2;
         const dy = cy - diam / 2;
         const maxOff = (Math.max(srcW, srcH) - side) / 2;
         const sx = (srcW - side) / 2 + panX * maxOff;
         const sy = (srcH - side) / 2 + panY * maxOff;
-        pg.save();
-        pg.beginPath();
-        pg.arc(cx * scale, cy * scale, (diam / 2) * scale, 0, Math.PI * 2);
-        pg.closePath();
-        pg.clip();
-        pg.imageSmoothingEnabled = true;
-        pg.drawImage(srcCanvas, sx, sy, side, side, dx * scale, dy * scale, diam * scale, diam * scale);
-        pg.restore();
-        pg.imageSmoothingEnabled = false;
-        pg.strokeStyle = "rgba(255,220,120,.95)";
-        pg.lineWidth = 2;
-        pg.beginPath();
-        pg.arc(cx * scale, cy * scale, (diam / 2) * scale, 0, Math.PI * 2);
-        pg.stroke();
-        pg.strokeStyle = "rgba(0,0,0,.55)";
-        pg.lineWidth = 1;
-        pg.stroke();
+        return { diam, dx, dy, sx, sy };
+      }
+
+      function paintSide(g, cw, ch, sc, mode) {
+        const { diam, dx, dy, sx, sy } = placement();
+        paintChecker(g, cw, ch);
+        if (mode === "sprite") {
+          g.drawImage(pixels, 0, 0, P.w, P.h, 0, 0, cw, ch);
+          g.fillStyle = "rgba(232, 196, 110, .16)";
+          g.beginPath();
+          g.arc(cx * sc, cy * sc, (diam / 2) * sc, 0, Math.PI * 2);
+          g.fill();
+        } else {
+          g.save();
+          g.beginPath();
+          g.arc(cx * sc, cy * sc, (diam / 2) * sc, 0, Math.PI * 2);
+          g.closePath();
+          g.clip();
+          g.imageSmoothingEnabled = true;
+          g.drawImage(srcCanvas, sx, sy, side, side, dx * sc, dy * sc, diam * sc, diam * sc);
+          g.restore();
+          g.imageSmoothingEnabled = false;
+        }
+        strokeGuide(g, sc);
+      }
+
+      function paintPreview() {
+        const { diam, dx, dy, sx, sy } = placement();
+
+        paintSide(bg, sw, sh, sideScale, "sprite");
+        paintSide(fc, sw, sh, sideScale, "face");
+
+        // Pixelized primary — sprite + face, PLAYPAL-quantized in the circle.
+        cg.imageSmoothingEnabled = false;
+        cg.clearRect(0, 0, P.w, P.h);
+        cg.drawImage(pixels, 0, 0);
+        cg.save();
+        cg.beginPath();
+        cg.arc(cx, cy, diam / 2, 0, Math.PI * 2);
+        cg.closePath();
+        cg.clip();
+        cg.imageSmoothingEnabled = true;
+        cg.drawImage(srcCanvas, sx, sy, side, side, dx, dy, diam, diam);
+        cg.restore();
+        const x0 = Math.max(0, Math.floor(dx));
+        const y0 = Math.max(0, Math.floor(dy));
+        const x1 = Math.min(P.w, Math.ceil(dx + diam));
+        const y1 = Math.min(P.h, Math.ceil(dy + diam));
+        const bw = Math.max(0, x1 - x0);
+        const bh = Math.max(0, y1 - y0);
+        if (bw > 0 && bh > 0) {
+          const id = cg.getImageData(x0, y0, bw, bh);
+          const d = id.data;
+          const r2 = (diam / 2) * (diam / 2);
+          for (let y = 0; y < bh; y++) {
+            for (let x = 0; x < bw; x++) {
+              const o = (y * bw + x) * 4;
+              if (d[o + 3] < 8) continue;
+              const ddx = x0 + x + 0.5 - cx;
+              const ddy = y0 + y + 0.5 - cy;
+              if (ddx * ddx + ddy * ddy > r2) continue;
+              const i = nearest(d[o], d[o + 1], d[o + 2]);
+              d[o] = pal[i * 3];
+              d[o + 1] = pal[i * 3 + 1];
+              d[o + 2] = pal[i * 3 + 2];
+              d[o + 3] = 255;
+            }
+          }
+          cg.putImageData(id, x0, y0);
+        }
+        paintChecker(px, pw, ph);
+        px.drawImage(compose, 0, 0, P.w, P.h, 0, 0, pw, ph);
+        strokeGuide(px, scale);
+      }
+
+      function schedulePaint() {
+        if (paintQueued) return;
+        paintQueued = requestAnimationFrame(() => {
+          paintQueued = 0;
+          paintPreview();
+        });
       }
       paintPreview();
 
-      function clientToSprite(ev) {
-        const r = prev.getBoundingClientRect();
-        const x = ((ev.clientX - r.left) / r.width) * P.w;
-        const y = ((ev.clientY - r.top) / r.height) * P.h;
+      function clientToSprite(ev, canvasEl) {
+        const r = canvasEl.getBoundingClientRect();
+        const x = ((ev.clientX - r.left) / Math.max(1, r.width)) * P.w;
+        const y = ((ev.clientY - r.top) / Math.max(1, r.height)) * P.h;
         return { x, y };
       }
 
-      function onPointerDown(ev) {
-        ev.preventDefault();
-        prev.setPointerCapture(ev.pointerId);
-        const p = clientToSprite(ev);
-        drag = {
-          shift: ev.shiftKey,
-          ox: p.x,
-          oy: p.y,
-          cx,
-          cy,
-          panX,
-          panY,
-        };
-        prev.style.cursor = "grabbing";
-      }
-      function onPointerMove(ev) {
-        if (!drag) return;
-        const p = clientToSprite(ev);
-        if (drag.shift) {
-          const diam = Math.min(P.w, P.h) * faceScale;
-          panX = Math.max(-1, Math.min(1, drag.panX + (p.x - drag.ox) / Math.max(1, diam)));
-          panY = Math.max(-1, Math.min(1, drag.panY + (p.y - drag.oy) / Math.max(1, diam)));
-        } else {
-          cx = drag.cx + (p.x - drag.ox);
-          cy = drag.cy + (p.y - drag.oy);
+      function bindCanvas(canvasEl) {
+        function onPointerDown(ev) {
+          ev.preventDefault();
+          canvasEl.setPointerCapture(ev.pointerId);
+          const p = clientToSprite(ev, canvasEl);
+          drag = {
+            el: canvasEl,
+            shift: ev.shiftKey,
+            ox: p.x,
+            oy: p.y,
+            cx,
+            cy,
+            panX,
+            panY,
+          };
         }
-        paintPreview();
+        function onPointerMove(ev) {
+          if (!drag || drag.el !== canvasEl) return;
+          const p = clientToSprite(ev, canvasEl);
+          if (drag.shift) {
+            const diam = Math.min(P.w, P.h) * faceScale;
+            panX = Math.max(-1, Math.min(1, drag.panX + (p.x - drag.ox) / Math.max(1, diam)));
+            panY = Math.max(-1, Math.min(1, drag.panY + (p.y - drag.oy) / Math.max(1, diam)));
+          } else {
+            cx = drag.cx + (p.x - drag.ox);
+            cy = drag.cy + (p.y - drag.oy);
+          }
+          schedulePaint();
+        }
+        function onPointerUp() {
+          drag = null;
+        }
+        canvasEl.addEventListener("pointerdown", onPointerDown);
+        canvasEl.addEventListener("pointermove", onPointerMove);
+        canvasEl.addEventListener("pointerup", onPointerUp);
+        canvasEl.addEventListener("pointercancel", onPointerUp);
+        canvasEl.addEventListener("wheel", (ev) => {
+          ev.preventDefault();
+          const next = Math.round(faceScale * 100 + (ev.deltaY > 0 ? -3 : 3));
+          sizeIn.value = String(Math.max(20, Math.min(95, next)));
+          sizeIn.dispatchEvent(new Event("input"));
+        }, { passive: false });
       }
-      function onPointerUp() {
-        drag = null;
-        prev.style.cursor = "grab";
-      }
-      prev.addEventListener("pointerdown", onPointerDown);
-      prev.addEventListener("pointermove", onPointerMove);
-      prev.addEventListener("pointerup", onPointerUp);
-      prev.addEventListener("pointercancel", onPointerUp);
-      prev.addEventListener("wheel", (ev) => {
-        ev.preventDefault();
-        const next = Math.round(faceScale * 100 + (ev.deltaY > 0 ? -3 : 3));
-        sizeIn.value = String(Math.max(20, Math.min(95, next)));
-        sizeIn.dispatchEvent(new Event("input"));
-      }, { passive: false });
+      bindCanvas(bgC);
+      bindCanvas(faceC);
+      bindCanvas(pixC);
 
       sizeIn.addEventListener("input", () => {
         faceScale = Number(sizeIn.value) / 100;
+        sizeVal.value = `${sizeIn.value}%`;
         sizeVal.textContent = `${sizeIn.value}%`;
-        paintPreview();
+        schedulePaint();
       });
 
       function close() {
+        if (paintQueued) cancelAnimationFrame(paintQueued);
         overlay.remove();
         window.removeEventListener("keydown", onKey);
       }

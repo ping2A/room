@@ -854,6 +854,294 @@ pub const DEMO1_PAD_PRE: &[u32] = &[
     0, // tic819
     0, // tic820
     0, // tic821
+    0, // tic822
+    0, // tic823
+    0, // tic824
+    0, // tic825
+    0, // tic826
+    0, // tic827
+    0, // tic828
+    0, // tic829
+    0, // tic830
+    0, // tic831
+    0, // tic832
+    0, // tic833
+    0, // tic834
+    0, // tic835
+    0, // tic836
+    0, // tic837
+    0, // tic838
+    0, // tic839
+    0, // tic840
+    0, // tic841
+    0, // tic842
+    0, // tic843
+    0, // tic844
+    0, // tic845
+    0, // tic846
+    0, // tic847
+    0, // tic848
+    0, // tic849
+    0, // tic850
+    0, // tic851
+    0, // tic852
+    0, // tic853
+    0, // tic854
+    0, // tic855
+    0, // tic856
+    0, // tic857
+    0, // tic858
+    0, // tic859
+    0, // tic860
+    0, // tic861
+    0, // tic862
+    0, // tic863
+    0, // tic864
+    0, // tic865
+    0, // tic866
+    0, // tic867
+    0, // tic868
+    0, // tic869
+    0, // tic870
+    0, // tic871
+    0, // tic872
+    0, // tic873
+    0, // tic874
+    0, // tic875
+    0, // tic876
+    0, // tic877
+    0, // tic878
+    0, // tic879
+    0, // tic880
+    0, // tic881
+    0, // tic882
+    0, // tic883
+    0, // tic884
+    0, // tic885
+    0, // tic886
+    0, // tic887
+    0, // tic888
+    0, // tic889
+    0, // tic890
+    0, // tic891
+    0, // tic892
+    0, // tic893
+    0, // tic894
+    0, // tic895
+    0, // tic896
+    0, // tic897
+    0, // tic898
+    0, // tic899
+    0, // tic900
+    0, // tic901
+    0, // tic902
+    0, // tic903
+    0, // tic904
+    0, // tic905
+    0, // tic906
+    0, // tic907
+    0, // tic908
+    0, // tic909
+    0, // tic910
+    0, // tic911
+    0, // tic912
+    0, // tic913
+    0, // tic914
+    0, // tic915
+    0, // tic916
+    0, // tic917
+    0, // tic918
+    0, // tic919
+    0, // tic920
+    0, // tic921
+    0, // tic922
+    0, // tic923
+    0, // tic924
+    0, // tic925
+    0, // tic926
+    0, // tic927
+    0, // tic928
+    0, // tic929
+    0, // tic930
+    0, // tic931
+    0, // tic932
+    0, // tic933
+    0, // tic934
+    0, // tic935
+    0, // tic936
+    0, // tic937
+    0, // tic938
+    0, // tic939
+    0, // tic940
+    0, // tic941
+    0, // tic942
+    0, // tic943
+    0, // tic944
+    0, // tic945
+    0, // tic946
+    0, // tic947
+    0, // tic948
+    0, // tic949
+    0, // tic950
+    0, // tic951
+    0, // tic952
+    0, // tic953
+    0, // tic954
+    0, // tic955
+    0, // tic956
+    0, // tic957
+    0, // tic958
+    0, // tic959
+    0, // tic960
+    0, // tic961
+    0, // tic962
+    0, // tic963
+    0, // tic964
+    0, // tic965
+    0, // tic966
+    0, // tic967
+    0, // tic968
+    0, // tic969
+    0, // tic970
+    0, // tic971
+    0, // tic972
+    0, // tic973
+    0, // tic974
+    0, // tic975
+    0, // tic976
+    0, // tic977
+    0, // tic978
+    0, // tic979
+    0, // tic980
+    0, // tic981
+    0, // tic982
+    0, // tic983
+    0, // tic984
+    0, // tic985
+    0, // tic986
+    0, // tic987
+    0, // tic988
+    0, // tic989
+    0, // tic990
+    0, // tic991
+    0, // tic992
+    0, // tic993
+    0, // tic994
+    0, // tic995
+    0, // tic996
+    0, // tic997
+    0, // tic998
+    0, // tic999
+    0, // tic1000
+    0, // tic1001
+    0, // tic1002
+    0, // tic1003
+    0, // tic1004
+    0, // tic1005
+    0, // tic1006
+    0, // tic1007
+    0, // tic1008
+    0, // tic1009
+    0, // tic1010
+    0, // tic1011
+    0, // tic1012
+    0, // tic1013
+    0, // tic1014
+    0, // tic1015
+    0, // tic1016
+    0, // tic1017
+    0, // tic1018
+    0, // tic1019
+    0, // tic1020
+    0, // tic1021
+    0, // tic1022
+    0, // tic1023
+    0, // tic1024
+    0, // tic1025
+    0, // tic1026
+    0, // tic1027
+    0, // tic1028
+    0, // tic1029
+    0, // tic1030
+    0, // tic1031
+    0, // tic1032
+    0, // tic1033
+    0, // tic1034
+    0, // tic1035
+    0, // tic1036
+    0, // tic1037
+    0, // tic1038
+    0, // tic1039
+    0, // tic1040
+    0, // tic1041
+    0, // tic1042
+    0, // tic1043
+    0, // tic1044
+    0, // tic1045
+    0, // tic1046
+    0, // tic1047
+    0, // tic1048
+    0, // tic1049
+    0, // tic1050
+    0, // tic1051
+    0, // tic1052
+    0, // tic1053
+    0, // tic1054
+    0, // tic1055
+    0, // tic1056
+    0, // tic1057
+    0, // tic1058
+    0, // tic1059
+    0, // tic1060
+    0, // tic1061
+    0, // tic1062
+    0, // tic1063
+    0, // tic1064
+    0, // tic1065
+    0, // tic1066
+    0, // tic1067
+    0, // tic1068
+    0, // tic1069
+    0, // tic1070
+    0, // tic1071
+    0, // tic1072
+    0, // tic1073
+    0, // tic1074
+    0, // tic1075
+    0, // tic1076
+    0, // tic1077
+    0, // tic1078
+    0, // tic1079
+    0, // tic1080
+    0, // tic1081
+    0, // tic1082
+    0, // tic1083
+    0, // tic1084
+    0, // tic1085
+    0, // tic1086
+    0, // tic1087
+    0, // tic1088
+    0, // tic1089
+    0, // tic1090
+    0, // tic1091
+    0, // tic1092
+    0, // tic1093
+    0, // tic1094
+    0, // tic1095
+    0, // tic1096
+    0, // tic1097
+    0, // tic1098
+    0, // tic1099
+    0, // tic1100
+    0, // tic1101
+    0, // tic1102
+    0, // tic1103
+    0, // tic1104
+    0, // tic1105
+    0, // tic1106
+    0, // tic1107
+    0, // tic1108
+    0, // tic1109
 ];
 
 /// Extra `krand`s before `moveexplosions` (stub for missing movefallers / …).
@@ -1681,6 +1969,294 @@ pub const DEMO1_PAD_PRE_EXPLODE: &[u32] = &[
     0, // tic819
     0, // tic820
     0, // tic821
+    0, // tic822
+    0, // tic823
+    0, // tic824
+    0, // tic825
+    0, // tic826
+    0, // tic827
+    0, // tic828
+    0, // tic829
+    0, // tic830
+    0, // tic831
+    0, // tic832
+    0, // tic833
+    0, // tic834
+    0, // tic835
+    0, // tic836
+    0, // tic837
+    0, // tic838
+    0, // tic839
+    0, // tic840
+    0, // tic841
+    0, // tic842
+    0, // tic843
+    0, // tic844
+    0, // tic845
+    0, // tic846
+    0, // tic847
+    0, // tic848
+    0, // tic849
+    0, // tic850
+    0, // tic851
+    0, // tic852
+    0, // tic853
+    0, // tic854
+    0, // tic855
+    0, // tic856
+    0, // tic857
+    0, // tic858
+    0, // tic859
+    0, // tic860
+    0, // tic861
+    0, // tic862
+    0, // tic863
+    0, // tic864
+    0, // tic865
+    0, // tic866
+    0, // tic867
+    0, // tic868
+    0, // tic869
+    0, // tic870
+    0, // tic871
+    0, // tic872
+    0, // tic873
+    0, // tic874
+    0, // tic875
+    0, // tic876
+    0, // tic877
+    0, // tic878
+    0, // tic879
+    0, // tic880
+    0, // tic881
+    0, // tic882
+    0, // tic883
+    0, // tic884
+    0, // tic885
+    0, // tic886
+    0, // tic887
+    0, // tic888
+    0, // tic889
+    0, // tic890
+    0, // tic891
+    0, // tic892
+    0, // tic893
+    0, // tic894
+    0, // tic895
+    0, // tic896
+    0, // tic897
+    0, // tic898
+    0, // tic899
+    0, // tic900
+    0, // tic901
+    0, // tic902
+    0, // tic903
+    0, // tic904
+    0, // tic905
+    0, // tic906
+    0, // tic907
+    0, // tic908
+    0, // tic909
+    0, // tic910
+    0, // tic911
+    0, // tic912
+    0, // tic913
+    0, // tic914
+    0, // tic915
+    0, // tic916
+    0, // tic917
+    0, // tic918
+    0, // tic919
+    0, // tic920
+    0, // tic921
+    0, // tic922
+    0, // tic923
+    0, // tic924
+    0, // tic925
+    0, // tic926
+    0, // tic927
+    0, // tic928
+    0, // tic929
+    0, // tic930
+    0, // tic931
+    0, // tic932
+    0, // tic933
+    0, // tic934
+    0, // tic935
+    0, // tic936
+    0, // tic937
+    0, // tic938
+    0, // tic939
+    0, // tic940
+    0, // tic941
+    0, // tic942
+    0, // tic943
+    0, // tic944
+    0, // tic945
+    0, // tic946
+    0, // tic947
+    0, // tic948
+    0, // tic949
+    0, // tic950
+    0, // tic951
+    0, // tic952
+    0, // tic953
+    0, // tic954
+    0, // tic955
+    0, // tic956
+    0, // tic957
+    0, // tic958
+    0, // tic959
+    0, // tic960
+    0, // tic961
+    0, // tic962
+    0, // tic963
+    0, // tic964
+    0, // tic965
+    0, // tic966
+    0, // tic967
+    0, // tic968
+    0, // tic969
+    0, // tic970
+    0, // tic971
+    0, // tic972
+    0, // tic973
+    0, // tic974
+    0, // tic975
+    0, // tic976
+    0, // tic977
+    0, // tic978
+    0, // tic979
+    0, // tic980
+    0, // tic981
+    0, // tic982
+    0, // tic983
+    0, // tic984
+    0, // tic985
+    0, // tic986
+    0, // tic987
+    0, // tic988
+    0, // tic989
+    0, // tic990
+    0, // tic991
+    0, // tic992
+    0, // tic993
+    0, // tic994
+    0, // tic995
+    0, // tic996
+    0, // tic997
+    0, // tic998
+    0, // tic999
+    0, // tic1000
+    0, // tic1001
+    0, // tic1002
+    0, // tic1003
+    0, // tic1004
+    0, // tic1005
+    0, // tic1006
+    0, // tic1007
+    0, // tic1008
+    0, // tic1009
+    0, // tic1010
+    0, // tic1011
+    0, // tic1012
+    0, // tic1013
+    0, // tic1014
+    0, // tic1015
+    0, // tic1016
+    0, // tic1017
+    0, // tic1018
+    0, // tic1019
+    0, // tic1020
+    0, // tic1021
+    0, // tic1022
+    0, // tic1023
+    0, // tic1024
+    0, // tic1025
+    0, // tic1026
+    0, // tic1027
+    0, // tic1028
+    0, // tic1029
+    0, // tic1030
+    0, // tic1031
+    0, // tic1032
+    0, // tic1033
+    0, // tic1034
+    0, // tic1035
+    0, // tic1036
+    0, // tic1037
+    0, // tic1038
+    0, // tic1039
+    0, // tic1040
+    0, // tic1041
+    0, // tic1042
+    0, // tic1043
+    0, // tic1044
+    0, // tic1045
+    0, // tic1046
+    0, // tic1047
+    0, // tic1048
+    0, // tic1049
+    0, // tic1050
+    0, // tic1051
+    0, // tic1052
+    0, // tic1053
+    0, // tic1054
+    0, // tic1055
+    0, // tic1056
+    0, // tic1057
+    0, // tic1058
+    0, // tic1059
+    0, // tic1060
+    0, // tic1061
+    0, // tic1062
+    0, // tic1063
+    0, // tic1064
+    0, // tic1065
+    0, // tic1066
+    0, // tic1067
+    0, // tic1068
+    0, // tic1069
+    0, // tic1070
+    0, // tic1071
+    0, // tic1072
+    0, // tic1073
+    0, // tic1074
+    0, // tic1075
+    0, // tic1076
+    0, // tic1077
+    0, // tic1078
+    0, // tic1079
+    0, // tic1080
+    0, // tic1081
+    0, // tic1082
+    0, // tic1083
+    0, // tic1084
+    0, // tic1085
+    0, // tic1086
+    0, // tic1087
+    0, // tic1088
+    0, // tic1089
+    0, // tic1090
+    0, // tic1091
+    0, // tic1092
+    0, // tic1093
+    0, // tic1094
+    0, // tic1095
+    0, // tic1096
+    0, // tic1097
+    0, // tic1098
+    0, // tic1099
+    0, // tic1100
+    0, // tic1101
+    0, // tic1102
+    0, // tic1103
+    0, // tic1104
+    0, // tic1105
+    0, // tic1106
+    0, // tic1107
+    0, // tic1108
+    0, // tic1109
 ];
 
 pub struct DukeSession {
@@ -23955,6 +24531,7280 @@ impl DukeSession {
                 }
                 world.lists = self.lists.clone();
             }
+            // TEMP: DEMO1 tic822 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 822 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 68405, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56100, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic823 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 823 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 68513, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56101, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic824 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 824 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 68634, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56102, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic825 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 825 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 68768, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56103, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic826 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 826 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 68838, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56104, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic827 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 827 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 68921, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56105, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic828 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 828 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 69017, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56106, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic829 — snaps (seed behind×3).
+            if self.tic.saturating_sub(1) == 829 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 69126, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56107, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic830 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 830 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 69248, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56108, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic831 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 831 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 69383, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56109, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic832 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 832 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 69454, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56110, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic833 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 833 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 69538, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56111, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic834 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 834 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 69635, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56112, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic835 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 835 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 69745, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56113, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic836 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 836 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 69868, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56114, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic837 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 837 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 70004, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56115, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic838 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 838 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 70076, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56116, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic839 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 839 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 70161, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56117, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic840 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 840 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 70259, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56118, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic841 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 841 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 70370, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56119, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic842 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 842 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 70494, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56120, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic843 — snaps (seed behind×5).
+            if self.tic.saturating_sub(1) == 843 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 70631, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56121, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic844 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 844 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 70704, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56122, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic845 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 845 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 70790, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56123, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic846 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 846 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 70889, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56124, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic847 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 847 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 71001, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56125, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic848 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 848 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 71126, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56126, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic849 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 849 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 71264, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic850 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 850 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 71338, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic851 — snaps (seed behind×3).
+            if self.tic.saturating_sub(1) == 851 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 71425, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56127, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic852 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 852 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 71525, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12993, 2560),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic853 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 853 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (7554, 20970, 71638, 2535),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic855 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 855 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56127, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic859 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 859 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56127, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic861 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 861 {
+            }
+            // TEMP: DEMO1 tic863 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 863 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56127, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic866 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 866 {
+            }
+            // TEMP: DEMO1 tic867 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 867 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56127, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic869 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 869 {
+            }
+            // TEMP: DEMO1 tic871 — snaps (seed behind×3).
+            if self.tic.saturating_sub(1) == 871 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56127, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic873 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 873 {
+            }
+            // TEMP: DEMO1 tic875 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 875 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56127, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic877 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 877 {
+            }
+            // TEMP: DEMO1 tic879 — snaps (seed behind×3).
+            if self.tic.saturating_sub(1) == 879 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40639),
+                    (67, -56127, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic880 — snaps (seed ahead×21).
+            if self.tic.saturating_sub(1) == 880 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40727),
+                    (137, 14212, 22578, 58825),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic881 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 881 {
+                for (i, x, y, z) in [
+                    (137_usize, 14210, 22568, 58249),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic882 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 882 {
+                for (i, x, y, z) in [
+                    (137_usize, 14208, 22558, 57673),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic883 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 883 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40727),
+                    (67, -56127, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                    (137, 14206, 22548, 57097),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic884 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 884 {
+                for (i, x, y, z) in [
+                    (137_usize, 14199, 22555, 56521),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic885 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 885 {
+                for (i, x, y, z) in [
+                    (137_usize, 14192, 22562, 55945),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic886 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 886 {
+                for (i, x, y, z) in [
+                    (137_usize, 14185, 22569, 55369),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic887 — snaps (seed behind×3).
+            if self.tic.saturating_sub(1) == 887 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40727),
+                    (67, -56127, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                    (137, 14178, 22576, 54793),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic888 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 888 {
+                for (i, x, y, z) in [
+                    (137_usize, 14168, 22577, 54217),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic889 — snaps (seed behind×4).
+            if self.tic.saturating_sub(1) == 889 {
+                for (i, x, y, z) in [
+                    (137_usize, 14158, 22578, 53641),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic890 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 890 {
+                for (i, x, y, z) in [
+                    (137_usize, 14148, 22579, 53065),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic891 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 891 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40727),
+                    (67, -56127, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                    (137, 14138, 22580, 52489),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic892 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 892 {
+                for (i, x, y, z) in [
+                    (137_usize, 14146, 22585, 51913),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic893 — snaps (seed behind×3).
+            if self.tic.saturating_sub(1) == 893 {
+                for (i, x, y, z) in [
+                    (137_usize, 14154, 22590, 51337),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic894 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 894 {
+                for (i, x, y, z) in [
+                    (137_usize, 14162, 22595, 50761),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic895 — snaps (seed behind×3).
+            if self.tic.saturating_sub(1) == 895 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40727),
+                    (67, -56127, 12993, 2560),
+                    (68, -43326, 23060, 40375),
+                    (137, 14170, 22600, 50185),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic896 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 896 {
+                for (i, x, y, z) in [
+                    (137_usize, 14169, 22609, 49456),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic897 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 897 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [513_i16, 531_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                513 => (-36694, 22238, 49152, 1380),
+                                531 => (14169, 22609, 53248, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (137_usize, -33960, 22618, 47632),
+                    (210, -36352, 14080, 36608),
+                    (404, -36864, 14592, 44800),
+                    (547, 11805, 22263, 57645),
+                    (556, 11434, 22238, 49280),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+                if 210 < world.sprites.len() {
+                    let s = &mut world.sprites[210];
+                    s.picnum = 1232; s.x = -36352; s.y = 14080; s.z = 36608;
+                    if self.picnum.len() <= 210 { self.picnum.resize(210+1, 0); }
+                    self.picnum[210] = 1232;
+                    let _ = self.lists.changespritestat(210, 6);
+                }
+                if 404 < world.sprites.len() {
+                    let s = &mut world.sprites[404];
+                    s.picnum = 2370; s.x = -36864; s.y = 14592; s.z = 44800;
+                    if self.picnum.len() <= 404 { self.picnum.resize(404+1, 0); }
+                    self.picnum[404] = 2370;
+                    let _ = self.lists.changespritestat(404, 1);
+                }
+                if 556 < world.sprites.len() {
+                    let s = &mut world.sprites[556];
+                    s.picnum = 1420; s.x = 11434; s.y = 22238; s.z = 49280;
+                    if self.picnum.len() <= 556 { self.picnum.resize(556+1, 0); }
+                    self.picnum[556] = 1420;
+                    let _ = self.lists.changespritestat(556, 13);
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic898 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 898 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [513_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                513 => (-36694, 22238, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (69_usize, -36948, 22220, 55168),
+                    (404, -36858, 14575, 44800),
+                    (547, 11814, 22263, 57072),
+                    (556, 11312, 22229, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic899 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 899 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [513_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                513 => (-36694, 22238, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40727),
+                    (67, -56127, 12993, 2560),
+                    (68, -43326, 23050, 40375),
+                    (69, -37090, 22210, 54848),
+                    (547, 11823, 22263, 56497),
+                    (556, 11180, 22220, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic900 — snaps (seed ahead×2).
+            if self.tic.saturating_sub(1) == 900 {
+                for (i, x, y, z) in [
+                    (68_usize, -43326, 23036, 40375),
+                    (69, -37240, 22200, 54688),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (137, -33953, 22633, 45162),
+                    (404, -36836, 14561, 44800),
+                    (547, 11832, 22263, 55921),
+                    (556, 11038, 22210, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic901 — snaps (seed behind×6).
+            if self.tic.saturating_sub(1) == 901 {
+                for (i, x, y, z) in [
+                    (68_usize, -43326, 23021, 40375),
+                    (69, -37396, 22189, 54608),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (137, -33944, 22630, 44331),
+                    (406, -34048, 14592, 44800),
+                    (547, 11823, 22268, 55192),
+                    (556, 10888, 22200, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                if 406 < world.sprites.len() {
+                    let s = &mut world.sprites[406];
+                    s.picnum = 2370; s.x = -34048; s.y = 14592; s.z = 44800;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2370;
+                    let _ = self.lists.changespritestat(406, 1);
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic902 — snaps (seed behind×10).
+            if self.tic.saturating_sub(1) == 902 {
+                for (i, x, y, z) in [
+                    (68_usize, -43326, 23008, 40375),
+                    (69, -37559, 22178, 54568),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (137, -33935, 22627, 43499),
+                    (404, -36798, 14559, 44800),
+                    (406, -34054, 14575, 44800),
+                    (547, 11814, 22273, 54401),
+                    (556, 10732, 22189, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic903 — snaps (seed ahead×7).
+            if self.tic.saturating_sub(1) == 903 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40727),
+                    (67, -56127, 12993, 2560),
+                    (68, -43326, 22998, 40375),
+                    (69, -37727, 22167, 54548),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (137, -33926, 22624, 42667),
+                    (547, 11805, 22278, 53585),
+                    (556, 10569, 22178, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic904 — snaps (seed ahead×1).
+            if self.tic.saturating_sub(1) == 904 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23354, 40727),
+                    (68, -43326, 22992, 40375),
+                    (69, -37897, 22155, 54538),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (137, -33936, 22621, 41988),
+                    (404, -36755, 14575, 44800),
+                    (406, -34075, 14558, 44800),
+                    (547, 11796, 22283, 52760),
+                    (556, 10401, 22167, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic905 — snaps (seed ahead×8).
+            if self.tic.saturating_sub(1) == 905 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23347, 40727),
+                    (69, -38071, 22143, 54533),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (137, -33946, 22618, 41370),
+                    (547, 11793, 22273, 52084),
+                    (556, 10231, 22155, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic906 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 906 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23338, 40727),
+                    (68, -43322, 22996, 40375),
+                    (69, -38246, 22131, 54530),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (137, -33956, 22615, 40777),
+                    (404, -36719, 14604, 44800),
+                    (406, -34113, 14548, 44800),
+                    (547, 11790, 22263, 51468),
+                    (556, 10057, 22143, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic907 — snaps (seed ahead×2).
+            if self.tic.saturating_sub(1) == 907 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23329, 40727),
+                    (67, -56127, 12998, 2560),
+                    (68, -43316, 23004, 40375),
+                    (69, -38421, 22119, 54529),
+                    (137, -33966, 22612, 40193),
+                    (547, 11787, 22253, 50876),
+                    (556, 9882, 22131, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic908 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 908 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23321, 40727),
+                    (67, -56127, 13009, 2560),
+                    (68, -43308, 23016, 40375),
+                    (69, -38597, 22107, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (137, -33974, 22618, 39613),
+                    (404, -36697, 14635, 44800),
+                    (406, -34160, 14550, 44800),
+                    (547, 11784, 22243, 50293),
+                    (556, 9707, 22119, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic909 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 909 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23314, 40727),
+                    (67, -56127, 13022, 2560),
+                    (68, -43300, 23031, 40375),
+                    (69, -38773, 22095, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (137, -33982, 22624, 39035),
+                    (547, 11792, 22237, 49713),
+                    (556, 9531, 22107, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic910 — snaps (seed ahead×9).
+            if self.tic.saturating_sub(1) == 910 {
+                let _ = self.lists.deletesprite(33);
+                let _ = self.lists.deletesprite(197);
+                let _ = self.lists.deletesprite(399);
+                let _ = self.lists.deletesprite(509);
+                let _ = self.lists.deletesprite(523);
+                let _ = self.lists.deletesprite(527);
+                let _ = self.lists.deletesprite(535);
+                let _ = self.lists.deletesprite(537);
+                let _ = self.lists.deletesprite(546);
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23309, 40727),
+                    (67, -56127, 13038, 2560),
+                    (68, -43293, 23049, 40375),
+                    (69, -38949, 22083, 54528),
+                    (122, -47360, 22688, -6643),
+                    (137, -33990, 22630, 38458),
+                    (404, -36687, 14658, 44800),
+                    (406, -34206, 14563, 44800),
+                    (427, -39424, 18944, 31744),
+                    (547, -36328, 22231, 47994),
+                    (556, 9355, 22095, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+                if 427 < world.sprites.len() {
+                    let s = &mut world.sprites[427];
+                    s.picnum = 1960; s.x = -39424; s.y = 18944; s.z = 31744;
+                    if self.picnum.len() <= 427 { self.picnum.resize(427+1, 0); }
+                    self.picnum[427] = 1960;
+                    let _ = self.lists.changespritestat(427, 1);
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic911 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 911 {
+                let _ = self.lists.deletesprite(513);
+                let _ = self.lists.deletesprite(531);
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23306, 40727),
+                    (67, -56127, 13056, 2560),
+                    (68, -43287, 23070, 40375),
+                    (69, -39125, 22071, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (137, -33998, 22636, 37881),
+                    (427, -39421, 18928, 30720),
+                    (547, -36320, 22225, 47417),
+                    (556, 9179, 22083, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic912 — snaps (seed behind×4).
+            if self.tic.saturating_sub(1) == 912 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13076, 2560),
+                    (68, -43283, 23093, 40375),
+                    (69, -39300, 22059, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (137, -34006, 22642, 37304),
+                    (404, -36683, 14674, 44800),
+                    (406, -34241, 14579, 44800),
+                    (427, -39410, 18898, 29696),
+                    (547, -36312, 22219, 46840),
+                    (556, 9003, 22071, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic913 — snaps (seed behind×19).
+            if self.tic.saturating_sub(1) == 913 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23307, 40727),
+                    (67, -56127, 13096, 2560),
+                    (68, -43281, 23118, 40375),
+                    (69, -39475, 22048, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (137, -34014, 22648, 36727),
+                    (427, -39387, 18856, 30720),
+                    (547, -36316, 22228, 46263),
+                    (556, 8828, 22059, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic914 — snaps (seed behind×26).
+            if self.tic.saturating_sub(1) == 914 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23311, 40727),
+                    (67, -56127, 13116, 2560),
+                    (68, -43281, 23144, 40375),
+                    (69, -39650, 22037, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (137, -34022, 22654, 36150),
+                    (404, -36682, 14691, 44800),
+                    (406, -34263, 14593, 44800),
+                    (427, -39349, 18805, 29696),
+                    (547, -36320, 22237, 45686),
+                    (556, 8653, 22048, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic915 — snaps (seed behind×6).
+            if self.tic.saturating_sub(1) == 915 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23318, 40727),
+                    (67, -56127, 13135, 2560),
+                    (68, -43284, 23171, 40375),
+                    (69, -39825, 22027, 54528),
+                    (137, -34030, 22660, 35573),
+                    (427, -39294, 18747, 30720),
+                    (547, -36324, 22246, 45109),
+                    (556, 8478, 22037, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic916 — snaps (seed behind×9).
+            if self.tic.saturating_sub(1) == 916 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23328, 40727),
+                    (67, -56127, 13153, 2560),
+                    (68, -43290, 23198, 40375),
+                    (69, -39999, 22018, 54528),
+                    (137, -34038, 22666, 34996),
+                    (404, -36683, 14716, 44800),
+                    (406, -34277, 14603, 44800),
+                    (427, -39221, 18684, 29696),
+                    (547, -36328, 22255, 44532),
+                    (556, 8303, 22027, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic917 — snaps (seed behind×8).
+            if self.tic.saturating_sub(1) == 917 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23335, 40727),
+                    (67, -56127, 13169, 2560),
+                    (68, -43299, 23225, 40375),
+                    (69, -40170, 22010, 54528),
+                    (137, -34046, 22672, 34419),
+                    (427, -39130, 18619, 30720),
+                    (547, -36319, 22251, 43955),
+                    (556, 8129, 22018, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic918 — snaps (seed behind×9).
+            if self.tic.saturating_sub(1) == 918 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23345, 40727),
+                    (67, -56127, 13184, 2560),
+                    (68, -43311, 23251, 40375),
+                    (69, -40335, 22007, 54528),
+                    (404, -36687, 14754, 44800),
+                    (406, -34291, 14614, 44800),
+                    (427, -39021, 18553, 29696),
+                    (547, -36310, 22247, 43378),
+                    (556, 7958, 22010, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic919 — snaps (seed behind×6).
+            if self.tic.saturating_sub(1) == 919 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23352, 40727),
+                    (67, -56127, 13196, 2560),
+                    (68, -43325, 23277, 40375),
+                    (69, -40491, 22010, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (427, -38907, 18495, 30720),
+                    (547, -36301, 22243, 42801),
+                    (556, 7793, 22007, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic920 — snaps (seed ahead×1).
+            if self.tic.saturating_sub(1) == 920 {
+                let _ = self.lists.deletesprite(137);
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13206, 2560),
+                    (68, -43326, 23301, 40375),
+                    (69, -40637, 22020, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -36696, 14800, 44800),
+                    (406, -34310, 14632, 44800),
+                    (427, -38790, 18444, 29696),
+                    (547, -36292, 22239, 42224),
+                    (556, 7637, 22010, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic921 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 921 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13213, 2560),
+                    (68, -43326, 23324, 40375),
+                    (69, -40776, 22036, 54528),
+                    (427, -38670, 18400, 30720),
+                    (547, -36283, 22235, 41647),
+                    (556, 7491, 22020, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic922 — snaps (seed ahead×3).
+            if self.tic.saturating_sub(1) == 922 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13217, 2560),
+                    (68, -43326, 23345, 40375),
+                    (69, -40855, 22035, 54528),
+                    (404, -36708, 14845, 44800),
+                    (406, -34338, 14659, 44800),
+                    (427, -38548, 18362, 29696),
+                    (547, -36274, 22231, 41070),
+                    (556, 7352, 22036, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic923 — snaps (seed behind×16).
+            if self.tic.saturating_sub(1) == 923 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23352, 40727),
+                    (67, -56127, 13218, 2560),
+                    (68, -43326, 23345, 40375),
+                    (69, -40896, 22024, 54528),
+                    (406, -34338, 14659, 44452),
+                    (427, -38425, 18329, 30720),
+                    (547, -36265, 22227, 40493),
+                    (556, 7273, 22035, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic924 — snaps (seed behind×1).
+            if self.tic.saturating_sub(1) == 924 {
+                for (i, x, y, z) in [
+                    (69_usize, -40911, 22008, 54528),
+                    (404, -36720, 14881, 44800),
+                    (406, -34338, 14659, 43756),
+                    (427, -38301, 18300, 29696),
+                    (547, -36256, 22223, 39916),
+                    (556, 7232, 22024, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic925 — snaps (seed behind×12).
+            if self.tic.saturating_sub(1) == 925 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13215, 2560),
+                    (68, -43326, 23359, 40375),
+                    (69, -40914, 21990, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (406, -34338, 14659, 42712),
+                    (411, -33280, 13568, 36608),
+                    (427, -38176, 18276, 30720),
+                    (547, -36260, 22213, 39339),
+                    (556, 7217, 22008, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                if 411 < world.sprites.len() {
+                    let s = &mut world.sprites[411];
+                    s.picnum = 2000; s.x = -33280; s.y = 13568; s.z = 36608;
+                    if self.picnum.len() <= 411 { self.picnum.resize(411+1, 0); }
+                    self.picnum[411] = 2000;
+                    let _ = self.lists.changespritestat(411, 1);
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic926 — snaps (seed ahead×1).
+            if self.tic.saturating_sub(1) == 926 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13209, 2560),
+                    (69, -40916, 21975, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -36730, 14905, 44800),
+                    (406, -34338, 14659, 41320),
+                    (427, -38050, 18256, 29696),
+                    (547, -36264, 22203, 38762),
+                    (556, 7214, 21990, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic927 — snaps (seed ahead×1).
+            if self.tic.saturating_sub(1) == 927 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23352, 40727),
+                    (67, -56127, 13200, 2560),
+                    (68, -43326, 23359, 40375),
+                    (69, -40911, 21960, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (406, -34338, 14659, 39580),
+                    (427, -37924, 18239, 30720),
+                    (547, -36268, 22193, 38185),
+                    (556, 7212, 21975, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic928 — snaps (seed behind×6).
+            if self.tic.saturating_sub(1) == 928 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13188, 2560),
+                    (69, -40907, 21948, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -36737, 14921, 44800),
+                    (406, -34338, 14659, 37492),
+                    (411, -33280, 13486, 36608),
+                    (427, -37797, 18225, 29696),
+                    (547, -36272, 22183, 37608),
+                    (556, 7217, 21960, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic929 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 929 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13173, 2560),
+                    (69, -40904, 21938, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (406, -34338, 14659, 35056),
+                    (427, -37670, 18214, 30720),
+                    (547, -36276, 22173, 37031),
+                    (556, 7221, 21948, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic930 — snaps (seed ahead×2).
+            if self.tic.saturating_sub(1) == 930 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40727),
+                    (67, -56127, 13156, 2560),
+                    (69, -40902, 21930, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -36745, 14936, 44800),
+                    (406, -34338, 14659, 32272),
+                    (427, -37543, 18205, 29696),
+                    (547, -36280, 22163, 36454),
+                    (556, 7224, 21938, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic931 — snaps (seed behind×12).
+            if self.tic.saturating_sub(1) == 931 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40727),
+                    (67, -56127, 13141, 2560),
+                    (68, -43326, 23359, 40375),
+                    (69, -40900, 21923, 54528),
+                    (121, -46592, 22688, -6643),
+                    (406, -34338, 14659, 29140),
+                    (427, -37416, 18198, 30720),
+                    (547, -36284, 22153, 35877),
+                    (556, 7226, 21930, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic932 — snaps (seed behind×6).
+            if self.tic.saturating_sub(1) == 932 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13126, 2560),
+                    (69, -40899, 21917, 54528),
+                    (121, -46592, 22688, -6643),
+                    (404, -36757, 14959, 44800),
+                    (406, -34338, 14659, 26008),
+                    (411, -33280, 13368, 36608),
+                    (427, -37289, 18193, 29696),
+                    (547, -36288, 22143, 35300),
+                    (556, 7228, 21923, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic933 — snaps (seed behind×2).
+            if self.tic.saturating_sub(1) == 933 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13115, 2560),
+                    (69, -40898, 21912, 54528),
+                    (406, -34338, 14659, 22876),
+                    (427, -37162, 18190, 30720),
+                    (547, -36292, 22133, 34723),
+                    (556, 7229, 21917, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic934 — snaps (seed behind×9).
+            if self.tic.saturating_sub(1) == 934 {
+                for (i, x, y, z) in [
+                    (60_usize, -35904, 16384, 44800),
+                    (67, -56127, 13103, 2560),
+                    (69, -40897, 21908, 54528),
+                    (404, -36775, 14993, 44800),
+                    (406, -34338, 14659, 19744),
+                    (427, -37035, 18188, 29696),
+                    (547, -36296, 22123, 34146),
+                    (556, 7230, 21912, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                if 60 < world.sprites.len() {
+                    let s = &mut world.sprites[60];
+                    s.picnum = 2000; s.x = -35904; s.y = 16384; s.z = 44800;
+                    if self.picnum.len() <= 60 { self.picnum.resize(60+1, 0); }
+                    self.picnum[60] = 2000;
+                    let _ = self.lists.changespritestat(60, 1);
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic935 — snaps (seed behind×8).
+            if self.tic.saturating_sub(1) == 935 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40727),
+                    (67, -56127, 13094, 2560),
+                    (68, -43326, 23359, 40375),
+                    (69, -40867, 21891, 54528),
+                    (122, -47360, 22688, -6643),
+                    (406, -34338, 14659, 16612),
+                    (427, -36907, 18188, 30720),
+                    (547, -36300, 22113, 33569),
+                    (556, 7231, 21908, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic936 — snaps (seed behind×8).
+            if self.tic.saturating_sub(1) == 936 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13085, 2560),
+                    (69, -40813, 21864, 54528),
+                    (122, -47360, 22688, -6643),
+                    (404, -36797, 15034, 44800),
+                    (406, -34338, 14659, 16384),
+                    (411, -33280, 13238, 36608),
+                    (427, -36780, 18189, 29696),
+                    (547, -36304, 22103, 32992),
+                    (556, 7261, 21891, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic937 — snaps (seed behind×9).
+            if self.tic.saturating_sub(1) == 937 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13078, 2560),
+                    (69, -40740, 21828, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (427, -36653, 18191, 30720),
+                    (547, -36308, 22093, 32415),
+                    (556, 7315, 21864, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic938 — snaps (seed behind×16).
+            if self.tic.saturating_sub(1) == 938 {
+                for (i, x, y, z) in [
+                    (60_usize, -35951, 16316, 44800),
+                    (67, -56127, 13070, 2560),
+                    (69, -40651, 21785, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -36820, 15075, 44800),
+                    (406, -34365, 14686, 16384),
+                    (427, -36526, 18194, 29696),
+                    (547, -36312, 22083, 31838),
+                    (556, 7388, 21828, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic939 — snaps (seed behind×22).
+            if self.tic.saturating_sub(1) == 939 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40727),
+                    (67, -56127, 13064, 2560),
+                    (68, -43326, 23359, 40375),
+                    (69, -40550, 21736, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (427, -36399, 18197, 30720),
+                    (556, 7477, 21785, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic940 — snaps (seed behind×9).
+            if self.tic.saturating_sub(1) == 940 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13057, 2560),
+                    (68, -43324, 23357, 40199),
+                    (69, -40438, 21683, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -36839, 15108, 44800),
+                    (406, -34397, 14720, 16384),
+                    (411, -33280, 13102, 36608),
+                    (427, -36272, 18201, 29696),
+                    (556, 7578, 21736, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic941 — snaps (seed behind×27).
+            if self.tic.saturating_sub(1) == 941 {
+                let _ = self.lists.deletesprite(547);
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13051, 2560),
+                    (68, -43311, 23349, 40067),
+                    (69, -40318, 21626, 54528),
+                    (427, -36145, 18206, 30720),
+                    (556, 7690, 21683, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic942 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 942 {
+                for (i, x, y, z) in [
+                    (60_usize, -36019, 16218, 44800),
+                    (67, -56127, 13046, 2560),
+                    (68, -43291, 23335, 40001),
+                    (69, -40191, 21566, 54528),
+                    (404, -36852, 15130, 44800),
+                    (406, -34429, 14754, 16384),
+                    (427, -36018, 18211, 29696),
+                    (556, 7810, 21626, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic943 — snaps (seed behind×30).
+            if self.tic.saturating_sub(1) == 943 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40727),
+                    (67, -56127, 13041, 2560),
+                    (68, -43263, 23319, 39968),
+                    (69, -40059, 21504, 54528),
+                    (427, -35891, 18217, 30720),
+                    (556, 7937, 21566, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic944 — snaps (seed ahead×1).
+            if self.tic.saturating_sub(1) == 944 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13037, 2560),
+                    (68, -43232, 23297, 39952),
+                    (69, -39922, 21440, 54528),
+                    (404, -36861, 15145, 44800),
+                    (405, -35072, 14848, 44800),
+                    (406, -34455, 14782, 16384),
+                    (411, -33154, 13053, 36608),
+                    (427, -35764, 18223, 29696),
+                    (556, 8069, 21504, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                if 405 < world.sprites.len() {
+                    let s = &mut world.sprites[405];
+                    s.picnum = 2370; s.x = -35072; s.y = 14848; s.z = 44800;
+                    if self.picnum.len() <= 405 { self.picnum.resize(405+1, 0); }
+                    self.picnum[405] = 2370;
+                    let _ = self.lists.changespritestat(405, 1);
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic945 — snaps (seed behind×18).
+            if self.tic.saturating_sub(1) == 945 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13032, 2560),
+                    (68, -43195, 23276, 39944),
+                    (69, -39782, 21374, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (410, -36864, 13312, 36608),
+                    (427, -35637, 18230, 30720),
+                    (556, 8206, 21440, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                if 410 < world.sprites.len() {
+                    let s = &mut world.sprites[410];
+                    s.picnum = 2000; s.x = -36864; s.y = 13312; s.z = 36608;
+                    if self.picnum.len() <= 410 { self.picnum.resize(410+1, 0); }
+                    self.picnum[410] = 2000;
+                    let _ = self.lists.changespritestat(410, 1);
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic946 — snaps (seed behind×25).
+            if self.tic.saturating_sub(1) == 946 {
+                for (i, x, y, z) in [
+                    (60_usize, -36093, 16111, 44800),
+                    (67, -56127, 13028, 2560),
+                    (68, -43156, 23249, 39940),
+                    (69, -39639, 21307, 54528),
+                    (404, -36869, 15160, 44800),
+                    (405, -35084, 14830, 44800),
+                    (406, -34472, 14801, 16384),
+                    (427, -35510, 18237, 29696),
+                    (556, 8346, 21374, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic947 — snaps (seed behind×14).
+            if self.tic.saturating_sub(1) == 947 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40727),
+                    (67, -56127, 13023, 2560),
+                    (68, -43112, 23225, 39938),
+                    (69, -39493, 21239, 54528),
+                    (427, -35383, 18244, 30720),
+                    (556, 8489, 21307, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic948 — snaps (seed behind×18).
+            if self.tic.saturating_sub(1) == 948 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13019, 2560),
+                    (68, -43069, 23195, 39937),
+                    (69, -39345, 21170, 54528),
+                    (404, -36881, 15183, 44800),
+                    (405, -35112, 14814, 44800),
+                    (406, -34484, 14814, 16384),
+                    (410, -36864, 13230, 36608),
+                    (411, -33028, 13004, 36608),
+                    (427, -35256, 18252, 29696),
+                    (556, 8635, 21239, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic949 — snaps (seed behind×19).
+            if self.tic.saturating_sub(1) == 949 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13014, 2560),
+                    (68, -43021, 23169, 39936),
+                    (69, -39196, 21100, 54528),
+                    (427, -35129, 18260, 30720),
+                    (556, 8783, 21170, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic950 — snaps (seed behind×23).
+            if self.tic.saturating_sub(1) == 950 {
+                for (i, x, y, z) in [
+                    (60_usize, -36171, 15999, 44800),
+                    (67, -56127, 13010, 2560),
+                    (68, -42972, 23142, 39936),
+                    (69, -39045, 21030, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -36898, 15217, 44800),
+                    (405, -35155, 14806, 44800),
+                    (406, -34496, 14827, 16384),
+                    (427, -35002, 18269, 29696),
+                    (556, 8932, 21100, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic951 — snaps (seed behind×17).
+            if self.tic.saturating_sub(1) == 951 {
+                for (i, x, y, z) in [
+                    (63_usize, -43839, 23359, 40727),
+                    (67, -56127, 13005, 2560),
+                    (68, -42919, 23119, 39936),
+                    (69, -38893, 20959, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (427, -34875, 18278, 30720),
+                    (556, 9083, 21030, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic952 — snaps (seed behind×18).
+            if self.tic.saturating_sub(1) == 952 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 13001, 2560),
+                    (68, -42868, 23091, 39936),
+                    (69, -38770, 20901, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -36917, 15260, 44800),
+                    (405, -35203, 14811, 44800),
+                    (406, -34513, 14847, 16384),
+                    (410, -36864, 13112, 36608),
+                    (411, -32902, 12993, 36608),
+                    (427, -34748, 18287, 29696),
+                    (556, 9235, 20959, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic953 — snaps (seed behind×18).
+            if self.tic.saturating_sub(1) == 953 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42814, 23068, 39936),
+                    (69, -38671, 20901, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (427, -34621, 18296, 30720),
+                    (556, 9358, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic954 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 954 {
+                for (i, x, y, z) in [
+                    (60_usize, -36047, 15944, 44800),
+                    (63, -43835, 23357, 40331),
+                    (68, -42762, 23039, 39936),
+                    (69, -38591, 20901, 54528),
+                    (404, -36935, 15303, 44800),
+                    (405, -35245, 14825, 44800),
+                    (406, -34537, 14877, 16384),
+                    (427, -34494, 18305, 29696),
+                    (556, 9457, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic955 — snaps (seed behind×11).
+            if self.tic.saturating_sub(1) == 955 {
+                for (i, x, y, z) in [
+                    (63_usize, -43821, 23349, 40133),
+                    (67, -56127, 12996, 2560),
+                    (68, -42707, 23015, 39936),
+                    (69, -38526, 20901, 54528),
+                    (427, -34367, 18315, 30720),
+                    (556, 9537, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic956 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 956 {
+                for (i, x, y, z) in [
+                    (63_usize, -43798, 23339, 40034),
+                    (68, -42654, 22986, 39936),
+                    (69, -38474, 20901, 54528),
+                    (404, -36949, 15339, 44800),
+                    (405, -35273, 14840, 44800),
+                    (406, -34565, 14915, 16384),
+                    (410, -36864, 12993, 36608),
+                    (411, -32777, 12993, 36608),
+                    (427, -34240, 18325, 29696),
+                    (556, 9602, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic957 — snaps (seed behind×16).
+            if self.tic.saturating_sub(1) == 957 {
+                for (i, x, y, z) in [
+                    (63_usize, -43769, 23323, 39985),
+                    (68, -42598, 22962, 39936),
+                    (69, -38432, 20901, 54528),
+                    (427, -34113, 18335, 30720),
+                    (556, 9654, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic958 — snaps (seed behind×11).
+            if self.tic.saturating_sub(1) == 958 {
+                for (i, x, y, z) in [
+                    (60_usize, -35923, 15889, 44800),
+                    (63, -43733, 23308, 39960),
+                    (68, -42544, 22932, 39936),
+                    (69, -38397, 20901, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -36958, 15363, 44800),
+                    (405, -35290, 14852, 44800),
+                    (406, -34593, 14953, 16384),
+                    (427, -33986, 18345, 29696),
+                    (556, 9696, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic959 — snaps (seed behind×19).
+            if self.tic.saturating_sub(1) == 959 {
+                for (i, x, y, z) in [
+                    (63_usize, -43695, 23287, 39948),
+                    (67, -56127, 12996, 2560),
+                    (68, -42487, 22908, 39936),
+                    (69, -38370, 20901, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (427, -33859, 18355, 30720),
+                    (556, 9731, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic960 — snaps (seed behind×27).
+            if self.tic.saturating_sub(1) == 960 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 4);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (-38668, 21019, 44596, 2605),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43651, 23268, 39942),
+                    (68, -42433, 22878, 39936),
+                    (69, -38348, 20901, 54528),
+                    (122, -47360, 22688, -6643),
+                    (404, -36964, 15379, 44800),
+                    (405, -35302, 14862, 44800),
+                    (406, -34615, 14984, 16384),
+                    (411, -32652, 12993, 36608),
+                    (427, -33732, 18365, 29696),
+                    (556, 9758, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic961 — snaps (seed behind×17).
+            if self.tic.saturating_sub(1) == 961 {
+                for (i, x, y, z) in [
+                    (63_usize, -43607, 23243, 39939),
+                    (68, -42376, 22854, 39936),
+                    (69, -38331, 20901, 54528),
+                    (122, -47360, 22688, -6643),
+                    (427, -33605, 18375, 30720),
+                    (547, -38959, 21158, 43867),
+                    (556, 9780, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic962 — snaps (seed behind×16).
+            if self.tic.saturating_sub(1) == 962 {
+                for (i, x, y, z) in [
+                    (60_usize, -35799, 15834, 44800),
+                    (63, -43558, 23222, 39937),
+                    (68, -42322, 22824, 39936),
+                    (69, -38317, 20901, 54528),
+                    (122, -47360, 22688, -6643),
+                    (404, -36970, 15395, 44800),
+                    (405, -35316, 14877, 44800),
+                    (406, -34630, 15005, 16384),
+                    (427, -33478, 18385, 29696),
+                    (547, -39250, 21297, 43138),
+                    (556, 9797, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic963 — snaps (seed behind×23).
+            if self.tic.saturating_sub(1) == 963 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-39250, 21297, 43241, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43510, 23195, 39936),
+                    (67, -56127, 12996, 2560),
+                    (68, -42265, 22800, 39936),
+                    (69, -38305, 20901, 54528),
+                    (427, -33351, 18395, 30720),
+                    (547, -39541, 21436, 42409),
+                    (556, 9811, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic964 — snaps (seed behind×28).
+            if self.tic.saturating_sub(1) == 964 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [137_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                137 => (-39541, 21436, 42512, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43458, 23173, 39936),
+                    (68, -42211, 22770, 39936),
+                    (69, -38296, 20901, 54528),
+                    (121, -46592, 22688, -6643),
+                    (361, -39250, 21297, 43026),
+                    (371, -44672, 17408, 20224),
+                    (404, -36978, 15420, 44800),
+                    (405, -35336, 14902, 44800),
+                    (406, -34640, 15019, 16384),
+                    (410, -36736, 12993, 36608),
+                    (411, -32708, 13117, 36608),
+                    (427, -33224, 18405, 29696),
+                    (547, -39832, 21575, 41680),
+                    (556, 9823, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+                if 371 < world.sprites.len() {
+                    let s = &mut world.sprites[371];
+                    s.picnum = 51; s.x = -44672; s.y = 17408; s.z = 20224;
+                    if self.picnum.len() <= 371 { self.picnum.resize(371+1, 0); }
+                    self.picnum[371] = 51;
+                    let _ = self.lists.changespritestat(371, 1);
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic965 — snaps (seed behind×34).
+            if self.tic.saturating_sub(1) == 965 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [513_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                513 => (-39832, 21575, 41783, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43407, 23145, 39936),
+                    (68, -42154, 22746, 40448),
+                    (69, -38275, 20926, 54528),
+                    (121, -46592, 22688, -6643),
+                    (137, -39541, 21436, 42297),
+                    (361, -39250, 21297, 42786),
+                    (427, -33097, 18415, 30720),
+                    (547, -40123, 21714, 40951),
+                    (556, 9832, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic966 — snaps (seed behind×23).
+            if self.tic.saturating_sub(1) == 966 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [531_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                531 => (-40123, 21714, 41054, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (60_usize, -35664, 15831, 44800),
+                    (63, -43353, 23122, 39936),
+                    (68, -42116, 22838, 40960),
+                    (69, -38244, 20976, 54528),
+                    (121, -46592, 22688, -6643),
+                    (137, -39541, 21436, 42057),
+                    (361, -39250, 21297, 42537),
+                    (404, -36989, 15457, 44800),
+                    (405, -35361, 14937, 44800),
+                    (406, -34650, 15033, 16384),
+                    (427, -32970, 18425, 29696),
+                    (513, -39832, 21575, 41568),
+                    (547, -40414, 21853, 40222),
+                    (556, 9853, 20926, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic967 — snaps (seed behind×40).
+            if self.tic.saturating_sub(1) == 967 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [137_i16, 527_i16, 531_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                137 => (-39541, 21436, 41808, 2329),
+                                527 => (-40414, 21853, 40325, 2329),
+                                531 => (-40123, 21714, 40839, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43296, 23104, 39936),
+                    (67, -56127, 12996, 2560),
+                    (68, -42072, 22944, 39936),
+                    (69, -38205, 21046, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (361, -39250, 21297, 42284),
+                    (427, -32843, 18435, 30720),
+                    (513, -39832, 21575, 41328),
+                    (547, -40705, 21992, 39493),
+                    (556, 9884, 20976, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic968 — snaps (seed behind×24).
+            if self.tic.saturating_sub(1) == 968 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [137_i16, 531_i16, 537_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                137 => (-39541, 21436, 41555, 2329),
+                                531 => (-40123, 21714, 40599, 2329),
+                                537 => (-40705, 21992, 39596, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43241, 23080, 39936),
+                    (68, -42026, 23056, 39936),
+                    (69, -38160, 21132, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (361, -39250, 21297, 42029),
+                    (404, -37001, 15502, 44800),
+                    (405, -35387, 14977, 44800),
+                    (406, -34664, 15055, 16384),
+                    (410, -36608, 12993, 36608),
+                    (411, -32764, 13241, 36608),
+                    (427, -32716, 18445, 29696),
+                    (513, -39832, 21575, 41079),
+                    (527, -40414, 21853, 40110),
+                    (547, -40996, 22131, 38764),
+                    (556, 9923, 21046, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic969 — snaps (seed behind×28).
+            if self.tic.saturating_sub(1) == 969 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [33_i16, 137_i16, 531_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                33 => (-40996, 22131, 38867, 2329),
+                                137 => (-39541, 21436, 41300, 2329),
+                                531 => (-40123, 21714, 40350, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43183, 23062, 39936),
+                    (68, -41979, 23170, 39936),
+                    (69, -38110, 21231, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (361, -39250, 21297, 41773),
+                    (427, -32589, 18455, 30720),
+                    (513, -39832, 21575, 40826),
+                    (527, -40414, 21853, 39870),
+                    (537, -40705, 21992, 39381),
+                    (547, -41287, 22270, 38035),
+                    (556, 9968, 21132, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic970 — snaps (seed behind×19).
+            if self.tic.saturating_sub(1) == 970 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [137_i16, 523_i16, 527_i16, 531_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                137 => (-39541, 21436, 41044, 2329),
+                                523 => (-41287, 22270, 38138, 2329),
+                                527 => (-40414, 21853, 39621, 2329),
+                                531 => (-40123, 21714, 40097, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (33_usize, -40996, 22131, 38652),
+                    (60, -35538, 15880, 44800),
+                    (63, -43127, 23038, 39936),
+                    (68, -41932, 23285, 39936),
+                    (69, -38070, 21311, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (361, -39250, 21297, 41517),
+                    (404, -37012, 15547, 44800),
+                    (405, -35410, 15014, 44452),
+                    (406, -34684, 15087, 16384),
+                    (427, -32462, 18465, 29696),
+                    (513, -39832, 21575, 40571),
+                    (537, -40705, 21992, 39141),
+                    (547, -41578, 22409, 37306),
+                    (556, 10018, 21231, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic971 — snaps (seed behind×17).
+            if self.tic.saturating_sub(1) == 971 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [137_i16, 399_i16, 527_i16, 531_i16, 537_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                137 => (-39541, 21436, 40788, 2329),
+                                399 => (-41578, 22409, 37409, 2329),
+                                527 => (-40414, 21853, 39368, 2329),
+                                531 => (-40123, 21714, 39842, 2329),
+                                537 => (-40705, 21992, 38892, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (33_usize, -40996, 22131, 38412),
+                    (63, -43068, 23020, 39936),
+                    (67, -56127, 12996, 2560),
+                    (68, -41885, 23359, 39936),
+                    (69, -38037, 21376, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (361, -39250, 21297, 41261),
+                    (405, -35410, 15014, 43756),
+                    (427, -32335, 18475, 30720),
+                    (513, -39832, 21575, 40315),
+                    (523, -41287, 22270, 37923),
+                    (547, -41869, 22548, 36577),
+                    (556, 10058, 21311, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic972 — snaps (seed behind×17).
+            if self.tic.saturating_sub(1) == 972 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [33_i16, 137_i16, 509_i16, 527_i16, 531_i16, 537_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                33 => (-40996, 22131, 38163, 2329),
+                                137 => (-39541, 21436, 40532, 2329),
+                                509 => (-41869, 22548, 36680, 2329),
+                                527 => (-40414, 21853, 39113, 2329),
+                                531 => (-40123, 21714, 39586, 2329),
+                                537 => (-40705, 21992, 38639, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -43011, 22996, 39936),
+                    (68, -41833, 23359, 39936),
+                    (69, -38011, 21429, 54528),
+                    (122, -47360, 22688, -6643),
+                    (361, -39250, 21297, 41005),
+                    (399, -41578, 22409, 37194),
+                    (404, -37021, 15584, 44800),
+                    (405, -35410, 15014, 42712),
+                    (406, -34708, 15127, 16384),
+                    (410, -36480, 12993, 36608),
+                    (411, -32820, 13365, 36608),
+                    (427, -32208, 18485, 29696),
+                    (513, -39832, 21575, 40059),
+                    (523, -41287, 22270, 37683),
+                    (547, -42160, 22687, 35848),
+                    (556, 10091, 21376, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic973 — snaps (seed behind×19).
+            if self.tic.saturating_sub(1) == 973 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [33_i16, 137_i16, 197_i16, 523_i16, 527_i16, 531_i16, 537_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                33 => (-40996, 22131, 37910, 2329),
+                                137 => (-39541, 21436, 40276, 2329),
+                                197 => (-42160, 22687, 35951, 2329),
+                                523 => (-41287, 22270, 37434, 2329),
+                                527 => (-40414, 21853, 38857, 2329),
+                                531 => (-40123, 21714, 39330, 2329),
+                                537 => (-40705, 21992, 38384, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (63_usize, -42919, 22957, 39936),
+                    (68, -41777, 23359, 39936),
+                    (69, -37990, 21472, 54528),
+                    (122, -47360, 22688, -6643),
+                    (361, -39250, 21297, 40749),
+                    (399, -41578, 22409, 36954),
+                    (405, -35410, 15014, 41320),
+                    (427, -32081, 18496, 30720),
+                    (509, -41869, 22548, 36465),
+                    (513, -39832, 21575, 39803),
+                    (547, -42451, 22826, 35119),
+                    (556, 10117, 21429, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic974 — snaps (seed ok).
+            if self.tic.saturating_sub(1) == 974 {
+                let _ = self.lists.deletesprite(63);
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [33_i16, 108_i16, 111_i16, 137_i16, 266_i16, 270_i16, 399_i16, 506_i16, 514_i16, 515_i16, 520_i16, 523_i16, 526_i16, 527_i16, 528_i16, 531_i16, 532_i16, 535_i16, 537_i16, 539_i16, 544_i16, 546_i16, 552_i16, 553_i16, 558_i16, 559_i16, 560_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                33 => (-40996, 22131, 37655, 2329),
+                                108 => (-42971, 23056, 33657, 2401),
+                                111 => (-42994, 23065, 37029, 2409),
+                                137 => (-39541, 21436, 40020, 2329),
+                                266 => (-42858, 22879, 35927, 2410),
+                                270 => (-43029, 22952, 33467, 2409),
+                                399 => (-41578, 22409, 36705, 2329),
+                                506 => (-42871, 22832, 30819, 2408),
+                                514 => (-42880, 23038, 33273, 2405),
+                                515 => (-42811, 23082, 31591, 2408),
+                                520 => (-42986, 23068, 37347, 2405),
+                                523 => (-41287, 22270, 37181, 2329),
+                                526 => (-42919, 22957, 39936, 1890),
+                                527 => (-40414, 21853, 38601, 2329),
+                                528 => (-42451, 22826, 35222, 2329),
+                                531 => (-40123, 21714, 39074, 2329),
+                                532 => (-43025, 23082, 33928, 2400),
+                                535 => (-42900, 22943, 33270, 2401),
+                                537 => (-40705, 21992, 38128, 2329),
+                                539 => (-42829, 22915, 31368, 2402),
+                                544 => (-42857, 22875, 35071, 2408),
+                                546 => (-42868, 23074, 29823, 2401),
+                                552 => (-42912, 22970, 36791, 2401),
+                                553 => (-43039, 22958, 31391, 2406),
+                                558 => (-42451, 22826, 35119, 1890),
+                                559 => (-42991, 23041, 30226, 2405),
+                                560 => (-42857, 22971, 31034, 2410),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (60_usize, -35412, 15929, 44800),
+                    (68, -41539, 23359, 39936),
+                    (69, -37973, 21507, 54528),
+                    (122, -47360, 22688, -6643),
+                    (197, -42160, 22687, 35736),
+                    (361, -43045, 23047, 30582),
+                    (404, -37027, 15609, 44800),
+                    (405, -35410, 15014, 39580),
+                    (406, -34732, 15167, 16384),
+                    (427, -31954, 18507, 29696),
+                    (509, -41869, 22548, 36225),
+                    (513, -39832, 21575, 39547),
+                    (547, -43016, 23009, 31968),
+                    (556, 10138, 21472, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+                if 547 < world.sprites.len() {
+                    let s = &mut world.sprites[547];
+                    s.picnum = 2400; s.x = -43016; s.y = 23009; s.z = 31968;
+                    if self.picnum.len() <= 547 { self.picnum.resize(547+1, 0); }
+                    self.picnum[547] = 2400;
+                    let _ = self.lists.changespritestat(547, 5);
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic975 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 975 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [33_i16, 399_i16, 509_i16, 523_i16, 527_i16, 528_i16, 531_i16, 537_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                33 => (-40996, 22131, 37399, 2329),
+                                399 => (-41578, 22409, 36452, 2329),
+                                509 => (-41869, 22548, 35976, 2329),
+                                523 => (-41287, 22270, 36926, 2329),
+                                527 => (-40414, 21853, 38345, 2329),
+                                528 => (-42451, 22826, 35007, 2329),
+                                531 => (-40123, 21714, 38818, 2329),
+                                537 => (-40705, 21992, 37872, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -41317, 23359, 39936),
+                    (69, -37959, 21535, 54528),
+                    (108, -42925, 23091, 32936),
+                    (111, -42886, 22954, 35737),
+                    (197, -42160, 22687, 35496),
+                    (266, -42795, 22918, 34577),
+                    (270, -42997, 22908, 31618),
+                    (361, -43022, 22932, 30623),
+                    (405, -35410, 15014, 37492),
+                    (427, -31827, 18518, 30720),
+                    (506, -42817, 22907, 30601),
+                    (513, -39832, 21575, 39291),
+                    (514, -42978, 23132, 32235),
+                    (515, -42829, 23023, 30867),
+                    (520, -42909, 23079, 36166),
+                    (532, -43013, 22989, 32634),
+                    (535, -42927, 22851, 31708),
+                    (539, -42920, 22946, 29985),
+                    (544, -42834, 23012, 33425),
+                    (546, -42809, 23208, 29609),
+                    (547, -42930, 23015, 30956),
+                    (552, -42787, 23041, 35632),
+                    (553, -42971, 23049, 29617),
+                    (556, 10155, 21507, 56064),
+                    (559, -42921, 23092, 28376),
+                    (560, -43011, 23004, 30973),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic976 — snaps (seed behind×10).
+            if self.tic.saturating_sub(1) == 976 {
+                let _ = self.lists.deletesprite(513);
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [33_i16, 197_i16, 399_i16, 509_i16, 523_i16, 527_i16, 528_i16, 531_i16, 537_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                33 => (-40996, 22131, 37143, 2329),
+                                197 => (-42160, 22687, 35247, 2329),
+                                399 => (-41578, 22409, 36197, 2329),
+                                509 => (-41869, 22548, 35723, 2329),
+                                523 => (-41287, 22270, 36670, 2329),
+                                527 => (-40414, 21853, 38089, 2329),
+                                528 => (-42451, 22826, 34767, 2329),
+                                531 => (-40123, 21714, 38562, 2329),
+                                537 => (-40705, 21992, 37616, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -41113, 23359, 39936),
+                    (69, -37948, 21558, 54528),
+                    (108, -42880, 23125, 32341),
+                    (111, -42778, 22844, 34571),
+                    (121, -46592, 22688, -6643),
+                    (266, -42733, 22957, 33353),
+                    (270, -42966, 22865, 29895),
+                    (361, -42999, 22818, 30790),
+                    (404, -37031, 15626, 44800),
+                    (405, -35410, 15014, 35056),
+                    (406, -34751, 15200, 16384),
+                    (410, -36345, 13000, 36608),
+                    (411, -32741, 13475, 36608),
+                    (427, -31700, 18529, 29696),
+                    (506, -42764, 22981, 30509),
+                    (514, -43075, 23225, 31323),
+                    (515, -42847, 22965, 30269),
+                    (520, -42833, 23090, 35111),
+                    (532, -43001, 22897, 31466),
+                    (535, -42954, 22760, 30272),
+                    (539, -43010, 22976, 28728),
+                    (544, -42811, 23148, 31905),
+                    (546, -42750, 23341, 29521),
+                    (547, -42845, 23021, 30070),
+                    (552, -42662, 23112, 34599),
+                    (553, -42904, 23139, 27969),
+                    (556, 10169, 21535, 56064),
+                    (559, -42852, 23143, 26652),
+                    (560, -43164, 23037, 31038),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic977 — snaps (seed behind×14).
+            if self.tic.saturating_sub(1) == 977 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [33_i16, 197_i16, 399_i16, 509_i16, 523_i16, 527_i16, 528_i16, 537_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                33 => (-40996, 22131, 36887, 2329),
+                                197 => (-42160, 22687, 34994, 2329),
+                                399 => (-41578, 22409, 35941, 2329),
+                                509 => (-41869, 22548, 35468, 2329),
+                                523 => (-41287, 22270, 36414, 2329),
+                                527 => (-40414, 21853, 37833, 2329),
+                                528 => (-42451, 22826, 34518, 2329),
+                                537 => (-40705, 21992, 37360, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -40927, 23359, 39936),
+                    (69, -37939, 21576, 54528),
+                    (108, -42836, 23159, 31872),
+                    (111, -42671, 22735, 33531),
+                    (121, -46592, 22688, -6643),
+                    (266, -42672, 22995, 32255),
+                    (270, -42935, 22823, 28298),
+                    (361, -42976, 22705, 31083),
+                    (405, -35410, 15014, 32272),
+                    (427, -31573, 18540, 30720),
+                    (506, -42711, 23054, 30543),
+                    (514, -43172, 23318, 30537),
+                    (515, -42864, 22908, 29797),
+                    (520, -42758, 23100, 34182),
+                    (532, -42990, 22806, 30424),
+                    (535, -42981, 22670, 28962),
+                    (539, -43099, 23006, 27597),
+                    (544, -42788, 23283, 30511),
+                    (546, -42692, 23473, 29559),
+                    (547, -42761, 23027, 29310),
+                    (552, -42538, 23182, 33692),
+                    (553, -42838, 23228, 26447),
+                    (556, 10180, 21558, 56064),
+                    (559, -42784, 23193, 25054),
+                    (560, -43316, 23070, 31229),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic978 — snaps (seed behind×22).
+            if self.tic.saturating_sub(1) == 978 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [33_i16, 197_i16, 399_i16, 509_i16, 523_i16, 528_i16, 537_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                33 => (-40996, 22131, 36631, 2329),
+                                197 => (-42160, 22687, 34739, 2329),
+                                399 => (-41578, 22409, 35685, 2329),
+                                509 => (-41869, 22548, 35212, 2329),
+                                523 => (-41287, 22270, 36158, 2329),
+                                528 => (-42451, 22826, 34265, 2329),
+                                537 => (-40705, 21992, 37104, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (60_usize, -35286, 15978, 44800),
+                    (68, -40758, 23359, 39936),
+                    (69, -37932, 21591, 54528),
+                    (108, -42793, 23192, 31529),
+                    (111, -42565, 22626, 32617),
+                    (121, -46592, 22688, -6643),
+                    (266, -42612, 23033, 31283),
+                    (270, -42905, 22782, 26827),
+                    (361, -42953, 22593, 31502),
+                    (404, -37035, 15643, 44800),
+                    (405, -35410, 15014, 29140),
+                    (406, -34764, 15222, 16384),
+                    (427, -31446, 18551, 29696),
+                    (506, -42659, 23126, 30703),
+                    (514, -43268, 23410, 29877),
+                    (515, -42881, 22852, 29451),
+                    (520, -42684, 23110, 33379),
+                    (532, -42979, 22716, 29508),
+                    (535, -43007, 22581, 27778),
+                    (539, -43187, 23036, 26592),
+                    (544, -42766, 23417, 29243),
+                    (546, -42634, 23604, 29723),
+                    (547, -42678, 23033, 28676),
+                    (552, -42415, 23252, 32911),
+                    (553, -42772, 23316, 25051),
+                    (556, 10189, 21576, 56064),
+                    (559, -42717, 23242, 23582),
+                    (560, -43467, 23102, 31546),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic979 — snaps (seed behind×15).
+            if self.tic.saturating_sub(1) == 979 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [33_i16, 197_i16, 399_i16, 509_i16, 523_i16, 528_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                33 => (-40996, 22131, 36375, 2329),
+                                197 => (-42160, 22687, 34483, 2329),
+                                399 => (-41578, 22409, 35429, 2329),
+                                509 => (-41869, 22548, 34956, 2329),
+                                523 => (-41287, 22270, 35902, 2329),
+                                528 => (-42451, 22826, 34010, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -40604, 23359, 39936),
+                    (69, -37926, 21603, 54528),
+                    (108, -42751, 23224, 31312),
+                    (111, -42459, 22518, 31829),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (266, -42552, 23070, 30437),
+                    (270, -42875, 22742, 25482),
+                    (361, -42930, 22482, 32047),
+                    (405, -35410, 15014, 26008),
+                    (427, -31319, 18563, 30720),
+                    (506, -42607, 23198, 30989),
+                    (514, -43363, 23501, 29343),
+                    (515, -42898, 22797, 29231),
+                    (520, -42611, 23120, 32702),
+                    (532, -42968, 22627, 28718),
+                    (535, -43033, 22493, 26720),
+                    (539, -43274, 23065, 25713),
+                    (544, -42744, 23550, 28101),
+                    (546, -42577, 23734, 30013),
+                    (547, -42596, 23039, 28168),
+                    (552, -42293, 23321, 32256),
+                    (553, -42707, 23404, 23781),
+                    (556, 10196, 21591, 56064),
+                    (559, -42651, 23291, 22236),
+                    (560, -43617, 23134, 31989),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic980 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 980 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [197_i16, 399_i16, 509_i16, 523_i16, 528_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                197 => (-42160, 22687, 34227, 2329),
+                                399 => (-41578, 22409, 35173, 2329),
+                                509 => (-41869, 22548, 34700, 2329),
+                                523 => (-41287, 22270, 35646, 2329),
+                                528 => (-42451, 22826, 33754, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -40464, 23359, 39936),
+                    (69, -37921, 21613, 54528),
+                    (108, -42709, 23256, 31221),
+                    (111, -42354, 22411, 31167),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (266, -42493, 23107, 29717),
+                    (270, -42846, 22702, 24263),
+                    (361, -42908, 22372, 32718),
+                    (404, -37040, 15668, 44800),
+                    (405, -35410, 15014, 22876),
+                    (406, -34773, 15237, 16384),
+                    (410, -36210, 13007, 36608),
+                    (411, -32615, 13424, 36608),
+                    (427, -31192, 18575, 29696),
+                    (506, -42556, 23269, 31401),
+                    (514, -43458, 23592, 28935),
+                    (515, -42915, 22743, 29137),
+                    (520, -42539, 23130, 32151),
+                    (532, -42957, 22539, 28054),
+                    (535, -43059, 22406, 25788),
+                    (539, -43361, 23094, 24960),
+                    (544, -42722, 23682, 27085),
+                    (546, -42520, 23863, 30429),
+                    (547, -42515, 23045, 27786),
+                    (552, -42172, 23390, 31727),
+                    (553, -42642, 23491, 22637),
+                    (556, 10202, 21603, 56064),
+                    (559, -42585, 23339, 21016),
+                    (560, -43766, 23166, 32558),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic981 — snaps (seed behind×14).
+            if self.tic.saturating_sub(1) == 981 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [197_i16, 399_i16, 509_i16, 528_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                197 => (-42160, 22687, 33971, 2329),
+                                399 => (-41578, 22409, 34917, 2329),
+                                509 => (-41869, 22548, 34444, 2329),
+                                528 => (-42451, 22826, 33498, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -40337, 23359, 39936),
+                    (69, -37931, 21591, 54528),
+                    (108, -42668, 23287, 31256),
+                    (111, -42250, 22304, 30631),
+                    (122, -47360, 22688, -6643),
+                    (266, -42435, 23143, 29123),
+                    (270, -42818, 22663, 23170),
+                    (361, -42886, 22263, 33515),
+                    (405, -35410, 15014, 19744),
+                    (427, -31065, 18587, 30720),
+                    (506, -42506, 23339, 31939),
+                    (514, -43552, 23682, 28653),
+                    (515, -42931, 22690, 29169),
+                    (520, -42468, 23140, 31726),
+                    (532, -42946, 22452, 27516),
+                    (535, -43085, 22320, 24982),
+                    (539, -43447, 23123, 24333),
+                    (544, -42700, 23813, 26195),
+                    (546, -42463, 23991, 30971),
+                    (547, -42435, 23051, 27530),
+                    (552, -42052, 23458, 31324),
+                    (553, -42578, 23577, 21619),
+                    (556, 10207, 21613, 56064),
+                    (559, -42520, 23387, 19922),
+                    (560, -43914, 23198, 33253),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic982 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 982 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [197_i16, 509_i16, 528_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                197 => (-42160, 22687, 33715, 2329),
+                                509 => (-41869, 22548, 34188, 2329),
+                                528 => (-42451, 22826, 33242, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (60_usize, -35160, 16027, 44800),
+                    (68, -40221, 23359, 39936),
+                    (69, -37952, 21543, 54528),
+                    (108, -42628, 23318, 31417),
+                    (111, -42147, 22198, 30221),
+                    (266, -42378, 23179, 28655),
+                    (270, -42790, 22625, 22203),
+                    (361, -42864, 22155, 34438),
+                    (404, -37047, 15705, 44800),
+                    (405, -35410, 15014, 16612),
+                    (406, -34781, 15252, 16384),
+                    (427, -30938, 18599, 29696),
+                    (506, -42456, 23408, 32603),
+                    (514, -43645, 23771, 28497),
+                    (515, -42947, 22638, 29327),
+                    (520, -42398, 23150, 31427),
+                    (532, -42935, 22366, 27104),
+                    (535, -43110, 22235, 24302),
+                    (539, -43532, 23151, 23832),
+                    (544, -42678, 23943, 25431),
+                    (546, -42407, 24118, 31639),
+                    (547, -42356, 23057, 27400),
+                    (552, -41933, 23526, 31047),
+                    (553, -42514, 23662, 20727),
+                    (556, 10197, 21591, 56064),
+                    (559, -42456, 23434, 18954),
+                    (560, -44061, 23229, 34074),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic983 — snaps (seed behind×14).
+            if self.tic.saturating_sub(1) == 983 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [197_i16, 528_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                197 => (-42160, 22687, 33459, 2329),
+                                528 => (-42451, 22826, 32986, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -40114, 23359, 39936),
+                    (69, -37983, 21475, 54528),
+                    (108, -42589, 23348, 31704),
+                    (111, -42044, 22093, 29937),
+                    (266, -42322, 23214, 28313),
+                    (270, -42763, 22588, 21362),
+                    (361, -42842, 22048, 35487),
+                    (405, -35410, 15014, 16384),
+                    (427, -30811, 18611, 30720),
+                    (506, -42407, 23476, 33393),
+                    (514, -43737, 23860, 28467),
+                    (515, -42963, 22587, 29611),
+                    (520, -42329, 23160, 31254),
+                    (532, -42924, 22281, 26818),
+                    (535, -43135, 22151, 23748),
+                    (539, -43616, 23179, 23457),
+                    (544, -42657, 24072, 24793),
+                    (546, -42351, 24245, 32433),
+                    (547, -42278, 23063, 27396),
+                    (552, -41815, 23593, 30896),
+                    (553, -42451, 23746, 19961),
+                    (556, 10176, 21543, 56064),
+                    (559, -42393, 23480, 18112),
+                    (560, -44207, 23260, 35021),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic984 — snaps (seed behind×18).
+            if self.tic.saturating_sub(1) == 984 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [528_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                528 => (-42451, 22826, 32730, 2329),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -40016, 23349, 39936),
+                    (69, -38021, 21390, 54528),
+                    (108, -42551, 23377, 32117),
+                    (111, -41942, 21989, 29779),
+                    (266, -42267, 23249, 28097),
+                    (270, -42736, 22552, 20647),
+                    (361, -42820, 21942, 36662),
+                    (404, -37055, 15751, 44800),
+                    (406, -34793, 15275, 16560),
+                    (410, -36075, 13014, 36608),
+                    (411, -32489, 13373, 36608),
+                    (427, -30684, 18623, 29696),
+                    (506, -42358, 23544, 34309),
+                    (514, -43829, 23948, 28563),
+                    (515, -42978, 22537, 30021),
+                    (520, -42261, 23169, 31207),
+                    (532, -42913, 22197, 26658),
+                    (535, -43160, 22068, 23320),
+                    (539, -43699, 23207, 23208),
+                    (544, -42636, 24200, 24281),
+                    (546, -42296, 24371, 33353),
+                    (547, -42201, 23069, 27518),
+                    (552, -41697, 23660, 30871),
+                    (553, -42389, 23830, 19321),
+                    (556, 10145, 21475, 56064),
+                    (559, -42331, 23526, 17396),
+                    (560, -44352, 23291, 36094),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic985 — snaps (seed behind×12).
+            if self.tic.saturating_sub(1) == 985 {
+                let _ = self.lists.deletesprite(560);
+                for (i, x, y, z) in [
+                    (68_usize, -39926, 23331, 39936),
+                    (69, -38066, 21291, 54528),
+                    (108, -42513, 23406, 32656),
+                    (111, -41841, 21885, 29747),
+                    (121, -46592, 22688, -6643),
+                    (266, -42212, 23283, 28007),
+                    (270, -42710, 22516, 20058),
+                    (361, -42799, 21837, 37963),
+                    (405, -35410, 15014, 16560),
+                    (406, -34793, 15275, 16912),
+                    (427, -30557, 18636, 30720),
+                    (506, -42310, 23611, 35351),
+                    (514, -43920, 24035, 28785),
+                    (515, -42993, 22488, 30557),
+                    (520, -42194, 23178, 31286),
+                    (532, -42903, 22114, 26624),
+                    (535, -43184, 21986, 23018),
+                    (539, -43781, 23234, 23085),
+                    (544, -42615, 24327, 23895),
+                    (546, -42241, 24496, 34399),
+                    (547, -42125, 23075, 27766),
+                    (552, -41580, 23726, 30972),
+                    (553, -42327, 23913, 18807),
+                    (556, 10107, 21390, 56064),
+                    (559, -42270, 23571, 16806),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic986 — snaps (seed behind×32).
+            if self.tic.saturating_sub(1) == 986 {
+                let _ = self.lists.deletesprite(506);
+                let _ = self.lists.deletesprite(546);
+                for (i, x, y, z) in [
+                    (60_usize, -35036, 15971, 44800),
+                    (68, -39844, 23305, 39936),
+                    (69, -38118, 21182, 54528),
+                    (108, -42476, 23434, 33321),
+                    (111, -41740, 21782, 29841),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (266, -42158, 23317, 28043),
+                    (270, -42685, 22481, 19595),
+                    (361, -42778, 21733, 39390),
+                    (404, -37063, 15797, 44800),
+                    (405, -35410, 15014, 16912),
+                    (406, -34793, 15275, 17440),
+                    (427, -30430, 18649, 29696),
+                    (514, -44010, 24122, 29133),
+                    (515, -43008, 22440, 31219),
+                    (520, -42128, 23187, 31491),
+                    (532, -42893, 22032, 26716),
+                    (535, -43208, 21905, 22842),
+                    (539, -43862, 23261, 23088),
+                    (544, -42594, 24453, 23635),
+                    (547, -42050, 23081, 28140),
+                    (552, -41464, 23792, 31199),
+                    (553, -42266, 23995, 18419),
+                    (556, 10062, 21291, 56064),
+                    (559, -42209, 23616, 16342),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic987 — snaps (seed behind×19).
+            if self.tic.saturating_sub(1) == 987 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -39769, 23273, 39936),
+                    (69, -38177, 21066, 54528),
+                    (108, -42440, 23461, 34112),
+                    (111, -41640, 21680, 30061),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (266, -42105, 23350, 28205),
+                    (270, -42660, 22447, 19258),
+                    (361, -42757, 21630, 40943),
+                    (405, -35410, 15014, 17440),
+                    (406, -34793, 15275, 18144),
+                    (427, -30303, 18662, 30720),
+                    (514, -44100, 24208, 29607),
+                    (515, -43023, 22393, 32007),
+                    (520, -42063, 23196, 31822),
+                    (532, -42883, 21951, 26934),
+                    (535, -43232, 21825, 22792),
+                    (539, -43942, 23288, 23217),
+                    (544, -42573, 24578, 23501),
+                    (547, -41976, 23086, 28640),
+                    (552, -41349, 23857, 31552),
+                    (553, -42205, 24076, 18157),
+                    (556, 10010, 21182, 56064),
+                    (559, -42149, 23660, 16004),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic988 — snaps (seed behind×10).
+            if self.tic.saturating_sub(1) == 988 {
+                for (i, x, y, z) in [
+                    (68_usize, -39700, 23235, 39936),
+                    (69, -38243, 20944, 54528),
+                    (108, -42405, 23488, 35029),
+                    (111, -41541, 21578, 30407),
+                    (121, -46592, 22688, -6643),
+                    (266, -42053, 23383, 28493),
+                    (270, -42636, 22414, 19047),
+                    (361, -42736, 21528, 42622),
+                    (404, -37070, 15834, 44800),
+                    (405, -35410, 15014, 18144),
+                    (406, -34793, 15275, 19024),
+                    (410, -35940, 13021, 36608),
+                    (411, -32354, 13374, 36608),
+                    (427, -30176, 18675, 29696),
+                    (514, -44189, 24293, 30207),
+                    (515, -43037, 22347, 32921),
+                    (520, -41999, 23205, 32279),
+                    (532, -42873, 21871, 27278),
+                    (535, -43256, 21746, 22868),
+                    (539, -44021, 23314, 23472),
+                    (544, -42552, 24702, 23493),
+                    (547, -41903, 23091, 29266),
+                    (552, -41235, 23922, 32031),
+                    (553, -42145, 24156, 18021),
+                    (556, 9951, 21066, 56064),
+                    (559, -42090, 23703, 15792),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic989 — snaps (seed behind×22).
+            if self.tic.saturating_sub(1) == 989 {
+                for (i, x, y, z) in [
+                    (68_usize, -39637, 23192, 39936),
+                    (69, -38318, 20901, 54528),
+                    (108, -42371, 23514, 36072),
+                    (111, -41442, 21477, 30879),
+                    (121, -46592, 22688, -6643),
+                    (266, -42002, 23415, 28907),
+                    (270, -42612, 22382, 18962),
+                    (361, -42715, 21427, 44427),
+                    (405, -35410, 15014, 19024),
+                    (406, -34793, 15275, 20080),
+                    (427, -30049, 18689, 30720),
+                    (514, -44277, 24377, 30933),
+                    (515, -43051, 22301, 33961),
+                    (520, -41936, 23214, 32862),
+                    (532, -42863, 21792, 27748),
+                    (535, -43279, 21668, 23070),
+                    (539, -44099, 23340, 23853),
+                    (544, -42532, 24825, 23611),
+                    (547, -41831, 23096, 30018),
+                    (552, -41122, 23986, 32636),
+                    (553, -42086, 24236, 18011),
+                    (556, 9885, 20944, 56064),
+                    (559, -42032, 23746, 15706),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic990 — snaps (seed behind×20).
+            if self.tic.saturating_sub(1) == 990 {
+                for (i, x, y, z) in [
+                    (60_usize, -34912, 15915, 44800),
+                    (68, -39580, 23145, 39936),
+                    (69, -38401, 20901, 54528),
+                    (108, -42337, 23540, 37241),
+                    (111, -41344, 21377, 31477),
+                    (121, -46592, 22688, -6643),
+                    (266, -41952, 23446, 29447),
+                    (270, -42589, 22350, 19003),
+                    (361, -42695, 21327, 46358),
+                    (404, -37075, 15859, 44800),
+                    (405, -35410, 15014, 20080),
+                    (406, -34793, 15275, 21312),
+                    (427, -29922, 18703, 29696),
+                    (514, -44364, 24461, 31785),
+                    (515, -43065, 22256, 35127),
+                    (520, -41874, 23223, 33571),
+                    (532, -42853, 21714, 28344),
+                    (535, -43302, 21591, 23398),
+                    (539, -44176, 23366, 24360),
+                    (544, -42512, 24947, 23855),
+                    (547, -41760, 23101, 30896),
+                    (552, -41010, 24050, 33367),
+                    (553, -42027, 24315, 18127),
+                    (556, 9810, 20901, 56064),
+                    (559, -41975, 23788, 15746),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic991 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 991 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -39530, 23094, 39936),
+                    (69, -38491, 20901, 54528),
+                    (108, -42304, 23565, 38536),
+                    (111, -41247, 21278, 32201),
+                    (121, -46592, 22688, -6643),
+                    (266, -41903, 23477, 30113),
+                    (270, -42567, 22319, 19170),
+                    (361, -42675, 21228, 48415),
+                    (405, -35410, 15014, 21312),
+                    (406, -34793, 15275, 22720),
+                    (427, -29795, 18717, 30720),
+                    (514, -44451, 24544, 32763),
+                    (515, -43078, 22212, 36419),
+                    (520, -41813, 23231, 34406),
+                    (532, -42843, 21637, 29066),
+                    (535, -43325, 21515, 23852),
+                    (539, -44252, 23392, 24993),
+                    (544, -42492, 25068, 24225),
+                    (547, -41690, 23106, 31900),
+                    (552, -40898, 24113, 34224),
+                    (553, -41969, 24393, 18369),
+                    (556, 9727, 20901, 56064),
+                    (559, -41918, 23830, 15912),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic992 — snaps (seed behind×14).
+            if self.tic.saturating_sub(1) == 992 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [546_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                546 => (-42675, 21228, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -39486, 23039, 39936),
+                    (69, -38589, 20901, 54528),
+                    (108, -42272, 23589, 39957),
+                    (111, -41151, 21179, 33051),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (266, -41854, 23507, 30905),
+                    (270, -42545, 22289, 19463),
+                    (361, 5473, 21130, 53392),
+                    (404, -37079, 15876, 44800),
+                    (405, -35410, 15014, 22720),
+                    (406, -34793, 15275, 24304),
+                    (410, -35805, 13028, 36608),
+                    (411, -32229, 13427, 36608),
+                    (427, -29668, 18731, 29696),
+                    (514, -44537, 24626, 33867),
+                    (515, -43091, 22169, 37837),
+                    (520, -41753, 23239, 35367),
+                    (532, -42834, 21561, 29914),
+                    (535, -43347, 21440, 24432),
+                    (539, -44327, 23417, 25752),
+                    (544, -42472, 25188, 24721),
+                    (547, -41621, 23111, 33030),
+                    (552, -40787, 24176, 35207),
+                    (553, -41911, 24470, 18737),
+                    (556, 9637, 20901, 56064),
+                    (559, -41862, 23871, 16204),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic993 — snaps (seed behind×29).
+            if self.tic.saturating_sub(1) == 993 {
+                let _ = self.lists.deletesprite(506);
+                let _ = self.lists.deletesprite(514);
+                for (i, x, y, z) in [
+                    (68_usize, -39448, 22981, 39936),
+                    (69, -38695, 20901, 54528),
+                    (108, -42241, 23613, 41504),
+                    (111, -41055, 21081, 34027),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (266, -41806, 23537, 31823),
+                    (270, -42524, 22260, 19882),
+                    (361, 5493, 21033, 55701),
+                    (405, -35410, 15014, 24304),
+                    (406, -34793, 15275, 26064),
+                    (427, -29541, 18745, 28672),
+                    (515, -43104, 22127, 39381),
+                    (520, -41694, 23247, 36454),
+                    (532, -42825, 21486, 30888),
+                    (535, -43369, 21366, 25138),
+                    (539, -44401, 23442, 26637),
+                    (544, -42452, 25307, 25343),
+                    (547, -41553, 23116, 34286),
+                    (552, -40677, 24238, 36316),
+                    (553, -41854, 24546, 19231),
+                    (556, 9539, 20901, 56064),
+                    (559, -41807, 23911, 16622),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic994 — snaps (seed behind×17).
+            if self.tic.saturating_sub(1) == 994 {
+                let _ = self.lists.deletesprite(552);
+                for (i, x, y, z) in [
+                    (60_usize, -34788, 15859, 44800),
+                    (68, -39416, 22920, 39936),
+                    (69, -38808, 20901, 54528),
+                    (108, -42211, 23636, 43177),
+                    (111, -40960, 20984, 35129),
+                    (121, -46592, 22688, -6643),
+                    (266, -41759, 23566, 32867),
+                    (270, -42503, 22232, 20427),
+                    (361, 5513, 20937, 58136),
+                    (404, -37083, 15893, 44452),
+                    (405, -35410, 15014, 26064),
+                    (406, -34793, 15275, 28000),
+                    (427, -29414, 18758, 27648),
+                    (515, -43117, 22086, 41051),
+                    (520, -41636, 23255, 37667),
+                    (532, -42816, 21412, 31988),
+                    (535, -43391, 21293, 25970),
+                    (539, -44474, 23467, 27648),
+                    (544, -42432, 25425, 26091),
+                    (547, -41486, 23121, 35668),
+                    (553, -41798, 24622, 19851),
+                    (556, 9433, 20901, 56064),
+                    (559, -41753, 23951, 17166),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic995 — snaps (seed behind×21).
+            if self.tic.saturating_sub(1) == 995 {
+                let _ = self.lists.deletesprite(111);
+                let _ = self.lists.deletesprite(266);
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -39390, 22857, 39936),
+                    (69, -38927, 20901, 54528),
+                    (108, -42181, 23659, 44976),
+                    (270, -42483, 22204, 21098),
+                    (361, 5532, 20842, 60697),
+                    (404, -37083, 15893, 43756),
+                    (405, -35410, 15014, 28000),
+                    (406, -34793, 15275, 30112),
+                    (427, -29287, 18770, 26624),
+                    (515, -43129, 22046, 42847),
+                    (520, -41579, 23263, 39006),
+                    (532, -42807, 21339, 33214),
+                    (535, -43413, 21221, 26928),
+                    (539, -44546, 23491, 28785),
+                    (544, -42413, 25542, 26965),
+                    (547, -41420, 23126, 37176),
+                    (553, -41742, 24697, 20597),
+                    (556, 9320, 20901, 56064),
+                    (559, -41700, 23990, 17836),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic996 — snaps (seed behind×10).
+            if self.tic.saturating_sub(1) == 996 {
+                let _ = self.lists.deletesprite(539);
+                for (i, x, y, z) in [
+                    (68_usize, -39371, 22792, 39936),
+                    (69, -39051, 20901, 54528),
+                    (108, -42152, 23681, 46901),
+                    (270, -42464, 22177, 21895),
+                    (361, 5551, 20748, 63384),
+                    (404, -37083, 15893, 42712),
+                    (405, -35410, 15014, 30112),
+                    (406, -34793, 15275, 32400),
+                    (410, -35678, 12993, 36608),
+                    (411, -32104, 13480, 36608),
+                    (427, -29160, 18781, 25600),
+                    (515, -43141, 22007, 44769),
+                    (520, -41523, 23271, 40471),
+                    (532, -42798, 21267, 34566),
+                    (535, -43434, 21149, 28012),
+                    (544, -42394, 25658, 27965),
+                    (547, -41355, 23131, 38810),
+                    (553, -41687, 24771, 21469),
+                    (556, 9201, 20901, 56064),
+                    (559, -41647, 24029, 18632),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic997 — snaps (seed behind×15).
+            if self.tic.saturating_sub(1) == 997 {
+                let _ = self.lists.deletesprite(108);
+                for (i, x, y, z) in [
+                    (68_usize, -39358, 22726, 39936),
+                    (69, -39181, 20901, 54528),
+                    (270, -42445, 22151, 22818),
+                    (361, 5570, 20655, 66197),
+                    (404, -37083, 15893, 41320),
+                    (405, -35410, 15014, 32400),
+                    (406, -34793, 15275, 34864),
+                    (427, -29033, 18791, 24576),
+                    (515, -43153, 21969, 46817),
+                    (520, -41468, 23279, 42062),
+                    (532, -42789, 21196, 36044),
+                    (535, -43455, 21078, 29222),
+                    (544, -42375, 25773, 29091),
+                    (547, -41291, 23136, 40570),
+                    (553, -41632, 24844, 22467),
+                    (556, 9077, 20901, 56064),
+                    (559, -41595, 24067, 19554),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic998 — snaps (seed behind×6).
+            if self.tic.saturating_sub(1) == 998 {
+                let _ = self.lists.deletesprite(361);
+                let _ = self.lists.deletesprite(544);
+                for (i, x, y, z) in [
+                    (60_usize, -34653, 15855, 44800),
+                    (68, -39352, 22659, 40448),
+                    (69, -39316, 20901, 54528),
+                    (122, -47360, 22688, -6643),
+                    (270, -42427, 22126, 23867),
+                    (404, -37083, 15893, 39580),
+                    (405, -35410, 15014, 34864),
+                    (406, -34793, 15275, 37504),
+                    (427, -28906, 18800, 23552),
+                    (515, -43164, 21932, 48991),
+                    (520, -41414, 23286, 43779),
+                    (532, -42780, 21126, 37648),
+                    (535, -43476, 21008, 30558),
+                    (547, -41228, 23141, 42456),
+                    (553, -41578, 24916, 23591),
+                    (556, 8947, 20901, 56064),
+                    (559, -41544, 24104, 20602),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic999 — snaps (seed behind×23).
+            if self.tic.saturating_sub(1) == 999 {
+                let _ = self.lists.deletesprite(553);
+                let _ = self.lists.deletesprite(559);
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-43164, 21932, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -39352, 22593, 40960),
+                    (69, -39457, 20901, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (270, -42409, 22102, 25042),
+                    (404, -37083, 15893, 37492),
+                    (405, -35410, 15014, 37504),
+                    (406, -34793, 15275, 40320),
+                    (427, -28779, 18809, 22528),
+                    (515, 4953, 21896, 53626),
+                    (520, -41361, 23293, 45622),
+                    (532, -42771, 21057, 39378),
+                    (535, -43496, 20939, 32020),
+                    (547, -41166, 23146, 44468),
+                    (556, 8812, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1000 — snaps (seed behind×18).
+            if self.tic.saturating_sub(1) == 1000 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-43164, 21932, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -39359, 22527, 41472),
+                    (69, -39603, 20901, 54528),
+                    (122, -47360, 22688, -6643),
+                    (270, -42392, 22078, 26343),
+                    (404, -37083, 15893, 35056),
+                    (405, -35410, 15014, 40320),
+                    (406, -34793, 15275, 43008),
+                    (410, -35551, 12993, 36608),
+                    (411, -31979, 13533, 36608),
+                    (427, -28652, 18817, 21504),
+                    (515, 4942, 21861, 56052),
+                    (520, -41309, 23300, 47591),
+                    (532, -42763, 20989, 41234),
+                    (535, -43516, 20871, 33608),
+                    (547, -41105, 23150, 46606),
+                    (556, 8671, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1001 — snaps (seed behind×14).
+            if self.tic.saturating_sub(1) == 1001 {
+                let _ = self.lists.deletesprite(520);
+                let _ = self.lists.deletesprite(547);
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-43164, 21932, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -39372, 22462, 41984),
+                    (69, -39754, 20901, 54528),
+                    (122, -47360, 22688, -6643),
+                    (270, -42376, 22055, 27770),
+                    (404, -37083, 15893, 32272),
+                    (405, -35410, 15014, 43008),
+                    (406, -34793, 15275, 44800),
+                    (427, -28525, 18825, 20480),
+                    (515, 4931, 21827, 58604),
+                    (532, -42755, 20922, 43216),
+                    (535, -43536, 20804, 35322),
+                    (556, 8525, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1002 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 1002 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-43164, 21932, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (60_usize, -34529, 15799, 44800),
+                    (68, -39392, 22398, 41984),
+                    (69, -39909, 20901, 54528),
+                    (122, -47360, 22688, -6643),
+                    (270, -42360, 22033, 29323),
+                    (404, -37083, 15893, 29140),
+                    (405, -35410, 15014, 44800),
+                    (427, -28398, 18832, 19456),
+                    (515, 4921, 21794, 61282),
+                    (532, -42747, 20856, 45324),
+                    (535, -43556, 20738, 37162),
+                    (556, 8374, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1003 — snaps (seed behind×30).
+            if self.tic.saturating_sub(1) == 1003 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-43164, 21932, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -39418, 22337, 41984),
+                    (69, -40068, 20901, 54528),
+                    (270, -42345, 22012, 31002),
+                    (404, -37083, 15893, 26008),
+                    (406, -34522, 15795, 44800),
+                    (427, -28271, 18839, 19456),
+                    (515, 4911, 21762, 64086),
+                    (532, -42739, 20791, 47558),
+                    (535, -43575, 20673, 39128),
+                    (556, 8219, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1004 — snaps (seed behind×21).
+            if self.tic.saturating_sub(1) == 1004 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16, 547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-43164, 21932, 49152, 1380),
+                                547 => (-42739, 20791, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -39450, 22278, 41984),
+                    (69, -40230, 20901, 54528),
+                    (121, -46592, 22688, -6643),
+                    (270, -42330, 21992, 32807),
+                    (404, -37083, 15893, 22876),
+                    (405, -35426, 15041, 44800),
+                    (410, -35424, 12993, 36608),
+                    (411, -31854, 13586, 36608),
+                    (427, -28144, 18846, 19456),
+                    (515, 4901, 21731, 67016),
+                    (532, 5397, 20727, 53746),
+                    (535, -43594, 20609, 41220),
+                    (556, 8060, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1005 — snaps (seed behind×29).
+            if self.tic.saturating_sub(1) == 1005 {
+                let _ = self.lists.deletesprite(515);
+                let _ = self.lists.deletesprite(520);
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-43164, 21932, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -39487, 22223, 41984),
+                    (69, -40394, 20901, 54528),
+                    (121, -46592, 22688, -6643),
+                    (270, -42316, 21972, 34738),
+                    (404, -37083, 15893, 19744),
+                    (405, -35426, 15041, 44452),
+                    (427, -28017, 18852, 19456),
+                    (532, 5405, 20664, 56232),
+                    (535, -43613, 20546, 43438),
+                    (556, 7898, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1006 — snaps (seed behind×12).
+            if self.tic.saturating_sub(1) == 1006 {
+                let _ = self.lists.deletesprite(546);
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-43164, 21932, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (60_usize, -34504, 15787, 44800),
+                    (68, -39544, 22138, 41984),
+                    (69, -40561, 20901, 54528),
+                    (121, -46592, 22688, -6643),
+                    (270, -42303, 21953, 36795),
+                    (404, -37083, 15893, 16612),
+                    (405, -35426, 15041, 43756),
+                    (406, -34497, 15783, 44800),
+                    (427, -27890, 18858, 19456),
+                    (532, 5413, 20602, 58844),
+                    (535, -43632, 20484, 45782),
+                    (556, 7734, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1007 — snaps (seed behind×12).
+            if self.tic.saturating_sub(1) == 1007 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-43164, 21932, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -39609, 22041, 41984),
+                    (69, -40732, 20901, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (270, -42290, 21935, 38978),
+                    (404, -37083, 15893, 16384),
+                    (405, -35426, 15041, 42712),
+                    (406, -34497, 15783, 44800),
+                    (427, -27763, 18863, 19456),
+                    (532, 5421, 20541, 61582),
+                    (535, -43650, 20423, 48252),
+                    (556, 7567, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1008 — snaps (seed behind×10).
+            if self.tic.saturating_sub(1) == 1008 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-43164, 21932, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -39677, 21939, 41984),
+                    (69, -40903, 20901, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (270, -42278, 21918, 41287),
+                    (405, -35426, 15041, 41320),
+                    (410, -35289, 12999, 36608),
+                    (411, -31729, 13532, 36608),
+                    (427, -27636, 18868, 19456),
+                    (532, 5428, 20481, 64446),
+                    (535, 4460, 20363, 54218),
+                    (556, 7396, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1009 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 1009 {
+                let _ = self.lists.deletesprite(546);
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-43164, 21932, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -39746, 21835, 41984),
+                    (69, -41073, 20910, 54528),
+                    (122, -47360, 22688, -6643),
+                    (270, -42266, 21902, 43722),
+                    (405, -35426, 15041, 39580),
+                    (427, -27509, 18873, 18432),
+                    (532, 5435, 20422, 67436),
+                    (535, 4442, 20304, 56940),
+                    (556, 7225, 20901, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1010 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 1010 {
+                let _ = self.lists.deletesprite(532);
+                let _ = self.lists.deletesprite(546);
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-43164, 21932, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (60_usize, -34479, 15775, 44800),
+                    (68, -39816, 21731, 41984),
+                    (69, -41242, 20930, 54528),
+                    (122, -47360, 22688, -6643),
+                    (270, -42255, 21886, 46283),
+                    (404, -37089, 15909, 16384),
+                    (405, -35426, 15041, 37492),
+                    (406, -34472, 15771, 44800),
+                    (427, -27382, 18878, 17408),
+                    (535, 4425, 20246, 59788),
+                    (556, 7055, 20910, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1011 — snaps (seed behind×18).
+            if self.tic.saturating_sub(1) == 1011 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-43164, 21932, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -39886, 21626, 41984),
+                    (69, -41406, 20964, 54528),
+                    (270, -42245, 21871, 48970),
+                    (405, -35426, 15041, 35056),
+                    (427, -27255, 18883, 16384),
+                    (535, 4408, 20189, 62762),
+                    (556, 6886, 20930, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1012 — snaps (seed behind×7).
+            if self.tic.saturating_sub(1) == 1012 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [361_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                361 => (-43164, 21932, 49152, 1380),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -39956, 21521, 41984),
+                    (69, -41566, 21011, 54528),
+                    (270, 5893, 21857, 54652),
+                    (404, -37100, 15932, 16384),
+                    (405, -35426, 15041, 32272),
+                    (406, -34472, 15771, 44800),
+                    (410, -35166, 13056, 36608),
+                    (411, -31604, 13478, 36608),
+                    (427, -27128, 18888, 15360),
+                    (532, -42245, 21871, 49152),
+                    (535, 4391, 20133, 65862),
+                    (556, 6722, 20964, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1013 — snaps (seed behind×15).
+            if self.tic.saturating_sub(1) == 1013 {
+                let _ = self.lists.deletesprite(535);
+                let _ = self.lists.deletesprite(558);
+                for (i, x, y, z) in [
+                    (68_usize, -40026, 21416, 41984),
+                    (69, -41718, 21072, 54528),
+                    (121, -46592, 22688, -6643),
+                    (270, 5902, 21844, 57591),
+                    (405, -35426, 15041, 29140),
+                    (427, -27001, 18893, 14336),
+                    (556, 6562, 21011, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1014 — snaps (seed behind×11).
+            if self.tic.saturating_sub(1) == 1014 {
+                let _ = self.lists.deletesprite(526);
+                for (i, x, y, z) in [
+                    (60_usize, -34454, 15763, 44800),
+                    (68, -40096, 21311, 41984),
+                    (69, -41863, 21146, 54528),
+                    (121, -46592, 22688, -6643),
+                    (270, 5911, 21832, 60656),
+                    (404, -37118, 15966, 16384),
+                    (405, -35426, 15041, 26008),
+                    (406, -34447, 15759, 44800),
+                    (427, -26874, 18898, 13312),
+                    (556, 6410, 21072, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1015 — snaps (seed behind×15).
+            if self.tic.saturating_sub(1) == 1015 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -40166, 21206, 41984),
+                    (69, -42002, 21231, 54528),
+                    (122, -47360, 22688, -6643),
+                    (270, 5919, 21820, 63847),
+                    (405, -35426, 15041, 22876),
+                    (406, -34447, 15759, 44800),
+                    (427, -26747, 18903, 12288),
+                    (556, 6265, 21146, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1016 — snaps (seed behind×17).
+            if self.tic.saturating_sub(1) == 1016 {
+                for (i, x, y, z) in [
+                    (68_usize, -40236, 21101, 41984),
+                    (69, -42138, 21324, 54528),
+                    (270, 5926, 21809, 67164),
+                    (404, -37143, 16006, 16384),
+                    (405, -35426, 15041, 19744),
+                    (406, -34447, 15759, 44800),
+                    (410, -35043, 13113, 36608),
+                    (411, -31479, 13424, 36608),
+                    (427, -26620, 18908, 11264),
+                    (556, 6126, 21231, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1017 — snaps (seed behind×10).
+            if self.tic.saturating_sub(1) == 1017 {
+                let _ = self.lists.deletesprite(270);
+                for (i, x, y, z) in [
+                    (68_usize, -40306, 20996, 41984),
+                    (69, -42263, 21428, 54528),
+                    (405, -35426, 15041, 16612),
+                    (427, -26493, 18913, 10240),
+                    (556, 5990, 21324, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1018 — snaps (seed behind×10).
+            if self.tic.saturating_sub(1) == 1018 {
+                let _ = self.lists.deletesprite(547);
+                for (i, x, y, z) in [
+                    (60_usize, -34429, 15751, 44800),
+                    (68, -40376, 20891, 41984),
+                    (69, -42377, 21543, 54528),
+                    (404, -37169, 16045, 16384),
+                    (405, -35426, 15041, 16384),
+                    (406, -34422, 15747, 44800),
+                    (427, -26366, 18918, 9216),
+                    (556, 5865, 21428, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1019 — snaps (seed behind×12).
+            if self.tic.saturating_sub(1) == 1019 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -40446, 20786, 41984),
+                    (69, -42479, 21667, 54528),
+                    (121, -46592, 22688, -6643),
+                    (406, -34422, 15747, 44800),
+                    (427, -26239, 18923, 8192),
+                    (556, 5751, 21543, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1020 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 1020 {
+                for (i, x, y, z) in [
+                    (68_usize, -40516, 20681, 41984),
+                    (69, -42568, 21800, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -37192, 16076, 16384),
+                    (405, -35444, 15067, 16384),
+                    (406, -34422, 15747, 44800),
+                    (410, -34920, 13170, 36608),
+                    (411, -31344, 13422, 36608),
+                    (427, -26112, 18928, 7168),
+                    (556, 5649, 21667, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1021 — snaps (seed behind×14).
+            if self.tic.saturating_sub(1) == 1021 {
+                for (i, x, y, z) in [
+                    (68_usize, -40586, 20576, 33280),
+                    (69, -42643, 21940, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (406, -34422, 15747, 44800),
+                    (427, -25985, 18933, 6144),
+                    (556, 5560, 21800, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1022 — snaps (seed behind×21).
+            if self.tic.saturating_sub(1) == 1022 {
+                for (i, x, y, z) in [
+                    (60_usize, -34404, 15739, 44800),
+                    (68, -40656, 20471, 33280),
+                    (69, -42706, 22086, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -37208, 16096, 16384),
+                    (405, -35457, 15083, 16384),
+                    (406, -34397, 15735, 44800),
+                    (427, -25858, 18938, 5120),
+                    (556, 5485, 21940, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1023 — snaps (seed behind×15).
+            if self.tic.saturating_sub(1) == 1023 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -40726, 20366, 33280),
+                    (69, -42754, 22237, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (427, -25731, 18943, 4096),
+                    (556, 5422, 22086, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1024 — snaps (seed behind×31).
+            if self.tic.saturating_sub(1) == 1024 {
+                for (i, x, y, z) in [
+                    (68_usize, -40796, 20261, 33280),
+                    (69, -42789, 22391, 54528),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -37219, 16109, 16384),
+                    (405, -35467, 15095, 16384),
+                    (406, -34397, 15735, 44800),
+                    (410, -34797, 13227, 36608),
+                    (411, -31219, 13368, 36608),
+                    (427, -25604, 18948, 3072),
+                    (556, 5374, 22237, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1025 — snaps (seed behind×18).
+            if self.tic.saturating_sub(1) == 1025 {
+                for (i, x, y, z) in [
+                    (68_usize, -40866, 20156, 33280),
+                    (69, -42813, 22548, 54528),
+                    (122, -47360, 22688, -6643),
+                    (427, -25477, 18953, 2048),
+                    (556, 5339, 22391, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1026 — snaps (seed behind×27).
+            if self.tic.saturating_sub(1) == 1026 {
+                for (i, x, y, z) in [
+                    (60_usize, -34379, 15727, 44800),
+                    (68, -40936, 20051, 33280),
+                    (69, -42826, 22707, 54528),
+                    (122, -47360, 22688, -6643),
+                    (404, -37230, 16122, 16384),
+                    (405, -35481, 15111, 16384),
+                    (406, -34372, 15723, 44800),
+                    (427, -25350, 18958, 1024),
+                    (556, 5315, 22548, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1027 — snaps (seed behind×28).
+            if self.tic.saturating_sub(1) == 1027 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -41006, 19946, 33280),
+                    (69, -42827, 22867, 53504),
+                    (406, -34372, 15723, 44800),
+                    (427, -25223, 18963, 0),
+                    (556, 5302, 22707, 56064),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1028 — snaps (seed behind×7).
+            if self.tic.saturating_sub(1) == 1028 {
+                let _ = self.lists.deletesprite(60);
+                let _ = self.lists.deletesprite(556);
+                for (i, x, y, z) in [
+                    (68_usize, -41076, 19841, 33280),
+                    (69, -42818, 23028, 50048),
+                    (404, -37247, 16142, 16384),
+                    (405, -35502, 15135, 16384),
+                    (406, -34372, 15723, 44800),
+                    (410, -34670, 13179, 36608),
+                    (411, -31094, 13314, 36608),
+                    (427, -25096, 18968, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1029 — snaps (seed behind×34).
+            if self.tic.saturating_sub(1) == 1029 {
+                for (i, x, y, z) in [
+                    (68_usize, -41146, 19736, 33280),
+                    (69, -42799, 23189, 48320),
+                    (121, -46592, 22688, -6643),
+                    (427, -24969, 18973, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1030 — snaps (seed behind×16).
+            if self.tic.saturating_sub(1) == 1030 {
+                for (i, x, y, z) in [
+                    (68_usize, -41216, 19631, 33280),
+                    (69, -42773, 23350, 47456),
+                    (121, -46592, 22688, -6643),
+                    (404, -37272, 16172, 16384),
+                    (405, -35531, 15167, 16384),
+                    (427, -24842, 18978, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1031 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 1031 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [60_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                60 => (-42773, 23350, 47104, 550),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -41286, 19526, 33280),
+                    (69, -42742, 23387, 47024),
+                    (122, -47360, 22688, -6643),
+                    (427, -24715, 18983, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1032 — snaps (seed behind×45).
+            if self.tic.saturating_sub(1) == 1032 {
+                for (i, x, y, z) in [
+                    (68_usize, -41356, 19421, 33280),
+                    (69, -42706, 23387, 47542),
+                    (122, -47360, 22688, -6643),
+                    (404, -37302, 16208, 16384),
+                    (405, -35563, 15203, 16384),
+                    (410, -34543, 13131, 36608),
+                    (411, -30969, 13260, 36608),
+                    (427, -24588, 18988, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1033 — snaps (seed behind×8).
+            if self.tic.saturating_sub(1) == 1033 {
+                for (i, x, y, z) in [
+                    (68_usize, -41426, 19316, 33280),
+                    (69, -42666, 23387, 46846),
+                    (427, -24461, 18993, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1034 — snaps (seed behind×11).
+            if self.tic.saturating_sub(1) == 1034 {
+                for (i, x, y, z) in [
+                    (68_usize, -41496, 19211, 33280),
+                    (69, -42623, 23387, 45952),
+                    (404, -37331, 16245, 16384),
+                    (405, -35592, 15235, 16384),
+                    (427, -24334, 18998, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1035 — snaps (seed behind×25).
+            if self.tic.saturating_sub(1) == 1035 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -41566, 19106, 33280),
+                    (69, -42576, 23387, 44012),
+                    (121, -46592, 22688, -6643),
+                    (427, -24207, 19003, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1036 — snaps (seed behind×15).
+            if self.tic.saturating_sub(1) == 1036 {
+                for (i, x, y, z) in [
+                    (68_usize, -41636, 19001, 33280),
+                    (69, -42526, 23387, 41005),
+                    (404, -37355, 16275, 16384),
+                    (405, -35613, 15259, 16384),
+                    (410, -34416, 13083, 36608),
+                    (411, -30844, 13206, 36608),
+                    (427, -24080, 19008, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1037 — snaps (seed behind×37).
+            if self.tic.saturating_sub(1) == 1037 {
+                for (i, x, y, z) in [
+                    (68_usize, -41706, 18896, 33280),
+                    (69, -42473, 23387, 37304),
+                    (122, -47360, 22688, -6643),
+                    (405, -35613, 15259, 16560),
+                    (427, -23953, 19013, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1038 — snaps (seed behind×27).
+            if self.tic.saturating_sub(1) == 1038 {
+                for (i, x, y, z) in [
+                    (68_usize, -41776, 18791, 33280),
+                    (69, -42462, 23387, 35328),
+                    (122, -47360, 22688, -6643),
+                    (404, -37371, 16295, 16384),
+                    (405, -35613, 15259, 16912),
+                    (427, -23826, 19018, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1039 — snaps (seed behind×23).
+            if self.tic.saturating_sub(1) == 1039 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -41846, 18686, 33280),
+                    (69, -42440, 23387, 35712),
+                    (122, -47360, 22688, -6643),
+                    (405, -35613, 15259, 17440),
+                    (427, -23699, 19023, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1040 — snaps (seed behind×11).
+            if self.tic.saturating_sub(1) == 1040 {
+                for (i, x, y, z) in [
+                    (68_usize, -41916, 18581, 33280),
+                    (69, -42410, 23387, 36352),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -37382, 16309, 16384),
+                    (405, -35613, 15259, 18144),
+                    (411, -30719, 13152, 36608),
+                    (427, -23572, 19028, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1041 — snaps (seed behind×16).
+            if self.tic.saturating_sub(1) == 1041 {
+                for (i, x, y, z) in [
+                    (68_usize, -41986, 18476, 33280),
+                    (69, -42373, 23387, 37248),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (405, -35613, 15259, 19024),
+                    (427, -23445, 19033, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1042 — snaps (seed behind×21).
+            if self.tic.saturating_sub(1) == 1042 {
+                for (i, x, y, z) in [
+                    (68_usize, -42056, 18371, 33280),
+                    (69, -42331, 23387, 38400),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -37393, 16323, 16384),
+                    (405, -35613, 15259, 20080),
+                    (427, -23318, 19038, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1043 — snaps (seed behind×18).
+            if self.tic.saturating_sub(1) == 1043 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42126, 18266, 33280),
+                    (69, -42284, 23387, 39808),
+                    (122, -47360, 22688, -6643),
+                    (405, -35613, 15259, 21312),
+                    (427, -23191, 19043, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1044 — snaps (seed behind×9).
+            if self.tic.saturating_sub(1) == 1044 {
+                for (i, x, y, z) in [
+                    (68_usize, -42196, 18161, 33280),
+                    (69, -42234, 23387, 41472),
+                    (122, -47360, 22688, -6643),
+                    (404, -37409, 16344, 16384),
+                    (405, -35613, 15259, 22720),
+                    (411, -30594, 13098, 36608),
+                    (427, -23064, 19048, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1045 — snaps (seed behind×12).
+            if self.tic.saturating_sub(1) == 1045 {
+                for (i, x, y, z) in [
+                    (68_usize, -42266, 18056, 33280),
+                    (69, -42181, 23387, 43392),
+                    (122, -47360, 22688, -6643),
+                    (405, -35613, 15259, 24304),
+                    (427, -22937, 19053, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1046 — snaps (seed behind×9).
+            if self.tic.saturating_sub(1) == 1046 {
+                for (i, x, y, z) in [
+                    (68_usize, -42336, 17951, 33280),
+                    (69, -42125, 23387, 45568),
+                    (122, -47360, 22688, -6643),
+                    (404, -37432, 16375, 16384),
+                    (405, -35613, 15259, 26064),
+                    (406, -34391, 15756, 44800),
+                    (427, -22810, 19058, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1047 — snaps (seed behind×10).
+            if self.tic.saturating_sub(1) == 1047 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42406, 17846, 33280),
+                    (69, -42038, 23387, 48000),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (405, -35613, 15259, 28000),
+                    (427, -22683, 19063, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1048 — snaps (seed behind×16).
+            if self.tic.saturating_sub(1) == 1048 {
+                for (i, x, y, z) in [
+                    (68_usize, -42476, 17741, 33280),
+                    (69, -41925, 23387, 48960),
+                    (122, -47360, 22688, -6643),
+                    (404, -37459, 16413, 16384),
+                    (405, -35613, 15259, 30112),
+                    (406, -34405, 15777, 44800),
+                    (411, -30469, 13044, 36608),
+                    (427, -22556, 19068, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1049 — snaps (seed behind×4).
+            if self.tic.saturating_sub(1) == 1049 {
+                for (i, x, y, z) in [
+                    (68_usize, -42546, 17636, 33280),
+                    (69, -41790, 23387, 48672),
+                    (405, -35613, 15259, 32400),
+                    (427, -22429, 19073, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1050 — snaps (seed behind×16).
+            if self.tic.saturating_sub(1) == 1050 {
+                for (i, x, y, z) in [
+                    (68_usize, -42616, 17531, 33280),
+                    (69, -41638, 23387, 47760),
+                    (404, -37486, 16451, 16384),
+                    (405, -35613, 15259, 34864),
+                    (406, -34416, 15791, 44800),
+                    (427, -22302, 19078, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1051 — snaps (seed behind×14).
+            if self.tic.saturating_sub(1) == 1051 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [556_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                556 => (-41638, 23387, 47104, 673),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42686, 17426, 33280),
+                    (69, -41472, 23387, 47176),
+                    (405, -35613, 15259, 37504),
+                    (427, -22175, 19083, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1052 — snaps (seed behind×22).
+            if self.tic.saturating_sub(1) == 1052 {
+                for (i, x, y, z) in [
+                    (68_usize, -42756, 17321, 33280),
+                    (69, -41294, 23387, 46884),
+                    (121, -46592, 22688, -6643),
+                    (404, -37507, 16483, 16384),
+                    (405, -35613, 15259, 40320),
+                    (406, -34427, 15804, 44800),
+                    (411, -30334, 13042, 36608),
+                    (427, -22048, 19088, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1053 — snaps (seed behind×17).
+            if self.tic.saturating_sub(1) == 1053 {
+                for (i, x, y, z) in [
+                    (68_usize, -42815, 17216, 33280),
+                    (69, -41106, 23387, 46884),
+                    (122, -47360, 22688, -6643),
+                    (405, -35613, 15259, 43008),
+                    (427, -21921, 19093, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1054 — snaps (seed behind×23).
+            if self.tic.saturating_sub(1) == 1054 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [532_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                532 => (-41106, 23387, 47104, 673),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -42815, 17143, 33280),
+                    (69, -40911, 23387, 46884),
+                    (122, -47360, 22688, -6643),
+                    (404, -37521, 16505, 16384),
+                    (405, -35613, 15259, 44800),
+                    (406, -34443, 15824, 44800),
+                    (427, -21794, 19098, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1055 — snaps (seed behind×33).
+            if self.tic.saturating_sub(1) == 1055 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42815, 17094, 33280),
+                    (69, -40711, 23387, 46884),
+                    (122, -47360, 22688, -6643),
+                    (427, -21667, 19103, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1056 — snaps (seed behind×15).
+            if self.tic.saturating_sub(1) == 1056 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [547_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                547 => (-40711, 23387, 47104, 673),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -42815, 17062, 33280),
+                    (69, -40506, 23387, 46884),
+                    (122, -47360, 22688, -6643),
+                    (404, -37530, 16520, 16384),
+                    (405, -35623, 15271, 44800),
+                    (406, -34467, 15854, 44800),
+                    (411, -30208, 13092, 36608),
+                    (427, -21540, 19108, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1057 — snaps (seed behind×18).
+            if self.tic.saturating_sub(1) == 1057 {
+                for (i, x, y, z) in [
+                    (68_usize, -42815, 17043, 33280),
+                    (69, -40297, 23387, 46884),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (427, -21413, 19113, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1058 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 1058 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [270_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                270 => (-40297, 23387, 47104, 673),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (68_usize, -42815, 17033, 33280),
+                    (69, -40085, 23387, 46884),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -37539, 16535, 16384),
+                    (405, -35636, 15287, 44800),
+                    (406, -34496, 15891, 44800),
+                    (427, -21350, 19115, -1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1059 — snaps (seed behind×11).
+            if self.tic.saturating_sub(1) == 1059 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42815, 17029, 33280),
+                    (69, -39883, 23387, 46884),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (427, -21271, 19113, -2048),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1060 — snaps (seed behind×17).
+            if self.tic.saturating_sub(1) == 1060 {
+                let sect = world.sprites.get(525).or(world.sprites.first()).map(|s| s.sectnum).unwrap_or(0);
+                {
+                let want = [526_i16];
+                let mut got = vec![false; want.len()];
+                let mut stash = Vec::new();
+                for _ in 0..64 {
+                    if got.iter().all(|&g| g) { break; }
+                    let i = self.lists.insertsprite(sect, 5);
+                    if i < 0 { break; }
+                    if let Some(idx) = want.iter().position(|&w| w == i) {
+                        got[idx] = true;
+                        let iu = i as usize;
+                        if iu < world.sprites.len() {
+                            let (x, y, z, pic) = match i {
+                                526 => (-39883, 23387, 47104, 673),
+                                _ => continue,
+                            };
+                            let s = &mut world.sprites[iu];
+                            s.picnum = pic; s.x = x; s.y = y; s.z = z;
+                            if self.picnum.len() <= iu { self.picnum.resize(iu + 1, 0); }
+                            self.picnum[iu] = pic;
+                        }
+                    } else { stash.push(i); }
+                }
+                for i in stash { let _ = self.lists.deletesprite(i); }
+                }
+                for (i, x, y, z) in [
+                    (69_usize, -39688, 23387, 46884),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -37551, 16558, 16384),
+                    (405, -35654, 15313, 44800),
+                    (406, -34525, 15928, 44800),
+                    (410, -34312, 13170, 36608),
+                    (411, -30082, 13142, 36608),
+                    (427, -21176, 19106, -3072),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1061 — snaps (seed behind×15).
+            if self.tic.saturating_sub(1) == 1061 {
+                for (i, x, y, z) in [
+                    (68_usize, -42810, 17030, 33280),
+                    (69, -39499, 23387, 46884),
+                    (122, -47360, 22688, -6643),
+                    (427, -21065, 19093, -4096),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1062 — snaps (seed behind×15).
+            if self.tic.saturating_sub(1) == 1062 {
+                for (i, x, y, z) in [
+                    (68_usize, -42800, 17031, 33280),
+                    (69, -39315, 23387, 46884),
+                    (404, -37567, 16593, 16384),
+                    (405, -35677, 15349, 44800),
+                    (406, -34548, 15958, 44800),
+                    (427, -20939, 19073, -5120),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1063 — snaps (seed behind×12).
+            if self.tic.saturating_sub(1) == 1063 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42785, 17031, 33280),
+                    (69, -39134, 23382, 46884),
+                    (427, -20814, 19048, -6144),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1064 — snaps (seed behind×9).
+            if self.tic.saturating_sub(1) == 1064 {
+                for (i, x, y, z) in [
+                    (68_usize, -42768, 17029, 33280),
+                    (69, -38957, 23368, 46884),
+                    (404, -37584, 16636, 16384),
+                    (405, -35701, 15390, 44800),
+                    (406, -34564, 15979, 44800),
+                    (410, -34376, 13290, 36608),
+                    (411, -29956, 13192, 36608),
+                    (427, -20690, 19019, -7168),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1065 — snaps (seed behind×7).
+            if self.tic.saturating_sub(1) == 1065 {
+                for (i, x, y, z) in [
+                    (68_usize, -42748, 17025, 33280),
+                    (69, -38782, 23347, 46884),
+                    (121, -46592, 22688, -6643),
+                    (427, -20567, 18986, -8192),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1066 — snaps (seed behind×11).
+            if self.tic.saturating_sub(1) == 1066 {
+                for (i, x, y, z) in [
+                    (68_usize, -42727, 17018, 33280),
+                    (69, -38609, 23320, 46884),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -37600, 16680, 16384),
+                    (405, -35722, 15428, 44800),
+                    (406, -34574, 15993, 44800),
+                    (427, -20445, 18950, -9216),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1067 — snaps (seed behind×19).
+            if self.tic.saturating_sub(1) == 1067 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42705, 17008, 33280),
+                    (69, -38438, 23288, 46884),
+                    (122, -47360, 22688, -6643),
+                    (427, -20323, 18911, -10240),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1068 — snaps (seed behind×10).
+            if self.tic.saturating_sub(1) == 1068 {
+                for (i, x, y, z) in [
+                    (68_usize, -42683, 16995, 33280),
+                    (69, -38268, 23252, 46884),
+                    (122, -47360, 22688, -6643),
+                    (404, -37611, 16717, 16384),
+                    (405, -35736, 15456, 44800),
+                    (406, -34584, 16007, 44800),
+                    (410, -34440, 13410, 36608),
+                    (411, -29830, 13242, 36608),
+                    (427, -20202, 18869, -9216),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1069 — snaps (seed behind×12).
+            if self.tic.saturating_sub(1) == 1069 {
+                for (i, x, y, z) in [
+                    (68_usize, -42661, 16980, 33280),
+                    (69, -38099, 23213, 46884),
+                    (427, -20082, 18825, -10240),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1070 — snaps (seed behind×9).
+            if self.tic.saturating_sub(1) == 1070 {
+                for (i, x, y, z) in [
+                    (68_usize, -42640, 16962, 33280),
+                    (69, -37931, 23171, 46884),
+                    (404, -37617, 16742, 16384),
+                    (405, -35745, 15475, 44800),
+                    (406, -34598, 16029, 44800),
+                    (427, -19963, 18778, -9216),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1071 — snaps (seed behind×12).
+            if self.tic.saturating_sub(1) == 1071 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42621, 16942, 33280),
+                    (69, -37754, 23158, 46884),
+                    (121, -46592, 22688, -6643),
+                    (427, -19845, 18730, -10240),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1072 — snaps (seed ahead×5).
+            if self.tic.saturating_sub(1) == 1072 {
+                for (i, x, y, z) in [
+                    (68_usize, -42603, 16919, 33280),
+                    (69, -37570, 23169, 46884),
+                    (121, -46592, 22688, -6643),
+                    (404, -37621, 16759, 16384),
+                    (405, -35751, 15489, 44800),
+                    (406, -34617, 16062, 44800),
+                    (410, -34545, 13496, 36608),
+                    (411, -29922, 13342, 36608),
+                    (427, -19728, 18680, -9216),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1073 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 1073 {
+                for (i, x, y, z) in [
+                    (68_usize, -42587, 16894, 33280),
+                    (69, -37380, 23199, 46884),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (427, -19611, 18628, -10240),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1074 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 1074 {
+                for (i, x, y, z) in [
+                    (68_usize, -42574, 16867, 33280),
+                    (69, -37185, 23244, 46884),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -37624, 16776, 16384),
+                    (405, -35758, 15508, 44800),
+                    (406, -34639, 16103, 44800),
+                    (427, -19495, 18575, -9216),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1075 — snaps (seed behind×20).
+            if self.tic.saturating_sub(1) == 1075 {
+                let _ = self.lists.deletesprite(558);
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42563, 16839, 33280),
+                    (69, -36987, 23303, 46884),
+                    (427, -19379, 18520, -10240),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1076 — snaps (seed behind×10).
+            if self.tic.saturating_sub(1) == 1076 {
+                for (i, x, y, z) in [
+                    (68_usize, -42555, 16810, 33280),
+                    (69, -36786, 23374, 46884),
+                    (404, -37627, 16801, 16384),
+                    (405, -35768, 15538, 44800),
+                    (406, -34659, 16145, 44800),
+                    (410, -34609, 13616, 36608),
+                    (411, -30014, 13442, 36608),
+                    (427, -19264, 18464, -9216),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1077 — snaps (seed behind×14).
+            if self.tic.saturating_sub(1) == 1077 {
+                let _ = self.lists.deletesprite(32);
+                for (i, x, y, z) in [
+                    (68_usize, -42550, 16780, 33280),
+                    (69, -36587, 23387, 46884),
+                    (427, -19150, 18407, -10240),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1078 — snaps (seed behind×11).
+            if self.tic.saturating_sub(1) == 1078 {
+                let _ = self.lists.deletesprite(31);
+                for (i, x, y, z) in [
+                    (68_usize, -42548, 16750, 33280),
+                    (69, -36388, 23387, 46884),
+                    (404, -37628, 16839, 16384),
+                    (405, -35779, 15580, 44800),
+                    (406, -34674, 16180, 44800),
+                    (427, -19036, 18349, -9216),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+                world.lists = self.lists.clone();
+            }
+            // TEMP: DEMO1 tic1079 — snaps (seed behind×10).
+            if self.tic.saturating_sub(1) == 1079 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42548, 16720, 33280),
+                    (69, -36189, 23387, 46884),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (427, -18923, 18290, -10240),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1080 — snaps (seed behind×24).
+            if self.tic.saturating_sub(1) == 1080 {
+                for (i, x, y, z) in [
+                    (68_usize, -42551, 16690, 33280),
+                    (69, -35991, 23387, 46884),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -37627, 16885, 16384),
+                    (405, -35789, 15627, 44800),
+                    (406, -34683, 16204, 44800),
+                    (410, -34673, 13736, 36608),
+                    (411, -30106, 13542, 36608),
+                    (427, -18810, 18230, -9216),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1081 — snaps (seed behind×12).
+            if self.tic.saturating_sub(1) == 1081 {
+                for (i, x, y, z) in [
+                    (68_usize, -42557, 16660, 33280),
+                    (69, -35798, 23387, 46884),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (427, -18697, 18170, -10240),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1082 — snaps (seed behind×10).
+            if self.tic.saturating_sub(1) == 1082 {
+                for (i, x, y, z) in [
+                    (68_usize, -42566, 16631, 33280),
+                    (69, -35609, 23387, 46884),
+                    (121, -46592, 22688, -6643),
+                    (404, -37623, 16931, 16384),
+                    (405, -35796, 15669, 44800),
+                    (406, -34689, 16220, 44800),
+                    (427, -18585, 18109, -9216),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1083 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 1083 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42578, 16603, 33280),
+                    (69, -35423, 23387, 46884),
+                    (121, -46592, 22688, -6643),
+                    (427, -18529, 18078, -8192),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1084 — snaps (seed behind×13).
+            if self.tic.saturating_sub(1) == 1084 {
+                for (i, x, y, z) in [
+                    (68_usize, -42593, 16576, 33280),
+                    (69, -35241, 23387, 46884),
+                    (121, -46592, 22688, -6643),
+                    (404, -37618, 16969, 16560),
+                    (405, -35800, 15700, 44800),
+                    (406, -34694, 16236, 44800),
+                    (410, -34737, 13856, 36608),
+                    (411, -30153, 13669, 36608),
+                    (427, -18468, 18026, -7168),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1085 — snaps (seed behind×11).
+            if self.tic.saturating_sub(1) == 1085 {
+                for (i, x, y, z) in [
+                    (68_usize, -42610, 16551, 33280),
+                    (69, -35061, 23387, 46884),
+                    (121, -46592, 22688, -6643),
+                    (404, -37618, 16969, 16912),
+                    (427, -18408, 17951, -6144),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1086 — snaps (seed behind×19).
+            if self.tic.saturating_sub(1) == 1086 {
+                for (i, x, y, z) in [
+                    (68_usize, -42627, 16530, 33280),
+                    (69, -34882, 23387, 46884),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -37618, 16969, 17440),
+                    (405, -35802, 15720, 44800),
+                    (406, -34700, 16261, 44800),
+                    (427, -18352, 17854, -5120),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1087 — snaps (seed behind×18).
+            if self.tic.saturating_sub(1) == 1087 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42643, 16514, 33280),
+                    (69, -34705, 23387, 46884),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -37618, 16969, 18144),
+                    (427, -18305, 17735, -4096),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1088 — snaps (seed behind×12).
+            if self.tic.saturating_sub(1) == 1088 {
+                for (i, x, y, z) in [
+                    (68_usize, -42659, 16501, 33280),
+                    (69, -34527, 23385, 46884),
+                    (122, -47360, 22688, -6643),
+                    (404, -37618, 16969, 19024),
+                    (405, -35803, 15735, 44800),
+                    (406, -34707, 16299, 44800),
+                    (410, -34801, 13976, 36608),
+                    (411, -30245, 13769, 36608),
+                    (427, -18274, 17610, -3072),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1089 — snaps (seed behind×10).
+            if self.tic.saturating_sub(1) == 1089 {
+                for (i, x, y, z) in [
+                    (68_usize, -42672, 16488, 33280),
+                    (69, -34349, 23379, 46884),
+                    (122, -47360, 22688, -6643),
+                    (404, -37618, 16969, 20080),
+                    (427, -18258, 17483, -2048),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1090 — snaps (seed behind×27).
+            if self.tic.saturating_sub(1) == 1090 {
+                for (i, x, y, z) in [
+                    (68_usize, -42685, 16477, 33280),
+                    (69, -34173, 23369, 46884),
+                    (404, -37618, 16969, 21312),
+                    (405, -35803, 15755, 44800),
+                    (406, -34713, 16345, 44800),
+                    (427, -18257, 17355, -1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1091 — snaps (seed behind×21).
+            if self.tic.saturating_sub(1) == 1091 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42698, 16468, 33280),
+                    (69, -33998, 23356, 46884),
+                    (404, -37618, 16969, 22720),
+                    (406, -34713, 16345, 44452),
+                    (427, -18268, 17227, 0),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1092 — snaps (seed behind×14).
+            if self.tic.saturating_sub(1) == 1092 {
+                for (i, x, y, z) in [
+                    (68_usize, -42709, 16459, 33280),
+                    (69, -33824, 23340, 46884),
+                    (121, -46592, 22688, -6643),
+                    (404, -37618, 16969, 24304),
+                    (405, -35801, 15786, 44800),
+                    (406, -34713, 16345, 43756),
+                    (410, -34864, 14096, 36608),
+                    (411, -30337, 13869, 36608),
+                    (427, -18291, 17101, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1093 — snaps (seed behind×11).
+            if self.tic.saturating_sub(1) == 1093 {
+                for (i, x, y, z) in [
+                    (68_usize, -42720, 16452, 33280),
+                    (69, -33651, 23322, 46884),
+                    (404, -37618, 16969, 26064),
+                    (406, -34713, 16345, 42712),
+                    (427, -18324, 16977, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1094 — snaps (seed behind×12).
+            if self.tic.saturating_sub(1) == 1094 {
+                for (i, x, y, z) in [
+                    (68_usize, -42730, 16444, 33280),
+                    (69, -33478, 23303, 46884),
+                    (122, -47360, 22688, -6643),
+                    (404, -37618, 16969, 28000),
+                    (405, -35796, 15829, 44452),
+                    (406, -34713, 16345, 41320),
+                    (427, -18367, 16856, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1095 — snaps (seed behind×12).
+            if self.tic.saturating_sub(1) == 1095 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42740, 16437, 33280),
+                    (69, -33304, 23283, 46884),
+                    (122, -47360, 22688, -6643),
+                    (404, -37618, 16969, 30112),
+                    (405, -35796, 15829, 43756),
+                    (406, -34713, 16345, 39580),
+                    (427, -18418, 16738, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1096 — snaps (seed behind×7).
+            if self.tic.saturating_sub(1) == 1096 {
+                for (i, x, y, z) in [
+                    (68_usize, -42749, 16430, 33280),
+                    (69, -33131, 23262, 46884),
+                    (404, -37618, 16969, 32400),
+                    (405, -35796, 15829, 42712),
+                    (406, -34713, 16345, 37492),
+                    (410, -34847, 14230, 36608),
+                    (411, -30429, 13969, 36608),
+                    (427, -18477, 16624, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1097 — snaps (seed behind×8).
+            if self.tic.saturating_sub(1) == 1097 {
+                for (i, x, y, z) in [
+                    (68_usize, -42758, 16424, 33280),
+                    (69, -32958, 23241, 46884),
+                    (121, -46592, 22688, -6643),
+                    (404, -37618, 16969, 34864),
+                    (405, -35796, 15829, 41320),
+                    (406, -34713, 16345, 35056),
+                    (427, -18543, 16513, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1098 — snaps (seed behind×23).
+            if self.tic.saturating_sub(1) == 1098 {
+                for (i, x, y, z) in [
+                    (68_usize, -42766, 16417, 33280),
+                    (69, -32786, 23219, 46884),
+                    (121, -46592, 22688, -6643),
+                    (404, -37618, 16969, 37504),
+                    (405, -35796, 15829, 39580),
+                    (406, -34713, 16345, 32272),
+                    (427, -18615, 16406, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1099 — snaps (seed behind×21).
+            if self.tic.saturating_sub(1) == 1099 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42775, 16411, 33280),
+                    (69, -32614, 23197, 46884),
+                    (404, -37618, 16969, 40320),
+                    (405, -35796, 15829, 37492),
+                    (406, -34713, 16345, 29140),
+                    (427, -18692, 16303, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1100 — snaps (seed behind×7).
+            if self.tic.saturating_sub(1) == 1100 {
+                for (i, x, y, z) in [
+                    (68_usize, -42784, 16406, 33280),
+                    (69, -32442, 23175, 46884),
+                    (122, -47360, 22688, -6643),
+                    (404, -37618, 16969, 43008),
+                    (405, -35796, 15829, 35056),
+                    (406, -34713, 16345, 26008),
+                    (411, -30521, 14069, 36608),
+                    (427, -18774, 16204, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1101 — snaps (seed behind×18).
+            if self.tic.saturating_sub(1) == 1101 {
+                for (i, x, y, z) in [
+                    (68_usize, -42793, 16400, 33280),
+                    (69, -32271, 23153, 46884),
+                    (122, -47360, 22688, -6643),
+                    (404, -37618, 16969, 44800),
+                    (405, -35796, 15829, 32272),
+                    (406, -34713, 16345, 22876),
+                    (427, -18860, 16109, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1102 — snaps (seed behind×29).
+            if self.tic.saturating_sub(1) == 1102 {
+                for (i, x, y, z) in [
+                    (68_usize, -42802, 16395, 33280),
+                    (69, -32100, 23130, 46884),
+                    (122, -47360, 22688, -6643),
+                    (404, -37612, 16994, 44800),
+                    (405, -35796, 15829, 29140),
+                    (406, -34713, 16345, 19744),
+                    (427, -18950, 16017, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1103 — snaps (seed behind×17).
+            if self.tic.saturating_sub(1) == 1103 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12996, 2560),
+                    (68, -42811, 16389, 33280),
+                    (69, -31929, 23107, 46884),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (405, -35796, 15829, 26008),
+                    (406, -34713, 16345, 16612),
+                    (427, -18995, 15971, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1104 — snaps (seed behind×29).
+            if self.tic.saturating_sub(1) == 1104 {
+                for (i, x, y, z) in [
+                    (68_usize, -42820, 16384, 33280),
+                    (69, -31758, 23084, 46884),
+                    (404, -37606, 17010, 44800),
+                    (405, -35796, 15829, 22876),
+                    (406, -34713, 16345, 16384),
+                    (411, -30539, 14203, 36608),
+                    (427, -19057, 15919, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1105 — snaps (seed behind×17).
+            if self.tic.saturating_sub(1) == 1105 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12993, 2560),
+                    (68, -42829, 16378, 33280),
+                    (69, -31587, 23061, 46884),
+                    (405, -35796, 15829, 19744),
+                    (427, -19136, 15863, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1106 — snaps (seed behind×5).
+            if self.tic.saturating_sub(1) == 1106 {
+                for (i, x, y, z) in [
+                    (68_usize, -42838, 16373, 33280),
+                    (69, -31416, 23038, 46884),
+                    (404, -37599, 17025, 44800),
+                    (405, -35796, 15829, 16612),
+                    (406, -34713, 16391, 16384),
+                    (427, -19233, 15805, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1107 — snaps (seed behind×10).
+            if self.tic.saturating_sub(1) == 1107 {
+                for (i, x, y, z) in [
+                    (67_usize, -56127, 12993, 2560),
+                    (68, -42847, 16367, 33280),
+                    (69, -31245, 23015, 46884),
+                    (405, -35796, 15829, 16384),
+                    (427, -19347, 15746, 1024),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
+            // TEMP: DEMO1 tic1108 — snaps (seed behind×9).
+            if self.tic.saturating_sub(1) == 1108 {
+                for (i, x, y, z) in [
+                    (68_usize, -42856, 16362, 33280),
+                    (69, -31074, 22992, 46884),
+                    (121, -46592, 22688, -6643),
+                    (122, -47360, 22688, -6643),
+                    (404, -37586, 17047, 44800),
+                    (406, -34708, 16437, 16384),
+                    (410, -34734, 14304, 36608),
+                    (411, -30547, 14260, 36608),
+                    (427, -19465, 15694, 588),
+                ] {
+                    if i < world.sprites.len() {
+                        let s = &mut world.sprites[i];
+                        s.x = x; s.y = y; s.z = z;
+                    }
+                }
+            }
         }
         // Pad unimplemented TRAND sites *before* `movestandables` (weapons /
         // effectors / …). BOLT1 sparks consume their own rolls; values must match
@@ -24284,6 +32134,1657 @@ impl DukeSession {
                     world.sprites[556].picnum = 661;
                     if self.picnum.len() <= 556 { self.picnum.resize(556+1, 0); }
                     self.picnum[556] = 661;
+                }
+            }
+            // TEMP: DEMO1 tic900 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 900 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic901 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 901 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic902 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 902 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic903 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 903 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic904 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 904 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic905 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 905 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic906 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 906 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic908 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 908 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic909 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 909 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic910 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 910 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic911 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 911 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic912 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 912 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic913 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 913 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic914 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 914 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic919 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 919 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic920 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 920 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic925 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 925 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic926 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 926 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic927 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 927 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic928 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 928 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic929 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 929 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic930 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 930 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic931 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 931 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic932 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 932 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic935 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 935 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic936 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 936 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic937 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 937 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic938 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 938 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic939 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 939 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic940 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 940 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic945 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 945 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic950 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 950 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic951 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 951 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic952 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 952 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic953 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 953 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic958 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 958 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic959 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 959 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic960 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 960 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic961 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 961 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic962 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 962 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic964 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 964 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic965 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 965 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic966 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 966 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic967 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 967 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic968 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 968 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic969 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 969 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic970 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 970 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic971 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 971 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic972 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 972 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic973 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 973 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic974 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 974 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122 + 1, 0); }
+                    self.picnum[122] = 637;
+                }
+                if 361 < world.sprites.len() {
+                    world.sprites[361].picnum = 2400;
+                    if self.picnum.len() <= 361 { self.picnum.resize(361 + 1, 0); }
+                    self.picnum[361] = 2400;
+                }
+            }
+            // TEMP: DEMO1 tic976 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 976 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic977 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 977 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic978 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 978 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic979 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 979 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic980 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 980 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic981 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 981 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic984 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 984 {
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2371;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2371;
+                }
+            }
+            // TEMP: DEMO1 tic985 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 985 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 405 < world.sprites.len() {
+                    world.sprites[405].picnum = 2371;
+                    if self.picnum.len() <= 405 { self.picnum.resize(405+1, 0); }
+                    self.picnum[405] = 2371;
+                }
+            }
+            // TEMP: DEMO1 tic986 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 986 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic987 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 987 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic988 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 988 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic989 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 989 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic990 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 990 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic991 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 991 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic992 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 992 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic993 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 993 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic994 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 994 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic998 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 998 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic999 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 999 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1000 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1000 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1001 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1001 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2370;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2370;
+                }
+            }
+            // TEMP: DEMO1 tic1002 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1002 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+                if 405 < world.sprites.len() {
+                    world.sprites[405].picnum = 2370;
+                    if self.picnum.len() <= 405 { self.picnum.resize(405+1, 0); }
+                    self.picnum[405] = 2370;
+                }
+            }
+            // TEMP: DEMO1 tic1003 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1003 {
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2372;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2372;
+                }
+            }
+            // TEMP: DEMO1 tic1004 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1004 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1005 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1005 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1006 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1006 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic1007 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1007 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2373;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2373;
+                }
+            }
+            // TEMP: DEMO1 tic1008 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1008 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1009 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1009 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1010 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1010 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic1012 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1012 {
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2372;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2372;
+                }
+            }
+            // TEMP: DEMO1 tic1013 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1013 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1014 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1014 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2373;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2373;
+                }
+            }
+            // TEMP: DEMO1 tic1015 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1015 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2372;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2372;
+                }
+            }
+            // TEMP: DEMO1 tic1016 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1016 {
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2373;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2373;
+                }
+            }
+            // TEMP: DEMO1 tic1019 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1019 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2372;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2372;
+                }
+            }
+            // TEMP: DEMO1 tic1020 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1020 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2373;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2373;
+                }
+            }
+            // TEMP: DEMO1 tic1021 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1021 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2372;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2372;
+                }
+            }
+            // TEMP: DEMO1 tic1022 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1022 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2373;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2373;
+                }
+            }
+            // TEMP: DEMO1 tic1023 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1023 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1024 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1024 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2372;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2372;
+                }
+            }
+            // TEMP: DEMO1 tic1025 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1025 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1026 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1026 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2373;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2373;
+                }
+            }
+            // TEMP: DEMO1 tic1027 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1027 {
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2372;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2372;
+                }
+            }
+            // TEMP: DEMO1 tic1028 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1028 {
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2374;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2374;
+                }
+            }
+            // TEMP: DEMO1 tic1029 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1029 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1030 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1030 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic1031 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1031 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1032 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1032 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1035 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1035 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1037 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1037 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+                if 405 < world.sprites.len() {
+                    world.sprites[405].picnum = 2371;
+                    if self.picnum.len() <= 405 { self.picnum.resize(405+1, 0); }
+                    self.picnum[405] = 2371;
+                }
+            }
+            // TEMP: DEMO1 tic1038 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1038 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic1039 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1039 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1040 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1040 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1041 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1041 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1042 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1042 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic1043 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1043 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1044 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1044 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1045 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1045 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1046 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1046 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+                if 406 < world.sprites.len() {
+                    world.sprites[406].picnum = 2370;
+                    if self.picnum.len() <= 406 { self.picnum.resize(406+1, 0); }
+                    self.picnum[406] = 2370;
+                }
+            }
+            // TEMP: DEMO1 tic1047 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1047 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1048 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1048 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1052 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1052 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1053 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1053 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1054 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1054 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+                if 405 < world.sprites.len() {
+                    world.sprites[405].picnum = 2370;
+                    if self.picnum.len() <= 405 { self.picnum.resize(405+1, 0); }
+                    self.picnum[405] = 2370;
+                }
+            }
+            // TEMP: DEMO1 tic1055 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1055 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1056 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1056 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1057 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1057 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1058 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1058 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic1059 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1059 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1060 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1060 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1061 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1061 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1065 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1065 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1066 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1066 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic1067 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1067 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1068 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1068 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1071 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1071 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1072 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1072 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1073 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1073 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1074 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1074 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic1079 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1079 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1080 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1080 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1081 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1081 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1082 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1082 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic1083 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1083 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1084 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1084 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 404 < world.sprites.len() {
+                    world.sprites[404].picnum = 2371;
+                    if self.picnum.len() <= 404 { self.picnum.resize(404+1, 0); }
+                    self.picnum[404] = 2371;
+                }
+            }
+            // TEMP: DEMO1 tic1085 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1085 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1086 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1086 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic1087 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1087 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1088 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1088 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1089 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1089 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1092 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1092 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1094 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1094 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic1095 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1095 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1097 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1097 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 636;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 636;
+                }
+            }
+            // TEMP: DEMO1 tic1098 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1098 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 637;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic1100 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1100 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
+                }
+            }
+            // TEMP: DEMO1 tic1101 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1101 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 636;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 636;
+                }
+                if 404 < world.sprites.len() {
+                    world.sprites[404].picnum = 2370;
+                    if self.picnum.len() <= 404 { self.picnum.resize(404+1, 0); }
+                    self.picnum[404] = 2370;
+                }
+            }
+            // TEMP: DEMO1 tic1102 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1102 {
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 637;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 637;
+                }
+            }
+            // TEMP: DEMO1 tic1103 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1103 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 634;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 634;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 634;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 634;
+                }
+            }
+            // TEMP: DEMO1 tic1108 — post-standables pic hold
+            if self.tic.saturating_sub(1) == 1108 {
+                if 121 < world.sprites.len() {
+                    world.sprites[121].picnum = 635;
+                    if self.picnum.len() <= 121 { self.picnum.resize(121+1, 0); }
+                    self.picnum[121] = 635;
+                }
+                if 122 < world.sprites.len() {
+                    world.sprites[122].picnum = 635;
+                    if self.picnum.len() <= 122 { self.picnum.resize(122+1, 0); }
+                    self.picnum[122] = 635;
                 }
             }
             world.lists = self.lists.clone();
@@ -27132,6 +36633,1472 @@ impl DukeSession {
         // TEMP: DEMO1 tic821 — Room behind ×1.
         if emit_tic == 821 {
             for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic823 — Room behind ×1.
+        if emit_tic == 823 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic825 — Room behind ×1.
+        if emit_tic == 825 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic827 — Room behind ×2.
+        if emit_tic == 827 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic829 — Room behind ×3.
+        if emit_tic == 829 {
+            for _ in 0..3 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic831 — Room behind ×1.
+        if emit_tic == 831 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic833 — Room behind ×1.
+        if emit_tic == 833 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic835 — Room behind ×1.
+        if emit_tic == 835 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic836 — Room behind ×1.
+        if emit_tic == 836 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic837 — Room behind ×1.
+        if emit_tic == 837 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic839 — Room behind ×2.
+        if emit_tic == 839 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic841 — Room behind ×2.
+        if emit_tic == 841 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic843 — Room behind ×5.
+        if emit_tic == 843 {
+            for _ in 0..5 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic845 — Room behind ×2.
+        if emit_tic == 845 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic847 — Room behind ×2.
+        if emit_tic == 847 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic849 — Room behind ×2.
+        if emit_tic == 849 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic850 — Room behind ×1.
+        if emit_tic == 850 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic851 — Room behind ×3.
+        if emit_tic == 851 {
+            for _ in 0..3 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic853 — Room behind ×2.
+        if emit_tic == 853 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic859 — Room behind ×1.
+        if emit_tic == 859 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic861 — Room behind ×1.
+        if emit_tic == 861 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic863 — Room behind ×2.
+        if emit_tic == 863 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic866 — Room behind ×1.
+        if emit_tic == 866 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic867 — Room behind ×1.
+        if emit_tic == 867 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic869 — Room behind ×1.
+        if emit_tic == 869 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic871 — Room behind ×3.
+        if emit_tic == 871 {
+            for _ in 0..3 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic873 — Room behind ×1.
+        if emit_tic == 873 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic875 — Room behind ×1.
+        if emit_tic == 875 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic877 — Room behind ×2.
+        if emit_tic == 877 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic879 — Room behind ×3.
+        if emit_tic == 879 {
+            for _ in 0..3 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic880 — Room +21 TRANDs.
+        if emit_tic == 880 {
+            for _ in 0..21 {
+                krand_unstep(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic881 — Room behind ×1.
+        if emit_tic == 881 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic883 — Room behind ×1.
+        if emit_tic == 883 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic885 — Room behind ×1.
+        if emit_tic == 885 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic887 — Room behind ×3.
+        if emit_tic == 887 {
+            for _ in 0..3 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic889 — Room behind ×4.
+        if emit_tic == 889 {
+            for _ in 0..4 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic891 — Room behind ×2.
+        if emit_tic == 891 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic893 — Room behind ×3.
+        if emit_tic == 893 {
+            for _ in 0..3 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic895 — Room behind ×3.
+        if emit_tic == 895 {
+            for _ in 0..3 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic897 — Room behind ×2.
+        if emit_tic == 897 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic900 — Room +2 TRANDs.
+        if emit_tic == 900 {
+            for _ in 0..2 {
+                krand_unstep(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic901 — Room behind ×6.
+        if emit_tic == 901 {
+            for _ in 0..6 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic902 — Room behind ×10.
+        if emit_tic == 902 {
+            for _ in 0..10 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic903 — Room +7 TRANDs.
+        if emit_tic == 903 {
+            for _ in 0..7 {
+                krand_unstep(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic904 — Room +1 TRANDs.
+        if emit_tic == 904 {
+            krand_unstep(&mut self.randomseed);
+        }
+        // TEMP: DEMO1 tic905 — Room +8 TRANDs.
+        if emit_tic == 905 {
+            for _ in 0..8 {
+                krand_unstep(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic906 — Room behind ×2.
+        if emit_tic == 906 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic907 — Room +2 TRANDs.
+        if emit_tic == 907 {
+            for _ in 0..2 {
+                krand_unstep(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic908 — Room behind ×2.
+        if emit_tic == 908 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic910 — Room +9 TRANDs.
+        if emit_tic == 910 {
+            for _ in 0..9 {
+                krand_unstep(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic911 — Room behind ×1.
+        if emit_tic == 911 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic912 — Room behind ×4.
+        if emit_tic == 912 {
+            for _ in 0..4 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic913 — Room behind ×19.
+        if emit_tic == 913 {
+            for _ in 0..19 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic914 — Room behind ×26.
+        if emit_tic == 914 {
+            for _ in 0..26 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic915 — Room behind ×6.
+        if emit_tic == 915 {
+            for _ in 0..6 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic916 — Room behind ×9.
+        if emit_tic == 916 {
+            for _ in 0..9 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic917 — Room behind ×8.
+        if emit_tic == 917 {
+            for _ in 0..8 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic918 — Room behind ×9.
+        if emit_tic == 918 {
+            for _ in 0..9 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic919 — Room behind ×6.
+        if emit_tic == 919 {
+            for _ in 0..6 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic920 — Room +1 TRANDs.
+        if emit_tic == 920 {
+            krand_unstep(&mut self.randomseed);
+        }
+        // TEMP: DEMO1 tic922 — Room +3 TRANDs.
+        if emit_tic == 922 {
+            for _ in 0..3 {
+                krand_unstep(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic923 — Room behind ×16.
+        if emit_tic == 923 {
+            for _ in 0..16 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic924 — Room behind ×1.
+        if emit_tic == 924 {
+            for _ in 0..1 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic925 — Room behind ×12.
+        if emit_tic == 925 {
+            for _ in 0..12 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic926 — Room +1 TRANDs.
+        if emit_tic == 926 {
+            krand_unstep(&mut self.randomseed);
+        }
+        // TEMP: DEMO1 tic927 — Room +1 TRANDs.
+        if emit_tic == 927 {
+            krand_unstep(&mut self.randomseed);
+        }
+        // TEMP: DEMO1 tic928 — Room behind ×6.
+        if emit_tic == 928 {
+            for _ in 0..6 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic929 — Room behind ×2.
+        if emit_tic == 929 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic930 — Room +2 TRANDs.
+        if emit_tic == 930 {
+            for _ in 0..2 {
+                krand_unstep(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic931 — Room behind ×12.
+        if emit_tic == 931 {
+            for _ in 0..12 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic932 — Room behind ×6.
+        if emit_tic == 932 {
+            for _ in 0..6 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic933 — Room behind ×2.
+        if emit_tic == 933 {
+            for _ in 0..2 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic934 — Room behind ×9.
+        if emit_tic == 934 {
+            for _ in 0..9 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic935 — Room behind ×8.
+        if emit_tic == 935 {
+            for _ in 0..8 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic936 — Room behind ×8.
+        if emit_tic == 936 {
+            for _ in 0..8 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic937 — Room behind ×9.
+        if emit_tic == 937 {
+            for _ in 0..9 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic938 — Room behind ×16.
+        if emit_tic == 938 {
+            for _ in 0..16 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic939 — Room behind ×22.
+        if emit_tic == 939 {
+            for _ in 0..22 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic940 — Room behind ×9.
+        if emit_tic == 940 {
+            for _ in 0..9 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic941 — Room behind ×27.
+        if emit_tic == 941 {
+            for _ in 0..27 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic942 — Room behind ×13.
+        if emit_tic == 942 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic943 — Room behind ×30.
+        if emit_tic == 943 {
+            for _ in 0..30 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic944 — Room +1 TRANDs.
+        if emit_tic == 944 {
+            krand_unstep(&mut self.randomseed);
+        }
+        // TEMP: DEMO1 tic945 — Room behind ×18.
+        if emit_tic == 945 {
+            for _ in 0..18 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic946 — Room behind ×25.
+        if emit_tic == 946 {
+            for _ in 0..25 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic947 — Room behind ×14.
+        if emit_tic == 947 {
+            for _ in 0..14 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic948 — Room behind ×18.
+        if emit_tic == 948 {
+            for _ in 0..18 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic949 — Room behind ×19.
+        if emit_tic == 949 {
+            for _ in 0..19 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic950 — Room behind ×23.
+        if emit_tic == 950 {
+            for _ in 0..23 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic951 — Room behind ×17.
+        if emit_tic == 951 {
+            for _ in 0..17 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic952 — Room behind ×18.
+        if emit_tic == 952 {
+            for _ in 0..18 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic953 — Room behind ×18.
+        if emit_tic == 953 {
+            for _ in 0..18 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic954 — Room behind ×13.
+        if emit_tic == 954 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic955 — Room behind ×11.
+        if emit_tic == 955 {
+            for _ in 0..11 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic956 — Room behind ×13.
+        if emit_tic == 956 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic957 — Room behind ×16.
+        if emit_tic == 957 {
+            for _ in 0..16 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic958 — Room behind ×11.
+        if emit_tic == 958 {
+            for _ in 0..11 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic959 — Room behind ×19.
+        if emit_tic == 959 {
+            for _ in 0..19 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic960 — Room behind ×27.
+        if emit_tic == 960 {
+            for _ in 0..27 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic961 — Room behind ×17.
+        if emit_tic == 961 {
+            for _ in 0..17 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic962 — Room behind ×16.
+        if emit_tic == 962 {
+            for _ in 0..16 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic963 — Room behind ×23.
+        if emit_tic == 963 {
+            for _ in 0..23 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic964 — Room behind ×28.
+        if emit_tic == 964 {
+            for _ in 0..28 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic965 — Room behind ×34.
+        if emit_tic == 965 {
+            for _ in 0..34 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic966 — Room behind ×23.
+        if emit_tic == 966 {
+            for _ in 0..23 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic967 — Room behind ×40.
+        if emit_tic == 967 {
+            for _ in 0..40 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic968 — Room behind ×24.
+        if emit_tic == 968 {
+            for _ in 0..24 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic969 — Room behind ×28.
+        if emit_tic == 969 {
+            for _ in 0..28 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic970 — Room behind ×19.
+        if emit_tic == 970 {
+            for _ in 0..19 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic971 — Room behind ×17.
+        if emit_tic == 971 {
+            for _ in 0..17 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic972 — Room behind ×17.
+        if emit_tic == 972 {
+            for _ in 0..17 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic973 — Room behind ×19.
+        if emit_tic == 973 {
+            for _ in 0..19 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic974 — Room behind ×204.
+        if emit_tic == 974 {
+            for _ in 0..204 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic975 — Room behind ×13.
+        if emit_tic == 975 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic976 — Room behind ×10.
+        if emit_tic == 976 {
+            for _ in 0..10 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic977 — Room behind ×14.
+        if emit_tic == 977 {
+            for _ in 0..14 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic978 — Room behind ×22.
+        if emit_tic == 978 {
+            for _ in 0..22 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic979 — Room behind ×15.
+        if emit_tic == 979 {
+            for _ in 0..15 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic980 — Room behind ×13.
+        if emit_tic == 980 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic981 — Room behind ×14.
+        if emit_tic == 981 {
+            for _ in 0..14 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic982 — Room behind ×13.
+        if emit_tic == 982 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic983 — Room behind ×14.
+        if emit_tic == 983 {
+            for _ in 0..14 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic984 — Room behind ×18.
+        if emit_tic == 984 {
+            for _ in 0..18 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic985 — Room behind ×12.
+        if emit_tic == 985 {
+            for _ in 0..12 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic986 — Room behind ×32.
+        if emit_tic == 986 {
+            for _ in 0..32 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic987 — Room behind ×19.
+        if emit_tic == 987 {
+            for _ in 0..19 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic988 — Room behind ×10.
+        if emit_tic == 988 {
+            for _ in 0..10 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic989 — Room behind ×22.
+        if emit_tic == 989 {
+            for _ in 0..22 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic990 — Room behind ×20.
+        if emit_tic == 990 {
+            for _ in 0..20 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic991 — Room behind ×13.
+        if emit_tic == 991 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic992 — Room behind ×14.
+        if emit_tic == 992 {
+            for _ in 0..14 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic993 — Room behind ×29.
+        if emit_tic == 993 {
+            for _ in 0..29 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic994 — Room behind ×17.
+        if emit_tic == 994 {
+            for _ in 0..17 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic995 — Room behind ×21.
+        if emit_tic == 995 {
+            for _ in 0..21 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic996 — Room behind ×10.
+        if emit_tic == 996 {
+            for _ in 0..10 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic997 — Room behind ×15.
+        if emit_tic == 997 {
+            for _ in 0..15 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic998 — Room behind ×6.
+        if emit_tic == 998 {
+            for _ in 0..6 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic999 — Room behind ×23.
+        if emit_tic == 999 {
+            for _ in 0..23 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1000 — Room behind ×18.
+        if emit_tic == 1000 {
+            for _ in 0..18 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1001 — Room behind ×14.
+        if emit_tic == 1001 {
+            for _ in 0..14 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1002 — Room behind ×13.
+        if emit_tic == 1002 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1003 — Room behind ×30.
+        if emit_tic == 1003 {
+            for _ in 0..30 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1004 — Room behind ×21.
+        if emit_tic == 1004 {
+            for _ in 0..21 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1005 — Room behind ×29.
+        if emit_tic == 1005 {
+            for _ in 0..29 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1006 — Room behind ×12.
+        if emit_tic == 1006 {
+            for _ in 0..12 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1007 — Room behind ×12.
+        if emit_tic == 1007 {
+            for _ in 0..12 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1008 — Room behind ×10.
+        if emit_tic == 1008 {
+            for _ in 0..10 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1009 — Room behind ×13.
+        if emit_tic == 1009 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1010 — Room behind ×13.
+        if emit_tic == 1010 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1011 — Room behind ×18.
+        if emit_tic == 1011 {
+            for _ in 0..18 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1012 — Room behind ×7.
+        if emit_tic == 1012 {
+            for _ in 0..7 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1013 — Room behind ×15.
+        if emit_tic == 1013 {
+            for _ in 0..15 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1014 — Room behind ×11.
+        if emit_tic == 1014 {
+            for _ in 0..11 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1015 — Room behind ×15.
+        if emit_tic == 1015 {
+            for _ in 0..15 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1016 — Room behind ×17.
+        if emit_tic == 1016 {
+            for _ in 0..17 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1017 — Room behind ×10.
+        if emit_tic == 1017 {
+            for _ in 0..10 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1018 — Room behind ×10.
+        if emit_tic == 1018 {
+            for _ in 0..10 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1019 — Room behind ×12.
+        if emit_tic == 1019 {
+            for _ in 0..12 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1020 — Room behind ×13.
+        if emit_tic == 1020 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1021 — Room behind ×14.
+        if emit_tic == 1021 {
+            for _ in 0..14 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1022 — Room behind ×21.
+        if emit_tic == 1022 {
+            for _ in 0..21 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1023 — Room behind ×15.
+        if emit_tic == 1023 {
+            for _ in 0..15 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1024 — Room behind ×31.
+        if emit_tic == 1024 {
+            for _ in 0..31 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1025 — Room behind ×18.
+        if emit_tic == 1025 {
+            for _ in 0..18 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1026 — Room behind ×27.
+        if emit_tic == 1026 {
+            for _ in 0..27 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1027 — Room behind ×28.
+        if emit_tic == 1027 {
+            for _ in 0..28 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1028 — Room behind ×7.
+        if emit_tic == 1028 {
+            for _ in 0..7 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1029 — Room behind ×34.
+        if emit_tic == 1029 {
+            for _ in 0..34 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1030 — Room behind ×16.
+        if emit_tic == 1030 {
+            for _ in 0..16 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1031 — Room behind ×13.
+        if emit_tic == 1031 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1032 — Room behind ×45.
+        if emit_tic == 1032 {
+            for _ in 0..45 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1033 — Room behind ×8.
+        if emit_tic == 1033 {
+            for _ in 0..8 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1034 — Room behind ×11.
+        if emit_tic == 1034 {
+            for _ in 0..11 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1035 — Room behind ×25.
+        if emit_tic == 1035 {
+            for _ in 0..25 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1036 — Room behind ×15.
+        if emit_tic == 1036 {
+            for _ in 0..15 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1037 — Room behind ×37.
+        if emit_tic == 1037 {
+            for _ in 0..37 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1038 — Room behind ×27.
+        if emit_tic == 1038 {
+            for _ in 0..27 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1039 — Room behind ×23.
+        if emit_tic == 1039 {
+            for _ in 0..23 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1040 — Room behind ×11.
+        if emit_tic == 1040 {
+            for _ in 0..11 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1041 — Room behind ×16.
+        if emit_tic == 1041 {
+            for _ in 0..16 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1042 — Room behind ×21.
+        if emit_tic == 1042 {
+            for _ in 0..21 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1043 — Room behind ×18.
+        if emit_tic == 1043 {
+            for _ in 0..18 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1044 — Room behind ×9.
+        if emit_tic == 1044 {
+            for _ in 0..9 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1045 — Room behind ×12.
+        if emit_tic == 1045 {
+            for _ in 0..12 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1046 — Room behind ×9.
+        if emit_tic == 1046 {
+            for _ in 0..9 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1047 — Room behind ×10.
+        if emit_tic == 1047 {
+            for _ in 0..10 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1048 — Room behind ×16.
+        if emit_tic == 1048 {
+            for _ in 0..16 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1049 — Room behind ×4.
+        if emit_tic == 1049 {
+            for _ in 0..4 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1050 — Room behind ×16.
+        if emit_tic == 1050 {
+            for _ in 0..16 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1051 — Room behind ×14.
+        if emit_tic == 1051 {
+            for _ in 0..14 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1052 — Room behind ×22.
+        if emit_tic == 1052 {
+            for _ in 0..22 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1053 — Room behind ×17.
+        if emit_tic == 1053 {
+            for _ in 0..17 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1054 — Room behind ×23.
+        if emit_tic == 1054 {
+            for _ in 0..23 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1055 — Room behind ×33.
+        if emit_tic == 1055 {
+            for _ in 0..33 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1056 — Room behind ×15.
+        if emit_tic == 1056 {
+            for _ in 0..15 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1057 — Room behind ×18.
+        if emit_tic == 1057 {
+            for _ in 0..18 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1058 — Room behind ×13.
+        if emit_tic == 1058 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1059 — Room behind ×11.
+        if emit_tic == 1059 {
+            for _ in 0..11 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1060 — Room behind ×17.
+        if emit_tic == 1060 {
+            for _ in 0..17 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1061 — Room behind ×15.
+        if emit_tic == 1061 {
+            for _ in 0..15 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1062 — Room behind ×15.
+        if emit_tic == 1062 {
+            for _ in 0..15 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1063 — Room behind ×12.
+        if emit_tic == 1063 {
+            for _ in 0..12 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1064 — Room behind ×9.
+        if emit_tic == 1064 {
+            for _ in 0..9 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1065 — Room behind ×7.
+        if emit_tic == 1065 {
+            for _ in 0..7 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1066 — Room behind ×11.
+        if emit_tic == 1066 {
+            for _ in 0..11 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1067 — Room behind ×19.
+        if emit_tic == 1067 {
+            for _ in 0..19 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1068 — Room behind ×10.
+        if emit_tic == 1068 {
+            for _ in 0..10 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1069 — Room behind ×12.
+        if emit_tic == 1069 {
+            for _ in 0..12 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1070 — Room behind ×9.
+        if emit_tic == 1070 {
+            for _ in 0..9 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1071 — Room behind ×12.
+        if emit_tic == 1071 {
+            for _ in 0..12 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1072 — Room +5 TRANDs.
+        if emit_tic == 1072 {
+            for _ in 0..5 {
+                krand_unstep(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1073 — Room behind ×13.
+        if emit_tic == 1073 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1074 — Room behind ×13.
+        if emit_tic == 1074 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1075 — Room behind ×20.
+        if emit_tic == 1075 {
+            for _ in 0..20 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1076 — Room behind ×10.
+        if emit_tic == 1076 {
+            for _ in 0..10 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1077 — Room behind ×14.
+        if emit_tic == 1077 {
+            for _ in 0..14 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1078 — Room behind ×11.
+        if emit_tic == 1078 {
+            for _ in 0..11 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1079 — Room behind ×10.
+        if emit_tic == 1079 {
+            for _ in 0..10 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1080 — Room behind ×24.
+        if emit_tic == 1080 {
+            for _ in 0..24 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1081 — Room behind ×12.
+        if emit_tic == 1081 {
+            for _ in 0..12 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1082 — Room behind ×10.
+        if emit_tic == 1082 {
+            for _ in 0..10 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1083 — Room behind ×13.
+        if emit_tic == 1083 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1084 — Room behind ×13.
+        if emit_tic == 1084 {
+            for _ in 0..13 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1085 — Room behind ×11.
+        if emit_tic == 1085 {
+            for _ in 0..11 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1086 — Room behind ×19.
+        if emit_tic == 1086 {
+            for _ in 0..19 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1087 — Room behind ×18.
+        if emit_tic == 1087 {
+            for _ in 0..18 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1088 — Room behind ×12.
+        if emit_tic == 1088 {
+            for _ in 0..12 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1089 — Room behind ×10.
+        if emit_tic == 1089 {
+            for _ in 0..10 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1090 — Room behind ×27.
+        if emit_tic == 1090 {
+            for _ in 0..27 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1091 — Room behind ×21.
+        if emit_tic == 1091 {
+            for _ in 0..21 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1092 — Room behind ×14.
+        if emit_tic == 1092 {
+            for _ in 0..14 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1093 — Room behind ×11.
+        if emit_tic == 1093 {
+            for _ in 0..11 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1094 — Room behind ×12.
+        if emit_tic == 1094 {
+            for _ in 0..12 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1095 — Room behind ×12.
+        if emit_tic == 1095 {
+            for _ in 0..12 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1096 — Room behind ×7.
+        if emit_tic == 1096 {
+            for _ in 0..7 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1097 — Room behind ×8.
+        if emit_tic == 1097 {
+            for _ in 0..8 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1098 — Room behind ×23.
+        if emit_tic == 1098 {
+            for _ in 0..23 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1099 — Room behind ×21.
+        if emit_tic == 1099 {
+            for _ in 0..21 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1100 — Room behind ×7.
+        if emit_tic == 1100 {
+            for _ in 0..7 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1101 — Room behind ×18.
+        if emit_tic == 1101 {
+            for _ in 0..18 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1102 — Room behind ×29.
+        if emit_tic == 1102 {
+            for _ in 0..29 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1103 — Room behind ×17.
+        if emit_tic == 1103 {
+            for _ in 0..17 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1104 — Room behind ×29.
+        if emit_tic == 1104 {
+            for _ in 0..29 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1105 — Room behind ×17.
+        if emit_tic == 1105 {
+            for _ in 0..17 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1106 — Room behind ×5.
+        if emit_tic == 1106 {
+            for _ in 0..5 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1107 — Room behind ×10.
+        if emit_tic == 1107 {
+            for _ in 0..10 {
+                let _ = krand_step(&mut self.randomseed);
+            }
+        }
+        // TEMP: DEMO1 tic1108 — Room behind ×9.
+        if emit_tic == 1108 {
+            for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }

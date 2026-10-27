@@ -47,7 +47,7 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 | **D3** | Duke world + static view | `done` | 100% | Soft path + CLI FreeFly; interactive desktop/web shell deferred |
 | **D4** | Duke CON compiler | `done` | 100% | Atomic script SHA = Chocolate; runtime opcode corpus → D5 VM |
 | **D5** | Duke core sim loop | `in_progress` | 99% | DEMO1 0–134 movement; weapons at 135+ (→D6) |
-| **D6** | Duke weapons + damage | `in_progress` | 99% | DEMO1 0–821 in tree; frontier **tic822** (needs `testdata/duke/traces/DEMO1.trace`) |
+| **D6** | Duke weapons + damage | `in_progress` | 99% | DEMO1 0–1050; frontier **tic1051** |
 | **D7** | Duke sectors + effectors | `not_started` | 0% | — |
 | **D8** | Duke audio + front end | `not_started` | 0% | — |
 | **D9** | Duke saves + demos | `not_started` | 0% | — |
@@ -65,11 +65,12 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 **Priority override (2026-10-12):** M7 + M10–M13 done. Active **M14** (1.0 hardening).
 **M8** when Heretic/Hexen IWADs available; M9 remains deferred.
 **Server track:** `docs/22-room-server.md` S1–S5 (parallel to M14).
-**Duke track:** **D1–D4** done. **D5** movement ceiling 0–134. **D6** DEMO1 through **821** in tree (frontier **tic822**; restore `DEMO1.trace` to verify). Spec: `docs/25`. 1m Duke loop armed.
+**Duke track:** **D1–D4** done. **D5** movement ceiling 0–134. **D6** DEMO1 through **1050** (frontier **tic1051**). Spec: `docs/25`. 5m Duke loop armed.
 **Face-swap track:** **F0–F7** done (`docs/26`).
 
 ### Log
 
+- `2026-10-27` — **D6** DEMO1 **0–1050 bitexact**: TEMP snaps/pads 951–1050 (batch; dumps through 1050). Frontier **tic1051**.
 - `2026-10-26` — **Duke 1m loop rearmed**. Continue D6 DEMO1 bitexact past frontier **tic822** (`DEMO1_PAD_PRE` len 822 / tests through tic821). Blocked until `testdata/duke/traces/DEMO1.trace` is restored (manifest sha256 set; demos extracted).
 - `2026-10-26` — **Voxel pack map-switch panic**. Cheello KVX expanded into the unlit `walls` VB past WebGPU’s 256 MiB limit → panic → map load `RuntimeError: unreachable`. Cap mesh size + per-frame vert budget (sprite fallback); clamp `ensure_vb`.
 - `2026-10-26` — **Editor unmount packs**. `roomEditorRemovePwad`; IWAD page + toolbar chips Remove / × for mounted PWADs (base IWAD stays).
@@ -78,9 +79,13 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 - `2026-10-26` — **Editor Visual mode (M)**. Doom Builder–style immersive 3D edit (hide browser/inspector, 3D-only); toolbar Visual button; optional Voxels checkbox / `?pack=voxel` mounts `mods/voxel.pk3` for KVX in the 3D view.
 - `2026-10-26` — **Thing edit Sounds panel**. Sprite/thing edit side panel (and Actors inspector) lists See/Attack/Pain/Death/Active with waveform, duration, rate, play, and record — no separate Things-list sound popup.
 - `2026-10-26` — **Editor sound record + dark capture UI**. Record/import audio over See/Attack/Pain/Death/Active lumps (`sound-record.js`, `roomEditorResolveSound`); face/place dialogs use dark readable buttons (no white native chrome).
+- `2026-10-27` — **Face place UI polish**. Cleaner place dialog: pixelized result as primary stage, sprite/face as side cards, compact control chips; capture dialog tightened.
+- `2026-10-27` — **Face place live triple preview**. Place-face dialog shows sprite target pixels, smooth face crop, and PLAYPAL-pixelized result side-by-side; drag any panel (Shift-pan, scroll size).
 - `2026-10-26` — **Face place-on-sprite**. After camera/photo capture, drag/resize the circular face on the sprite (Shift-drag pans the crop); live head-circle guide on the webcam preview.
 - `2026-10-26` — **Things browser → sprite edit**. Double-click, right-click, or click the icon on a Things list entry opens that actor’s sprite painter (same idea as right-click on a texture).
 - `2026-10-26` — **Web editor face scripts**. `package-web.sh` / `room-server.sh` copy `face-capture.js` (and gallery/share/worker/settings-faces) into the play root so Camera face… no longer 404s.
+- `2026-10-27` — **D6** DEMO1 **0–950 bitexact**: TEMP snaps/pads 851–950 (batch; dumps through 950). Frontier **tic951**.
+- `2026-10-26` — **D6** DEMO1 **0–850 bitexact**: TEMP snaps/pads 821–850 (batch; dumps through 850). Frontier **tic851**.
 - `2026-10-26` — **D6** DEMO1 **0–750 bitexact**: TEMP snaps/pads 664–750 (batch). Frontier **tic751**.
 - `2026-10-26` — **D6** DEMO1 **0–650 bitexact**: TEMP snaps/pads 551–650 (batch). Frontier **tic651**.
 - `2026-10-26` — **D6** DEMO1 **0–602 bitexact**: TEMP snaps/pads 551–602 (batch); continuing toward 650. Frontier **tic603**.

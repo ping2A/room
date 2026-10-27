@@ -4000,7 +4000,1373 @@ mod tests {
         demo1_bitexact_through(821);
     }
 
-                                                                                                                                                                            #[test]
+    #[test]
+    fn demo1_tic822_bitexact() {
+        demo1_bitexact_through(822);
+    }
+
+    #[test]
+    fn demo1_tic823_bitexact() {
+        demo1_bitexact_through(823);
+    }
+
+    #[test]
+    fn demo1_tic824_bitexact() {
+        demo1_bitexact_through(824);
+    }
+
+    #[test]
+    fn demo1_tic825_bitexact() {
+        demo1_bitexact_through(825);
+    }
+
+    #[test]
+    fn demo1_tic826_bitexact() {
+        demo1_bitexact_through(826);
+    }
+
+    #[test]
+    fn demo1_tic827_bitexact() {
+        demo1_bitexact_through(827);
+    }
+
+    #[test]
+    fn demo1_tic828_bitexact() {
+        demo1_bitexact_through(828);
+    }
+
+    #[test]
+    fn demo1_tic829_bitexact() {
+        demo1_bitexact_through(829);
+    }
+
+    #[test]
+    fn demo1_tic830_bitexact() {
+        demo1_bitexact_through(830);
+    }
+
+    #[test]
+    fn demo1_tic831_bitexact() {
+        demo1_bitexact_through(831);
+    }
+
+    #[test]
+    fn demo1_tic832_bitexact() {
+        demo1_bitexact_through(832);
+    }
+
+    #[test]
+    fn demo1_tic833_bitexact() {
+        demo1_bitexact_through(833);
+    }
+
+    #[test]
+    fn demo1_tic834_bitexact() {
+        demo1_bitexact_through(834);
+    }
+
+    #[test]
+    fn demo1_tic835_bitexact() {
+        demo1_bitexact_through(835);
+    }
+
+    #[test]
+    fn demo1_tic836_bitexact() {
+        demo1_bitexact_through(836);
+    }
+
+    #[test]
+    fn demo1_tic837_bitexact() {
+        demo1_bitexact_through(837);
+    }
+
+    #[test]
+    fn demo1_tic838_bitexact() {
+        demo1_bitexact_through(838);
+    }
+
+    #[test]
+    fn demo1_tic839_bitexact() {
+        demo1_bitexact_through(839);
+    }
+
+    #[test]
+    fn demo1_tic840_bitexact() {
+        demo1_bitexact_through(840);
+    }
+
+    #[test]
+    fn demo1_tic841_bitexact() {
+        demo1_bitexact_through(841);
+    }
+
+    #[test]
+    fn demo1_tic842_bitexact() {
+        demo1_bitexact_through(842);
+    }
+
+    #[test]
+    fn demo1_tic843_bitexact() {
+        demo1_bitexact_through(843);
+    }
+
+    #[test]
+    fn demo1_tic844_bitexact() {
+        demo1_bitexact_through(844);
+    }
+
+    #[test]
+    fn demo1_tic845_bitexact() {
+        demo1_bitexact_through(845);
+    }
+
+    #[test]
+    fn demo1_tic846_bitexact() {
+        demo1_bitexact_through(846);
+    }
+
+    #[test]
+    fn demo1_tic847_bitexact() {
+        demo1_bitexact_through(847);
+    }
+
+    #[test]
+    fn demo1_tic848_bitexact() {
+        demo1_bitexact_through(848);
+    }
+
+    #[test]
+    fn demo1_tic849_bitexact() {
+        demo1_bitexact_through(849);
+    }
+
+    #[test]
+    fn demo1_tic850_bitexact() {
+        demo1_bitexact_through(850);
+    }
+
+    #[test]
+    fn demo1_tic851_bitexact() {
+        demo1_bitexact_through(851);
+    }
+
+    #[test]
+    fn demo1_tic852_bitexact() {
+        demo1_bitexact_through(852);
+    }
+
+    #[test]
+    fn demo1_tic853_bitexact() {
+        demo1_bitexact_through(853);
+    }
+
+    #[test]
+    fn demo1_tic855_bitexact() {
+        demo1_bitexact_through(855);
+    }
+
+    #[test]
+    fn demo1_tic859_bitexact() {
+        demo1_bitexact_through(859);
+    }
+
+    #[test]
+    fn demo1_tic861_bitexact() {
+        demo1_bitexact_through(861);
+    }
+
+    #[test]
+    fn demo1_tic863_bitexact() {
+        demo1_bitexact_through(863);
+    }
+
+    #[test]
+    fn demo1_tic866_bitexact() {
+        demo1_bitexact_through(866);
+    }
+
+    #[test]
+    fn demo1_tic867_bitexact() {
+        demo1_bitexact_through(867);
+    }
+
+    #[test]
+    fn demo1_tic869_bitexact() {
+        demo1_bitexact_through(869);
+    }
+
+    #[test]
+    fn demo1_tic871_bitexact() {
+        demo1_bitexact_through(871);
+    }
+
+    #[test]
+    fn demo1_tic873_bitexact() {
+        demo1_bitexact_through(873);
+    }
+
+    #[test]
+    fn demo1_tic875_bitexact() {
+        demo1_bitexact_through(875);
+    }
+
+    #[test]
+    fn demo1_tic877_bitexact() {
+        demo1_bitexact_through(877);
+    }
+
+    #[test]
+    fn demo1_tic879_bitexact() {
+        demo1_bitexact_through(879);
+    }
+
+    #[test]
+    fn demo1_tic880_bitexact() {
+        demo1_bitexact_through(880);
+    }
+
+    #[test]
+    fn demo1_tic881_bitexact() {
+        demo1_bitexact_through(881);
+    }
+
+    #[test]
+    fn demo1_tic882_bitexact() {
+        demo1_bitexact_through(882);
+    }
+
+    #[test]
+    fn demo1_tic883_bitexact() {
+        demo1_bitexact_through(883);
+    }
+
+    #[test]
+    fn demo1_tic884_bitexact() {
+        demo1_bitexact_through(884);
+    }
+
+    #[test]
+    fn demo1_tic885_bitexact() {
+        demo1_bitexact_through(885);
+    }
+
+    #[test]
+    fn demo1_tic886_bitexact() {
+        demo1_bitexact_through(886);
+    }
+
+    #[test]
+    fn demo1_tic887_bitexact() {
+        demo1_bitexact_through(887);
+    }
+
+    #[test]
+    fn demo1_tic888_bitexact() {
+        demo1_bitexact_through(888);
+    }
+
+    #[test]
+    fn demo1_tic889_bitexact() {
+        demo1_bitexact_through(889);
+    }
+
+    #[test]
+    fn demo1_tic890_bitexact() {
+        demo1_bitexact_through(890);
+    }
+
+    #[test]
+    fn demo1_tic891_bitexact() {
+        demo1_bitexact_through(891);
+    }
+
+    #[test]
+    fn demo1_tic892_bitexact() {
+        demo1_bitexact_through(892);
+    }
+
+    #[test]
+    fn demo1_tic893_bitexact() {
+        demo1_bitexact_through(893);
+    }
+
+    #[test]
+    fn demo1_tic894_bitexact() {
+        demo1_bitexact_through(894);
+    }
+
+    #[test]
+    fn demo1_tic895_bitexact() {
+        demo1_bitexact_through(895);
+    }
+
+    #[test]
+    fn demo1_tic896_bitexact() {
+        demo1_bitexact_through(896);
+    }
+
+    #[test]
+    fn demo1_tic897_bitexact() {
+        demo1_bitexact_through(897);
+    }
+
+    #[test]
+    fn demo1_tic898_bitexact() {
+        demo1_bitexact_through(898);
+    }
+
+    #[test]
+    fn demo1_tic899_bitexact() {
+        demo1_bitexact_through(899);
+    }
+
+    #[test]
+    fn demo1_tic900_bitexact() {
+        demo1_bitexact_through(900);
+    }
+
+    #[test]
+    fn demo1_tic901_bitexact() {
+        demo1_bitexact_through(901);
+    }
+
+    #[test]
+    fn demo1_tic902_bitexact() {
+        demo1_bitexact_through(902);
+    }
+
+    #[test]
+    fn demo1_tic903_bitexact() {
+        demo1_bitexact_through(903);
+    }
+
+    #[test]
+    fn demo1_tic904_bitexact() {
+        demo1_bitexact_through(904);
+    }
+
+    #[test]
+    fn demo1_tic905_bitexact() {
+        demo1_bitexact_through(905);
+    }
+
+    #[test]
+    fn demo1_tic906_bitexact() {
+        demo1_bitexact_through(906);
+    }
+
+    #[test]
+    fn demo1_tic907_bitexact() {
+        demo1_bitexact_through(907);
+    }
+
+    #[test]
+    fn demo1_tic908_bitexact() {
+        demo1_bitexact_through(908);
+    }
+
+    #[test]
+    fn demo1_tic909_bitexact() {
+        demo1_bitexact_through(909);
+    }
+
+    #[test]
+    fn demo1_tic910_bitexact() {
+        demo1_bitexact_through(910);
+    }
+
+    #[test]
+    fn demo1_tic911_bitexact() {
+        demo1_bitexact_through(911);
+    }
+
+    #[test]
+    fn demo1_tic912_bitexact() {
+        demo1_bitexact_through(912);
+    }
+
+    #[test]
+    fn demo1_tic913_bitexact() {
+        demo1_bitexact_through(913);
+    }
+
+    #[test]
+    fn demo1_tic914_bitexact() {
+        demo1_bitexact_through(914);
+    }
+
+    #[test]
+    fn demo1_tic915_bitexact() {
+        demo1_bitexact_through(915);
+    }
+
+    #[test]
+    fn demo1_tic916_bitexact() {
+        demo1_bitexact_through(916);
+    }
+
+    #[test]
+    fn demo1_tic917_bitexact() {
+        demo1_bitexact_through(917);
+    }
+
+    #[test]
+    fn demo1_tic918_bitexact() {
+        demo1_bitexact_through(918);
+    }
+
+    #[test]
+    fn demo1_tic919_bitexact() {
+        demo1_bitexact_through(919);
+    }
+
+    #[test]
+    fn demo1_tic920_bitexact() {
+        demo1_bitexact_through(920);
+    }
+
+    #[test]
+    fn demo1_tic921_bitexact() {
+        demo1_bitexact_through(921);
+    }
+
+    #[test]
+    fn demo1_tic922_bitexact() {
+        demo1_bitexact_through(922);
+    }
+
+    #[test]
+    fn demo1_tic923_bitexact() {
+        demo1_bitexact_through(923);
+    }
+
+    #[test]
+    fn demo1_tic924_bitexact() {
+        demo1_bitexact_through(924);
+    }
+
+    #[test]
+    fn demo1_tic925_bitexact() {
+        demo1_bitexact_through(925);
+    }
+
+    #[test]
+    fn demo1_tic926_bitexact() {
+        demo1_bitexact_through(926);
+    }
+
+    #[test]
+    fn demo1_tic927_bitexact() {
+        demo1_bitexact_through(927);
+    }
+
+    #[test]
+    fn demo1_tic928_bitexact() {
+        demo1_bitexact_through(928);
+    }
+
+    #[test]
+    fn demo1_tic929_bitexact() {
+        demo1_bitexact_through(929);
+    }
+
+    #[test]
+    fn demo1_tic930_bitexact() {
+        demo1_bitexact_through(930);
+    }
+
+    #[test]
+    fn demo1_tic931_bitexact() {
+        demo1_bitexact_through(931);
+    }
+
+    #[test]
+    fn demo1_tic932_bitexact() {
+        demo1_bitexact_through(932);
+    }
+
+    #[test]
+    fn demo1_tic933_bitexact() {
+        demo1_bitexact_through(933);
+    }
+
+    #[test]
+    fn demo1_tic934_bitexact() {
+        demo1_bitexact_through(934);
+    }
+
+    #[test]
+    fn demo1_tic935_bitexact() {
+        demo1_bitexact_through(935);
+    }
+
+    #[test]
+    fn demo1_tic936_bitexact() {
+        demo1_bitexact_through(936);
+    }
+
+    #[test]
+    fn demo1_tic937_bitexact() {
+        demo1_bitexact_through(937);
+    }
+
+    #[test]
+    fn demo1_tic938_bitexact() {
+        demo1_bitexact_through(938);
+    }
+
+    #[test]
+    fn demo1_tic939_bitexact() {
+        demo1_bitexact_through(939);
+    }
+
+    #[test]
+    fn demo1_tic940_bitexact() {
+        demo1_bitexact_through(940);
+    }
+
+    #[test]
+    fn demo1_tic941_bitexact() {
+        demo1_bitexact_through(941);
+    }
+
+    #[test]
+    fn demo1_tic942_bitexact() {
+        demo1_bitexact_through(942);
+    }
+
+    #[test]
+    fn demo1_tic943_bitexact() {
+        demo1_bitexact_through(943);
+    }
+
+    #[test]
+    fn demo1_tic944_bitexact() {
+        demo1_bitexact_through(944);
+    }
+
+    #[test]
+    fn demo1_tic945_bitexact() {
+        demo1_bitexact_through(945);
+    }
+
+    #[test]
+    fn demo1_tic946_bitexact() {
+        demo1_bitexact_through(946);
+    }
+
+    #[test]
+    fn demo1_tic947_bitexact() {
+        demo1_bitexact_through(947);
+    }
+
+    #[test]
+    fn demo1_tic948_bitexact() {
+        demo1_bitexact_through(948);
+    }
+
+    #[test]
+    fn demo1_tic949_bitexact() {
+        demo1_bitexact_through(949);
+    }
+
+    #[test]
+    fn demo1_tic950_bitexact() {
+        demo1_bitexact_through(950);
+    }
+
+    #[test]
+    fn demo1_tic951_bitexact() {
+        demo1_bitexact_through(951);
+    }
+
+    #[test]
+    fn demo1_tic952_bitexact() {
+        demo1_bitexact_through(952);
+    }
+
+    #[test]
+    fn demo1_tic953_bitexact() {
+        demo1_bitexact_through(953);
+    }
+
+    #[test]
+    fn demo1_tic954_bitexact() {
+        demo1_bitexact_through(954);
+    }
+
+    #[test]
+    fn demo1_tic955_bitexact() {
+        demo1_bitexact_through(955);
+    }
+
+    #[test]
+    fn demo1_tic956_bitexact() {
+        demo1_bitexact_through(956);
+    }
+
+    #[test]
+    fn demo1_tic957_bitexact() {
+        demo1_bitexact_through(957);
+    }
+
+    #[test]
+    fn demo1_tic958_bitexact() {
+        demo1_bitexact_through(958);
+    }
+
+    #[test]
+    fn demo1_tic959_bitexact() {
+        demo1_bitexact_through(959);
+    }
+
+    #[test]
+    fn demo1_tic960_bitexact() {
+        demo1_bitexact_through(960);
+    }
+
+    #[test]
+    fn demo1_tic961_bitexact() {
+        demo1_bitexact_through(961);
+    }
+
+    #[test]
+    fn demo1_tic962_bitexact() {
+        demo1_bitexact_through(962);
+    }
+
+    #[test]
+    fn demo1_tic963_bitexact() {
+        demo1_bitexact_through(963);
+    }
+
+    #[test]
+    fn demo1_tic964_bitexact() {
+        demo1_bitexact_through(964);
+    }
+
+    #[test]
+    fn demo1_tic965_bitexact() {
+        demo1_bitexact_through(965);
+    }
+
+    #[test]
+    fn demo1_tic966_bitexact() {
+        demo1_bitexact_through(966);
+    }
+
+    #[test]
+    fn demo1_tic967_bitexact() {
+        demo1_bitexact_through(967);
+    }
+
+    #[test]
+    fn demo1_tic968_bitexact() {
+        demo1_bitexact_through(968);
+    }
+
+    #[test]
+    fn demo1_tic969_bitexact() {
+        demo1_bitexact_through(969);
+    }
+
+    #[test]
+    fn demo1_tic970_bitexact() {
+        demo1_bitexact_through(970);
+    }
+
+    #[test]
+    fn demo1_tic971_bitexact() {
+        demo1_bitexact_through(971);
+    }
+
+    #[test]
+    fn demo1_tic972_bitexact() {
+        demo1_bitexact_through(972);
+    }
+
+    #[test]
+    fn demo1_tic973_bitexact() {
+        demo1_bitexact_through(973);
+    }
+
+    #[test]
+    fn demo1_tic974_bitexact() {
+        demo1_bitexact_through(974);
+    }
+
+    #[test]
+    fn demo1_tic975_bitexact() {
+        demo1_bitexact_through(975);
+    }
+
+    #[test]
+    fn demo1_tic976_bitexact() {
+        demo1_bitexact_through(976);
+    }
+
+    #[test]
+    fn demo1_tic977_bitexact() {
+        demo1_bitexact_through(977);
+    }
+
+    #[test]
+    fn demo1_tic978_bitexact() {
+        demo1_bitexact_through(978);
+    }
+
+    #[test]
+    fn demo1_tic979_bitexact() {
+        demo1_bitexact_through(979);
+    }
+
+    #[test]
+    fn demo1_tic980_bitexact() {
+        demo1_bitexact_through(980);
+    }
+
+    #[test]
+    fn demo1_tic981_bitexact() {
+        demo1_bitexact_through(981);
+    }
+
+    #[test]
+    fn demo1_tic982_bitexact() {
+        demo1_bitexact_through(982);
+    }
+
+    #[test]
+    fn demo1_tic983_bitexact() {
+        demo1_bitexact_through(983);
+    }
+
+    #[test]
+    fn demo1_tic984_bitexact() {
+        demo1_bitexact_through(984);
+    }
+
+    #[test]
+    fn demo1_tic985_bitexact() {
+        demo1_bitexact_through(985);
+    }
+
+    #[test]
+    fn demo1_tic986_bitexact() {
+        demo1_bitexact_through(986);
+    }
+
+    #[test]
+    fn demo1_tic987_bitexact() {
+        demo1_bitexact_through(987);
+    }
+
+    #[test]
+    fn demo1_tic988_bitexact() {
+        demo1_bitexact_through(988);
+    }
+
+    #[test]
+    fn demo1_tic989_bitexact() {
+        demo1_bitexact_through(989);
+    }
+
+    #[test]
+    fn demo1_tic990_bitexact() {
+        demo1_bitexact_through(990);
+    }
+
+    #[test]
+    fn demo1_tic991_bitexact() {
+        demo1_bitexact_through(991);
+    }
+
+    #[test]
+    fn demo1_tic992_bitexact() {
+        demo1_bitexact_through(992);
+    }
+
+    #[test]
+    fn demo1_tic993_bitexact() {
+        demo1_bitexact_through(993);
+    }
+
+    #[test]
+    fn demo1_tic994_bitexact() {
+        demo1_bitexact_through(994);
+    }
+
+    #[test]
+    fn demo1_tic995_bitexact() {
+        demo1_bitexact_through(995);
+    }
+
+    #[test]
+    fn demo1_tic996_bitexact() {
+        demo1_bitexact_through(996);
+    }
+
+    #[test]
+    fn demo1_tic997_bitexact() {
+        demo1_bitexact_through(997);
+    }
+
+    #[test]
+    fn demo1_tic998_bitexact() {
+        demo1_bitexact_through(998);
+    }
+
+    #[test]
+    fn demo1_tic999_bitexact() {
+        demo1_bitexact_through(999);
+    }
+
+    #[test]
+    fn demo1_tic1000_bitexact() {
+        demo1_bitexact_through(1000);
+    }
+
+    #[test]
+    fn demo1_tic1001_bitexact() {
+        demo1_bitexact_through(1001);
+    }
+
+    #[test]
+    fn demo1_tic1002_bitexact() {
+        demo1_bitexact_through(1002);
+    }
+
+    #[test]
+    fn demo1_tic1003_bitexact() {
+        demo1_bitexact_through(1003);
+    }
+
+    #[test]
+    fn demo1_tic1004_bitexact() {
+        demo1_bitexact_through(1004);
+    }
+
+    #[test]
+    fn demo1_tic1005_bitexact() {
+        demo1_bitexact_through(1005);
+    }
+
+    #[test]
+    fn demo1_tic1006_bitexact() {
+        demo1_bitexact_through(1006);
+    }
+
+    #[test]
+    fn demo1_tic1007_bitexact() {
+        demo1_bitexact_through(1007);
+    }
+
+    #[test]
+    fn demo1_tic1008_bitexact() {
+        demo1_bitexact_through(1008);
+    }
+
+    #[test]
+    fn demo1_tic1009_bitexact() {
+        demo1_bitexact_through(1009);
+    }
+
+    #[test]
+    fn demo1_tic1010_bitexact() {
+        demo1_bitexact_through(1010);
+    }
+
+    #[test]
+    fn demo1_tic1011_bitexact() {
+        demo1_bitexact_through(1011);
+    }
+
+    #[test]
+    fn demo1_tic1012_bitexact() {
+        demo1_bitexact_through(1012);
+    }
+
+    #[test]
+    fn demo1_tic1013_bitexact() {
+        demo1_bitexact_through(1013);
+    }
+
+    #[test]
+    fn demo1_tic1014_bitexact() {
+        demo1_bitexact_through(1014);
+    }
+
+    #[test]
+    fn demo1_tic1015_bitexact() {
+        demo1_bitexact_through(1015);
+    }
+
+    #[test]
+    fn demo1_tic1016_bitexact() {
+        demo1_bitexact_through(1016);
+    }
+
+    #[test]
+    fn demo1_tic1017_bitexact() {
+        demo1_bitexact_through(1017);
+    }
+
+    #[test]
+    fn demo1_tic1018_bitexact() {
+        demo1_bitexact_through(1018);
+    }
+
+    #[test]
+    fn demo1_tic1019_bitexact() {
+        demo1_bitexact_through(1019);
+    }
+
+    #[test]
+    fn demo1_tic1020_bitexact() {
+        demo1_bitexact_through(1020);
+    }
+
+    #[test]
+    fn demo1_tic1021_bitexact() {
+        demo1_bitexact_through(1021);
+    }
+
+    #[test]
+    fn demo1_tic1022_bitexact() {
+        demo1_bitexact_through(1022);
+    }
+
+    #[test]
+    fn demo1_tic1023_bitexact() {
+        demo1_bitexact_through(1023);
+    }
+
+    #[test]
+    fn demo1_tic1024_bitexact() {
+        demo1_bitexact_through(1024);
+    }
+
+    #[test]
+    fn demo1_tic1025_bitexact() {
+        demo1_bitexact_through(1025);
+    }
+
+    #[test]
+    fn demo1_tic1026_bitexact() {
+        demo1_bitexact_through(1026);
+    }
+
+    #[test]
+    fn demo1_tic1027_bitexact() {
+        demo1_bitexact_through(1027);
+    }
+
+    #[test]
+    fn demo1_tic1028_bitexact() {
+        demo1_bitexact_through(1028);
+    }
+
+    #[test]
+    fn demo1_tic1029_bitexact() {
+        demo1_bitexact_through(1029);
+    }
+
+    #[test]
+    fn demo1_tic1030_bitexact() {
+        demo1_bitexact_through(1030);
+    }
+
+    #[test]
+    fn demo1_tic1031_bitexact() {
+        demo1_bitexact_through(1031);
+    }
+
+    #[test]
+    fn demo1_tic1032_bitexact() {
+        demo1_bitexact_through(1032);
+    }
+
+    #[test]
+    fn demo1_tic1033_bitexact() {
+        demo1_bitexact_through(1033);
+    }
+
+    #[test]
+    fn demo1_tic1034_bitexact() {
+        demo1_bitexact_through(1034);
+    }
+
+    #[test]
+    fn demo1_tic1035_bitexact() {
+        demo1_bitexact_through(1035);
+    }
+
+    #[test]
+    fn demo1_tic1036_bitexact() {
+        demo1_bitexact_through(1036);
+    }
+
+    #[test]
+    fn demo1_tic1037_bitexact() {
+        demo1_bitexact_through(1037);
+    }
+
+    #[test]
+    fn demo1_tic1038_bitexact() {
+        demo1_bitexact_through(1038);
+    }
+
+    #[test]
+    fn demo1_tic1039_bitexact() {
+        demo1_bitexact_through(1039);
+    }
+
+    #[test]
+    fn demo1_tic1040_bitexact() {
+        demo1_bitexact_through(1040);
+    }
+
+    #[test]
+    fn demo1_tic1041_bitexact() {
+        demo1_bitexact_through(1041);
+    }
+
+    #[test]
+    fn demo1_tic1042_bitexact() {
+        demo1_bitexact_through(1042);
+    }
+
+    #[test]
+    fn demo1_tic1043_bitexact() {
+        demo1_bitexact_through(1043);
+    }
+
+    #[test]
+    fn demo1_tic1044_bitexact() {
+        demo1_bitexact_through(1044);
+    }
+
+    #[test]
+    fn demo1_tic1045_bitexact() {
+        demo1_bitexact_through(1045);
+    }
+
+    #[test]
+    fn demo1_tic1046_bitexact() {
+        demo1_bitexact_through(1046);
+    }
+
+    #[test]
+    fn demo1_tic1047_bitexact() {
+        demo1_bitexact_through(1047);
+    }
+
+    #[test]
+    fn demo1_tic1048_bitexact() {
+        demo1_bitexact_through(1048);
+    }
+
+    #[test]
+    fn demo1_tic1049_bitexact() {
+        demo1_bitexact_through(1049);
+    }
+
+    #[test]
+    fn demo1_tic1050_bitexact() {
+        demo1_bitexact_through(1050);
+    }
+
+    #[test]
+    fn demo1_tic1051_bitexact() {
+        demo1_bitexact_through(1051);
+    }
+
+    #[test]
+    fn demo1_tic1052_bitexact() {
+        demo1_bitexact_through(1052);
+    }
+
+    #[test]
+    fn demo1_tic1053_bitexact() {
+        demo1_bitexact_through(1053);
+    }
+
+    #[test]
+    fn demo1_tic1054_bitexact() {
+        demo1_bitexact_through(1054);
+    }
+
+    #[test]
+    fn demo1_tic1055_bitexact() {
+        demo1_bitexact_through(1055);
+    }
+
+    #[test]
+    fn demo1_tic1056_bitexact() {
+        demo1_bitexact_through(1056);
+    }
+
+    #[test]
+    fn demo1_tic1057_bitexact() {
+        demo1_bitexact_through(1057);
+    }
+
+    #[test]
+    fn demo1_tic1058_bitexact() {
+        demo1_bitexact_through(1058);
+    }
+
+    #[test]
+    fn demo1_tic1059_bitexact() {
+        demo1_bitexact_through(1059);
+    }
+
+    #[test]
+    fn demo1_tic1060_bitexact() {
+        demo1_bitexact_through(1060);
+    }
+
+    #[test]
+    fn demo1_tic1061_bitexact() {
+        demo1_bitexact_through(1061);
+    }
+
+    #[test]
+    fn demo1_tic1062_bitexact() {
+        demo1_bitexact_through(1062);
+    }
+
+    #[test]
+    fn demo1_tic1063_bitexact() {
+        demo1_bitexact_through(1063);
+    }
+
+    #[test]
+    fn demo1_tic1064_bitexact() {
+        demo1_bitexact_through(1064);
+    }
+
+    #[test]
+    fn demo1_tic1065_bitexact() {
+        demo1_bitexact_through(1065);
+    }
+
+    #[test]
+    fn demo1_tic1066_bitexact() {
+        demo1_bitexact_through(1066);
+    }
+
+    #[test]
+    fn demo1_tic1067_bitexact() {
+        demo1_bitexact_through(1067);
+    }
+
+    #[test]
+    fn demo1_tic1068_bitexact() {
+        demo1_bitexact_through(1068);
+    }
+
+    #[test]
+    fn demo1_tic1069_bitexact() {
+        demo1_bitexact_through(1069);
+    }
+
+    #[test]
+    fn demo1_tic1070_bitexact() {
+        demo1_bitexact_through(1070);
+    }
+
+    #[test]
+    fn demo1_tic1071_bitexact() {
+        demo1_bitexact_through(1071);
+    }
+
+    #[test]
+    fn demo1_tic1072_bitexact() {
+        demo1_bitexact_through(1072);
+    }
+
+    #[test]
+    fn demo1_tic1073_bitexact() {
+        demo1_bitexact_through(1073);
+    }
+
+    #[test]
+    fn demo1_tic1074_bitexact() {
+        demo1_bitexact_through(1074);
+    }
+
+    #[test]
+    fn demo1_tic1075_bitexact() {
+        demo1_bitexact_through(1075);
+    }
+
+    #[test]
+    fn demo1_tic1076_bitexact() {
+        demo1_bitexact_through(1076);
+    }
+
+    #[test]
+    fn demo1_tic1077_bitexact() {
+        demo1_bitexact_through(1077);
+    }
+
+    #[test]
+    fn demo1_tic1078_bitexact() {
+        demo1_bitexact_through(1078);
+    }
+
+    #[test]
+    fn demo1_tic1079_bitexact() {
+        demo1_bitexact_through(1079);
+    }
+
+    #[test]
+    fn demo1_tic1080_bitexact() {
+        demo1_bitexact_through(1080);
+    }
+
+    #[test]
+    fn demo1_tic1081_bitexact() {
+        demo1_bitexact_through(1081);
+    }
+
+    #[test]
+    fn demo1_tic1082_bitexact() {
+        demo1_bitexact_through(1082);
+    }
+
+    #[test]
+    fn demo1_tic1083_bitexact() {
+        demo1_bitexact_through(1083);
+    }
+
+    #[test]
+    fn demo1_tic1084_bitexact() {
+        demo1_bitexact_through(1084);
+    }
+
+    #[test]
+    fn demo1_tic1085_bitexact() {
+        demo1_bitexact_through(1085);
+    }
+
+    #[test]
+    fn demo1_tic1086_bitexact() {
+        demo1_bitexact_through(1086);
+    }
+
+    #[test]
+    fn demo1_tic1087_bitexact() {
+        demo1_bitexact_through(1087);
+    }
+
+    #[test]
+    fn demo1_tic1088_bitexact() {
+        demo1_bitexact_through(1088);
+    }
+
+    #[test]
+    fn demo1_tic1089_bitexact() {
+        demo1_bitexact_through(1089);
+    }
+
+    #[test]
+    fn demo1_tic1090_bitexact() {
+        demo1_bitexact_through(1090);
+    }
+
+    #[test]
+    fn demo1_tic1091_bitexact() {
+        demo1_bitexact_through(1091);
+    }
+
+    #[test]
+    fn demo1_tic1092_bitexact() {
+        demo1_bitexact_through(1092);
+    }
+
+    #[test]
+    fn demo1_tic1093_bitexact() {
+        demo1_bitexact_through(1093);
+    }
+
+    #[test]
+    fn demo1_tic1094_bitexact() {
+        demo1_bitexact_through(1094);
+    }
+
+    #[test]
+    fn demo1_tic1095_bitexact() {
+        demo1_bitexact_through(1095);
+    }
+
+    #[test]
+    fn demo1_tic1096_bitexact() {
+        demo1_bitexact_through(1096);
+    }
+
+    #[test]
+    fn demo1_tic1097_bitexact() {
+        demo1_bitexact_through(1097);
+    }
+
+    #[test]
+    fn demo1_tic1098_bitexact() {
+        demo1_bitexact_through(1098);
+    }
+
+    #[test]
+    fn demo1_tic1099_bitexact() {
+        demo1_bitexact_through(1099);
+    }
+
+    #[test]
+    fn demo1_tic1100_bitexact() {
+        demo1_bitexact_through(1100);
+    }
+
+    #[test]
+    fn demo1_tic1101_bitexact() {
+        demo1_bitexact_through(1101);
+    }
+
+    #[test]
+    fn demo1_tic1102_bitexact() {
+        demo1_bitexact_through(1102);
+    }
+
+    #[test]
+    fn demo1_tic1103_bitexact() {
+        demo1_bitexact_through(1103);
+    }
+
+    #[test]
+    fn demo1_tic1104_bitexact() {
+        demo1_bitexact_through(1104);
+    }
+
+    #[test]
+    fn demo1_tic1105_bitexact() {
+        demo1_bitexact_through(1105);
+    }
+
+    #[test]
+    fn demo1_tic1106_bitexact() {
+        demo1_bitexact_through(1106);
+    }
+
+    #[test]
+    fn demo1_tic1107_bitexact() {
+        demo1_bitexact_through(1107);
+    }
+
+    #[test]
+    fn demo1_tic1108_bitexact() {
+        demo1_bitexact_through(1108);
+    }
+
+
+    #[test]
     fn demo1_tic238_pad_search() {
         use crate::player::DukeInput;
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
@@ -4012,7 +5378,7 @@ mod tests {
         let dmo_b = std::fs::read(root.join("demos/DEMO1.DMO")).unwrap();
         let choc = load_trace(&root.join("traces/DEMO1.trace")).unwrap();
         let step = |mut s: i32| { let _ = krand_step(&mut s); s };
-        for tic in 821..822usize {
+        for tic in 1109..1110usize {
             let (mut session, dmo) = session_from_grp_demo(&grp_b, &dmo_b).unwrap();
             align_rng_pre_tic0(&mut session, &choc);
             session.rng_pad_per_tic = DEMO1_TIC0_EXTRA_KRANDS;
@@ -4033,22 +5399,24 @@ mod tests {
             }
             let mut ahead = None;
             let mut s = want.randomseed;
-            for n in 1..64u32 {
+            for n in 1..512u32 {
                 s = step(s);
                 if s == tr.randomseed { ahead = Some(n); break; }
             }
             let mut behind = None;
             let mut s = tr.randomseed;
-            for n in 1..64u32 {
+            for n in 1..512u32 {
                 s = step(s);
                 if s == want.randomseed { behind = Some(n); break; }
             }
             eprintln!(
-                "tic{tic} MISMATCH seed_ok={} hash_ok={} nspr={}/{} ahead={ahead:?} behind={behind:?}",
+                "tic{tic} MISMATCH seed_ok={} hash_ok={} nspr={}/{} room_seed={} choc_seed={} ahead={ahead:?} behind={behind:?}",
                 tr.randomseed == want.randomseed,
                 tr.sprite_hash == want.sprite_hash,
                 tr.numsprites,
-                want.numsprites
+                want.numsprites,
+                tr.randomseed,
+                want.randomseed
             );
             let mut hash_hit = None;
             for pad in 0..24u32 {

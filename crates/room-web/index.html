@@ -359,18 +359,18 @@
       <input id="game-voxel" type="checkbox" />
       Voxel sprites
     </label>
-    <label title="Load your own Doom / Freedoom IWAD or Duke GRP (commercial WADs stay on your machine)">IWAD
-      <input id="game-iwad" type="file" accept=".wad,.grp,application/octet-stream" />
+    <label title="Load your own Doom / Freedoom IWAD (commercial WADs stay on your machine)">IWAD
+      <input id="game-iwad" type="file" accept=".wad,application/octet-stream" />
     </label>
     <a href="editor.html" title="Map editor — Scripts tab for WASM mods">Editor ↗</a>
   </div>
   <div id="boot">
     <div class="panel">
       <h1>Room</h1>
-      <p>Load a Doom / Freedoom IWAD or a Duke Nukem 3D <code>DUKE3D.GRP</code> to play in the browser.</p>
+      <p>Load a Doom / Freedoom IWAD to play in the browser.</p>
       <label>
-        Choose IWAD / GRP…
-        <input id="iwad" type="file" accept=".wad,.grp,application/octet-stream" />
+        Choose IWAD…
+        <input id="iwad" type="file" accept=".wad,application/octet-stream" />
       </label>
       <label>
         Skill
@@ -382,7 +382,7 @@
           <option value="5">Nightmare!</option>
         </select>
       </label>
-      <p class="hint">Freedoom may load automatically when packaged with the site. To play retail Doom (or switch games), pick your own <code>doom1.wad</code> / <code>doom.wad</code> / <code>doom2.wad</code> / <code>DUKE3D.GRP</code> above — or use <strong>IWAD</strong> in the bar after the game starts. Files stay in the browser; commercial IWADs are never uploaded. Coop: add <code>?ws=…&amp;players=2</code>. Press a key or click to unlock audio; click the canvas for mouse look.</p>
+      <p class="hint">Freedoom may load automatically when packaged with the site. To play retail Doom, pick your own <code>doom1.wad</code> / <code>doom.wad</code> / <code>doom2.wad</code> above — or use <strong>IWAD</strong> in the bar after the game starts. Files stay in the browser; commercial IWADs are never uploaded. Coop: add <code>?ws=…&amp;players=2</code>. Press a key or click to unlock audio; click the canvas for mouse look.</p>
     </div>
   </div>
   <div id="lobby" aria-live="polite">
@@ -719,10 +719,11 @@
         const vx = gamebar.querySelector("#game-voxel");
         if (vx) vx.closest("label").hidden = true;
       }
-      // Duke Nukem 3D: Duke skill names (room-build plays skills 1–5 as Duke
-      // 1, 1, 2, 3, 4); the Doom gameplay mods don't apply.
+      // Duke Nukem 3D UI — kept behind ROOM_UI_SHOW_DUKE (Doom-only surface by default).
+      const ROOM_UI_SHOW_DUKE = false;
       const DUKE_SKILLS = ["Piece Of Cake (easy)", "Piece Of Cake", "Let's Rock", "Come Get Some", "Damn I'm Good"];
       const useDukeUi = () => {
+        if (!ROOM_UI_SHOW_DUKE) return;
         for (const id of ["game-skill", "skill-select"]) {
           const sel = document.getElementById(id);
           if (!sel) continue;
@@ -734,7 +735,7 @@
       };
       const isGrpBytes = (buf) =>
         buf.byteLength >= 12 && String.fromCharCode(...buf.subarray(0, 12)) === "KenSilverman";
-      const dukeUrl = /\.grp$/i.test(params.get("iwad") || "");
+      const dukeUrl = ROOM_UI_SHOW_DUKE && /\.grp$/i.test(params.get("iwad") || "");
       if (dukeUrl) useDukeUi();
 
       // Gameplay WASM mod (`?mod=survival`) plus optional content packs
@@ -854,18 +855,30 @@
       }
 
       const startWithBytes = (bytes, label) => {
+        if (isGrpBytes(bytes) && !ROOM_UI_SHOW_DUKE) {
+          status.textContent = "Duke Nukem 3D is hidden in this UI — choose a Doom IWAD";
+          status.style.color = "#f66";
+          return false;
+        }
+        status.style.color = "";
         status.textContent = `Loading ${label}…`;
         if (isGrpBytes(bytes)) useDukeUi();
         mod.roomStartIwad(bytes);
         status.textContent = `Playing ${label}`;
+        return true;
       };
 
       status.textContent = "Room web ready — load an IWAD to play";
 
       const tryUrls = [];
-      if (params.get("iwad")) tryUrls.push(params.get("iwad"));
+      if (params.get("iwad")) {
+        const want = params.get("iwad");
+        if (ROOM_UI_SHOW_DUKE || !/\.grp$/i.test(want)) tryUrls.push(want);
+      }
       // A Duke room must not fall back to Doom content (every seat loads the same game).
-      if (!/\.grp$/i.test(params.get("iwad") || "")) tryUrls.push("doom1.wad", "freedoom1.wad");
+      if (!(ROOM_UI_SHOW_DUKE && /\.grp$/i.test(params.get("iwad") || ""))) {
+        tryUrls.push("doom1.wad", "freedoom1.wad");
+      }
 
       let loaded = false;
       for (const url of tryUrls) {
@@ -874,7 +887,7 @@
           if (!res.ok) continue;
           const buf = new Uint8Array(await res.arrayBuffer());
           if (buf.byteLength < 16) continue;
-          startWithBytes(buf, url);
+          if (!startWithBytes(buf, url)) continue;
           loaded = true;
           break;
         } catch (_) {
@@ -882,7 +895,7 @@
         }
       }
       if (!loaded) {
-        status.textContent = "Choose a Doom IWAD or DUKE3D.GRP to play in the browser";
+        status.textContent = "Choose a Doom IWAD to play in the browser";
       }
 
       const loadIwadFile = async (file, fromBoot) => {
