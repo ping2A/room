@@ -16,10 +16,13 @@ Layout
 
 Quick start on the VPS
 ----------------------
-  1. Upload this tree (or use ./scripts/push-vps.sh from your laptop).
-  2. cp env.example .env && edit YOUR_VPS_IP / secrets.
-  3. ./room start
-  4. Open http://YOUR_IP:8765/  (lobby) and http://YOUR_IP:8766/admin
+  1. On the build machine (macOS ok): ./room package
+     — ships a Linux ELF binary (cross-built via cargo-zigbuild).
+  2. Upload this tree (./room push ubuntu@host:~/room/).
+  3. First install only: scp dist-vps/.env … or cp env.example .env
+  4. ./room start
+  5. Open https://room.42.bzh/  (lobby) and https://room-admin.42.bzh/admin
+
 
 Firewall
 --------
@@ -31,6 +34,9 @@ Update without wiping data
   On the build machine:
     ./scripts/package-vps.sh
     ./scripts/push-vps.sh user@host:~/room/
+    # Boom-style aliases also work:
+    ./room push ubuntu@vps:~/boom/
+    ./room push vps ubuntu@vps:~/boom/
 
   On the VPS:
     ./room restart

@@ -94,7 +94,8 @@ ${C_BOLD}Commands${C_RESET}
   health          Curl lobby + admin once
   mods            Build gameplay mods only
   package […]     ./scripts/package-vps.sh
-  push […]        ./scripts/push-vps.sh
+  push [vps] [user@host:path]   rsync dist-vps/ (keeps data/, logs/, .env)
+                                e.g. ./room push ubuntu@vps:~/boom/
 
 ${C_BOLD}Local URLs${C_RESET} (defaults)
   Lobby   http://127.0.0.1:8765/

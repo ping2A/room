@@ -3,7 +3,7 @@
 #
 #   ./room start|stop|restart|status|logs|health
 #   ./room package [--zip]     # → scripts/package-vps.sh
-#   ./room push user@host:~/room/
+#   ./room push [vps] user@host:~/room/   # or ~/boom/ — same as Boom
 #
 # On a VPS tree the packaged ./room is a copy of scripts/vps/room.
 set -euo pipefail
