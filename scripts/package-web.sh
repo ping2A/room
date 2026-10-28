@@ -42,9 +42,10 @@ Build a standalone static Room web client (WASM + mods) for any static host.
 Options:
   --out DIR              output directory (default: dist/room-web)
   --zip                  also write <out>.zip next to the directory
-  --iwad none|auto|freedoom|PATH
-                         IWAD to ship (default: auto = Freedoom if present;
-                         commercial IWADs only when you pass a path yourself)
+  --iwad none|auto|freedoom|doom|all|PATH
+                         IWAD(s) to ship (default: auto = Freedoom if present;
+                         doom = testdata/doom/doom1+doom2; all = doom + Freedoom;
+                         PATH = single file you point at)
   --debug                debug wasm build
   --no-asc               skip AssemblyScript compiler vendor
   -h, --help             this help
@@ -68,7 +69,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --iwad)
       case "${2:?--iwad needs a value}" in
-        none|auto|freedoom)
+        none|auto|freedoom|all|doom)
           IWAD_MODE="$2"
           IWAD_PATH=""
           ;;
@@ -232,6 +233,31 @@ copy_iwad() {
 }
 
 IWAD_COPIED=0
+copy_doom_pair() {
+  local n=0
+  if copy_iwad "$ROOT/testdata/doom/doom1.wad" "doom1.wad" \
+    || copy_iwad "$ROOT/testdata/doom/DOOM1.WAD" "doom1.wad" \
+    || copy_iwad "$ROOT/testdata/doom/doom.wad" "doom1.wad" \
+    || copy_iwad "$ROOT/testdata/doom/DOOM.WAD" "doom1.wad"; then
+    n=$((n + 1))
+  fi
+  if copy_iwad "$ROOT/testdata/doom/doom2.wad" "doom2.wad" \
+    || copy_iwad "$ROOT/testdata/doom/DOOM2.WAD" "doom2.wad"; then
+    n=$((n + 1))
+  fi
+  [[ "$n" -gt 0 ]]
+}
+copy_freedoom_pair() {
+  local n=0
+  if copy_iwad "$ROOT/testdata/freedoom/freedoom1.wad" "freedoom1.wad"; then
+    n=$((n + 1))
+  fi
+  if copy_iwad "$ROOT/testdata/freedoom/freedoom2.wad" "freedoom2.wad"; then
+    n=$((n + 1))
+  fi
+  [[ "$n" -gt 0 ]]
+}
+
 case "$IWAD_MODE" in
   none)
     ;;
@@ -244,8 +270,9 @@ case "$IWAD_MODE" in
     dest="$(basename "$IWAD_PATH")"
     case "$dest" in
       doom1.wad|DOOM1.WAD|doom.wad|DOOM.WAD) dest=doom1.wad ;;
+      doom2.wad|DOOM2.WAD) dest=doom2.wad ;;
       freedoom1.wad|FREEDOOM1.WAD) dest=freedoom1.wad ;;
-      freedoom2.wad|FREEDOOM2.WAD) dest=freedoom1.wad ;;
+      freedoom2.wad|FREEDOOM2.WAD) dest=freedoom2.wad ;;
       duke3d.grp|DUKE3D.GRP) dest=duke3d.grp ;;
     esac
     if copy_iwad "$IWAD_PATH" "$dest"; then
@@ -256,24 +283,38 @@ case "$IWAD_MODE" in
     fi
     ;;
   freedoom)
-    if copy_iwad "$ROOT/testdata/freedoom/freedoom1.wad" "freedoom1.wad" \
-      || copy_iwad "$ROOT/testdata/freedoom/freedoom2.wad" "freedoom1.wad"; then
+    if copy_freedoom_pair; then
       IWAD_COPIED=1
     else
       echo "room: Freedoom not found under testdata/freedoom/ (run scripts/fetch-freedoom.sh)" >&2
       exit 1
     fi
     ;;
+  doom)
+    if copy_doom_pair; then
+      IWAD_COPIED=1
+    else
+      echo "room: doom1.wad / doom2.wad not found under testdata/doom/" >&2
+      exit 1
+    fi
+    ;;
+  all)
+    # VPS default: ship every free/local IWAD we have + keep voxels via mods/.
+    copy_doom_pair && IWAD_COPIED=1
+    copy_freedoom_pair && IWAD_COPIED=1
+    if [[ "$IWAD_COPIED" -eq 0 ]]; then
+      echo "room: --iwad all found no WADs under testdata/doom or testdata/freedoom" >&2
+      exit 1
+    fi
+    ;;
   auto)
     if [[ -n "$IWAD_PATH" ]] && copy_iwad "$IWAD_PATH" "doom1.wad"; then
       IWAD_COPIED=1
-    elif copy_iwad "$ROOT/testdata/freedoom/freedoom1.wad" "freedoom1.wad"; then
+    elif copy_doom_pair; then
       IWAD_COPIED=1
-    elif copy_iwad "$ROOT/testdata/freedoom/freedoom2.wad" "freedoom1.wad"; then
+    elif copy_freedoom_pair; then
       IWAD_COPIED=1
     fi
-    # Commercial Doom / Duke only when the operator points at them explicitly
-    # via ROOM_WEB_IWAD / --iwad. Never auto-copy from testdata/doom or duke.
     ;;
 esac
 
@@ -288,19 +329,15 @@ files as-is (GitHub Pages, Netlify, Cloudflare Pages, S3+CloudFront, nginx, …)
 Open the site root (index.html). Optional query params:
   ?mod=survival|bounty|royale|voxel
   ?skill=1..5
-  ?iwad=freedoom1.wad   (when an IWAD was packaged beside this file)
-
-To play retail Doom while Freedoom is packaged: use the IWAD control in the
-top bar (or the boot file picker) and choose your own doom1.wad / doom.wad /
-doom2.wad. The file stays in the browser and is never uploaded.
+  ?iwad=doom1.wad|doom2.wad|freedoom1.wad|freedoom2.wad
+  ?voxel=0 to disable Cheello voxels (on by default when packaged)
 
 Editor: open editor.html on the same origin. Use IWAD… in the toolbar to
-switch the base game the same way (Open… is for PWADs / maps on top).
+switch the base game (Open… is for PWADs / maps on top).
 
 Notes:
-  - Commercial IWADs (DOOM.WAD, duke3d.grp, …) are not included unless you
-    passed them with --iwad / ROOM_WEB_IWAD yourself. Do not redistribute them.
-  - Mods shipped: ${MOD_COUNT} under mods/
+  - Packaged IWADs depend on --iwad (VPS default is all: doom1/doom2 + Freedoom).
+  - Mods shipped: ${MOD_COUNT} under mods/ (includes voxel.pk3 when present)
   - Cross-origin isolation is not required for solo play. Coop needs a
     room-server (see deploy/README.md); this package is the play client only.
 

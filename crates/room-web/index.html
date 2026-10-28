@@ -356,7 +356,7 @@
       </select>
     </label>
     <label title="Stack Cheello voxel meshes with the gameplay mod">
-      <input id="game-voxel" type="checkbox" />
+      <input id="game-voxel" type="checkbox" checked />
       Voxel sprites
     </label>
     <label title="Load your own Doom / Freedoom IWAD (commercial WADs stay on your machine)">IWAD
@@ -382,7 +382,7 @@
           <option value="5">Nightmare!</option>
         </select>
       </label>
-      <p class="hint">Freedoom may load automatically when packaged with the site. To play retail Doom, pick your own <code>doom1.wad</code> / <code>doom.wad</code> / <code>doom2.wad</code> above — or use <strong>IWAD</strong> in the bar after the game starts. Files stay in the browser; commercial IWADs are never uploaded. Coop: add <code>?ws=…&amp;players=2</code>. Press a key or click to unlock audio; click the canvas for mouse look.</p>
+      <p class="hint">Packaged builds ship <code>doom1.wad</code> / <code>doom2.wad</code> / Freedoom and load the first that responds; voxels are on by default (<code>?voxel=0</code> to disable). Or pick a local IWAD above / via <strong>IWAD</strong> in the bar — files stay in the browser and are never uploaded. Coop: add <code>?ws=…&amp;players=2</code>. Press a key or click to unlock audio; click the canvas for mouse look.</p>
     </div>
   </div>
   <div id="lobby" aria-live="polite">
@@ -634,22 +634,43 @@
       {
         const voxelBox = document.getElementById("game-voxel");
         if (voxelBox) {
+          // Default ON (matches mountSoloAssets). ?voxel=0 / false turns off;
+          // ?voxel=1, pack=voxel, or mod=voxel forces on.
+          const v = (params.get("voxel") || "").toLowerCase();
+          const packHas = (params.get("pack") || "")
+            .split(",")
+            .map((p) => p.trim().toLowerCase())
+            .includes("voxel");
+          const off = v === "0" || v === "false";
           const on =
-            params.get("voxel") === "1" ||
-            params.get("voxel") === "true" ||
-            (params.get("pack") || "").split(",").includes("voxel") ||
-            params.get("mod") === "voxel";
+            !off &&
+            (v === "1" ||
+              v === "true" ||
+              packHas ||
+              params.get("mod") === "voxel" ||
+              v === "");
           voxelBox.checked = on;
           voxelBox.addEventListener("change", () => {
-            let packs = (params.get("pack") || "")
-              .split(",")
-              .map((p) => p.trim())
-              .filter(Boolean);
-            packs = packs.filter((p) => p !== "voxel");
-            if (voxelBox.checked) packs.push("voxel");
-            if (packs.length) params.set("pack", packs.join(","));
-            else params.delete("pack");
-            params.delete("voxel");
+            // Persist intent explicitly so default-on stays stable across reloads.
+            if (voxelBox.checked) {
+              params.delete("voxel");
+              let packs = (params.get("pack") || "")
+                .split(",")
+                .map((p) => p.trim())
+                .filter(Boolean)
+                .filter((p) => p !== "voxel");
+              packs.push("voxel");
+              params.set("pack", packs.join(","));
+            } else {
+              params.set("voxel", "0");
+              let packs = (params.get("pack") || "")
+                .split(",")
+                .map((p) => p.trim())
+                .filter(Boolean)
+                .filter((p) => p !== "voxel");
+              if (packs.length) params.set("pack", packs.join(","));
+              else params.delete("pack");
+            }
             if (params.get("mod") === "voxel") params.delete("mod");
             location.search = params.toString();
           });
@@ -740,6 +761,7 @@
 
       // Gameplay WASM mod (`?mod=survival`) plus optional content packs
       // (`?pack=voxel` or `?voxel=1`). `mod=voxel` alone still means pack-only.
+      // Voxels default ON when packaged; pass ?voxel=0 to disable.
       const mountSoloAssets = async () => {
         if (params.get("ws") || dukeUrl) return;
         const rawMod = (params.get("mod") || "").replace(/[^a-z0-9_-]/gi, "");
@@ -748,7 +770,10 @@
           const n = p.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
           if (n) packs.add(n);
         }
-        if (params.get("voxel") === "1" || params.get("voxel") === "true") packs.add("voxel");
+        const voxelParam = (params.get("voxel") || "").toLowerCase();
+        if (voxelParam === "1" || voxelParam === "true") packs.add("voxel");
+        else if (voxelParam === "0" || voxelParam === "false") packs.delete("voxel");
+        else packs.add("voxel"); // default on
         let gameplay = rawMod;
         if (rawMod === "voxel") {
           packs.add("voxel");
@@ -877,7 +902,7 @@
       }
       // A Duke room must not fall back to Doom content (every seat loads the same game).
       if (!(ROOM_UI_SHOW_DUKE && /\.grp$/i.test(params.get("iwad") || ""))) {
-        tryUrls.push("doom1.wad", "freedoom1.wad");
+        tryUrls.push("doom1.wad", "doom2.wad", "freedoom1.wad", "freedoom2.wad");
       }
 
       let loaded = false;

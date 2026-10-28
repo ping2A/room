@@ -4,8 +4,8 @@ Room — VPS package
 Layout
 ------
   bin/room-server   release binary
-  web/              static client (wasm + HTML)
-  mods/             gameplay PK3s (royale, bounty, …)
+  web/              static client (wasm + HTML + doom1/doom2/Freedoom when packaged)
+  mods/             gameplay PK3s + voxel.pk3 (royale, bounty, …)
   data/             persistent (created on start; not overwritten by push)
   logs/             service logs
   run/              pid files

@@ -17,7 +17,8 @@ cd "$ROOT"
 
 OUT="${ROOM_VPS_OUT:-dist-vps}"
 MAKE_ZIP=0
-IWAD_ARG=(--iwad none)
+# Default: ship doom1/doom2 + Freedoom + Cheello voxels when present under testdata/.
+IWAD_ARG=(--iwad all)
 NO_ASC=0
 # Empty = auto (native on Linux, x86_64-unknown-linux-gnu elsewhere).
 TARGET="${ROOM_VPS_TARGET:-}"
@@ -34,8 +35,9 @@ Build a standalone VPS tree under dist-vps/ (Linux binary + web + mods + ./room)
 Options:
   --out DIR              output directory (default: dist-vps)
   --zip                  also write <out>.tar.gz
-  --iwad none|freedoom|PATH   IWAD packaged into web/ (default: none;
-                              commercial IWADs only when you pass a path)
+  --iwad all|doom|freedoom|none|PATH
+                         IWADs into web/ (default: all = doom1+doom2+Freedoom;
+                         voxels always packaged when testdata/voxel exists)
   --target TRIPLE        Linux rustc target (default: native on Linux,
                               else x86_64-unknown-linux-gnu)
   --no-asc               skip AssemblyScript vendor in the web client
@@ -55,7 +57,7 @@ while [[ $# -gt 0 ]]; do
     --target) TARGET="${2:?}"; shift 2 ;;
     --iwad)
       case "${2:?}" in
-        none|freedoom) IWAD_ARG=(--iwad "$2") ;;
+        none|freedoom|doom|all) IWAD_ARG=(--iwad "$2") ;;
         *) IWAD_ARG=(--iwad "$2") ;;
       esac
       shift 2
