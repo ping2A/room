@@ -238,7 +238,11 @@ impl PlaySession {
 
         let mut opts = opts;
         let requested = opts.map_name.as_deref().unwrap_or("").trim().to_owned();
-        if requested.is_empty() && opts.net.is_none() {
+        // Title / MENUDEF only for plain vanilla boots. A gameplay WASM mod
+        // (Survival / Bounty / …) expects an immediate map — otherwise waves
+        // never start and the mod looks broken.
+        let (preview_mods, _) = room_game::discover_mods(&vfs);
+        if requested.is_empty() && opts.net.is_none() && preview_mods.is_empty() {
             opts.stay_on_title = true;
         }
         let map_name = resolve_start_map(&vfs, &requested);

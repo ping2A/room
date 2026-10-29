@@ -623,6 +623,15 @@
         sel.addEventListener("change", () => {
           if (sel.value) params.set(key, sel.value);
           else params.delete(key);
+          // Gameplay mods need a live map (title screen never runs their ticks).
+          if (
+            key === "mod" &&
+            sel.value &&
+            sel.value !== "voxel" &&
+            !(params.get("map") || "").trim()
+          ) {
+            params.set("map", "E1M1");
+          }
           location.search = params.toString();
         });
         // Keep game keys (arrows / WASD) away from a focused select.

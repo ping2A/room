@@ -2252,11 +2252,18 @@ mod browser {
                     } else {
                         " net=solo".into()
                     };
+                    let mods = play.script_mod_names();
+                    let mods = if mods.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" mods={}", mods.join("+"))
+                    };
                     format!(
-                        "mode=play seat={} held={}{} pos={}",
+                        "mode=play seat={} held={}{}{} pos={}",
                         play.local_seat_debug(),
                         held,
                         net,
+                        mods,
                         play.pos_debug()
                     )
                 }
