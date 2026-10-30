@@ -91,6 +91,7 @@ impl Editor {
             name: m.name.clone(),
             version: m.version.clone(),
             abi: room_script::ABI_VERSION,
+            max_players: None,
             modules: m
                 .modules
                 .iter()

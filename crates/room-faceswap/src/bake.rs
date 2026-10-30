@@ -57,13 +57,7 @@ pub fn resolve_anchor(
             }
         }
     }
-    estimate_anchor(
-        sprite.width,
-        sprite.height,
-        &sprite.alpha,
-        lump,
-        hint,
-    )
+    estimate_anchor(sprite.width, sprite.height, &sprite.alpha, lump, hint)
 }
 
 fn split_mirror_name(name: &str) -> Option<(&str, &str)> {
@@ -90,10 +84,7 @@ pub fn bake_class(
 ) -> Result<BakeClassResult, BakeError> {
     let mut out = BakeClassResult::default();
     for (name, spr, hash) in lumps {
-        if exclude
-            .iter()
-            .any(|e| e.eq_ignore_ascii_case(name))
-        {
+        if exclude.iter().any(|e| e.eq_ignore_ascii_case(name)) {
             out.lumps.push(BakedLump {
                 name: name.clone(),
                 sprite: spr.clone(),
@@ -171,10 +162,8 @@ fn composite_with_yaw(
                 _ => {}
             }
             // Prefer captured side view when present (same composite entry for F2).
-            if matches!(
-                anchor.yaw,
-                HeadYaw::ThreeQuarterLeft | HeadYaw::ProfileLeft
-            ) && profile.left.is_some()
+            if matches!(anchor.yaw, HeadYaw::ThreeQuarterLeft | HeadYaw::ProfileLeft)
+                && profile.left.is_some()
             {
                 return composite_front(sprite, palette, &a, profile, opts);
             }

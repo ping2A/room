@@ -11,7 +11,7 @@ use room_build_engine::geom::{
 use room_build_engine::types::{SectorT, SpriteT, WallT};
 use room_build_engine::world::SpriteLists;
 
-use crate::player::{sprite_z_clip, TileZMeta, CLIPMASK0};
+use crate::player::{CLIPMASK0, TileZMeta, sprite_z_clip};
 
 use crate::stat::{
     STAT_ACTIVATOR, STAT_ACTOR, STAT_DEFAULT, STAT_DUMMY, STAT_EFFECTOR, STAT_FX, STAT_LOCATOR,
@@ -440,7 +440,7 @@ const TICSPERFRAME: i32 = 4;
 /// `ssp` computes Q14 steps `(xvel*sintable)>>14`, then `movesprite` feeds
 /// `((step*TICSPERFRAME)<<11)` into `clipmove` (world Δ = `(step*TICSPERFRAME)>>3`).
 pub fn ssp_cracks_after_classify(sprites: &mut [SpriteT], sectors: &[SectorT], walls: &[WallT]) {
-    use room_build_engine::geom::{clipmove_xy, SectorWalls};
+    use room_build_engine::geom::{SectorWalls, clipmove_xy};
     use room_build_engine::helpers::sincos_q14;
 
     let sec: Vec<SectorWalls> = sectors

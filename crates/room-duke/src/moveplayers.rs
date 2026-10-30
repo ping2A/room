@@ -7,7 +7,7 @@ use room_build_engine::numeric::krand_step;
 use room_build_engine::types::{SectorT, SpriteT};
 use room_build_engine::world::SpriteLists;
 
-use crate::con::{tick_action_frames, ActorConTemps, ScriptImage};
+use crate::con::{ActorConTemps, ScriptImage, tick_action_frames};
 use crate::player::{DukeInput, Player};
 use crate::spawn::WATERBUBBLE;
 use crate::stat::{STAT_MISC, STAT_PLAYER};
@@ -143,9 +143,8 @@ pub fn moveplayers(
         // Keep previous-tic sprite ang through the water ifrnd/spawn block.
 
         let sect = sprites[iu].sectnum;
-        let in_water = sect >= 0
-            && (sect as usize) < sectors.len()
-            && sectors[sect as usize].lotag == 2;
+        let in_water =
+            sect >= 0 && (sect as usize) < sectors.len() && sectors[sect as usize].lotag == 2;
         if !in_water {
             sprites[iu].ang = p.ang;
             i = next;
@@ -183,9 +182,8 @@ pub fn moveplayers(
                 && emit_tic != 190
                 && emit_tic != 220;
             if live && rnd(randomseed, 4) {
-                let _ = spawn_aplayer_water_bubble(
-                    lists, sprites, picnum, actor_temps, i, Some(img),
-                );
+                let _ =
+                    spawn_aplayer_water_bubble(lists, sprites, picnum, actor_temps, i, Some(img));
             }
             if actor_temps[iu].g_t[2] >= 4 {
                 let first_wait = !actor_temps[iu].swim_pswim_ifrnd_live;
@@ -210,16 +208,13 @@ pub fn moveplayers(
         if actor_temps[iu].g_t[4] == pswim_wait && actor_temps[iu].swim_ifrnd_budget > 0 {
             actor_temps[iu].swim_ifrnd_budget -= 1;
             if rnd(randomseed, 4) {
-                let _ = spawn_aplayer_water_bubble(
-                    lists, sprites, picnum, actor_temps, i, Some(img),
-                );
+                let _ =
+                    spawn_aplayer_water_bubble(lists, sprites, picnum, actor_temps, i, Some(img));
             }
         }
         // Trailing `ifrnd 4` / `spawn WATERBUBBLE // For effect`.
         if rnd(randomseed, 4) {
-            let _ = spawn_aplayer_water_bubble(
-                lists, sprites, picnum, actor_temps, i, Some(img),
-            );
+            let _ = spawn_aplayer_water_bubble(lists, sprites, picnum, actor_temps, i, Some(img));
         }
         // Chocolate `moveplayers`: after execute, `s->ang = p->ang`.
         sprites[iu].ang = p.ang;

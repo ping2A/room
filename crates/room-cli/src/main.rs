@@ -740,15 +740,15 @@ fn duke_soft_view(
 
 fn write_pgm(path: &std::path::Path, frame: &room_build_engine::SoftFrame) -> Result<()> {
     use std::io::Write;
-    let mut f = std::fs::File::create(path).with_context(|| format!("create {}", path.display()))?;
+    let mut f =
+        std::fs::File::create(path).with_context(|| format!("create {}", path.display()))?;
     writeln!(f, "P5\n{} {}\n255", frame.width, frame.height)?;
     f.write_all(&frame.pixels)?;
     Ok(())
 }
 
 fn duke_extract_demos(grp_path: &std::path::Path, out: &std::path::Path) -> Result<()> {
-    let bytes =
-        std::fs::read(grp_path).with_context(|| format!("read {}", grp_path.display()))?;
+    let bytes = std::fs::read(grp_path).with_context(|| format!("read {}", grp_path.display()))?;
     let grp = room_build::Grp::parse(&bytes).map_err(|e| anyhow::anyhow!("{e}"))?;
     std::fs::create_dir_all(out).with_context(|| format!("mkdir {}", out.display()))?;
     for name in ["DEMO1.DMO", "DEMO2.DMO", "DEMO3.DMO"] {
@@ -898,8 +898,8 @@ fn faceswap_bake(
     output: PathBuf,
 ) -> Result<()> {
     use room_faceswap::{
-        Consent, FaceId, ManualPoints, align_manual, bake_class, lump_pixel_hash, parse_headanchors,
-        CompositeOptions, PalettedSprite,
+        CompositeOptions, Consent, FaceId, ManualPoints, PalettedSprite, align_manual, bake_class,
+        lump_pixel_hash, parse_headanchors,
     };
     use room_formats::patch::{encode_patch, parse_patch};
     use room_formats::playpal::parse_playpal;
@@ -950,7 +950,9 @@ fn faceswap_bake(
             continue;
         }
         let Ok(bytes) = vfs.read(id) else { continue };
-        let Ok(patch) = parse_patch(&bytes) else { continue };
+        let Ok(patch) = parse_patch(&bytes) else {
+            continue;
+        };
         let (indices, alpha) = patch.to_indices_masked();
         let hash = lump_pixel_hash(&indices, &alpha);
         lumps.push((
@@ -1004,14 +1006,13 @@ fn faceswap_bake(
     for (p, b) in &owned {
         files.push((p.clone(), b.clone()));
     }
-    let refs: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
+    let refs: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(p, b)| (p.as_str(), b.as_slice()))
+        .collect();
     let zip = room_vfs::zip_from_files(&refs)?;
     std::fs::write(&output, zip).with_context(|| format!("write {}", output.display()))?;
-    println!(
-        "baked {} lumps → {}",
-        baked.lumps.len(),
-        output.display()
-    );
+    println!("baked {} lumps → {}", baked.lumps.len(), output.display());
     Ok(())
 }
 
@@ -1029,7 +1030,9 @@ fn faceswap_anchors_estimate(iwad: PathBuf, prefix: String) -> Result<()> {
             continue;
         }
         let Ok(bytes) = vfs.read(id) else { continue };
-        let Ok(patch) = parse_patch(&bytes) else { continue };
+        let Ok(patch) = parse_patch(&bytes) else {
+            continue;
+        };
         let (_idx, alpha) = patch.to_indices_masked();
         let a = estimate_anchor(
             u32::from(patch.width),

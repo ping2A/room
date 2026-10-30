@@ -12,11 +12,7 @@ use crate::spawn::{BOLT1, WATERBUBBLE, WATERBUBBLEMAKER};
 use crate::stat::{STAT_MISC, STAT_STANDABLE};
 
 fn klabs(x: i32) -> i32 {
-    if x == i32::MIN {
-        i32::MIN
-    } else {
-        x.abs()
-    }
+    if x == i32::MIN { i32::MIN } else { x.abs() }
 }
 
 /// Chocolate `findplayer` distance (single-player): manhattan on `opos` + Z/16.

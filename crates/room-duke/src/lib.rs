@@ -28,6 +28,7 @@ pub mod weapons;
 pub mod weapons_move;
 
 pub use actors::moveactors;
+pub use badguy::badguy_pic;
 pub use con::{
     ActorConTemps, ConStop, ConVersion, ConVm, IncludeResolver, KEYWORDS, LevelDef, Lexer,
     MAX_TILES, NUM_KEYWORDS, NUM_QUOTES, NUM_SOUNDS, NullIncludes, ScriptImage, SoundDef, compile,
@@ -38,7 +39,6 @@ pub use demo_sync::{
     duke_map_lump, krand_unstep, play_demo_trace, session_from_grp_demo,
 };
 pub use explosions::moveexplosions;
-pub use badguy::badguy_pic;
 pub use fta::{findplayer_dist, movefta};
 pub use moveplayers::moveplayers;
 pub use player::{
@@ -50,7 +50,6 @@ pub use session::ENTERLEVEL_RANDOMSEED;
 pub use session::{DUKE_TIC_RATE, DukeSession};
 pub use spawn::{APLAYER, SECTOREFFECTOR, classify_map_sprites, spawn_player_body};
 pub use standables::movestandables;
-pub use transports::movetransports;
 pub use stat::{
     STAT_ACTIVATOR, STAT_ACTOR, STAT_DEFAULT, STAT_DUMMY, STAT_EFFECTOR, STAT_FX, STAT_LOCATOR,
     STAT_MISC, STAT_PLAYER, STAT_PROJECTILE, STAT_STANDABLE, STAT_TRANSPORT,
@@ -59,3 +58,4 @@ pub use trace::{
     HEADER, MAX_WEAPONS, TraceDiff, TraceFile, TracePlayer, TraceTic, diff_traces, format_trace,
     hash_sprites, load_trace, parse_trace, sha256_hex,
 };
+pub use transports::movetransports;

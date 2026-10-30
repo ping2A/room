@@ -34,6 +34,7 @@ pub mod lightmode;
 pub mod lights;
 pub mod materials;
 pub mod mesh;
+pub mod mod_zones;
 pub mod model_catalog;
 pub mod models;
 pub mod offscreen;
@@ -67,6 +68,7 @@ pub use decals::{
     DecalIngestAnim, DecalInstance, DecalStore, MAX_DECALS, append_decals, emit_decal_quad,
 };
 pub use device::{DeviceError, GpuContext, GpuTier};
+pub use faces::{FaceTextureKey, upsert_face_rgba};
 pub use fonts::{Fon1Face, TextDraw};
 pub use fuzz::{FuzzType, fuzz_modulate};
 pub use glsl_translate::{GlslError, glsl_to_wgsl};
@@ -90,6 +92,9 @@ pub use lights::{
 };
 pub use materials::{MaterialCatalog, MaterialMaps, lump_preview_rgba};
 pub use mesh::{FlatVertex, ViewUniforms, WallVertex};
+pub use mod_zones::{
+    ModZonePass, ZoneDraw, ZoneMeshes, ZoneVertex, build_zone_meshes, flags as mod_zone_flags,
+};
 pub use model_catalog::{ModelActorPose, ModelCatalog, append_actor_models, join_model_path};
 pub use models::{
     IqmJoint, IqmModel, Md2Model, Md3Model, ModelError, ModelMesh, ModelVertex, append_model,
@@ -129,7 +134,6 @@ pub use ssao::{
     SsaoPass, SsaoUniforms, depth_only_view, ssao_bilateral_weight, ssao_edge_occlusion,
 };
 pub use texanim::TextureAnimator;
-pub use faces::{FaceTextureKey, upsert_face_rgba};
 pub use texture::{TextureEntry, TextureFormatKind, TextureManager};
 pub use ue1::{Ue1Model, Ue1Tri, decompress_ue1_vertex, parse_ue1};
 pub use voxel_draw::{

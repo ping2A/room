@@ -31,6 +31,8 @@ async fn legacy_two_peers_stamped_data() {
             packs: Vec::new(),
             time_limit: None,
             game: None,
+            fill_bots: false,
+            quick_play: false,
         })
         .expect("create");
     let (addr, _server) = bind_ephemeral(registry).await.expect("bind");
@@ -125,6 +127,8 @@ async fn v2_tic_frame_two_seats() {
             packs: Vec::new(),
             time_limit: None,
             game: None,
+            fill_bots: false,
+            quick_play: false,
         })
         .expect("create");
     let (addr, _server) = bind_ephemeral(registry).await.expect("bind");
@@ -232,6 +236,8 @@ async fn many_rooms_create_and_pair() {
                     packs: Vec::new(),
                     time_limit: None,
                     game: None,
+                    fill_bots: false,
+                    quick_play: false,
                 })
                 .expect("create"),
         );
@@ -291,6 +297,8 @@ async fn soak_1000_rooms_v2_tic_frames() {
                     packs: Vec::new(),
                     time_limit: None,
                     game: None,
+                    fill_bots: false,
+                    quick_play: false,
                 })
                 .expect("create")
                 .id,
@@ -429,6 +437,8 @@ async fn origin_allowlist_rejects_unknown() {
             packs: Vec::new(),
             time_limit: None,
             game: None,
+            fill_bots: false,
+            quick_play: false,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -469,6 +479,8 @@ async fn join_ticket_round_trip_and_replay_rejected() {
             packs: Vec::new(),
             time_limit: None,
             game: None,
+            fill_bots: false,
+            quick_play: false,
         })
         .unwrap();
     let (ticket, _) = registry.issue_join_ticket(&created.id, "alice").unwrap();

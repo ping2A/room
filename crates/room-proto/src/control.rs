@@ -62,10 +62,21 @@ pub struct WelcomeRoom {
     /// when it runs out; the server closes the room shortly after.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub time_limit: u32,
+    /// Empty seats are sim bots on every client (`GameOptions.fill_bots`, BE8).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fill_bots: bool,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+fn is_zero_u8(v: &u8) -> bool {
     *v == 0
 }
 
@@ -81,6 +92,9 @@ pub struct ResultRow {
     pub frags: i32,
     /// Deaths.
     pub deaths: i32,
+    /// Damage dealt (BE11; 0 when omitted).
+    #[serde(default)]
+    pub damage: i32,
 }
 
 /// Mod PWAD a room plays with; clients download it from `GET /api/mods/{name}.wad`
@@ -222,6 +236,12 @@ pub enum ControlMsg {
         tic0: u32,
         /// Confirmed RNG seed.
         rng_seed: u32,
+        /// Bot fill for seats `bot_first_seat`..`max_players` (BE8).
+        #[serde(default, skip_serializing_if = "is_false")]
+        fill_bots: bool,
+        /// First seat index driven by bot brains (humans occupy lower seats).
+        #[serde(default, skip_serializing_if = "is_zero_u8")]
+        bot_first_seat: u8,
     },
     /// Chat.
     Chat {
@@ -379,6 +399,7 @@ mod tests {
             game_mod: None,
             packs: Vec::new(),
             time_limit: 0,
+            fill_bots: false,
         };
         let plain = serde_json::to_string(&room).unwrap();
         assert!(
@@ -466,6 +487,7 @@ mod tests {
                 place: 1,
                 frags: 2,
                 deaths: 0,
+                damage: 0,
             }],
         };
         let s = encode_control(&msg).unwrap();

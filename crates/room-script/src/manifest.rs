@@ -29,6 +29,8 @@ pub struct Manifest {
     pub version: String,
     /// Required ABI major version.
     pub abi: i32,
+    /// Suggested max seats for multiplayer rooms (`docs/28` BE12).
+    pub max_players: Option<u8>,
     /// Modules in load order.
     pub modules: Vec<ManifestModule>,
 }
@@ -166,6 +168,11 @@ impl Manifest {
                     "abi" => {
                         if let Value::Int(n) = value {
                             out.abi = i32::try_from(n).unwrap_or(i32::MAX);
+                        }
+                    }
+                    "max_players" => {
+                        if let Value::Int(n) = value {
+                            out.max_players = Some(u8::try_from(n.clamp(2, 8)).unwrap_or(8));
                         }
                     }
                     _ => {}

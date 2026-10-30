@@ -121,11 +121,33 @@ const AML_NOT_MAPPED: i32 = 8;
 
 /// Append automap lines + player arrow into `list`.
 pub fn draw_automap(map: &MapGeometry, view: &AutomapView, list: &mut UiDrawList) {
-    // Opaque black — classic automap replaces the view, not a translucent overlay.
-    list.fill(
-        crate::draw::Rect::new(view.screen_x, view.screen_y, view.width, view.height),
-        Rgba::new(0.0, 0.0, 0.0, 1.0),
-    );
+    draw_automap_ex(map, view, list, true);
+}
+
+/// Automap into a widget rect; optionally skip the player chevron (MAP widget draws its own).
+pub fn draw_automap_ex(
+    map: &MapGeometry,
+    view: &AutomapView,
+    list: &mut UiDrawList,
+    draw_player: bool,
+) {
+    draw_automap_ex2(map, view, list, draw_player, true);
+}
+
+/// Like [`draw_automap_ex`] but can skip the black background fill (MAP widget supplies its own).
+pub fn draw_automap_ex2(
+    map: &MapGeometry,
+    view: &AutomapView,
+    list: &mut UiDrawList,
+    draw_player: bool,
+    draw_background: bool,
+) {
+    if draw_background {
+        list.fill(
+            crate::draw::Rect::new(view.screen_x, view.screen_y, view.width, view.height),
+            Rgba::new(0.0, 0.0, 0.0, 1.0),
+        );
+    }
     draw_grid(view, list);
 
     let pad = 4.0;
@@ -169,7 +191,13 @@ pub fn draw_automap(map: &MapGeometry, view: &AutomapView, list: &mut UiDrawList
         });
     }
 
-    // Player chevron at center (Doom `AM_drawPlayer`).
+    if draw_player {
+        draw_player_arrow(view, list);
+    }
+}
+
+/// Player chevron at the widget centre (`AM_drawPlayer`).
+pub fn draw_player_arrow(view: &AutomapView, list: &mut UiDrawList) {
     let c = Vec2::new(
         view.screen_x + view.width * 0.5,
         view.screen_y + view.height * 0.5,

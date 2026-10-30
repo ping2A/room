@@ -31,7 +31,8 @@ pub fn badguy_pic(picnum: i16, actortype: &[u8]) -> bool {
         2710 | // BOSS2
         2760 | // BOSS3
         4740 | // BOSS4
-        2370..=2377 | // GREENSLIME*
+        2370
+            ..=2377 | // GREENSLIME*
         1267 | // RAT
         2360 // ROTATEGUN
     );

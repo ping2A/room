@@ -95,6 +95,8 @@ async fn main() {
             packs: Vec::new(),
             time_limit: None,
             game: None,
+            fill_bots: false,
+            quick_play: false,
         }) {
             Ok(r) => room_ids.push(r.id),
             Err(e) => {

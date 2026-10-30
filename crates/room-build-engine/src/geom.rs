@@ -526,9 +526,7 @@ pub fn hitscan_full(
                 // Face sprites only when `cstat&48==0` (Chocolate hitscan case 0).
                 let cstat_type = sp.cstat & 48;
                 if sp.face_span != 0 && cstat_type == 0 {
-                    if let Some((_t, hx, hy, hz)) =
-                        ray_face_sprite(x, y, z, vx, vy, vz, sp)
-                    {
+                    if let Some((_t, hx, hy, hz)) = ray_face_sprite(x, y, z, vx, vy, vz, sp) {
                         let manh = klabs(hx.wrapping_sub(x)) + klabs(hy.wrapping_sub(y));
                         if manh <= best_manh {
                             best_manh = manh;
@@ -541,8 +539,7 @@ pub fn hitscan_full(
                         }
                     }
                 } else if sp.clipdist > 0 && cstat_type == 0 {
-                    if let Some((t, hx, hy)) =
-                        ray_circle_xy(x, y, vx, vy, sp.x, sp.y, sp.clipdist)
+                    if let Some((t, hx, hy)) = ray_circle_xy(x, y, vx, vy, sp.x, sp.y, sp.clipdist)
                     {
                         let manh = klabs(hx.wrapping_sub(x)) + klabs(hy.wrapping_sub(y));
                         if manh <= best_manh {
@@ -607,9 +604,8 @@ fn ray_sector_planes(
     let wal2 = walls[p2];
     let dax0 = wal2.x.wrapping_sub(wal.x);
     let day0 = wal2.y.wrapping_sub(wal.y);
-    let wall_len = nsqrtasm(
-        (i64::from(dax0) * i64::from(dax0) + i64::from(day0) * i64::from(day0)) as u32,
-    );
+    let wall_len =
+        nsqrtasm((i64::from(dax0) * i64::from(dax0) + i64::from(day0) * i64::from(day0)) as u32);
     let mut best_manh = i32::MAX;
     let mut best: Option<(i64, i32, i32, i32)> = None;
 
@@ -647,8 +643,13 @@ fn ray_sector_planes(
         day = day.wrapping_mul(i);
         let j = (vz << 8).wrapping_sub(dmulscale(dax, vy, -day, vx, 15));
         if j != 0 {
-            let i = ((sec.ceilingz.wrapping_sub(zs)) << 8)
-                .wrapping_add(dmulscale(dax, ys.wrapping_sub(wal.y), -day, xs.wrapping_sub(wal.x), 15));
+            let i = ((sec.ceilingz.wrapping_sub(zs)) << 8).wrapping_add(dmulscale(
+                dax,
+                ys.wrapping_sub(wal.y),
+                -day,
+                xs.wrapping_sub(wal.x),
+                15,
+            ));
             if (i ^ j) >= 0 && (klabs(i) >> 1) < klabs(j) {
                 let t = divscale(i, j, 30);
                 consider(
@@ -679,8 +680,13 @@ fn ray_sector_planes(
         day = day.wrapping_mul(i);
         let j = (vz << 8).wrapping_sub(dmulscale(dax, vy, -day, vx, 15));
         if j != 0 {
-            let i = ((sec.floorz.wrapping_sub(zs)) << 8)
-                .wrapping_add(dmulscale(dax, ys.wrapping_sub(wal.y), -day, xs.wrapping_sub(wal.x), 15));
+            let i = ((sec.floorz.wrapping_sub(zs)) << 8).wrapping_add(dmulscale(
+                dax,
+                ys.wrapping_sub(wal.y),
+                -day,
+                xs.wrapping_sub(wal.x),
+                15,
+            ));
             if (i ^ j) >= 0 && (klabs(i) >> 1) < klabs(j) {
                 let t = divscale(i, j, 30);
                 consider(
@@ -834,7 +840,9 @@ pub fn clipmove_xy(
     sectors: &[SectorWalls],
     walls: &[WallXY],
 ) -> i32 {
-    clipmove_xy_at_z(x, y, 0, sect, xvect, yvect, walldist, 0, 0, sectors, walls, None)
+    clipmove_xy_at_z(
+        x, y, 0, sect, xvect, yvect, walldist, 0, 0, sectors, walls, None,
+    )
 }
 
 /// Chocolate `clipmove` (walls / portal Z-gates; sprites deferred).
@@ -856,8 +864,20 @@ pub fn clipmove_xy_at_z(
     sector_z: Option<&[SectorZ]>,
 ) -> i32 {
     clipmove_xy_at_z_sprites(
-        x, y, z, sect, xvect, yvect, walldist, ceildist, flordist, sectors, walls, sector_z,
-        &[], 0,
+        x,
+        y,
+        z,
+        sect,
+        xvect,
+        yvect,
+        walldist,
+        ceildist,
+        flordist,
+        sectors,
+        walls,
+        sector_z,
+        &[],
+        0,
     )
 }
 
@@ -974,14 +994,13 @@ pub fn clipmove_xy_at_z_sprites(
                     let ns = wal.nextsector;
                     if (ns as usize) < sz.len() && (dasect as usize) < sz.len() {
                         // Chocolate rintersect fallback to (*x,*y) when miss.
-                        let (daxp, dayp) =
-                            if let Some((_, hx, hy)) =
-                                ray_seg_intersect(*x, *y, gx, gy, x1, y1, x2, y2)
-                            {
-                                (hx, hy)
-                            } else {
-                                (*x, *y)
-                            };
+                        let (daxp, dayp) = if let Some((_, hx, hy)) =
+                            ray_seg_intersect(*x, *y, gx, gy, x1, y1, x2, y2)
+                        {
+                            (hx, hy)
+                        } else {
+                            (*x, *y)
+                        };
                         let (_, daz_f) = getzsofslope(dasect, daxp, dayp, sz, walls);
                         let (_, daz2_f) = getzsofslope(ns, daxp, dayp, sz, walls);
                         let sec2 = sz[ns as usize];
@@ -1011,17 +1030,37 @@ pub fn clipmove_xy_at_z_sprites(
                 if gx < 0 {
                     bsz = -bsz;
                 }
-                clipit.push((x1.wrapping_sub(bsz), y1.wrapping_sub(bsz), x1.wrapping_sub(bsz), y1.wrapping_add(bsz)));
+                clipit.push((
+                    x1.wrapping_sub(bsz),
+                    y1.wrapping_sub(bsz),
+                    x1.wrapping_sub(bsz),
+                    y1.wrapping_add(bsz),
+                ));
                 clipobjectval.push(oval);
-                clipit.push((x2.wrapping_sub(bsz), y2.wrapping_sub(bsz), x2.wrapping_sub(bsz), y2.wrapping_add(bsz)));
+                clipit.push((
+                    x2.wrapping_sub(bsz),
+                    y2.wrapping_sub(bsz),
+                    x2.wrapping_sub(bsz),
+                    y2.wrapping_add(bsz),
+                ));
                 clipobjectval.push(oval);
                 bsz = walldist;
                 if gy < 0 {
                     bsz = -bsz;
                 }
-                clipit.push((x1.wrapping_add(bsz), y1.wrapping_sub(bsz), x1.wrapping_sub(bsz), y1.wrapping_sub(bsz)));
+                clipit.push((
+                    x1.wrapping_add(bsz),
+                    y1.wrapping_sub(bsz),
+                    x1.wrapping_sub(bsz),
+                    y1.wrapping_sub(bsz),
+                ));
                 clipobjectval.push(oval);
-                clipit.push((x2.wrapping_add(bsz), y2.wrapping_sub(bsz), x2.wrapping_sub(bsz), y2.wrapping_sub(bsz)));
+                clipit.push((
+                    x2.wrapping_add(bsz),
+                    y2.wrapping_sub(bsz),
+                    x2.wrapping_sub(bsz),
+                    y2.wrapping_sub(bsz),
+                ));
                 clipobjectval.push(oval);
                 let mut dax = walldist;
                 if dy > 0 {
@@ -1099,13 +1138,23 @@ pub fn clipmove_xy_at_z_sprites(
             if gx < 0 {
                 bsz = -bsz;
             }
-            clipit.push((x1.wrapping_sub(bsz), y1.wrapping_sub(bsz), x1.wrapping_sub(bsz), y1.wrapping_add(bsz)));
+            clipit.push((
+                x1.wrapping_sub(bsz),
+                y1.wrapping_sub(bsz),
+                x1.wrapping_sub(bsz),
+                y1.wrapping_add(bsz),
+            ));
             clipobjectval.push(oval);
             bsz = (i32::from(spr.clipdist) << 2) + walldist;
             if gy < 0 {
                 bsz = -bsz;
             }
-            clipit.push((x1.wrapping_add(bsz), y1.wrapping_sub(bsz), x1.wrapping_sub(bsz), y1.wrapping_sub(bsz)));
+            clipit.push((
+                x1.wrapping_add(bsz),
+                y1.wrapping_sub(bsz),
+                x1.wrapping_sub(bsz),
+                y1.wrapping_sub(bsz),
+            ));
             clipobjectval.push(oval);
         }
     }
@@ -1400,9 +1449,9 @@ pub fn pushmove(
                                 if p2 < walls.len() {
                                     let mut dax = walls[p2].x.wrapping_sub(wal.x);
                                     let mut day = walls[p2].y.wrapping_sub(wal.y);
-                    let daz = dax
-                        .wrapping_mul(x.wrapping_sub(wal.x))
-                        .wrapping_add(day.wrapping_mul(y.wrapping_sub(wal.y)));
+                                    let daz = dax
+                                        .wrapping_mul(x.wrapping_sub(wal.x))
+                                        .wrapping_add(day.wrapping_mul(y.wrapping_sub(wal.y)));
                                     let t = if daz <= 0 {
                                         0
                                     } else {
@@ -1421,7 +1470,8 @@ pub fn pushmove(
                                     let (_, daz_f) = getzsofslope(sn, dax, day, sector_z, walls);
                                     let (_, daz2_f) = getzsofslope(ns, dax, day, sector_z, walls);
                                     let sec2 = sector_z[ns as usize];
-                                    if daz2_f < daz_f.wrapping_sub(1 << 8) && (sec2.floorstat & 1) == 0
+                                    if daz2_f < daz_f.wrapping_sub(1 << 8)
+                                        && (sec2.floorstat & 1) == 0
                                         && z >= daz2_f.wrapping_sub(flordist.wrapping_sub(1))
                                     {
                                         j = 1;
@@ -1900,10 +1950,14 @@ pub fn getzrange_with_sprites(
                     if spr.cstat & 8 != 0 {
                         yoff = -yoff;
                     }
-                    let hw = ((tw >> 1) + xoff).saturating_mul(i32::from(spr.xrepeat)).abs()
+                    let hw = ((tw >> 1) + xoff)
+                        .saturating_mul(i32::from(spr.xrepeat))
+                        .abs()
                         + walldist
                         + 4;
-                    let hh = ((th >> 1) + yoff).saturating_mul(i32::from(spr.yrepeat)).abs()
+                    let hh = ((th >> 1) + yoff)
+                        .saturating_mul(i32::from(spr.yrepeat))
+                        .abs()
                         + walldist
                         + 4;
                     if (spr.x - x).abs() > hw || (spr.y - y).abs() > hh {

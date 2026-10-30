@@ -202,6 +202,39 @@ for m in modules:
     lumps.append((m["file"], wasm.read_bytes()))
     if m.get("source") and ts.is_file():
         lumps.append((m["source"], ts.read_bytes()))
+# Track B: content under lumps/ (stem → lump name) and sprites/ (SS_START…SS_END).
+lump_dir = d / "lumps"
+if lump_dir.is_dir():
+    for path in sorted(lump_dir.iterdir()):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        name = path.stem.upper()[:8]
+        lumps.append((name, path.read_bytes()))
+sprite_dir = d / "sprites"
+if sprite_dir.is_dir():
+    frames = sorted(p for p in sprite_dir.iterdir() if p.is_file() and not p.name.startswith("."))
+    if frames:
+        lumps.append(("SS_START", b""))
+        for path in frames:
+            name = path.stem.upper()[:8]
+            lumps.append((name, path.read_bytes()))
+        lumps.append(("SS_END", b""))
+maps_dir = d / "maps"
+if maps_dir.is_dir():
+    def _read_wad_lumps(data: bytes):
+        if data[:4] not in (b"IWAD", b"PWAD"):
+            sys.exit(f"{d}: not a WAD under maps/")
+        num, off = struct.unpack_from("<ii", data, 4)
+        out = []
+        for i in range(num):
+            fp, sz, nm = struct.unpack_from("<ii8s", data, off + i * 16)
+            nm = nm.split(b"\0")[0].decode("ascii", "replace")
+            out.append((nm, data[fp : fp + sz]))
+        return out
+
+    for path in sorted(maps_dir.glob("*.wad")):
+        for name, body in _read_wad_lumps(path.read_bytes()):
+            lumps.append((name, body))
 data, dir_, off = b"", b"", 12
 for name, body in lumps:
     dir_ += struct.pack("<ii8s", off, len(body), name.encode())

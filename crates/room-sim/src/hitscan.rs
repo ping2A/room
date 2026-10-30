@@ -1195,6 +1195,223 @@ fn spawn_wall_bullet_decal(world: &mut World, source: ActorId, pos: DVec3, line:
     }
 }
 
+/// Non-damaging hitscan trace (`docs/28` BE7).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewTrace {
+    /// [`room_script_abi::trace_kind`].
+    pub kind: u8,
+    /// Actor struck, if any.
+    pub actor: Option<ActorId>,
+    /// Linedef index when `kind == LINE`.
+    pub line_index: u32,
+    /// Sector index when `kind == SECTOR`.
+    pub sector_index: u32,
+    /// Impact position.
+    pub pos: DVec3,
+    /// Travel distance (map units).
+    pub distance: f64,
+}
+
+/// Trace from `source` along its yaw/pitch without applying damage or FX.
+#[must_use]
+pub fn view_trace(world: &World, source: ActorId, range: f64) -> ViewTrace {
+    use room_script_abi::trace_kind;
+    let Some(a) = world.actors.get(source) else {
+        return ViewTrace {
+            kind: trace_kind::MISS as u8,
+            actor: None,
+            line_index: 0,
+            sector_index: 0,
+            pos: DVec3::ZERO,
+            distance: 0.0,
+        };
+    };
+    let pitch = a.pitch;
+    if pitch.degrees().abs() > 80.0 {
+        return view_trace_pitch_ray(world, source, a.angle, range, pitch);
+    }
+    let aim_slope = dmath::tan(pitch.radians());
+    view_trace_with_slope(world, source, a.angle, range, aim_slope)
+}
+
+fn view_trace_pitch_ray(
+    world: &World,
+    source: ActorId,
+    angle: Angle,
+    range: f64,
+    pitch: Angle,
+) -> ViewTrace {
+    use room_script_abi::trace_kind;
+    let Some((origin, _)) = shoot_origin(world, source) else {
+        return ViewTrace {
+            kind: trace_kind::MISS as u8,
+            actor: None,
+            line_index: 0,
+            sector_index: 0,
+            pos: DVec3::ZERO,
+            distance: 0.0,
+        };
+    };
+    let rad = angle.radians();
+    let pr = pitch.radians();
+    let cp = dmath::cos(pr);
+    let sp = dmath::sin(pr);
+    let dir = DVec3::new(dmath::cos(rad) * cp, dmath::sin(rad) * cp, sp);
+    let horiz = dmath::sqrt(dir.x() * dir.x() + dir.y() * dir.y());
+    if horiz > 1e-12 {
+        let ang = Angle::from_radians(dmath::atan2(dir.y(), dir.x()));
+        let aim_slope = dir.z() / horiz;
+        return view_trace_with_slope(world, source, ang, range, aim_slope);
+    }
+    ViewTrace {
+        kind: trace_kind::MISS as u8,
+        actor: None,
+        line_index: 0,
+        sector_index: 0,
+        pos: DVec3::new(
+            origin.x() + dir.x() * range,
+            origin.y() + dir.y() * range,
+            origin.z() + dir.z() * range,
+        ),
+        distance: range,
+    }
+}
+
+fn view_trace_with_slope(
+    world: &World,
+    source: ActorId,
+    angle: Angle,
+    range: f64,
+    aim_slope: f64,
+) -> ViewTrace {
+    use room_script_abi::trace_kind;
+    let Some((origin, _)) = shoot_origin(world, source) else {
+        return ViewTrace {
+            kind: trace_kind::MISS as u8,
+            actor: None,
+            line_index: 0,
+            sector_index: 0,
+            pos: DVec3::ZERO,
+            distance: 0.0,
+        };
+    };
+    let (tdx, tdy) = finesine_dir(angle, range);
+    let dir_x = tdx / range;
+    let dir_y = tdy / range;
+
+    let mut best: Option<(ActorId, f64, DVec3)> = None;
+    let path_blocks = path_traverse_blocks(
+        &world.map.blockmap,
+        origin.x(),
+        origin.y(),
+        origin.x() + tdx,
+        origin.y() + tdy,
+    );
+    let path_set: std::collections::BTreeSet<(i32, i32)> = path_blocks.into_iter().collect();
+    let ids: Vec<ActorId> = world.thinkers.default.clone();
+    for id in ids {
+        if id == source {
+            continue;
+        }
+        let Some(a) = world.actors.get(id) else {
+            continue;
+        };
+        if a.destroyed || (a.flags & FLAG_SHOOTABLE) == 0 {
+            continue;
+        }
+        if !path_set.is_empty() {
+            let (bx, by) = block_coords(&world.map.blockmap, a.pos.x(), a.pos.y());
+            if !path_set.contains(&(i32::from(bx), i32::from(by))) {
+                continue;
+            }
+        }
+        let z0 = a.pos.z();
+        let z1 = z0 + a.height;
+        let Some(frac) = thing_intercept_frac(
+            origin.x(),
+            origin.y(),
+            tdx,
+            tdy,
+            a.pos.x(),
+            a.pos.y(),
+            a.radius,
+        ) else {
+            continue;
+        };
+        let t = frac * range;
+        if t <= 1e-6 || t > range {
+            continue;
+        }
+        let thing_top = (z1 - origin.z()) / t;
+        let thing_bot = (z0 - origin.z()) / t;
+        if thing_top < aim_slope || thing_bot > aim_slope {
+            continue;
+        }
+        let pos = DVec3::new(
+            origin.x() + dir_x * t,
+            origin.y() + dir_y * t,
+            origin.z() + aim_slope * t,
+        );
+        if best.as_ref().is_none_or(|(_, d, _)| t < *d) {
+            best = Some((id, t, pos));
+        }
+    }
+
+    let wall = nearest_shoot_wall(world, origin, dir_x, dir_y, aim_slope, range);
+    let plane = nearest_shoot_plane(world, origin, dir_x, dir_y, aim_slope, range);
+    let thing_dist = best.as_ref().map(|(_, d, _)| *d);
+    let wall_dist = wall.as_ref().map(|(d, _, _)| *d);
+    let plane_dist = plane.as_ref().map(|(d, _, _, _)| *d);
+    let nearest = [thing_dist, wall_dist, plane_dist]
+        .into_iter()
+        .flatten()
+        .fold(f64::INFINITY, f64::min);
+    if thing_dist == Some(nearest) {
+        let (id, dist, pos) = best.unwrap();
+        return ViewTrace {
+            kind: trace_kind::ACTOR as u8,
+            actor: Some(id),
+            line_index: 0,
+            sector_index: 0,
+            pos,
+            distance: dist,
+        };
+    }
+    if wall_dist == Some(nearest) {
+        let (wd, wpos, lid) = wall.unwrap();
+        return ViewTrace {
+            kind: trace_kind::LINE as u8,
+            actor: None,
+            line_index: lid.raw(),
+            sector_index: 0,
+            pos: wpos,
+            distance: wd,
+        };
+    }
+    if let Some((pd, ppos, sid, _part)) = plane {
+        return ViewTrace {
+            kind: trace_kind::SECTOR as u8,
+            actor: None,
+            line_index: 0,
+            sector_index: sid.raw(),
+            pos: ppos,
+            distance: pd,
+        };
+    }
+    ViewTrace {
+        kind: trace_kind::MISS as u8,
+        actor: None,
+        line_index: 0,
+        sector_index: 0,
+        pos: DVec3::new(
+            origin.x() + dir_x * range,
+            origin.y() + dir_y * range,
+            origin.z() + aim_slope * range,
+        ),
+        distance: range,
+    }
+}
+
 /// DECALDEF `generator` key: player's ready weapon, else the source actor class.
 fn hitscan_decal_generator_name(world: &World, source: ActorId) -> String {
     for p in world.players.iter().flatten() {

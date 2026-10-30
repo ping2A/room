@@ -53,6 +53,8 @@ pub struct NetPlay {
     pub peer_count: u8,
     /// Shared RNG seed from lobby.
     pub rng_seed: u32,
+    /// Seat display names from lobby start (BE3).
+    pub seat_names: Vec<String>,
 }
 
 impl NetPlay {
@@ -165,7 +167,12 @@ impl NetPlay {
             std::thread::sleep(Duration::from_millis(5));
         }
 
-        let start = lobby.start_msg().encode();
+        let start_msg = lobby.start_msg();
+        let seat_names = match &start_msg {
+            LobbyMsg::Start(s) => s.names.clone(),
+            _ => Vec::new(),
+        };
+        let start = start_msg.encode();
         for &addr in &known_addrs {
             let _ = transport.send_raw(addr, &start);
         }
@@ -181,6 +188,7 @@ impl NetPlay {
             session,
             peer_count: max_players,
             rng_seed,
+            seat_names,
         })
     }
 
@@ -204,6 +212,7 @@ impl NetPlay {
         let deadline = Instant::now() + Duration::from_secs(60);
         let mut welcome = None;
         let mut start_seed = None;
+        let mut seat_names = Vec::new();
         while welcome.is_none() || start_seed.is_none() {
             if Instant::now() > deadline {
                 return Err("join lobby timed out".into());
@@ -225,7 +234,10 @@ impl NetPlay {
                     Ok(LobbyMsg::Reject(r)) => {
                         return Err(format!("host rejected: {}", r.reason));
                     }
-                    Ok(LobbyMsg::Start(s)) => start_seed = Some(s.rng_seed),
+                    Ok(LobbyMsg::Start(s)) => {
+                        start_seed = Some(s.rng_seed);
+                        seat_names = s.names;
+                    }
                     _ => {}
                 }
             }
@@ -252,6 +264,7 @@ impl NetPlay {
                 session,
                 peer_count,
                 rng_seed,
+                seat_names,
             },
             map,
         ))
@@ -312,7 +325,12 @@ impl NetPlay {
             std::thread::sleep(Duration::from_millis(5));
         }
 
-        let start = lobby.start_msg().encode();
+        let start_msg = lobby.start_msg();
+        let seat_names = match &start_msg {
+            LobbyMsg::Start(s) => s.names.clone(),
+            _ => Vec::new(),
+        };
+        let start = start_msg.encode();
         for &id in &welcomed {
             transport.send(id, &start);
         }
@@ -328,6 +346,7 @@ impl NetPlay {
             session,
             peer_count: max_players,
             rng_seed,
+            seat_names,
         })
     }
 
@@ -351,6 +370,7 @@ impl NetPlay {
         let deadline = Instant::now() + Duration::from_secs(60);
         let mut welcome = None;
         let mut start_seed = None;
+        let mut seat_names = Vec::new();
         while welcome.is_none() || start_seed.is_none() {
             if Instant::now() > deadline {
                 return Err("join lobby timed out".into());
@@ -372,7 +392,10 @@ impl NetPlay {
                     Ok(LobbyMsg::Reject(r)) => {
                         return Err(format!("host rejected: {}", r.reason));
                     }
-                    Ok(LobbyMsg::Start(s)) => start_seed = Some(s.rng_seed),
+                    Ok(LobbyMsg::Start(s)) => {
+                        start_seed = Some(s.rng_seed);
+                        seat_names = s.names;
+                    }
                     _ => {}
                 }
             }
@@ -396,6 +419,7 @@ impl NetPlay {
                 session,
                 peer_count,
                 rng_seed,
+                seat_names,
             },
             map,
         ))
@@ -452,8 +476,12 @@ impl NetPlay {
             std::thread::sleep(Duration::from_millis(5));
         }
 
-        let start = lobby.start_msg().encode();
-        server.broadcast_host(&start);
+        let start_msg = lobby.start_msg();
+        let seat_names = match &start_msg {
+            LobbyMsg::Start(s) => s.names.clone(),
+            _ => Vec::new(),
+        };
+        server.broadcast_host(&start_msg.encode());
 
         let peers: Vec<PeerId> = lobby.seats().iter().map(|(id, _)| *id).collect();
         let mut session = LockstepSession::new(PeerId(0), peers.clone(), 1);
@@ -466,6 +494,7 @@ impl NetPlay {
             session,
             peer_count: max_players,
             rng_seed,
+            seat_names,
         })
     }
 
@@ -495,6 +524,7 @@ impl NetPlay {
         let deadline = Instant::now() + Duration::from_secs(60);
         let mut welcome = None;
         let mut start_seed = None;
+        let mut seat_names = Vec::new();
         while welcome.is_none() || start_seed.is_none() {
             if Instant::now() > deadline {
                 return Err("join lobby timed out".into());
@@ -517,7 +547,10 @@ impl NetPlay {
                     Ok(LobbyMsg::Reject(r)) => {
                         return Err(format!("host rejected: {}", r.reason));
                     }
-                    Ok(LobbyMsg::Start(s)) => start_seed = Some(s.rng_seed),
+                    Ok(LobbyMsg::Start(s)) => {
+                        start_seed = Some(s.rng_seed);
+                        seat_names = s.names;
+                    }
                     _ => {}
                 }
             }
@@ -541,6 +574,7 @@ impl NetPlay {
                 session,
                 peer_count,
                 rng_seed,
+                seat_names,
             },
             map,
         ))

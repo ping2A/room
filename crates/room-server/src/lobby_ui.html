@@ -32,6 +32,7 @@
       <p class="lede">Public pits on this node. Create a slaughter, join by id, or watch the carnage.</p>
       <div class="hero-actions">
         <button type="button" id="btn-create" class="btn primary">Open a pit</button>
+        <button type="button" id="btn-quick-br" class="btn primary" title="8-seat Battle Royale queue; bots fill empty seats after 60s">Quick play BR</button>
         <button type="button" id="btn-join-id" class="btn">Join by id</button>
         <button type="button" id="btn-solo" class="btn" title="Play alone in this browser: no room, no netplay">Play solo</button>
         <button type="button" id="btn-refresh" class="btn ghost">Refresh</button>
@@ -51,8 +52,12 @@
 
     <section class="panel top-players">
       <div class="panel-head">
-        <h2>Top players</h2>
-        <span class="muted">wins · frags</span>
+        <h2>Leaderboard</h2>
+        <span class="muted" id="lb-mode-label">all modes</span>
+      </div>
+      <div class="lb-tabs" role="tablist">
+        <button type="button" class="lb-tab on" data-lb="all" role="tab">All</button>
+        <button type="button" class="lb-tab" data-lb="br" role="tab">Battle Royale</button>
       </div>
       <ol id="top-list" class="top-list"></ol>
       <p id="top-empty" class="empty">No finished matches yet — be the first name on the wall.</p>

@@ -47,13 +47,34 @@ pub struct GameOptions {
     pub complevel: Complevel,
     /// MBF `-dogs N` — spawn friendly helper dogs at Player 2–4 starts (0..=3).
     pub helper_dogs: u8,
-    /// Coop player count 1..=4 (spawns seats at Player 2–4 starts when >1).
+    /// Coop player count 1..=[`MAX_PLAYERS`] (BE12: DM starts + P1 offset fallback).
     pub coop_players: u8,
+    /// When true, seats from [`Self::bot_first_seat`]..`coop_players` are sim bots (BE8).
+    pub fill_bots: bool,
+    /// First seat index filled by bots when [`Self::fill_bots`] (`0` = all seats can be bots).
+    pub bot_first_seat: u8,
     /// Match time limit in tics across the maps of one game (`0` = none);
     /// [`World::match_over`] is set when it runs out.
     pub time_limit_tics: u32,
     /// Deathmatch / DukeMatch: PvP, DM starts, no monsters on Duke.
     pub deathmatch: bool,
+    /// Session display names per seat (BE3); empty → sim fallback `Player N`.
+    pub player_names: [String; MAX_PLAYERS],
+}
+
+impl GameOptions {
+    /// Apply roster / lobby names (seat index → UTF-8 display name).
+    pub fn set_session_player_names(
+        &mut self,
+        names: impl IntoIterator<Item = (u8, impl AsRef<str>)>,
+    ) {
+        for (seat, name) in names {
+            let i = usize::from(seat);
+            if i < MAX_PLAYERS {
+                self.player_names[i] = name.as_ref().to_owned();
+            }
+        }
+    }
 }
 
 /// Headless errors.
@@ -552,6 +573,11 @@ impl Headless {
         if let Some(old) = self.mods.as_mut() {
             old.end_map(&mut self.world);
             self.mod_errors.extend(old.drain_log());
+            // Hot-swap: drop every retained widget from the outgoing modules.
+            if let Some(w) = self.world.as_mut() {
+                w.mod_hud.clear_all();
+                w.mod_zones.clear_all();
+            }
         }
         let same_layout = classes.len() == self.classes.len() && states.len() == self.states.len();
         if let Some(w) = self.world.as_mut() {
@@ -908,9 +934,18 @@ impl Headless {
             Some(t) => world.match_tics_left = t,
             None => {}
         }
-        let coop = self.options.coop_players.clamp(1, 4);
+        let coop = self.options.coop_players.clamp(1, MAX_PLAYERS as u8);
+        for (i, name) in self.options.player_names.iter().enumerate().take(MAX_PLAYERS) {
+            if !name.is_empty() {
+                world.set_player_display_name(i, name);
+            }
+        }
         if coop > 1 {
             let _ = world.spawn_coop_players(coop)?;
+        }
+        if self.options.fill_bots && coop > 0 {
+            let first = self.options.bot_first_seat.min(coop.saturating_sub(1));
+            world.fill_bot_seats(first, coop - 1);
         }
         world.deathmatch = self.options.deathmatch;
         if world.deathmatch {
@@ -1071,6 +1106,17 @@ impl Headless {
     /// Mutable world.
     pub fn world_mut(&mut self) -> Option<&mut World> {
         self.world.as_mut()
+    }
+
+    /// Session display name for `seat` (BE3); updates options and live world when loaded.
+    pub fn set_player_display_name(&mut self, seat: usize, name: &str) {
+        if seat >= MAX_PLAYERS {
+            return;
+        }
+        self.options.player_names[seat] = name.to_owned();
+        if let Some(w) = self.world.as_mut() {
+            w.set_player_display_name(seat, name);
+        }
     }
 
     /// One game tic. `cmds` are copied into player slots (pad/truncate to [`MAX_PLAYERS`]).

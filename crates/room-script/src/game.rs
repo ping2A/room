@@ -154,9 +154,54 @@ game_fns! {
     /// `game_end_match(winner PlayerRef | 0 = no winner)` (play): the match is
     /// over; shells show the final standings.
     GameEndMatch = "game_end_match"(I32);
+    /// `game_end_match_ex(winner, standings_ptr, n)` (play; BE11): like
+    /// [`GameEndMatch`], plus `n` little-endian [`MatchStandingV1`] rows.
+    GameEndMatchEx = "game_end_match_ex"(I32, I32, I32);
     /// `level_things(editor number, out [x, y, angle°] f64 triples, cap) -> total`
     /// — map things of that type as placed in the map (e.g. deathmatch starts).
     LevelThings = "level_things"(I32, I32, I32) -> I32;
+    /// `hud_widget_set(seat1, id, params_ptr, params_len) -> i32` (play; Mod HUD).
+    HudWidgetSet = "hud_widget_set"(I32, I32, I32, I32) -> I32;
+    /// `hud_widget_patch(seat1, id, field, value) -> i32` (play).
+    HudWidgetPatch = "hud_widget_patch"(I32, I32, I32, I32) -> I32;
+    /// `hud_widget_remove(seat1, id) -> i32` (play).
+    HudWidgetRemove = "hud_widget_remove"(I32, I32) -> I32;
+    /// `hud_clear(seat1) -> i32` (play; seat1 0 = shared for this module).
+    HudClear = "hud_clear"(I32) -> I32;
+    /// `player_capture_input(PlayerRef, mask)` (play; mask 0 releases).
+    PlayerCaptureInput = "player_capture_input"(I32, I32);
+    /// `player_cmd(PlayerRef, out_ptr) -> i32` (play; writes [`PlayerCmdV1`]).
+    PlayerCmd = "player_cmd"(I32, I32) -> I32;
+    /// `player_sound(PlayerRef, name_ptr, len, volume)` (play; that seat only).
+    PlayerSound = "player_sound"(I32, I32, I32, F64);
+    /// `hud_widget_animate(seat1, id, field, target, tics, easing) -> i32` (play; Mod HUD MH4).
+    HudWidgetAnimate = "hud_widget_animate"(I32, I32, I32, I32, I32, I32) -> I32;
+    /// `actor_flag(ActorRef, FlagId) -> 0/1` (play; Track C C2).
+    ActorFlag = "actor_flag"(I64, I32) -> I32;
+    /// `actor_set_flag(ActorRef, FlagId, on)` (play; C2).
+    ActorSetFlag = "actor_set_flag"(I64, I32, I32);
+    /// `player_set_i32(PlayerRef, PlayerProp, v)` (play; C3).
+    PlayerSetI32 = "player_set_i32"(I32, I32, I32);
+    /// `actor_quake(ActorRef, intensity, duration, damrad, tremrad)` (play; C4).
+    ActorQuake = "actor_quake"(I64, F64, I32, F64, F64);
+    /// `actor_radius_attack(ActorRef, source, damage, distance)` (play; C5).
+    ActorRadiusAttack = "actor_radius_attack"(I64, I64, I32, F64);
+    /// `actor_spawn_missile(src, dest, ClassRef) -> ActorRef` (play; C5).
+    ActorSpawnMissile = "actor_spawn_missile"(I64, I64, I32) -> I64;
+    /// `zone_set(id, cx, cy, r, next_cx, next_cy, next_r, rgba, flags) -> i32` (play; BE1).
+    ZoneSet = "zone_set"(I32, I32, I32, I32, I32, I32, I32, I32, I32) -> I32;
+    /// `zone_clear(id) -> i32` (play; BE1).
+    ZoneClear = "zone_clear"(I32) -> I32;
+    /// `player_set_camera(PlayerRef, ActorRef | 0)` (play; BE9 spectate).
+    PlayerSetCamera = "player_set_camera"(I32, I64);
+    /// `player_set_team(PlayerRef, team)` (play; BE5).
+    PlayerSetTeam = "player_set_team"(I32, I32);
+    /// `player_team(PlayerRef) -> team` (play; BE5).
+    PlayerTeam = "player_team"(I32) -> I32;
+    /// `player_trace(PlayerRef, max_dist, out_ptr) -> kind` (play; BE7).
+    PlayerTrace = "player_trace"(I32, F64, I32) -> I32;
+    /// `player_name(PlayerRef, buf, cap) -> len` (play; BE3 session names).
+    PlayerName = "player_name"(I32, I32, I32) -> I32;
 }
 
 pub use room_script_abi::game::{
@@ -295,5 +340,13 @@ mod tests {
         );
         assert_eq!(GameFn::ActorSpawn.result(), Some(ValKind::I64));
         assert_eq!(GameFn::ActorDestroy.result(), None);
+        assert_eq!(GameFn::ALL.len(), 68);
+        assert_eq!(GameFn::ALL[GameFn::ALL.len() - 1], GameFn::PlayerName);
+        assert_eq!(
+            GameFn::HudWidgetSet.params(),
+            &[ValKind::I32, ValKind::I32, ValKind::I32, ValKind::I32]
+        );
+        assert_eq!(GameFn::HudWidgetSet.result(), Some(ValKind::I32));
+        assert_eq!(GameFn::HudClear.params(), &[ValKind::I32]);
     }
 }

@@ -24,6 +24,7 @@ dependencies = [
 name = "room-mod-doom1-royale"
 version = "0.1.0"
 dependencies = [
+ "room-script-abi",
  "room-script-sdk",
 ]
 

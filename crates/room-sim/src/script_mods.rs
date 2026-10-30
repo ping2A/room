@@ -7,7 +7,9 @@
 
 use crate::actor::ActorId;
 use crate::class::{
-    ClassDef, ClassRegistry, FLAG_COUNTKILL, FLAG_FRIENDLY, FLAG_MISSILE, FLAG_SHOOTABLE,
+    ClassDef, ClassRegistry, FLAG_BOSS, FLAG_BUDDHA, FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_FLOAT,
+    FLAG_FRIENDLY, FLAG_INVULNERABLE, FLAG_MISSILE, FLAG_NOBLOOD, FLAG_NODAMAGE, FLAG_NOGRAVITY,
+    FLAG_NORADIUSDMG, FLAG_SHOOTABLE, FLAG_SOLID,
 };
 use crate::state::StateTable;
 use crate::world::World;
@@ -20,7 +22,8 @@ use room_script::{
     RegisteredClass, RegisteredEventHandler, ScriptError, SessionKind, WasmBackend, WasmInstance,
     WasmiBackend, WasmiInstance, event_mask,
 };
-use room_script_abi::{Budget, Val};
+use room_script_abi::hud::HudWidgetV1;
+use room_script_abi::{Budget, PlayerTraceV1, Val};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -227,6 +230,12 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
                 player_prop::ITEMS => i32::try_from(world.level.found_items).unwrap_or(0),
                 player_prop::SECRETS => i32::try_from(world.level.found_secrets).unwrap_or(0),
                 player_prop::FRAGS => world.player_frags(slot),
+                player_prop::DAMAGECOUNT => p.damage_count,
+                player_prop::BONUSCOUNT => p.bonus_count,
+                player_prop::EXTRALIGHT => p.extralight,
+                player_prop::READY_WEAPON => p.ready_weapon.map(|c| class_ref(c)).unwrap_or(0),
+                player_prop::DAMAGE_DEALT => p.damage_dealt,
+                player_prop::ARMOR_TYPE => i32::from(p.armor_class),
                 _ => 0,
             };
             i32v(v)
@@ -292,6 +301,10 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
                 actor_i32::DAMAGE => actor.damage,
                 actor_i32::REACTION_TIME => actor.reaction_time,
                 actor_i32::FRIENDLY => i32::from(actor.flags & FLAG_FRIENDLY != 0),
+                actor_i32::LAST_DAMAGE_TYPE => player_slot(world, id)
+                    .and_then(|s| world.players.get(s)?.as_ref())
+                    .map(|p| p.last_damage_weapon)
+                    .unwrap_or(0),
                 _ => 0,
             };
             i32v(v)
@@ -589,10 +602,42 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
             rule::RESPAWN => i32::from(!world.no_player_respawn),
             rule::TIME_LEFT => i32::try_from(world.match_tics_left).unwrap_or(i32::MAX),
             rule::MATCH_OVER => i32::from(world.match_over.is_some()),
+            rule::TEAM_DAMAGE => i32::from(world.team_damage),
+            rule::SELF_DAMAGE => i32::from(world.self_damage),
+            rule::SQUAD_DBNO => i32::from(world.squad_dbno),
+            rule::PAUSED => i32::from(world.paused),
             _ => 0,
         }),
         GameFn::GameEndMatch => {
             let winner = u8::try_from(ai(a, 0) - 1).ok();
+            world.end_match(winner, false);
+            None
+        }
+        GameFn::GameEndMatchEx => {
+            let winner = u8::try_from(ai(a, 0) - 1).ok();
+            let ptr = ai(a, 1);
+            let n = usize::try_from(ai(a, 2)).unwrap_or(0);
+            let row_len = usize::from(room_script_abi::MatchStandingV1::SIZE);
+            let mut rows = Vec::with_capacity(n);
+            for i in 0..n {
+                let off = ptr + i32::try_from(i * row_len).unwrap_or(i32::MAX);
+                let Some(chunk) = mem.read(off, room_script_abi::MatchStandingV1::SIZE as i32)
+                else {
+                    continue;
+                };
+                if let Some(row) = room_script_abi::MatchStandingV1::read_le(&chunk) {
+                    rows.push(crate::world::MatchStanding {
+                        seat: row.seat,
+                        place: row.place,
+                        kills: row.kills,
+                        assists: row.assists,
+                        damage: row.damage,
+                        revives: row.revives,
+                        survival_tics: row.survival_tics,
+                    });
+                }
+            }
+            world.match_standings = rows;
             world.end_match(winner, false);
             None
         }
@@ -619,16 +664,408 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
             }
             i32v(total)
         }
+        GameFn::HudWidgetSet => {
+            let Ok((seat1, id)) = hud_seat_id(ai(a, 0), ai(a, 1)) else {
+                return i32v(crate::mod_hud::err::BAD_PARAMS);
+            };
+            i32v(hud_widget_set(world, mem, seat1, id, ai(a, 2), ai(a, 3)))
+        }
+        GameFn::HudWidgetPatch => {
+            let Ok((seat1, id)) = hud_seat_id(ai(a, 0), ai(a, 1)) else {
+                return i32v(crate::mod_hud::err::BAD_PARAMS);
+            };
+            let Ok(field) = u8::try_from(ai(a, 2)) else {
+                return i32v(crate::mod_hud::err::BAD_PARAMS);
+            };
+            i32v(world.mod_hud.patch(
+                world.script_mod_index,
+                seat1,
+                id,
+                field,
+                ai(a, 3),
+                world.level.maptime,
+            ))
+        }
+        GameFn::HudWidgetRemove => {
+            let Ok((seat1, id)) = hud_seat_id(ai(a, 0), ai(a, 1)) else {
+                return i32v(crate::mod_hud::err::BAD_PARAMS);
+            };
+            i32v(world.mod_hud.remove(world.script_mod_index, seat1, id))
+        }
+        GameFn::HudClear => {
+            let seat = ai(a, 0);
+            if !(0..=8).contains(&seat) {
+                return i32v(crate::mod_hud::err::BAD_PARAMS);
+            }
+            world.mod_hud.clear_seat(world.script_mod_index, seat as u8);
+            i32v(0)
+        }
+        GameFn::HudWidgetAnimate => {
+            let Ok((seat1, id)) = hud_seat_id(ai(a, 0), ai(a, 1)) else {
+                return i32v(crate::mod_hud::err::BAD_PARAMS);
+            };
+            let Ok(field) = u8::try_from(ai(a, 2)) else {
+                return i32v(crate::mod_hud::err::BAD_PARAMS);
+            };
+            let tics = ai(a, 4).clamp(0, i32::from(u16::MAX)) as u16;
+            let _easing = ai(a, 5); // reserved; linear only for MH4
+            i32v(world.mod_hud.animate(
+                world.script_mod_index,
+                seat1,
+                id,
+                field,
+                ai(a, 3),
+                tics,
+                world.level.maptime,
+            ))
+        }
+        GameFn::PlayerCaptureInput => {
+            let slot = usize::try_from(ai(a, 0)).ok()?.checked_sub(1)?;
+            let mask = ai(a, 1) as u32;
+            let module = world.script_mod_index;
+            let maptime = world.level.maptime;
+            let p = world.players.get_mut(slot)?.as_mut()?;
+            if mask == 0 {
+                p.input_capture = 0;
+                p.capture_module = u16::MAX;
+            } else {
+                p.input_capture = mask;
+                p.capture_module = module;
+                p.capture_started = maptime;
+            }
+            None
+        }
+        GameFn::PlayerCmd => {
+            let slot = usize::try_from(ai(a, 0)).ok()?.checked_sub(1)?;
+            let out = ai(a, 1);
+            let p = world.players.get(slot)?.as_ref()?;
+            let buttons = p.raw_cmd.buttons.0;
+            let prev = p.prev_buttons;
+            let cmd = room_script_abi::PlayerCmdV1 {
+                size: room_script_abi::PlayerCmdV1::SIZE,
+                weapon_select: p.raw_cmd.weapon_select,
+                _pad: 0,
+                buttons,
+                pressed: buttons & !prev,
+                released: prev & !buttons,
+                forward: p.raw_cmd.forward_move,
+                side: p.raw_cmd.side_move,
+                yaw: p.raw_cmd.yaw,
+                pitch: p.raw_cmd.pitch,
+            };
+            let mut buf = [0u8; 24];
+            let _ = cmd.write_le(&mut buf);
+            i32v(i32::from(mem.write(out, &buf)))
+        }
+        GameFn::PlayerSound => {
+            let slot = usize::try_from(ai(a, 0)).ok()?.checked_sub(1)?;
+            let name = mem.read_str(ai(a, 1), ai(a, 2));
+            let vol = af(a, 3).clamp(0.0, 1.0) as f32;
+            if !name.is_empty() {
+                world.play_seat_sound(Some(slot as u8), &name, vol);
+            }
+            None
+        }
+        GameFn::ActorFlag => {
+            let id = live(world, au(a, 0))?;
+            let bit = flag_bit(ai(a, 1))?;
+            let actor = world.actors.get(id)?;
+            let class_flags = world.classes.get(actor.class).map(|c| c.flags).unwrap_or(0);
+            i32v(i32::from((actor.flags | class_flags) & bit != 0))
+        }
+        GameFn::ActorSetFlag => {
+            let id = live(world, au(a, 0))?;
+            let bit = flag_bit(ai(a, 1))?;
+            let on = ai(a, 2) != 0;
+            let actor = world.actors.get_mut(id)?;
+            if on {
+                actor.flags |= bit;
+            } else {
+                actor.flags &= !bit;
+            }
+            None
+        }
+        GameFn::PlayerSetI32 => {
+            let slot = usize::try_from(ai(a, 0)).ok()?.checked_sub(1)?;
+            let p = world.players.get_mut(slot)?.as_mut()?;
+            let v = ai(a, 2);
+            match ai(a, 1) {
+                player_prop::DAMAGECOUNT => p.damage_count = v.clamp(0, 100),
+                player_prop::BONUSCOUNT => p.bonus_count = v.max(0),
+                player_prop::EXTRALIGHT => p.extralight = v.clamp(0, 2),
+                _ => {}
+            }
+            None
+        }
+        GameFn::ActorQuake => {
+            let id = live(world, au(a, 0))?;
+            let intensity = af(a, 1).max(0.0);
+            let duration = ai(a, 2).max(0);
+            let damrad = af(a, 3).max(0.0);
+            let tremrad = af(a, 4).max(0.0);
+            if duration > 0 && intensity > 0.0 {
+                world.quakes.push(crate::world::Quake {
+                    spot: id,
+                    intensity,
+                    countdown: duration,
+                    damage_radius: damrad,
+                    tremor_radius: tremrad,
+                    sound: "world/quake".into(),
+                    thrust_multiplier: 0.5,
+                });
+            }
+            None
+        }
+        GameFn::ActorRadiusAttack => {
+            let origin_id = live(world, au(a, 0))?;
+            let source = live(world, au(a, 1)).unwrap_or(origin_id);
+            let damage = ai(a, 2);
+            let distance = af(a, 3);
+            let origin = world.actors.get(origin_id)?.pos;
+            crate::action::radius_attack(world, source, origin, damage, distance);
+            None
+        }
+        GameFn::ActorSpawnMissile => {
+            let src = live(world, au(a, 0))?;
+            let dest = live(world, au(a, 1))?;
+            let class = class_of(world, ai(a, 2))?;
+            let name = world.classes.get(class)?.name.clone();
+            let before = world.thinkers.default.len();
+            crate::action::script_spawn_missile(world, src, dest, &name);
+            let spawned = world
+                .thinkers
+                .default
+                .get(before..)
+                .and_then(|s| s.last().copied());
+            Some(Val::I64(opt_ref(spawned) as i64))
+        }
+        GameFn::ZoneSet => {
+            let id = ai(a, 0);
+            let Ok(id) = u8::try_from(id) else {
+                return i32v(crate::mod_zones::err::BAD_PARAMS);
+            };
+            let flags = ai(a, 8);
+            let Ok(flags) = u8::try_from(flags) else {
+                return i32v(crate::mod_zones::err::BAD_PARAMS);
+            };
+            let rgba = ai(a, 7) as u32;
+            i32v(world.mod_zones.set(
+                world.script_mod_index,
+                id,
+                ai(a, 1),
+                ai(a, 2),
+                ai(a, 3),
+                ai(a, 4),
+                ai(a, 5),
+                ai(a, 6),
+                rgba,
+                flags,
+                world.level.maptime,
+            ))
+        }
+        GameFn::ZoneClear => {
+            let id = ai(a, 0);
+            let Ok(id) = u8::try_from(id) else {
+                return i32v(crate::mod_zones::err::BAD_PARAMS);
+            };
+            i32v(world.mod_zones.clear(id))
+        }
+        GameFn::PlayerSetCamera => {
+            let slot = usize::try_from(ai(a, 0)).ok()?.checked_sub(1)?;
+            let bits = au(a, 1);
+            let cam = if bits == 0 {
+                None
+            } else {
+                Some(live(world, bits)?)
+            };
+            let p = world.players.get_mut(slot)?.as_mut()?;
+            p.camera = cam;
+            p.camera_revert = false;
+            None
+        }
         GameFn::GameSetRule => {
             let on = ai(a, 1) != 0;
             match ai(a, 0) {
                 rule::DEATHMATCH => world.deathmatch = on,
                 rule::RESPAWN => world.no_player_respawn = !on,
+                rule::TEAM_DAMAGE => world.team_damage = on,
+                rule::SELF_DAMAGE => world.self_damage = on,
+                rule::SQUAD_DBNO => world.squad_dbno = on,
+                rule::PAUSED => world.paused = on,
                 _ => {}
             }
             None
         }
+        GameFn::PlayerSetTeam => {
+            let slot = usize::try_from(ai(a, 0)).ok()?.checked_sub(1)?;
+            let team = u8::try_from(ai(a, 1)).ok()?;
+            let p = world.players.get_mut(slot)?.as_mut()?;
+            p.team = team;
+            if let Some(mo) = p.mo {
+                if let Some(a) = world.actors.get_mut(mo) {
+                    a.designated_team = team;
+                }
+            }
+            None
+        }
+        GameFn::PlayerTeam => {
+            let slot = usize::try_from(ai(a, 0)).ok()?.checked_sub(1)?;
+            let team = world
+                .players
+                .get(slot)?
+                .as_ref()
+                .map(|p| i32::from(p.team))
+                .unwrap_or(255);
+            i32v(team)
+        }
+        GameFn::PlayerName => {
+            let slot = usize::try_from(ai(a, 0)).ok()?.checked_sub(1)?;
+            let buf = ai(a, 1);
+            let cap = ai(a, 2);
+            if slot >= world.players.len() {
+                return i32v(0);
+            }
+            let mut scratch = [0u8; room_script_abi::player_name::MAX_BYTES];
+            let full = world.player_names.write_display(slot, &mut scratch);
+            let n = usize::try_from(full.max(0)).unwrap_or(0);
+            let copy = n.min(cap.max(0) as usize);
+            if copy > 0 {
+                let _ = mem.write(buf, &scratch[..copy]);
+            }
+            i32v(full)
+        }
+        GameFn::PlayerTrace => {
+            let slot = usize::try_from(ai(a, 0)).ok()?.checked_sub(1)?;
+            let max_dist = af(a, 1).max(1.0);
+            let out_ptr = ai(a, 2);
+            let mo = world.players.get(slot)?.as_ref()?.mo?;
+            let hit = crate::hitscan::view_trace(world, mo, max_dist);
+            let actor_bits = hit.actor.map(actor_ref).unwrap_or(0);
+            let trace = PlayerTraceV1 {
+                size: PlayerTraceV1::SIZE,
+                kind: hit.kind,
+                _pad: 0,
+                hit_x: hit.pos.x(),
+                hit_y: hit.pos.y(),
+                hit_z: hit.pos.z(),
+                actor: actor_bits,
+                line_index: hit.line_index,
+                sector_index: hit.sector_index,
+                distance: hit.distance,
+            };
+            let mut buf = [0u8; 56];
+            if !trace.write_le(&mut buf) {
+                return i32v(0);
+            }
+            if !mem.write(out_ptr, &buf) {
+                return i32v(0);
+            }
+            i32v(i32::from(hit.kind))
+        }
     }
+}
+
+fn flag_bit(flag_id: i32) -> Option<u64> {
+    Some(match flag_id {
+        1 => FLAG_SOLID,
+        2 => FLAG_SHOOTABLE,
+        3 => FLAG_COUNTKILL,
+        4 => FLAG_FRIENDLY,
+        5 => FLAG_NOGRAVITY,
+        6 => FLAG_FLOAT,
+        7 => FLAG_NOBLOOD,
+        8 => FLAG_BOSS,
+        9 => FLAG_NORADIUSDMG,
+        10 => FLAG_INVULNERABLE,
+        11 => FLAG_DONTDRAW,
+        12 => FLAG_NODAMAGE,
+        13 => FLAG_BUDDHA,
+        _ => return None,
+    })
+}
+
+fn hud_seat_id(seat: i32, id: i32) -> Result<(u8, u16), i32> {
+    if !(0..=8).contains(&seat) {
+        return Err(crate::mod_hud::err::BAD_PARAMS);
+    }
+    let Ok(id) = u16::try_from(id) else {
+        return Err(crate::mod_hud::err::BAD_PARAMS);
+    };
+    Ok((seat as u8, id))
+}
+
+fn hud_blob(params: &[u8], off: u16, len: u16) -> Result<&[u8], i32> {
+    if len == 0 {
+        return Ok(&[]);
+    }
+    let start = usize::from(off);
+    let Some(end) = start.checked_add(usize::from(len)) else {
+        return Err(crate::mod_hud::err::BAD_PARAMS);
+    };
+    if end > params.len() {
+        return Err(crate::mod_hud::err::BAD_PARAMS);
+    }
+    Ok(&params[start..end])
+}
+
+fn hud_widget_set(
+    world: &mut World,
+    mem: &dyn GuestMemory,
+    seat1: u8,
+    id: u16,
+    ptr: i32,
+    len: i32,
+) -> i32 {
+    use crate::mod_hud::{HudWidget, MAX_TEXT_BYTES, err, kind, layer};
+    if !(2..=4096).contains(&len) {
+        return err::BAD_PARAMS;
+    }
+    let Some(bytes) = mem.read(ptr, len) else {
+        return err::BAD_PARAMS;
+    };
+    let Some(v) = HudWidgetV1::decode_prefix(&bytes) else {
+        return err::BAD_PARAMS;
+    };
+    if v.kind > kind::MAP || v.layer > layer::MODAL || v.anchor > 8 {
+        return err::BAD_PARAMS;
+    }
+    let Ok(name) = hud_blob(&bytes, v.name_off, v.name_len) else {
+        return err::BAD_PARAMS;
+    };
+    let Ok(text) = hud_blob(&bytes, v.text_off, v.text_len) else {
+        return err::BAD_PARAMS;
+    };
+    let name = &name[..name.len().min(64)];
+    let text = &text[..text.len().min(MAX_TEXT_BYTES)];
+    let mut w = HudWidget::default();
+    w.kind = v.kind;
+    w.layer = v.layer;
+    w.anchor = v.anchor;
+    w.align = v.align;
+    w.font = v.font;
+    w.flags = v.flags;
+    w.x = v.x;
+    w.y = v.y;
+    w.w = v.w;
+    w.h = v.h;
+    w.z = v.z;
+    w.color = v.color;
+    w.color2 = v.color2;
+    w.text_color = v.text_color;
+    w.value = v.value;
+    w.max = v.max;
+    w.segments = v.segments;
+    w.alpha = v.alpha.min(1000);
+    w.fade_in = v.fade_in;
+    w.hold = v.hold;
+    w.fade_out = v.fade_out;
+    w.actor = v.actor;
+    w.world_xyz = v.world_xyz;
+    w.name = String::from_utf8_lossy(name).into_owned();
+    w.text = String::from_utf8_lossy(text).into_owned();
+    world
+        .mod_hud
+        .set(world.script_mod_index, seat1, id, w, world.level.maptime)
 }
 
 fn destroy(world: &mut World, id: ActorId) {
@@ -960,6 +1397,9 @@ impl ModRuntime {
             if m.failed {
                 continue;
             }
+            if let Some(w) = lock(&self.cell).as_mut() {
+                w.script_mod_index = h.module_index as u16;
+            }
             let mut budget = Budget::from_config(&m.cfg);
             let len = i32::try_from(payload.len().min(SCRATCH_BYTES as usize)).unwrap_or(0);
             let res = m
@@ -973,6 +1413,9 @@ impl ModRuntime {
                 m.failed = true;
                 let line = format!("[{}] disabled: {e}", m.name);
                 if let Some(w) = lock(&self.cell).as_mut() {
+                    w.mod_hud.clear_module(h.module_index as u16);
+                    w.mod_zones.clear_module(h.module_index as u16);
+                    w.clear_module_captures(h.module_index as u16);
                     w.push_message(line.clone());
                 }
                 lock(&self.log).push(line);
@@ -1036,6 +1479,10 @@ impl ModRuntime {
             if let Some(w) = lock(&rt.cell).as_mut() {
                 w.script_event_mask = 0;
                 w.script_events.clear();
+                // Drop non-PERSIST_MAP widgets; shells redraw from the new map.
+                w.mod_hud.clear_map();
+                w.mod_zones.clear_all();
+                w.clear_all_captures();
             }
         });
     }
@@ -1272,6 +1719,43 @@ mod tests {
                 .get(id)
                 .is_some_and(|a| a.class == hunter && a.health == 200)
         }));
+    }
+
+    #[test]
+    fn game_end_match_ex_populates_world() {
+        use room_script::game::{GameFn, GuestMemory};
+        use room_script_abi::Val;
+        let (classes, states) = tables();
+        let mut w =
+            World::from_map_with_classes(map_with_imp(), Arc::clone(&classes), states).unwrap();
+        let row = room_script_abi::MatchStandingV1 {
+            size: room_script_abi::MatchStandingV1::SIZE,
+            seat: 0,
+            place: 1,
+            kills: 2,
+            assists: 0,
+            damage: 40,
+            revives: 0,
+            survival_tics: 350,
+        };
+        let mut backing = vec![0u8; 24];
+        assert!(row.write_le(&mut backing));
+        struct Mem(Vec<u8>);
+        impl GuestMemory for Mem {
+            fn read(&self, ptr: i32, len: i32) -> Option<Vec<u8>> {
+                let start = usize::try_from(ptr).ok()?;
+                let end = start.checked_add(usize::try_from(len).ok()?)?;
+                self.0.get(start..end).map(<[u8]>::to_vec)
+            }
+            fn write(&mut self, _ptr: i32, _data: &[u8]) -> bool {
+                false
+            }
+        }
+        let args = [Val::I32(1), Val::I32(0), Val::I32(1)];
+        assert!(serve(&mut w, GameFn::GameEndMatchEx, &args, &mut Mem(backing)).is_none());
+        assert_eq!(w.match_standings.len(), 1);
+        assert_eq!(w.match_standings[0].kills, 2);
+        assert!(w.match_over.is_some());
     }
 
     #[test]

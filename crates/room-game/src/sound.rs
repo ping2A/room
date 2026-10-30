@@ -217,6 +217,7 @@ mod tests {
             z: 0.0,
             volume: 1.0,
             attenuation: 1.0,
+            seat: None,
         }];
         assert!(sys.translate(&vfs, &ev, 0).is_empty());
     }
@@ -278,6 +279,7 @@ mod tests {
             z: 0.0,
             volume: 1.0,
             attenuation: 0.0,
+            seat: None,
         }];
         let out = sys.translate(&vfs, &ev, 0);
         assert_eq!(out.len(), 1);

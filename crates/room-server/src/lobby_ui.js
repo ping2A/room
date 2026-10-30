@@ -10,6 +10,8 @@
     modalResolve: null,
     /** Room id from `?join=` waiting for a callsign + Enter. */
     pendingJoinId: null,
+    lbMode: "all",
+    brTop: [],
   };
 
   function playerName() {
@@ -405,7 +407,7 @@
     return { join, name: callsign };
   }
 
-  async function playRoom(room, { newTab = false, confirm = false } = {}) {
+  async function playRoom(room, { newTab = false, confirm = false, ticket = null, callsign = null } = {}) {
     try {
       if (room.occupied >= room.max_players) {
         flash("Pit full — Spectate the slaughter, or open another pit", "error");
@@ -444,7 +446,15 @@
         if (pending) pending.close();
         return;
       }
-      const { join, name } = await mintTicket(room.id, callsign);
+      let join;
+      let name = callsign;
+      if (ticket && callsign) {
+        join = { ticket, ws_v2: room.ws_v2 };
+      } else {
+        const minted = await mintTicket(room.id, callsign);
+        join = minted.join;
+        name = minted.name;
+      }
       const url = playUrl(
         {
           ...room,
@@ -758,8 +768,35 @@
 
   function renderTop(players) {
     const list = $("top-list");
-    const rows = players || [];
+    const mode = state.lbMode;
+    const rows = mode === "br" ? state.brTop || [] : players || [];
     $("top-empty").classList.toggle("hidden", rows.length > 0);
+    const label = $("lb-mode-label");
+    if (label) label.textContent = mode === "br" ? "rating · BR stats" : "wins · frags";
+    document.querySelectorAll(".lb-tab").forEach((btn) => {
+      btn.classList.toggle("on", btn.getAttribute("data-lb") === mode);
+    });
+    if (mode === "br") {
+      list.innerHTML = rows
+        .map(
+          (p) =>
+            '<li><span class="who" title="' +
+            escapeHtml(p.name) +
+            '">' +
+            escapeHtml(p.name) +
+            '</span><span class="stats"><b>' +
+            p.rating +
+            "</b> rating · " +
+            p.wins +
+            " W · avg #" +
+            (p.matches ? (p.place_sum / p.matches).toFixed(1) : "—") +
+            " · " +
+            p.kills +
+            " K</span></li>"
+        )
+        .join("");
+      return;
+    }
     list.innerHTML = rows
       .map(
         (p) =>
@@ -780,13 +817,15 @@
 
   async function refresh() {
     try {
-      const [cfg, rooms, top] = await Promise.all([
+      const [cfg, rooms, top, brTop] = await Promise.all([
         api("/api/lobby"),
         api("/api/rooms"),
         api("/api/leaderboard").catch(() => null),
+        api("/api/br/leaderboard?limit=15").catch(() => null),
       ]);
       state.config = cfg;
       state.rooms = rooms || [];
+      state.brTop = brTop || [];
       if (top) renderTop(top);
       $("node-pill").textContent = "node " + (cfg.node_id || "—");
       $("drain-pill").classList.toggle("hidden", !cfg.draining);
@@ -799,7 +838,47 @@
     }
   }
 
+  async function quickPlayBr() {
+    const name = requireCallsign();
+    if (!name) return;
+    try {
+      const join = await api("/api/quick-play/br", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      flash("Quick play BR — joining queue…");
+      const roomId = (join.ws_v2 || "").replace(/.*\/v2\/rooms\//, "").replace(/\/ws.*/, "");
+      if (roomId) {
+        await playRoom(
+          {
+            id: roomId,
+            ws_v2: join.ws_v2,
+            map: "E1M1",
+            skill: 3,
+            max_players: 8,
+            mod: { name: "royale", title: "Battle Royale" },
+            game: "doom",
+            time_limit: state.config.room_time_limit_mins || 20,
+            occupied: 0,
+            started: false,
+          },
+          { ticket: join.ticket, callsign: name }
+        );
+      }
+    } catch (err) {
+      flash(err.message || String(err), "error");
+    }
+  }
+
+  document.querySelectorAll(".lb-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.lbMode = btn.getAttribute("data-lb") || "all";
+      renderTop(null);
+    });
+  });
+
   $("btn-create").addEventListener("click", () => createRoom());
+  $("btn-quick-br").addEventListener("click", () => quickPlayBr());
   $("btn-join-id").addEventListener("click", () => joinById());
   $("btn-solo").addEventListener("click", () => playSolo());
   $("btn-refresh").addEventListener("click", () => refresh());

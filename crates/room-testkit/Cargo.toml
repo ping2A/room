@@ -12,3 +12,6 @@ workspace = true
 [dependencies]
 room-map = { path = "../room-map" }
 room-vfs = { path = "../room-vfs" }
+
+[dev-dependencies]
+room-nodebuild = { path = "../room-nodebuild" }

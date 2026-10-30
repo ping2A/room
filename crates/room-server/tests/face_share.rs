@@ -6,9 +6,11 @@ use room_proto::{ControlMsg, HelloMsg, encode_control, parse_control};
 use room_server::{CreateRoomRequest, RoomRegistry, ServerConfig, bind_ephemeral};
 use tokio_tungstenite::tungstenite::Message;
 
-async fn drain_welcome(ws: &mut tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->) {
+async fn drain_welcome(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) {
     for _ in 0..30 {
         if let Some(Ok(Message::Text(t))) = ws.next().await {
             if matches!(parse_control(&t), Ok(ControlMsg::Welcome(_))) {
@@ -86,15 +88,19 @@ async fn face_share_dropped_when_disabled() {
     let url = format!("ws://{addr}/v2/rooms/{}/ws", room.id);
 
     let (mut a, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    a.send(Message::Text(encode_control(&hello(&room.id, "a")).unwrap().into()))
-        .await
-        .unwrap();
+    a.send(Message::Text(
+        encode_control(&hello(&room.id, "a")).unwrap().into(),
+    ))
+    .await
+    .unwrap();
     drain_welcome(&mut a).await;
 
     let (mut b, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    b.send(Message::Text(encode_control(&hello(&room.id, "b")).unwrap().into()))
-        .await
-        .unwrap();
+    b.send(Message::Text(
+        encode_control(&hello(&room.id, "b")).unwrap().into(),
+    ))
+    .await
+    .unwrap();
     drain_welcome(&mut b).await;
 
     a.send(Message::Text(encode_control(&share_msg()).unwrap().into()))
@@ -137,15 +143,19 @@ async fn face_share_relays_when_enabled() {
     let url = format!("ws://{addr}/v2/rooms/{}/ws", room.id);
 
     let (mut a, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    a.send(Message::Text(encode_control(&hello(&room.id, "a")).unwrap().into()))
-        .await
-        .unwrap();
+    a.send(Message::Text(
+        encode_control(&hello(&room.id, "a")).unwrap().into(),
+    ))
+    .await
+    .unwrap();
     drain_welcome(&mut a).await;
 
     let (mut b, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    b.send(Message::Text(encode_control(&hello(&room.id, "b")).unwrap().into()))
-        .await
-        .unwrap();
+    b.send(Message::Text(
+        encode_control(&hello(&room.id, "b")).unwrap().into(),
+    ))
+    .await
+    .unwrap();
     drain_welcome(&mut b).await;
 
     a.send(Message::Text(encode_control(&share_msg()).unwrap().into()))

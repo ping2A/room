@@ -6,6 +6,7 @@ mod admin_auth;
 mod bans;
 mod config;
 mod http;
+mod br_stats;
 mod leaderboard;
 mod limits;
 mod lobby;
@@ -33,6 +34,7 @@ pub use config::{ServerConfig, TurnAuth};
 pub use http::{
     JoinRoomRequest, JoinRoomResponse, admin_router, bind_ephemeral, public_router, router, serve,
 };
+pub use br_stats::{BrMatchRow, BrPlayerStats, BrStats, MODE_BR};
 pub use leaderboard::{Leaderboard, MatchRow, PlayerStats};
 pub use lobby::{PublicRoom, lobby_routes};
 pub use mods::{AdminModRow, MAX_MOD_BYTES, ModCatalog, ModEntry, ModListing};

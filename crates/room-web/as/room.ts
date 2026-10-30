@@ -72,6 +72,34 @@
 @external("room", "game_get_rule") declare function _game_get_rule(rule: i32): i32;
 @external("room", "game_set_rule") declare function _game_set_rule(rule: i32, value: i32): void;
 @external("room", "game_end_match") declare function _game_end_match(winner: i32): void;
+@external("room", "hud_widget_set") declare function _hud_widget_set(seat1: i32, id: i32, ptr: usize, len: i32): i32;
+@external("room", "hud_widget_patch") declare function _hud_widget_patch(seat1: i32, id: i32, field: i32, value: i32): i32;
+@external("room", "hud_widget_remove") declare function _hud_widget_remove(seat1: i32, id: i32): i32;
+@external("room", "hud_clear") declare function _hud_clear(seat1: i32): i32;
+@external("room", "player_capture_input") declare function _player_capture_input(player: i32, mask: i32): void;
+@external("room", "player_cmd") declare function _player_cmd(player: i32, out: usize): i32;
+@external("room", "player_sound") declare function _player_sound(player: i32, ptr: usize, len: i32, vol: f64): void;
+@external("room", "hud_widget_animate") declare function _hud_widget_animate(
+  seat1: i32, id: i32, field: i32, target: i32, tics: i32, easing: i32
+): i32;
+@external("room", "zone_set") declare function _zone_set(
+  id: i32, cx: i32, cy: i32, r: i32, nextCx: i32, nextCy: i32, nextR: i32, rgba: i32, flags: i32
+): i32;
+@external("room", "zone_clear") declare function _zone_clear(id: i32): i32;
+@external("room", "actor_flag") declare function _actor_flag(actor: i64, flag: i32): i32;
+@external("room", "actor_set_flag") declare function _actor_set_flag(actor: i64, flag: i32, on: i32): void;
+@external("room", "player_set_i32") declare function _player_set_i32(player: i32, prop: i32, v: i32): void;
+@external("room", "player_set_camera") declare function _player_set_camera(player: i32, actor: i64): void;
+@external("room", "player_name") declare function _player_name(player: i32, buf: usize, cap: i32): i32;
+@external("room", "actor_quake") declare function _actor_quake(
+  actor: i64, intensity: f64, duration: i32, damrad: f64, tremrad: f64
+): void;
+@external("room", "actor_radius_attack") declare function _actor_radius_attack(
+  actor: i64, source: i64, damage: i32, distance: f64
+): void;
+@external("room", "actor_spawn_missile") declare function _actor_spawn_missile(
+  src: i64, dest: i64, classId: i32
+): i64;
 
 // ------------------------------------------------------------------ constants
 
@@ -190,6 +218,58 @@ export namespace ClassFlag {
   export const NORADIUSDMG: i32 = 9;
   export const INVULNERABLE: i32 = 10;
   export const DONTDRAW: i32 = 11;
+}
+
+/** Mod HUD widget kinds (`docs/27` §9.2). */
+export namespace HudKind {
+  export const TEXT: i32 = 0;
+  export const FILL: i32 = 1;
+  export const IMAGE: i32 = 2;
+  export const BAR: i32 = 3;
+  export const BOX: i32 = 4;
+  export const PANEL: i32 = 5;
+  export const MARKER: i32 = 6;
+}
+
+/** Anchor on the virtual 320×200 screen. */
+export namespace HudAnchor {
+  export const TOP_LEFT: i32 = 0;
+  export const TOP_CENTER: i32 = 1;
+  export const TOP_RIGHT: i32 = 2;
+  export const MID_LEFT: i32 = 3;
+  export const CENTER: i32 = 4;
+  export const MID_RIGHT: i32 = 5;
+  export const BOTTOM_LEFT: i32 = 6;
+  export const BOTTOM_CENTER: i32 = 7;
+  export const BOTTOM_RIGHT: i32 = 8;
+}
+
+/** Mod HUD font. */
+export namespace HudFont {
+  export const SMALL: i32 = 0;
+  export const BIG: i32 = 1;
+  export const CONSOLE: i32 = 2;
+  export const NEW_SMALL: i32 = 3;
+}
+
+/** Draw layer. */
+export namespace HudLayer {
+  export const UNDER: i32 = 0;
+  export const OVER: i32 = 1;
+  export const MODAL: i32 = 2;
+}
+
+/** `hudPatch` field ids. */
+export namespace HudPatch {
+  export const VALUE: i32 = 0;
+  export const MAX: i32 = 1;
+  export const ALPHA: i32 = 2;
+  export const X: i32 = 3;
+  export const Y: i32 = 4;
+  export const COLOR: i32 = 5;
+  export const TEXT_COLOR: i32 = 6;
+  export const HIDDEN: i32 = 7;
+  export const Z: i32 = 8;
 }
 
 export const TICRATE: i32 = 35;
@@ -353,6 +433,227 @@ export function getRule(rule: i32): i32 { return _game_get_rule(rule); }
 export function setRule(rule: i32, value: i32): void { _game_set_rule(rule, value); }
 /** End the match: `winner` slot (0-based) or -1 for none. Shows the final standings. */
 export function endMatch(winner: i32 = -1): void { _game_end_match(winner + 1); }
+
+// ------------------------------------------------------------------ mod hud
+// Packed HudWidgetV1 (`docs/27` §9.2): size 76, little-endian, no padding.
+// Text/name bytes follow the header in the same buffer.
+
+const HUD_BUF: usize = memory.data(288, 4);
+const HUD_SIZE: i32 = 76;
+
+function hudSeat1(slot: i32): i32 { return slot < 0 ? 0 : slot + 1; }
+
+/** TEXTCOLO index. Unknown names and "untranslated" are 255. */
+export function textColorIndex(name: string): u8 {
+  const n = name.toLowerCase().replaceAll(" ", "").replaceAll("_", "");
+  if (n == "brick") return 0;
+  if (n == "tan") return 1;
+  if (n == "gray" || n == "grey") return 2;
+  if (n == "green") return 3;
+  if (n == "brown") return 4;
+  if (n == "gold") return 5;
+  if (n == "red") return 6;
+  if (n == "blue") return 7;
+  if (n == "orange") return 8;
+  if (n == "white") return 9;
+  if (n == "yellow") return 10;
+  if (n == "black") return 12;
+  if (n == "lightblue") return 13;
+  if (n == "cream") return 14;
+  if (n == "olive") return 15;
+  if (n == "darkgreen") return 16;
+  if (n == "darkred") return 17;
+  if (n == "darkbrown") return 18;
+  if (n == "purple") return 19;
+  if (n == "darkgray") return 20;
+  if (n == "cyan") return 21;
+  if (n == "ice") return 22;
+  if (n == "fire") return 23;
+  if (n == "sapphire") return 24;
+  if (n == "teal") return 25;
+  return 255;
+}
+
+/**
+ * Retained HUD widget. `seat` is 0-based (`-1` = every seat).
+ * `Hud.text(1).anchor(HudAnchor.TOP_CENTER).at(0, 24).font(HudFont.BIG).color("Gold").text("ROUND 5").seat(0).show()`.
+ */
+export class Hud {
+  private id: i32;
+  private seat1: i32 = 0;
+  private kindV: u8 = 0;
+  private layerV: u8 = 1;
+  private anchorV: u8 = 1;
+  private alignV: u8 = 0;
+  private fontV: u8 = 0;
+  private flagsV: u8 = 0;
+  private x: i16 = 0;
+  private y: i16 = 24;
+  private w: i16 = 0;
+  private h: i16 = 0;
+  private z: i16 = 0;
+  private colorV: u32 = 0xffffffff;
+  private color2V: u32 = 0;
+  private textColorV: u8 = 255;
+  private valueV: i32 = 0;
+  private maxV: i32 = 0;
+  private segmentsV: u16 = 0;
+  private alphaV: u16 = 1000;
+  private label: string = "";
+  private icon: string = "";
+
+  private constructor(kindId: i32, id: i32) {
+    this.kindV = <u8>kindId;
+    this.id = id;
+  }
+
+  static text(id: i32): Hud { return new Hud(HudKind.TEXT, id); }
+  static fill(id: i32): Hud { return new Hud(HudKind.FILL, id); }
+  static image(id: i32): Hud { return new Hud(HudKind.IMAGE, id); }
+  static bar(id: i32): Hud { return new Hud(HudKind.BAR, id); }
+  static frame(id: i32): Hud { return new Hud(HudKind.BOX, id); }
+  static panel(id: i32): Hud { return new Hud(HudKind.PANEL, id); }
+  static marker(id: i32): Hud { return new Hud(HudKind.MARKER, id); }
+
+  anchor(a: i32): Hud { this.anchorV = <u8>a; return this; }
+  layer(l: i32): Hud { this.layerV = <u8>l; return this; }
+  at(x: i32, y: i32): Hud { this.x = <i16>x; this.y = <i16>y; return this; }
+  size(w: i32, h: i32): Hud { this.w = <i16>w; this.h = <i16>h; return this; }
+  font(f: i32): Hud { this.fontV = <u8>f; return this; }
+  /** TEXTCOLO name ("Gold", "Red", …). */
+  color(name: string): Hud { this.textColorV = textColorIndex(name); return this; }
+  rgba(c: u32): Hud { this.colorV = c; return this; }
+  text(s: string): Hud { this.label = s; return this; }
+  graphic(name: string): Hud { this.icon = name; return this; }
+  value(v: i32): Hud { this.valueV = v; return this; }
+  max(v: i32): Hud { this.maxV = v; return this; }
+  alpha(a: i32): Hud { this.alphaV = <u16>a; return this; }
+  /** 0-based slot; -1 = every seat. */
+  seat(slot: i32): Hud { this.seat1 = hudSeat1(slot); return this; }
+
+  /** Create or replace. Returns 0 or a negative error. */
+  show(): i32 {
+    const base = HUD_BUF;
+    store<u16>(base, <u16>HUD_SIZE);
+    store<u8>(base, this.kindV, 2);
+    store<u8>(base, this.layerV, 3);
+    store<u8>(base, this.anchorV, 4);
+    store<u8>(base, this.alignV, 5);
+    store<u8>(base, this.fontV, 6);
+    store<u8>(base, this.flagsV, 7);
+    store<i16>(base, this.x, 8);
+    store<i16>(base, this.y, 10);
+    store<i16>(base, this.w, 12);
+    store<i16>(base, this.h, 14);
+    store<i16>(base, this.z, 16);
+    store<u32>(base, this.colorV, 18);
+    store<u32>(base, this.color2V, 22);
+    store<u8>(base, this.textColorV, 26);
+    store<i32>(base, this.valueV, 30);
+    store<i32>(base, this.maxV, 34);
+    store<u16>(base, this.segmentsV, 38);
+    store<u16>(base, this.alphaV, 40);
+    store<u16>(base, 0, 68);
+    store<u16>(base, 0, 70);
+    store<u16>(base, 0, 72);
+    store<u16>(base, 0, 74);
+    let cursor: i32 = HUD_SIZE;
+    const icon = utf8(this.icon);
+    const iconN = min(icon.byteLength, 64);
+    if (iconN > 0) {
+      memory.copy(base + <usize>cursor, changetype<usize>(icon), <usize>iconN);
+      store<u16>(base, <u16>cursor, 68);
+      store<u16>(base, <u16>iconN, 70);
+      cursor += iconN;
+    }
+    const label = utf8(this.label);
+    const labelN = min(label.byteLength, 160);
+    if (labelN > 0) {
+      memory.copy(base + <usize>cursor, changetype<usize>(label), <usize>labelN);
+      store<u16>(base, <u16>cursor, 72);
+      store<u16>(base, <u16>labelN, 74);
+      cursor += labelN;
+    }
+    return _hud_widget_set(this.seat1, this.id, base, cursor);
+  }
+}
+
+/** Patch one numeric field. `slot` is 0-based; -1 = every seat. */
+export function hudPatch(slot: i32, id: i32, field: i32, value: i32): i32 {
+  return _hud_widget_patch(hudSeat1(slot), id, field, value);
+}
+/** Remove one widget. */
+export function hudRemove(slot: i32, id: i32): i32 {
+  return _hud_widget_remove(hudSeat1(slot), id);
+}
+/** Capture parts of a player's command (`docs/27` §9.3). `slot` is 0-based. */
+export function playerCaptureInput(slot: i32, mask: u32): void {
+  _player_capture_input(slot + 1, mask as i32);
+}
+/** Write `PlayerCmdV1` for `slot` (0-based). */
+export function playerCmd(slot: i32, out: usize): i32 {
+  return _player_cmd(slot + 1, out);
+}
+/** Non-positional sound heard only by `slot` (0-based). */
+export function playerSound(slot: i32, name: string, volume: f64 = 1.0): void {
+  const b = utf8(name);
+  _player_sound(slot + 1, changetype<usize>(b), b.byteLength, volume);
+}
+/** Clear this module's widgets for `slot` (-1 = shared only). */
+export function hudClear(slot: i32): i32 {
+  return _hud_clear(hudSeat1(slot));
+}
+/** Tween a numeric widget field (linear). `slot` is 0-based; -1 = every seat. */
+export function hudAnimate(slot: i32, id: i32, field: i32, target: i32, tics: i32): i32 {
+  return _hud_widget_animate(hudSeat1(slot), id, field, target, tics, 0);
+}
+/** Battle royale zone ring (BE1): current + next preview in map units. */
+export function zoneSet(
+  id: i32, cx: i32, cy: i32, r: i32, nextCx: i32, nextCy: i32, nextR: i32, rgba: i32, flags: i32 = 0
+): i32 {
+  return _zone_set(id, cx, cy, r, nextCx, nextCy, nextR, rgba, flags);
+}
+export function zoneClear(id: i32): i32 { return _zone_clear(id); }
+/** Class-flag bit on an actor (`docs/27` C2). */
+export function actorFlag(actor: Actor, flag: i32): bool {
+  return _actor_flag(actor.ref, flag) != 0;
+}
+/** Set/clear a class-flag bit (C2). */
+export function actorSetFlag(actor: Actor, flag: i32, on: bool): void {
+  _actor_set_flag(actor.ref, flag, on ? 1 : 0);
+}
+/** Set player flash / extralight props (C3). `slot` is 0-based. */
+export function playerSetI32(slot: i32, prop: i32, value: i32): void {
+  _player_set_i32(slot + 1, prop, value);
+}
+/** Per-seat spectate camera (BE9). Pass `actor.ref == 0` to clear. */
+export function playerSetCamera(slot: i32, actor: Actor): void {
+  _player_set_camera(slot + 1, actor.ref);
+}
+/** Clear per-seat spectate camera (BE9). */
+export function playerClearCamera(slot: i32): void {
+  _player_set_camera(slot + 1, 0);
+}
+/** Session display name for `slot` (0-based, BE3). Returns full UTF-8 length. */
+export function playerName(slot: i32, out: usize, cap: i32): i32 {
+  return _player_name(slot + 1, out, cap);
+}
+/** Quake at actor (C4). */
+export function actorQuake(
+  actor: Actor, intensity: f64, duration: i32, damrad: f64, tremrad: f64
+): void {
+  _actor_quake(actor.ref, intensity, duration, damrad, tremrad);
+}
+/** Radius attack (C5). */
+export function actorRadiusAttack(
+  origin: Actor, source: Actor, damage: i32, distance: f64
+): void {
+  _actor_radius_attack(origin.ref, source.ref, damage, distance);
+}
+/** Spawn missile aimed at dest (C5). */
+export function actorSpawnMissile(src: Actor, dest: Actor, classRef: i32): Actor {
+  return new Actor(_actor_spawn_missile(src.ref, dest.ref, classRef));
+}
 /** Run an ACS script on the current map. */
 export function acs(script: i32, a0: i32 = 0, a1: i32 = 0, a2: i32 = 0): i32 {
   store<i32>(SCRATCH, a0); store<i32>(SCRATCH, a1, 4); store<i32>(SCRATCH, a2, 8);

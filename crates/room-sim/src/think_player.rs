@@ -206,6 +206,21 @@ pub fn player_think(world: &mut World, player: &mut Player) {
         return;
     };
     world.thinking_refire = player.refire;
+    // Raw cmd from the shell / net; filter captured bits for playsim.
+    let raw = player.cmd;
+    player.raw_cmd = raw;
+    if player.player_state == PlayerState::Dead {
+        player.input_capture = 0;
+        player.capture_module = u16::MAX;
+    } else if player.input_capture != 0 {
+        let age = world.level.maptime.saturating_sub(player.capture_started);
+        if age > crate::player::MAX_CAPTURE_TICS as u32 {
+            player.input_capture = 0;
+            player.capture_module = u16::MAX;
+        } else {
+            crate::player::apply_input_capture(&mut player.cmd, player.input_capture);
+        }
+    }
     let cmd = player.cmd;
     // Dead: sink to the floor, face the killer; USE → respawn at Player 1 start.
     if player.player_state == PlayerState::Dead {
@@ -230,9 +245,11 @@ pub fn player_think(world: &mut World, player: &mut Player) {
                 }
             }
         }
+        player.prev_buttons = raw.buttons.0;
         return;
     }
     if player.player_state != PlayerState::Live {
+        player.prev_buttons = raw.buttons.0;
         return;
     }
     player.damage_count = (player.damage_count - 1).max(0);
@@ -460,6 +477,7 @@ pub fn player_think(world: &mut World, player: &mut Player) {
         player.view_z = view_z;
     }
     tick_idle_taunt(world, player, mo, &cmd);
+    player.prev_buttons = raw.buttons.0;
 }
 
 /// Duke `crack_time`: after ~4 s still, play an `IdleTaunt`.
@@ -2762,5 +2780,33 @@ actor FastWalker : Actor
             (x1 - x0 - 12.5).abs() < 0.5,
             "forward-move scale {x0} -> {x1}"
         );
+    }
+
+    #[test]
+    fn mod_buttons_do_not_block_movement_and_stay_in_raw_cmd() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let x0 = w.actors.get(mo).unwrap().pos.x();
+        let mut player = w.players[0].take().unwrap();
+        player.cmd = TicCmd {
+            forward_move: 25 * 256,
+            buttons: Buttons(Buttons::MOD1),
+            ..TicCmd::default()
+        };
+        player_think(&mut w, &mut player);
+        let x1 = w.actors.get(mo).unwrap().pos.x();
+        assert!(x1 > x0, "MOD1 must not block forward move");
+        assert_eq!(player.raw_cmd.buttons.0 & Buttons::MOD1, Buttons::MOD1);
+        w.players[0] = Some(player);
     }
 }

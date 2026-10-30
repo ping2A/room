@@ -79,6 +79,8 @@ that clean-room implementation is possible.
  **M8** when Heretic/Hexen IWADs available; M9 remains deferred. **Duke track:**
  D6 DEMO1 sync (frontier tic1051; face-swap F0–F7 done).
  **Face-swap track:** **F0–F7** done (`docs/26-face-swap.md`, `docs/21` §0).
+ **Survival Director track:** **SV0**–**SV9** + **MH0**–**MH4** done (`docs/27`, `docs/21` §0); **MH5** deferred.
+ **Battle Royale track:** **BR0**–**BR9** + **BE1**–**BE12** + **S-BR1** / **S-BR2** (MVP) / **S-BR4** done (`docs/28`, `docs/21` §0); **S-BR2** deferrals: OpenSkill, weekly reset.
 - Each crate has its own `README.md` stating its responsibility and public API
   surface. Keep public APIs small; prefer `pub(crate)`.
 - When a spec is ambiguous, look at the GZDoom source at
@@ -123,6 +125,9 @@ docs/
   23-build-engine.md           Duke Nukem 3D / Build: GRP→UDMF conversion, roadmap
   25-duke3d-full-support.md    Duke Nukem 3D full support: native Build runtime spec (D0–D11)
   26-face-swap.md              your face / a photo on enemy sprite heads: capture, anchors, compositing (F0–F7)
+  27-survival-director-aaa.md  Survival Director 2.0 + engine Mod HUD (on-screen widgets, input capture for mod menus): SV0–SV9, MH0–MH5
+  28-battle-royale-aaa.md      Battle Royale 2.0: drop, moving zone, squads, spectate, bots, stats (BR0–BR9, BE1–BE13)
+  29-shaders.md                shader system + catalogue of shaders to implement (SH0–SH9)
   appendix-a-dependencies.md   allowed crates and policy
   appendix-b-gzdoom-source-map.md  GZDoom source → Room crate mapping
   appendix-c-glossary.md       terms

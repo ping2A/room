@@ -52,6 +52,8 @@ pub struct Reject {
 pub struct Start {
     /// Confirmed RNG seed.
     pub rng_seed: u32,
+    /// Display name per seat (`0..names.len()`), broadcast for lockstep (BE3).
+    pub names: Vec<String>,
 }
 
 /// Peer finished local load and is ready for tic 0 (web coop gate).
@@ -106,6 +108,9 @@ impl LobbyMsg {
             Self::Start(s) => {
                 v.push(4);
                 v.extend_from_slice(&s.rng_seed.to_le_bytes());
+                for name in &s.names {
+                    push_str(&mut v, name);
+                }
             }
             Self::Ready(r) => {
                 v.push(5);
@@ -157,9 +162,14 @@ impl LobbyMsg {
             3 => Ok(Self::Reject(Reject {
                 reason: take_str(bytes, &mut o)?,
             })),
-            4 => Ok(Self::Start(Start {
-                rng_seed: take_u32(bytes, &mut o)?,
-            })),
+            4 => {
+                let rng_seed = take_u32(bytes, &mut o)?;
+                let mut names = Vec::new();
+                while o < bytes.len() {
+                    names.push(take_str(bytes, &mut o)?);
+                }
+                Ok(Self::Start(Start { rng_seed, names }))
+            }
             5 => Ok(Self::Ready(Ready {
                 peer_id: PeerId(take_u8(bytes, &mut o)?),
             })),
@@ -293,8 +303,16 @@ impl LobbyHost {
     /// Broadcast start when lobby is ready (caller decides timing).
     #[must_use]
     pub fn start_msg(&self) -> LobbyMsg {
+        let mut names = vec![String::new(); usize::from(self.max_players)];
+        for (id, n) in &self.seats {
+            let i = usize::from(id.0);
+            if i < names.len() {
+                names[i] = n.clone();
+            }
+        }
         LobbyMsg::Start(Start {
             rng_seed: self.rng_seed,
+            names,
         })
     }
 

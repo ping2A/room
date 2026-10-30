@@ -100,12 +100,10 @@ fn nsqrt_tables() -> &'static NsqrtTables {
                 j <<= 2;
                 k += 1;
             }
-            sqrtable[i as usize] =
-                (msqrtasm(((i as u32) << 18).wrapping_add(131_072)) << 1) as u16;
+            sqrtable[i as usize] = (msqrtasm(((i as u32) << 18).wrapping_add(131_072)) << 1) as u16;
             shlookup[i as usize] = ((k << 1) + ((10 - k) << 8)) as u16;
             if i < 256 {
-                shlookup[(i + 4096) as usize] =
-                    (((k + 6) << 1) + ((10 - (k + 6)) << 8)) as u16;
+                shlookup[(i + 4096) as usize] = (((k + 6) << 1) + ((10 - (k + 6)) << 8)) as u16;
             }
         }
         NsqrtTables { sqrtable, shlookup }

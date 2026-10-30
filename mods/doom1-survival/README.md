@@ -1,43 +1,63 @@
-# doom1-survival — example Room WASM mod
+# doom1-survival — Survival Director
 
-"Survival Director" for `doom1.wad` (works on any Doom map): written in Rust
-with `room-script-sdk`, it takes control of the game through the WASM game API
-(docs/12 §15). For the same kind of mod in AssemblyScript (no Rust toolchain,
-editable live in the web editor), see `mods/doom1-bounty`.
+Room WASM mod (`docs/27`) for Doom / Freedoom maps: skill-scaled Director waves,
+elites, kill streaks and ammo rewards. Written in Rust with `room-script-sdk`.
+AssemblyScript cousin: `mods/doom1-bounty`.
 
-- Monster waves spawn (with teleport fog) at the map's own thing spots, out of
-  least 320 units from the player; one new monster type unlocks per wave.
-- Skill sets the pace: a wave every 60 / 50 / 40 / 32 / 25 s (ITYTD → NM), more
-  monsters per wave and less healing on harder skills.
-- Every fifth wave is a boss wave: Barons and music `D_E1M8`.
-- Two mod classes: `PhantomImp` (translucent, faster imp) and `Juggernaut`
-  (big, heavy, 400 HP demon).
-- Kill-streak messages, heal on kill, ammo reward when a wave is cleared,
-  low-health warning.
+**Status:** **SV0**–**SV9** + engine **MH0**–**MH4** done (`docs/27`). Optional
+**MH5** / C6 translation render / C10 sector mood deferred.
+
+## Behaviour
+
+- Director phases (Warmup → Assault → Peak/Clear → Intermission); threat budget
+  and alive-threat cap scale with skill and player count.
+- Wave archetypes (Swarm, Pincer, Ambush, Elite Pack, Siege, Horde Rush, Boss).
+- Spawns at learned map spots (≥ 384 from the team); stuck monsters recycle.
+- Coop: targeting / distance use every alive seat (waves continue if seat 0 dies).
+- Elites (`EliteZombie` / `EliteImp` / `EliteDemon`) with affixes (Brute, Haste,
+  Regenerating, Vampiric, Volatile, Splitter, Summoner, Phasing); UV guarantees
+  one by round 3.
+- Announcer queue: ≤ one team line per 1.5 s; music restore for `ExMy` and `MAPxx`.
+- Between waves: on-screen perk draft (Mod HUD MODAL + input capture); Marks currency.
+- Stock classes: `PhantomImp`, `Juggernaut`. Kill streaks, heal-on-kill, ammo on clear.
+
+## Layout
+
+```
+src/
+  lib.rs        export_mod! + RoomMod wiring
+  host.rs       Host trait, SdkHost, FakeHost (tests)
+  director.rs   phase machine + wave release
+  elites.rs     affixes + elite subclasses
+  announcer.rs  priority / rate-limited messages
+  spots.rs      spot collect / pick / stuck
+  tables.rs     tuning + monster pool
+  register.rs   PhantomImp / Juggernaut / Elite*
+  …
+```
 
 ## Build
 
 ```bash
-./scripts/room-server.sh mods   # → mods/doom1-survival/survival.{wasm,wad} (and the other mods)
+./scripts/room-server.sh mods   # → survival.{wasm,wad} (+ other mods)
 ```
 
-`survival.wad` holds a `ROOMMOD` manifest (`room.toml`) and the module lump
-`SURVIVAL`.
+Release `survival.wasm` is about **59 KiB** (opt-level `z`, LTO, stripped; SV8).
+`survival.wad` holds `ROOMMOD` + `SURVIVAL` + Track B `DECORATE`/`GLDEFS`/`SNDINFO`.
 
 ## Play
 
 ```bash
-# Desktop
 cargo run -p room-app --release -- --iwad testdata/doom/doom1.wad \
   --file mods/doom1-survival/survival.wad --map E1M1 --play --skill 4
 
-# Web: pick Skill + "Survival Director (Rust)" in the play page's top-left bar
-# (http://127.0.0.1:8080/?skill=4&mod=survival), or in the editor's
-# Scripts tab → "Example: Survival (Rust)", then Play
-./scripts/play-web.sh
-
-# Multiplayer: the lobby's "Open a pit" → Mod → Survival Director
-./scripts/room-server.sh start   # http://127.0.0.1:8765/
+./scripts/play-web.sh   # ?skill=4&mod=survival
+./scripts/room-server.sh start
 ```
 
-Test: `cargo test -p room-game --test wasm_mod_survival`.
+## Tests
+
+```bash
+cargo test --manifest-path mods/doom1-survival/Cargo.toml
+cargo test -p room-game --test wasm_mod_survival
+```

@@ -1,6 +1,7 @@
 //! In-process room registry.
 
 use crate::config::ServerConfig;
+use crate::br_stats::BrStats;
 use crate::leaderboard::Leaderboard;
 use crate::room::{
     AdminCmd, CreateRoomRequest, CreateRoomResponse, GAMES, RoomCmd, RoomHandle, RoomSettings,
@@ -74,6 +75,9 @@ pub struct RoomRegistry {
     draining: Arc<AtomicBool>,
     verified_rooms: Arc<AtomicUsize>,
     leaderboard: Arc<Leaderboard>,
+    br_stats: Arc<BrStats>,
+    /// Active quick-play BR room on this node (`S-BR4`).
+    quick_play_br_room: Arc<std::sync::Mutex<Option<String>>>,
     /// Prometheus counters.
     pub(crate) metric_ws_msgs_in: Arc<AtomicU64>,
     pub(crate) metric_ws_bytes_in: Arc<AtomicU64>,
@@ -91,8 +95,11 @@ impl RoomRegistry {
     pub fn new(cfg: ServerConfig) -> Self {
         let ticket_key = TicketKey::from_secret(&cfg.ticket_secret);
         let leaderboard = Arc::new(Leaderboard::open(&cfg.data_dir));
+        let br_stats = Arc::new(BrStats::open(&cfg.data_dir));
         Self {
             leaderboard,
+            br_stats,
+            quick_play_br_room: Arc::new(std::sync::Mutex::new(None)),
             rooms: Arc::new(DashMap::new()),
             room_location: Arc::new(DashMap::new()),
             used_tickets: Arc::new(DashMap::new()),
@@ -369,6 +376,8 @@ impl RoomRegistry {
                 .unwrap_or(self.cfg.room_time_limit_mins)
                 .clamp(1, MAX_TIME_LIMIT_MINS),
             game: game.into(),
+            fill_bots: req.fill_bots,
+            quick_play: req.quick_play,
         };
         let id = new_room_id().map_err(|_| RegistryError::Rng)?;
         let rng_seed = new_rng_seed();
@@ -471,6 +480,61 @@ impl RoomRegistry {
     #[must_use]
     pub fn leaderboard(&self) -> &Leaderboard {
         &self.leaderboard
+    }
+
+    /// Battle Royale aggregate stats (`S-BR1` / `S-BR2`).
+    #[must_use]
+    pub fn br_stats(&self) -> &BrStats {
+        &self.br_stats
+    }
+
+    /// Drop `room_id` from the quick-play slot when the actor stops.
+    pub fn clear_quick_play_br(&self, room_id: &str) {
+        let mut g = self
+            .quick_play_br_room
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if g.as_deref() == Some(room_id) {
+            *g = None;
+        }
+    }
+
+    /// Create or join the quick-play Battle Royale queue (`S-BR4`).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::create_room`] / [`Self::issue_join_ticket`].
+    pub fn quick_play_br(&self, name: &str) -> Result<(String, TicketClaims), RegistryError> {
+        let room_id = {
+            let mut slot = self
+                .quick_play_br_room
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if let Some(id) = slot.clone() {
+                if let Some(h) = self.get(&id) {
+                    if !h.started.load(Ordering::Relaxed)
+                        && h.occupied.load(Ordering::Relaxed)
+                            < usize::from(h.settings.max_players)
+                    {
+                        return self.issue_join_ticket(&id, name);
+                    }
+                }
+                *slot = None;
+            }
+            let created = self.create_room(CreateRoomRequest {
+                map: "E1M1".into(),
+                skill: 3,
+                max_players: 8,
+                visibility: "public".into(),
+                game_mod: Some("royale".into()),
+                fill_bots: true,
+                quick_play: true,
+                ..CreateRoomRequest::default()
+            })?;
+            *slot = Some(created.id.clone());
+            created.id
+        };
+        self.issue_join_ticket(&room_id, name)
     }
 
     /// Count of rooms with the optional verifier enabled.

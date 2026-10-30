@@ -45,10 +45,7 @@ pub fn estimate_anchor(
     }
 
     // Topmost solid row.
-    let top = row_span
-        .iter()
-        .position(|&(a, b)| a <= b)
-        .unwrap_or(0);
+    let top = row_span.iter().position(|&(a, b)| a <= b).unwrap_or(0);
     // Neck = first local minimum of width below the top bump (within 35% height).
     let max_head_h = ((h as f32) * 0.35).ceil() as usize;
     let search_end = (top + max_head_h).min(h.saturating_sub(1));
@@ -56,11 +53,7 @@ pub fn estimate_anchor(
     let mut prev_w = 0i32;
     let mut decreasing = false;
     for (y, &(a, b)) in row_span.iter().enumerate().take(search_end + 1).skip(top) {
-        let ww = if a <= b {
-            (b - a + 1) as i32
-        } else {
-            0
-        };
+        let ww = if a <= b { (b - a + 1) as i32 } else { 0 };
         if prev_w > 0 && ww + 1 < prev_w {
             decreasing = true;
         }
@@ -71,7 +64,9 @@ pub fn estimate_anchor(
         prev_w = ww;
     }
 
-    let head_rows: Vec<usize> = (top..neck).filter(|&y| row_span[y].0 <= row_span[y].1).collect();
+    let head_rows: Vec<usize> = (top..neck)
+        .filter(|&y| row_span[y].0 <= row_span[y].1)
+        .collect();
     if head_rows.is_empty() {
         return HeadAnchor {
             center: (w as f32 * 0.5, h as f32 * 0.15),
@@ -182,7 +177,11 @@ mod tests {
             }
         }
         let a = estimate_anchor(w, h, &alpha, "TROOA1", ClassHint::default());
-        assert!(a.center.1 < 20.0, "head centre should be near top, got {:?}", a.center);
+        assert!(
+            a.center.1 < 20.0,
+            "head centre should be near top, got {:?}",
+            a.center
+        );
         assert!(matches!(a.yaw, HeadYaw::Front));
     }
 }

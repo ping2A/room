@@ -254,6 +254,12 @@ pub struct RoomSettings {
     /// Content every seat loads: `doom` (doom1.wad) or `duke3d` (duke3d.grp).
     #[serde(default = "default_game")]
     pub game: String,
+    /// Empty seats are sim bots on every client.
+    #[serde(default)]
+    pub fill_bots: bool,
+    /// Quick-play queue: start after timeout with bots for empty seats.
+    #[serde(default)]
+    pub quick_play: bool,
 }
 
 impl Default for RoomSettings {
@@ -268,6 +274,8 @@ impl Default for RoomSettings {
             packs: Vec::new(),
             time_limit: default_time_limit(),
             game: default_game(),
+            fill_bots: false,
+            quick_play: false,
         }
     }
 }
@@ -313,6 +321,12 @@ pub struct CreateRoomRequest {
     /// One of [`GAMES`]; absent = `doom`.
     #[serde(default)]
     pub game: Option<String>,
+    /// Fill empty seats with sim bots (BE8).
+    #[serde(default)]
+    pub fill_bots: bool,
+    /// Quick-play queue room (`S-BR4`): start after timeout, not only when full.
+    #[serde(default)]
+    pub quick_play: bool,
 }
 
 impl Default for CreateRoomRequest {
@@ -327,6 +341,8 @@ impl Default for CreateRoomRequest {
             packs: Vec::new(),
             time_limit: None,
             game: None,
+            fill_bots: false,
+            quick_play: false,
         }
     }
 }
@@ -459,6 +475,10 @@ struct RoomState {
     close_at: Option<Instant>,
     /// Set when the actor should stop (closed by admin, drain or match end).
     closed: bool,
+    /// Quick-play: wall clock to force start (`S-BR4`).
+    quick_play_deadline: Option<Instant>,
+    /// Human seat count at start (bots from this index).
+    start_bot_first_seat: u8,
 }
 
 /// One seat's view of the match end (all honest seats send the same).
@@ -526,8 +546,11 @@ pub fn spawn_room(
             recorded: false,
             close_at: None,
             closed: false,
+            quick_play_deadline: None,
+            start_bot_first_seat: 0,
         };
         room_loop(&mut state, rx).await;
+        state.registry.clear_quick_play_br(&id);
         state.registry.remove(&id);
         info!(room_id = %id, "room actor stopped");
     });
@@ -965,6 +988,11 @@ fn v2_hello(state: &mut RoomState, conn: ConnId, h: HelloMsg) {
         },
     );
     state.conn_seat.insert(conn, seat);
+    if state.settings.quick_play && state.quick_play_deadline.is_none() {
+        state.quick_play_deadline = Some(
+            Instant::now() + Duration::from_secs(state.cfg.quick_play_timeout_secs),
+        );
+    }
     finish_v2_welcome(state, seat);
 }
 
@@ -1026,10 +1054,7 @@ fn v2_watch(state: &mut RoomState, conn: ConnId, fingerprint: &str, name: Option
         let _ = tx.try_send(Bytes::from(s.into_bytes()));
     }
     if state.started {
-        if let Ok(s) = encode_control(&ControlMsg::Start {
-            tic0: 0,
-            rng_seed: state.rng_seed,
-        }) {
+        if let Ok(s) = encode_control(&start_control(state)) {
             let _ = tx.try_send(Bytes::from(s.into_bytes()));
         }
     }
@@ -1112,6 +1137,16 @@ fn welcome_room(state: &RoomState) -> WelcomeRoom {
         game_mod: state.settings.game_mod.clone(),
         packs: state.settings.packs.clone(),
         time_limit: u32::from(state.settings.time_limit) * 60,
+        fill_bots: state.settings.fill_bots,
+    }
+}
+
+fn start_control(state: &RoomState) -> ControlMsg {
+    ControlMsg::Start {
+        tic0: 0,
+        rng_seed: state.rng_seed,
+        fill_bots: state.settings.fill_bots,
+        bot_first_seat: state.start_bot_first_seat,
     }
 }
 
@@ -1172,6 +1207,31 @@ fn on_result(state: &mut RoomState, seat: u8, report: MatchReport) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     state.registry.leaderboard().record(&rows, now);
+    if state
+        .settings
+        .game_mod
+        .as_ref()
+        .is_some_and(|m| m.name == "royale")
+    {
+        let br_rows: Vec<crate::br_stats::BrMatchRow> = report
+            .standings
+            .iter()
+            .filter_map(|r| {
+                let slot = state.seats.get(&r.seat)?;
+                Some(crate::br_stats::BrMatchRow {
+                    name: slot.name.clone(),
+                    place: r.place,
+                    won: report.winner == Some(r.seat),
+                    kills: r.frags,
+                    damage: r.damage,
+                })
+            })
+            .collect();
+        state
+            .registry
+            .br_stats()
+            .record_match(crate::br_stats::MODE_BR, &br_rows, now);
+    }
 }
 
 /// Say goodbye to everyone and stop the actor.
@@ -1422,8 +1482,26 @@ fn maybe_v2_start(state: &mut RoomState) {
     if state.started {
         return;
     }
+    let humans = live_seat_count(state);
+    let quick_due = state.settings.quick_play
+        && state
+            .quick_play_deadline
+            .is_some_and(|d| Instant::now() >= d);
+    if quick_due {
+        if humans == 0 {
+            return;
+        }
+        for slot in state.seats.values_mut() {
+            if slot.away_since.is_none() {
+                slot.state = SeatState::Ready;
+            }
+        }
+        state.start_bot_first_seat = humans as u8;
+        do_v2_start(state);
+        return;
+    }
     let need = state.settings.max_players;
-    if live_seat_count(state) < usize::from(need) {
+    if humans < usize::from(need) {
         return;
     }
     if !state
@@ -1432,6 +1510,16 @@ fn maybe_v2_start(state: &mut RoomState) {
         .filter(|s| s.away_since.is_none())
         .all(|s| matches!(s.state, SeatState::Ready))
     {
+        return;
+    }
+    if state.settings.fill_bots {
+        state.start_bot_first_seat = humans as u8;
+    }
+    do_v2_start(state);
+}
+
+fn do_v2_start(state: &mut RoomState) {
+    if state.started {
         return;
     }
     state.started = true;
@@ -1458,10 +1546,7 @@ fn maybe_v2_start(state: &mut RoomState) {
             send_reject_tx(&sp.tx, "fingerprint", "iwad fingerprint mismatch");
         }
     }
-    let start = ControlMsg::Start {
-        tic0: 0,
-        rng_seed: state.rng_seed,
-    };
+    let start = start_control(state);
     if let Ok(s) = encode_control(&start) {
         let packet = Bytes::from(s.into_bytes());
         broadcast_all(state, packet.clone());
@@ -1666,6 +1751,9 @@ fn on_leave(state: &mut RoomState, conn: ConnId, reason: LeaveReason) {
 fn on_tick(state: &mut RoomState) {
     expire_reserved(state);
     drain_verifier(state);
+    if !state.started && state.settings.quick_play {
+        maybe_v2_start(state);
+    }
     if state.started {
         on_clock(state);
     }

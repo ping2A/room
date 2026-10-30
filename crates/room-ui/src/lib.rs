@@ -16,6 +16,8 @@ mod intermission;
 mod menu;
 mod menudef_runtime;
 mod messages;
+mod mod_hud;
+mod mod_zones;
 mod patches;
 mod sbarinfo_draw;
 mod statusbar;
@@ -41,6 +43,11 @@ pub use menudef_runtime::{
     MenuBuildOpts, MenuGame, any_menu_from_def, list_menu_from_def, option_menu_from_def,
 };
 pub use messages::MessageQueue;
+pub use mod_hud::{
+    MarkerCam, ModHudMapCtx, draw_mod_hud, draw_mod_hud_layer, draw_mod_hud_modals,
+    player_map_poses, seat_has_modal, set_marker_cam,
+};
+pub use mod_zones::{draw_mod_zones_automap, draw_outside_zone_tint};
 pub use patches::{PatchCache, SoftPatch};
 pub use sbarinfo_draw::SbarInfoBar;
 pub use statusbar::{DoomStatusBar, DukeStatusBar, StatusBar};

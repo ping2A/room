@@ -3,9 +3,7 @@
 //! Script words use **word indices** for pointers (Room compiler form). Callers
 //! that load Chocolate save-relocated images must convert byte offsets ÷ 4 first.
 
-use room_build_engine::geom::{
-    SectorZ, SectorWalls, SpriteHit, WallXY, cansee, hitscan_full,
-};
+use room_build_engine::geom::{SectorWalls, SectorZ, SpriteHit, WallXY, cansee, hitscan_full};
 use room_build_engine::helpers::{getangle, sincos_q14};
 use room_build_engine::numeric::krand_step;
 use room_build_engine::types::{SectorT, SpriteT};
@@ -644,8 +642,8 @@ impl<'a> ConVm<'a> {
                 self.insptr += 1;
             }
             // unary stubs — skip opcode + one word
-            15 | 25 | 40 | 52 | 68 | 69 | 74 | 77 | 80 | 86 | 87 | 88 | 89 | 92 | 93
-            | 100 | 101 | 102 | 103 | 105 | 110 => {
+            15 | 25 | 40 | 52 | 68 | 69 | 74 | 77 | 80 | 86 | 87 | 88 | 89 | 92 | 93 | 100
+            | 101 | 102 | 103 | 105 | 110 => {
                 self.insptr += 2;
             }
             // ifcount — `g_t[0] >= N`
@@ -680,14 +678,18 @@ impl<'a> ConVm<'a> {
             72 => {
                 self.insptr += 1;
                 let n = self.word(self.insptr);
-                let cond = self.env.map_or(false, |e| (e.floorz - e.sprite_z) <= (n << 8));
+                let cond = self
+                    .env
+                    .map_or(false, |e| (e.floorz - e.sprite_z) <= (n << 8));
                 self.parse_if_else(cond);
             }
             // ifceilingdistl N — `(z - hittype.ceilingz) <= (N<<8)`
             73 => {
                 self.insptr += 1;
                 let n = self.word(self.insptr);
-                let cond = self.env.map_or(false, |e| (e.sprite_z - e.ceilingz) <= (n << 8));
+                let cond = self
+                    .env
+                    .map_or(false, |e| (e.sprite_z - e.ceilingz) <= (n << 8));
                 self.parse_if_else(cond);
             }
             // ifpdistl — `g_x < N`
@@ -726,8 +728,7 @@ impl<'a> ConVm<'a> {
             // ifonwater — near sector floor and lotag == 1
             43 => {
                 let cond = self.env.map_or(false, |e| {
-                    e.sect_lotag == 1
-                        && (e.sprite_z - e.sector_floorz).abs() < (32 << 8)
+                    e.sect_lotag == 1 && (e.sprite_z - e.sector_floorz).abs() < (32 << 8)
                 });
                 self.parse_if_else(cond);
             }
@@ -1076,11 +1077,7 @@ pub fn actor_header_hitag(image: &ScriptImage, picnum: i16) -> i32 {
     if entry <= 0 {
         return 0;
     }
-    image
-        .script
-        .get(entry as usize + 3)
-        .copied()
-        .unwrap_or(0)
+    image.script.get(entry as usize + 3).copied().unwrap_or(0)
 }
 
 #[cfg(test)]

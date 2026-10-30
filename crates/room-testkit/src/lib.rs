@@ -2,6 +2,9 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
+mod royale01;
+pub use royale01::royale01;
+
 use room_map::{MapGeometry, load_map};
 use room_vfs::{VfsBuilder, WadWriter};
 use std::collections::BTreeMap;
@@ -488,6 +491,7 @@ impl MapBuilder {
         for name in &room_names {
             let room = &self.rooms[name];
             let _ = writeln!(out, "sector {{");
+            let _ = writeln!(out, "  // area: {name};");
             let _ = writeln!(
                 out,
                 "  heightfloor = {};\n  heightceiling = {};\n  texturefloor = \"{}\";\n  textureceiling = \"{}\";\n  lightlevel = {};",
@@ -578,15 +582,21 @@ impl MapBuilder {
         out
     }
 
-    /// Build a PWAD containing `MAP01` as UDMF and load it.
-    pub fn build_udmf(self, map_name: &str) -> Result<MapGeometry, String> {
+    /// Serialise this map as a PWAD (`map_name` + `TEXTMAP` + `ENDMAP`).
+    #[must_use]
+    pub fn build_udmf_wad(&self, map_name: &str) -> Result<Vec<u8>, String> {
         let text = self.build_udmf_text();
-        let wad = WadWriter::pwad()
+        WadWriter::pwad()
             .add(map_name, Vec::new())
             .add("TEXTMAP", text.into_bytes())
             .add("ENDMAP", Vec::new())
             .finish()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
+    }
+
+    /// Build a PWAD containing `MAP01` as UDMF and load it.
+    pub fn build_udmf(self, map_name: &str) -> Result<MapGeometry, String> {
+        let wad = self.build_udmf_wad(map_name)?;
         let vfs = VfsBuilder::new()
             .mount_memory("testkit.wad", wad)
             .map_err(|e| e.to_string())?

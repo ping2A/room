@@ -80,7 +80,7 @@ impl CoopSocket {
         }
     }
 
-    fn take_start_v2(&mut self) -> Option<(u32, u32)> {
+    fn take_start_v2(&mut self) -> Option<(u32, u32, bool, u8)> {
         match self {
             Self::V2(t) => t.take_start(),
             Self::Legacy(_) => None,
@@ -193,6 +193,10 @@ pub struct NetJoinConfig {
     pub packs: Vec<String>,
     /// Match time limit in seconds from `welcome` (0 = none).
     pub time_limit: u32,
+    /// Bot fill for empty seats (BE8).
+    pub fill_bots: bool,
+    /// First bot seat index from server `start`.
+    pub bot_first_seat: u8,
 }
 
 /// Ready lockstep session + match settings (hand off to [`crate::play::PlaySession`]).
@@ -221,6 +225,10 @@ pub struct NetReady {
     pub spectator: bool,
     /// Match time limit in seconds (0 = none).
     pub time_limit: u32,
+    /// Bot fill (BE8).
+    pub fill_bots: bool,
+    /// First bot seat from server `start`.
+    pub bot_first_seat: u8,
 }
 
 /// Connecting / lobby phases before the sim starts.
@@ -328,6 +336,18 @@ impl NetLobby {
         self.cfg.time_limit
     }
 
+    /// Bot fill from `welcome` / `start` (BE8).
+    #[must_use]
+    pub fn fill_bots(&self) -> bool {
+        self.cfg.fill_bots
+    }
+
+    /// First bot seat from server `start`.
+    #[must_use]
+    pub fn bot_first_seat(&self) -> u8 {
+        self.cfg.bot_first_seat
+    }
+
     /// Relay WebSocket URL (mod downloads use the same host).
     #[must_use]
     pub fn ws_url(&self) -> &str {
@@ -345,6 +365,15 @@ impl NetLobby {
             self.cfg.players,
             seat,
         ))
+    }
+
+    /// Roster display names for session setup (BE3).
+    #[must_use]
+    pub fn session_names(&self) -> Vec<(u8, String)> {
+        self.peer_names
+            .iter()
+            .map(|(p, n)| (p.0, n.clone()))
+            .collect()
     }
 
     /// Lobby panel fields for the waiting UI.
@@ -477,6 +506,7 @@ impl NetLobby {
                 self.cfg.game_mod = w.room.game_mod.clone();
                 self.cfg.packs = w.room.packs.clone();
                 self.cfg.time_limit = w.room.time_limit;
+                self.cfg.fill_bots = w.room.fill_bots;
                 transport.set_peer_count(w.room.max_players);
                 for seat in &w.roster {
                     self.peer_names.insert(PeerId(seat.seat), seat.name.clone());
@@ -534,10 +564,15 @@ impl NetLobby {
                 }
             }
             pump_rtc(transport);
-            if let Some((tic0, seed)) = transport.take_start_v2() {
+            if let Some((tic0, seed, fill_bots, bot_first)) = transport.take_start_v2() {
                 web_sys::console::log_1(
-                    &format!("room-web: v2 Start tic0={tic0} seed={seed}").into(),
+                    &format!(
+                        "room-web: v2 Start tic0={tic0} seed={seed} fill_bots={fill_bots} bot_first={bot_first}"
+                    )
+                    .into(),
                 );
+                self.cfg.fill_bots = fill_bots;
+                self.cfg.bot_first_seat = bot_first;
                 self.started_seed = Some(seed);
             }
         }
@@ -739,6 +774,8 @@ impl NetLobby {
                 peer_names: std::mem::take(&mut self.peer_names),
                 spectator: self.cfg.spectate,
                 time_limit: self.cfg.time_limit,
+                fill_bots: self.cfg.fill_bots,
+                bot_first_seat: self.cfg.bot_first_seat,
             }));
         }
         Ok(None)
@@ -957,6 +994,15 @@ impl NetPlay {
     #[must_use]
     pub fn peer_name(&self, seat: u8) -> Option<&str> {
         self.peer_names.get(&PeerId(seat)).map(String::as_str)
+    }
+
+    /// Roster callsigns for session setup (`(seat, name)`).
+    #[must_use]
+    pub fn session_names(&self) -> Vec<(u8, String)> {
+        self.peer_names
+            .iter()
+            .map(|(p, n)| (p.0, n.clone()))
+            .collect()
     }
 
     /// Seat disconnected mid-match.
@@ -1401,6 +1447,7 @@ impl NetPlay {
                                 local,
                                 &LobbyMsg::Start(Start {
                                     rng_seed: h.rng_seed,
+                                    names: Vec::new(),
                                 })
                                 .encode(),
                             );
@@ -1463,6 +1510,7 @@ impl NetPlay {
                     local,
                     &LobbyMsg::Start(Start {
                         rng_seed: h.rng_seed,
+                        names: Vec::new(),
                     })
                     .encode(),
                 );

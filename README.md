@@ -18,6 +18,9 @@ Agents and contributors: start with [`AGENTS.md`](AGENTS.md).
 | [`docs/23-build-engine.md`](docs/23-build-engine.md) | Duke Nukem 3D (Build engine) support |
 | [`docs/25-duke3d-full-support.md`](docs/25-duke3d-full-support.md) | Duke Nukem 3D full support — native runtime spec |
 | [`docs/26-face-swap.md`](docs/26-face-swap.md) | Face swap: camera or photo onto enemy heads |
+| [`docs/27-survival-director-aaa.md`](docs/27-survival-director-aaa.md) | Survival Director 2.0 — "AAA" upgrade spec for `mods/doom1-survival` + engine Mod HUD (mods drawing on screen) |
+| [`docs/28-battle-royale-aaa.md`](docs/28-battle-royale-aaa.md) | Battle Royale 2.0 — "AAA" upgrade spec for `mods/doom1-royale` + BR engine/server features |
+| [`docs/29-shaders.md`](docs/29-shaders.md) | Shader system (frame graph, WGSL modules, GZDoom `HardwareShader`, mod control) + shader roadmap |
 | [`crates/room-server/README.md`](crates/room-server/README.md) | Server CLI, lobby, admin, ICE/TURN |
 
 ## Status

@@ -250,7 +250,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[39].randomseed, "tic39 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[39].sprite_hash, "tic39 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[39].sprite_hash,
+            "tic39 sprite_hash"
+        );
     }
 
     #[test]
@@ -276,7 +279,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[40].randomseed, "tic40 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[40].sprite_hash, "tic40 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[40].sprite_hash,
+            "tic40 sprite_hash"
+        );
     }
 
     #[test]
@@ -302,7 +308,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[41].randomseed, "tic41 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[41].sprite_hash, "tic41 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[41].sprite_hash,
+            "tic41 sprite_hash"
+        );
     }
 
     #[test]
@@ -328,7 +337,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[51].randomseed, "tic51 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[51].sprite_hash, "tic51 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[51].sprite_hash,
+            "tic51 sprite_hash"
+        );
         assert_eq!(tr.numsprites, choc.tics[51].numsprites, "tic51 numsprites");
     }
 
@@ -355,7 +367,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[54].randomseed, "tic54 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[54].sprite_hash, "tic54 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[54].sprite_hash,
+            "tic54 sprite_hash"
+        );
         assert_eq!(tr.numsprites, choc.tics[54].numsprites, "tic54 numsprites");
     }
 
@@ -382,7 +397,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[55].randomseed, "tic55 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[55].sprite_hash, "tic55 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[55].sprite_hash,
+            "tic55 sprite_hash"
+        );
         assert_eq!(tr.numsprites, choc.tics[55].numsprites, "tic55 numsprites");
     }
 
@@ -409,7 +427,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[56].randomseed, "tic56 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[56].sprite_hash, "tic56 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[56].sprite_hash,
+            "tic56 sprite_hash"
+        );
         assert_eq!(tr.numsprites, choc.tics[56].numsprites, "tic56 numsprites");
     }
 
@@ -436,7 +457,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[57].randomseed, "tic57 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[57].sprite_hash, "tic57 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[57].sprite_hash,
+            "tic57 sprite_hash"
+        );
         assert_eq!(tr.numsprites, choc.tics[57].numsprites, "tic57 numsprites");
     }
 
@@ -463,7 +487,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[58].randomseed, "tic58 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[58].sprite_hash, "tic58 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[58].sprite_hash,
+            "tic58 sprite_hash"
+        );
     }
 
     #[test]
@@ -489,7 +516,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[59].randomseed, "tic59 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[59].sprite_hash, "tic59 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[59].sprite_hash,
+            "tic59 sprite_hash"
+        );
     }
 
     #[test]
@@ -515,7 +545,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[60].randomseed, "tic60 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[60].sprite_hash, "tic60 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[60].sprite_hash,
+            "tic60 sprite_hash"
+        );
         assert_eq!(tr.numsprites, choc.tics[60].numsprites, "tic60 numsprites");
     }
 
@@ -542,7 +575,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[61].randomseed, "tic61 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[61].sprite_hash, "tic61 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[61].sprite_hash,
+            "tic61 sprite_hash"
+        );
         assert_eq!(tr.numsprites, choc.tics[61].numsprites, "tic61 numsprites");
     }
 
@@ -555,10 +591,7 @@ mod tests {
         if !grp.is_file() {
             return;
         }
-        assert!(
-            DEMO1_PAD_PRE.len() > 65,
-            "DEMO1_PAD_PRE must cover tic65"
-        );
+        assert!(DEMO1_PAD_PRE.len() > 65, "DEMO1_PAD_PRE must cover tic65");
         let grp_b = std::fs::read(&grp).unwrap();
         let dmo_b = std::fs::read(root.join("demos/DEMO1.DMO")).unwrap();
         let choc = load_trace(&root.join("traces/DEMO1.trace")).unwrap();
@@ -573,7 +606,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[65].randomseed, "tic65 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[65].sprite_hash, "tic65 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[65].sprite_hash,
+            "tic65 sprite_hash"
+        );
         assert_eq!(tr.numsprites, choc.tics[65].numsprites, "tic65 numsprites");
     }
 
@@ -586,10 +622,7 @@ mod tests {
         if !grp.is_file() {
             return;
         }
-        assert!(
-            DEMO1_PAD_PRE.len() > 82,
-            "DEMO1_PAD_PRE must cover tic82"
-        );
+        assert!(DEMO1_PAD_PRE.len() > 82, "DEMO1_PAD_PRE must cover tic82");
         let grp_b = std::fs::read(&grp).unwrap();
         let dmo_b = std::fs::read(root.join("demos/DEMO1.DMO")).unwrap();
         let choc = load_trace(&root.join("traces/DEMO1.trace")).unwrap();
@@ -604,7 +637,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[82].randomseed, "tic82 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[82].sprite_hash, "tic82 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[82].sprite_hash,
+            "tic82 sprite_hash"
+        );
         assert_eq!(tr.numsprites, choc.tics[82].numsprites, "tic82 numsprites");
     }
 
@@ -617,10 +653,7 @@ mod tests {
         if !grp.is_file() {
             return;
         }
-        assert!(
-            DEMO1_PAD_PRE.len() > 89,
-            "DEMO1_PAD_PRE must cover tic89"
-        );
+        assert!(DEMO1_PAD_PRE.len() > 89, "DEMO1_PAD_PRE must cover tic89");
         let grp_b = std::fs::read(&grp).unwrap();
         let dmo_b = std::fs::read(root.join("demos/DEMO1.DMO")).unwrap();
         let choc = load_trace(&root.join("traces/DEMO1.trace")).unwrap();
@@ -635,7 +668,10 @@ mod tests {
         }
         let tr = session.emit_trace_tic();
         assert_eq!(tr.randomseed, choc.tics[89].randomseed, "tic89 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[89].sprite_hash, "tic89 sprite_hash");
+        assert_eq!(
+            tr.sprite_hash, choc.tics[89].sprite_hash,
+            "tic89 sprite_hash"
+        );
         assert_eq!(tr.numsprites, choc.tics[89].numsprites, "tic89 numsprites");
     }
 
@@ -648,10 +684,7 @@ mod tests {
         if !grp.is_file() {
             return;
         }
-        assert!(
-            DEMO1_PAD_PRE.len() > 119,
-            "DEMO1_PAD_PRE must cover tic119"
-        );
+        assert!(DEMO1_PAD_PRE.len() > 119, "DEMO1_PAD_PRE must cover tic119");
         let grp_b = std::fs::read(&grp).unwrap();
         let dmo_b = std::fs::read(root.join("demos/DEMO1.DMO")).unwrap();
         let choc = load_trace(&root.join("traces/DEMO1.trace")).unwrap();
@@ -665,9 +698,18 @@ mod tests {
             session.tick(DukeInput::from_dmo(inp));
         }
         let tr = session.emit_trace_tic();
-        assert_eq!(tr.randomseed, choc.tics[119].randomseed, "tic119 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[119].sprite_hash, "tic119 sprite_hash");
-        assert_eq!(tr.numsprites, choc.tics[119].numsprites, "tic119 numsprites");
+        assert_eq!(
+            tr.randomseed, choc.tics[119].randomseed,
+            "tic119 randomseed"
+        );
+        assert_eq!(
+            tr.sprite_hash, choc.tics[119].sprite_hash,
+            "tic119 sprite_hash"
+        );
+        assert_eq!(
+            tr.numsprites, choc.tics[119].numsprites,
+            "tic119 numsprites"
+        );
     }
 
     #[test]
@@ -679,10 +721,7 @@ mod tests {
         if !grp.is_file() {
             return;
         }
-        assert!(
-            DEMO1_PAD_PRE.len() > 120,
-            "DEMO1_PAD_PRE must cover tic120"
-        );
+        assert!(DEMO1_PAD_PRE.len() > 120, "DEMO1_PAD_PRE must cover tic120");
         let grp_b = std::fs::read(&grp).unwrap();
         let dmo_b = std::fs::read(root.join("demos/DEMO1.DMO")).unwrap();
         let choc = load_trace(&root.join("traces/DEMO1.trace")).unwrap();
@@ -696,9 +735,18 @@ mod tests {
             session.tick(DukeInput::from_dmo(inp));
         }
         let tr = session.emit_trace_tic();
-        assert_eq!(tr.randomseed, choc.tics[120].randomseed, "tic120 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[120].sprite_hash, "tic120 sprite_hash");
-        assert_eq!(tr.numsprites, choc.tics[120].numsprites, "tic120 numsprites");
+        assert_eq!(
+            tr.randomseed, choc.tics[120].randomseed,
+            "tic120 randomseed"
+        );
+        assert_eq!(
+            tr.sprite_hash, choc.tics[120].sprite_hash,
+            "tic120 sprite_hash"
+        );
+        assert_eq!(
+            tr.numsprites, choc.tics[120].numsprites,
+            "tic120 numsprites"
+        );
     }
 
     #[test]
@@ -710,10 +758,7 @@ mod tests {
         if !grp.is_file() {
             return;
         }
-        assert!(
-            DEMO1_PAD_PRE.len() > 123,
-            "DEMO1_PAD_PRE must cover tic123"
-        );
+        assert!(DEMO1_PAD_PRE.len() > 123, "DEMO1_PAD_PRE must cover tic123");
         let grp_b = std::fs::read(&grp).unwrap();
         let dmo_b = std::fs::read(root.join("demos/DEMO1.DMO")).unwrap();
         let choc = load_trace(&root.join("traces/DEMO1.trace")).unwrap();
@@ -727,9 +772,18 @@ mod tests {
             session.tick(DukeInput::from_dmo(inp));
         }
         let tr = session.emit_trace_tic();
-        assert_eq!(tr.randomseed, choc.tics[123].randomseed, "tic123 randomseed");
-        assert_eq!(tr.sprite_hash, choc.tics[123].sprite_hash, "tic123 sprite_hash");
-        assert_eq!(tr.numsprites, choc.tics[123].numsprites, "tic123 numsprites");
+        assert_eq!(
+            tr.randomseed, choc.tics[123].randomseed,
+            "tic123 randomseed"
+        );
+        assert_eq!(
+            tr.sprite_hash, choc.tics[123].sprite_hash,
+            "tic123 sprite_hash"
+        );
+        assert_eq!(
+            tr.numsprites, choc.tics[123].numsprites,
+            "tic123 numsprites"
+        );
     }
 
     fn demo1_bitexact_through(tic: usize) {
@@ -1140,7 +1194,7 @@ mod tests {
         demo1_bitexact_through(249);
     }
 
-        #[test]
+    #[test]
     fn demo1_tic250_bitexact() {
         demo1_bitexact_through(250);
     }
@@ -1155,7 +1209,7 @@ mod tests {
         demo1_bitexact_through(252);
     }
 
-        #[test]
+    #[test]
     fn demo1_tic253_bitexact() {
         demo1_bitexact_through(253);
     }
@@ -1195,7 +1249,7 @@ mod tests {
         demo1_bitexact_through(260);
     }
 
-        #[test]
+    #[test]
     fn demo1_tic261_bitexact() {
         demo1_bitexact_through(261);
     }
@@ -1395,7 +1449,7 @@ mod tests {
         demo1_bitexact_through(300);
     }
 
-                #[test]
+    #[test]
     fn demo1_tic301_bitexact() {
         demo1_bitexact_through(301);
     }
@@ -5365,7 +5419,6 @@ mod tests {
         demo1_bitexact_through(1108);
     }
 
-
     #[test]
     fn demo1_tic238_pad_search() {
         use crate::player::DukeInput;
@@ -5373,11 +5426,16 @@ mod tests {
         use room_build_engine::numeric::krand_step;
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() { return; }
+        if !grp.is_file() {
+            return;
+        }
         let grp_b = std::fs::read(&grp).unwrap();
         let dmo_b = std::fs::read(root.join("demos/DEMO1.DMO")).unwrap();
         let choc = load_trace(&root.join("traces/DEMO1.trace")).unwrap();
-        let step = |mut s: i32| { let _ = krand_step(&mut s); s };
+        let step = |mut s: i32| {
+            let _ = krand_step(&mut s);
+            s
+        };
         for tic in 1109..1110usize {
             let (mut session, dmo) = session_from_grp_demo(&grp_b, &dmo_b).unwrap();
             align_rng_pre_tic0(&mut session, &choc);
@@ -5401,13 +5459,19 @@ mod tests {
             let mut s = want.randomseed;
             for n in 1..512u32 {
                 s = step(s);
-                if s == tr.randomseed { ahead = Some(n); break; }
+                if s == tr.randomseed {
+                    ahead = Some(n);
+                    break;
+                }
             }
             let mut behind = None;
             let mut s = tr.randomseed;
             for n in 1..512u32 {
                 s = step(s);
-                if s == want.randomseed { behind = Some(n); break; }
+                if s == want.randomseed {
+                    behind = Some(n);
+                    break;
+                }
             }
             eprintln!(
                 "tic{tic} MISMATCH seed_ok={} hash_ok={} nspr={}/{} room_seed={} choc_seed={} ahead={ahead:?} behind={behind:?}",
@@ -5425,8 +5489,16 @@ mod tests {
                     align_rng_pre_tic0(&mut session, &choc);
                     session.rng_pad_per_tic = DEMO1_TIC0_EXTRA_KRANDS;
                     for (i, inp) in dmo.tics.iter().take(tic + 1).enumerate() {
-                        let p = if i == tic { pad } else { DEMO1_PAD_PRE.get(i).copied().unwrap_or(0) };
-                        let e = if i == tic { pe } else { DEMO1_PAD_PRE_EXPLODE.get(i).copied().unwrap_or(0) };
+                        let p = if i == tic {
+                            pad
+                        } else {
+                            DEMO1_PAD_PRE.get(i).copied().unwrap_or(0)
+                        };
+                        let e = if i == tic {
+                            pe
+                        } else {
+                            DEMO1_PAD_PRE_EXPLODE.get(i).copied().unwrap_or(0)
+                        };
                         session.pad_pre_override = Some(p);
                         session.pad_pre_explode_override = Some(e);
                         session.tick(DukeInput::from_dmo(inp));
@@ -5437,7 +5509,9 @@ mod tests {
                         break;
                     }
                 }
-                if hash_hit.is_some() { break; }
+                if hash_hit.is_some() {
+                    break;
+                }
             }
             eprintln!("tic{tic} hash_hit={hash_hit:?}");
             // dump room sprites
@@ -5456,16 +5530,20 @@ mod tests {
             if let Some(world) = session.world.as_ref() {
                 for i in 0..world.sprites.len() {
                     let st = session.lists.sprite_stat.get(i).copied().unwrap_or(1024);
-                    if st == 1024 { continue; }
+                    if st == 1024 {
+                        continue;
+                    }
                     let sp = &world.sprites[i];
-                    s.push_str(&format!("{} {} {} {} {} {}\n", i, sp.picnum, st, sp.x, sp.y, sp.z));
+                    s.push_str(&format!(
+                        "{} {} {} {} {} {}\n",
+                        i, sp.picnum, st, sp.x, sp.y, sp.z
+                    ));
                 }
             }
-            let _ = std::fs::write(&out, &s.replace("\n","\n"));
+            let _ = std::fs::write(&out, &s.replace("\n", "\n"));
             break;
         }
     }
-
 
     fn demo1_tic154_octa_probe() {
         use crate::player::DukeInput;
@@ -5498,9 +5576,7 @@ mod tests {
             let world = session.world.as_ref().unwrap();
             let p = &session.player;
             let want_p = &want.players[0];
-            let spawn_z = (6 << 8)
-                + p.pyoff
-                + p.posz
+            let spawn_z = (6 << 8) + p.pyoff + p.posz
                 - ((i32::from(p.horizoff) + i32::from(p.horiz) - 100) << 4);
             eprintln!(
                 "tic{tic} hash_ok={} seed_ok={} pyoff={} pycount={} horiz={} horizoff={} posz={} choc_posz={} spawn_z_formula={}",
@@ -5873,8 +5949,7 @@ mod tests {
                         let mut cur = format!("numsprites={}\n", tr.numsprites);
                         if let Some(world) = session.world.as_ref() {
                             for si in 0..world.sprites.len() {
-                                let st =
-                                    session.lists.sprite_stat.get(si).copied().unwrap_or(1024);
+                                let st = session.lists.sprite_stat.get(si).copied().unwrap_or(1024);
                                 if st == 1024 {
                                     continue;
                                 }
@@ -5897,7 +5972,11 @@ mod tests {
                                         sec.ceilingz,
                                         sec.floorheinum,
                                         sec.lotag,
-                                        session.actor_temps.get(si).map(|t| t.hit_floorz).unwrap_or(0),
+                                        session
+                                            .actor_temps
+                                            .get(si)
+                                            .map(|t| t.hit_floorz)
+                                            .unwrap_or(0),
                                         session.actor_temps.get(si).map(|t| t.cgg).unwrap_or(0),
                                     );
                                 }
@@ -6039,9 +6118,6 @@ mod tests {
         }
     }
 
-
-
-
     #[test]
     fn demo1_tic135_inside_floor() {
         use crate::player::DukeInput;
@@ -6067,10 +6143,15 @@ mod tests {
                 Some(DEMO1_PAD_PRE_EXPLODE.get(i).copied().unwrap_or(0));
             session.tick(DukeInput::from_dmo(inp));
         }
-        let Some(world) = session.world.as_ref() else { return };
+        let Some(world) = session.world.as_ref() else {
+            return;
+        };
         let sec: Vec<SectorWalls> = world.sectors[..world.numsectors as usize]
             .iter()
-            .map(|s| SectorWalls { wallptr: s.wallptr, wallnum: s.wallnum })
+            .map(|s| SectorWalls {
+                wallptr: s.wallptr,
+                wallnum: s.wallnum,
+            })
             .collect();
         let sec_z: Vec<SectorZ> = world.sectors[..world.numsectors as usize]
             .iter()
@@ -6128,8 +6209,6 @@ mod tests {
         }
     }
 
-
-
     /// Count FX sprites after tic135 with seed-matching pad.
     #[test]
 
@@ -6157,7 +6236,10 @@ mod tests {
             session.tick(DukeInput::from_dmo(inp));
         }
         let tr = session.emit_trace_tic();
-        eprintln!("seed={} nspr={} (choc {} {})", tr.randomseed, tr.numsprites, choc.tics[135].randomseed, choc.tics[135].numsprites);
+        eprintln!(
+            "seed={} nspr={} (choc {} {})",
+            tr.randomseed, tr.numsprites, choc.tics[135].randomseed, choc.tics[135].numsprites
+        );
         let mut counts = [0u32; 4];
         if let Some(world) = session.world.as_ref() {
             for (i, s) in world.sprites.iter().enumerate() {
@@ -6200,7 +6282,11 @@ mod tests {
                 eprintln!("room FX {:?}", r);
             }
         }
-        eprintln!("hash room={} choc={}", &tr.sprite_hash[..16], &choc.tics[135].sprite_hash[..16]);
+        eprintln!(
+            "hash room={} choc={}",
+            &tr.sprite_hash[..16],
+            &choc.tics[135].sprite_hash[..16]
+        );
     }
 
     /// DEMO1 tic135: smoke XYZ + seed + nspr (hash still open — freelist).
@@ -6248,10 +6334,7 @@ mod tests {
                     continue;
                 }
                 let s = &world.sprites[i];
-                lines.push(format!(
-                    "{} {} {} {} {} {}",
-                    i, s.picnum, st, s.x, s.y, s.z
-                ));
+                lines.push(format!("{} {} {} {} {} {}", i, s.picnum, st, s.x, s.y, s.z));
                 if s.picnum == SMALLSMOKE {
                     smoke.push((i as i16, s.x, s.y, s.z));
                 }
@@ -6297,7 +6380,9 @@ mod tests {
         let want = &choc.tics[135];
         eprintln!(
             "choc tic135 seed={} nspr={} hash={}",
-            want.randomseed, want.numsprites, &want.sprite_hash[..16]
+            want.randomseed,
+            want.numsprites,
+            &want.sprite_hash[..16]
         );
         for pad in 0_u32..120 {
             let (mut session, dmo) = session_from_grp_demo(&grp_b, &dmo_b).unwrap();
@@ -6327,10 +6412,7 @@ mod tests {
                 }
             }
             if pad == 0 || pad == 20 || pad == 40 || pad == 60 || pad == 80 {
-                eprintln!(
-                    "pad={pad} seed={} nspr={}",
-                    tr.randomseed, tr.numsprites
-                );
+                eprintln!("pad={pad} seed={} nspr={}", tr.randomseed, tr.numsprites);
             }
         }
         eprintln!("no seed hit in pad 0..120");
@@ -6342,7 +6424,9 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() { return; }
+        if !grp.is_file() {
+            return;
+        }
         let grp_b = std::fs::read(&grp).unwrap();
         let dmo_b = std::fs::read(root.join("demos/DEMO1.DMO")).unwrap();
         let choc = load_trace(&root.join("traces/DEMO1.trace")).unwrap();
@@ -6350,10 +6434,16 @@ mod tests {
         align_rng_pre_tic0(&mut session, &choc);
         session.rng_pad_per_tic = DEMO1_TIC0_EXTRA_KRANDS;
         for (i, inp) in dmo.tics.iter().take(140).enumerate() {
-            let fire = (inp.bits & (1<<2)) != 0;
+            let fire = (inp.bits & (1 << 2)) != 0;
             if (120..=139).contains(&i) {
-                eprintln!("tic{} bits={:#x} fire={} weap={} ammo2={}",
-                    i, inp.bits, fire, session.player.curr_weapon, session.player.ammo.get(2).copied().unwrap_or(-1));
+                eprintln!(
+                    "tic{} bits={:#x} fire={} weap={} ammo2={}",
+                    i,
+                    inp.bits,
+                    fire,
+                    session.player.curr_weapon,
+                    session.player.ammo.get(2).copied().unwrap_or(-1)
+                );
             }
             session.pad_pre_override = Some(DEMO1_PAD_PRE.get(i).copied().unwrap_or(4));
             session.pad_pre_explode_override =
@@ -6389,14 +6479,7 @@ mod tests {
                 let tt = session.actor_temps.get(401).cloned().unwrap_or_default();
                 eprintln!(
                     "tic{} #401 g_t0={} xvel={} ang={} xrep={} xyz=({},{},{}) want=(1417,21967,69414)",
-                    i,
-                    tt.g_t[0],
-                    sp.xvel,
-                    sp.ang,
-                    sp.xrepeat,
-                    sp.x,
-                    sp.y,
-                    sp.z,
+                    i, tt.g_t[0], sp.xvel, sp.ang, sp.xrepeat, sp.x, sp.y, sp.z,
                 );
             }
         }
@@ -6405,10 +6488,10 @@ mod tests {
     /// Dump randomseed after each mover phase for the frontier tic (pad=0).
     #[test]
     fn demo1_tic120_phase_seeds() {
-        use crate::player::DukeInput;
-        use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         use crate::con::vm::VM_TRANDS;
         use crate::explosions::EXPLOSION_TRANDS;
+        use crate::player::DukeInput;
+        use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         use room_build_engine::numeric::krand_step;
         let root = duke_root();
         let grp = root.join("duke3d.grp");
@@ -6427,7 +6510,10 @@ mod tests {
                 Some(DEMO1_PAD_PRE_EXPLODE.get(i).copied().unwrap_or(0));
             session.tick(DukeInput::from_dmo(inp));
         }
-        assert_eq!(session.randomseed, choc.tics[119].randomseed, "pre-120 seed");
+        assert_eq!(
+            session.randomseed, choc.tics[119].randomseed,
+            "pre-120 seed"
+        );
         // Manual tic120 with phase probes — mirror DukeSession::tick.
         let inp = dmo.tics[120];
         VM_TRANDS.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -6435,14 +6521,17 @@ mod tests {
         session.tic = session.tic.wrapping_add(1);
         let seed0 = session.randomseed;
         session.global_random = krand_step(&mut session.randomseed) as i16 as i32;
-        eprintln!("after global: seed={} glob={}", session.randomseed, session.global_random);
+        eprintln!(
+            "after global: seed={} glob={}",
+            session.randomseed, session.global_random
+        );
         {
-            use crate::player::{processinput_move, sync_player_sprite, DUKE_FRICTION};
+            use crate::actors::moveactors;
+            use crate::explosions::moveexplosions;
             use crate::fta::movefta;
             use crate::moveplayers::moveplayers;
+            use crate::player::{DUKE_FRICTION, processinput_move, sync_player_sprite};
             use crate::transports::movetransports;
-            use crate::explosions::moveexplosions;
-            use crate::actors::moveactors;
             let world = session.world.as_mut().unwrap();
             processinput_move(
                 &mut session.player,
@@ -6476,7 +6565,11 @@ mod tests {
                 &mut session.actor_temps,
                 actortype,
             );
-            eprintln!("after movefta: seed={} vm={}", session.randomseed, VM_TRANDS.load(std::sync::atomic::Ordering::Relaxed));
+            eprintln!(
+                "after movefta: seed={} vm={}",
+                session.randomseed,
+                VM_TRANDS.load(std::sync::atomic::Ordering::Relaxed)
+            );
             {
                 let mut plist = [session.player.clone()];
                 let sync = [DukeInput::from_dmo(&inp)];
@@ -6511,7 +6604,11 @@ mod tests {
                     session.tic.saturating_sub(1),
                 );
             }
-            eprintln!("after moveplayers: seed={} vm={}", session.randomseed, VM_TRANDS.load(std::sync::atomic::Ordering::Relaxed));
+            eprintln!(
+                "after moveplayers: seed={} vm={}",
+                session.randomseed,
+                VM_TRANDS.load(std::sync::atomic::Ordering::Relaxed)
+            );
             {
                 let players = [session.player.clone()];
                 moveexplosions(
@@ -6550,12 +6647,15 @@ mod tests {
                     let pic_i = session.picnum.get(iu).copied().unwrap_or(0);
                     let entry = script.actorscrptr.get(pic_i as usize).copied().unwrap_or(0);
                     if entry > 0 && pic_i != crate::spawn::FIRE && pic_i != crate::spawn::FIRE2 {
-                        use crate::con::{execute_actor, ConSpriteEnv};
+                        use crate::con::{ConSpriteEnv, execute_actor};
                         use crate::fta::findplayer_dist;
                         if session.actor_temps.len() <= iu {
                             session.actor_temps.resize(iu + 1, Default::default());
                         }
-                        let (pidx, dist) = findplayer_dist(&world.sprites[iu], std::slice::from_ref(&session.player));
+                        let (pidx, dist) = findplayer_dist(
+                            &world.sprites[iu],
+                            std::slice::from_ref(&session.player),
+                        );
                         let mut env = ConSpriteEnv {
                             player_dist: dist,
                             sync_bits: DukeInput::from_dmo(&inp).bits,
@@ -6576,7 +6676,11 @@ mod tests {
                             let _ = pidx;
                         }
                         let sect = world.sprites[iu].sectnum;
-                        let sec = world.sectors.get(sect as usize).copied().unwrap_or_default();
+                        let sec = world
+                            .sectors
+                            .get(sect as usize)
+                            .copied()
+                            .unwrap_or_default();
                         let body = (entry as usize).saturating_add(4);
                         let sec_z: Vec<_> = world.sectors.iter().map(|s| s.z()).collect();
                         let wxy: Vec<_> = world.walls.iter().map(|w| w.xy()).collect();
@@ -6771,9 +6875,7 @@ mod tests {
                 &want_hash[..16],
             );
         }
-        eprintln!(
-            "tic{tic} frontier seed_hits={seed_hits} hash_hit={hash_hit} best={best:?}"
-        );
+        eprintln!("tic{tic} frontier seed_hits={seed_hits} hash_hit={hash_hit} best={best:?}");
         // Always dump room sprites at first seed-hit (or best pad 0/4) for choc compare.
         {
             let (pe, pd) = if hash_hit {
@@ -6888,9 +6990,6 @@ mod tests {
         }
     }
 
-
-
-
     #[test]
     fn demo1_retune_pads_after_warp_floorz() {
         use crate::player::DukeInput;
@@ -6991,7 +7090,9 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() { return; }
+        if !grp.is_file() {
+            return;
+        }
         let grp_b = std::fs::read(&grp).unwrap();
         let dmo_b = std::fs::read(root.join("demos/DEMO1.DMO")).unwrap();
         let choc = load_trace(&root.join("traces/DEMO1.trace")).unwrap();
@@ -7008,12 +7109,21 @@ mod tests {
                     if world.sprites.len() > 80 {
                         let sp = &world.sprites[80];
                         let tt = session.actor_temps.get(80).cloned().unwrap_or_default();
-                        let mv = session.script.as_ref().and_then(|img| {
-                            img.script.get(tt.g_t[1] as usize + 1).copied()
-                        });
+                        let mv = session
+                            .script
+                            .as_ref()
+                            .and_then(|img| img.script.get(tt.g_t[1] as usize + 1).copied());
                         eprintln!(
                             "tic{} #80 z={} zvel={} t0={} t1={} t4={} mv_v={:?} ang={} warp_fz={:?}",
-                            i, sp.z, sp.zvel, tt.g_t[0], tt.g_t[1], tt.g_t[4], mv, sp.ang, tt.warp_floorz
+                            i,
+                            sp.z,
+                            sp.zvel,
+                            tt.g_t[0],
+                            tt.g_t[1],
+                            tt.g_t[4],
+                            mv,
+                            sp.ang,
+                            tt.warp_floorz
                         );
                     }
                 }
@@ -7102,8 +7212,8 @@ mod tests {
     /// Brute-force DEMO1 `pad_pre` × `pad_pre_explode` pairs for seed+hash sync.
     #[test]
     fn demo1_search_pad_pre() {
-        use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         use crate::player::DukeInput;
+        use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
 
         let root = duke_root();
         let grp = root.join("duke3d.grp");
@@ -7183,7 +7293,6 @@ mod tests {
         eprintln!("DEMO1_PAD_PRE => {found_pad:?}");
         eprintln!("DEMO1_PAD_PRE_EXPLODE => {found_ex:?}");
     }
-
 
     /// Find mid-tic TRAND gap before `moveexplosions` that fixes sprite_hash.
     #[test]
@@ -7486,11 +7595,7 @@ mod tests {
         let z_moved = t.bposz != sp.z;
         let skill = session.skill;
         let g0 = t.g_t[0] + 1; // move() increments first
-        let path = if skill < 2 || z_moved {
-            "<<=1"
-        } else {
-            "<<=2"
-        };
+        let path = if skill < 2 || z_moved { "<<=1" } else { "<<=2" };
         if skill < 2 || z_moved {
             if g0 & 1 != 0 {
                 eprintln!("would skip odd");
@@ -7664,9 +7769,7 @@ mod tests {
                 let sp = &session.world.as_ref().unwrap().sprites[537];
                 let t = session.actor_temps.get(537);
                 let p = &session.player;
-                let spawn_z = (6 << 8)
-                    + p.pyoff
-                    + p.posz
+                let spawn_z = (6 << 8) + p.pyoff + p.posz
                     - ((i32::from(p.horizoff) + i32::from(p.horiz) - 100) << 4);
                 eprintln!(
                     "tic{i} #537 pic={} xy=({},{}) z={} ang={} xv={} zv={} st={} pyoff={} pycount={} horiz={} hoff={} spawn_z={} z-zv={} g0={} g5={}",
@@ -7855,8 +7958,7 @@ mod tests {
                 let p = &session.player;
                 let goal = room_build_engine::helpers::getangle(p.posx - sp.x, p.posy - sp.y);
                 let last = t.map(|x| (x.lastvx, x.lastvy)).unwrap_or((0, 0));
-                let goal_last =
-                    room_build_engine::helpers::getangle(last.0 - sp.x, last.1 - sp.y);
+                let goal_last = room_build_engine::helpers::getangle(last.0 - sp.x, last.1 - sp.y);
                 let g1 = t.map(|x| x.g_t[1]).unwrap_or(0);
                 let (hvel, vvel) = if let Some(img) = session.script.as_ref() {
                     let u = g1 as usize;

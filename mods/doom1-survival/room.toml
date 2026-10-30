@@ -3,7 +3,7 @@ id = "room.example.doom1-survival"
 name = "Survival Director"
 version = "0.1.0"
 abi = 1
-description = "Monster waves from the map's spawn spots, skill-scaled pace, boss every fifth wave, kill streaks and ammo rewards. Solo or coop."
+description = "Wave survival on any Doom map: skill-scaled hordes, elites, perk drafts, and a Warden every fifth round. Solo or coop."
 
 [[module]]
 file = "SURVIVAL"

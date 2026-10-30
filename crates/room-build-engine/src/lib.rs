@@ -23,8 +23,8 @@ pub use fly::{FreeFly, FreeFlyCmd};
 pub use geom::{
     HIT_WALL_BOOTSTRAP, HitScan, SectorWalls, SectorZ, SpriteHit, SpriteZClip, WallXY, ZRange,
     cansee, clipinsidebox, clipmove_xy, clipmove_xy_at_z, getzrange, getzrange_with_sprites,
-    getzsofslope, hitscan,
-    hitscan_full, hitscan_with_sprites, inside, neartag_wall, pushmove, updatesector,
+    getzsofslope, hitscan, hitscan_full, hitscan_with_sprites, inside, neartag_wall, pushmove,
+    updatesector,
 };
 pub use helpers::{
     approx_sincos_q14, dragpoint, getangle, install_radarang, install_sintable, lastwall, length2d,

@@ -8,7 +8,9 @@ use wasm_bindgen::prelude::*;
 /// Returns a JSON array of `{bbox:[x,y,w,h], landmarks:[{x,y}×5], score}`.
 #[wasm_bindgen(js_name = detectFacesRgba)]
 pub fn detect_faces_rgba(width: u32, height: u32, pixels: &[u8]) -> String {
-    let expected = (width as usize).saturating_mul(height as usize).saturating_mul(4);
+    let expected = (width as usize)
+        .saturating_mul(height as usize)
+        .saturating_mul(4);
     if width == 0 || height == 0 || pixels.len() < expected {
         return "[]".into();
     }

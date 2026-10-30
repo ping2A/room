@@ -71,5 +71,27 @@ game_imports! {
     fn game_get_rule(rule: i32) -> i32;
     fn game_set_rule(rule: i32, value: i32);
     fn game_end_match(winner: i32);
+    fn game_end_match_ex(winner: i32, standings_ptr: i32, n: i32);
     fn level_things(ednum: i32, out: i32, cap: i32) -> i32;
+    fn hud_widget_set(seat1: i32, id: i32, params_ptr: i32, params_len: i32) -> i32;
+    fn hud_widget_patch(seat1: i32, id: i32, field: i32, value: i32) -> i32;
+    fn hud_widget_remove(seat1: i32, id: i32) -> i32;
+    fn hud_clear(seat1: i32) -> i32;
+    fn player_capture_input(player: i32, mask: i32);
+    fn player_cmd(player: i32, out_ptr: i32) -> i32;
+    fn player_sound(player: i32, ptr: i32, len: i32, volume: f64);
+    fn hud_widget_animate(seat1: i32, id: i32, field: i32, target: i32, tics: i32, easing: i32) -> i32;
+    fn actor_flag(actor: i64, flag: i32) -> i32;
+    fn actor_set_flag(actor: i64, flag: i32, on: i32);
+    fn player_set_i32(player: i32, prop: i32, v: i32);
+    fn actor_quake(actor: i64, intensity: f64, duration: i32, damrad: f64, tremrad: f64);
+    fn actor_radius_attack(actor: i64, source: i64, damage: i32, distance: f64);
+    fn actor_spawn_missile(src: i64, dest: i64, class: i32) -> i64;
+    fn zone_set(id: i32, cx: i32, cy: i32, r: i32, next_cx: i32, next_cy: i32, next_r: i32, rgba: i32, flags: i32) -> i32;
+    fn zone_clear(id: i32) -> i32;
+    fn player_set_camera(player: i32, actor: i64);
+    fn player_set_team(player: i32, team: i32);
+    fn player_team(player: i32) -> i32;
+    fn player_trace(player: i32, max_dist: f64, out_ptr: i32) -> i32;
+    fn player_name(player: i32, buf: i32, cap: i32) -> i32;
 }

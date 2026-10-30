@@ -56,6 +56,7 @@ pub fn save_world(world: &mut World, map: &str, skill: u8) -> Result<Vec<u8>, Sa
     );
     let world_bin = encode_world(world)?;
     let scripts_bin = encode_scripts(&world.scripts.snapshot_play_modules());
+    let modhud_bin = world.mod_hud.to_bytes();
 
     let mut cursor = Cursor::new(Vec::new());
     {
@@ -73,6 +74,13 @@ pub fn save_world(world: &mut World, map: &str, skill: u8) -> Result<Vec<u8>, Sa
             zip.start_file("scripts.bin", opts)
                 .map_err(|e| SaveError::Message(e.to_string()))?;
             zip.write_all(&scripts_bin)
+                .map_err(|e| SaveError::Message(e.to_string()))?;
+        }
+        // Optional Mod HUD widgets (`docs/27` MH0); absent on older saves.
+        if modhud_bin.len() > 12 {
+            zip.start_file("modhud.bin", opts)
+                .map_err(|e| SaveError::Message(e.to_string()))?;
+            zip.write_all(&modhud_bin)
                 .map_err(|e| SaveError::Message(e.to_string()))?;
         }
         zip.finish()
@@ -198,6 +206,14 @@ pub fn load_world(world: &mut World, bytes: &[u8]) -> Result<u64, SaveError> {
             .scripts
             .restore_play_modules(&snaps)
             .map_err(|e| SaveError::Message(e.to_string()))?;
+    }
+    if let Ok(mut file) = zip.by_name("modhud.bin") {
+        let mut hud = Vec::new();
+        file.read_to_end(&mut hud)
+            .map_err(|e| SaveError::Message(e.to_string()))?;
+        world.mod_hud = room_sim::mod_hud::ModHud::from_bytes(&hud).map_err(SaveError::Message)?;
+    } else {
+        world.mod_hud.clear_all();
     }
     Ok(info.checksum)
 }
@@ -704,6 +720,64 @@ mod tests {
         assert_eq!(count_inventory(&w2, mo2, shotgun), 1);
         assert_eq!(count_inventory(&w2, mo2, key), 1);
         assert_eq!(w2.players[0].as_ref().unwrap().ready_weapon, Some(shotgun));
+    }
+
+    #[test]
+    fn save_load_restores_mod_hud_widgets() {
+        use room_sim::mod_hud::{HudWidget, kind};
+
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(128.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        let mut widget = HudWidget::default();
+        widget.kind = kind::TEXT;
+        widget.text = "ROUND 5".into();
+        widget.value = 42;
+        assert_eq!(w.mod_hud.set(3, 1, 7, widget, 10), 0);
+        let before = w.mod_hud_hash();
+        let checksum_before = w.checksum();
+        let blob = save_world(&mut w, "MAP01", 3).unwrap();
+
+        // Widgets must not affect the desync checksum.
+        w.mod_hud.clear_all();
+        assert_eq!(w.checksum(), checksum_before);
+        assert_ne!(w.mod_hud_hash(), before);
+
+        let mut map2 = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(128.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map2);
+        let mut w2 = World::from_map(map2).unwrap();
+        load_world(&mut w2, &blob).unwrap();
+        assert_eq!(w2.mod_hud_hash(), before);
+        assert_eq!(w2.mod_hud.len(), 1);
+
+        let mut zip = ZipArchive::new(Cursor::new(&blob)).unwrap();
+        assert!(zip.by_name("modhud.bin").is_ok());
+    }
+
+    #[test]
+    fn save_load_without_modhud_clears_widgets() {
+        use room_sim::mod_hud::HudWidget;
+
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(128.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        // Empty store → no modhud.bin entry.
+        let blob = save_world(&mut w, "MAP01", 3).unwrap();
+        assert_eq!(w.mod_hud.set(0, 0, 1, HudWidget::default(), 0), 0);
+        load_world(&mut w, &blob).unwrap();
+        assert!(w.mod_hud.is_empty());
     }
 
     #[test]

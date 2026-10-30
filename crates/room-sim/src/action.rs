@@ -5387,6 +5387,16 @@ pub(crate) fn class_move_speed(world: &World, class: &crate::class::ClassDef) ->
     }
 }
 
+/// Script ABI `actor_spawn_missile` — aim a named missile class at `dest`.
+pub(crate) fn script_spawn_missile(
+    world: &mut World,
+    source: ActorId,
+    dest: ActorId,
+    class_name: &str,
+) {
+    spawn_missile_aimed(world, source, dest, class_name, 10.0);
+}
+
 /// Double-math `P_SpawnMissile`: target aim + spawn offset clear of the shooter.
 fn spawn_missile_aimed(
     world: &mut World,
@@ -7470,7 +7480,7 @@ fn melee_dice(world: &mut World, sides: i32, mult: i32) -> i32 {
 }
 
 /// Radial blast around `origin` attributed to `source` (vanilla `P_RadiusAttack`).
-fn radius_attack(
+pub(crate) fn radius_attack(
     world: &mut World,
     source: ActorId,
     origin: DVec3,

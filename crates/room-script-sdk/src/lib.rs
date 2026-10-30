@@ -13,6 +13,8 @@ use room_script_abi::ABI_VERSION;
 mod bump;
 /// World / actor / level control and typed events (play scope).
 pub mod game;
+/// Retained Mod HUD builder (`docs/27` §9).
+pub mod hud;
 #[macro_use]
 #[allow(unused_imports)]
 mod macros;

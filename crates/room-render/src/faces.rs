@@ -49,6 +49,9 @@ mod tests {
             lump: "TROOA1".into(),
             face_id: 0xFACE,
         };
-        assert_eq!(k.cache_name(), "face:TROOA1:0000000000000000000000000000face");
+        assert_eq!(
+            k.cache_name(),
+            "face:TROOA1:0000000000000000000000000000face"
+        );
     }
 }

@@ -155,11 +155,7 @@ fn skin_density(skin: &[u8], stride: u32, x: u32, y: u32, w: u32, h: u32) -> f32
             hit += u32::from(skin[(yy * stride + xx) as usize]);
         }
     }
-    if n == 0 {
-        0.0
-    } else {
-        hit as f32 / n as f32
-    }
+    if n == 0 { 0.0 } else { hit as f32 / n as f32 }
 }
 
 fn find_eyes(img: &RgbaImage, bx: u32, by: u32, bw: u32, bh: u32) -> (f32, f32, f32, f32) {
@@ -172,13 +168,7 @@ fn find_eyes(img: &RgbaImage, bx: u32, by: u32, bw: u32, bh: u32) -> (f32, f32, 
     (lx, ly, rx, ry)
 }
 
-fn darkest_blob(
-    img: &RgbaImage,
-    x0: u32,
-    y0: u32,
-    x1: u32,
-    y1: u32,
-) -> Option<(f32, f32)> {
+fn darkest_blob(img: &RgbaImage, x0: u32, y0: u32, x1: u32, y1: u32) -> Option<(f32, f32)> {
     if x1 <= x0 || y1 <= y0 {
         return None;
     }

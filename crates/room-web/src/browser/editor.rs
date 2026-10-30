@@ -924,8 +924,7 @@ pub fn room_editor_add_pwad(data: &[u8], name: &str) -> Result<String, JsValue> 
 pub fn room_editor_remove_pwad(name: &str) -> Result<String, JsValue> {
     with_editor(|ed| {
         let before = ed.pwads.len();
-        ed.pwads
-            .retain(|(n, _)| !n.eq_ignore_ascii_case(name));
+        ed.pwads.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
         if ed.pwads.len() == before {
             // Also allow removing a Duke user .MAP that was folded into the GRP convert.
             if let Some((grp_name, grp, maps)) = ed.duke.as_mut() {
@@ -1055,9 +1054,7 @@ pub fn room_editor_resolve_sound(logical: &str) -> Result<JsValue, JsValue> {
         } else {
             room_defs::parse_sndinfo(&combined).unwrap_or_default()
         };
-        let mut lump = reg
-            .resolve_lump(logical, 0)
-            .map(|s| s.to_ascii_uppercase());
+        let mut lump = reg.resolve_lump(logical, 0).map(|s| s.to_ascii_uppercase());
         if lump.is_none() {
             let cand = logical.to_ascii_uppercase();
             if ed.vfs.find(&cand, Namespace::Sounds).is_some()

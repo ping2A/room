@@ -28,16 +28,17 @@ impl LiveFaceOverrides {
     /// Insert baked lumps for one face.
     pub fn absorb_bake(&mut self, face: FaceId, baked: &BakeClassResult) {
         for lump in &baked.lumps {
-            self.by_key
-                .insert((lump.name.to_ascii_uppercase(), face.0), lump.sprite.clone());
+            self.by_key.insert(
+                (lump.name.to_ascii_uppercase(), face.0),
+                lump.sprite.clone(),
+            );
         }
     }
 
     /// Lookup.
     #[must_use]
     pub fn get(&self, lump: &str, face: FaceId) -> Option<&PalettedSprite> {
-        self.by_key
-            .get(&(lump.to_ascii_uppercase(), face.0))
+        self.by_key.get(&(lump.to_ascii_uppercase(), face.0))
     }
 
     /// Drop everything (Forget all / faces off).

@@ -5,7 +5,7 @@ use room_build_engine::types::{SectorT, SpriteT};
 use room_build_engine::world::SpriteLists;
 
 use crate::con::ActorConTemps;
-use crate::player::{sync_player_sprite, DukeInput, Player, PHEIGHT};
+use crate::player::{DukeInput, PHEIGHT, Player, sync_player_sprite};
 use crate::spawn::WATERBUBBLE;
 use crate::stat::{STAT_MISC, STAT_PLAYER, STAT_PROJECTILE, STAT_TRANSPORT};
 
@@ -13,11 +13,7 @@ use crate::stat::{STAT_MISC, STAT_PLAYER, STAT_PROJECTILE, STAT_TRANSPORT};
 const WATERSPLASH2: i16 = 1380;
 
 fn klabs(x: i32) -> i32 {
-    if x == i32::MIN {
-        i32::MIN
-    } else {
-        x.abs()
-    }
+    if x == i32::MIN { i32::MIN } else { x.abs() }
 }
 
 /// Minimal Chocolate `spawn(j, WATERBUBBLE)` + `z += TRAND&16383`.
@@ -244,9 +240,7 @@ pub fn movetransports(
 
             // Off-floor water tunnel.
             if !onfloorz && klabs(sz - p.posz) < 6144 {
-                let jet_ok = p.jetpack_on == 0
-                    || (bits & 1) != 0
-                    || (bits & 2) != 0;
+                let jet_ok = p.jetpack_on == 0 || (bits & 1) != 0 || (bits & 2) != 0;
                 if jet_ok {
                     p.posx += ox - sx;
                     p.posy += oy - sy;
@@ -287,8 +281,7 @@ pub fn movetransports(
             }
 
             // Rise: underwater (lotag 2) → surface.
-            if onfloorz && sectlotag == 2 && p.posz < sectors[sect as usize].ceilingz + (6 << 8)
-            {
+            if onfloorz && sectlotag == 2 && p.posz < sectors[sect as usize].ceilingz + (6 << 8) {
                 k = 1;
                 if osect >= 0 && (osect as usize) < sectors.len() {
                     p.posz = sectors[osect as usize].floorz - (7 << 8);
@@ -394,8 +387,7 @@ pub fn movetransports(
                             actor_temps.resize_with(ju + 1, ActorConTemps::default);
                         }
                         if actor_temps[ju].warp_floorz.is_none() {
-                            actor_temps[ju].warp_floorz =
-                                Some(sectors[old_sect as usize].floorz);
+                            actor_temps[ju].warp_floorz = Some(sectors[old_sect as usize].floorz);
                             actor_temps[ju].warp_ceilingz =
                                 Some(sectors[old_sect as usize].ceilingz);
                         }

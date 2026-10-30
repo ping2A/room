@@ -9,14 +9,12 @@ use room_build_engine::types::{SectorT, SpriteT, WallT};
 use room_build_engine::world::{MAXSPRITES, SpriteLists};
 
 use crate::badguy::badguy_pic;
-use crate::con::{
-    ActorConTemps, ConSpriteEnv, ConStop, ScriptImage, execute_actor,
-};
+use crate::con::{ActorConTemps, ConSpriteEnv, ConStop, ScriptImage, execute_actor};
 use crate::fta::findplayer_dist;
 use crate::player::{DUKE_GC, Player, TileZMeta, sprite_z_clip};
 use crate::shoot::{
-    con_spawn_blood, shoot_bloodsplat_enemy, shoot_coolexplosion_enemy, BLOOD, BLOODSPLAT1,
-    BLOODSPLAT2, BLOODSPLAT3, BLOODSPLAT4, COOLEXPLOSION1,
+    BLOOD, BLOODSPLAT1, BLOODSPLAT2, BLOODSPLAT3, BLOODSPLAT4, COOLEXPLOSION1, con_spawn_blood,
+    shoot_bloodsplat_enemy, shoot_coolexplosion_enemy,
 };
 use crate::spawn::{FIRE, FIRE2, con_fall};
 use crate::stat::STAT_ACTOR;
@@ -296,9 +294,7 @@ fn actor_con_move(
             let lotag = sectors[dasect as usize].lotag;
             (sp.picnum == BOSS2 && sp.pal == 0 && lotag != 3)
                 || ((sp.picnum == BOSS1 || sp.picnum == BOSS2) && lotag == 1)
-                || (lotag == 1
-                    && (sp.picnum == LIZMAN
-                        || (sp.picnum == LIZTROOP && sp.zvel == 0)))
+                || (lotag == 1 && (sp.picnum == LIZMAN || (sp.picnum == LIZTROOP && sp.zvel == 0)))
         };
     if revert {
         sp.x = oldx;
@@ -577,14 +573,16 @@ pub fn moveactors_with_skill(
             // Snapshot for Chocolate `hits()` / CLIPMASK0 face-sprite clips.
             let spr_hits: Vec<SpriteHit> = sprites
                 .iter()
-                .map(|s| SpriteHit::cylinder(
-                    s.x,
-                    s.y,
-                    s.z,
-                    s.sectnum,
-                    i32::from(s.clipdist) << 2,
-                    s.cstat,
-                ))
+                .map(|s| {
+                    SpriteHit::cylinder(
+                        s.x,
+                        s.y,
+                        s.z,
+                        s.sectnum,
+                        i32::from(s.clipdist) << 2,
+                        s.cstat,
+                    )
+                })
                 .collect();
             let mx = sprites[iu].x;
             let my = sprites[iu].y;

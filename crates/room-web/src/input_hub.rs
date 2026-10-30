@@ -54,6 +54,9 @@ pub fn default_binds() -> BTreeMap<String, String> {
         ("KeyC", "down"),
         ("Slash", "kick"),
         ("Quote", "invuse"),
+        ("KeyB", "mod1"),
+        ("KeyM", "mod2"),
+        ("KeyV", "mod3"),
         ("KeyG", "grid"),
         ("Digit0", "grid"),
         ("Numpad0", "grid"),
@@ -137,6 +140,10 @@ fn intern_action(action: &str) -> Option<&'static str> {
         "weapon7" => "weapon7",
         "weapon8" => "weapon8",
         "weapon9" => "weapon9",
+        "mod1" => "mod1",
+        "mod2" => "mod2",
+        "mod3" => "mod3",
+        "mod4" => "mod4",
         _ => return None,
     })
 }

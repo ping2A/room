@@ -1,7 +1,7 @@
 //! Public lobby SPA + room directory (docs/22 player-facing surface).
 
 use crate::state::AppState;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
@@ -23,11 +23,68 @@ pub fn lobby_routes() -> Router<AppState> {
         .route("/lobby/assets/app.js", get(lobby_js))
         .route("/api/lobby", get(lobby_config))
         .route("/api/leaderboard", get(leaderboard))
+        .route("/api/br/leaderboard", get(br_leaderboard))
+        .route("/api/quick-play/br", axum::routing::post(quick_play_br))
 }
 
 /// `GET /api/leaderboard` — top 10 players (no auth).
 async fn leaderboard(State(state): State<AppState>) -> Json<Vec<crate::leaderboard::PlayerStats>> {
     Json(state.registry.leaderboard().top(10))
+}
+
+#[derive(serde::Deserialize, Default)]
+struct BrLeaderboardQuery {
+    #[serde(default = "default_br_limit")]
+    limit: usize,
+}
+
+fn default_br_limit() -> usize {
+    25
+}
+
+/// `GET /api/br/leaderboard` — Battle Royale ratings (no auth).
+async fn br_leaderboard(
+    State(state): State<AppState>,
+    Query(q): Query<BrLeaderboardQuery>,
+) -> Json<Vec<crate::br_stats::BrPlayerStats>> {
+    let n = q.limit.clamp(1, 100);
+    Json(
+        state
+            .registry
+            .br_stats()
+            .top(crate::br_stats::MODE_BR, n),
+    )
+}
+
+#[derive(serde::Deserialize)]
+struct QuickPlayBrRequest {
+    name: String,
+}
+
+/// `POST /api/quick-play/br` — create or join the 8-seat BR queue (`S-BR4`).
+async fn quick_play_br(
+    State(state): State<AppState>,
+    Json(req): Json<QuickPlayBrRequest>,
+) -> Result<Json<crate::http::JoinRoomResponse>, StatusCode> {
+    let Some(name) = crate::names::sanitize_display_name(&req.name) else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    let (ticket, claims) = state.registry.quick_play_br(&name).map_err(|e| match e {
+        crate::registry::RegistryError::UnknownMod | crate::registry::RegistryError::ModNotAllowed => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        crate::registry::RegistryError::Full | crate::registry::RegistryError::Draining => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    })?;
+    let room_id = claims.room_id.clone();
+    Ok(Json(crate::http::JoinRoomResponse {
+        ticket,
+        ws_v2: format!("/v2/rooms/{room_id}/ws"),
+        exp: claims.exp,
+        node_id: state.registry.config().node_id.clone(),
+    }))
 }
 
 async fn lobby_spa() -> impl IntoResponse {

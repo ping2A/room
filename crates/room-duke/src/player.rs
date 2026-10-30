@@ -310,11 +310,7 @@ pub fn processinput_move(
             .get(p.cursectnum as usize)
             .map(|s| s.lotag)
             .unwrap_or(0);
-        let flordist = if psectlotag == 1 {
-            4 << 8
-        } else {
-            20 << 8
-        };
+        let flordist = if psectlotag == 1 { 4 << 8 } else { 20 << 8 };
         let _hit = clipmove_xy_at_z(
             &mut p.posx,
             &mut p.posy,
@@ -363,7 +359,6 @@ pub fn processinput_move(
         }
     }
 }
-
 
 /// Chocolate fall + water/ground smooth + ceiling rest (`player.c` subset).
 pub fn apply_player_fall_z(
@@ -690,7 +685,14 @@ mod tests {
             x_offset: -1,
             y_offset: 1,
         };
-        apply_player_fall_z(&mut p, DukeInput::default(), &sectors, &walls, &sprites, &meta);
+        apply_player_fall_z(
+            &mut p,
+            DukeInput::default(),
+            &sectors,
+            &walls,
+            &sprites,
+            &meta,
+        );
         assert_eq!(p.posz, -24016);
         assert_eq!(p.poszv, 128);
     }

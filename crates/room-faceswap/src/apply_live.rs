@@ -39,11 +39,7 @@ pub fn override_rgba(
     palette: &[u8; 768],
 ) -> Option<(u32, u32, Vec<u8>)> {
     let spr = overrides.get(lump, face)?;
-    Some((
-        spr.width,
-        spr.height,
-        sprite_to_rgba(spr, palette),
-    ))
+    Some((spr.width, spr.height, sprite_to_rgba(spr, palette)))
 }
 
 #[cfg(test)]

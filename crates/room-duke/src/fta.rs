@@ -14,13 +14,8 @@ use crate::con::ActorConTemps;
 use crate::player::Player;
 use crate::stat::{STAT_ACTOR, STAT_DUMMY};
 
-
 fn klabs(x: i32) -> i32 {
-    if x == i32::MIN {
-        i32::MIN
-    } else {
-        x.abs()
-    }
+    if x == i32::MIN { i32::MIN } else { x.abs() }
 }
 
 /// Chocolate `findplayer` distance (SP): manhattan on `opos` + Z/16.
@@ -31,9 +26,8 @@ pub fn findplayer_dist(s: &SpriteT, players: &[Player]) -> (usize, i32) {
         if p.sprite_i < 0 {
             continue;
         }
-        let d = klabs(p.oposx - s.x)
-            + klabs(p.oposy - s.y)
-            + (klabs(p.oposz - s.z + (28 << 8)) >> 4);
+        let d =
+            klabs(p.oposx - s.x) + klabs(p.oposy - s.y) + (klabs(p.oposz - s.z + (28 << 8)) >> 4);
         if d < best {
             best = d;
             best_p = pi;

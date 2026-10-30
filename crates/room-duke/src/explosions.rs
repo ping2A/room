@@ -85,7 +85,16 @@ pub fn moveexplosions(
             step_smallsmoke(lists, sprites, sectors, randomseed, actor_temps, script, i);
         } else if s.picnum == BLOOD {
             // Chocolate: `findplayer` + `execute` (GAME.CON ifpdistg / ifactioncount).
-            step_blood(lists, sprites, sectors, randomseed, actor_temps, script, players, i);
+            step_blood(
+                lists,
+                sprites,
+                sectors,
+                randomseed,
+                actor_temps,
+                script,
+                players,
+                i,
+            );
         } else if s.picnum == JIBS6 {
             step_jibs6(lists, sprites, sectors, actor_temps, i);
         } else if s.picnum == SHOTGUNSHELL || s.picnum == 2533 {
@@ -587,7 +596,15 @@ mod tests {
         ];
         let mut seed = 1;
         let mut temps = Vec::new();
-        moveexplosions(&mut lists, &mut sprites, &[], &mut seed, &mut temps, None, &[]);
+        moveexplosions(
+            &mut lists,
+            &mut sprites,
+            &[],
+            &mut seed,
+            &mut temps,
+            None,
+            &[],
+        );
         assert_eq!(lists.sprite_stat[0], MAXSTATUS as i16);
         assert_eq!(lists.sprite_stat[1], STAT_MISC);
     }
@@ -606,7 +623,15 @@ mod tests {
         }];
         let mut seed = 1;
         let mut temps = Vec::new();
-        moveexplosions(&mut lists, &mut sprites, &[], &mut seed, &mut temps, None, &[]);
+        moveexplosions(
+            &mut lists,
+            &mut sprites,
+            &[],
+            &mut seed,
+            &mut temps,
+            None,
+            &[],
+        );
         assert!(sprites[0].z > -20480);
         assert_eq!(temps[0].g_t[0], 1);
     }

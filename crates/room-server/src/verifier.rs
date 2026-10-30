@@ -119,7 +119,7 @@ fn load_headless(
         skill,
         rng_seed,
         record_demo: false,
-        coop_players: max_players.clamp(1, 4),
+        coop_players: max_players.clamp(1, MAX_PLAYERS as u8),
         time_limit_tics,
         ..Default::default()
     });

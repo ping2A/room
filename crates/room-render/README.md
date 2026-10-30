@@ -9,6 +9,7 @@ wgpu renderer: 3D scene plus 2D canvas backend.
 - `walk_bsp` — CPU visibility → subsector list
 - `build_scene` — walls (mid/upper/lower) + floor/ceiling fans + sky cylinder
 - `UnlitPass` + `OffscreenTarget` — checker unlit draw + lightmode attenuations
+- `ModZonePass` — BE1 battle-royale zone cylinder wall + ground ring (translucent, depth-tested; `tests/zone_wall_smoke.rs`)
 - `TextureManager::upload_image` — PLAYPAL expand → RGBA8 GPU upload
 - Material sampler — nearest + **Repeat** (Doom walls/flats tile in UV; ClampToEdge smears)
 - `read_rgba` / `encode_png` — golden-image capture path (offscreen smoke test)

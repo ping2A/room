@@ -13,6 +13,7 @@ workspace = true
 room-defs = { path = "../room-defs" }
 room-formats = { path = "../room-formats" }
 room-map = { path = "../room-map" }
+room-sim = { path = "../room-sim" }
 room-vfs = { path = "../room-vfs" }
 
 [dev-dependencies]

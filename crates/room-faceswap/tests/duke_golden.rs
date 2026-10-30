@@ -16,7 +16,9 @@ fn buildish_sprite(label: &str) -> PalettedSprite {
     let n = (w * h) as usize;
     let mut indices = vec![0u8; n];
     let mut alpha = vec![0u8; n];
-    let seed = label.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(u32::from(b)));
+    let seed = label
+        .bytes()
+        .fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(u32::from(b)));
     for y in 8..52u32 {
         for x in 16..48u32 {
             let nx = (x as f32 - 32.0) / 14.0;

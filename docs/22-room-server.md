@@ -155,7 +155,7 @@ The server becomes the arbitrator and the only sender of tic frames: clients sen
 | `rtc` | both | WebRTC signalling: `{kind: offer/answer/ice/track, sdp?, candidate?, mid?}` (§8) |
 | `notice` | S→C | admin broadcast text, kick reason, shutdown warning |
 | `bye` | S→C | `code`, `reason` before close |
-| `result` | C→S | `winner` (seat or null), `time_up`, `standings: [{seat, place, frags, deaths}]` — sent once by each seat when its sim ends the match |
+| `result` | C→S | `winner` (seat or null), `time_up`, `standings: [{seat, place, frags, deaths, damage?}]` — sent once by each seat when its sim ends the match |
 
 **Match end, time limit, leaderboard.** Every room has a time limit in minutes
 (`time_limit` on `POST /api/rooms`, clamped 1–180; default
@@ -168,7 +168,14 @@ server sends a `notice` and closes the room `--match-end-grace-secs` later
 backstop closes it at start + limit + 30 s ("time limit reached"). Closed
 rooms leave the directory. When every connected seat (≥ 2) agrees, the result
 goes into `data_dir/leaderboard.json`; `GET /api/leaderboard` returns the top 10
-(wins, frags, deaths, matches), shown as "Top players" in the lobby.
+(wins, frags, deaths, matches), shown as "Top players" in the lobby. Battle Royale
+rooms (`mod: royale`) also update `data_dir/br_stats.json` (matches, wins, top-5s,
+kills, damage, avg place, placement rating); `GET /api/br/leaderboard` and the lobby
+**Battle Royale** tab list those rows. Quick play: `POST /api/quick-play/br` with
+`{name}` create-or-joins an 8-seat public royale room (`fill_bots: true` on
+`welcome.room` and `start`); the match starts when full or after
+`--quick-play-timeout-secs` (default 60) with bots filling empty seats.
+
 | `watch` | C→S | `iwad_fingerprint`, `name?`, `client_version` — join as a spectator instead of `hello` (no ticket, no seat) |
 | `watching` | S→C | `room` (same as `welcome.room`), `roster[]`; followed by `start` if the match is running |
 

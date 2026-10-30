@@ -50,6 +50,8 @@ async fn require_tickets_rejects_bare_room_id() {
             packs: Vec::new(),
             time_limit: None,
             game: None,
+            fill_bots: false,
+            quick_play: false,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -97,6 +99,8 @@ async fn seat_hijack_without_resume_token_rejected() {
             packs: Vec::new(),
             time_limit: None,
             game: None,
+            fill_bots: false,
+            quick_play: false,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -200,6 +204,8 @@ async fn message_flood_disconnects() {
             packs: Vec::new(),
             time_limit: None,
             game: None,
+            fill_bots: false,
+            quick_play: false,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();

@@ -164,11 +164,19 @@ pub fn getangle(xvect: i32, yvect: i32) -> i32 {
     if let Some(rad) = RADARANG.get() {
         if klabs(xvect) > klabs(yvect) {
             let idx = (640 + scale(160, yvect, xvect)) as usize;
-            let a = if idx < rad.len() { i32::from(rad[idx]) } else { 0 };
+            let a = if idx < rad.len() {
+                i32::from(rad[idx])
+            } else {
+                0
+            };
             return ((a >> 6) + (i32::from(xvect < 0) << 10)) & 2047;
         }
         let idx = (640 - scale(160, xvect, yvect)) as usize;
-        let a = if idx < rad.len() { i32::from(rad[idx]) } else { 0 };
+        let a = if idx < rad.len() {
+            i32::from(rad[idx])
+        } else {
+            0
+        };
         return ((a >> 6) + 512 + (i32::from(yvect < 0) << 10)) & 2047;
     }
     // Fallback without TABLES.DAT: octant-ish atan via ratio (not DEMO-safe).

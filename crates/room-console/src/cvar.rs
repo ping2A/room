@@ -199,6 +199,12 @@ impl CvarStore {
             CvarValue::String("auto".into()),
             CvarFlags::ARCHIVE,
         );
+        self.register(
+            "name",
+            CvarType::String,
+            CvarValue::String(String::new()),
+            CvarFlags::ARCHIVE,
+        );
     }
 
     /// Names with [`CvarFlags::ARCHIVE`] (for config write).

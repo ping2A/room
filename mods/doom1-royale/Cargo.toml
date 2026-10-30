@@ -13,6 +13,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+room-script-abi = { path = "../../crates/room-script-abi" }
 room-script-sdk = { path = "../../crates/room-script-sdk" }
 
 [profile.release]

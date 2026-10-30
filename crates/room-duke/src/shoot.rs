@@ -1,8 +1,8 @@
 //! Chocolate `shoot` / `aim` (player shotgun path for D6 / DEMO1 tic135).
 
 use room_build_engine::geom::{
-    HitScan, SectorWalls, SectorZ, SpriteHit, WallXY, cansee, getzsofslope, hitscan_full,
-    pushmove, updatesector,
+    HitScan, SectorWalls, SectorZ, SpriteHit, WallXY, cansee, getzsofslope, hitscan_full, pushmove,
+    updatesector,
 };
 use room_build_engine::helpers::{getangle, sincos_q14};
 use room_build_engine::numeric::{klabs, krand_step, mulscale};
@@ -77,45 +77,24 @@ pub fn set_shot_pads5(pre: i32, miss: i32, blood: i32, first_extra: i32, last: i
 
 fn pre_shot_pad() -> u32 {
     let v = PRE_SHOT_PAD_OVR.load(std::sync::atomic::Ordering::SeqCst);
-    if v < 0 {
-        PRE_SHOT_PAD
-    } else {
-        v as u32
-    }
+    if v < 0 { PRE_SHOT_PAD } else { v as u32 }
 }
 fn miss_hitpath_pad() -> u32 {
     let v = MISS_HITPATH_PAD_OVR.load(std::sync::atomic::Ordering::SeqCst);
-    if v < 0 {
-        MISS_HITPATH_PAD
-    } else {
-        v as u32
-    }
+    if v < 0 { MISS_HITPATH_PAD } else { v as u32 }
 }
 fn blood_splat_trands() -> u32 {
     let v = BLOOD_SPLAT_TRANDS_OVR.load(std::sync::atomic::Ordering::SeqCst);
-    if v < 0 {
-        BLOOD_SPLAT_TRANDS
-    } else {
-        v as u32
-    }
+    if v < 0 { BLOOD_SPLAT_TRANDS } else { v as u32 }
 }
 fn first_face_extra() -> u32 {
     let v = FIRST_FACE_EXTRA_OVR.load(std::sync::atomic::Ordering::SeqCst);
-    if v < 0 {
-        0
-    } else {
-        v as u32
-    }
+    if v < 0 { 0 } else { v as u32 }
 }
 fn last_shot_pad() -> u32 {
     let v = LAST_SHOT_PAD_OVR.load(std::sync::atomic::Ordering::SeqCst);
-    if v < 0 {
-        LAST_SHOT_PAD
-    } else {
-        v as u32
-    }
+    if v < 0 { LAST_SHOT_PAD } else { v as u32 }
 }
-
 
 /// Chocolate `FindDistance2D` (Build approx — not `ksqrt` / not manhattan).
 #[must_use]
@@ -136,11 +115,7 @@ pub fn ldist(a: &SpriteT, b: &SpriteT) -> i32 {
 }
 
 fn scale_div(n: i32, mul: i32, div: i32) -> i32 {
-    if div == 0 {
-        0
-    } else {
-        (n * mul) / div
-    }
+    if div == 0 { 0 } else { (n * mul) / div }
 }
 
 /// Chocolate `aim` (auto-aim cone; no TRAND).
@@ -780,9 +755,7 @@ fn checkhitsprite_shotgun(
             actor_temps.resize_with(iu + 1, ActorConTemps::default);
         }
         actor_temps[iu].hit_picnum = sprites[su].picnum;
-        actor_temps[iu].hit_extra = actor_temps[iu]
-            .hit_extra
-            .saturating_add(sprites[su].extra);
+        actor_temps[iu].hit_extra = actor_temps[iu].hit_extra.saturating_add(sprites[su].extra);
         actor_temps[iu].hit_ang = sprites[su].ang;
         actor_temps[iu].hit_owner = sprites[su].owner;
     }
@@ -835,10 +808,7 @@ fn tracers(
         if sect < 0 {
             continue;
         }
-        let lotag = sectors
-            .get(sect as usize)
-            .map(|s| s.lotag)
-            .unwrap_or(0);
+        let lotag = sectors.get(sect as usize).map(|s| s.lotag).unwrap_or(0);
         if lotag == 2 {
             let xr = (4 + (krand_step(randomseed) & 3)) as u8;
             let yr = (4 + (krand_step(randomseed) & 3)) as u8;
@@ -932,8 +902,7 @@ pub fn shoot_shotgun_player(
             .get(sprites[ju].picnum.max(0) as usize)
             .map(|m| m.height)
             .unwrap_or(0);
-        let mut dal =
-            (i32::from(sprites[ju].xrepeat) * i32::from(height) * 2) + (5 << 8);
+        let mut dal = (i32::from(sprites[ju].xrepeat) * i32::from(height) * 2) + (5 << 8);
         match sprites[ju].picnum {
             2370..=2377 | 2360 => dal -= 8 << 8,
             _ => {}
@@ -1111,7 +1080,15 @@ pub fn shoot_shotgun_player(
             }
         }
         spawn_smallsmoke(
-            lists, sprites, sectors, walls, picnum_out, actor_temps, script, randomseed, k,
+            lists,
+            sprites,
+            sectors,
+            walls,
+            picnum_out,
+            actor_temps,
+            script,
+            randomseed,
+            k,
         );
         for _ in 0..miss_hitpath_pad() {
             let _ = krand_step(randomseed);
@@ -1151,7 +1128,15 @@ pub fn shoot_shotgun_player(
             sprites[ku].yrepeat = 0;
         } else {
             spawn_smallsmoke(
-                lists, sprites, sectors, walls, picnum_out, actor_temps, script, randomseed, k,
+                lists,
+                sprites,
+                sectors,
+                walls,
+                picnum_out,
+                actor_temps,
+                script,
+                randomseed,
+                k,
             );
             if spawn_blood {
                 for _ in 0..first_face_extra() {
@@ -1161,7 +1146,15 @@ pub fn shoot_shotgun_player(
         }
     } else if hit.hitwall >= 0 {
         spawn_smallsmoke(
-            lists, sprites, sectors, walls, picnum_out, actor_temps, script, randomseed, k,
+            lists,
+            sprites,
+            sectors,
+            walls,
+            picnum_out,
+            actor_temps,
+            script,
+            randomseed,
+            k,
         );
         for _ in 0..miss_hitpath_pad() {
             let _ = krand_step(randomseed);
@@ -1285,7 +1278,7 @@ fn spawn_shotgun_shell(
     actor_temps: &mut Vec<ActorConTemps>,
     randomseed: &mut i32,
 ) -> i16 {
-    use room_build_engine::geom::{clipmove_xy, SectorWalls, WallXY};
+    use room_build_engine::geom::{SectorWalls, WallXY, clipmove_xy};
     use room_build_engine::helpers::sincos_q14;
 
     let body = p.sprite_i;
@@ -1298,10 +1291,7 @@ fn spawn_shotgun_shell(
     let a = i32::from(p.ang) - (krand_step(randomseed) & 63) + 8;
     let t1 = (krand_step(randomseed) & 1) as i32;
     let zvel = -(krand_step(randomseed) & 255) as i16;
-    let z = (6 << 8)
-        + p.pyoff
-        + p.posz
-        - ((i32::from(p.horizoff) + i32::from(p.horiz) - 100) << 4);
+    let z = (6 << 8) + p.pyoff + p.posz - ((i32::from(p.horizoff) + i32::from(p.horiz) - 100) << 4);
     // Chocolate: x += sintable[(a+512)&2047]>>7; y += sintable[a&2047]>>7
     let (sin_a, cos_a) = sincos_q14(a);
     let x = sprites[bu].x + (cos_a >> 7);

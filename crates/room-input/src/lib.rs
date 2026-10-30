@@ -3,11 +3,13 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 mod attack;
+mod mod_buttons;
 
 pub use attack::{
     ATTACK_HOLD_TICS, AttackLatch, DeviceButtonOs, device_button_is_primary,
     device_button_is_primary_on,
 };
+pub use mod_buttons::{ModButtonState, apply_mod_buttons, default_bind_pairs};
 
 /// Logical keys the binder cares about (M5 subset).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -64,6 +66,14 @@ pub enum Key {
     NextWeapon,
     /// Cycle to previous owned weapon.
     PrevWeapon,
+    /// Mod button 1 (`+mod1`).
+    Mod1,
+    /// Mod button 2 (`+mod2`).
+    Mod2,
+    /// Mod button 3 (`+mod3`).
+    Mod3,
+    /// Mod button 4 (`+mod4`).
+    Mod4,
 }
 
 /// Per-tic key / axis sample before binding resolution.
@@ -216,6 +226,20 @@ pub fn build_ticcmd(sample: &InputSample) -> TicCmdBits {
     if sample.keys.contains(&Key::InvUse) {
         cmd.buttons |= TicCmdBits::BT_INVUSE;
     }
+    apply_mod_buttons(&mut cmd, ModButtonState::default(), &sample.keys);
+    cmd
+}
+
+/// Like [`build_ticcmd`] but merges held mod buttons from [`ModButtonState`].
+#[must_use]
+pub fn build_ticcmd_with_mods(sample: &InputSample, mods: ModButtonState) -> TicCmdBits {
+    let mut cmd = build_ticcmd(sample);
+    // `build_ticcmd` already merged keys; re-apply mods without double-counting keys.
+    cmd.buttons &= !(ModButtonState::MOD1
+        | ModButtonState::MOD2
+        | ModButtonState::MOD3
+        | ModButtonState::MOD4);
+    apply_mod_buttons(&mut cmd, mods, &sample.keys);
     cmd
 }
 

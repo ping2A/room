@@ -27,6 +27,8 @@ async fn admin_summary_and_close_audited() {
             packs: Vec::new(),
             time_limit: None,
             game: None,
+            fill_bots: false,
+            quick_play: false,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry.clone()).await.unwrap();
@@ -144,6 +146,8 @@ async fn admin_notice_reaches_v2_client() {
             packs: Vec::new(),
             time_limit: None,
             game: None,
+            fill_bots: false,
+            quick_play: false,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -224,6 +228,8 @@ async fn ban_by_name_blocks_join_and_hello() {
             packs: Vec::new(),
             time_limit: None,
             game: None,
+            fill_bots: false,
+            quick_play: false,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -308,6 +314,8 @@ async fn ban_name_regex_and_auth_key_scopes() {
             packs: Vec::new(),
             time_limit: None,
             game: None,
+            fill_bots: false,
+            quick_play: false,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();

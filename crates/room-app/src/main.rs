@@ -24,19 +24,23 @@ use room_game::{
     mount_embedded_engine, mount_optional_engine_extras, play_first_music_lump, play_map_music,
     play_music_lump, read_save_info, title_music_candidates,
 };
-use room_input::{AttackLatch, InputSample, Key, build_ticcmd, device_button_is_primary};
+use room_input::{
+    AttackLatch, InputSample, Key, ModButtonState, build_ticcmd_with_mods, default_bind_pairs,
+    device_button_is_primary,
+};
 use room_map::{MapGeometry, load_map};
 use room_nodebuild::{apply_nodes, ensure_nodes};
 use room_render::{
     Camera, Canvas, CanvasGpu, CubemapFaces, DecalStore, DynLightInstance, GpuContext, LightMode,
-    MaterialCatalog, MaterialMaps, ModelActorPose, ModelCatalog, OffscreenTarget, PARTICLE_TEX,
-    ParticleStore, SceneLists, SpriteInstance, SpriteOrient, TextureAnimator, UnlitPass,
-    MAX_VOXEL_WALL_VERTS_PER_FRAME, VoxelActorPose, VoxelCatalog, append_actor_models,
-    append_decals, append_particles, apply_glow_fullbright, build_scene,
-    build_scene_with_sky_ex_sized, clip_scene_to_mirror_line, mirror_clip_plane, read_rgba,
-    read_texture_rgba, render_offscreen, scroll_sky_u, sprite_lump_candidates_rot,
-    sprite_rotation_digit, voxel_spin_degrees, voxel_view_angles,
+    MAX_VOXEL_WALL_VERTS_PER_FRAME, MaterialCatalog, MaterialMaps, ModelActorPose, ModelCatalog,
+    OffscreenTarget, PARTICLE_TEX, ParticleStore, SceneLists, SpriteInstance, SpriteOrient,
+    ModZonePass, TextureAnimator, UnlitPass, VoxelActorPose, VoxelCatalog, ZoneDraw,
+    ZoneMeshes, append_actor_models, append_decals, append_particles, apply_glow_fullbright,
+    build_scene, build_scene_with_sky_ex_sized, build_zone_meshes, clip_scene_to_mirror_line,
+    mirror_clip_plane, read_rgba, read_texture_rgba, render_offscreen, scroll_sky_u,
+    sprite_lump_candidates_rot, sprite_rotation_digit, voxel_spin_degrees, voxel_view_angles,
 };
+use room_sim::mod_hud::layer as mod_hud_layer;
 use room_sim::{
     ActorId, Buttons, ClassRegistry, FLAG_CORPSE, FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_DROPPED,
     FLAG_FLOAT, FLAG_MISSILE, FLAG_NOGRAVITY, FLAG_SPAWNCEILING, RenderStyle, ShotKind, StateTable,
@@ -45,10 +49,11 @@ use room_sim::{
 use room_testkit::{MapBuilder, combat_arena, rect};
 use room_ui::{
     AutomapView, CanvasSink, DoomStatusBar, DrawCmd, DukeStatusBar, FontRegistry, HudState,
-    IntermissionStats, MenuCommand, MenuSfx, MenuStack, MessageQueue, PatchCache, Rect, Rgba,
-    StatusBar, UiDrawList, anim_pic, blit_draw_list_full, draw_automap, draw_finale,
-    draw_intermission, draw_title, draw_weapon, finale_anm_prefix, parse_titledef, splash_ms,
-    title_screen_pic,
+    IntermissionStats, MenuCommand, MenuSfx, MenuStack, MessageQueue, ModHudMapCtx, PatchCache,
+    Rect, Rgba, StatusBar, UiDrawList, anim_pic, blit_draw_list_full, draw_automap, draw_finale,
+    draw_intermission, draw_mod_hud_layer, draw_mod_hud_modals, draw_mod_zones_automap,
+    draw_outside_zone_tint, draw_title, draw_weapon, finale_anm_prefix, parse_titledef,
+    player_map_poses, splash_ms, title_screen_pic,
 };
 use room_vfs::{Namespace, Vfs, VfsBuilder};
 use screen_capture::GifRecorder;
@@ -124,6 +129,9 @@ struct Args {
     /// Encrypt lockstep payloads with Noise_XX (after lobby; UDP/TCP/tcp-server).
     #[arg(long, default_value_t = false)]
     noise: bool,
+    /// Local display name for netplay / session (also `name` cvar when `--import-ini`).
+    #[arg(long, default_value = "")]
+    name: String,
 }
 
 fn main() {
@@ -295,6 +303,13 @@ fn main() {
             rng_seed,
             coop_players,
         );
+        if let Some(net) = net.as_ref() {
+            for (i, n) in net.seat_names.iter().enumerate().take(usize::from(coop_players)) {
+                if !n.is_empty() {
+                    game.set_player_display_name(i, n);
+                }
+            }
+        }
         // Default: jump straight into `--map` so WASD/playsim work without a menu dig.
         if !args.title {
             if let Err(e) = game.begin_pending_map() {
@@ -421,6 +436,7 @@ fn main() {
         config: None,
         gpu: None,
         pass: None,
+        zone_pass: None,
         depth: None,
         stencil_aux: None,
         frame_color: None,
@@ -482,11 +498,15 @@ fn main() {
                     eprintln!("room: imported {} ({} cvars)", gz.display(), r.set);
                 }
             }
+            for (key, cmd) in default_bind_pairs() {
+                con.aliases.insert(format!("bind_{key}"), cmd.to_string());
+            }
             con
         },
         console_open: false,
         console_line: String::new(),
         keyconf_binds: std::collections::BTreeMap::new(),
+        mod_buttons: ModButtonState::default(),
         audio,
     };
     if let Some(audio) = &app.audio {
@@ -503,6 +523,28 @@ fn main() {
         }
         for (key, cmd) in keyconf_default_binds(conf) {
             app.keyconf_binds.insert(key.to_ascii_lowercase(), cmd);
+        }
+    }
+    if app.net.is_none() {
+        let local_name = if !args.name.is_empty() {
+            args.name.clone()
+        } else {
+            app.console
+                .cvars
+                .get("name")
+                .and_then(|v| {
+                    if let room_console::CvarValue::String(s) = v {
+                        (!s.is_empty()).then(|| s.clone())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default()
+        };
+        if !local_name.is_empty() {
+            if let Some(game) = app.play.as_mut() {
+                game.set_player_display_name(usize::from(app.local_seat), &local_name);
+            }
         }
     }
     if app
@@ -912,6 +954,7 @@ struct ViewerApp {
     config: Option<wgpu::SurfaceConfiguration>,
     gpu: Option<GpuContext>,
     pass: Option<UnlitPass>,
+    zone_pass: Option<ModZonePass>,
     depth: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// Dummy R8 MRT target (Metal stencil / unlit MRT pass layout).
     stencil_aux: Option<(wgpu::Texture, wgpu::TextureView)>,
@@ -984,6 +1027,8 @@ struct ViewerApp {
     console_line: String,
     /// KEYCONF `defaultbind` → console command (lowercase key name).
     keyconf_binds: std::collections::BTreeMap<String, String>,
+    /// Held `+mod1` … `+mod4` bits (`docs/28` BE4).
+    mod_buttons: ModButtonState,
     /// Native audio output (mixer + music on the device thread).
     audio: Option<AudioOut>,
 }
@@ -1429,6 +1474,7 @@ impl ApplicationHandler for ViewerApp {
         };
         surface.configure(&gpu.device, &config);
         let mut pass = UnlitPass::new(&gpu, format);
+        let zone_pass = ModZonePass::new(&gpu, format);
         // ~90° horizontal at 16:9 (Doom-like); `fov_y_deg` 90 is fish-eye wide.
         self.camera.fov_y_deg = 58.715;
         pass.light_mode = LightMode::DoomSoftware;
@@ -1455,6 +1501,7 @@ impl ApplicationHandler for ViewerApp {
         self.config = Some(config);
         self.gpu = Some(gpu);
         self.pass = Some(pass);
+        self.zone_pass = Some(zone_pass);
         self.depth = Some(depth);
         self.stencil_aux = Some(stencil_aux);
         self.frame_color = Some(frame_color);
@@ -1575,6 +1622,12 @@ impl ApplicationHandler for ViewerApp {
                         self.keys.attack.set_key(down);
                     }
                     KeyCode::KeyE if !menu_open => self.keys.use_btn = down,
+                    KeyCode::KeyG if !menu_open => {
+                        self.apply_console(if down { "+mod1" } else { "-mod1" });
+                    }
+                    KeyCode::KeyM if !menu_open => {
+                        self.apply_console(if down { "+mod2" } else { "-mod2" });
+                    }
                     KeyCode::KeyL if down && self.play.is_some() && !menu_open => {
                         self.set_play_look(!self.mouse_look);
                     }
@@ -2170,11 +2223,38 @@ impl ViewerApp {
         let want_gif = self.gif_recorder.is_some();
         let inverse_colormap =
             self.play.is_some() && self.fixed_colormap == room_sim::INVERSE_COLORMAP;
+        const TIC_SEC: f32 = 1.0 / 35.0;
+        let ticfrac_milli = (self.tic_accum / TIC_SEC * 1000.0).clamp(0.0, 1000.0) as u32;
+        let zone_meshes: Option<ZoneMeshes> = if in_level {
+            self.play.as_ref().and_then(|g| g.world()).and_then(|world| {
+                if world.mod_zones.is_empty() {
+                    return None;
+                }
+                let draws: Vec<ZoneDraw> = world
+                    .mod_zones
+                    .iter()
+                    .map(|z| {
+                        let (cx, cy, r) = z.interp_current(world.level.maptime, ticfrac_milli);
+                        ZoneDraw {
+                            cx: cx as f32,
+                            cy: cy as f32,
+                            r: r as f32,
+                            rgba: z.rgba,
+                            flags: z.flags,
+                        }
+                    })
+                    .collect();
+                Some(build_zone_meshes(&self.map, &draws))
+            })
+        } else {
+            None
+        };
         let capture_rgba = {
             let (
                 Some(surface),
                 Some(gpu),
                 Some(pass),
+                Some(zone_pass),
                 Some(depth),
                 Some(stencil_aux),
                 Some(frame_color),
@@ -2185,6 +2265,7 @@ impl ViewerApp {
                 &self.surface,
                 &self.gpu,
                 &mut self.pass,
+                &mut self.zone_pass,
                 &self.depth,
                 &self.stencil_aux,
                 &self.frame_color,
@@ -2306,6 +2387,8 @@ impl ViewerApp {
                         // Live world map carries `ML_MAPPED` exploration bits.
                         if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
                             draw_automap(&world.map, &view, &mut ui);
+                            let maptime = world.level.maptime;
+                            draw_mod_zones_automap(&world.mod_zones, maptime, 1000, &view, &mut ui);
                         } else {
                             draw_automap(&self.map, &view, &mut ui);
                         }
@@ -2343,19 +2426,106 @@ impl ViewerApp {
                             ui.invert_since(weapon_cmds);
                         }
                     }
-                    if self
-                        .vfs
+                    let (mod_hud_seat, mod_hud_tic) = self
+                        .play
                         .as_ref()
-                        .is_some_and(|v| v.find_any_ns(DukeStatusBar::MARKER).is_some())
-                    {
-                        DukeStatusBar.draw(&self.hud, &mut ui);
-                    } else {
-                        DoomStatusBar.draw(&self.hud, &mut ui);
+                        .and_then(|g| g.world())
+                        .map(|w| (self.local_seat, w.level.maptime))
+                        .unwrap_or((self.local_seat, self.frames as u32));
+                    if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
+                        let poses = player_map_poses(world);
+                        let allmap = world
+                            .players
+                            .get(usize::from(self.local_seat))
+                            .and_then(|p| p.as_ref())
+                            .is_some_and(|p| p.allmap);
+                        let map_hud_ctx = ModHudMapCtx {
+                            map: Some(&world.map),
+                            zones: &world.mod_zones,
+                            player_pose: &poses,
+                            hud: &world.mod_hud,
+                            allmap,
+                            ticfrac_milli: 1000,
+                        };
+                        room_ui::set_marker_cam(room_ui::MarkerCam {
+                            x: f64::from(self.camera.eye.x),
+                            y: f64::from(self.camera.eye.y),
+                            yaw_deg: f64::from(self.yaw.to_degrees()),
+                            scale: 1024.0,
+                        });
+                        draw_mod_hud_layer(
+                            &world.mod_hud,
+                            mod_hud_seat,
+                            mod_hud_tic,
+                            0.0,
+                            &mut ui,
+                            mod_hud_layer::UNDER_HUD,
+                            Some(&map_hud_ctx),
+                        );
+                        let spectating = world
+                            .players
+                            .get(usize::from(self.local_seat))
+                            .and_then(|p| p.as_ref())
+                            .is_some_and(|p| {
+                                p.player_state == room_sim::PlayerState::Dead && p.camera.is_some()
+                            });
+                        if !spectating {
+                            if self
+                                .vfs
+                                .as_ref()
+                                .is_some_and(|v| v.find_any_ns(DukeStatusBar::MARKER).is_some())
+                            {
+                                DukeStatusBar.draw(&self.hud, &mut ui);
+                            } else {
+                                DoomStatusBar.draw(&self.hud, &mut ui);
+                            }
+                        }
                     }
                     if let Some(tint) = room_ui::screen_blend(self.hud.palette) {
                         ui.fill(Rect::new(0.0, 0.0, 320.0, 200.0), tint);
                     }
                     self.messages.draw(&mut ui, 8.0, 8.0);
+                    if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
+                        let poses = player_map_poses(world);
+                        let allmap = world
+                            .players
+                            .get(usize::from(self.local_seat))
+                            .and_then(|p| p.as_ref())
+                            .is_some_and(|p| p.allmap);
+                        let map_hud_ctx = ModHudMapCtx {
+                            map: Some(&world.map),
+                            zones: &world.mod_zones,
+                            player_pose: &poses,
+                            hud: &world.mod_hud,
+                            allmap,
+                            ticfrac_milli: 1000,
+                        };
+                        draw_mod_hud_layer(
+                            &world.mod_hud,
+                            mod_hud_seat,
+                            mod_hud_tic,
+                            0.0,
+                            &mut ui,
+                            mod_hud_layer::OVER_HUD,
+                            Some(&map_hud_ctx),
+                        );
+                        let _ = draw_mod_hud_modals(
+                            &world.mod_hud,
+                            mod_hud_seat,
+                            mod_hud_tic,
+                            0.0,
+                            &mut ui,
+                            Some(&map_hud_ctx),
+                        );
+                        draw_outside_zone_tint(
+                            &world.mod_zones,
+                            mod_hud_tic,
+                            1000,
+                            f64::from(self.camera.eye.x),
+                            f64::from(self.camera.eye.y),
+                            &mut ui,
+                        );
+                    }
                     if let Some(menu) = &self.menu {
                         let tic = self
                             .play
@@ -2503,6 +2673,16 @@ impl ViewerApp {
                     } else {
                         pass.draw(&mut rp, &scene);
                     }
+                    if let Some(meshes) = zone_meshes.as_ref() {
+                        if !meshes.wall_depth.is_empty()
+                            || !meshes.wall_through.is_empty()
+                            || !meshes.ring.is_empty()
+                        {
+                            zone_pass.prepare(gpu, &self.camera, pass.time);
+                            zone_pass.upload(gpu, meshes);
+                            zone_pass.draw(&mut rp, meshes);
+                        }
+                    }
                 }
             }
             {
@@ -2618,7 +2798,7 @@ impl ViewerApp {
         while self.tic_accum >= tic {
             self.tic_accum -= tic;
             let sample = self.sample_input();
-            let bits = build_ticcmd(&sample);
+            let bits = build_ticcmd_with_mods(&sample, self.mod_buttons);
             let cmd = TicCmd {
                 buttons: Buttons(bits.buttons),
                 pitch: bits.pitch,
@@ -3252,8 +3432,7 @@ impl ViewerApp {
                 continue;
             }
             used += cost;
-            self.voxel_pose_actors
-                .insert((id.index(), id.generation()));
+            self.voxel_pose_actors.insert((id.index(), id.generation()));
             self.voxel_poses.push(pose);
         }
     }
@@ -4372,6 +4551,9 @@ impl ViewerApp {
     }
 
     fn apply_console(&mut self, line: &str) {
+        if self.mod_buttons.apply_cmd(line.trim()) {
+            return;
+        }
         let Ok(result) = self.console.exec(line) else {
             return;
         };

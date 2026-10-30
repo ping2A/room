@@ -28,11 +28,15 @@ impl Actor {
     /// No actor.
     pub const NULL: Self = Self(ActorRef::NULL);
 
-    fn bits(self) -> i64 {
+    /// Raw handle bits for ABI imports (`0` = null).
+    #[must_use]
+    pub fn bits(self) -> i64 {
         self.0.0 as i64
     }
 
-    fn from_bits(bits: i64) -> Option<Self> {
+    /// Reconstruct from ABI bits (`None` when null).
+    #[must_use]
+    pub fn from_bits(bits: i64) -> Option<Self> {
         (bits != 0).then_some(Self(ActorRef(bits as u64)))
     }
 
@@ -418,6 +422,30 @@ pub fn end_match(winner: Option<i32>) {
     unsafe { sys::game_end_match(winner.map_or(0, |w| w + 1)) }
 }
 
+/// End the match with rich per-seat standings ([`room_script_abi::MatchStandingV1`]; BE11).
+pub fn end_match_ex(winner: Option<i32>, rows: &[room_script_abi::MatchStandingV1]) {
+    let n = i32::try_from(rows.len()).unwrap_or(0);
+    if n == 0 {
+        end_match(winner);
+        return;
+    }
+    let mut buf = [0u8; 8 * 24];
+    let cap = rows.len().min(buf.len() / 24);
+    for (i, row) in rows.iter().take(cap).enumerate() {
+        let mut row = *row;
+        row.size = room_script_abi::MatchStandingV1::SIZE;
+        let _ = row.write_le(&mut buf[i * 24..(i + 1) * 24]);
+    }
+    // SAFETY: `buf` is readable for `cap * 24` bytes for the call.
+    unsafe {
+        sys::game_end_match_ex(
+            winner.map_or(0, |w| w + 1),
+            buf.as_ptr() as i32,
+            i32::try_from(cap).unwrap_or(0),
+        );
+    }
+}
+
 /// Map things of editor number `ednum` ([`thing_type`]) as `[x, y, angle°]`,
 /// in map order; returns the total (may exceed `out.len()`).
 pub fn level_things(ednum: i32, out: &mut [[f64; 3]]) -> usize {
@@ -425,6 +453,171 @@ pub fn level_things(ednum: i32, out: &mut [[f64; 3]]) -> usize {
     // SAFETY: `out` is `cap` writable `[f64; 3]` slots.
     let n = unsafe { sys::level_things(ednum, out.as_mut_ptr() as i32, cap) };
     usize::try_from(n).unwrap_or(0)
+}
+
+/// Create or replace a Mod HUD widget (`docs/27` §9). `seat1` is `0` for every
+/// seat and `n` for seat `n - 1`. `params` is a little-endian
+/// [`room_script_abi::hud::HudWidgetV1`] blob (leading `size`).
+/// Prefer [`crate::hud::Hud`] when building that blob.
+pub fn hud_widget_set(seat1: i32, id: u16, params: &[u8]) -> i32 {
+    // SAFETY: guest buffer is readable for `params.len()`.
+    unsafe {
+        sys::hud_widget_set(
+            seat1,
+            i32::from(id),
+            params.as_ptr() as i32,
+            i32::try_from(params.len()).unwrap_or(0),
+        )
+    }
+}
+
+/// Patch one numeric field on a Mod HUD widget.
+pub fn hud_widget_patch(seat1: i32, id: u16, field: i32, value: i32) -> i32 {
+    // SAFETY: scalar import.
+    unsafe { sys::hud_widget_patch(seat1, i32::from(id), field, value) }
+}
+
+/// Remove one Mod HUD widget.
+pub fn hud_widget_remove(seat1: i32, id: u16) -> i32 {
+    // SAFETY: scalar import.
+    unsafe { sys::hud_widget_remove(seat1, i32::from(id)) }
+}
+
+/// Clear Mod HUD widgets for `seat1` (`0` = shared) owned by this module.
+pub fn hud_clear(seat1: i32) -> i32 {
+    // SAFETY: scalar import.
+    unsafe { sys::hud_clear(seat1) }
+}
+
+/// Linear tween of a numeric widget field over `tics` (`easing` reserved; 0 = linear).
+pub fn hud_widget_animate(
+    seat1: i32,
+    id: u16,
+    field: i32,
+    target: i32,
+    tics: i32,
+    easing: i32,
+) -> i32 {
+    // SAFETY: scalar import.
+    unsafe { sys::hud_widget_animate(seat1, i32::from(id), field, target, tics, easing) }
+}
+
+pub use room_script_abi::zone::{err as zone_err, flags as zone_flags};
+
+/// Publish or update a battle royale zone ring (`docs/28` §9 BE1).
+#[allow(clippy::too_many_arguments)]
+pub fn zone_set(
+    id: i32,
+    cx: i32,
+    cy: i32,
+    r: i32,
+    next_cx: i32,
+    next_cy: i32,
+    next_r: i32,
+    rgba: u32,
+    flags: i32,
+) -> i32 {
+    // SAFETY: scalar import.
+    unsafe { sys::zone_set(id, cx, cy, r, next_cx, next_cy, next_r, rgba as i32, flags) }
+}
+
+/// Remove a zone ring by id.
+pub fn zone_clear(id: i32) -> i32 {
+    // SAFETY: scalar import.
+    unsafe { sys::zone_clear(id) }
+}
+
+/// Capture player input bits for menus (`mask` 0 = release). `slot` is 0-based.
+pub fn player_capture_input(slot: i32, mask: u32) {
+    // SAFETY: scalar import.
+    unsafe { sys::player_capture_input(slot + 1, mask as i32) }
+}
+
+/// Write this tic's raw [`PlayerCmdV1`] for `slot` (0-based) into `out` (≥24 bytes).
+pub fn player_cmd(slot: i32, out: &mut [u8; 24]) -> i32 {
+    // SAFETY: `out` is 24 writable bytes for the call.
+    unsafe { sys::player_cmd(slot + 1, out.as_mut_ptr() as i32) }
+}
+
+/// Play a non-positional UI sound for one seat (0-based).
+pub fn player_sound(slot: i32, name: &str, volume: f64) {
+    let (p, n) = str_args(name);
+    // SAFETY: name slice lives for the call.
+    unsafe { sys::player_sound(slot + 1, p, n, volume) }
+}
+
+/// Read a class-flag bit on an actor (`docs/27` Track C C2).
+pub fn actor_flag(a: Actor, flag: i32) -> bool {
+    // SAFETY: scalar import.
+    unsafe { sys::actor_flag(a.bits(), flag) != 0 }
+}
+
+/// Set/clear a class-flag bit on an actor (C2).
+pub fn actor_set_flag(a: Actor, flag: i32, on: bool) {
+    // SAFETY: scalar import.
+    unsafe { sys::actor_set_flag(a.bits(), flag, i32::from(on)) }
+}
+
+/// Set a player integer property (C3: damage/bonus/extralight flashes).
+pub fn player_set_i32(slot: i32, prop: i32, value: i32) {
+    // SAFETY: scalar import.
+    unsafe { sys::player_set_i32(slot + 1, prop, value) }
+}
+
+/// Per-seat view actor for spectate (`docs/28` BE9). `actor` null clears the override.
+pub fn player_set_camera(slot: i32, actor: Option<Actor>) {
+    let bits = actor.map(|a| a.bits()).unwrap_or(0);
+    // SAFETY: scalar import.
+    unsafe { sys::player_set_camera(slot + 1, bits) }
+}
+
+/// Assign a squad team index (`255` = none; BE5).
+pub fn player_set_team(slot: i32, team: i32) {
+    // SAFETY: scalar import.
+    unsafe { sys::player_set_team(slot + 1, team) }
+}
+
+/// Read squad team index (BE5).
+pub fn player_team(slot: i32) -> i32 {
+    // SAFETY: scalar import.
+    unsafe { sys::player_team(slot + 1) }
+}
+
+/// View hitscan trace from the player's aim (BE7). Writes [`PlayerTraceV1`] to `out`.
+pub fn player_trace(slot: i32, max_dist: f64, out: &mut [u8; 56]) -> i32 {
+    // SAFETY: `out` is 56 writable bytes for the call.
+    unsafe { sys::player_trace(slot + 1, max_dist, out.as_mut_ptr() as i32) }
+}
+
+/// Display name for `slot` (0-based, BE3). Returns full UTF-8 length.
+pub fn player_name(slot: i32, out: &mut [u8]) -> i32 {
+    // SAFETY: host import.
+    unsafe { sys::player_name(slot + 1, out.as_mut_ptr() as i32, out.len() as i32) }
+}
+
+/// Start a quake centered on `a` (C4).
+pub fn actor_quake(a: Actor, intensity: f64, duration: i32, damrad: f64, tremrad: f64) {
+    // SAFETY: scalar import.
+    unsafe { sys::actor_quake(a.bits(), intensity, duration, damrad, tremrad) }
+}
+
+/// Radius attack at `origin`'s position from `source` (C5).
+pub fn actor_radius_attack(origin: Actor, source: Actor, damage: i32, distance: f64) {
+    // SAFETY: scalar import.
+    unsafe { sys::actor_radius_attack(origin.bits(), source.bits(), damage, distance) }
+}
+
+/// Spawn a missile from `src` aimed at `dest` (C5).
+pub fn actor_spawn_missile(src: Actor, dest: Actor, class: ClassRef) -> Actor {
+    // SAFETY: scalar import.
+    unsafe {
+        Actor::from_bits(sys::actor_spawn_missile(
+            src.bits(),
+            dest.bits(),
+            class.0 as i32,
+        ))
+        .unwrap_or(Actor::NULL)
+    }
 }
 
 /// One game event delivered to a handler.

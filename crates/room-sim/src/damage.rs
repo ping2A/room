@@ -358,6 +358,31 @@ pub fn damage_mobj(
             }
         }
     }
+    // BE5: team / self damage rules for deathmatch PvP.
+    if world.deathmatch {
+        if let Some(src) = source {
+            let src_slot = world
+                .players
+                .iter()
+                .position(|p| p.as_ref().is_some_and(|p| p.mo == Some(src)));
+            let tgt_slot = world
+                .players
+                .iter()
+                .position(|p| p.as_ref().is_some_and(|p| p.mo == Some(target)));
+            if let (Some(s), Some(t)) = (src_slot, tgt_slot) {
+                if s == t && !world.self_damage {
+                    return 0;
+                }
+                if s != t && !world.team_damage {
+                    let st = world.players[s].as_ref().map(|p| p.team).unwrap_or(255);
+                    let tt = world.players[t].as_ref().map(|p| p.team).unwrap_or(255);
+                    if st != 255 && st == tt {
+                        return 0;
+                    }
+                }
+            }
+        }
+    }
     let dtype = inflictor.and_then(|id| {
         let a = world.actors.get(id)?;
         if !a.damage_type.is_empty() {
@@ -580,6 +605,17 @@ pub fn damage_mobj(
             return 0;
         };
         actor.health = actor.health.saturating_sub(health_damage);
+        if actor.health <= 0 {
+            let buddha = (actor.flags & crate::class::FLAG_BUDDHA) != 0;
+            let pvp_dbno = world.squad_dbno
+                && is_player_pawn
+                && source.is_some_and(|src| {
+                    src != target && world.players.iter().flatten().any(|p| p.mo == Some(src))
+                });
+            if buddha || pvp_dbno {
+                actor.health = 1;
+            }
+        }
         // Wake: cancel ReactionTime so chase can start immediately after See/Pain.
         actor.reaction_time = 0;
         actor.flags &= !crate::class::FLAG_DORMANT;
@@ -600,6 +636,44 @@ pub fn damage_mobj(
                 p.attacker = source;
                 p.damage_count = (p.damage_count + health_damage).min(100);
                 break;
+            }
+        }
+    }
+    if health_damage > 0 {
+        let source_player = source.and_then(|src| {
+            world
+                .players
+                .iter()
+                .position(|p| p.as_ref().is_some_and(|pl| pl.mo == Some(src)))
+        });
+        if let Some(src_slot) = source_player {
+            if let Some(p) = world.players[src_slot].as_mut() {
+                if source != Some(target) {
+                    p.damage_dealt = p.damage_dealt.saturating_add(health_damage);
+                }
+                let weapon_ref = p
+                    .ready_weapon
+                    .map(|c| i32::try_from(c.raw().saturating_add(1)).unwrap_or(0))
+                    .unwrap_or(0);
+                if is_player_pawn {
+                    for vp in world.players.iter_mut().flatten() {
+                        if vp.mo == Some(target) {
+                            vp.last_damage_weapon = weapon_ref;
+                            break;
+                        }
+                    }
+                }
+            }
+        } else if is_player_pawn {
+            let weapon_ref = inflictor
+                .and_then(|id| world.actors.get(id))
+                .map(|a| i32::try_from(a.class.raw().saturating_add(1)).unwrap_or(0))
+                .unwrap_or(0);
+            for vp in world.players.iter_mut().flatten() {
+                if vp.mo == Some(target) {
+                    vp.last_damage_weapon = weapon_ref;
+                    break;
+                }
             }
         }
     }
@@ -1922,6 +1996,51 @@ actor RedBot : Actor 9910
         assert_eq!(w.actors.get(mo1).unwrap().health, hp1);
     }
 
+    fn two_player_dm_world() -> (World, ActorId, ActorId) {
+        use crate::player::Player;
+        use room_core::{Angle, DVec3};
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        let mo0 = w.players[0].as_ref().unwrap().mo.unwrap();
+        let pawn = w.players[0].as_ref().unwrap().cls;
+        let mo1 = w
+            .spawn_at(pawn, DVec3::new(200.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let mut second = Player::default();
+        second.possess(mo1, pawn);
+        w.players[1] = Some(second);
+        w.deathmatch = true;
+        (w, mo0, mo1)
+    }
+
+    #[test]
+    fn buddha_floors_health_at_one() {
+        let (mut w, mo0, mo1) = two_player_dm_world();
+        w.actors.get_mut(mo1).unwrap().flags |= crate::class::FLAG_BUDDHA;
+        assert!(damage_mobj(&mut w, mo1, None, Some(mo0), 500) > 0);
+        assert_eq!(w.actors.get(mo1).unwrap().health, 1);
+    }
+
+    #[test]
+    fn player_team_damage_rule_blocks_teammates_in_dm() {
+        let (mut w, mo0, mo1) = two_player_dm_world();
+        w.team_damage = false;
+        w.players[0].as_mut().unwrap().team = 0;
+        w.players[1].as_mut().unwrap().team = 0;
+        assert_eq!(damage_mobj(&mut w, mo1, None, Some(mo0), 50), 0);
+        w.players[1].as_mut().unwrap().team = 1;
+        assert!(damage_mobj(&mut w, mo1, None, Some(mo0), 10) > 0);
+    }
+
     #[test]
     fn mbf21_infighting_group_blocks_peer_damage() {
         let ir = parse_decorate(
@@ -2564,6 +2683,31 @@ actor PlayerPawn : Actor 0
         assert_eq!(damage_mobj(&mut w, mo, None, None, 30), 20);
         assert_eq!(w.actors.get(mo).unwrap().health, 80);
         assert_eq!(w.players[0].as_ref().unwrap().armor, 90);
+    }
+
+    #[test]
+    fn player_damage_dealt_tracks_pvp_hits() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .thing(2, 128.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        w.deathmatch = true;
+        assert_eq!(w.spawn_coop_players(2).unwrap(), 2);
+        let (p0, p1) = (
+            w.players[0].as_ref().and_then(|p| p.mo).unwrap(),
+            w.players[1].as_ref().and_then(|p| p.mo).unwrap(),
+        );
+        assert_eq!(damage_mobj(&mut w, p1, Some(p0), Some(p0), 25), 25);
+        assert_eq!(w.players[0].as_ref().unwrap().damage_dealt, 25);
+        assert!(w.players[1].as_ref().unwrap().last_damage_weapon >= 0);
     }
 
     #[test]

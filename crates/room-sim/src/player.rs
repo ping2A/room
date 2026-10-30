@@ -29,6 +29,14 @@ impl Buttons {
     pub const QUICKKICK: u32 = 1 << 7;
     /// Use the carried inventory item (Duke medkit / steroids).
     pub const INVUSE: u32 = 1 << 8;
+    /// Mod bind `+mod1` (ping / primary mod action; `docs/28` BE4).
+    pub const MOD1: u32 = 1 << 16;
+    /// Mod bind `+mod2` (map / secondary mod action).
+    pub const MOD2: u32 = 1 << 17;
+    /// Mod bind `+mod3`.
+    pub const MOD3: u32 = 1 << 18;
+    /// Mod bind `+mod4`.
+    pub const MOD4: u32 = 1 << 19;
 
     /// True if any of `mask` is set.
     #[must_use]
@@ -58,6 +66,39 @@ pub struct TicCmd {
     pub weapon_select: u8,
 }
 
+/// Max tics a mod may hold input capture before auto-release (`docs/27` §9.1 E9).
+pub const MAX_CAPTURE_TICS: i32 = 35 * 60;
+
+/// Zero captured parts of `cmd` in place (`docs/27` §9.3).
+pub fn apply_input_capture(cmd: &mut TicCmd, mask: u32) {
+    use room_script_abi::capture;
+    if mask & capture::WEAPON_SELECT != 0 {
+        cmd.weapon_select = 0;
+    }
+    if mask & capture::WEAPON_CYCLE != 0 {
+        cmd.buttons.0 &= !(Buttons::WEAPONNEXT | Buttons::WEAPONPREV);
+    }
+    if mask & capture::ATTACK != 0 {
+        cmd.buttons.0 &= !Buttons::ATTACK;
+    }
+    if mask & capture::USE != 0 {
+        cmd.buttons.0 &= !Buttons::USE;
+    }
+    if mask & capture::MOVE != 0 {
+        cmd.forward_move = 0;
+        cmd.side_move = 0;
+        cmd.up_move = 0;
+    }
+    if mask & capture::TURN != 0 {
+        cmd.yaw = 0;
+        cmd.pitch = 0;
+        cmd.roll = 0;
+    }
+    if mask & capture::JUMP != 0 {
+        cmd.buttons.0 &= !Buttons::JUMP;
+    }
+}
+
 /// High-level player life-cycle.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PlayerState {
@@ -77,8 +118,18 @@ pub enum PlayerState {
 pub struct Player {
     /// Player pawn actor.
     pub mo: Option<ActorId>,
-    /// This tic's command.
+    /// This tic's command (filtered by [`Self::input_capture`] before think).
     pub cmd: TicCmd,
+    /// Raw command before capture filtering (mods read via `player_cmd`).
+    pub raw_cmd: TicCmd,
+    /// Mod input-capture mask (`room_script_abi::capture`).
+    pub input_capture: u32,
+    /// Module index that owns the capture (`u16::MAX` = none).
+    pub capture_module: u16,
+    /// `maptime` when capture was set (auto-release after [`MAX_CAPTURE_TICS`]).
+    pub capture_started: u32,
+    /// Previous tic's raw button bits (for pressed/released edges).
+    pub prev_buttons: u32,
     /// Life-cycle.
     pub player_state: PlayerState,
     /// Player class.
@@ -123,6 +174,8 @@ pub struct Player {
     pub invuse_down: bool,
     /// Quick-kick button was held last tic.
     pub quick_kick_down: bool,
+    /// Sim-driven bot: [`crate::bot::run_bot_brains`] overwrites [`Self::cmd`] each tic.
+    pub is_bot: bool,
     /// Weapon to restore after a quick kick (`None` = not kicking).
     pub quick_kick_restore: Option<ClassId>,
     /// Consecutive idle tics (no move / fire / use / turn). Resets on input.
@@ -217,6 +270,12 @@ pub struct Player {
     pub mugshot: crate::mugshot::MugShot,
     /// Doom `player->frags[victim]` — kills of each player slot (own = suicides).
     pub frags: [i32; MAX_PLAYERS],
+    /// Damage dealt to other players this match (BE10).
+    pub damage_dealt: i32,
+    /// Last weapon class ref that damaged this pawn (BE10).
+    pub last_damage_weapon: i32,
+    /// Squad / team index (`255` = unteamed; `docs/28` BE5).
+    pub team: u8,
 }
 
 impl Player {

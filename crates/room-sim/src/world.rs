@@ -28,6 +28,16 @@ const THING_PLAYER1_START: i16 = 1;
 const THING_PLAYER2_START: i16 = 2;
 const THING_PLAYER3_START: i16 = 3;
 const THING_PLAYER4_START: i16 = 4;
+const THING_DEATHMATCH_START: i16 = 11;
+
+fn p1_fallback_offset(seat: usize) -> (f64, f64) {
+    let i = seat as f64;
+    let ang = i * 2.399_963_229_728_653;
+    (
+        room_core::dmath::cos(ang) * 48.0,
+        room_core::dmath::sin(ang) * 48.0,
+    )
+}
 /// MBF helper dog DoomEdNum.
 const THING_MBF_HELPER_DOG: i32 = 888;
 
@@ -471,6 +481,12 @@ pub struct World {
     pub sky_mist_speed: f64,
     /// HUD messages produced this tic (drained by the shell).
     pub messages: Vec<HudMessage>,
+    /// Retained Mod HUD widgets (`docs/27` §9). Not part of [`Self::checksum`].
+    pub mod_hud: crate::mod_hud::ModHud,
+    /// Battle royale zone rings (`docs/28` §9 BE1). Render-only; not in checksum.
+    pub mod_zones: crate::mod_zones::ModZones,
+    /// Lobby / session display names per seat (`docs/28` §9 BE3).
+    pub player_names: crate::player_names::PlayerNames,
     /// Diagnostic lines for the drop-down console (drained by the shell).
     pub debug_log: Vec<String>,
     /// Deaths since the last [`World::drain_kill_events`] (shell-only).
@@ -480,12 +496,22 @@ pub struct World {
     /// Deathmatch rules: players can hurt each other; the status bar shows
     /// frags instead of `STARMS`.
     pub deathmatch: bool,
+    /// Teammates may damage each other (`game_set_rule` TEAM_DAMAGE; BE5).
+    pub team_damage: bool,
+    /// Self damage allowed (`game_set_rule` SELF_DAMAGE; BE5).
+    pub self_damage: bool,
+    /// Squad DBNO: PvP lethal damage floors player health at 1 (`docs/28` BR6).
+    pub squad_dbno: bool,
     /// Dead players stay down instead of respawning with Use (mod rule).
     pub no_player_respawn: bool,
     /// Set once the match is decided (mod `game_end_match` or the time limit).
     pub match_over: Option<MatchOver>,
+    /// Per-seat stats from the last `game_end_match_ex` call (BE11).
+    pub match_standings: Vec<MatchStanding>,
     /// Tics left before the room time limit ends the match (`0` = no limit).
     pub match_tics_left: u32,
+    /// Bitmask of seats driven by [`crate::bot::run_bot_brains`] (`docs/28` BE8).
+    pub bot_seats: u8,
     /// Level time of each player's latest death (standings tie-break).
     pub player_died_at: [Option<u32>; MAX_PLAYERS],
     /// Doom skill 1..=5 (filters map things).
@@ -558,6 +584,8 @@ pub struct World {
     pub brain_spit_easy: bool,
     /// Event bits WASM mods subscribed to ([`crate::script_mods::ModRuntime`]).
     pub script_event_mask: u64,
+    /// Module index currently serving a game import (Mod HUD ownership).
+    pub script_mod_index: u16,
     /// Sim events queued this tic for WASM mod handlers.
     pub script_events: Vec<crate::script_mods::ScriptEvent>,
     /// Monster corpse FIFO (`sv_corpsequeuesize`, default 64). Oldest destroyed when full.
@@ -597,6 +625,25 @@ pub struct MatchOver {
     pub time_up: bool,
     /// Level time (tics) the match ended.
     pub maptime: u32,
+}
+
+/// Rich standings row from mod `game_end_match_ex` (BE11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchStanding {
+    /// Player slot.
+    pub seat: u8,
+    /// 1-based place.
+    pub place: u8,
+    /// Frags / kills.
+    pub kills: i32,
+    /// Assists.
+    pub assists: i32,
+    /// Damage dealt.
+    pub damage: i32,
+    /// Revives.
+    pub revives: i32,
+    /// Survival time in tics.
+    pub survival_tics: i32,
 }
 
 /// One row of [`World::standings`].
@@ -713,6 +760,8 @@ pub struct SimSoundEvent {
     pub volume: f32,
     /// Attenuation scale (`1.0` = normal, `0.0` = full volume / no falloff).
     pub attenuation: f32,
+    /// When `Some(seat)`, only that console seat should hear it (Mod HUD UI cue).
+    pub seat: Option<u8>,
 }
 
 /// Wall / floor decal request for the renderer (DECALDEF name).
@@ -1289,13 +1338,21 @@ impl World {
             sky_speed2: 0.0,
             sky_mist_speed: 0.0,
             messages: Vec::new(),
+            mod_hud: crate::mod_hud::ModHud::new(),
+            mod_zones: crate::mod_zones::ModZones::new(),
+            player_names: crate::player_names::PlayerNames::default(),
             debug_log: Vec::new(),
             kill_events: Vec::new(),
             paused: false,
             deathmatch: false,
+            team_damage: true,
+            self_damage: true,
+            squad_dbno: false,
             no_player_respawn: false,
             match_over: None,
+            match_standings: Vec::new(),
             match_tics_left: 0,
+            bot_seats: 0,
             player_died_at: [None; MAX_PLAYERS],
             skill: skill.clamp(1, 5),
             fast_monsters: skill >= 5,
@@ -1332,6 +1389,7 @@ impl World {
             boss_target_cursor: 0,
             brain_spit_easy: false,
             script_event_mask: 0,
+            script_mod_index: 0,
             script_events: Vec::new(),
             corpse_queue: std::collections::VecDeque::new(),
             corpse_queue_size: DEFAULT_CORPSE_QUEUE_SIZE,
@@ -1654,56 +1712,141 @@ impl World {
         }
     }
 
-    /// Spawn coop players 2..=N at Player 2–4 starts (`total` clamped 1..=4).
+    /// Spawn coop players 2..=N (`total` clamped 1..=[`MAX_PLAYERS`]).
     ///
-    /// Player 1 is already created in [`Self::spawn_map_things`]. Missing starts are skipped.
-    /// Also enables multiplayer-only map things (`MTF_NOTSINGLE`) when `total > 1`.
+    /// Player 1 is already created in [`Self::spawn_map_things`]. Uses Player 2–4
+    /// starts, then deathmatch starts (type 11), then Player 1 + offset + telefog
+    /// (`docs/28` BE12). Also enables multiplayer-only map things when `total > 1`.
     pub fn spawn_coop_players(&mut self, total: u8) -> Result<u8, SimError> {
-        let total = total.clamp(1, 4) as usize;
+        let total = total.clamp(1, MAX_PLAYERS as u8) as usize;
         if total <= 1 {
-            return Ok(1);
+            return Ok(self.players[0].is_some() as u8);
         }
         self.spawn_multiplayer_only_things()?;
-        let class = self.player_class();
-        let starts: [i16; 3] = [
+        let mut alive = u8::from(self.players[0].is_some());
+        let coop_starts: [i16; 3] = [
             THING_PLAYER2_START,
             THING_PLAYER3_START,
             THING_PLAYER4_START,
         ];
-        let mut alive = 1u8;
-        for (slot, &tid) in starts.iter().enumerate().take(total - 1) {
-            let seat = slot + 1;
+        let dm_starts: Vec<_> = self
+            .map
+            .things
+            .iter()
+            .filter(|t| t.type_id == THING_DEATHMATCH_START)
+            .cloned()
+            .collect();
+        let p1 = self
+            .map
+            .things
+            .iter()
+            .find(|t| t.type_id == THING_PLAYER1_START)
+            .cloned();
+        let mut dm_idx = 0usize;
+        for seat in 1..total {
             if self.players[seat].is_some() {
                 alive = alive.saturating_add(1);
                 continue;
             }
-            let Some(thing) = self.map.things.iter().find(|t| t.type_id == tid).cloned() else {
-                continue;
-            };
-            let id = self.spawn_at(
-                class,
-                DVec3::new(f64::from(thing.x), f64::from(thing.y), f64::from(thing.z)),
-                doom_thing_angle(thing.angle),
-            )?;
-            self.randomize_mapthing_tics(id);
-            let mut p = Player::default();
-            p.possess(id, class);
-            if let Some(vh) = self
-                .classes
-                .get(class)
-                .map(|c| c.view_height)
-                .filter(|&v| v > 0.0)
-            {
-                p.view_height = vh;
+            let mut spawned = false;
+            if seat <= 3 {
+                let tid = coop_starts[seat - 1];
+                if let Some(thing) = self.map.things.iter().find(|t| t.type_id == tid).cloned() {
+                    self.spawn_coop_seat(seat, &thing, false)?;
+                    spawned = true;
+                }
             }
-            if let Some(a) = self.actors.get(id) {
-                p.view_z = a.pos.z() + p.view_height;
+            if !spawned && dm_idx < dm_starts.len() {
+                let thing = &dm_starts[dm_idx];
+                dm_idx += 1;
+                self.spawn_coop_seat(seat, thing, false)?;
+                spawned = true;
             }
-            self.players[seat] = Some(p);
-            let _ = self.give_starting_loadout(id);
-            alive = alive.saturating_add(1);
+            if !spawned {
+                if let Some(ref p1) = p1 {
+                    let (ox, oy) = p1_fallback_offset(seat);
+                    let class = self.player_class();
+                    let z = self.map_thing_z(class, p1);
+                    let pos = DVec3::new(f64::from(p1.x) + ox, f64::from(p1.y) + oy, z);
+                    let angle = doom_thing_angle(p1.angle);
+                    self.spawn_coop_seat_at(seat, pos, angle, true)?;
+                    spawned = true;
+                }
+            }
+            if spawned {
+                alive = alive.saturating_add(1);
+            }
         }
         Ok(alive)
+    }
+
+    fn spawn_coop_seat(
+        &mut self,
+        seat: usize,
+        thing: &room_map::RawThing,
+        telefog: bool,
+    ) -> Result<(), SimError> {
+        let class = self.player_class();
+        let z = self.map_thing_z(class, thing);
+        let pos = DVec3::new(f64::from(thing.x), f64::from(thing.y), z);
+        self.spawn_coop_seat_at(seat, pos, doom_thing_angle(thing.angle), telefog)
+    }
+
+    fn spawn_coop_seat_at(
+        &mut self,
+        seat: usize,
+        pos: DVec3,
+        angle: room_core::Angle,
+        telefog: bool,
+    ) -> Result<(), SimError> {
+        if self.players[seat].is_some() {
+            return Ok(());
+        }
+        let class = self.player_class();
+        let id = self.spawn_at(class, pos, angle)?;
+        self.randomize_mapthing_tics(id);
+        if telefog {
+            crate::specials::spawn_teleport_fog(self, pos);
+        }
+        let mut p = Player::default();
+        p.possess(id, class);
+        if let Some(vh) = self
+            .classes
+            .get(class)
+            .map(|c| c.view_height)
+            .filter(|&v| v > 0.0)
+        {
+            p.view_height = vh;
+        }
+        if let Some(a) = self.actors.get(id) {
+            p.view_z = a.pos.z() + p.view_height;
+        }
+        self.players[seat] = Some(p);
+        let _ = self.give_starting_loadout(id);
+        Ok(())
+    }
+
+    /// Mark a seat as sim-driven bot (`docs/28` BE8).
+    pub fn set_seat_bot(&mut self, seat: u8, bot: bool) {
+        let i = usize::from(seat.min(MAX_PLAYERS as u8 - 1));
+        if let Some(p) = self.players[i].as_mut() {
+            p.is_bot = bot;
+        }
+        let bit = 1u8 << seat;
+        if bot {
+            self.bot_seats |= bit;
+        } else {
+            self.bot_seats &= !bit;
+        }
+    }
+
+    /// Enable bots on contiguous seats `[first..=last]` (inclusive).
+    pub fn fill_bot_seats(&mut self, first: u8, last: u8) {
+        for seat in first..=last.min(MAX_PLAYERS as u8 - 1) {
+            if self.players[usize::from(seat)].is_some() {
+                self.set_seat_bot(seat, true);
+            }
+        }
     }
 
     /// Spawn map things flagged `MTF_NOTSINGLE` (bit 16) once multiplayer is active.
@@ -2369,7 +2512,43 @@ impl World {
             z,
             volume,
             attenuation,
+            seat: None,
         });
+    }
+
+    /// Non-positional UI sound heard only by `seat` (0-based), or everyone when `None`.
+    pub fn play_seat_sound(&mut self, seat: Option<u8>, name: &str, volume: f32) {
+        self.sound_events.push(SimSoundEvent {
+            name: name.to_owned(),
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            volume,
+            attenuation: 0.0,
+            seat,
+        });
+    }
+
+    /// Release Mod HUD input captures owned by `module`.
+    pub fn clear_module_captures(&mut self, module: u16) {
+        for slot in &mut self.players {
+            if let Some(p) = slot {
+                if p.capture_module == module {
+                    p.input_capture = 0;
+                    p.capture_module = u16::MAX;
+                }
+            }
+        }
+    }
+
+    /// Release all input captures (map change / unload).
+    pub fn clear_all_captures(&mut self) {
+        for slot in &mut self.players {
+            if let Some(p) = slot {
+                p.input_capture = 0;
+                p.capture_module = u16::MAX;
+            }
+        }
     }
 
     /// Resume a Duke save-game earthquake (`SE 2` / `A_Quake(4, …, 0, 2048)`).
@@ -4553,8 +4732,26 @@ impl World {
 
     /// One game tic (`P_Ticker` subset). See `docs/07-playsim.md §2.2`.
     pub fn tick(&mut self) {
-        // GZDoom: if paused ⇒ return
+        // Console / mod pause: freeze playsim clocks and thinkers, but still
+        // feed `raw_cmd` + script `WorldTick` so Mod HUD menus (draft, etc.)
+        // can resolve. `maptime` does not advance.
         if self.paused {
+            self.scripts.sync_from_world(self);
+            self.sound_heard = self.sound_events.iter().map(|e| e.name.clone()).collect();
+            self.sound_events.clear();
+            let now = self.level.maptime;
+            self.mod_hud.tick_tweens(now);
+            for i in 0..MAX_PLAYERS {
+                if let Some(p) = self.players[i].as_mut() {
+                    p.raw_cmd = p.cmd;
+                }
+            }
+            let _ = self.scripts.dispatch_world_tick();
+            for i in 0..MAX_PLAYERS {
+                if let Some(p) = self.players[i].as_mut() {
+                    p.prev_buttons = p.raw_cmd.buttons.0;
+                }
+            }
             return;
         }
         if self.match_tics_left > 0 {
@@ -4573,6 +4770,19 @@ impl World {
             self.messages.drain(..excess);
         }
         self.screen_fade.tick();
+        let now = self.level.maptime;
+        self.mod_hud.tick_tweens(now);
+        {
+            let actors = &self.actors;
+            self.mod_hud.sync_marker_actors(|bits| {
+                if bits == 0 {
+                    return None;
+                }
+                let id = crate::actor::ActorId::from_raw(bits as u32, (bits >> 32) as u32);
+                let a = actors.get(id).filter(|a| !a.destroyed)?;
+                Some([a.pos.x() as i32, a.pos.y() as i32, a.pos.z() as i32])
+            });
+        }
         tick_contact_damage(self);
         crate::damage::tick_duke_effects(self);
         // Snapshot plane Z for render interpolation (`interpolations.begin_tic`).
@@ -4580,6 +4790,7 @@ impl World {
             sec.prev_floor_z = sec.floor_z;
             sec.prev_ceiling_z = sec.ceiling_z;
         }
+        crate::bot::run_bot_brains(self);
         for i in 0..MAX_PLAYERS {
             if self.players[i].is_some() {
                 let mut p = self.players[i].take().unwrap_or_default();
@@ -4591,6 +4802,16 @@ impl World {
         }
         // events.world_tick (WASM EventHandlers) + flush WASM→ACS starts
         let _ = self.scripts.dispatch_world_tick();
+        // A mod may set `rule::PAUSED` during WorldTick (e.g. Survival draft).
+        // Skip the rest of this tic so in-flight missiles cannot still kill.
+        if self.paused {
+            for i in 0..MAX_PLAYERS {
+                if let Some(p) = self.players[i].as_mut() {
+                    p.prev_buttons = p.raw_cmd.buttons.0;
+                }
+            }
+            return;
+        }
         for (script, map, args) in self.scripts.drain_acs_starts() {
             let mut a = [0i32; 5];
             a[0] = script;
@@ -4798,6 +5019,18 @@ impl World {
         self.body_queue.retain(|&x| x != id);
     }
 
+    /// Hash of retained Mod HUD widgets (tests only; not in [`Self::checksum`]).
+    #[must_use]
+    pub fn mod_hud_hash(&self) -> u64 {
+        self.mod_hud.hash()
+    }
+
+    /// Hash of retained zone rings (tests only; not in [`Self::checksum`]).
+    #[must_use]
+    pub fn mod_zones_hash(&self) -> u64 {
+        self.mod_zones.hash()
+    }
+
     /// Stable checksum for determinism / netplay (`World::checksum`).
     #[must_use]
     pub fn checksum(&self) -> u64 {
@@ -4889,8 +5122,25 @@ impl World {
             bytes.extend_from_slice(&p.return_to_center.to_le_bytes());
             bytes.extend_from_slice(&p.tip_incs.to_le_bytes());
             bytes.push(u8::from(p.walk_snd_toggle));
+            bytes.extend_from_slice(&p.input_capture.to_le_bytes());
+            bytes.extend_from_slice(&p.capture_module.to_le_bytes());
+            bytes.extend_from_slice(&p.capture_started.to_le_bytes());
+            bytes.extend_from_slice(&p.prev_buttons.to_le_bytes());
+            bytes.extend_from_slice(
+                &p.camera
+                    .map(|c| u64::from(c.index()))
+                    .unwrap_or(u64::MAX)
+                    .to_le_bytes(),
+            );
+            bytes.push(u8::from(p.camera_revert));
         }
+        bytes.extend_from_slice(&self.player_names.checksum_bytes());
         xxh3_64(&bytes)
+    }
+
+    /// Set the display name for `seat` (0-based; session setup, BE3).
+    pub fn set_player_display_name(&mut self, seat: usize, name: &str) {
+        self.player_names.set(seat, name);
     }
 }
 
@@ -5157,6 +5407,7 @@ mod tests {
 
     use super::*;
     use crate::StateTable;
+    use crate::player::TicCmd;
     use room_decorate::parse_decorate;
     use room_nodebuild::apply_nodes;
     use room_testkit::{MapBuilder, rect};
@@ -5228,6 +5479,57 @@ mod tests {
         w2.tick();
         w2.tick();
         assert_eq!(w.checksum(), w2.checksum());
+    }
+
+    #[test]
+    fn checksum_ignores_mod_hud_widgets() {
+        use crate::mod_hud::HudWidget;
+        let mut w = World::from_map(empty_room()).unwrap();
+        let c0 = w.checksum();
+        let h0 = w.mod_hud_hash();
+        assert_eq!(w.mod_hud.set(0, 1, 1, HudWidget::default(), 1), 0);
+        assert_eq!(w.checksum(), c0);
+        assert_ne!(w.mod_hud_hash(), h0);
+    }
+
+    #[test]
+    fn checksum_ignores_mod_zones() {
+        let mut w = World::from_map(empty_room()).unwrap();
+        let c0 = w.checksum();
+        let z0 = w.mod_zones_hash();
+        assert_eq!(
+            w.mod_zones
+                .set(0, 0, 100, 200, 5000, 0, 0, 4000, 0xff0000ff, 0, 1),
+            0
+        );
+        assert_eq!(w.checksum(), c0);
+        assert_ne!(w.mod_zones_hash(), z0);
+    }
+
+    #[test]
+    fn checksum_includes_player_camera() {
+        let mut w = World::from_map(empty_room()).unwrap();
+        w.tick();
+        let c0 = w.checksum();
+        let mo = w.players[0].as_ref().and_then(|p| p.mo);
+        if let Some(p) = w.players[0].as_mut() {
+            if let Some(mo) = mo {
+                p.camera = Some(mo);
+                p.camera_revert = false;
+            }
+        }
+        assert_ne!(w.checksum(), c0);
+    }
+
+    #[test]
+    fn checksum_includes_player_names() {
+        let mut w = World::from_map(empty_room()).unwrap();
+        let c0 = w.checksum();
+        w.set_player_display_name(0, "Alice");
+        assert_ne!(w.checksum(), c0);
+        let c1 = w.checksum();
+        w.set_player_display_name(1, "Bob");
+        assert_ne!(w.checksum(), c1);
     }
 
     #[test]
@@ -5717,6 +6019,53 @@ actor QuietZombie : Actor 3004
         });
         let zombie = zombie.unwrap();
         assert_eq!(zombie.flags & crate::class::FLAG_COUNTKILL, 0);
+    }
+
+    #[test]
+    fn spawn_eight_players_uses_dm_starts_after_coop() {
+        let mut b = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 1024.0, 1024.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .thing(2, 128.0, 64.0, 0);
+        for (x, y) in [
+            (200.0, 200.0),
+            (800.0, 200.0),
+            (200.0, 800.0),
+            (800.0, 800.0),
+        ] {
+            b = b.thing(11, x, y, 0);
+        }
+        let mut map = b.build_udmf("MAP01").unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        assert_eq!(w.spawn_coop_players(8).unwrap(), 8);
+        for seat in 0..8 {
+            assert!(w.players[seat].is_some(), "seat {seat} missing");
+        }
+    }
+
+    #[test]
+    fn bot_brains_are_deterministic_across_runs() {
+        let map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .thing(2, 128.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        let run = || {
+            let mut map = map.clone();
+            apply_nodes(&mut map);
+            let mut w = World::from_map(map).unwrap();
+            w.deathmatch = true;
+            let _ = w.spawn_coop_players(2).unwrap();
+            w.fill_bot_seats(0, 1);
+            for _ in 0..400 {
+                w.set_ticcmds(&[TicCmd::default(); 2]);
+                w.tick();
+            }
+            w.checksum()
+        };
+        assert_eq!(run(), run());
     }
 
     #[test]

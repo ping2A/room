@@ -122,6 +122,8 @@ pub struct ServerConfig {
     pub room_time_limit_mins: u16,
     /// Seconds the room stays open after the match ends (final screen).
     pub match_end_grace_secs: u64,
+    /// Quick-play BR queue: start with bots after this many seconds (`S-BR4`).
+    pub quick_play_timeout_secs: u64,
     /// Allow opt-in face-share messages in rooms (`docs/26` §8). Default off for
     /// public lobbies; private rooms may enable via admin. When enabling, raise
     /// [`Self::byte_burst`] to ≥ 64 KiB so a FaceShare frame is not dropped.
@@ -176,6 +178,7 @@ impl Default for ServerConfig {
             mods: Arc::default(),
             room_time_limit_mins: 20,
             match_end_grace_secs: 20,
+            quick_play_timeout_secs: 60,
             handshake_timeout_secs: 5,
             idle_timeout_secs: 30,
             face_share_enabled: false,

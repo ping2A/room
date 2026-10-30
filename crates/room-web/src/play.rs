@@ -12,24 +12,26 @@ use room_game::{
     intermission_music_candidates, load_embedded_engine_data, mount_embedded_engine,
     play_first_music_lump, play_map_music, play_music_lump, title_music_candidates,
 };
-use room_input::{InputSample, Key, build_ticcmd};
+use room_input::{InputSample, Key, ModButtonState, build_ticcmd_with_mods};
 use room_map::{MapGeometry, load_map};
 use room_music::{GenMidiBank, MidiDevice};
 use room_nodebuild::ensure_nodes;
 use room_render::{
-    Camera, Canvas, DynLightInstance, GpuContext, MaterialCatalog, OffscreenTarget, SceneLists,
-    MAX_VOXEL_WALL_VERTS_PER_FRAME, SpriteInstance, SpriteOrient, UnlitPass, VoxelActorPose,
-    VoxelCatalog, build_scene, render_offscreen, sprite_lump_candidates_rot,
-    sprite_rotation_digit, voxel_spin_degrees, voxel_view_angles,
+    Camera, Canvas, DynLightInstance, GpuContext, MAX_VOXEL_WALL_VERTS_PER_FRAME, MaterialCatalog,
+    OffscreenTarget, SceneLists, SpriteInstance, SpriteOrient, UnlitPass, VoxelActorPose,
+    VoxelCatalog, build_scene, render_offscreen, sprite_lump_candidates_rot, sprite_rotation_digit,
+    voxel_spin_degrees, voxel_view_angles,
 };
+use room_sim::mod_hud::layer as mod_hud_layer;
 use room_sim::{
     Buttons, FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_DROPPED, FLAG_FLOAT, FLAG_NOGRAVITY,
     FLAG_SPAWNCEILING, TicCmd,
 };
 use room_ui::{
     CanvasSink, DoomStatusBar, DrawCmd, DukeStatusBar, HudState, MenuCommand, MenuStack,
-    PatchCache, Rect, Rgba, StatusBar, UiDrawList, blit_draw_list_full, draw_stcfn_string,
-    draw_title, draw_weapon, measure_stcfn_string, parse_titledef, splash_ms, title_screen_pic,
+    ModHudMapCtx, PatchCache, Rect, Rgba, StatusBar, UiDrawList, blit_draw_list_full,
+    draw_mod_hud_layer, draw_mod_hud_modals, draw_stcfn_string, draw_title, draw_weapon,
+    measure_stcfn_string, parse_titledef, player_map_poses, splash_ms, title_screen_pic,
 };
 use room_vfs::{Namespace, Vfs, VfsBuilder};
 use std::collections::{BTreeMap, BTreeSet};
@@ -198,6 +200,12 @@ pub struct PlayStartOpts {
     pub time_limit_secs: u32,
     /// Stay on the title / MENUDEF until New Game (no `?map=`).
     pub stay_on_title: bool,
+    /// Session display names (seat, UTF-8) applied before tic 0 (BE3).
+    pub session_names: Vec<(u8, String)>,
+    /// Fill empty seats with sim bots (BE8).
+    pub fill_bots: bool,
+    /// First bot seat when [`Self::fill_bots`].
+    pub bot_first_seat: u8,
 }
 
 impl Default for PlayStartOpts {
@@ -212,6 +220,17 @@ impl Default for PlayStartOpts {
             pwads: Vec::new(),
             time_limit_secs: 0,
             stay_on_title: false,
+            session_names: Vec::new(),
+            fill_bots: false,
+            bot_first_seat: 0,
+        }
+    }
+}
+
+fn apply_session_names(game: &mut Headless, names: &[(u8, String)]) {
+    for (seat, name) in names {
+        if !name.is_empty() {
+            game.set_player_display_name(usize::from(*seat), name);
         }
     }
 }
@@ -265,13 +284,15 @@ impl PlaySession {
         data: EngineData,
     ) -> Result<Self, String> {
         let skill = Skill::new(opts.skill);
-        let coop = opts.coop_players.clamp(1, 4);
+        let coop = opts.coop_players.clamp(1, 8);
         let mut game = Headless::new(GameOptions {
             skill,
             rng_seed: opts.rng_seed,
             record_demo: false,
             coop_players: coop,
             time_limit_tics: opts.time_limit_secs.saturating_mul(35),
+            fill_bots: opts.fill_bots,
+            bot_first_seat: opts.bot_first_seat,
             ..GameOptions::default()
         });
 
@@ -350,12 +371,15 @@ impl PlaySession {
             }
         }
 
+        game.options
+            .set_session_player_names(opts.session_names.iter().map(|(s, n)| (*s, n.as_str())));
         if opts.stay_on_title {
             game.set_pending_map(map.clone());
         } else {
             game.start_custom_map(map.clone(), skill)
                 .map_err(|e| e.to_string())?;
         }
+        apply_session_names(&mut game, &opts.session_names);
 
         let patches = PatchCache::from_vfs(&vfs);
         let mut materials = MaterialCatalog::new();
@@ -437,6 +461,12 @@ impl PlaySession {
 
     /// Attach lockstep after a solo map prepare (v2 lobby).
     pub fn attach_net(&mut self, net: NetPlay) {
+        for (seat, name) in net.session_names() {
+            if !name.is_empty() {
+                self.game
+                    .set_player_display_name(usize::from(seat), &name);
+            }
+        }
         self.net = Some(net);
     }
 
@@ -845,7 +875,7 @@ impl PlaySession {
                         cmds
                     } else {
                         let sample = self.sample_input();
-                        let bits = build_ticcmd(&sample);
+                        let bits = build_ticcmd_with_mods(&sample, ModButtonState::default());
                         vec![TicCmd {
                             buttons: Buttons(bits.buttons),
                             pitch: bits.pitch,
@@ -975,16 +1005,31 @@ impl PlaySession {
             return;
         };
         self.match_reported = true;
-        let standings = world
-            .standings()
-            .iter()
-            .map(|s| room_proto::ResultRow {
-                seat: s.slot,
-                place: s.place,
-                frags: s.frags,
-                deaths: s.deaths,
-            })
-            .collect();
+        let standings = if !world.match_standings.is_empty() {
+            world
+                .match_standings
+                .iter()
+                .map(|s| room_proto::ResultRow {
+                    seat: s.seat,
+                    place: s.place,
+                    frags: s.kills,
+                    deaths: 0,
+                    damage: s.damage,
+                })
+                .collect()
+        } else {
+            world
+                .standings()
+                .iter()
+                .map(|s| room_proto::ResultRow {
+                    seat: s.slot,
+                    place: s.place,
+                    frags: s.frags,
+                    deaths: s.deaths,
+                    damage: 0,
+                })
+                .collect()
+        };
         let msg = room_proto::ControlMsg::Result {
             winner: over.winner,
             time_up: over.time_up,
@@ -1182,6 +1227,18 @@ impl PlaySession {
         }
         if self.held.contains("invuse") {
             keys.push(Key::InvUse);
+        }
+        if self.held.contains("mod1") {
+            keys.push(Key::Mod1);
+        }
+        if self.held.contains("mod2") {
+            keys.push(Key::Mod2);
+        }
+        if self.held.contains("mod3") {
+            keys.push(Key::Mod3);
+        }
+        if self.held.contains("mod4") {
+            keys.push(Key::Mod4);
         }
         match self.weapon {
             1 => keys.push(Key::Weapon1),
@@ -1572,6 +1629,17 @@ impl PlaySession {
 
     /// Weapon sprite + classic `STBAR` for `local_seat` into a 320×200 list.
     fn draw_player_hud(&mut self, ui: &mut UiDrawList) {
+        if let Some(w) = self.game.world() {
+            if let Some(p) = w
+                .players
+                .get(usize::from(self.local_seat))
+                .and_then(|p| p.as_ref())
+            {
+                if p.player_state == room_sim::PlayerState::Dead && p.camera.is_some() {
+                    return;
+                }
+            }
+        }
         let mut hud = HudState::doom_default();
         if let Some(h) = self
             .game
@@ -1629,10 +1697,77 @@ impl PlaySession {
         if hud.inverse_colormap() {
             ui.invert_since(weapon_cmds);
         }
+        let maptime = self.game.world().map(|w| w.level.maptime).unwrap_or(0);
+        if let Some(world) = self.game.world() {
+            let poses = player_map_poses(world);
+            let allmap = world
+                .players
+                .get(usize::from(self.local_seat))
+                .and_then(|p| p.as_ref())
+                .is_some_and(|p| p.allmap);
+            let map_hud_ctx = ModHudMapCtx {
+                map: Some(&world.map),
+                zones: &world.mod_zones,
+                player_pose: &poses,
+                hud: &world.mod_hud,
+                allmap,
+                ticfrac_milli: 1000,
+            };
+            if let Some((eye, _)) = self.view_pose() {
+                room_ui::set_marker_cam(room_ui::MarkerCam {
+                    x: f64::from(eye.x),
+                    y: f64::from(eye.y),
+                    yaw_deg: self.yaw.to_degrees(),
+                    scale: 1024.0,
+                });
+            }
+            draw_mod_hud_layer(
+                &world.mod_hud,
+                self.local_seat,
+                maptime,
+                0.0,
+                ui,
+                mod_hud_layer::UNDER_HUD,
+                Some(&map_hud_ctx),
+            );
+        }
         if self.vfs.find_any_ns(DukeStatusBar::MARKER).is_some() {
             DukeStatusBar.draw(&hud, ui);
         } else {
             DoomStatusBar.draw(&hud, ui);
+        }
+        if let Some(world) = self.game.world() {
+            let poses = player_map_poses(world);
+            let allmap = world
+                .players
+                .get(usize::from(self.local_seat))
+                .and_then(|p| p.as_ref())
+                .is_some_and(|p| p.allmap);
+            let map_hud_ctx = ModHudMapCtx {
+                map: Some(&world.map),
+                zones: &world.mod_zones,
+                player_pose: &poses,
+                hud: &world.mod_hud,
+                allmap,
+                ticfrac_milli: 1000,
+            };
+            draw_mod_hud_layer(
+                &world.mod_hud,
+                self.local_seat,
+                maptime,
+                0.0,
+                ui,
+                mod_hud_layer::OVER_HUD,
+                Some(&map_hud_ctx),
+            );
+            let _ = draw_mod_hud_modals(
+                &world.mod_hud,
+                self.local_seat,
+                maptime,
+                0.0,
+                ui,
+                Some(&map_hud_ctx),
+            );
         }
     }
 
@@ -1833,7 +1968,10 @@ impl PlaySession {
             };
             let file = def.file.clone();
             let override_palette = def.override_palette;
-            let Some(cost) = self.voxels.wall_vert_cost(&self.vfs, &file, override_palette) else {
+            let Some(cost) = self
+                .voxels
+                .wall_vert_cost(&self.vfs, &file, override_palette)
+            else {
                 continue;
             };
             let dropped = (flags & FLAG_DROPPED) != 0;
@@ -1880,8 +2018,7 @@ impl PlaySession {
                 continue;
             }
             used += cost;
-            self.voxel_pose_actors
-                .insert((id.index(), id.generation()));
+            self.voxel_pose_actors.insert((id.index(), id.generation()));
             self.voxel_poses.push(pose);
         }
     }

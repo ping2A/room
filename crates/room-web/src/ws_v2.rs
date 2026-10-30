@@ -30,7 +30,7 @@ struct Shared {
     inbox: VecDeque<(PeerId, Vec<u8>)>,
     presence: VecDeque<PresenceEvent>,
     welcome: Option<WelcomeMsg>,
-    started: Option<(u32, u32)>,
+    started: Option<(u32, u32, bool, u8)>,
     resume_token: Option<String>,
     opened: bool,
     closed: bool,
@@ -278,8 +278,8 @@ impl WsV2Transport {
         self.shared.borrow_mut().watching.take()
     }
 
-    /// `(tic0, rng_seed)` when server Start arrives.
-    pub fn take_start(&mut self) -> Option<(u32, u32)> {
+    /// `(tic0, rng_seed, fill_bots, bot_first_seat)` when server Start arrives.
+    pub fn take_start(&mut self) -> Option<(u32, u32, bool, u8)> {
         self.shared.borrow_mut().started.take()
     }
 
@@ -449,8 +449,13 @@ fn on_text(shared: &Rc<RefCell<Shared>>, text: &str) {
             }
             s.watching = Some((room, roster));
         }
-        ControlMsg::Start { tic0, rng_seed } => {
-            shared.borrow_mut().started = Some((tic0, rng_seed));
+        ControlMsg::Start {
+            tic0,
+            rng_seed,
+            fill_bots,
+            bot_first_seat,
+        } => {
+            shared.borrow_mut().started = Some((tic0, rng_seed, fill_bots, bot_first_seat));
         }
         ControlMsg::Reject(r) => {
             shared.borrow_mut().reject = Some(format!("{}: {}", r.code, r.reason));

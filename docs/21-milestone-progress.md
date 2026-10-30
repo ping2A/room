@@ -61,15 +61,92 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 | **F5** | Multi-angle + webcam live | `done` | 100% | guided yaw steps + `revise_live_lumps` budget |
 | **F6** | Multiplayer sharing | `done` | 100% | FaceShare relay + prompt UI + two-peer test |
 | **F7** | Duke + polish | `done` | 100% | goldens + import; GPU composite intentional deferral |
+| **SV0** | Survival Director refactor + Host | `done` | 100% | modules + FakeHost; wasm_mod_survival green |
+| **SV1** | Coop + spot graph + stuck recycle | `done` | 100% | coop + stuck e2e green |
+| **SV2** | Director phases / threat / archetypes | `done` | 100% | threat cap soak + phase e2e |
+| **SV3** | Elites + announcer | `done` | 100% | affix FakeHost + elite e2e + rate limit |
+| **SV4** | Marks / draft / perks (needs MH0–MH3) | `done` | 100% | MODAL draft + weapon_select pick e2e |
+| **SV5** | Objectives + extraction (needs MH4) | `done` | 100% | extraction e2e + hold markers |
+| **SV6** | Phased bosses + boss bar | `done` | 100% | Warden 66/33% + boss bar e2e |
+| **SV7** | Track B content lumps | `done` | 100% | DECORATE/GLDEFS/SNDINFO packed |
+| **SV8** | Track C C2–C5 (+C8) | `done` | 100% | flags/flash/quake/radius + events |
+| **SV9** | C6/C7/C10 + polish | `done` | 95% | C7 scripts.bin; C6/C10 render deferred |
+| **MH0** | ModHud store + save/hot-swap | `done` | 100% | — |
+| **MH1** | ModHud draw desktop + web | `done` | 100% | room-ui draw + app/web wire |
+| **MH2** | ModHud imports + SDK + AS | `done` | 100% | hud_widget_* + wasm_mod_hud |
+| **MH3** | Input capture + player_cmd | `done` | 100% | capture e2e + death release + checksum |
+| **MH4** | World markers + tweens | `done` | 100% | clamp + tween + animate import |
+| **MH5** | UI-scope modules (optional) | `not_started` | 0% | — |
+| **BR0** | Battle Royale refactor + Host | `done` | 100% | — |
+| **BR1** | Match flow phases + moving zone | `done` | 100% | — |
+| **BR2** | HUD: timer, feed, hit markers | `done` | 100% | — |
+| **BR3** | Zone render + map + drop select | `done` | 100% | — |
+| **BR4** | Loot 2.0 (rarity, supply, vault) | `done` | 100% | — |
+| **BR5** | Death: recap + spectate killer | `done` | 100% | — |
+| **BR6** | Squads + downed/revive + pings | `done` | 100% | — |
+| **BR7** | Moments + announcer + music | `done` | 100% | — |
+| **BR8** | Bots fill empty seats | `done` | 100% | — |
+| **BR9** | Track B content + polish | `done` | 100% | **S-BR2** OpenSkill / weekly reset deferred |
+| **S-BR1** | Match history & stats | `done` | 100% | `br_stats.json` + BE11 `damage` |
+| **S-BR2** | Rating & leaderboards (MVP) | `done` | 85% | placement rating; OpenSkill deferred |
+| **S-BR4** | Quick play BR queue | `done` | 100% | 60 s + bots |
+| **BE1** | Zone rendering (wall + ring) | `done` | 100% | — |
+| **BE2** | Map widget (minimap / full) | `done` | 100% | kind MAP=7; royale minimap |
+| **BE3** | Player names in sim | `done` | 100% | — |
+| **BE4** | Bindable mod buttons | `done` | 100% | bits 16–19; +mod1..4 |
+| **BE5** | Teams + damage rules | `done` | 100% | — |
+| **BE6** | Per-actor flags (BUDDHA, …) | `done` | 100% | — |
+| **BE7** | View trace (pings, USE) | `done` | 100% | — |
+| **BE8** | Deterministic bots (sim) | `done` | 85% | MVP brain; ≤0.2 ms/tic not measured |
+| **BE9** | Per-seat camera / spectate | `done` | 100% | — |
+| **BE10** | Weapon / stats queries | `done` | 100% | — |
+| **BE11** | Rich match result standings | `done` | 100% | — |
+| **BE12** | 8 seats on any map | `done` | 100% | — |
 
 **Priority override (2026-10-12):** M7 + M10–M13 done. Active **M14** (1.0 hardening).
 **M8** when Heretic/Hexen IWADs available; M9 remains deferred.
 **Server track:** `docs/22-room-server.md` S1–S5 (parallel to M14).
 **Duke track:** **D1–D4** done. **D5** movement ceiling 0–134. **D6** DEMO1 through **1050** (frontier **tic1051**). Spec: `docs/25`. 5m Duke loop armed.
 **Face-swap track:** **F0–F7** done (`docs/26`).
+**Survival Director track:** **SV0**–**SV9** + **MH0**–**MH4** done (`docs/27`). **MH5** optional / deferred.
+**Battle Royale track:** **BR0**–**BR9** + **BE1**–**BE12** + **S-BR1** / **S-BR2** (MVP) / **S-BR4** done (`docs/28` §8–§10). Deferrals: **S-BR2** OpenSkill + weekly reset.
 
 ### Log
 
+- `2026-10-30` — Survival draft **pause**: `rule::PAUSED` freezes thinkers/`maptime` while `WorldTick` still runs; draft timeout uses open-menu tics; `wasm_mod_survival` asserts pause/unpause.
+- `2026-10-30` — **S-BR1** / **S-BR2** (MVP) / **S-BR4**: `room-server` `br_stats.json`, `GET /api/br/leaderboard`, lobby BR tab; `POST /api/quick-play/br`; `fill_bots` on `welcome`/`start`; royale results ingest test.
+- `2026-10-30` — **BE3** `player_name`; session names on `World` (checksum); web roster / `room-app` cvar + lobby `Start.names`; royale HUD wired; `wasm_mod_player_name`; `royale.wasm`/`royale.wad` rebuilt.
+- `2026-10-30` — **BR9** **ROYALE01** + balance: `room_testkit::royale01()` → `mods/doom1-royale/maps/ROYALE01.wad` (18 DM starts); packer merges `maps/*.wad` into `royale.wad`; loot/supply tuning; `wasm_mod_royale` ROYALE01 e2e; **S-BR2** deferred.
+- `2026-10-30` — **BE1** wgpu wall: `room-render` `ModZonePass` (translucent animated cylinder + ground ring, depth clip, `THROUGH_WALLS`); desktop + web after world pass; `zone_wall_smoke` offscreen test; soft/automap unchanged.
+- `2026-10-29` — **BR9** Track B: `mods/doom1-royale/lumps/` DECORATE (`RoyaleSupplyBeacon`, rarity glow stubs) + GLDEFS + SNDINFO; `royale.wad` repacked; README rewrite; `wasm_mod_royale` lump e2e; **ROYALE01** / **S-BR2** / balance pass deferred.
+- `2026-10-29` — **BE8** / **BE12** / **BR8**: `room-sim` `bot.rs` (deterministic `TicCmd` per tic); `Player.is_bot`, `World::fill_bot_seats`; `spawn_coop_players` 1..=8 (DM starts + P1 offset + telefog); `GameOptions.fill_bots` / `bot_first_seat`; royale `room.toml` `max_players = 8`; `wasm_mod_royale` 8-bot dual-run e2e; **S-BR4** matchmaking deferred.
+- `2026-10-29` — **BE10**–**BE11** + **BR7**: `player_get_i32` `READY_WEAPON` / `DAMAGE_DEALT` / `ARMOR_TYPE`, `actor_get_i32` `LAST_DAMAGE_TYPE`, sim `Player.damage_dealt`; `game_end_match_ex` + `MatchStandingV1` / `World.match_standings`; royale `moments.rs` / `announcer.rs` (banners, music, victory MODAL, rich standings); `wasm_mod_royale` + `room-sim` tests; `royale.wasm`/`royale.wad` rebuilt.
+- `2026-10-29` — **BE5**–**BE7** + **BR6**: `player_set_team` / `player_team`, rules `TEAM_DAMAGE` / `SELF_DAMAGE` / `SQUAD_DBNO`, `FLAG_BUDDHA` + `class_flag::BUDDHA`, `player_trace` + `PlayerTraceV1`; royale `teams.rs` (duos ≥4 seats, downed/revive, squad HUD, pings); `wasm_mod_royale` squads e2e; `royale.wasm`/`royale.wad` rebuilt.
+- `2026-10-29` — **BE9** `player_set_camera` (sim + checksum); **BR5** elimination MODAL, 15 s damage recap, spectate killer + ATTACK/MOD1 cycle; `wasm_mod_camera` + `wasm_mod_royale` death e2e; desktop/web hide STBAR when dead+spectating; `royale.wasm`/`royale.wad` rebuilt.
+- `2026-10-29` — **BR4** Loot 2.0: rarity subclasses + pickup labels; supply drop (25 s warn / 40 s land, USE 2 s + bar, legendary loot); vault unlock phase 3; death weapon drops + killer LOOT marker; `wasm_mod_royale` supply + death e2e; `royale.wasm`/`royale.wad` rebuilt.
+- `2026-10-29` — **BR3** Modal drop select (15 s): MAP + zone ring, cursor via `player_cmd`, USE/ATTACK confirm, `resolve_drop` / outer-half timeout; `wasm_mod_royale` e2e; full 4:3/16:9 image goldens deferred (`room-ui` `map_widget_emits_lines_and_zone_cmds` smoke).
+- `2026-10-29` — **BE4** `Buttons::MOD1..MOD4` (bits 16–19); `room-input` `+mod1..+mod4` / defaults `bind g +mod1`, `bind m +mod2` (desktop); web `B`/`M`; raw `player_cmd`; playsim ignores; `wasm_mod_buttons`.
+- `2026-10-29` — **BE2** Mod HUD kind **MAP** (7): layers mask, scale/follow in `HudWidgetV1`; `ModHudMapCtx` + automap/zone draw; royale minimap during zone; `wasm_mod_hud` / unit test.
+- `2026-10-29` — **BE1** `zone_set` / `zone_clear`; `World.mod_zones` (≤4); `SimView`; automap rings + outside tint; excluded from checksum; `wasm_mod_zones`; royale publishes ring each second; wgpu wall deferred.
+- `2026-10-29` — **BR2** Mod HUD: alive/kills, zone timer + bar, kill feed, elimination toast, hit marker, damage-direction marker; `WORLD_THING_DAMAGED`; `wasm_mod_royale` widget + lockstep checksum e2e; `royale.wasm` rebuilt.
+- `2026-10-29` — **BR1** Match flow (pregame/deploy/loot/zone), moving circles + §6.3 schedule, landing shield, `pregame_ignores_damage` e2e; containment test 1000 seeds.
+- `2026-10-29` — **BR0** Battle Royale modular refactor: `Host`/`FakeHost`, §7 layout; `wasm_mod_royale` green; native zone/loot tests.
+- `2026-10-29` — **Mod HUD text** SoftFont → STCFN patches (menus/status-bar look); survival draft perk labels uppercase ASCII.
+- `2026-10-29` — **SV9** Polish: Warden uses C2 INVULNERABLE + C3 damage flash; C7 via existing `scripts.bin`; README; C6/C10 render deferred.
+- `2026-10-29` — **SV8** Track C C2–C5 (`actor_flag`/`player_set_i32`/`actor_quake`/`radius_attack`/`spawn_missile`) + C8 event bits; `wasm_mod_track_c`.
+- `2026-10-29` — **SV7** Track B packer (`lumps/` + `sprites/`); SurvivalBeacon DECORATE/GLDEFS/SNDINFO; lump e2e.
+- `2026-10-29` — **SV6** Warden phased boss (66/33%) + boss bar; skip stuck-recycle on boss; sealed-closet e2e.
+- `2026-10-29` — **MH4** MARKER project/clamp + actor follow sync; `hud_widget_animate` + tweens; shell `MarkerCam`.
+- `2026-10-29` — **SV5** Objectives (Hold/Flawless) + extraction finale (`final_round`); ITYTD e2e `exit_level`; run summary MODAL.
+- `2026-10-29` — **SV4** Marks/combos, perk draft MODAL (capture + weapon_select), early-ready intermission; draft e2e green.
+- `2026-10-29` — **MH3** `player_capture_input` / `player_cmd` / `player_sound`; key tokens; capture blocks weapon_select; death releases; lockstep checksum e2e.
+- `2026-10-29` — **SV3** Elite affixes + subclasses; announcer queue (1 team msg / 1.5 s); UV elite e2e; native affix tests.
+- `2026-10-29` — **MH2** ModHud imports `hud_widget_set/patch/remove` + `hud_clear`; packed `HudWidgetV1`; SDK builder + AS mirror; `wasm_mod_hud` create/patch/remove/clear.
+- `2026-10-29` — **SV2** Director phases + threat budget/cap + archetypes; native soak (20×5×{1,2,4}); phase banner e2e.
+- `2026-10-29` — **MH1** ModHud draw in `room-ui` (layers/anchors/fades); wired desktop + web; draw-list tests.
+- `2026-10-29` — **SV1** Coop team targeting, spot graph/learning, stuck + straggler recycle, `MAPxx` music restore; `wasm_mod_survival` coop + sealed-closet e2e.
+- `2026-10-29` — **MH0** ModHud store on `World` (BTreeMap, caps); `modhud.bin` save/load; trap/hot-swap/map clear; excluded from checksum (`mod_hud_hash`).
+- `2026-10-29` — **SV0** Survival Director refactor: `Host`/`FakeHost`, §7 module layout, native unit tests; `wasm_mod_survival` unchanged; wasm ≈14 KiB.
 - `2026-10-27` — **D6** DEMO1 **0–1050 bitexact**: TEMP snaps/pads 951–1050 (batch; dumps through 1050). Frontier **tic1051**.
 - `2026-10-26` — **Duke 1m loop rearmed**. Continue D6 DEMO1 bitexact past frontier **tic822** (`DEMO1_PAD_PRE` len 822 / tests through tic821). Blocked until `testdata/duke/traces/DEMO1.trace` is restored (manifest sha256 set; demos extracted).
 - `2026-10-26` — **Voxel pack map-switch panic**. Cheello KVX expanded into the unlit `walls` VB past WebGPU’s 256 MiB limit → panic → map load `RuntimeError: unreachable`. Cap mesh size + per-frame vert budget (sprite fallback); clamp `ensure_vb`.
@@ -2452,6 +2529,432 @@ keep file case (`strcmp`), matching Chocolate — do not fold to lowercase.
 - [x] Shipped Duke tile anchors (`HEADANCHORS.duke.txt`) + synthetic `LIZTROOP`/`PIGCOP` goldens
 - [x] Desktop file import in `room-app` (`face_import`; camera deferred per §12)
 - [x] Optional GPU composite shader — **intentional deferral** (CPU golden path ships; GPU ≈ CPU later)
+
+## BR2 — Mod HUD (information)
+
+**Status:** `done` · Spec: `28` §6.5 / §11 BR2
+
+### Acceptance
+
+- [x] Widgets per §6.5: alive/kills (top-right), zone timer + optional bar (top-centre), kill feed (right OVER_HUD), elimination toast, hit marker, damage-direction MARKER, interaction stub hidden
+- [x] Kill feed / HUD use **BE3** `player_name` (fallback `Player N`)
+- [x] `WORLD_THING_DAMAGED` for hit marker / damage direction; kill feed from frags
+- [x] HUD patch every 5 tics; `hud_clear` on match over
+- [x] E2E `wasm_mod_royale`: widgets contain `ALIVE` / `ZONE IN`; two-run lockstep equal `World::checksum()`
+- [x] `royale.wasm` + `royale.wad` rebuilt
+
+## BR1 — Match flow + moving zone
+
+**Status:** `done` · Spec: `28` §5 / §6.3 / §11 BR1
+
+### Acceptance
+
+- [x] Phases: Pregame → DropSelect (text fallback) → Deploy → Loot → zone schedule → resolution
+- [x] Pregame: `DEATHMATCH = 0`, fists only; 10 s countdown after auto-ready
+- [x] Deploy: landing shield (`DAMAGE_FACTOR` 0) for 3 s
+- [x] Moving circles + §6.3 schedule; next circle contained (1000-seed property test)
+- [x] E2E `pregame_ignores_damage`; `wasm_mod_royale` timings/messages updated; determinism
+- [x] Drop select was instant farthest-spawn fallback pre-BR3 (superseded by BR3 modal map)
+
+## BR0 — Battle Royale refactor + Host
+
+**Status:** `done` · Spec: `28` §7 / §11 BR0
+
+### Acceptance
+
+- [x] §7 module layout (`host`, `spots`, `tables`, `zone`, `loot`, `match_flow`, stubs for BR1+)
+- [x] `Host` trait + `SdkHost` + native `FakeHost` (print capture smoke test)
+- [x] Behaviour parity: `cargo test -p room-game --test wasm_mod_royale`
+- [x] Native unit tests: `cargo test --manifest-path mods/doom1-royale/Cargo.toml`
+- [x] README notes BR0 modular Host refactor
+
+## SV0 — Survival Director refactor + Host
+
+**Status:** `done` · Spec: `27` §7 / §11 SV0
+
+### Acceptance
+
+- [x] §7 module layout (`host`, `spots`, `tables`, `director`, stubs for SV1+)
+- [x] `Host` trait + `SdkHost` + native `FakeHost`
+- [x] Behaviour parity: `cargo test -p room-game --test wasm_mod_survival`
+- [x] Native unit tests: `cargo test --manifest-path mods/doom1-survival/Cargo.toml`
+- [x] README notes release wasm size (~14 KiB)
+
+## SV1 — Coop + spot graph + stuck recycle
+
+**Status:** `done` · Spec: `27` §6.1 / §6.9 / §11 SV1
+
+### Acceptance
+
+- [x] 2-player headless: player 0 dead → waves continue
+- [x] Sealed-closet fixture → stuck monster recycled ≤ 15 s; round ends
+- [x] Music restore for `MAPxx` maps
+- [x] Determinism checksum still equal
+
+## SV2 — Director phases / threat / archetypes
+
+**Status:** `done` · Spec: `27` §5 / §6.2 / §6.3 / §11 SV2
+
+### Acceptance
+
+- [x] Native soak: 20 rounds × 5 skills × {1,2,4} players — alive threat ≤ cap
+- [x] Phase / archetype banners on arena e2e
+- [x] Peak-fade path present (`Phase::Peak` / `saw_peak_fade`)
+
+## SV3 — Elites + announcer
+
+**Status:** `done` · Spec: `27` §6.4 / §6.8 / §11 SV3
+
+### Acceptance
+
+- [x] Elite subclasses + each affix FakeHost-tested
+- [x] UV e2e: elite class / announce by round 3
+- [x] Announcer: ≤ one team message per 1.5 s
+
+## SV4 — Marks / draft / perks
+
+**Status:** `done` · Spec: `27` §6.5 / §11 SV4
+
+### Acceptance
+
+- [x] Marks + combo payouts; perk apply (Vitality…Backpack)
+- [x] Intermission MODAL draft (3 cards) + input capture
+- [x] `weapon_select` picks perk, closes panel, releases capture (e2e)
+- [x] Weapon does not switch while captured
+
+## SV5 — Objectives + extraction
+
+**Status:** `done` · Spec: `27` §6.6 / §6.10 / §11 SV5
+
+### Acceptance
+
+- [x] Hold Point / Flawless objectives + HUD tracker
+- [x] Extraction after `final_round`; `exit_level` e2e (ITYTD)
+- [x] Run summary MODAL on extract / wipe
+- [x] World markers (Hold beacon; MH4)
+
+## SV6 — Phased bosses + boss bar
+
+**Status:** `done` · Spec: `27` §6.7 / §11 SV6
+
+### Acceptance
+
+- [x] Warden class + phased behaviour (66% summons / 33% enrage)
+- [x] Boss bar Mod HUD tracks health
+- [x] e2e phase transitions + native FakeHost test
+
+## MH4 — World markers + tweens
+
+**Status:** `done` · Spec: `27` §9.1 E8 / E12 / §9.5 MH4
+
+### Acceptance
+
+- [x] MARKER draw + off-screen clamp; actor → `world_xyz` sync
+- [x] `hud_widget_animate` + exact end state after N tics
+- [x] Desktop + web `MarkerCam`; SDK `world_at` / `follow` / `animate`
+
+## SV7 — Track B content lumps
+
+**Status:** `done` · Spec: `27` §8 / §11 SV7
+
+### Acceptance
+
+- [x] Packer appends `mods/*/lumps/` + `sprites/` (`SS_START`…`SS_END`)
+- [x] Survival DECORATE (`SurvivalBeacon`) + GLDEFS + SNDINFO
+- [x] e2e: WAD lumps present; DECORATE class resolves; wasm mod still loads
+
+## SV8 — Track C C2–C5 (+C8)
+
+**Status:** `done` · Spec: `27` §10 / §11 SV8
+
+### Acceptance
+
+- [x] `actor_flag` / `actor_set_flag` (class_flag ids incl. INVULNERABLE)
+- [x] `player_set_i32` DAMAGECOUNT / BONUSCOUNT / EXTRALIGHT
+- [x] `actor_quake` + `actor_radius_attack` + `actor_spawn_missile`
+- [x] C8 event_mask bits `PLAYER_RESPAWNED` / `WORLD_THING_DESTROYED`
+- [x] SDK + AS mirrors; `wasm_mod_track_c` e2e
+
+## SV9 — C6/C7/C10 + polish
+
+**Status:** `done` · Spec: `27` §11 SV9
+
+### Acceptance
+
+- [x] C7: module memory in saves (`scripts.bin` / `restore_play_modules`)
+- [x] Survival uses C2/C3 on Warden enrage; README rewritten
+- [x] `docs/21` log + dashboard
+- [ ] C6 translation GPU path (stored on actor; render deferred)
+- [ ] C10 `point_in_sector` / sector light mood (deferred)
+
+## MH0 — ModHud store + save/hot-swap
+
+**Status:** `done` · Spec: `27` §9.1 E1–E3 / §9.5 MH0
+
+### Acceptance
+
+- [x] `ModHud` on `World` (caps, ordered keys, no HashMap iter)
+- [x] Save/load round trip keeps widgets
+- [x] Hot-swap / trap removes that module’s widgets
+- [x] Widgets excluded from desync checksum; `mod_hud_hash()` for tests
+
+## MH1 — ModHud draw desktop + web
+
+**Status:** `done` · Spec: `27` §9.1 E6–E7 / §9.5 MH1
+
+### Acceptance
+
+- [x] `room-ui` `draw_mod_hud` / layer helpers (anchors, fades, kinds)
+- [x] Desktop + web shells draw UNDER → status/messages → OVER → MODAL
+- [x] Draw-list unit tests (text/panel/bar + modal dim)
+
+## MH2 — ModHud imports + SDK
+
+**Status:** `done` · Spec: `27` §9.1 E4–E5 / §9.5 MH2
+
+### Acceptance
+
+- [x] Append-only `hud_widget_set/patch/remove` + `hud_clear` in `game_fns!`
+- [x] Packed `HudWidgetV1` (older prefix / newer tail) + SDK builder + `room.ts`
+- [x] `room-game/tests/wasm_mod_hud.rs` create/patch/remove/clear; module owns its widgets
+
+## BE1 — Zone rendering (wall + ring)
+
+**Status:** `done` · Spec: `28` §9 BE1
+
+### Acceptance
+
+- [x] `ModZones` on `World` (≤4 ids, tic interpolation fields)
+- [x] Append-only `zone_set` / `zone_clear`; SDK + `room.ts`
+- [x] Excluded from desync checksum; `mod_zones_hash()` for tests
+- [x] Cleared on map unload / module hot-swap (not in save blob)
+- [x] `SimView.mod_zones`; automap rings + soft outside tint
+- [x] wgpu translucent animated cylinder wall + ground ring (`ModZonePass`); `interp_current` + ticfrac; `THROUGH_WALLS`; `zone_wall_smoke`
+- [x] `wasm_mod_zones` + unit caps; royale publishes `zone_set(0, …)`
+
+## BE2 — Map widget (minimap / full)
+
+**Status:** `done` · Spec: `28` §9 BE2
+
+### Acceptance
+
+- [x] Mod HUD kind `MAP` (`7`) in ABI + `room-sim` / SDK `Hud::map`
+- [x] Fields via packed widget: rect, `value`=scale×10⁴, `max`=layers, `font`=follow seat, `MAP_ROTATE` flag
+- [x] `room-ui` draws geometry (automap), BE1 zones, seat MARKERs; follow arrow; no enemy blips
+- [x] Shell passes `ModHudMapCtx` (desktop + web)
+- [x] Royale minimap under alive counter when zone visible
+- [x] MODAL full-map drop select (BR3): 15 s, cursor + confirm, zone ring on map
+
+## BR3 — Zone render + map + drop select
+
+**Status:** `done` · Spec: `28` §5 / §6.1 / §11 BR3
+
+### Acceptance
+
+- [x] BE1 zone ring on automap / soft tint during drop select (`zone_set` at phase start)
+- [x] MODAL full-screen MAP widget (kind 7) with geometry + zones + cursor MARKER
+- [x] Input capture (MOVE/TURN/USE/ATTACK/weapon); local button edges (WorldTick after `player_think`)
+- [x] Cursor from `forward`/`side`/`yaw`; confirm USE or ATTACK; timeout → random outer half of first circle
+- [x] Deploy teleports to nearest spot within 512 (`resolve_drop`, 256 pick separation)
+- [x] E2E `drop_select_modal_map_and_confirm_lands_near_pick`; `past_pregame_tics` = 10+15+3 s
+- [x] `royale.wasm` + `royale.wad` rebuilt
+- [ ] Offscreen 4:3 / 16:9 image goldens for map + zone wall — deferred; draw-list smoke in `room-ui` `map_widget_emits_lines_and_zone_cmds`
+
+## BR4 — Loot 2.0 (rarity, supply, vault, death loot)
+
+**Status:** `done` · Spec: `28` §6.2 / §11 BR4
+
+### Acceptance
+
+- [x] Tiered INNER/MIDDLE/OUTER loot still keyed to **first** circle centre
+- [x] Rarity tiers (common/rare/epic/legendary) via registered subclasses + pickup HUD print
+- [x] Supply drop: MARKER 15 s before land (25 s loot), crate in **next** circle; USE within 64 for 2 s + progress bar → legendary weapon + armor
+- [x] Vault: one hot-zone spot per match; unlocks after phase 2 (simplified timed spawn at phase 3)
+- [x] Death loot: victim weapons (+ ammo via `spawn_gun`) at death site; killer LOOT marker 10 s
+- [x] Host: `actor_count_inv`; `wasm_mod_royale` supply open + death drop e2e; `royale.wasm` + `royale.wad` rebuilt
+- [x] Track B DECORATE/GLDEFS/SNDINFO packed (**BR9**); item-following glow spawn deferred (stub actors only)
+
+## BR6 — Squads (duos, downed, pings)
+
+**Status:** `done` · Spec: `28` §6.4 / §11 BR6 · Needs **BE4**–**BE7**
+
+### Acceptance
+
+- [x] Duos when ≥4 contenders: `TEAM_DAMAGE=0`, `SQUAD_DBNO=1`, teams `seat/2`
+- [x] PvP lethal → 1 HP + downed (capture attack/weapons, speed ×0.3, BUDDHA while downed); 4 s USE revive → 30 HP; 30 s bleed-out
+- [x] `+mod1` ping via `player_trace`; team-only MARKER widgets; squad HUD bottom-left
+- [x] E2E `wasm_mod_royale` `squads_duos_teammate_no_damage_downed_revive_and_ping`
+- [x] `royale.wasm` + `royale.wad` rebuilt
+
+## BE5 — Teams + damage rules
+
+**Status:** `done` · Spec: `28` §9 BE5
+
+### Acceptance
+
+- [x] `player_set_team` / `player_team`; `Player.team` + pawn `designated_team`
+- [x] Rules `TEAM_DAMAGE`, `SELF_DAMAGE`; damage path blocks same-team PvP when off
+- [x] `room-sim` unit test `player_team_damage_rule_blocks_teammates_in_dm`
+
+## BE6 — BUDDHA + actor flags
+
+**Status:** `done` · Spec: `28` §9 BE6 / doc 27 C2
+
+### Acceptance
+
+- [x] `class_flag::BUDDHA` (13) / `FLAG_BUDDHA`; lethal damage floors at 1
+- [x] Rule `SQUAD_DBNO`: player-vs-player lethal floors at 1 (zone kills unchanged)
+- [x] Unit test `buddha_floors_health_at_one`
+
+## BE7 — View trace
+
+**Status:** `done` · Spec: `28` §9 BE7
+
+### Acceptance
+
+- [x] `player_trace(slot, max_dist, out)` → kind + `PlayerTraceV1` (actor / line / sector / miss)
+- [x] `hitscan::view_trace` (no damage); SDK + host wiring
+
+## BR5 — Death experience (recap + spectate)
+
+**Status:** `done` · Spec: `28` §6.6 / §11 BR5 · Needs **BE9**
+
+### Acceptance
+
+- [x] 4 s MODAL per eliminated seat: place, killer, distance, killer HP, top-3 recap (15 s `ThingDamaged` ring)
+- [x] Then `player_set_camera` on killer (or first alive); ATTACK/MOD1 cycles alive targets (input capture)
+- [x] Dead seat keeps zone HUD / kill feed; `wasm_mod_royale` spectate + recap + cycle e2e
+- [x] `royale.wasm` + `royale.wad` rebuilt
+
+## BR7 — Moments, music, rich standings
+
+**Status:** `done` · Spec: `28` §6.7–6.8 / §11 BR7 · Needs **BE10**, **BE11**
+
+### Acceptance
+
+- [x] Phase / alive banners (`TOP 5`, `3 LEFT`, `FINAL CIRCLE`, `LAST DUEL`, `LAST ONE STANDING`) via announcer + Mod HUD victory MODAL (~6 s)
+- [x] Music intensity via `set_music` (shareware `D_E1M1` / `D_E1M7` / `D_E1M8`)
+- [x] `game_end_match_ex` standings (kills, damage, assists, revives, survival) on `World.match_standings`
+- [x] `wasm_mod_royale` + native `moments` tests; practice mode unchanged (1 human)
+- [ ] E2E **3 LEFT** with 4+ scripted seats (covered by native announcer + 2-seat PvP standings e2e)
+- [x] **S-BR1** royale `result` → `br_stats.json` (`br_stats_ingest` test)
+
+## BE10 — Weapon / stats queries
+
+**Status:** `done` · Spec: `28` §9 BE10
+
+### Acceptance
+
+- [x] `player_prop::READY_WEAPON`, `DAMAGE_DEALT`, `ARMOR_TYPE`; `actor_i32::LAST_DAMAGE_TYPE`
+- [x] Sim tracks `Player.damage_dealt` on PvP hits; `room-sim` unit test
+
+## BE11 — Rich match result
+
+**Status:** `done` · Spec: `28` §9 BE11
+
+### Acceptance
+
+- [x] `game_end_match_ex(winner, standings_ptr, n)` + `MatchStandingV1` (24-byte LE rows)
+- [x] `World.match_standings`; `game_end_match` unchanged
+- [x] `room-sim` import test + royale e2e standings vs kills/damage
+
+## BE3 — Player names in sim
+
+**Status:** `done` · Spec: `28` §9 BE3
+
+### Acceptance
+
+- [x] Append-only `player_name(slot, buf, cap) -> len` in `GameFn` / `script_mods` / SDK / `room.ts`
+- [x] `World.player_names` set before tic 0; fallback `Player N`; included in `World::checksum`
+- [x] `Headless::set_player_display_name` + `GameOptions` session names; web roster + `room-app` `--name` / `name` cvar; legacy lobby `Start.names`
+- [x] Royale mod kill feed / HUD / death panel use `player_name`
+- [x] `room-game/tests/wasm_mod_player_name.rs`
+
+## BE9 — Per-seat camera
+
+**Status:** `done` · Spec: `28` §9 BE9
+
+### Acceptance
+
+- [x] Append-only `player_set_camera(slot, ActorRef|0)` in `GameFn` / `script_mods` / SDK / `room.ts`
+- [x] Sets `Player.camera` (`camera_revert = false` for mod spectate); included in `World::checksum`
+- [x] Desktop + web already render `p.camera.or(p.mo)`; STBAR hidden when dead + camera set
+- [x] `room-sim` checksum test + `room-game/tests/wasm_mod_camera.rs`
+- [ ] Save-game persistence — cleared on load (same as ACS `ChangeCamera` today); document only
+
+## BR8 — Bots fill empty seats
+
+**Status:** `done` · Spec: `28` §11 BR8 · Needs **BE8**, **BE12**
+
+### Acceptance
+
+- [x] 8-seat headless with all bots finishes (elimination or time limit)
+- [x] Dual-run world checksum identical (`wasm_mod_royale` `eight_seat_all_bots_*`)
+- [x] `GameOptions.fill_bots` + `bot_first_seat` on `Headless`
+- [x] **S-BR4** `POST /api/quick-play/br` + lobby **Quick play BR** (60 s, 8 seats, bots)
+
+## BR9 — Track B content + polish
+
+**Status:** `done` (pragmatic) · Spec: `28` §8 / §11 BR9 / §13
+
+### Acceptance
+
+- [x] Packer appends `mods/doom1-royale/lumps/` (`DECORATE`, `GLDEFS`, `SNDINFO`)
+- [x] DECORATE: `RoyaleSupplyBeacon` + `RarityGlow*` stubs (runtime `SupplyCrate`/rarity stay in WASM `register.rs`)
+- [x] GLDEFS point lights for beacon + rarity colours; SNDINFO `royale/*` → shareware Doom SFX
+- [x] `royale.wad` repacked (`room.toml` 0.2.0, `max_players = 8`); README rewritten (modes, controls, HUD, bots)
+- [x] `wasm_mod_royale` `royale_wad_packs_track_b_lumps_and_decorate_class`; all prior E2E still green
+- [x] Dedicated map **ROYALE01** — `maps/ROYALE01.wad` (18 DM starts, nodes build); embedded in `royale.wad`; `?map=ROYALE01` / room `map` field
+- [x] **S-BR2** MVP: placement rating + `GET /api/br/leaderboard` + lobby tab
+- [ ] **S-BR2** OpenSkill / weekly reset — deferred
+- [x] Loot/zone balance pass — `GUN_SPACING` 448, rocket/chaingun caps, tier weights, supply 30 s / 45 s land (`extras.rs`)
+
+## BE8 — Deterministic bots (sim MVP)
+
+**Status:** `done` (MVP) · Spec: `28` §9 BE8
+
+### Acceptance
+
+- [x] `Player.is_bot`; `World::fill_bot_seats` / `set_seat_bot`
+- [x] `bot::run_bot_brains` before `player_think` (zone centre, nearest foe, LOS attack)
+- [x] `room_core::dmath` + playsim RNG (`p_random`); no std transcendentals in bot path
+- [x] `room-sim` dual-run checksum test
+- [ ] `bot_set_goal` mod hook — nice-to-have / deferred
+- [ ] ≤ 0.2 ms/tic per bot — not measured (MVP budget assumed OK)
+
+## BE12 — 8 seats on any map
+
+**Status:** `done` · Spec: `28` §9 BE12
+
+### Acceptance
+
+- [x] `spawn_coop_players` clamp 1..=8; missing P2–P4 → DM starts → P1 offset + telefog
+- [x] `room.toml` `max_players = 8` (royale); parsed in `room-script` manifest
+- [x] `Headless` / verifier `coop_players` up to 8; web play clamp 8
+- [x] Unit test `spawn_eight_players_uses_dm_starts_after_coop`
+
+## BE4 — Bindable mod buttons
+
+**Status:** `done` · Spec: `28` §9 BE4 (`reg_button_label` deferred)
+
+### Acceptance
+
+- [x] `Buttons::MOD1..MOD4` = bits 16–19 on wire (`TicCmd.buttons`)
+- [x] `+mod1..+mod4` / `-mod1..-mod4` via `room-input::ModButtonState`
+- [x] Default binds documented: desktop **G**/**M**; web **B**/**M** (Q kept for turn / fly)
+- [x] `player_cmd` exposes raw bits; playsim ignores MOD bits
+- [x] `think_player` unit test + `wasm_mod_buttons`
+
+## MH3 — Input capture + player_cmd
+
+**Status:** `done` · Spec: `27` §9.1 E9–E11 / §9.5 MH3
+
+### Acceptance
+
+- [x] Capture mask zeroes weapon/buttons before think; raw readable via `player_cmd`
+- [x] Auto-release on death / map unload / module disable / max tics
+- [x] `player_sound` seat-scoped UI cue; `{key:…}` expand in `room-ui`
+- [x] `wasm_mod_capture` e2e + equal checksum with captures
 
 ---
 

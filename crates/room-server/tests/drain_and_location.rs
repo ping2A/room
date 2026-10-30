@@ -24,6 +24,8 @@ async fn drain_rejects_creates_and_readyz_503() {
             packs: Vec::new(),
             time_limit: None,
             game: None,
+            fill_bots: false,
+            quick_play: false,
         })
         .unwrap();
     assert_eq!(registry.locate_room(&created.id).as_deref(), Some("node-a"));

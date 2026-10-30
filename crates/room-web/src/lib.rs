@@ -60,8 +60,8 @@ mod browser {
     use room_game::GameRuntime;
     use room_nodebuild::apply_nodes;
     use room_render::{
-        Camera, CanvasGpu, GpuContext, LightMode, SceneLists, UnlitPass, build_scene_with_sky,
-        build_scene_with_sky_ex_sized,
+        Camera, CanvasGpu, GpuContext, LightMode, ModZonePass, SceneLists, UnlitPass, ZoneDraw,
+        build_scene_with_sky, build_scene_with_sky_ex_sized, build_zone_meshes,
     };
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -91,6 +91,7 @@ mod browser {
         gpu: GpuContext,
         config: wgpu::SurfaceConfiguration,
         pass: UnlitPass,
+        zone_pass: ModZonePass,
         depth: (wgpu::Texture, wgpu::TextureView),
         /// Dummy R8 MRT slot — `UnlitPass` pipelines expect two colour targets.
         stencil_aux: (wgpu::Texture, wgpu::TextureView),
@@ -231,6 +232,7 @@ mod browser {
         surface.configure(&gpu.device, &config);
         let mut pass = UnlitPass::new(&gpu, format);
         apply_web_lighting(&mut pass);
+        let zone_pass = ModZonePass::new(&gpu, format);
         let depth = create_depth(&gpu.device, width, height);
         let stencil_aux = create_stencil_aux(&gpu.device, width, height);
         let mut map = load_embedded_demo_map()?;
@@ -248,6 +250,7 @@ mod browser {
             gpu,
             config,
             pass,
+            zone_pass,
             depth,
             stencil_aux,
             camera,
@@ -389,6 +392,8 @@ mod browser {
             game_mod: None,
             packs: Vec::new(),
             time_limit: 0,
+            fill_bots: false,
+            bot_first_seat: 0,
         };
         NET_MOD.with(|n| *n.borrow_mut() = NetModState::Idle);
         let lobby = NetLobby::begin(cfg).map_err(|e| JsValue::from_str(&e))?;
@@ -650,10 +655,17 @@ mod browser {
                     map_name: Some(map),
                     skill,
                     rng_seed,
-                    coop_players: players.min(4),
+                    coop_players: if lobby.fill_bots() {
+                        players
+                    } else {
+                        players.min(4)
+                    },
                     local_seat: seat,
                     pwads,
                     time_limit_secs: lobby.time_limit(),
+                    session_names: lobby.session_names(),
+                    fill_bots: lobby.fill_bots(),
+                    bot_first_seat: lobby.bot_first_seat(),
                     ..PlayStartOpts::default()
                 },
             )
@@ -961,6 +973,8 @@ mod browser {
         let skill = ready.skill;
         let rng_seed = ready.rng_seed;
         let time_limit_secs = ready.time_limit;
+        let fill_bots = ready.fill_bots;
+        let bot_first_seat = ready.bot_first_seat;
         let net = NetPlay::from_ready(ready);
         let (iwad, prepared) = {
             let mut s = state.borrow_mut();
@@ -978,10 +992,17 @@ mod browser {
                     map_name: Some(map),
                     skill,
                     rng_seed,
-                    coop_players: peer_count.min(4),
+                    coop_players: if fill_bots {
+                        peer_count
+                    } else {
+                        peer_count.min(4)
+                    },
                     local_seat: local,
                     pwads: ready_mod_pwads(),
                     time_limit_secs,
+                    session_names: net.session_names(),
+                    fill_bots,
+                    bot_first_seat,
                     ..PlayStartOpts::default()
                 },
             ) {
@@ -1779,8 +1800,37 @@ mod browser {
             }
         }
 
+        let zone_meshes = match &s.mode {
+            Mode::Play(play) | Mode::Lobby { prepared: Some(play), .. } => {
+                play.game.world().and_then(|world| {
+                    if world.mod_zones.is_empty() {
+                        return None;
+                    }
+                    let ticfrac_milli = (play.tic_accum * 1000.0 / (1.0 / 35.0))
+                        .clamp(0.0, 1000.0) as u32;
+                    let draws: Vec<ZoneDraw> = world
+                        .mod_zones
+                        .iter()
+                        .map(|z| {
+                            let (cx, cy, r) =
+                                z.interp_current(world.level.maptime, ticfrac_milli);
+                            ZoneDraw {
+                                cx: cx as f32,
+                                cy: cy as f32,
+                                r: r as f32,
+                                rgba: z.rgba,
+                                flags: z.flags,
+                            }
+                        })
+                        .collect();
+                    Some(build_zone_meshes(&play.map, &draws))
+                })
+            }
+            _ => None,
+        };
         {
             let FrameState { gpu, pass, .. } = &mut *s;
+            pass.time += 1.0 / 60.0;
             pass.prepare(gpu, cam, &scene);
         }
 
@@ -1794,6 +1844,7 @@ mod browser {
             let FrameState {
                 gpu,
                 pass,
+                zone_pass,
                 mode,
                 depth,
                 stencil_aux,
@@ -1853,6 +1904,16 @@ mod browser {
                 }
             } else {
                 pass.draw(&mut rp, &scene);
+            }
+            if let Some(meshes) = zone_meshes.as_ref() {
+                if !meshes.wall_depth.is_empty()
+                    || !meshes.wall_through.is_empty()
+                    || !meshes.ring.is_empty()
+                {
+                    zone_pass.prepare(gpu, cam, pass.time);
+                    zone_pass.upload(gpu, meshes);
+                    zone_pass.draw(&mut rp, meshes);
+                }
             }
         }
         s.gpu.queue.submit(Some(encoder.finish()));

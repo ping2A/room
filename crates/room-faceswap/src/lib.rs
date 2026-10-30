@@ -6,11 +6,11 @@
 
 pub mod align;
 pub mod anchor;
+pub mod apply_live;
 pub mod assign;
 pub mod bake;
 pub mod color;
 pub mod composite;
-pub mod apply_live;
 pub mod detect;
 pub mod duke;
 pub mod estimate;
@@ -22,6 +22,7 @@ pub mod share;
 
 pub use align::{AlignError, ManualPoints, align_manual};
 pub use anchor::{HeadAnchor, HeadYaw, Visibility, lump_pixel_hash};
+pub use apply_live::{install_bake, override_rgba, sprite_to_rgba};
 pub use assign::{
     AssignmentRule, FaceAssignment, FaceCatalog, PickMode, face_for_actor, instance_hash,
     resolve_face_key,
@@ -32,7 +33,6 @@ pub use detect::{FaceDetection, Pt, detect};
 pub use duke::{duke_composite_options, duke_skip_indices};
 pub use estimate::{ClassHint, estimate_anchor, mirror_anchor, yaw_from_lump};
 pub use image::{AlphaMask, RgbaImage};
-pub use apply_live::{install_bake, override_rgba, sprite_to_rgba};
 pub use live::{
     LIVE_LUMPS_PER_FRAME, LiveCacheKey, LiveFaceOverrides, rebuild_class_overrides,
     revise_live_lumps,
@@ -43,6 +43,6 @@ pub use profile::{
     ProfileError, Rgb,
 };
 pub use share::{
-    MAX_FACES_PER_PEER, MAX_FACE_BYTES, RoomSharePolicy, SharePrefs, SharedFaceBlob,
+    MAX_FACE_BYTES, MAX_FACES_PER_PEER, RoomSharePolicy, SharePrefs, SharedFaceBlob,
     accept_peer_face, decode_share_blob, make_share_blob,
 };

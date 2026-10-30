@@ -1391,6 +1391,7 @@ fn apply_script_flag(def: &mut ClassDef, flag: u32, on: bool) {
         9 => FLAG_NORADIUSDMG,
         10 => FLAG_INVULNERABLE,
         11 => FLAG_DONTDRAW,
+        12 => FLAG_NODAMAGE, // NOPAIN script toggle
         _ => return,
     };
     if on {
@@ -1478,6 +1479,8 @@ pub const FLAG_BOUNCEONFLOORS: u64 = 1 << 36;
 pub const FLAG_BOUNCEONWALLS: u64 = 1 << 37;
 /// Player Use runs this actor's `Use` state (`+USESPECIAL`).
 pub const FLAG_USESPECIAL: u64 = 1 << 38;
+/// GZDoom `BUDDHA` — lethal damage floors health at 1 (`docs/28` BE6).
+pub const FLAG_BUDDHA: u64 = 1 << 39;
 
 fn apply_flag(flags: &mut u64, op: &FlagOp) {
     let bit = match op.name.to_ascii_uppercase().as_str() {

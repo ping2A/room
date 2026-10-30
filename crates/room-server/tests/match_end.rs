@@ -67,12 +67,14 @@ fn result(winner: Option<u8>) -> ControlMsg {
                 place: 1,
                 frags: 1,
                 deaths: 0,
+                damage: 0,
             },
             ResultRow {
                 seat: 1,
                 place: 2,
                 frags: 0,
                 deaths: 1,
+                damage: 0,
             },
         ],
     }

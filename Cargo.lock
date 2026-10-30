@@ -4929,6 +4929,7 @@ name = "room-testkit"
 version = "0.1.0"
 dependencies = [
  "room-map",
+ "room-nodebuild",
  "room-vfs",
 ]
 
@@ -4940,6 +4941,7 @@ dependencies = [
  "room-formats",
  "room-map",
  "room-nodebuild",
+ "room-sim",
  "room-testkit",
  "room-vfs",
 ]
