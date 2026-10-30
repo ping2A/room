@@ -1,0 +1,31 @@
+;; BE4: log when player_cmd.buttons has MOD1 (bit 16).
+(module
+  (import "room" "reg_event_handler" (func $reg_event_handler (param i32 i32 i32 i32 i32 i32 i32) (result i32)))
+  (import "room" "player_cmd" (func $cmd (param i32 i32) (result i32)))
+  (import "room" "log" (func $log (param i32 i32 i32)))
+  (memory (export "memory") 1)
+  (data (i32.const 0) "Mod1Probe")
+  (data (i32.const 64) "mod1=1")
+  (func (export "room_abi_version") (result i32) (i32.const 1))
+  (func (export "room_alloc") (param i32 i32) (result i32) (i32.const 256))
+  (func (export "room_free") (param i32 i32 i32))
+  (func (export "room_register") (result i32)
+    (if (i32.ne
+          (call $reg_event_handler
+            (i32.const 0) (i32.const 6)
+            (i32.const 0) (i32.const 0)
+            (i32.const 1) (i32.const 0)
+            (i32.const 100))
+          (i32.const 0))
+      (then (return (i32.const 1))))
+    (i32.const 0))
+  (func (export "room_init") (param i32) (result i32) (i32.const 0))
+  (func (export "room_dispatch") (param $id i32) (param $ptr i32) (param $len i32) (result i64)
+    (if (result i64) (i32.eq (local.get $id) (i32.const 100))
+      (then
+        (drop (call $cmd (i32.const 1) (i32.const 0x100)))
+        (if (i32.ne (i32.and (i32.load (i32.const 0x104)) (i32.const 65536)) (i32.const 0))
+          (then (call $log (i32.const 0) (i32.const 64) (i32.const 6))))
+        (i64.const 1))
+      (else (i64.const 0))))
+)
