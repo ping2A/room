@@ -1,0 +1,14 @@
+// Optional dynamic lights for Survival Director (`docs/27` §8).
+// Render-only; safe when the lump is stripped.
+
+PointLight SurvivalBeaconLight
+{
+  color 0.2 1.0 0.3
+  size 48
+  offset 0 0 24
+}
+
+object SurvivalBeacon
+{
+  frame TNT1A { light SurvivalBeaconLight }
+}

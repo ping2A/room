@@ -1,0 +1,8 @@
+// Optional Battle Royale stingers (`docs/28` §8). Aliases only — samples from IWAD.
+royale/zone     dsbdopn
+royale/supply   dsgetpow
+royale/kill     dspistol
+royale/victory  dsbdopn
+royale/downed   dsplpain
+royale/revive   dsgetpow
+royale/phase    dsbarexp

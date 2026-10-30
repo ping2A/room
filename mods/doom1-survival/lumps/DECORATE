@@ -1,0 +1,17 @@
+// Track B visuals (`docs/27` §8). Optional — WASM falls back when absent.
+// Do not redefine classes registered in register.rs (Warden / Elite*).
+
+actor SurvivalBeacon : Actor
+{
+  Radius 16
+  Height 32
+  +NOGRAVITY
+  +NOBLOCKMAP
+  +DONTDRAW
+  States
+  {
+  Spawn:
+    TNT1 A -1
+    Stop
+  }
+}

@@ -1,0 +1,37 @@
+// Track B visuals (`docs/28` §8). Optional — WASM registers SupplyCrate + rarity
+// subclasses at runtime (`register.rs`); do not redefine those here.
+
+actor RoyaleSupplyBeacon : Actor
+{
+  Radius 16
+  Height 32
+  +NOGRAVITY
+  +NOBLOCKMAP
+  +DONTDRAW
+  States
+  {
+  Spawn:
+    TNT1 A -1
+    Stop
+  }
+}
+
+// Render-only ground glow stubs (attach from mod later; GLDEFS lights below).
+actor RarityGlowCommon : Actor
+{
+  Radius 8
+  Height 1
+  +NOGRAVITY
+  +NOBLOCKMAP
+  +NOINTERACTION
+  States
+  {
+  Spawn:
+    TNT1 A -1
+    Stop
+  }
+}
+
+actor RarityGlowRare : RarityGlowCommon {}
+actor RarityGlowEpic : RarityGlowCommon {}
+actor RarityGlowLegendary : RarityGlowCommon {}

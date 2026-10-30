@@ -1,0 +1,4 @@
+// Optional Survival stingers (`docs/27` §8). Names only — samples optional.
+survival/round   dsgetpow
+survival/elite   dsgetpow
+survival/boss    dsgetpow
