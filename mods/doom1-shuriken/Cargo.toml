@@ -1,0 +1,30 @@
+[package]
+name = "room-mod-doom1-shuriken"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Shuriken throwing weapon — art/sounds/classes generated at room_register (docs/32)."
+publish = false
+
+# Standalone guest crate (built for wasm32-unknown-unknown), not a workspace member.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+room-script-abi = { path = "../../crates/room-script-abi" }
+room-script-sdk = { path = "../../crates/room-script-sdk", features = ["alloc"] }
+
+[dev-dependencies]
+sha2 = "0.10"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+panic = "abort"

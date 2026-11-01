@@ -1,0 +1,33 @@
+# Educational Python bindings (maturin). Not a workspace member — build with:
+#   ./scripts/setup-python-edu.sh
+# or:  cd python && maturin develop --release
+[package]
+name = "room-python"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Educational Python bindings for Room (headless sim + RoomMod host)"
+publish = false
+
+[lib]
+name = "room_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310"] }
+room-core = { path = "../crates/room-core" }
+room-game = { path = "../crates/room-game" }
+room-map = { path = "../crates/room-map" }
+room-nodebuild = { path = "../crates/room-nodebuild" }
+room-sim = { path = "../crates/room-sim" }
+room-testkit = { path = "../crates/room-testkit" }
+room-vfs = { path = "../crates/room-vfs" }
+bytes = "1.10"
+
+[lints.rust]
+unsafe_code = "allow" # pyo3 extension module
+missing_docs = "allow"
+
+[lints.clippy]
+unwrap_used = "allow"
+expect_used = "allow"

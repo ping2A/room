@@ -1,0 +1,18 @@
+[mod]
+id = "room.example.doom1-shuriken"
+name = "Shuriken"
+version = "0.1.0"
+abi = 1
+description = "Throwing stars generated at startup: silent, retrievable, slot 8."
+
+[options]
+slot = 8
+style = "4point"
+skin = "steel"
+place_weapon = true
+ammo_replace_percent = 25
+
+[[module]]
+file = "SHURIKEN"
+scope = "play"
+name = "shuriken"

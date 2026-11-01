@@ -1,0 +1,31 @@
+[package]
+name = "room-python-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Host-side Python play mods for desktop (optional embed)."
+publish = false
+
+[features]
+default = []
+## Link CPython via pyo3 (desktop only; needs a local Python).
+embed = ["dep:pyo3"]
+
+[lints.rust]
+unsafe_code = "allow" # pyo3 when `embed`
+missing_docs = "allow"
+
+[lints.clippy]
+unwrap_used = "allow"
+expect_used = "allow"
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["auto-initialize", "abi3-py310"], optional = true }
+room-core = { path = "../room-core" }
+room-game = { path = "../room-game" }
+room-sim = { path = "../room-sim" }
+
+[dev-dependencies]
+room-nodebuild = { path = "../room-nodebuild" }
+room-testkit = { path = "../room-testkit" }

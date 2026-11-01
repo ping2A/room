@@ -1,0 +1,32 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "room"
+version = "0.1.0"
+description = "Educational Python bindings for the Room engine (headless sim + RoomMod host)"
+readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.10"
+authors = [{ name = "Room contributors" }]
+keywords = ["doom", "gzdoom", "wasm", "education", "game-engine"]
+classifiers = [
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Rust",
+  "Topic :: Education",
+  "Topic :: Games/Entertainment",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+room-edu = "room.__main__:main"
+
+[tool.maturin]
+manifest-path = "Cargo.toml"
+module-name = "room._native"
+python-source = "."
+features = ["pyo3/extension-module"]

@@ -1,0 +1,20 @@
+# Desktop Python play mod (host CPython). Pack with:
+#   ./scripts/pack-python-mod.sh mods/doom1-python-hello
+# Run:
+#   cargo run -p room-app --features python-mods -- \
+#     --iwad testdata/doom/doom1.wad --file mods/doom1-python-hello/hello.wad --play
+#
+# Not netplay-safe. For WASM netplay, port to mods/doom1-bounty or room-script-sdk.
+
+[mod]
+id = "room.example.doom1-python-hello"
+name = "Hello Python"
+version = "0.1.0"
+abi = 1
+description = "Spawn an Imp at 3s; heal on kills — host Python RoomMod"
+
+[[module]]
+file = "HELLO"
+name = "hello"
+language = "python"
+scope = "play"
