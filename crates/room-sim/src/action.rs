@@ -3186,11 +3186,16 @@ fn a_custom_combo_attack(world: &mut World, self_id: ActorId, args: &[String]) -
     )
 }
 
-/// `A_RailAttack` / `A_CustomRailgun(damage [, …, range, …, limit])` — piercing hitscan.
+/// `A_RailAttack` / `A_CustomRailgun(damage [, offset_xy, useammo, …, range, …, limit])`.
 ///
-/// Bootstrap reads `damage` (arg0), optional `range` (arg10), optional `limit` (arg17).
+/// Bootstrap reads `damage` (arg0), `useammo` (arg2, default true), optional
+/// `range` (arg10), optional `limit` (arg17).
 fn a_rail_attack(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
     let damage = parse_i32_arg(args, 0, 0).max(0);
+    let useammo = parse_useammo_arg(args, 2);
+    if useammo && world.psprite_weapon.is_some() && !deplete_ready_ammo(world, self_id) {
+        return ActionResult::Continue;
+    }
     let range = args
         .get(10)
         .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
@@ -6775,42 +6780,74 @@ fn a_skull_attack(world: &mut World, self_id: ActorId) -> ActionResult {
     ActionResult::Continue
 }
 
-/// `A_Saw`: chainsaw melee; hit → `weapons/sawhit` + face target, miss → `weapons/sawfull`.
+/// `A_Saw`: chainsaw melee; hit → `weapons/sawhit` + gradual face, miss → `weapons/sawfull`.
 fn a_saw(world: &mut World, self_id: ActorId) -> ActionResult {
-    let angle = world
+    let base = world
         .actors
         .get(self_id)
         .map(|a| a.angle)
         .unwrap_or(Angle::ZERO);
-    // Vanilla: ((rnd%10)+1)*2
+    // Vanilla: ((rnd%10)+1)*2, then `P_SubRandom()<<18` yaw; range `MELEERANGE+1` = 65.
     let damage = melee_dice(world, 10, 2);
-    let hit = line_attack(world, self_id, angle, 64.0, damage);
-    let snd = if hit.actor.is_some() {
-        "weapons/sawhit"
-    } else {
-        "weapons/sawfull"
-    };
-    if let Some(a) = world.actors.get(self_id) {
-        world.play_sound(snd, a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
+    let r1 = i32::from(world.p_random("pr_saw"));
+    let r2 = i32::from(world.p_random("pr_saw"));
+    let jitter = f64::from(r1 - r2) * (360.0 / 16_384.0);
+    let angle = Angle::from_degrees(base.degrees() + jitter);
+    let hit = line_attack(world, self_id, angle, 65.0, damage);
+    if hit.actor.is_none() {
+        if let Some(a) = world.actors.get(self_id) {
+            world.play_sound("weapons/sawfull", a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
+        }
+        return ActionResult::Continue;
     }
-    // Vanilla: turn toward the struck actor on a successful saw hit.
-    if let Some(tid) = hit.actor {
-        let face = match (world.actors.get(self_id), world.actors.get(tid)) {
-            (Some(src), Some(tgt)) => {
-                let dx = tgt.pos.x() - src.pos.x();
-                let dy = tgt.pos.y() - src.pos.y();
-                Some(Angle::from_radians(dmath::atan2(dy, dx)))
-            }
-            _ => None,
-        };
-        if let Some(face) = face {
-            if let Some(a) = world.actors.get_mut(self_id) {
-                a.angle = face;
-            }
+    if let Some(a) = world.actors.get(self_id) {
+        world.play_sound("weapons/sawhit", a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
+    }
+    let tid = hit.actor.expect("checked");
+    let face = match (world.actors.get(self_id), world.actors.get(tid)) {
+        (Some(src), Some(tgt)) => {
+            let dx = tgt.pos.x() - src.pos.x();
+            let dy = tgt.pos.y() - src.pos.y();
+            Some(Angle::from_radians(dmath::atan2(dy, dx)))
+        }
+        _ => None,
+    };
+    if let Some(face) = face {
+        if let Some(a) = world.actors.get_mut(self_id) {
+            a.angle = saw_turn_toward(a.angle, face);
+            a.flags |= crate::class::FLAG_JUSTATTACKED;
         }
     }
     ActionResult::Continue
 }
+
+/// Vanilla chainsaw steer: step ±`ANG90/20` (4.5°) toward the target, snap by
+/// `ANG90/21` when the remaining gap is larger (docs/30 W10).
+fn saw_turn_toward(current: Angle, target: Angle) -> Angle {
+    let mut delta = (target.degrees() - current.degrees()) % 360.0;
+    if delta > 180.0 {
+        delta -= 360.0;
+    } else if delta < -180.0 {
+        delta += 360.0;
+    }
+    const STEP: f64 = 90.0 / 20.0;
+    const OVERSHOOT: f64 = 90.0 / 21.0;
+    let deg = if delta < 0.0 {
+        if delta < -STEP {
+            target.degrees() + OVERSHOOT
+        } else {
+            current.degrees() - STEP
+        }
+    } else if delta > STEP {
+        target.degrees() - OVERSHOOT
+    } else {
+        current.degrees() + STEP
+    };
+    Angle::from_degrees(deg).normalized()
+}
+
+/// GZDoom `CPF_USEAMMO` — default when flags omitted.
+const CPF_USEAMMO: i32 = 1;
 
 /// `A_CustomPunch(damage [, norandom [, flags [, pufftype [, range]]]])`.
 fn a_custom_punch(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
@@ -6822,6 +6859,11 @@ fn a_custom_punch(world: &mut World, self_id: ActorId, args: &[String]) -> Actio
             t == "1" || t == "true" || t == "yes"
         })
         .unwrap_or(false);
+    let flags = parse_i32_arg(args, 2, CPF_USEAMMO);
+    if flags & CPF_USEAMMO != 0 && world.psprite_weapon.is_some() && !deplete_ready_ammo(world, self_id)
+    {
+        return ActionResult::Continue;
+    }
     let range = args
         .get(4)
         .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
@@ -6834,11 +6876,22 @@ fn a_custom_punch(world: &mut World, self_id: ActorId, args: &[String]) -> Actio
     } else {
         0
     };
-    let angle = world
-        .actors
-        .get(self_id)
-        .map(|a| a.angle)
-        .unwrap_or(Angle::ZERO);
+    // GZDoom spreads the punch angle (`P_SubRandom()<<18` style).
+    let jitter = if world.psprite_weapon.is_some() {
+        let r1 = i32::from(world.p_random("pr_punch"));
+        let r2 = i32::from(world.p_random("pr_punch"));
+        f64::from(r1 - r2) * (360.0 / 16_384.0)
+    } else {
+        0.0
+    };
+    let angle = Angle::from_degrees(
+        world
+            .actors
+            .get(self_id)
+            .map(|a| a.angle.degrees())
+            .unwrap_or(0.0)
+            + jitter,
+    );
     if damage > 0 {
         let hit = line_attack(world, self_id, angle, range, damage);
         if let Some(tid) = hit.actor {
@@ -6860,12 +6913,24 @@ fn a_custom_punch(world: &mut World, self_id: ActorId, args: &[String]) -> Actio
     ActionResult::Continue
 }
 
+/// GZDoom `FBF_*` — default flags include `FBF_USEAMMO`.
+const FBF_USEAMMO: i32 = 1;
+const FBF_NOFLASH: i32 = 16;
+
 /// `A_FireBullets(spread_horiz, spread_vert, numbullets, damage [, flags [, puff [, range]]])`.
 fn a_fire_bullets(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
     let spread_h = parse_f64_arg(args, 0, 0.0);
     let _spread_v = parse_f64_arg(args, 1, 0.0);
     let num = parse_i32_arg(args, 2, 1).max(1);
     let damage = parse_i32_arg(args, 3, 5).max(0);
+    let flags = parse_i32_arg(args, 4, FBF_USEAMMO);
+    if flags & FBF_USEAMMO != 0 && world.psprite_weapon.is_some() && !deplete_ready_ammo(world, self_id)
+    {
+        return ActionResult::Continue;
+    }
+    if flags & FBF_NOFLASH == 0 && world.psprite_weapon.is_some() {
+        world.psprite_flash_request = Some(0);
+    }
     let range = args
         .get(6)
         .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
@@ -6876,6 +6941,7 @@ fn a_fire_bullets(world: &mut World, self_id: ActorId, args: &[String]) -> Actio
         .get(self_id)
         .map(|a| a.angle)
         .unwrap_or(Angle::ZERO);
+    push_weapon_fired_fx(world, self_id);
     for i in 0..num {
         let yaw = if i == 0 && num > 1 && spread_h == 0.0 {
             // Vanilla shotgun-style: first bullet accurate when spread is 0.
@@ -6895,6 +6961,39 @@ fn a_fire_bullets(world: &mut World, self_id: ActorId, args: &[String]) -> Actio
     ActionResult::Continue
 }
 
+/// Render-only muzzle cue for the console / other players (`docs/29` I1).
+fn push_weapon_fired_fx(world: &mut World, self_id: ActorId) {
+    let (origin, forward, class) = {
+        let Some(a) = world.actors.get(self_id) else {
+            return;
+        };
+        let rad = a.angle.radians();
+        (
+            a.pos,
+            room_core::DVec3::new(rad.cos(), rad.sin(), 0.0),
+            a.class,
+        )
+    };
+    let (player, weapon) = world
+        .players
+        .iter()
+        .enumerate()
+        .find_map(|(i, p)| {
+            let p = p.as_ref()?;
+            if p.mo != Some(self_id) {
+                return None;
+            }
+            Some((i as u8, p.ready_weapon.unwrap_or(class)))
+        })
+        .unwrap_or((0, class));
+    world.push_fx(crate::fx_events::FxEvent::WeaponFired {
+        player,
+        weapon,
+        origin,
+        forward,
+    });
+}
+
 /// `A_Punch`: short-range melee; ×10 damage when berserk; face target on hit.
 fn a_punch(world: &mut World, self_id: ActorId) -> ActionResult {
     let berserk = world
@@ -6902,21 +7001,26 @@ fn a_punch(world: &mut World, self_id: ActorId) -> ActionResult {
         .iter()
         .flatten()
         .any(|p| p.mo == Some(self_id) && p.berserk);
-    // Vanilla: ((rnd%10)+1)*2, ×10 with berserk.
+    // Vanilla: ((rnd%10)+1)*2, ×10 with berserk; then `P_SubRandom()<<18` yaw.
     let mut damage = melee_dice(world, 10, 2);
     if berserk {
         damage *= 10;
     }
-    let angle = world
+    let base = world
         .actors
         .get(self_id)
         .map(|a| a.angle)
         .unwrap_or(Angle::ZERO);
-    if let Some(a) = world.actors.get(self_id) {
-        world.play_sound("player/male/fist", a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
-    }
+    let r1 = i32::from(world.p_random("pr_punch"));
+    let r2 = i32::from(world.p_random("pr_punch"));
+    let jitter = f64::from(r1 - r2) * (360.0 / 16_384.0);
+    let angle = Angle::from_degrees(base.degrees() + jitter);
     let hit = line_attack(world, self_id, angle, 64.0, damage);
     if let Some(tid) = hit.actor {
+        // Sound only on hit (vanilla).
+        if let Some(a) = world.actors.get(self_id) {
+            world.play_sound("player/male/fist", a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
+        }
         let face = match (world.actors.get(self_id), world.actors.get(tid)) {
             (Some(src), Some(tgt)) => {
                 let dx = tgt.pos.x() - src.pos.x();
@@ -6949,6 +7053,7 @@ fn player_shotgun_spread_deg(world: &mut World) -> f64 {
 
 /// Doom `P_GunShot`: damage, then `P_SubRandom()<<18` yaw if `!accurate`.
 fn player_gun_shot(world: &mut World, self_id: ActorId, accurate: bool) {
+    push_weapon_fired_fx(world, self_id);
     let mut angle = world
         .actors
         .get(self_id)
@@ -6972,20 +7077,71 @@ fn player_refire(world: &World, self_id: ActorId) -> i32 {
         .unwrap_or(world.thinking_refire)
 }
 
+/// Deplete ready-weapon ammo (docs/30 W2/W14). False → skip the shot.
+fn deplete_ready_ammo(world: &mut World, self_id: ActorId) -> bool {
+    let wpn = world.psprite_weapon.or_else(|| {
+        world
+            .players
+            .iter()
+            .flatten()
+            .find(|p| p.mo == Some(self_id))
+            .and_then(|p| p.ready_weapon)
+    });
+    let Some(wpn) = wpn else {
+        return true;
+    };
+    crate::think_player::deplete_ammo(world, self_id, wpn)
+}
+
+/// Chaingun Fire frame index → flash segment (A → 0, B → 1).
+fn chaingun_flash_offset(world: &World) -> usize {
+    let Some(wpn) = world.psprite_weapon else {
+        return 0;
+    };
+    let Some(fire0) = world.states.find_label(wpn, "Fire") else {
+        return 0;
+    };
+    let Some(cur) = world.psprite_state else {
+        return 0;
+    };
+    let mut sid = Some(fire0);
+    let mut i = 0usize;
+    while let Some(s) = sid {
+        if s == cur {
+            return i.min(1);
+        }
+        sid = world.states.get(s).and_then(|st| st.next);
+        i += 1;
+        if i > 8 {
+            break;
+        }
+    }
+    0
+}
+
 /// `A_FirePistol`: single hitscan (`P_GunShot` with `!refire` accuracy).
 fn a_fire_pistol(world: &mut World, self_id: ActorId) -> ActionResult {
     if let Some(a) = world.actors.get(self_id) {
         world.play_sound("weapons/pistol", a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
     }
+    if !deplete_ready_ammo(world, self_id) {
+        return ActionResult::Continue;
+    }
+    world.psprite_flash_request = Some(0);
     player_gun_shot(world, self_id, player_refire(world, self_id) == 0);
     ActionResult::Continue
 }
 
 /// `A_FireCGun`: single hitscan with chaingun sound (`P_GunShot` `!refire`).
 fn a_fire_cgun(world: &mut World, self_id: ActorId) -> ActionResult {
+    // Vanilla plays the sound even when empty, then returns.
     if let Some(a) = world.actors.get(self_id) {
         world.play_sound("weapons/chngun", a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
     }
+    if !deplete_ready_ammo(world, self_id) {
+        return ActionResult::Continue;
+    }
+    world.psprite_flash_request = Some(chaingun_flash_offset(world));
     player_gun_shot(world, self_id, player_refire(world, self_id) == 0);
     ActionResult::Continue
 }
@@ -7000,6 +7156,11 @@ fn a_fire_shotgun(world: &mut World, self_id: ActorId) -> ActionResult {
     if let Some(a) = world.actors.get(self_id) {
         world.play_sound("weapons/shotgf", a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
     }
+    if !deplete_ready_ammo(world, self_id) {
+        return ActionResult::Continue;
+    }
+    world.psprite_flash_request = Some(0);
+    push_weapon_fired_fx(world, self_id);
     // Doom `P_BulletSlope` once, then seven `P_GunShot` with that aimslope.
     let slope = crate::hitscan::bullet_slope(world, self_id);
     if std::env::var_os("ROOM_TRACE_WALL").is_some() && matches!(world.level.time, 410 | 456) {
@@ -7051,6 +7212,11 @@ fn a_fire_shotgun2(world: &mut World, self_id: ActorId) -> ActionResult {
     if let Some(a) = world.actors.get(self_id) {
         world.play_sound("weapons/sshotf", a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
     }
+    if !deplete_ready_ammo(world, self_id) {
+        return ActionResult::Continue;
+    }
+    world.psprite_flash_request = Some(0);
+    push_weapon_fired_fx(world, self_id);
     // Doom SSG: `P_BulletSlope`, then pellets with yaw + slope jitter.
     let base_slope = crate::hitscan::bullet_slope(world, self_id);
     for _ in 0..20 {
@@ -7193,14 +7359,27 @@ fn parse_fpf_flags(raw: Option<&String>) -> i32 {
         .fold(0, |a, b| a | b)
 }
 
+/// Parse a DECORATE bool / 0/1 useammo argument (default `true`).
+fn parse_useammo_arg(args: &[String], i: usize) -> bool {
+    args.get(i)
+        .map(|s| {
+            let t = s.trim_matches('"').to_ascii_lowercase();
+            !(t == "0" || t == "false" || t == "no")
+        })
+        .unwrap_or(true)
+}
+
 /// `A_FireProjectile` / `A_FireCustomMissile(missiletype, angle, useammo,
-/// spawnofs_xy, spawnheight, flags, pitch)`. Ammo is spent when the Fire
-/// state starts, so `useammo` is ignored. For `A_FireCustomMissile` a bool
+/// spawnofs_xy, spawnheight, flags, pitch)`. For `A_FireCustomMissile` a bool
 /// `flags` is the old `aimatangle`.
 fn a_fire_projectile(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
     let Some(cid) = args.first().and_then(|s| resolve_type_arg(world, s)) else {
         return ActionResult::Continue;
     };
+    let useammo = parse_useammo_arg(args, 2);
+    if useammo && world.psprite_weapon.is_some() && !deplete_ready_ammo(world, self_id) {
+        return ActionResult::Continue;
+    }
     let flags = parse_fpf_flags(args.get(5));
     let opts = PlayerMissileOpts {
         angle: parse_f64_arg(args, 1, 0.0),
@@ -7210,12 +7389,17 @@ fn a_fire_projectile(world: &mut World, self_id: ActorId, args: &[String]) -> Ac
         aim_at_angle: flags & FPF_AIMATANGLE != 0,
         no_autoaim: flags & FPF_NOAUTOAIM != 0,
     };
+    push_weapon_fired_fx(world, self_id);
     let _ = spawn_player_missile_ex(world, self_id, cid, 20.0, opts);
     ActionResult::Continue
 }
 
 /// `A_FireMissile`: spawn a `Rocket` from the shooter.
 fn a_fire_missile(world: &mut World, self_id: ActorId) -> ActionResult {
+    if !deplete_ready_ammo(world, self_id) {
+        return ActionResult::Continue;
+    }
+    push_weapon_fired_fx(world, self_id);
     if world.classes.find_name("Rocket").is_some() {
         spawn_player_missile(world, self_id, "Rocket", 20.0);
     } else if let Some(a) = world.actors.get(self_id) {
@@ -7226,6 +7410,12 @@ fn a_fire_missile(world: &mut World, self_id: ActorId) -> ActionResult {
 
 /// `A_FirePlasma`: spawn a `PlasmaBall`.
 fn a_fire_plasma(world: &mut World, self_id: ActorId) -> ActionResult {
+    if !deplete_ready_ammo(world, self_id) {
+        return ActionResult::Continue;
+    }
+    // Vanilla: deplete → flash RNG → spawn (RNG order matters for demos, N4).
+    world.psprite_flash_request = Some((world.p_random("pr_flash") & 1) as usize);
+    push_weapon_fired_fx(world, self_id);
     if world.classes.find_name("PlasmaBall").is_some() {
         spawn_player_missile(world, self_id, "PlasmaBall", 25.0);
     } else if let Some(a) = world.actors.get(self_id) {
@@ -7236,6 +7426,10 @@ fn a_fire_plasma(world: &mut World, self_id: ActorId) -> ActionResult {
 
 /// `A_FireBFG`: spawn a `BFGBall` (spray extras spawn from `A_BFGSpray` on death).
 fn a_fire_bfg(world: &mut World, self_id: ActorId) -> ActionResult {
+    if !deplete_ready_ammo(world, self_id) {
+        return ActionResult::Continue;
+    }
+    push_weapon_fired_fx(world, self_id);
     if world.classes.find_name("BFGBall").is_some() {
         spawn_player_missile(world, self_id, "BFGBall", 25.0);
     }
@@ -7490,6 +7684,11 @@ pub(crate) fn radius_attack(
     if max_damage <= 0 || distance <= 0.0 {
         return;
     }
+    world.push_fx(crate::fx_events::FxEvent::Explosion {
+        pos: origin,
+        radius: distance,
+        damage: max_damage,
+    });
     let ids: Vec<ActorId> = world.thinkers.default.clone();
     for id in ids {
         if id == source {
@@ -10991,6 +11190,24 @@ actor Boom : Actor 9103
             let d = player_bullet_damage(&mut w);
             assert!([5, 10, 15].contains(&d), "got {d}");
         }
+    }
+
+    #[test]
+    fn saw_turn_toward_steps_then_snaps() {
+        let face = Angle::from_degrees(45.0);
+        let near = saw_turn_toward(Angle::from_degrees(42.0), face);
+        assert!(
+            (near.degrees() - 45.0).abs() < 0.01 || (near.degrees() - 46.5).abs() < 0.2,
+            "near gap steps toward target, got {}",
+            near.degrees()
+        );
+        let far = saw_turn_toward(Angle::ZERO, face);
+        // 45° gap > 4.5° → snap to target − ANG90/21 ≈ 40.71°.
+        assert!(
+            (far.degrees() - (45.0 - 90.0 / 21.0)).abs() < 0.05,
+            "large gap snaps, got {}",
+            far.degrees()
+        );
     }
 
     #[test]

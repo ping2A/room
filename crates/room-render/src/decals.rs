@@ -58,6 +58,8 @@ pub struct DecalInstance {
     pub color_goal_light: f32,
     /// Optional linedef index (wall-clipped when map is provided).
     pub line: Option<u32>,
+    /// Floor/ceiling projected splat (`docs/29` J2) — Flat orient, grows via stretch.
+    pub on_floor: bool,
 }
 
 /// Cap on retained decals (`cl_maxdecals` bootstrap default).
@@ -150,6 +152,55 @@ impl DecalStore {
             color_time_tics,
             color_goal_light,
             line,
+            on_floor: false,
+        });
+    }
+
+    /// Floor blood / scorch splat (J2 Downlevel: flat quad at hit Z).
+    pub fn ingest_floor_splat(
+        &mut self,
+        name: String,
+        x: f64,
+        y: f64,
+        z: f64,
+        radius: f32,
+        light: f32,
+        seed: u64,
+    ) {
+        if name.is_empty() {
+            return;
+        }
+        let grow = 1.6 + ((seed >> 16) as u32 % 40) as f32 / 100.0;
+        // Slight lift so the flat doesn't z-fight the floor plane.
+        #[allow(clippy::cast_possible_truncation)]
+        let zf = z as f32 + 0.75;
+        #[allow(clippy::cast_possible_truncation)]
+        self.push(DecalInstance {
+            name,
+            pos: Vec3::new(x as f32, y as f32, zf),
+            width: radius.max(4.0),
+            height: radius.max(4.0) * 0.7,
+            base_width: radius.max(4.0),
+            base_height: radius.max(4.0) * 0.7,
+            light: light.clamp(0.2, 1.0),
+            base_light: light.clamp(0.2, 1.0),
+            alpha: 0.85,
+            age_tics: 0,
+            fade_start_tics: 35 * 20,
+            fade_time_tics: 35 * 8,
+            stretch_start_tics: 0,
+            stretch_time_tics: 35 * 3,
+            stretch_goal_x: Some(grow),
+            stretch_goal_y: Some(grow * 0.9),
+            slide_start_tics: u32::MAX,
+            slide_time_tics: 0,
+            slide_dist_y: 0.0,
+            slide_start_z: zf,
+            color_start_tics: u32::MAX,
+            color_time_tics: 0,
+            color_goal_light: 0.0,
+            line: None,
+            on_floor: true,
         });
     }
 
@@ -248,6 +299,33 @@ pub fn append_decals(
             if emit_wall_decal(lists, map, d, li) {
                 continue;
             }
+        }
+        if d.on_floor {
+            #[allow(clippy::cast_possible_truncation)]
+            let start = lists.sprites.len() as u32;
+            let yaw = d.pos.x * 0.17 + d.pos.y * 0.13;
+            let quad = emit_sprite_quad(
+                SpriteInstance {
+                    pos: d.pos,
+                    width: d.width,
+                    height: d.height,
+                    light: d.light,
+                    alpha: d.alpha,
+                    fuzz: false,
+                    texture: d.name.clone(),
+                    flip_u: false,
+                    anchor_u: 0.5,
+                    orient: crate::sprites::SpriteOrient::Flat { yaw },
+                },
+                camera.forward,
+            );
+            lists.sprites.extend_from_slice(&quad);
+            lists.sprite_ranges.push(MaterialRange {
+                name: d.name.clone(),
+                start,
+                count: 6,
+            });
+            continue;
         }
         #[allow(clippy::cast_possible_truncation)]
         let start = lists.sprites.len() as u32;
@@ -432,6 +510,7 @@ mod tests {
             color_time_tics: 0,
             color_goal_light: 0.0,
             line: None,
+            on_floor: false,
         }
     }
 

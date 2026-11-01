@@ -121,7 +121,19 @@ impl Console {
                     if args.len() < 2 {
                         return Err(ConsoleError::Message("usage: set <cvar> <value>".into()));
                     }
-                    self.cvars.set(&args[0], &args[1..].join(" "))?;
+                    let name = args[0].as_str();
+                    let value = args[1..].join(" ");
+                    if name.eq_ignore_ascii_case("r_quality") {
+                        let level: i32 = value
+                            .parse()
+                            .map_err(|_| ConsoleError::Message(format!("bad int '{value}'")))?;
+                        self.cvars.apply_quality_preset(level);
+                        let msg = format!("r_quality = {level} (preset applied)");
+                        self.print(&msg);
+                        output.push(msg);
+                    } else {
+                        self.cvars.set(name, &value)?;
+                    }
                 }
                 "get" => {
                     if args.len() != 1 {
@@ -462,7 +474,18 @@ impl Console {
                             return Err(ConsoleError::Unknown(other.to_owned()));
                         }
                     } else if self.cvars.get(other).is_some() {
-                        self.cvars.set(other, &args.join(" "))?;
+                        let value = args.join(" ");
+                        if other.eq_ignore_ascii_case("r_quality") {
+                            let level: i32 = value
+                                .parse()
+                                .map_err(|_| ConsoleError::Message(format!("bad int '{value}'")))?;
+                            self.cvars.apply_quality_preset(level);
+                            let msg = format!("r_quality = {level} (preset applied)");
+                            self.print(&msg);
+                            output.push(msg);
+                        } else {
+                            self.cvars.set(other, &value)?;
+                        }
                     } else {
                         return Err(ConsoleError::Unknown(other.to_owned()));
                     }
@@ -579,6 +602,10 @@ mod tests {
         assert!(r.output[0].contains("true"));
         con.exec("toggle cl_run").unwrap();
         assert_eq!(con.cvars.get("cl_run"), Some(&CvarValue::Bool(false)));
+        let rq = con.exec("r_quality 2").unwrap();
+        assert!(rq.output.iter().any(|l| l.contains("preset")));
+        assert_eq!(con.cvars.get("gl_bloom"), Some(&CvarValue::Bool(true)));
+        assert_eq!(con.cvars.get("gl_ssao"), Some(&CvarValue::Int(1)));
         con.exec("echo hello world").unwrap();
         assert_eq!(
             con.scrollback.last().map(String::as_str),

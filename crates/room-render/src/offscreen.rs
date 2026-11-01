@@ -77,7 +77,8 @@ impl OffscreenTarget {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
+            // Match scene MRT aux (docs/29 U16 G-buffer-lite).
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
@@ -226,7 +227,7 @@ pub fn render_offscreen_with_post(
         });
         pass.draw(&mut rp, scene);
     }
-    post.apply(gpu, &mut encoder, &target.color_view, post_dst);
+    post.apply(gpu, &mut encoder, &target.color_view, None, post_dst);
     gpu.queue.submit(Some(encoder.finish()));
 }
 

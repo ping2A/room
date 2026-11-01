@@ -1,9 +1,11 @@
 //! GPU vertex layouts (bytemuck-castable).
 
 use bytemuck::{Pod, Zeroable};
-use glam::{Vec2, Vec3};
+use glam::{Vec2, Vec3, Vec4};
 
-/// Wall quad corner (streamed every frame).
+/// Wall / sprite quad corner (streamed every frame).
+///
+/// Layout must stay in lockstep with [`FlatVertex`] (same unlit pipeline attrs).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct WallVertex {
@@ -17,10 +19,14 @@ pub struct WallVertex {
     pub _pad: [f32; 2],
     /// Lightmap atlas UV (ZDRay / FLMP surface).
     pub lm_uv: [f32; 2],
+    /// World-space geometric normal (docs/29 U1).
+    pub normal: [f32; 3],
+    /// World-space tangent XYZ + bitangent sign in `w` (docs/29 U2 TBN).
+    pub tangent: [f32; 4],
 }
 
 impl WallVertex {
-    /// Construct (`alpha` = 1, solid / no mask, `lm_uv` = 0).
+    /// Construct (`alpha` = 1, solid / no mask, `lm_uv` = 0, N=+Z, T=+X).
     #[must_use]
     pub fn new(pos: Vec3, uv: Vec2, light: f32) -> Self {
         Self {
@@ -29,6 +35,8 @@ impl WallVertex {
             light,
             _pad: [1.0, 0.0],
             lm_uv: [0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            tangent: [1.0, 0.0, 0.0, 1.0],
         }
     }
 
@@ -66,9 +74,17 @@ impl WallVertex {
         self.lm_uv = lm.to_array();
         self
     }
+
+    /// World-space normal + tangent frame (`tangent.w` = bitangent sign).
+    #[must_use]
+    pub fn with_tbn(mut self, normal: Vec3, tangent: Vec4) -> Self {
+        self.normal = normal.to_array();
+        self.tangent = tangent.to_array();
+        self
+    }
 }
 
-/// Flat triangle vertex.
+/// Flat triangle vertex (same GPU layout as [`WallVertex`]).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FlatVertex {
@@ -82,10 +98,14 @@ pub struct FlatVertex {
     pub _pad: [f32; 2],
     /// Lightmap atlas UV.
     pub lm_uv: [f32; 2],
+    /// World-space geometric normal.
+    pub normal: [f32; 3],
+    /// World-space tangent XYZ + bitangent sign.
+    pub tangent: [f32; 4],
 }
 
 impl FlatVertex {
-    /// Construct (`alpha` = 1, solid fill, `lm_uv` = 0).
+    /// Construct (`alpha` = 1, solid fill, `lm_uv` = 0, N=+Z, T=+X).
     #[must_use]
     pub fn new(pos: Vec3, uv: Vec2, light: f32) -> Self {
         Self {
@@ -94,6 +114,8 @@ impl FlatVertex {
             light,
             _pad: [1.0, 0.0],
             lm_uv: [0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            tangent: [1.0, 0.0, 0.0, 1.0],
         }
     }
 
@@ -108,6 +130,14 @@ impl FlatVertex {
     #[must_use]
     pub fn with_lm_uv(mut self, lm: Vec2) -> Self {
         self.lm_uv = lm.to_array();
+        self
+    }
+
+    /// World-space normal + tangent frame.
+    #[must_use]
+    pub fn with_tbn(mut self, normal: Vec3, tangent: Vec4) -> Self {
+        self.normal = normal.to_array();
+        self.tangent = tangent.to_array();
         self
     }
 }
@@ -128,4 +158,29 @@ pub struct ViewUniforms {
     /// `x` = lightmap blend strength (0 = off), `y` = output gain, `z` = sRGB
     /// encode, `w` = inverse colormap (invulnerability).
     pub lightmap_params: [f32; 4],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wall_and_flat_layouts_match() {
+        assert_eq!(
+            std::mem::size_of::<WallVertex>(),
+            std::mem::size_of::<FlatVertex>()
+        );
+        assert_eq!(
+            std::mem::align_of::<WallVertex>(),
+            std::mem::align_of::<FlatVertex>()
+        );
+    }
+
+    #[test]
+    fn with_tbn_stores_normal_and_tangent() {
+        let v = WallVertex::new(Vec3::ZERO, Vec2::ZERO, 1.0)
+            .with_tbn(Vec3::new(0.0, 1.0, 0.0), Vec4::new(1.0, 0.0, 0.0, -1.0));
+        assert_eq!(v.normal, [0.0, 1.0, 0.0]);
+        assert_eq!(v.tangent, [1.0, 0.0, 0.0, -1.0]);
+    }
 }

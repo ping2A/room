@@ -1,6 +1,9 @@
 //! Registration-phase bookkeeping (`docs/12` §6).
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+
+use crate::manifest::{ManifestOptions, OptionValue};
 
 /// Seed `PropId` values (append-only; DECORATE property subset).
 #[repr(u32)]
@@ -36,6 +39,57 @@ pub enum PropId {
     Tag = 21,
     /// Obituary — `reg_class_property_str`.
     Obituary = 22,
+    // --- MA2 (`docs/31`) — append-only ---
+    /// `Inventory.Amount`.
+    InventoryAmount = 30,
+    /// `Inventory.MaxAmount`.
+    InventoryMaxAmount = 31,
+    /// `Ammo.BackpackAmount`.
+    AmmoBackpackAmount = 32,
+    /// `Ammo.BackpackMaxAmount`.
+    AmmoBackpackMaxAmount = 33,
+    /// `Weapon.AmmoUse`.
+    WeaponAmmoUse = 34,
+    /// `Weapon.AmmoGive`.
+    WeaponAmmoGive = 35,
+    /// `Weapon.SelectionOrder`.
+    WeaponSelectionOrder = 36,
+    /// `Weapon.Kickback`.
+    WeaponKickback = 37,
+    /// `Weapon.SlotNumber`.
+    WeaponSlotNumber = 38,
+    /// `Damage` (missile/melee base).
+    Damage = 39,
+    /// `BounceType` (0 = none).
+    BounceType = 40,
+    /// `BounceCount` max.
+    BounceCountMax = 41,
+    /// `BounceFactor` in percent.
+    BounceFactorPercent = 42,
+    /// `WallBounceFactor` in percent.
+    WallBounceFactorPercent = 43,
+    /// `ProjectileKickBack`.
+    ProjectileKickBack = 44,
+    /// `Weapon.AmmoType` — str.
+    WeaponAmmoType = 50,
+    /// `Weapon.ReadySound` — str.
+    WeaponReadySound = 51,
+    /// `Weapon.UpSound` — str.
+    WeaponUpSound = 52,
+    /// `Inventory.PickupMessage` — str.
+    InventoryPickupMessage = 53,
+    /// `Inventory.PickupSound` — str.
+    InventoryPickupSound = 54,
+    /// `Inventory.Icon` — str.
+    InventoryIcon = 55,
+    /// `SeeSound` — str.
+    SeeSound = 56,
+    /// `DeathSound` — str.
+    DeathSound = 57,
+    /// `BounceSound` — str.
+    BounceSound = 58,
+    /// `ActiveSound` — str.
+    ActiveSound = 59,
 }
 
 /// Virtual method slots for `reg_class_virtual`.
@@ -118,12 +172,62 @@ pub enum RegCall {
         /// Assigned StateRef.
         state_ref: u32,
     },
+    /// `reg_state_flow`.
+    StateFlow {
+        /// [`room_script_abi::state_flow_kind`] value.
+        kind: i32,
+        /// Goto label (empty for Loop/Stop/Wait/Fail).
+        label: String,
+        /// Goto offset in states.
+        offset: i32,
+    },
+    /// `reg_state_action` on the last appended state.
+    StateAction {
+        /// Native action name (`A_WeaponReady`).
+        name: String,
+        /// Raw DECORATE argument string (comma-separated).
+        args: String,
+    },
+    /// `reg_state_offset` on the last appended state.
+    StateOffset {
+        /// Psprite X offset.
+        x: i32,
+        /// Psprite Y offset.
+        y: i32,
+    },
     /// `reg_class_virtual`.
     Virtual {
         /// Virtual slot.
         slot: u32,
         /// Dispatch callback id.
         callback_id: i32,
+    },
+    /// `reg_lump` (fingerprint hashes name/ns/len/bytes).
+    Lump {
+        /// Lump name (≤8, upper).
+        name: String,
+        /// [`room_script_abi::lump_ns`].
+        namespace: i32,
+        /// Raw lump bytes.
+        data: Vec<u8>,
+    },
+    /// `reg_sound_alias`.
+    SoundAlias {
+        /// Logical SNDINFO name.
+        logical: String,
+        /// Lump name.
+        lump: String,
+        /// `$limit` (−1 = omit).
+        limit: i32,
+    },
+    /// `reg_weapon_slot` (`docs/31` MA4).
+    WeaponSlot {
+        /// Slot 1..=10 (0/10 = tenth key).
+        slot: i32,
+        /// Weapon class name.
+        class_name: String,
+        /// Insert index (0 = first).
+        priority: i32,
     },
     /// `reg_event_handler`.
     EventHandler {
@@ -207,6 +311,45 @@ pub struct RegisteredStaticFunction {
     pub module_index: usize,
 }
 
+/// One lump produced during `room_register` (`docs/31` MA3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeneratedLump {
+    /// Owning module index.
+    pub module_index: usize,
+    /// Lump name (≤8, upper).
+    pub name: String,
+    /// [`room_script_abi::lump_ns`] value.
+    pub namespace: i32,
+    /// Raw bytes (Doom patch / DMX / …).
+    pub data: Vec<u8>,
+}
+
+/// SNDINFO alias recorded during registration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeneratedSoundAlias {
+    /// Owning module index.
+    pub module_index: usize,
+    /// Logical name (`shuriken/throw`).
+    pub logical: String,
+    /// Lump name (`DSSHKTHR`).
+    pub lump: String,
+    /// `$limit` channels (−1 = omit).
+    pub limit: i32,
+}
+
+/// Weapon slot recorded during registration (`docs/31` MA4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeneratedWeaponSlot {
+    /// Owning module index.
+    pub module_index: usize,
+    /// Slot 1..=10.
+    pub slot: i32,
+    /// Weapon class name.
+    pub class_name: String,
+    /// Insert priority (0 = first).
+    pub priority: i32,
+}
+
 /// Finished class recorded during registration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegisteredClass {
@@ -232,6 +375,8 @@ pub struct RegisteredClass {
     pub virtuals: Vec<(u32, i32)>,
     /// State labels and states in order.
     pub states: Vec<RegCall>,
+    /// Module index that registered this class (`ModRuntime` / `ScriptHost`).
+    pub module_index: usize,
 }
 
 struct OpenClass {
@@ -255,11 +400,19 @@ pub struct RegistrationSession {
     event_handlers: Vec<RegisteredEventHandler>,
     thinker_classes: Vec<RegisteredThinkerClass>,
     static_functions: Vec<RegisteredStaticFunction>,
+    lumps: Vec<GeneratedLump>,
+    sound_aliases: Vec<GeneratedSoundAlias>,
+    weapon_slots: Vec<GeneratedWeaponSlot>,
+    lump_bytes_total: usize,
     open: Option<OpenClass>,
     next_class: u32,
     next_state: u32,
     /// Module currently executing `room_register` (set by ScriptHost).
     current_module: usize,
+    /// Manifest `[options]` for the module being registered (`docs/31` MA4b).
+    options: ManifestOptions,
+    /// When true, generated lumps may replace IWAD names.
+    pub override_lumps: bool,
 }
 
 impl Default for RegistrationSession {
@@ -278,17 +431,67 @@ impl RegistrationSession {
             event_handlers: Vec::new(),
             thinker_classes: Vec::new(),
             static_functions: Vec::new(),
+            lumps: Vec::new(),
+            sound_aliases: Vec::new(),
+            weapon_slots: Vec::new(),
+            lump_bytes_total: 0,
             open: None,
             // High band avoids colliding with ClassRegistry ClassRef (= ClassId.raw()+1).
             next_class: 1_000,
             next_state: 1_000,
             current_module: 0,
+            options: BTreeMap::new(),
+            override_lumps: false,
         }
+    }
+
+    /// Generated lumps from all modules so far.
+    #[must_use]
+    pub fn lumps(&self) -> &[GeneratedLump] {
+        &self.lumps
+    }
+
+    /// Sound aliases from all modules so far.
+    #[must_use]
+    pub fn sound_aliases(&self) -> &[GeneratedSoundAlias] {
+        &self.sound_aliases
+    }
+
+    /// Weapon slots from all modules so far.
+    #[must_use]
+    pub fn weapon_slots(&self) -> &[GeneratedWeaponSlot] {
+        &self.weapon_slots
+    }
+
+    /// Drain generated lumps (after registration).
+    pub fn take_lumps(&mut self) -> Vec<GeneratedLump> {
+        std::mem::take(&mut self.lumps)
+    }
+
+    /// Drain sound aliases.
+    pub fn take_sound_aliases(&mut self) -> Vec<GeneratedSoundAlias> {
+        std::mem::take(&mut self.sound_aliases)
+    }
+
+    /// Drain weapon slots.
+    pub fn take_weapon_slots(&mut self) -> Vec<GeneratedWeaponSlot> {
+        std::mem::take(&mut self.weapon_slots)
     }
 
     /// Set module index for subsequent `reg_event_handler` / `reg_thinker_class`.
     pub fn set_current_module(&mut self, index: usize) {
         self.current_module = index;
+    }
+
+    /// Replace `[options]` visible to `manifest_option_*` (and fingerprint them).
+    pub fn set_options(&mut self, options: ManifestOptions) {
+        self.options = options;
+    }
+
+    /// Current `[options]` map.
+    #[must_use]
+    pub fn options(&self) -> &ManifestOptions {
+        &self.options
     }
 
     /// Registered event handlers (registration order).
@@ -338,6 +541,13 @@ impl RegistrationSession {
     #[must_use]
     pub fn fingerprint(&self) -> u64 {
         let mut h = 0xcbf2_9ce4_8422_2325_u64;
+        for (k, v) in &self.options {
+            let piece = format!("opt:{k}={v:?}");
+            for b in piece.bytes() {
+                h ^= u64::from(b);
+                h = h.wrapping_mul(0x100_0000_01b3);
+            }
+        }
         for call in &self.calls {
             let piece = format!("{call:?}");
             for b in piece.bytes() {
@@ -454,6 +664,7 @@ impl RegistrationSession {
             class_flags: open.class_flags,
             virtuals: open.virtuals,
             states: open.states,
+            module_index: self.current_module,
         });
     }
 
@@ -502,6 +713,64 @@ impl RegistrationSession {
         open.states.push(call.clone());
         self.calls.push(call);
         state_ref
+    }
+
+    /// `reg_state_flow` → 0 ok, −1 error.
+    pub fn state_flow(&mut self, kind: i32, label: &[u8], offset: i32) -> i32 {
+        let Some(open) = self.open.as_mut() else {
+            return -1;
+        };
+        if !matches!(kind, 0..=4) {
+            return -1;
+        }
+        let label = if kind == room_script_abi::state_flow_kind::GOTO {
+            match std::str::from_utf8(label) {
+                Ok(s) if !s.is_empty() => s.to_owned(),
+                _ => return -1,
+            }
+        } else {
+            String::new()
+        };
+        let call = RegCall::StateFlow {
+            kind,
+            label,
+            offset,
+        };
+        open.states.push(call.clone());
+        self.calls.push(call);
+        0
+    }
+
+    /// `reg_state_action` → 0 ok, −1 error.
+    pub fn state_action(&mut self, name: &[u8], args: &[u8]) -> i32 {
+        let Some(open) = self.open.as_mut() else {
+            return -1;
+        };
+        let Ok(name) = std::str::from_utf8(name) else {
+            return -1;
+        };
+        if name.is_empty() {
+            return -1;
+        }
+        let args = std::str::from_utf8(args).unwrap_or("").to_owned();
+        let call = RegCall::StateAction {
+            name: name.to_owned(),
+            args,
+        };
+        open.states.push(call.clone());
+        self.calls.push(call);
+        0
+    }
+
+    /// `reg_state_offset` → 0 ok, −1 error.
+    pub fn state_offset(&mut self, x: i32, y: i32) -> i32 {
+        let Some(open) = self.open.as_mut() else {
+            return -1;
+        };
+        let call = RegCall::StateOffset { x, y };
+        open.states.push(call.clone());
+        self.calls.push(call);
+        0
     }
 
     /// `reg_class_virtual`.
@@ -605,6 +874,154 @@ impl RegistrationSession {
         });
         self.static_functions.push(f);
         0
+    }
+
+    /// `reg_lump` → 0 ok, −1 error (`docs/31` MA3).
+    pub fn lump(&mut self, name: &[u8], namespace: i32, data: &[u8]) -> i32 {
+        use room_script_abi::{lump_limits, lump_ns};
+        if !matches!(
+            namespace,
+            lump_ns::GLOBAL | lump_ns::SPRITES | lump_ns::GRAPHICS | lump_ns::SOUNDS | lump_ns::FLATS
+        ) {
+            return -1;
+        }
+        let Ok(raw) = std::str::from_utf8(name) else {
+            return -1;
+        };
+        let name = raw.trim();
+        if name.is_empty() || name.len() > 8 {
+            return -1;
+        }
+        if !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'+')
+        {
+            return -1;
+        }
+        let name = name.to_ascii_uppercase();
+        if data.len() > lump_limits::TOTAL_BYTES {
+            return -1;
+        }
+        if self.lump_bytes_total.saturating_add(data.len()) > lump_limits::TOTAL_BYTES {
+            return -1;
+        }
+        if self
+            .lumps
+            .iter()
+            .any(|l| l.name == name && l.namespace == namespace)
+        {
+            return -1;
+        }
+        let lump = GeneratedLump {
+            module_index: self.current_module,
+            name: name.clone(),
+            namespace,
+            data: data.to_vec(),
+        };
+        self.calls.push(RegCall::Lump {
+            name,
+            namespace,
+            data: lump.data.clone(),
+        });
+        self.lump_bytes_total += lump.data.len();
+        self.lumps.push(lump);
+        0
+    }
+
+    /// `reg_sound_alias` → 0 ok, −1 error.
+    pub fn sound_alias(&mut self, logical: &[u8], lump: &[u8], limit: i32) -> i32 {
+        let Ok(logical) = std::str::from_utf8(logical) else {
+            return -1;
+        };
+        let Ok(lump) = std::str::from_utf8(lump) else {
+            return -1;
+        };
+        let logical = logical.trim();
+        let lump = lump.trim();
+        if logical.is_empty() || lump.is_empty() || lump.len() > 8 {
+            return -1;
+        }
+        let lump = lump.to_ascii_uppercase();
+        let alias = GeneratedSoundAlias {
+            module_index: self.current_module,
+            logical: logical.to_owned(),
+            lump: lump.clone(),
+            limit,
+        };
+        self.calls.push(RegCall::SoundAlias {
+            logical: alias.logical.clone(),
+            lump,
+            limit,
+        });
+        self.sound_aliases.push(alias);
+        0
+    }
+
+    /// `reg_weapon_slot` → 0 ok, −1 error (`docs/31` MA4).
+    pub fn weapon_slot(&mut self, slot: i32, class_name: &[u8], priority: i32) -> i32 {
+        if !matches!(slot, 0 | 1..=10) {
+            return -1;
+        }
+        let Ok(raw) = std::str::from_utf8(class_name) else {
+            return -1;
+        };
+        let class_name = raw.trim();
+        if class_name.is_empty() {
+            return -1;
+        }
+        let entry = GeneratedWeaponSlot {
+            module_index: self.current_module,
+            slot,
+            class_name: class_name.to_owned(),
+            priority,
+        };
+        self.calls.push(RegCall::WeaponSlot {
+            slot,
+            class_name: entry.class_name.clone(),
+            priority,
+        });
+        self.weapon_slots.push(entry);
+        0
+    }
+
+    /// `manifest_option_i32` — absent key returns `default`.
+    #[must_use]
+    pub fn option_i32(&self, key: &[u8], default: i32) -> i32 {
+        let Ok(key) = std::str::from_utf8(key) else {
+            return default;
+        };
+        self.options
+            .get(key.trim())
+            .map_or(default, |v| v.as_i32(default))
+    }
+
+    /// `manifest_option_str` → length written into `buf` (−1 absent / OOB).
+    pub fn option_str(&self, key: &[u8], buf: &mut [u8]) -> i32 {
+        let Ok(key) = std::str::from_utf8(key) else {
+            return -1;
+        };
+        let Some(v) = self.options.get(key.trim()) else {
+            return -1;
+        };
+        let owned;
+        let s = match v {
+            OptionValue::Str(t) => t.as_str(),
+            OptionValue::Int(n) => {
+                owned = n.to_string();
+                owned.as_str()
+            }
+            OptionValue::Bool(b) => {
+                if *b {
+                    "true"
+                } else {
+                    "false"
+                }
+            }
+        };
+        let full = s.len();
+        let n = full.min(buf.len());
+        buf[..n].copy_from_slice(&s.as_bytes()[..n]);
+        full as i32
     }
 }
 

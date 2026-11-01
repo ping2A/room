@@ -17,6 +17,7 @@ mod compat;
 mod cross_lines;
 mod damage;
 mod deco_eval;
+pub mod fx_events;
 mod hitscan;
 mod inventory;
 mod level;
@@ -62,6 +63,7 @@ pub use compat::{
 };
 pub use cross_lines::cross_special_lines;
 pub use damage::damage_mobj;
+pub use fx_events::{FxEvent, Rgb8 as FxRgb8};
 pub use hitscan::{TraceHit, ViewTrace, line_attack, view_trace};
 pub use inventory::{
     InvItem, InventoryBags, cheat_give, count_inventory, give_inventory, set_inventory,
@@ -101,5 +103,5 @@ pub use world::{
     BossAction, CameraTextureBind, DEFAULT_BODY_QUEUE_SIZE, DEFAULT_CORPSE_QUEUE_SIZE, HudClipRect,
     HudMessage, KillEvent, LastDamageInfo, MAX_KILL_EVENTS, MatchOver, MatchStanding, MessageTo,
     PlayerHud, Quake, ScreenFade, SectorDynamic, ShotKind, ShotTrace, SimDecalEvent, SimError,
-    SimParticleEvent, SimSoundEvent, Standing, World,
+    SimParticleEvent, SimSoundEvent, Standing, World, psprite_scalelight,
 };

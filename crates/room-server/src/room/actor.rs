@@ -989,9 +989,8 @@ fn v2_hello(state: &mut RoomState, conn: ConnId, h: HelloMsg) {
     );
     state.conn_seat.insert(conn, seat);
     if state.settings.quick_play && state.quick_play_deadline.is_none() {
-        state.quick_play_deadline = Some(
-            Instant::now() + Duration::from_secs(state.cfg.quick_play_timeout_secs),
-        );
+        state.quick_play_deadline =
+            Some(Instant::now() + Duration::from_secs(state.cfg.quick_play_timeout_secs));
     }
     finish_v2_welcome(state, seat);
 }

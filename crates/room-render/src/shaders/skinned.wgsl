@@ -32,6 +32,7 @@ struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) light: f32,
+    @location(2) world_pos: vec3<f32>,
 };
 
 fn skin_point(p: vec3<f32>, indices: vec4<f32>, weights: vec4<f32>) -> vec3<f32> {
@@ -65,11 +66,20 @@ fn vs_main(vin: VsIn) -> VsOut {
     o.clip = view.view_proj * vec4<f32>(skinned, 1.0);
     o.uv = vin.uv;
     o.light = vin.light;
+    o.world_pos = skinned;
     return o;
 }
 
 @fragment
 fn fs_main(vin: VsOut) -> @location(0) vec4<f32> {
+    // Mirror / portal clip (docs/29 SK1) — same test as unlit.wgsl.
+    let cn = view.clip_plane.xyz;
+    if (dot(cn, cn) > 1e-12) {
+        let s = dot(cn, vin.world_pos) + view.clip_plane.w;
+        if (s > 1e-3) {
+            discard;
+        }
+    }
     let albedo = textureSample(tex_albedo, samp_albedo, vin.uv);
     if (albedo.a < 0.1) {
         discard;

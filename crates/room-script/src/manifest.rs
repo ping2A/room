@@ -1,9 +1,74 @@
 //! Mod manifest (`room.toml` in PK3s, `ROOMMOD` lump in WADs) — `docs/12` §2.
 //!
-//! Accepts the TOML subset the manifest uses: `[mod]`, `[[module]]`, and
-//! `key = "string" | integer | bool` lines. Unknown tables / keys are ignored.
+//! Accepts the TOML subset the manifest uses: `[mod]`, `[options]`, `[[module]]`,
+//! and `key = "string" | integer | bool` lines. Unknown tables / keys are ignored.
+
+use std::collections::BTreeMap;
 
 use crate::ModuleScope;
+
+/// One `[options]` value (`docs/31` MA4b).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OptionValue {
+    /// Integer option.
+    Int(i64),
+    /// String option.
+    Str(String),
+    /// Boolean option.
+    Bool(bool),
+}
+
+impl OptionValue {
+    /// Integer coercion (`true`→1, `false`→0, parseable strings).
+    #[must_use]
+    pub fn as_i32(&self, default: i32) -> i32 {
+        match self {
+            Self::Int(n) => i32::try_from(*n).unwrap_or(default),
+            Self::Bool(b) => i32::from(*b),
+            Self::Str(s) => s.parse().unwrap_or(default),
+        }
+    }
+
+    /// String form (ints/bools rendered).
+    #[must_use]
+    pub fn as_str_owned(&self) -> String {
+        match self {
+            Self::Int(n) => n.to_string(),
+            Self::Bool(b) => b.to_string(),
+            Self::Str(s) => s.clone(),
+        }
+    }
+}
+
+/// Sorted `[options]` table (deterministic fingerprint).
+pub type ManifestOptions = BTreeMap<String, OptionValue>;
+
+/// Guest / host language for a `[[module]]` entry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModuleLanguage {
+    /// `wasm32` guest (default; netplay-safe).
+    #[default]
+    Wasm,
+    /// Host CPython (desktop `python-mods` feature; not netplay).
+    Python,
+}
+
+impl ModuleLanguage {
+    fn parse(s: &str) -> Self {
+        if s.eq_ignore_ascii_case("python") || s.eq_ignore_ascii_case("py") {
+            Self::Python
+        } else {
+            Self::Wasm
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Wasm => "wasm",
+            Self::Python => "python",
+        }
+    }
+}
 
 /// One `[[module]]` entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,6 +81,8 @@ pub struct ManifestModule {
     pub name: String,
     /// Optional WAT source lump / path (editor round-trip).
     pub source: Option<String>,
+    /// `wasm` (default) or `python` (host-side desktop mods).
+    pub language: ModuleLanguage,
 }
 
 /// Parsed manifest.
@@ -31,6 +98,8 @@ pub struct Manifest {
     pub abi: i32,
     /// Suggested max seats for multiplayer rooms (`docs/28` BE12).
     pub max_players: Option<u8>,
+    /// Shared `[options]` (identical on every client; `docs/31` MA4b).
+    pub options: ManifestOptions,
     /// Modules in load order.
     pub modules: Vec<ManifestModule>,
 }
@@ -58,6 +127,7 @@ pub enum ManifestError {
 enum Section {
     Root,
     Mod,
+    Options,
     Module,
     Other,
 }
@@ -132,6 +202,7 @@ impl Manifest {
                         scope: ModuleScope::Play,
                         name: String::new(),
                         source: None,
+                        language: ModuleLanguage::Wasm,
                     });
                     Section::Module
                 } else {
@@ -140,10 +211,10 @@ impl Manifest {
                 continue;
             }
             if let Some(name) = line.strip_prefix('[').and_then(|l| l.split(']').next()) {
-                section = if name.trim() == "mod" {
-                    Section::Mod
-                } else {
-                    Section::Other
+                section = match name.trim() {
+                    "mod" => Section::Mod,
+                    "options" => Section::Options,
+                    _ => Section::Other,
                 };
                 continue;
             }
@@ -177,6 +248,14 @@ impl Manifest {
                     }
                     _ => {}
                 },
+                Section::Options => {
+                    let opt = match value {
+                        Value::Int(n) => OptionValue::Int(n),
+                        Value::Bool(b) => OptionValue::Bool(b),
+                        Value::Str(s) => OptionValue::Str(s),
+                    };
+                    out.options.insert(key.to_owned(), opt);
+                }
                 Section::Module => {
                     let Some(m) = out.modules.last_mut() else {
                         continue;
@@ -185,6 +264,7 @@ impl Manifest {
                         "file" => m.file = value.text(),
                         "name" => m.name = value.text(),
                         "source" => m.source = Some(value.text()).filter(|s| !s.is_empty()),
+                        "language" | "lang" => m.language = ModuleLanguage::parse(&value.text()),
                         "scope" => {
                             m.scope = if value.text().eq_ignore_ascii_case("ui") {
                                 ModuleScope::Ui
@@ -236,16 +316,27 @@ impl Manifest {
             q(&self.version),
             self.abi
         );
+        if !self.options.is_empty() {
+            s.push_str("\n[options]\n");
+            for (k, v) in &self.options {
+                match v {
+                    OptionValue::Int(n) => s.push_str(&format!("{k} = {n}\n")),
+                    OptionValue::Bool(b) => s.push_str(&format!("{k} = {b}\n")),
+                    OptionValue::Str(t) => s.push_str(&format!("{k} = {}\n", q(t))),
+                }
+            }
+        }
         for m in &self.modules {
             s.push_str(&format!(
-                "\n[[module]]\nfile = {}\nscope = {}\nname = {}\n",
+                "\n[[module]]\nfile = {}\nscope = {}\nname = {}\nlanguage = {}\n",
                 q(&m.file),
                 q(if m.scope == ModuleScope::Ui {
                     "ui"
                 } else {
                     "play"
                 }),
-                q(&m.name)
+                q(&m.name),
+                q(m.language.as_str()),
             ));
             if let Some(src) = &m.source {
                 s.push_str(&format!("source = {}\n", q(src)));
@@ -289,6 +380,29 @@ handlers = ["betterimps::ImpTracker"]
         assert_eq!(m.modules[0].name, "betterimps");
         assert_eq!(m.modules[1].scope, ModuleScope::Ui);
         assert_eq!(m.modules[1].name, "hud");
+        assert_eq!(Manifest::parse(&m.to_toml()).unwrap(), m);
+    }
+
+    #[test]
+    fn parses_options_table() {
+        let text = r#"
+[mod]
+id = "x"
+abi = 1
+[options]
+slot = 8
+style = "4point"
+place_weapon = true
+[[module]]
+file = "M.wasm"
+"#;
+        let m = Manifest::parse(text).unwrap();
+        assert_eq!(m.options.get("slot"), Some(&OptionValue::Int(8)));
+        assert_eq!(
+            m.options.get("style"),
+            Some(&OptionValue::Str("4point".into()))
+        );
+        assert_eq!(m.options.get("place_weapon"), Some(&OptionValue::Bool(true)));
         assert_eq!(Manifest::parse(&m.to_toml()).unwrap(), m);
     }
 

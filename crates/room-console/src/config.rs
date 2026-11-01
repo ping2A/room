@@ -7,8 +7,17 @@ use std::path::Path;
 /// Write archived CVars as `name value` lines (Doom-style).
 #[must_use]
 pub fn write_ini(cvars: &CvarStore) -> String {
+    write_ini_excluding(cvars, &[])
+}
+
+/// Like [`write_ini`], but skips names in `exclude` (case-insensitive).
+#[must_use]
+pub fn write_ini_excluding(cvars: &CvarStore, exclude: &[&str]) -> String {
     let mut out = String::from("# room.ini — auto-generated\n");
     for name in cvars.archive_names() {
+        if exclude.iter().any(|e| name.eq_ignore_ascii_case(e)) {
+            continue;
+        }
         if let Some(v) = cvars.get(&name) {
             out.push_str(&name);
             out.push(' ');
@@ -17,6 +26,19 @@ pub fn write_ini(cvars: &CvarStore) -> String {
         }
     }
     out
+}
+
+/// Save archived CVars to `path`, optionally excluding names.
+pub fn save_ini_file_excluding(
+    cvars: &CvarStore,
+    path: &Path,
+    exclude: &[&str],
+) -> Result<(), ConsoleError> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(path, write_ini_excluding(cvars, exclude))
+        .map_err(|e| ConsoleError::Message(format!("write {}: {e}", path.display())))
 }
 
 /// Apply `name value` lines from a room/gzdoom-style ini fragment.

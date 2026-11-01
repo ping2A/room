@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Launch the built-in combat arena (monsters + full arsenal) with Freedoom assets.
+#
+# Examples:
+#   ./scripts/play-combat-demo.sh
+#   ./scripts/play-combat-demo.sh --god
+#   ./scripts/play-combat-demo.sh --god --give-all --file mods/doom1-shuriken/shuriken.wad
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

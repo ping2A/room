@@ -102,6 +102,30 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 | **BE10** | Weapon / stats queries | `done` | 100% | — |
 | **BE11** | Rich match result standings | `done` | 100% | — |
 | **BE12** | 8 seats on any map | `done` | 100% | — |
+| **SH0** | Frame graph + linear unlit | `in_progress` | 85% | encode_srgb toggles with post; HDR dual UnlitPass next |
+| **SH1** | Tonemap/LUT/SSAO/bloom/AA wired | `in_progress` | 85% | Real bloom composite wired; FXAA/sharpen on LDR |
+| **SHR** | Review fixes (`docs/29` §1.1) | `in_progress` | 80% | Batch 3: U1/U2/U16; remaining Q/P rows |
+| **WF0** | Weapon timeline harness | `done` | 100% | `testdata/weapons` + 9 timeline tests (held/full + Flash) |
+| **WF1** | Weapon data (`doom.txt`) | `done` | 100% | `Weapon`+`LightDone`; ReadySound/UpSound; SelectionOrder |
+| **WF2** | Weapon logic | `done` | 100% | N1–N5/N7/N8; W8.3 bob freeze; generic deplete; Duke/Royale |
+| **SH2** | Module system / hot reload | `not_started` | 0% | — |
+| **SH3** | HardwareShader materials | `not_started` | 0% | — |
+| **SH4** | Post stages + mod control | `not_started` | 0% | — |
+| **SH5** | P1 look catalogue | `in_progress` | 55% | E3/E5/E6 + F6–F12/G1 stand-ins; soft particles |
+| **SH6** | Liquids & atmosphere | `in_progress` | 20% | Underwater/powerup post + heat-haze pulse MVP |
+| **SH7** | Advanced (GTAO/TAA/…) | `not_started` | 0% | CVars registered |
+| **SH8** | Mod-specific H1–H7 | `not_started` | 0% | — |
+| **SH9** | P3 extras + perf | `not_started` | 0% | — |
+| **SH10** | Hardcore shooting & blood | `in_progress` | 75% | J2 floor + J3 drip stand-ins; wet/SSR still open |
+| **MA1** | Module states + actions | `done` | 100% | merge + flow/action/offset; WASM dispatch; `wasm_mod_states` green |
+| **MA2** | Weapon/ammo/projectile props | `done` | 95% | PropIds + NOALERT; bounce/NOTELEPORT stand-ins; full e2e fire deferred |
+| **MA3** | Generated lumps (art/sound) | `done` | 100% | `wasm_mod_lumps`; SDK encoders; VFS `mount_memory` layer |
+| **MA4** | Slots / alt fire / hit info | `done` | 100% | `reg_weapon_slot`, ALTATTACK, hit info, ThingDestroyed, `[options]` |
+| **SK0** | Shuriken art generation | `done` | 100% | `mods/doom1-shuriken` pinned SHA-256 sprites |
+| **SK1** | Shuriken synth sounds | `done` | 100% | pinned DMX hashes + aliases |
+| **SK2** | Shuriken classes + fire | `done` | 100% | Clip/Pistol parents; slot 8; Fire/AltFire |
+| **SK3** | Shuriken impact / stick | `done` | 100% | impact callback + ring/drops/placement |
+| **SK4** | Shuriken polish | `done` | 100% | `wasm_mod_shuriken` + `shuriken.wad` |
 
 **Priority override (2026-10-12):** M7 + M10–M13 done. Active **M14** (1.0 hardening).
 **M8** when Heretic/Hexen IWADs available; M9 remains deferred.
@@ -110,9 +134,27 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 **Face-swap track:** **F0–F7** done (`docs/26`).
 **Survival Director track:** **SV0**–**SV9** + **MH0**–**MH4** done (`docs/27`). **MH5** optional / deferred.
 **Battle Royale track:** **BR0**–**BR9** + **BE1**–**BE12** + **S-BR1** / **S-BR2** (MVP) / **S-BR4** done (`docs/28` §8–§10). Deferrals: **S-BR2** OpenSkill + weekly reset.
+**Shader track:** **SHR** batch 3 (U1/U2/U16 normals+TBN+aux); **SH0**–**SH1** + **SH5**/**SH10** still open (`docs/29`).
+**Weapons track:** **WF0**–**WF4** + re-audit **N1–N5/N7/N8** + **W8.3** landed (`docs/30`); open **N6** remainder / W12 melee FX / optional movebob CVars.
+**Mod API track:** **MA1**–**MA4** + **SK0**–**SK4** done (`docs/31`, `docs/32`); shuriken acceptance e2e green.
 
 ### Log
 
+- `2026-11-01` — **MA4 + SK1–SK4**: `reg_weapon_slot` / `[options]` / ALTATTACK+RMB / missile hit info / ThingDestroyed / `export_mod` state actions; shuriken synth+classes+behaviour; `wasm_mod_shuriken`; registration fuel 250 M for generated art/sfx.
+- `2026-11-01` — **MA3 + SK0**: `lump_find`/`lump_read`/`reg_lump`/`reg_sound_alias`; SDK `art::encode_patch`/`sound::encode_dmx`; generated PWAD via `Vfs::mount_memory`; `wasm_mod_lumps`; `mods/doom1-shuriken` art pipeline with pinned SHA-256 hashes.
+- `2026-11-01` — **MA1 done + MA2**: `wasm_mod_states` Spawn loop e2e; AS `state*`/`Prop`/`Flag`/`Flow`; weapon/ammo/inventory PropIds + `WEAPON.NOALERT` in fire/ReFire; `mod_weapon.wat` merge test.
+- `2026-11-01` — **MA1** (partial): `StateTable::import_script_states`; `reg_state_flow`/`action`/`offset` ABI+SDK+linkers; `merge_classes` merges module states; WASM `ActionPayload` dispatch from `set_state`/`set_psprite` (Headless binds runtime); SoftFont Graphics menu spacing fix earlier same day.
+- `2026-10-31` — **WF0 + N8 + W8.3**: `testdata/weapons/*.txt` timeline harness (9 guns); Doom `psprite_scalelight`; fuzzoffset psprite fuzz; bob sway frozen outside `A_WeaponReady` (`pspr_bob_x/y`).
+- `2026-10-31` — **docs/30 N1–N5/N7 + N3/N6 partial**: `Weapon`+`LightDone`; Goto parent resolve / no fallthrough; flash `flash0+offset` + action-requested flash (plasma RNG before spawn); generic fire deplete (`FBF`/`CPF`/useammo); Duke SelectionOrder; Royale `WEAPON_STAY 0`; ReadySound/UpSound parse.
+- `2026-10-31` — **SHR batch 3** + **WF3/WF4**: geometric normals + TBN (walls/flats) with world-space N·L; aux G-buffer RGBA8 (oct normal + flags); saw gradual turn/range 65; raise from `WEAPONBOTTOM` + death Deselect→A_Lower; psprite sector light/Bright/fuzz; `rule::WEAPON_STAY` + coop/DM default.
+- `2026-10-31` — **SHR batch 2** + **WF1/WF2** + **WF3 (partial)**: skinned clip plane; lightmap modulate; bloom soft-knee/Karis + additive upsample; SSG G/H + I/J flash; Bright flashes; SelectionOrder parse; ammo depletes in `A_Fire*`; deferred weapon switch; slot cycling; bob period 64 + mom²/4 amplitude; punch sound-on-hit + angle jitter; chaingun 1-bullet + SSG 62-tic tests.
+- `2026-10-31` — **Desktop Python mods**: `language = "python"` in `ROOMMOD`; `discover_python_mods` + `Headless::set_native_mods`; `room-python-host` (`embed`/pyo3); `room-app --features python-mods`; pack `mods/doom1-python-hello/hello.wad`; smoke test spawns Imp at 3s.
+- `2026-10-31` — **README diagrams** + **educational Python**: Mermaid crate/frame/WASM-mod charts in root README; optional Maturin/`pyo3` package `python/` (workspace `exclude`); `mods/doom1-python-hello` mirrors `hello_as` RoomMod hooks; `./scripts/setup-python-edu.sh`.
+- `2026-10-31` — **SHR batch 1** (`docs/29` §1.1.5): bloom per-pass UBOs (R1) + composite bound in post (R2); `needs_post` only wired FX (R7); recreate `PostPass` on LDR format change (R10); web `output_gain=1`/`encode_srgb=0` with post (R12); FXAA/sharpen on LDR (P1/P2); dither before banding (P3); RoomSoft linear + conditional sRGB encode (P5). HUD weapon blit = one RGBA image (plasma/BFG perf).
+- `2026-10-31` — **Blood floor/wall snap**: splats use `floor_at_xy` + nearest linedef; spray particles settle on floor Z; web Settings **Reset shaders to defaults**.
+- `2026-10-30` — **Shader loop**: scrollable Graphics; combat-demo ephemeral+defaults-off; `FxEvent` stream; I1–I10/J1/J5–J6/J10 particle MVPs; E3/E5/E6; F2/F6–F12/G1 stand-ins; heat-haze/liquids/underwater/powerup post hooks; `r_quality` faithful stack.
+- `2026-10-30` — **Graphics settings**: desktop Options → Graphics (live CVar labels, cycle/toggle); web Settings → Graphics; post look FX CRT/dither/vignette/grain/chromatic; web PostChain when effects on.
+- `2026-10-30` — **SH0/SH1** bootstrap: `RenderSettings` + all §8 CVars; `PostChain` (SSAO/bloom/tonemap/FXAA); palette 32³ LUT; tonemap modes incl. RoomSoft/AgX/Uncharted2/Khronos; desktop shell wires post when any effect on; `r_quality` presets; web `roomSetShaderCvar`.
 - `2026-10-30` — Survival draft **pause**: `rule::PAUSED` freezes thinkers/`maptime` while `WorldTick` still runs; draft timeout uses open-menu tics; `wasm_mod_survival` asserts pause/unpause.
 - `2026-10-30` — **S-BR1** / **S-BR2** (MVP) / **S-BR4**: `room-server` `br_stats.json`, `GET /api/br/leaderboard`, lobby BR tab; `POST /api/quick-play/br`; `fill_bots` on `welcome`/`start`; royale results ingest test.
 - `2026-10-30` — **BE3** `player_name`; session names on `World` (checksum); web roster / `room-app` cvar + lobby `Start.names`; royale HUD wired; `wasm_mod_player_name`; `royale.wasm`/`royale.wad` rebuilt.

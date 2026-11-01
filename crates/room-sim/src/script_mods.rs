@@ -4,6 +4,10 @@
 //! tics the shell lends it the [`World`] (moved into a shared cell, so host
 //! imports get full `&mut World` access without aliasing): it dispatches
 //! `WorldLoaded` / `WorldTick` / queued sim events, then hands the world back.
+//!
+//! State-action dispatch uses a narrow `unsafe` host↔guest bridge (same class
+//! of access as `room-script`); see [`bind_active_runtime`].
+#![allow(unsafe_code)]
 
 use crate::actor::ActorId;
 use crate::class::{
@@ -18,14 +22,23 @@ use room_script::game::{
     actor_f64, actor_i32, actor_ptr, args, level_stat, player_prop, rule, spawn_flags,
 };
 use room_script::{
-    GameBridge, GameFn, GuestLifecycle, GuestMemory, HostLinker, ModuleConfig, ModuleScope,
-    RegisteredClass, RegisteredEventHandler, ScriptError, SessionKind, WasmBackend, WasmInstance,
-    WasmiBackend, WasmiInstance, event_mask,
+    GameBridge, GameFn, GuestLifecycle, GuestMemory, HostLinker, LumpBytesFn, LumpFindFn,
+    ModuleConfig, ModuleScope, RegisteredClass, RegisteredEventHandler, ScriptError, SessionKind,
+    WasmBackend, WasmInstance, WasmiBackend, WasmiInstance, event_mask, pack_generated_pwad,
 };
 use room_script_abi::hud::HudWidgetV1;
-use room_script_abi::{Budget, PlayerTraceV1, Val};
+use room_script_abi::{ActionPayload, Budget, PlayerTraceV1, Val, action_caller};
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard};
+
+thread_local! {
+    /// `ModRuntime` bound for the current playsim tic (WASM state actions).
+    static ACTIVE_RT: Cell<*mut ModRuntime> = const { Cell::new(ptr::null_mut()) };
+    /// Borrowed `&mut World` while a state action runs (host imports).
+    static BORROWED_WORLD: Cell<*mut World> = const { Cell::new(ptr::null_mut()) };
+}
 
 /// Sim-side event queued for mod handlers (drained after each tic).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +75,11 @@ pub enum ScriptEvent {
         /// Item class.
         item_class: ClassId,
     },
+    /// An actor was destroyed / removed (`docs/31` MA4).
+    ThingDestroyed {
+        /// Removed actor.
+        thing: ActorId,
+    },
 }
 
 impl ScriptEvent {
@@ -71,6 +89,7 @@ impl ScriptEvent {
             Self::ThingDamaged { .. } => event_mask::WORLD_THING_DAMAGED,
             Self::ThingDied { .. } => event_mask::WORLD_THING_DIED | event_mask::PLAYER_DIED,
             Self::ItemPickup { .. } => event_mask::WORLD_ITEM_PICKUP,
+            Self::ThingDestroyed { .. } => event_mask::WORLD_THING_DESTROYED,
         }
     }
 }
@@ -301,6 +320,7 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
                 actor_i32::DAMAGE => actor.damage,
                 actor_i32::REACTION_TIME => actor.reaction_time,
                 actor_i32::FRIENDLY => i32::from(actor.flags & FLAG_FRIENDLY != 0),
+                actor_i32::HIT_KIND => actor.hit_kind,
                 actor_i32::LAST_DAMAGE_TYPE => player_slot(world, id)
                     .and_then(|s| world.players.get(s)?.as_ref())
                     .map(|p| p.last_damage_weapon)
@@ -335,6 +355,7 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
                 actor_ptr::TARGET => actor.target,
                 actor_ptr::MASTER => actor.master,
                 actor_ptr::TRACER => actor.tracer,
+                actor_ptr::HIT_ACTOR => actor.hit_actor,
                 _ => None,
             };
             Some(Val::I64(
@@ -606,6 +627,7 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
             rule::SELF_DAMAGE => i32::from(world.self_damage),
             rule::SQUAD_DBNO => i32::from(world.squad_dbno),
             rule::PAUSED => i32::from(world.paused),
+            rule::WEAPON_STAY => i32::from(world.weapon_stay),
             _ => 0,
         }),
         GameFn::GameEndMatch => {
@@ -892,6 +914,7 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
                 rule::SELF_DAMAGE => world.self_damage = on,
                 rule::SQUAD_DBNO => world.squad_dbno = on,
                 rule::PAUSED => world.paused = on,
+                rule::WEAPON_STAY => world.weapon_stay = on,
                 _ => {}
             }
             None
@@ -961,6 +984,29 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
                 return i32v(0);
             }
             i32v(i32::from(hit.kind))
+        }
+        GameFn::ActorHitInfo => {
+            let id = live(world, au(a, 0))?;
+            let actor = world.actors.get(id)?;
+            let out = ai(a, 1);
+            let mut buf = [0u8; 48];
+            for (i, v) in [
+                actor.hit_pos.x(),
+                actor.hit_pos.y(),
+                actor.hit_pos.z(),
+                actor.hit_normal.x(),
+                actor.hit_normal.y(),
+                actor.hit_normal.z(),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                buf[i * 8..(i + 1) * 8].copy_from_slice(&v.to_le_bytes());
+            }
+            if !mem.write(out, &buf) {
+                return i32v(0);
+            }
+            i32v(actor.hit_kind)
         }
     }
 }
@@ -1069,11 +1115,15 @@ fn hud_widget_set(
 }
 
 fn destroy(world: &mut World, id: ActorId) {
+    let was_live = world.actors.get(id).is_some_and(|a| !a.destroyed);
     if let Some(a) = world.actors.get_mut(id) {
         a.destroyed = true;
         a.state = None;
         a.flags = 0;
         a.health = 0;
+    }
+    if was_live {
+        world.push_script_event(ScriptEvent::ThingDestroyed { thing: id });
     }
 }
 
@@ -1089,10 +1139,127 @@ struct WorldBridge {
 
 impl GameBridge for WorldBridge {
     fn call(&self, f: GameFn, args: &[Val], mem: &mut dyn GuestMemory) -> Option<Val> {
+        // Re-entrant state actions hold `&mut World` via BORROWED_WORLD.
+        let borrowed = BORROWED_WORLD.get();
+        if !borrowed.is_null() {
+            // SAFETY: set only for the duration of `dispatch_state_action`.
+            let world = unsafe { &mut *borrowed };
+            return serve(world, f, args, mem);
+        }
         let mut g = lock(&self.cell);
         let world = g.as_mut()?;
         serve(world, f, args, mem)
     }
+}
+
+/// Bind `rt` so [`dispatch_state_action`] can reach its modules this tic.
+pub fn bind_active_runtime(rt: &mut ModRuntime) {
+    ACTIVE_RT.with(|c| c.set(rt as *mut ModRuntime));
+}
+
+/// Bind by address (shells without `unsafe` — pointer from `as *mut ModRuntime`).
+///
+/// # Safety
+///
+/// `ptr` must be a live `*mut ModRuntime` for the duration of the tic, or null.
+pub fn bind_active_runtime_addr(ptr: usize) {
+    ACTIVE_RT.with(|c| c.set(ptr as *mut ModRuntime));
+}
+
+/// Clear the active [`ModRuntime`] binding.
+pub fn unbind_active_runtime() {
+    ACTIVE_RT.with(|c| c.set(ptr::null_mut()));
+}
+
+/// Run a WASM state action when an active [`ModRuntime`] is bound.
+///
+/// Returns `Some(StateId)` to jump to when the guest returns a non-zero engine
+/// state id; `Some(None)` means continue; `None` means no runtime / failed.
+pub fn dispatch_state_action(
+    world: &mut World,
+    module_index: usize,
+    callback_id: i32,
+    self_id: ActorId,
+    player: i32,
+    state: room_core::StateId,
+    caller: u32,
+) -> Option<Option<room_core::StateId>> {
+    if callback_id < 0 {
+        return None;
+    }
+    let rt = ACTIVE_RT.get();
+    if rt.is_null() {
+        return None;
+    }
+    // SAFETY: `bind_active_runtime` keeps `rt` alive for the tic.
+    let rt = unsafe { &mut *rt };
+    let Some(m) = rt.mods.get_mut(module_index) else {
+        return None;
+    };
+    if m.failed {
+        return None;
+    }
+    let payload = ActionPayload {
+        self_: actor_ref(self_id),
+        player,
+        state: state.raw(),
+        caller,
+    };
+    let mut bytes = [0u8; ActionPayload::SIZE];
+    if !payload.write_le(&mut bytes) {
+        return None;
+    }
+    BORROWED_WORLD.with(|c| c.set(world as *mut World));
+    world.script_mod_index = module_index as u16;
+    let result = (|| {
+        m.instance
+            .write_memory(m.scratch as usize, &bytes)
+            .ok()?;
+        let mut budget = Budget::from_config(&m.cfg);
+        m.instance
+            .dispatch(
+                callback_id,
+                m.scratch,
+                ActionPayload::SIZE as i32,
+                &mut budget,
+            )
+            .ok()
+    })();
+    BORROWED_WORLD.with(|c| c.set(ptr::null_mut()));
+    match result {
+        Some(0) => Some(None),
+        Some(v) if (1..=i64::from(u32::MAX)).contains(&v) => {
+            Some(Some(room_core::StateId::from_raw(v as u32)))
+        }
+        Some(_) => Some(None),
+        None => {
+            m.failed = true;
+            let line = format!("[{}] disabled: state action trap", m.name);
+            world.push_message(line.clone());
+            lock(&rt.log).push(line);
+            None
+        }
+    }
+}
+
+/// Convenience: actor-caller dispatch (`docs/31` MA1).
+#[must_use]
+pub fn dispatch_actor_state_action(
+    world: &mut World,
+    module_index: usize,
+    callback_id: i32,
+    self_id: ActorId,
+    state: room_core::StateId,
+) -> Option<Option<room_core::StateId>> {
+    dispatch_state_action(
+        world,
+        module_index,
+        callback_id,
+        self_id,
+        -1,
+        state,
+        action_caller::ACTOR,
+    )
 }
 
 /// One mod module to load.
@@ -1106,6 +1273,8 @@ pub struct ModSource {
     pub scope: ModuleScope,
     /// `.wasm` bytes.
     pub bytes: Vec<u8>,
+    /// Manifest `[options]` for this mod (`docs/31` MA4b).
+    pub options: room_script::manifest::ManifestOptions,
 }
 
 struct LoadedMod {
@@ -1125,6 +1294,10 @@ pub struct ModRuntime {
     classes: Vec<RegisteredClass>,
     mask: u64,
     hash: u64,
+    /// In-memory PWAD of lumps generated during `room_register` (may be empty).
+    generated_wad: Vec<u8>,
+    /// Weapon slots recorded during registration (`docs/31` MA4).
+    weapon_slots: Vec<room_script::GeneratedWeaponSlot>,
 }
 
 /// Event bit index → `callback_base + index` dispatch id.
@@ -1141,10 +1314,28 @@ impl ModRuntime {
     /// Validation / link failures or a guest trap / non-zero return in
     /// `room_register` / `room_init`.
     pub fn new(sources: &[ModSource], classes: Arc<ClassRegistry>) -> Result<Self, ScriptError> {
+        Self::new_with_lumps(sources, classes, None)
+    }
+
+    /// Like [`Self::new`], with optional `lump_find` / `lump_read` host data
+    /// (typically a PLAYPAL snapshot from the mounted VFS).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::new`], plus PWAD packing failure for generated lumps.
+    pub fn new_with_lumps(
+        sources: &[ModSource],
+        classes: Arc<ClassRegistry>,
+        lumps: Option<(LumpFindFn, LumpBytesFn)>,
+    ) -> Result<Self, ScriptError> {
         let cell: WorldCell = Arc::new(Mutex::new(None));
         let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let current = Arc::new(Mutex::new(String::new()));
         let mut host = HostLinker::default();
+        if let Some((find, bytes)) = lumps {
+            host.lump_find = find;
+            host.lump_bytes = bytes;
+        }
         {
             let (log, cell, current) = (Arc::clone(&log), Arc::clone(&cell), Arc::clone(&current));
             host.log = Arc::new(move |level, msg| {
@@ -1238,6 +1429,9 @@ impl ModRuntime {
             let fail = |e: ScriptError| ScriptError::Backend(format!("{}: {e}", src.name));
             let cfg = ModuleConfig {
                 scope: ModuleScope::Play,
+                // Art/sound generation at `room_register` (e.g. shuriken) needs
+                // more than the 50 M default (`docs/12` §4.2 / `docs/32` §4).
+                fuel_per_call: 250_000_000,
                 ..Default::default()
             };
             let compiled = backend.compile(&src.bytes, &cfg).map_err(fail)?;
@@ -1247,7 +1441,11 @@ impl ModRuntime {
             if ver != room_script::ABI_VERSION {
                 return Err(fail(ScriptError::Invalid(format!("abi version {ver}"))));
             }
-            lock(&host.reg).set_current_module(mods.len());
+            {
+                let mut reg = lock(&host.reg);
+                reg.set_current_module(mods.len());
+                reg.set_options(src.options.clone());
+            }
             if instance.register(&mut budget).map_err(fail)? != 0 {
                 return Err(fail(ScriptError::Backend("room_register failed".into())));
             }
@@ -1292,8 +1490,17 @@ impl ModRuntime {
         });
         let mask = handlers.iter().fold(0, |m, h| m | h.event_mask);
         let classes = reg.classes().to_vec();
+        let gen_lumps = reg.lumps().to_vec();
+        let gen_aliases = reg.sound_aliases().to_vec();
+        let weapon_slots = reg.weapon_slots().to_vec();
         let hash = hash ^ reg.fingerprint();
         drop(reg);
+        let generated_wad = if gen_lumps.is_empty() && gen_aliases.is_empty() {
+            Vec::new()
+        } else {
+            pack_generated_pwad(&gen_lumps, &gen_aliases)
+                .map_err(|e| ScriptError::Backend(format!("generated wad: {e}")))?
+        };
         Ok(Self {
             cell,
             log,
@@ -1302,7 +1509,21 @@ impl ModRuntime {
             classes,
             mask,
             hash,
+            generated_wad,
+            weapon_slots,
         })
+    }
+
+    /// PWAD bytes produced by `reg_lump` / `reg_sound_alias` (empty if none).
+    #[must_use]
+    pub fn generated_wad(&self) -> &[u8] {
+        &self.generated_wad
+    }
+
+    /// Weapon slots from `reg_weapon_slot` during registration.
+    #[must_use]
+    pub fn weapon_slots(&self) -> &[room_script::GeneratedWeaponSlot] {
+        &self.weapon_slots
     }
 
     /// Loaded module names.
@@ -1368,6 +1589,18 @@ impl ModRuntime {
             map.insert(c.class_ref, id);
         }
         let mut states = states.clone();
+        // Merge module states before inherit_labels so parent labels fill gaps.
+        for c in &self.classes {
+            let Some(&id) = map.get(&c.class_ref) else {
+                continue;
+            };
+            if c.states.is_empty() {
+                continue;
+            }
+            states
+                .import_script_states(&registry, id, c.module_index, &c.states)
+                .map_err(ScriptError::Backend)?;
+        }
         states.inherit_labels(&registry);
         Ok((registry, states))
     }
@@ -1545,6 +1778,12 @@ impl ModRuntime {
                         p.extend_from_slice(&class_ref(item_class).to_le_bytes());
                         self.fire(event_mask::WORLD_ITEM_PICKUP, &p);
                     }
+                    ScriptEvent::ThingDestroyed { thing } => {
+                        self.fire(
+                            event_mask::WORLD_THING_DESTROYED,
+                            &actor_ref(thing).to_le_bytes(),
+                        );
+                    }
                 }
             }
         }
@@ -1664,6 +1903,7 @@ mod tests {
             name: name.into(),
             scope: ModuleScope::Play,
             bytes: wat::parse_str(wat).unwrap(),
+            options: Default::default(),
         }
     }
 
@@ -1719,6 +1959,99 @@ mod tests {
                 .get(id)
                 .is_some_and(|a| a.class == hunter && a.health == 200)
         }));
+    }
+
+    /// Mod owns Spawn (Loop + A_Look) while still inheriting See from DoomImp.
+    const SPINNER: &str = r#"(module
+  (import "room" "class_find" (func $class_find (param i32 i32) (result i32)))
+  (import "room" "reg_class_begin" (func $begin (param i32 i32 i32 i32 i32 i32) (result i32)))
+  (import "room" "reg_class_end" (func $end))
+  (import "room" "reg_state_label" (func $label (param i32 i32)))
+  (import "room" "reg_state" (func $state (param i32 i32 i32 i32 i32) (result i32)))
+  (import "room" "reg_state_action" (func $action (param i32 i32 i32 i32) (result i32)))
+  (import "room" "reg_state_flow" (func $flow (param i32 i32 i32 i32) (result i32)))
+  (memory (export "memory") 1)
+  (data (i32.const 0) "DoomImp")
+  (data (i32.const 16) "SpinImp")
+  (data (i32.const 32) "Spawn")
+  (data (i32.const 48) "TROO")
+  (data (i32.const 64) "A_Look")
+  (func (export "room_abi_version") (result i32) (i32.const 1))
+  (func (export "room_alloc") (param i32 i32) (result i32) (i32.const 1024))
+  (func (export "room_free") (param i32 i32 i32))
+  (func (export "room_register") (result i32)
+    (local $imp i32)
+    (local.set $imp (call $class_find (i32.const 0) (i32.const 7)))
+    (drop (call $begin (i32.const 16) (i32.const 7) (local.get $imp) (i32.const 0) (i32.const -1) (i32.const 0)))
+    (call $label (i32.const 32) (i32.const 5))
+    (drop (call $state (i32.const 48) (i32.const 65) (i32.const 8) (i32.const 0) (i32.const -1)))
+    (drop (call $action (i32.const 64) (i32.const 6) (i32.const 0) (i32.const 0)))
+    (drop (call $state (i32.const 48) (i32.const 66) (i32.const 8) (i32.const 0) (i32.const -1)))
+    (drop (call $action (i32.const 64) (i32.const 6) (i32.const 0) (i32.const 0)))
+    (drop (call $flow (i32.const 0) (i32.const 0) (i32.const 0) (i32.const 0)))
+    (call $end)
+    (i32.const 0))
+  (func (export "room_init") (param i32) (result i32) (i32.const 0))
+  (func (export "room_dispatch") (param i32 i32 i32) (result i64) (i64.const 0))
+)"#;
+
+    #[test]
+    fn merge_classes_weapon_ammo_props_and_noalert() {
+        let (classes, states) = tables();
+        let wasm = wat::parse_file(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../room-script/testdata/mod_weapon.wat"
+        ))
+        .unwrap();
+        let rt = ModRuntime::new(
+            &[ModSource {
+                mod_id: "test.weapon".into(),
+                name: "weapon".into(),
+                scope: ModuleScope::Play,
+                bytes: wasm,
+                options: Default::default(),
+            }],
+            Arc::clone(&classes),
+        )
+        .unwrap();
+        let (classes, _states) = rt.merge_classes(&classes, &states).unwrap();
+        let ammo = classes.find_name("QuietClip").unwrap();
+        let a = classes.get(ammo).unwrap();
+        assert!(a.is_ammo);
+        assert_eq!(a.inventory_amount, 5);
+        assert_eq!(a.inventory_max_amount, 40);
+        assert_eq!(a.ammo_backpack_amount, 10);
+        assert_eq!(a.ammo_backpack_max_amount, 80);
+        assert_eq!(a.inventory_icon, "CLIP");
+        let gun = classes.find_name("QuietGun").unwrap();
+        let g = classes.get(gun).unwrap();
+        assert!(g.is_weapon);
+        assert!(g.weapon_noalert);
+        assert_eq!(g.ammo_type, "QuietClip");
+        assert_eq!(g.ammo_use, 1);
+        assert_eq!(g.ammo_give, 10);
+        assert_eq!(g.selection_order, 1600);
+        assert_eq!(g.kickback, 50);
+        assert_eq!(g.slot_number, 8);
+        assert_eq!(g.up_sound, "shuriken/up");
+    }
+
+    #[test]
+    fn merge_classes_imports_module_spawn_loop() {
+        let (classes, states) = tables();
+        let rt = ModRuntime::new(&[source("spinner", SPINNER)], Arc::clone(&classes)).unwrap();
+        let (classes, states) = rt.merge_classes(&classes, &states).unwrap();
+        let spin = classes.find_name("SpinImp").unwrap();
+        let spawn = states.find_label(spin, "Spawn").unwrap();
+        let a = states.get(spawn).unwrap();
+        assert_eq!(a.sprite, "TROO");
+        assert_eq!(a.action.as_deref(), Some("A_Look"));
+        assert_eq!(a.tics, 8);
+        let b = states.get(a.next.unwrap()).unwrap();
+        assert_eq!(b.frame, 1);
+        assert_eq!(b.next.unwrap(), spawn, "Loop must return to Spawn");
+        // Parent See still inherited.
+        assert!(states.find_label(spin, "See").is_some());
     }
 
     #[test]

@@ -13,6 +13,11 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+default = []
+## Embed CPython and load `language = "python"` ROOMMOD modules (desktop only).
+python-mods = ["room-python-host/embed"]
+
 [dependencies]
 clap.workspace = true
 cpal.workspace = true
@@ -33,6 +38,7 @@ room-testkit = { path = "../room-testkit" }
 room-ui = { path = "../room-ui" }
 room-vfs = { path = "../room-vfs" }
 room-faceswap = { path = "../room-faceswap" }
+room-python-host = { path = "../room-python-host" }
 glam.workspace = true
 image.workspace = true
 pollster.workspace = true

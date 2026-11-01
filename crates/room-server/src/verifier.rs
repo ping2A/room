@@ -107,7 +107,7 @@ fn load_headless(
             .mount_memory(format!("{name}.wad"), bytes)
             .map_err(|e| format!("mount mod {name}: {e}"))?;
     }
-    let vfs = builder.build().map_err(|e| format!("vfs: {e}"))?;
+    let mut vfs = builder.build().map_err(|e| format!("vfs: {e}"))?;
     let mut geometry = load_map(&vfs, map).map_err(|e| format!("load_map: {e}"))?;
     ensure_nodes(&mut geometry);
     let src = include_str!("../../../testdata/actors/doom_basic.txt");
@@ -130,7 +130,7 @@ fn load_headless(
     }
     if !mods.is_empty() {
         let names = game
-            .set_script_mods(mods)
+            .set_script_mods_with_vfs(mods, Some(&mut vfs))
             .map_err(|e| format!("mods: {e}"))?;
         info!(mods = %names.join(", "), "verifier mods loaded");
     }

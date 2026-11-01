@@ -94,4 +94,5 @@ game_imports! {
     fn player_team(player: i32) -> i32;
     fn player_trace(player: i32, max_dist: f64, out_ptr: i32) -> i32;
     fn player_name(player: i32, buf: i32, cap: i32) -> i32;
+    fn actor_hit_info(actor: i64, out_ptr: i32) -> i32;
 }

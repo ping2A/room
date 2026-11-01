@@ -29,6 +29,8 @@ impl Buttons {
     pub const QUICKKICK: u32 = 1 << 7;
     /// Use the carried inventory item (Duke medkit / steroids).
     pub const INVUSE: u32 = 1 << 8;
+    /// Alt / secondary attack (`docs/31` MA4).
+    pub const ALTATTACK: u32 = 1 << 9;
     /// Mod bind `+mod1` (ping / primary mod action; `docs/28` BE4).
     pub const MOD1: u32 = 1 << 16;
     /// Mod bind `+mod2` (map / secondary mod action).
@@ -162,8 +164,16 @@ pub struct Player {
     pub extralight: i32,
     /// Weapon bob amplitude (map units; from XY speed).
     pub bob: f64,
+    /// Last weapon sway X written by `A_WeaponReady` (docs/30 W8.3).
+    pub pspr_bob_x: f64,
+    /// Last weapon sway Y written by `A_WeaponReady` (docs/30 W8.3).
+    pub pspr_bob_y: f64,
     /// Attack button was held last tic (edge detect).
     pub attack_down: bool,
+    /// Alt-attack button was held last tic (`docs/31` MA4).
+    pub alt_attack_down: bool,
+    /// True while the ready weapon is in an alt-fire / alt-hold sequence.
+    pub alt_fire_active: bool,
     /// Doom `player->refire` — consecutive `A_ReFire` shots (`P_GunShot` spread).
     pub refire: i32,
     /// Jump button was held last tic (edge detect).
@@ -308,14 +318,19 @@ impl Player {
         self.crouching = false;
         self.ready_weapon = None;
         self.pending_weapon = None;
-        self.pspr_y = WEAPON_TOP;
+        // Off-screen until `P_BringUpWeapon` / Select raise (docs/30 W13).
+        self.pspr_y = WEAPON_BOTTOM;
         self.pspr_state = None;
         self.pspr_tics = 0;
         self.pspr_flash_state = None;
         self.pspr_flash_tics = 0;
         self.extralight = 0;
         self.bob = 0.0;
+        self.pspr_bob_x = 0.0;
+        self.pspr_bob_y = 0.0;
         self.attack_down = false;
+        self.alt_attack_down = false;
+        self.alt_fire_active = false;
         self.refire = 0;
         self.jump_down = false;
         self.use_down = false;

@@ -51,6 +51,21 @@ pub fn draw_weapon(
     bob_x: f32,
     bob_y: f32,
 ) {
+    draw_weapon_lit(list, patch, fullscreen, soft, bob_x, bob_y, 1.0, false, false);
+}
+
+/// Draw a psprite with sector lighting / Bright / fuzz (docs/30 W6).
+pub fn draw_weapon_lit(
+    list: &mut UiDrawList,
+    patch: &str,
+    fullscreen: bool,
+    soft: Option<&SoftPatch>,
+    bob_x: f32,
+    bob_y: f32,
+    light: f32,
+    bright: bool,
+    fuzz: bool,
+) {
     if patch.is_empty() {
         return;
     }
@@ -65,7 +80,8 @@ pub fn draw_weapon(
             Vec2::new(0.0, 0.0),
         )
     };
-    list.patch(patch, pos, size);
+    let lit = if bright { 1.0 } else { light.clamp(0.05, 1.0) };
+    list.patch_lit(patch, pos, size, lit, fuzz);
 }
 
 #[cfg(test)]

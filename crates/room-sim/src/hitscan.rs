@@ -34,6 +34,13 @@ fn record_hitscan(world: &mut World, source: ActorId, origin: DVec3, hit: &Trace
         damage,
         missile_class: String::new(),
     });
+    world.push_fx(crate::fx_events::FxEvent::HitscanFired {
+        shooter: source,
+        origin,
+        end: hit.pos,
+        hit_actor: hit.actor,
+        damage,
+    });
     if let Some(ld) = world.last_damage.as_mut() {
         if ld.tic == world.level.time && ld.cause.is_empty() {
             ld.cause = "hitscan".into();
@@ -1167,7 +1174,35 @@ pub(crate) fn spawn_blood(
         }
     }
     jitter_mobj_tics(world, id);
-    let _ = source;
+    // Render-only blood spray cue (SH10 / docs/29 J1).
+    let dir = source
+        .and_then(|s| world.actors.get(s).map(|a| a.pos))
+        .map(|sp| {
+            let d = DVec3::new(pos.x() - sp.x(), pos.y() - sp.y(), pos.z() - sp.z());
+            let len = (d.x() * d.x() + d.y() * d.y() + d.z() * d.z())
+                .sqrt()
+                .max(1e-3);
+            DVec3::new(d.x() / len, d.y() / len, d.z() / len)
+        })
+        .unwrap_or(DVec3::new(0.0, 0.0, 1.0));
+    let color = world
+        .actors
+        .get(victim)
+        .and_then(|a| world.classes.get(a.class))
+        .and_then(|c| c.blood_color)
+        .map(|rgb| crate::fx_events::Rgb8 {
+            r: rgb[0],
+            g: rgb[1],
+            b: rgb[2],
+        })
+        .unwrap_or_else(crate::fx_events::Rgb8::blood_red);
+    world.push_fx(crate::fx_events::FxEvent::BloodHit {
+        victim,
+        pos,
+        dir,
+        damage,
+        color,
+    });
 }
 
 /// Spawn a `BulletPuff` at `pos`.

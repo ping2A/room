@@ -8,14 +8,17 @@ use room_script_abi::{Budget, REQUIRED_EXPORTS, Trap, Val};
 use std::sync::Arc;
 
 pub mod game;
+pub mod generated_wad;
 pub mod manifest;
 mod registration;
 
 pub use game::{GameBridge, GameFn, GuestMemory, SharedGameBridge, ValKind};
+pub use generated_wad::pack_generated_pwad;
 pub use registration::{
-    PropId, RegCall, RegisteredClass, RegisteredEventHandler, RegisteredStaticFunction,
-    RegisteredThinkerClass, RegistrationSession, SharedRegistration, VirtualSlot,
-    event_handler_flags, event_mask, shared_registration,
+    GeneratedLump, GeneratedSoundAlias, GeneratedWeaponSlot, PropId, RegCall, RegisteredClass,
+    RegisteredEventHandler, RegisteredStaticFunction, RegisteredThinkerClass,
+    RegistrationSession, SharedRegistration, VirtualSlot, event_handler_flags, event_mask,
+    shared_registration,
 };
 pub use room_script_abi::{
     ABI_VERSION, ActorRef, ExportId, ModuleConfig, ModuleScope, SessionKind,
@@ -70,6 +73,10 @@ pub type NameInternFn = Arc<dyn Fn(&[u8]) -> u32 + Send + Sync>;
 pub type ClassFindFn = Arc<dyn Fn(&[u8]) -> u32 + Send + Sync>;
 /// Host `room::acs_execute(script, map, args) -> i32` (queued or immediate).
 pub type AcsExecuteFn = Arc<dyn Fn(i32, i32, &[i32]) -> i32 + Send + Sync>;
+/// Host `room::lump_find(name, namespace) -> index` (−1 absent). Indices are opaque ≥ 0.
+pub type LumpFindFn = Arc<dyn Fn(&[u8], i32) -> i32 + Send + Sync>;
+/// Host `room::lump_read` source: bytes for a `lump_find` index.
+pub type LumpBytesFn = Arc<dyn Fn(i32) -> Option<Vec<u8>> + Send + Sync>;
 
 /// Host callbacks bound into guest imports (module `"room"`).
 #[derive(Clone)]
@@ -88,6 +95,10 @@ pub struct HostLinker {
     pub class_find: ClassFindFn,
     /// `acs_execute(script, map, args)`.
     pub acs_execute: AcsExecuteFn,
+    /// `lump_find(name, namespace) -> index`.
+    pub lump_find: LumpFindFn,
+    /// `lump_read` payload by index from [`Self::lump_find`].
+    pub lump_bytes: LumpBytesFn,
     /// Registration-phase session (`reg_*` imports).
     pub reg: SharedRegistration,
     /// Game-control imports ([`GameFn`]); `None` → every call returns zero.
@@ -112,6 +123,8 @@ impl Default for HostLinker {
                     .unwrap_or(0)
             }),
             acs_execute: Arc::new(|_script, _map, _args| 0),
+            lump_find: Arc::new(|_name, _ns| -1),
+            lump_bytes: Arc::new(|_index| None),
             reg,
             game: None,
         }

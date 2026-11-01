@@ -146,13 +146,23 @@ impl SoftFont {
         }
     }
 
+    /// Inter-glyph tracking applied after the first character.
+    ///
+    /// `STCFN` patches ink to both left and right edges of `width`; without a
+    /// 1px gap (same pitch idea as [`crate::doom_text::draw_stcfn_string`])
+    /// SoftFont menus look fused/overlapped once scaled to the framebuffer.
+    fn tracking(&self) -> i16 {
+        match self {
+            Self::Fon1(_) => 0,
+            Self::Patches { .. } => 1,
+            Self::Fon2(f) => f.kerning,
+        }
+    }
+
     /// Pixel width of a string (ASCII; UTF-8 bytes above 127 use glyph if present).
     #[must_use]
     pub fn measure(&self, text: &str) -> f32 {
-        let kern = match self {
-            Self::Fon1(_) | Self::Patches { .. } => 0i16,
-            Self::Fon2(f) => f.kerning,
-        };
+        let kern = self.tracking();
         let mut w = 0i32;
         let mut first = true;
         for b in text.bytes() {
@@ -218,10 +228,22 @@ impl SoftFont {
         color: Rgba,
         mut emit: impl FnMut(f32, f32, f32, f32, [f32; 4]),
     ) {
-        let kern = match self {
-            Self::Fon1(_) | Self::Patches { .. } => 0i16,
-            Self::Fon2(f) => f.kerning,
-        };
+        self.paint_text_xy(text, origin_x, origin_y, scale, scale, color, &mut emit);
+    }
+
+    /// Like [`Self::paint_text`], but with independent X/Y scales so widescreen
+    /// stretch (`sx ≠ sy`) keeps advance matching destination coordinates.
+    pub fn paint_text_xy(
+        &self,
+        text: &str,
+        origin_x: f32,
+        origin_y: f32,
+        scale_x: f32,
+        scale_y: f32,
+        color: Rgba,
+        mut emit: impl FnMut(f32, f32, f32, f32, [f32; 4]),
+    ) {
+        let kern = self.tracking();
         let mut x = origin_x;
         let mut first = true;
         for b in text.bytes() {
@@ -229,23 +251,24 @@ impl SoftFont {
                 continue;
             }
             if !first {
-                x += f32::from(kern) * scale;
+                x += f32::from(kern) * scale_x;
             }
             first = false;
-            let advance = f32::from(self.char_width(b)) * scale;
+            let advance = f32::from(self.char_width(b)) * scale_x;
             if let Some(g) = self.glyph(b) {
-                self.paint_glyph(g, x, origin_y, scale, color, &mut emit);
+                self.paint_glyph_xy(g, x, origin_y, scale_x, scale_y, color, &mut emit);
             }
             x += advance;
         }
     }
 
-    fn paint_glyph(
+    fn paint_glyph_xy(
         &self,
         g: &FontGlyph,
         x0: f32,
         y0: f32,
-        scale: f32,
+        scale_x: f32,
+        scale_y: f32,
         color: Rgba,
         emit: &mut impl FnMut(f32, f32, f32, f32, [f32; 4]),
     ) {
@@ -271,10 +294,10 @@ impl SoftFont {
                 if rgba[3] <= 0.0 {
                     continue;
                 }
-                let px = x0 + start as f32 * scale;
-                let py = y0 + row as f32 * scale;
-                let pw = (col - start) as f32 * scale;
-                emit(px, py, pw, scale.max(1.0), rgba);
+                let px = x0 + start as f32 * scale_x;
+                let py = y0 + row as f32 * scale_y;
+                let pw = (col - start) as f32 * scale_x;
+                emit(px, py, pw, scale_y.max(1.0), rgba);
             }
         }
     }
@@ -464,6 +487,90 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn paint_text_xy_widescreen_advances_with_sx() {
+        // Regression: uniform min(sx,sy) advance + sx-scaled origin crushed glyphs.
+        let Some(wad) = freedoom2() else {
+            return;
+        };
+        let vfs = room_vfs::VfsBuilder::new()
+            .mount_path(&wad)
+            .unwrap()
+            .build()
+            .unwrap();
+        let reg = FontRegistry::load_doom_fonts(&vfs);
+        let Some(font) = reg.get(FontId::SMALL) else {
+            return;
+        };
+        let mut xs = Vec::new();
+        let sx = 8.0_f32;
+        let sy = 5.0_f32;
+        font.paint_text_xy("AB", 0.0, 0.0, sx, sy, Rgba::WHITE, |x, _y, _w, _h, _| {
+            xs.push(x);
+        });
+        assert!(xs.len() >= 2, "expected painted pixels for AB");
+        let a_end = f32::from(font.char_width(b'A')) * sx;
+        let max_a = xs
+            .iter()
+            .copied()
+            .filter(|&x| x < a_end)
+            .fold(0.0_f32, f32::max);
+        let min_b = xs
+            .iter()
+            .copied()
+            .filter(|&x| x >= a_end * 0.9)
+            .fold(f32::MAX, f32::min);
+        assert!(
+            min_b + 0.5 >= max_a,
+            "widescreen SoftFont glyphs must not overlap (max_a={max_a} min_b={min_b})"
+        );
+    }
+
+    #[test]
+    fn softfont_stcfn_leaves_gap_between_edge_ink_glyphs() {
+        // STCFN QUALITY letters ink to both edges of `width`; tracking must
+        // keep SoftFont advance strictly past the previous glyph's ink.
+        let Some(wad) = freedoom2() else {
+            return;
+        };
+        let vfs = room_vfs::VfsBuilder::new()
+            .mount_path(&wad)
+            .unwrap()
+            .build()
+            .unwrap();
+        let reg = FontRegistry::load_doom_fonts(&vfs);
+        let Some(font) = reg.get(FontId::SMALL) else {
+            return;
+        };
+        let mut spans: Vec<(f32, f32)> = Vec::new();
+        font.paint_text("QI", 0.0, 0.0, 1.0, Rgba::WHITE, |x, _y, w, _h, _| {
+            spans.push((x, x + w));
+        });
+        assert!(spans.len() >= 2, "expected Q and I pixels");
+        let q_w = f32::from(font.char_width(b'Q'));
+        let q_end = spans
+            .iter()
+            .copied()
+            .filter(|(x, _)| *x < q_w)
+            .map(|(_, r)| r)
+            .fold(0.0_f32, f32::max);
+        let i_start = spans
+            .iter()
+            .copied()
+            .filter(|(x, _)| *x >= q_w)
+            .map(|(l, _)| l)
+            .fold(f32::MAX, f32::min);
+        assert!(
+            i_start >= q_end + 0.99,
+            "STCFN SoftFont must leave ≥1px gap (q_end={q_end} i_start={i_start})"
+        );
+        let measured = font.measure("QI");
+        assert!(
+            (measured - (q_w + 1.0 + f32::from(font.char_width(b'I')))).abs() < 0.01,
+            "measure must include +1 tracking, got {measured}"
+        );
     }
 
     #[test]

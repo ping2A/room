@@ -6,7 +6,13 @@
 //! cannot cancel a press still held on another.
 
 /// How many playsim tics to keep `+attack` after a short click.
-pub const ATTACK_HOLD_TICS: u8 = 18;
+///
+/// Must be long enough that a 1-frame press still reaches `A_WeaponReady` →
+/// Fire (macOS Locked cursor often drops the button before the next tic), but
+/// **short enough that `A_ReFire` does not see a held attack**. Pistol reaches
+/// `A_ReFire` after 14 tics; plasma after 3 — so values ≥4 make a tap fire
+/// plasma twice / pistol twice. `3` covers grab-drop without auto-refire.
+pub const ATTACK_HOLD_TICS: u8 = 3;
 
 /// Platform used to interpret raw `DeviceEvent::Button` ids.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -219,6 +225,16 @@ mod tests {
             fired >= u32::from(ATTACK_HOLD_TICS),
             "expected ≥{} attack tics after dual release, got {fired}",
             ATTACK_HOLD_TICS
+        );
+    }
+
+    #[test]
+    fn hold_is_shorter_than_plasma_refire_window() {
+        // Plasma: Fire A 3 tics then A_ReFire. Hold must end before that so a
+        // tap is one bolt (see think_player weapon fire tests).
+        assert!(
+            ATTACK_HOLD_TICS <= 3,
+            "ATTACK_HOLD_TICS={ATTACK_HOLD_TICS} would auto-refire plasma on a tap"
         );
     }
 

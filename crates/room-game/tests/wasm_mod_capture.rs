@@ -19,6 +19,7 @@ fn capture_mod() -> ModSource {
         name: "capture".into(),
         scope: ModuleScope::Play,
         bytes: wasm,
+        options: Default::default(),
     }
 }
 

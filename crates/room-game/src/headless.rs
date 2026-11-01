@@ -6,15 +6,57 @@ use crate::sound::SoundSystem;
 use room_audio::SoundEvent;
 use room_defs::Complevel;
 use room_map::MapGeometry;
+use room_script::{LumpBytesFn, LumpFindFn};
 use room_sim::{
     BossAction, Buttons, ClassRegistry, CompatMode, MAX_PLAYERS, PlayerState, SimError, StateTable,
     TicCmd, World, cheat_give, math_mode_for_vanilla_demo,
 };
 use room_ui::HudState;
-use room_vfs::Vfs;
+use room_vfs::{Namespace, Vfs};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use thiserror::Error;
+
+/// Snapshot PLAYPAL / COLORMAP (and matching namespace) for registration-scope
+/// `lump_find` / `lump_read` (`docs/31` MA3).
+fn snapshot_lump_host(vfs: &Vfs) -> (LumpFindFn, LumpBytesFn) {
+    let want = [
+        ("PLAYPAL", Namespace::Global, 0i32),
+        ("COLORMAP", Namespace::Global, 0i32),
+    ];
+    let mut entries: Vec<(String, i32, Vec<u8>)> = Vec::new();
+    for &(name, ns, abi_ns) in &want {
+        if let Some(id) = vfs.find(name, ns) {
+            if let Ok(bytes) = vfs.read(id) {
+                entries.push((name.to_owned(), abi_ns, bytes.to_vec()));
+            }
+        }
+    }
+    let entries = Arc::new(entries);
+    let find = {
+        let entries = Arc::clone(&entries);
+        Arc::new(move |name: &[u8], ns: i32| -> i32 {
+            let Ok(s) = std::str::from_utf8(name) else {
+                return -1;
+            };
+            let key = s.to_ascii_uppercase();
+            entries
+                .iter()
+                .position(|(n, nns, _)| n == &key && *nns == ns)
+                .map_or(-1, |i| i as i32)
+        })
+    };
+    let bytes = {
+        let entries = Arc::clone(&entries);
+        Arc::new(move |index: i32| -> Option<Vec<u8>> {
+            if index < 0 {
+                return None;
+            }
+            entries.get(index as usize).map(|(_, _, d)| d.clone())
+        })
+    };
+    (find, bytes)
+}
 
 /// Skill level 1..=5 (Doom ITYTD…Nightmare).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,6 +205,10 @@ pub struct Headless {
     time_left: Option<u32>,
     /// Live mod runtime for the current game session.
     mods: Option<room_sim::script_mods::ModRuntime>,
+    /// PWAD of lumps generated during the last `set_script_mods` (MA3).
+    generated_mod_wad: Vec<u8>,
+    /// Host-side play mods (desktop Python, tools).
+    native_mods: Vec<Box<dyn crate::native_mods::NativePlayMod>>,
     /// Mod load / runtime errors not yet drained by the shell.
     mod_errors: Vec<String>,
     /// Duke `CONEVT` lump (`ENTERLEVEL` / `EGS` / `GETSHOT` / `RESETWEAPONS` / …).
@@ -476,6 +522,8 @@ impl Headless {
             mod_sources: Vec::new(),
             time_left: None,
             mods: None,
+            generated_mod_wad: Vec::new(),
+            native_mods: Vec::new(),
             mod_errors: Vec::new(),
             conevt: None,
             conevt_last_hp: None,
@@ -508,6 +556,12 @@ impl Headless {
         &self.classes
     }
 
+    /// Session state table (DECORATE plus merged mod states).
+    #[must_use]
+    pub fn states(&self) -> &Arc<room_sim::StateTable> {
+        &self.states
+    }
+
     /// Install WASM mod modules (after [`Self::set_defs`]): registers them once,
     /// merges their classes into the session tables, and runs them every tic
     /// of every following game. Returns the loaded module names.
@@ -520,24 +574,80 @@ impl Headless {
         &mut self,
         sources: Vec<room_sim::script_mods::ModSource>,
     ) -> Result<Vec<String>, GameError> {
+        self.set_script_mods_with_vfs(sources, None)
+    }
+
+    /// Like [`Self::set_script_mods`], with optional VFS for `lump_find` /
+    /// `lump_read` during registration (PLAYPAL, …). Mounts generated lumps
+    /// into `vfs` when provided and non-empty.
+    ///
+    /// # Errors
+    ///
+    /// Compile / link / registration / merge / VFS mount failure.
+    pub fn set_script_mods_with_vfs(
+        &mut self,
+        sources: Vec<room_sim::script_mods::ModSource>,
+        vfs: Option<&mut room_vfs::Vfs>,
+    ) -> Result<Vec<String>, GameError> {
         self.mods = None;
+        self.generated_mod_wad.clear();
         self.mod_sources.clear();
         self.classes = Arc::clone(&self.base_classes);
         self.states = Arc::clone(&self.base_states);
         if sources.is_empty() {
             return Ok(Vec::new());
         }
-        let rt = room_sim::script_mods::ModRuntime::new(&sources, Arc::clone(&self.classes))
-            .map_err(|e| GameError::Message(format!("mod: {e}")))?;
+        let lumps = vfs.as_ref().map(|v| snapshot_lump_host(v));
+        let rt = room_sim::script_mods::ModRuntime::new_with_lumps(
+            &sources,
+            Arc::clone(&self.classes),
+            lumps,
+        )
+        .map_err(|e| GameError::Message(format!("mod: {e}")))?;
         let (classes, states) = rt
             .merge_classes(&self.classes, &self.states)
             .map_err(|e| GameError::Message(format!("mod: {e}")))?;
+        for slot in rt.weapon_slots() {
+            self.weapon_slots.add_slot_default_priority(
+                slot.slot,
+                &slot.class_name,
+                slot.priority,
+            );
+        }
+        for def in classes.iter() {
+            if def.slot_number != 0 {
+                self.weapon_slots
+                    .add_slot_default(def.slot_number, &def.name);
+            }
+        }
         self.classes = Arc::new(classes);
         self.states = Arc::new(states);
+        self.generated_mod_wad = rt.generated_wad().to_vec();
+        if let (Some(vfs), true) = (vfs, !self.generated_mod_wad.is_empty()) {
+            vfs.mount_memory(
+                "mod-generated.wad",
+                bytes::Bytes::copy_from_slice(&self.generated_mod_wad),
+            )
+            .map_err(|e| GameError::Message(format!("mod wad: {e}")))?;
+        }
         self.mod_errors.extend(rt.drain_log());
         let names = rt.module_names().iter().map(|s| (*s).to_owned()).collect();
+        // Runtime is rebuilt in `restart_mods` when a level starts; keep sources + wad.
+        drop(rt);
         self.mod_sources = sources;
         Ok(names)
+    }
+
+    /// PWAD bytes from the last successful [`Self::set_script_mods`] (may be empty).
+    #[must_use]
+    pub fn generated_mod_wad(&self) -> &[u8] {
+        &self.generated_mod_wad
+    }
+
+    /// Current weapon slot table (KEYCONF + mod `reg_weapon_slot`).
+    #[must_use]
+    pub fn weapon_slots(&self) -> &room_sim::WeaponSlots {
+        &self.weapon_slots
     }
 
     /// Swap the mod set while a level is running (live editing): the old
@@ -579,6 +689,11 @@ impl Headless {
                 w.mod_zones.clear_all();
             }
         }
+        if let Some(w) = self.world.as_mut() {
+            for m in &mut self.native_mods {
+                m.end_map(w);
+            }
+        }
         let same_layout = classes.len() == self.classes.len() && states.len() == self.states.len();
         if let Some(w) = self.world.as_mut() {
             if same_layout {
@@ -598,6 +713,11 @@ impl Headless {
             self.mod_errors.extend(rt.drain_log());
             rt.begin_map(&mut self.world);
         }
+        if let Some(w) = self.world.as_mut() {
+            for m in &mut self.native_mods {
+                m.begin_map(w);
+            }
+        }
         Ok(self.script_mod_names())
     }
 
@@ -605,6 +725,30 @@ impl Headless {
     #[must_use]
     pub fn script_mod_names(&self) -> Vec<String> {
         self.mod_sources.iter().map(|s| s.name.clone()).collect()
+    }
+
+    /// Install host-side play mods (e.g. desktop Python). Replaces any previous set.
+    pub fn set_native_mods(&mut self, mods: Vec<Box<dyn crate::native_mods::NativePlayMod>>) {
+        if let Some(world) = self.world.as_mut() {
+            for m in &mut self.native_mods {
+                m.end_map(world);
+            }
+        }
+        self.native_mods = mods;
+        if let Some(world) = self.world.as_mut() {
+            for m in &mut self.native_mods {
+                m.begin_map(world);
+            }
+        }
+    }
+
+    /// Names of installed host-side play mods.
+    #[must_use]
+    pub fn native_mod_names(&self) -> Vec<String> {
+        self.native_mods
+            .iter()
+            .map(|m| m.name().to_owned())
+            .collect()
     }
 
     /// Identity of the installed mod set (0 when none) for net / demo checks.
@@ -827,6 +971,11 @@ impl Headless {
             if let Some(rt) = self.mods.as_mut() {
                 rt.end_map(&mut self.world);
             }
+            if let Some(w) = self.world.as_mut() {
+                for m in &mut self.native_mods {
+                    m.end_map(w);
+                }
+            }
         } else {
             self.restart_mods();
             self.time_left =
@@ -935,7 +1084,13 @@ impl Headless {
             None => {}
         }
         let coop = self.options.coop_players.clamp(1, MAX_PLAYERS as u8);
-        for (i, name) in self.options.player_names.iter().enumerate().take(MAX_PLAYERS) {
+        for (i, name) in self
+            .options
+            .player_names
+            .iter()
+            .enumerate()
+            .take(MAX_PLAYERS)
+        {
             if !name.is_empty() {
                 world.set_player_display_name(i, name);
             }
@@ -1025,6 +1180,11 @@ impl Headless {
         self.world = Some(world);
         if let Some(rt) = self.mods.as_mut() {
             rt.begin_map(&mut self.world);
+        }
+        if let Some(w) = self.world.as_mut() {
+            for m in &mut self.native_mods {
+                m.begin_map(w);
+            }
         }
         self.intermission = None;
         self.state = GameState::Level;
@@ -1124,6 +1284,11 @@ impl Headless {
         if self.state != GameState::Level {
             return;
         }
+        // Split-borrow: bind mods before taking `&mut World` for the tic.
+        let mods_ptr = self
+            .mods
+            .as_mut()
+            .map(|rt| rt as *mut room_sim::script_mods::ModRuntime);
         let Some(world) = self.world.as_mut() else {
             return;
         };
@@ -1132,7 +1297,12 @@ impl Headless {
             full[i] = *c;
         }
         world.set_ticcmds(&full);
+        if let Some(p) = mods_ptr {
+            // Address is valid for this tic; `unbind` clears it after `world.tick`.
+            room_sim::script_mods::bind_active_runtime_addr(p as usize);
+        }
         world.tick();
+        room_sim::script_mods::unbind_active_runtime();
         if let Some(evt) = self.conevt.clone() {
             let hp = player0_health(world);
             if let (Some(prev), Some(now)) = (self.conevt_last_hp, hp) {
@@ -1192,6 +1362,11 @@ impl Headless {
         }
         if let Some(rt) = self.mods.as_mut() {
             rt.tick(&mut self.world);
+        }
+        if let Some(w) = self.world.as_mut() {
+            for m in &mut self.native_mods {
+                m.tick(w);
+            }
         }
         let Some(world) = self.world.as_mut() else {
             return;

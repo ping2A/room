@@ -25,6 +25,7 @@ fi
 
 echo "room: Doom1 — $IWAD  map=$MAP  skill=$SKILL"
 echo "  WASD move, mouse look, Ctrl/F/LMB fire, 1–7 weapons, E use, Esc pause"
+echo "  F5 Graphics (shaders live)  ·  or Esc → Options → Graphics"
 echo "  F12 screenshot, F11 start/stop GIF  (saved under room/screenshots)"
 
 # Empty `"${EXTRA[@]}"` trips `set -u` on older bash (macOS).

@@ -28,6 +28,7 @@ Before adding a crate, verify its current maintenance state and that the version
 | parallel | `rayon` (native only paths) | loading, scene build |
 | config | `toml`, `toml_edit` (preserve user comments), `rust-ini` (gzdoom.ini import) | |
 | guest SDK | `talc` or `dlmalloc`, `libm` | WASM guest |
+| edu Python (optional) | `pyo3` (links the **system Python** C ABI; no vendored C compiled by Room) | `python/` Maturin package (workspace `exclude`) **and** `room-python-host` feature `embed` via `room-app --features python-mods`. Default CI / workspace builds leave pyo3 unlinked. |
 | dev/test | `proptest`, `insta`, `criterion`, `image-compare`, `pretty_assertions`, `cargo-fuzz`/`libfuzzer-sys` (fuzz only; libFuzzer is C++ but limited to the fuzz workspace) | testing |
 
 ## 3. Native-code exceptions (allowlist)

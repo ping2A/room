@@ -1297,6 +1297,8 @@ fn make_mrt_pipeline(
                     2 => Float32,
                     3 => Float32x2,
                     4 => Float32x2,
+                    5 => Float32x3,
+                    6 => Float32x4,
                 ],
             }],
         },
@@ -1313,7 +1315,7 @@ fn make_mrt_pipeline(
                     write_mask: color0_writes,
                 }),
                 Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::R8Unorm,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: color0_writes,
                 }),
@@ -1402,12 +1404,14 @@ fn make_unlit_pipeline_bias(
                     2 => Float32,
                     3 => Float32x2,
                     4 => Float32x2,
+                    5 => Float32x3,
+                    6 => Float32x4,
                 ],
             }],
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            // MRT: colour + dummy R8 so the main pass matches stencil pipelines.
+            // MRT: colour + aux G-buffer-lite (RGBA8; docs/29 U16).
             entry_point: Some("fs_main_mrt"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             // Same blend and write mask on both targets. WebGL2 rejects
@@ -1419,7 +1423,7 @@ fn make_unlit_pipeline_bias(
                     write_mask,
                 }),
                 Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::R8Unorm,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
                     blend: Some(blend),
                     write_mask,
                 }),

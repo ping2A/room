@@ -19,6 +19,7 @@ fn camera_mod() -> ModSource {
         name: "camera".into(),
         scope: ModuleScope::Play,
         bytes: wasm,
+        options: Default::default(),
     }
 }
 

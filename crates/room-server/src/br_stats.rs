@@ -151,8 +151,10 @@ impl BrStats {
                 s.last_played = now;
             }
             if bucket.len() > MAX_ROWS {
-                let mut by_age: Vec<(u64, String)> =
-                    bucket.iter().map(|(k, s)| (s.last_played, k.clone())).collect();
+                let mut by_age: Vec<(u64, String)> = bucket
+                    .iter()
+                    .map(|(k, s)| (s.last_played, k.clone()))
+                    .collect();
                 by_age.sort();
                 for (_, k) in by_age.into_iter().take(bucket.len() - MAX_ROWS) {
                     bucket.remove(&k);
@@ -227,10 +229,7 @@ mod tests {
         let st = BrStats::open(d);
         st.record_match(
             MODE_BR,
-            &[
-                row("Ann", 1, true, 3, 120),
-                row("bob", 2, false, 1, 40),
-            ],
+            &[row("Ann", 1, true, 3, 120), row("bob", 2, false, 1, 40)],
             10,
         );
         st.record_match(
@@ -239,7 +238,10 @@ mod tests {
             11,
         );
         let top = st.top(MODE_BR, 10);
-        let ann = top.iter().find(|s| s.name.eq_ignore_ascii_case("ann")).unwrap();
+        let ann = top
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case("ann"))
+            .unwrap();
         assert_eq!((ann.matches, ann.wins), (2, 1));
         assert!(ann.kills >= 3);
         let cid = top.iter().find(|s| s.name == "Cid").unwrap();

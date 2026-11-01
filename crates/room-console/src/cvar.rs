@@ -205,6 +205,210 @@ impl CvarStore {
             CvarValue::String(String::new()),
             CvarFlags::ARCHIVE,
         );
+        self.register_shader_defaults();
+    }
+
+    /// Renderer / post / FX toggles (`docs/29-shaders.md`). All ARCHIVE so they
+    /// persist; defaults keep the classic look (modern effects off).
+    pub fn register_shader_defaults(&mut self) {
+        let a = CvarFlags::ARCHIVE;
+        let reg_i = |s: &mut Self, name: &str, v: i32| {
+            s.register(name, CvarType::Int, CvarValue::Int(v), a);
+        };
+        let reg_f = |s: &mut Self, name: &str, v: f64| {
+            s.register(name, CvarType::Float, CvarValue::Float(v), a);
+        };
+        let reg_b = |s: &mut Self, name: &str, v: bool| {
+            s.register(name, CvarType::Bool, CvarValue::Bool(v), a);
+        };
+
+        reg_i(self, "r_quality", 0);
+        reg_i(self, "gl_tonemap", 0);
+        reg_f(self, "r_exposure", 1.0);
+        reg_f(self, "r_gamma", 1.0);
+        reg_i(self, "gl_fxaa", 0);
+        reg_i(self, "r_aa", 0);
+        reg_f(self, "r_sharpen", 0.0);
+        reg_f(self, "vid_scalefactor", 1.0);
+        reg_i(self, "vid_scalemode", 0);
+        reg_b(self, "gl_bloom", false);
+        reg_f(self, "gl_bloom_amount", 0.8);
+        reg_i(self, "gl_ssao", 0);
+        reg_f(self, "gl_ssao_strength", 1.0);
+        reg_i(self, "r_postchain", 0); // 0 auto, 1 force on, 2 force off
+        reg_i(self, "r_dither", 0);
+        reg_b(self, "r_banding", false);
+        reg_b(self, "r_crt", false);
+        reg_i(self, "r_crt_preset", 0);
+        reg_b(self, "r_softparticles", false);
+        reg_b(self, "r_outlines", false);
+        reg_b(self, "r_hitflash", false);
+        reg_b(self, "r_colorgrade", false);
+        reg_b(self, "r_damagefx", false);
+        reg_b(self, "r_menublur", false);
+        reg_b(self, "r_hudfx", false);
+        reg_i(self, "gl_shadowmap_filter", 0);
+        reg_b(self, "gl_light_sprites", false);
+        reg_b(self, "r_autonormals", false);
+        reg_b(self, "r_lightshafts", false);
+        reg_b(self, "r_volfog", false);
+        reg_b(self, "r_ambientbounce", false);
+        reg_b(self, "gl_lightmap", false);
+        reg_i(self, "r_liquids", 0);
+        reg_b(self, "r_heathaze", false);
+        reg_b(self, "r_parallax", false);
+        reg_b(self, "r_ssr", false);
+        reg_b(self, "r_detail", false);
+        reg_b(self, "r_skyfx", false);
+        reg_b(self, "r_decalfx", false);
+        reg_b(self, "r_particlefx", false);
+        reg_b(self, "r_dissolve", false);
+        reg_b(self, "r_actorspriteshadow", false);
+        reg_b(self, "r_autoexposure", false);
+        reg_b(self, "r_powerupfx", false);
+        reg_b(self, "r_underwaterfx", false);
+        reg_f(self, "r_vignette", 0.0);
+        reg_f(self, "r_grain", 0.0);
+        reg_f(self, "r_chromatic", 0.0);
+        reg_b(self, "r_dof", false);
+        reg_b(self, "r_motionblur", false);
+        reg_b(self, "r_muzzlefx", false);
+        reg_b(self, "r_tracers", false);
+        reg_b(self, "r_impactfx", false);
+        reg_b(self, "r_viewkick", false);
+        reg_f(self, "r_viewkick_scale", 1.0);
+        reg_b(self, "r_weaponsmoke", false);
+        reg_b(self, "r_casings", false);
+        reg_b(self, "r_explosionfx", false);
+        reg_b(self, "r_trails", false);
+        reg_b(self, "r_hitconfirm", false);
+        reg_b(self, "r_bloodfx", false);
+        reg_b(self, "r_blooddrips", false);
+        reg_b(self, "r_bloodwet", false);
+        reg_b(self, "r_corpsepools", false);
+        reg_b(self, "r_gibs", false);
+        reg_b(self, "r_screenblood", false);
+        reg_b(self, "r_weaponblood", false);
+        reg_b(self, "r_wounds", false);
+        reg_i(self, "r_gore", 1);
+        reg_b(self, "r_reduce_flashing", false);
+        reg_b(self, "r_gpuprofile", false);
+    }
+
+    /// Expand `r_quality` into individual shader CVars (classic → ultra).
+    pub fn apply_quality_preset(&mut self, level: i32) {
+        let level = level.clamp(0, 3);
+        let _ = self.set("r_quality", &level.to_string());
+        // Always reset the modern stack, then layer the preset.
+        let writes: &[(&str, &str)] = match level {
+            0 => &[
+                ("gl_tonemap", "0"),
+                ("r_exposure", "1"),
+                ("gl_fxaa", "0"),
+                ("r_aa", "0"),
+                ("r_sharpen", "0"),
+                ("gl_bloom", "0"),
+                ("gl_bloom_amount", "0.8"),
+                ("gl_ssao", "0"),
+                ("gl_ssao_strength", "1"),
+                ("r_softparticles", "0"),
+                ("r_outlines", "0"),
+                ("r_hitflash", "0"),
+                ("r_colorgrade", "0"),
+                ("r_damagefx", "0"),
+                ("r_liquids", "0"),
+                ("r_heathaze", "0"),
+                ("gl_shadowmap_filter", "0"),
+                ("r_lightshafts", "0"),
+                ("r_autoexposure", "0"),
+                ("r_particlefx", "0"),
+                ("r_weaponsmoke", "0"),
+                ("r_casings", "0"),
+                ("r_muzzlefx", "0"),
+                ("r_tracers", "0"),
+                ("r_impactfx", "0"),
+                ("r_viewkick", "0"),
+                ("r_explosionfx", "0"),
+                ("r_trails", "0"),
+                ("r_hitconfirm", "0"),
+                ("r_bloodfx", "0"),
+                ("r_corpsepools", "0"),
+                ("r_gore", "1"),
+            ],
+            1 => &[
+                ("gl_tonemap", "8"), // RoomSoft
+                ("gl_fxaa", "1"),
+                ("r_aa", "1"),
+                ("gl_bloom", "1"),
+                ("gl_bloom_amount", "0.6"),
+                ("gl_ssao", "0"),
+                ("r_softparticles", "1"),
+                ("r_hitflash", "1"),
+                ("r_outlines", "0"),
+                ("r_colorgrade", "0"),
+                ("r_damagefx", "0"),
+                ("r_liquids", "0"),
+                ("r_heathaze", "0"),
+                ("gl_shadowmap_filter", "0"),
+                ("r_lightshafts", "0"),
+                ("r_autoexposure", "0"),
+                ("r_sharpen", "0"),
+                ("r_muzzlefx", "1"),
+                ("r_tracers", "1"),
+                ("r_impactfx", "1"),
+                ("r_viewkick", "1"),
+                ("r_explosionfx", "1"),
+            ],
+            2 => &[
+                ("gl_tonemap", "6"), // AgX
+                ("gl_fxaa", "2"),
+                ("r_aa", "2"),
+                ("gl_bloom", "1"),
+                ("gl_bloom_amount", "0.75"),
+                ("gl_ssao", "1"),
+                ("gl_ssao_strength", "1"),
+                ("r_softparticles", "1"),
+                ("r_outlines", "1"),
+                ("r_hitflash", "1"),
+                ("r_colorgrade", "1"),
+                ("r_damagefx", "1"),
+                ("r_liquids", "1"),
+                ("gl_shadowmap_filter", "1"),
+                ("r_sharpen", "0.2"),
+                ("r_heathaze", "0"),
+                ("r_lightshafts", "0"),
+                ("r_autoexposure", "0"),
+            ],
+            _ => &[
+                ("gl_tonemap", "7"), // Khronos Neutral
+                ("gl_fxaa", "3"),
+                ("r_aa", "3"),
+                ("gl_bloom", "1"),
+                ("gl_bloom_amount", "0.85"),
+                ("gl_ssao", "3"),
+                ("gl_ssao_strength", "1.2"),
+                ("r_softparticles", "1"),
+                ("r_outlines", "1"),
+                ("r_hitflash", "1"),
+                ("r_colorgrade", "1"),
+                ("r_damagefx", "1"),
+                ("r_liquids", "2"),
+                ("r_heathaze", "1"),
+                ("gl_shadowmap_filter", "2"),
+                ("r_lightshafts", "1"),
+                ("r_autoexposure", "1"),
+                ("r_sharpen", "0.35"),
+                ("r_particlefx", "1"),
+                ("r_weaponsmoke", "1"),
+                ("r_casings", "1"),
+                ("r_gore", "2"),
+                ("r_bloodfx", "1"),
+                ("r_corpsepools", "1"),
+            ],
+        };
+        for (name, val) in writes {
+            let _ = self.set(name, val);
+        }
     }
 
     /// Names with [`CvarFlags::ARCHIVE`] (for config write).

@@ -131,7 +131,9 @@ Port `hw_portal.cpp` concepts:
 
 ## 9. Post-processing
 
-Ordered: SSAO (`gl_ssao`, half-res, bilateral blur) → bloom (`gl_bloom`, threshold + mip blur chain) → exposure/tonemap (`gl_tonemap`: none, Uncharted2, Hejl-Dawson, Reinhard, linear, **palette** (quantize to PLAYPAL via a 3D LUT — GZDoom has this)) → lens/vignette (none by default) → palette flash blend (damage red, bonus gold, radiation suit green, `PowerupColor`, `Sector fade`, `Screen blend` from `A_SetBlend`; computed exactly like GZDoom's `V_AddBlend`/`P_AddPlayerBlend` logic into one RGBA blend) → FXAA (`gl_fxaa`) → colour correction (gamma, brightness, contrast, saturation; `vid_gamma`, `vid_contrast`, `vid_brightness`, `vid_saturation`) → dither (8-bit look option). Custom post-process shaders from GLDEFS `HardwareShader PostProcess` (§10).
+Ordered: SSAO (`gl_ssao`, half-res, bilateral blur) → bloom (`gl_bloom`, threshold + mip blur chain) → exposure/tonemap (`gl_tonemap`: none, Uncharted2, Hejl-Dawson, Reinhard, linear, **palette** (quantize to PLAYPAL via a 3D LUT — GZDoom has this), AgX, Khronos Neutral, **RoomSoft**) → lens/vignette (none by default) → palette flash blend (damage red, bonus gold, radiation suit green, `PowerupColor`, `Sector fade`, `Screen blend` from `A_SetBlend`; computed exactly like GZDoom's `V_AddBlend`/`P_AddPlayerBlend` logic into one RGBA blend) → FXAA (`gl_fxaa`) → colour correction (gamma, brightness, contrast, saturation; `vid_gamma`, `vid_contrast`, `vid_brightness`, `vid_saturation`) → dither (8-bit look option). Custom post-process shaders from GLDEFS `HardwareShader PostProcess` (§10).
+
+**Implementation (SH0–SH1):** `room_render::PostChain` + `RenderSettings` run that order when any effect CVar is on (`needs_post()`). Defaults keep the classic path (post off). `r_quality 0..3` expands presets into individual CVars. Full catalogue and enable/disable list: [`docs/29-shaders.md`](29-shaders.md).
 
 ## 10. Custom shaders (GLDEFS)
 

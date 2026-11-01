@@ -2,6 +2,10 @@
 
 wgpu renderer: 3D scene plus 2D canvas backend.
 
+**Shaders / post / blood FX CVars** (how to set values, quality presets): see the
+root [`README.md`](../../README.md#shaders--graphics-cvars) and
+[`docs/29-shaders.md`](../../docs/29-shaders.md).
+
 ## M4 status
 
 - `GpuContext` / `GpuTier` — headless device init (Full vs Downlevel)

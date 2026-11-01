@@ -317,10 +317,7 @@ fn survival_draft_modal_picks_with_weapon_select() {
         0,
         "capture released"
     );
-    assert!(
-        !w.paused,
-        "playsim must unpause once the draft closes"
-    );
+    assert!(!w.paused, "playsim must unpause once the draft closes");
     assert_eq!(
         w.players[0].as_ref().unwrap().ready_weapon,
         ready_before,

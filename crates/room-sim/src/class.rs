@@ -279,6 +279,40 @@ pub struct ClassDef {
     pub ammo_use: i32,
     /// `Weapon.AmmoGive` granted on first pickup.
     pub ammo_give: i32,
+    /// `Weapon.SelectionOrder` — lower preferred for auto-switch (GZDoom).
+    pub selection_order: i32,
+    /// `Weapon.ReadySound` (idle while Ready, e.g. chainsaw).
+    pub ready_sound: String,
+    /// `Weapon.UpSound` (played when raising the weapon).
+    pub up_sound: String,
+    /// `Weapon.Kickback` (default 100).
+    pub kickback: i32,
+    /// `Weapon.SlotNumber` (0 = unset; KEYCONF / `reg_weapon_slot` may override).
+    pub slot_number: i32,
+    /// `+WEAPON.NOALERT` — firing does not call `P_NoiseAlert`.
+    pub weapon_noalert: bool,
+    /// `+WEAPON.NOAUTOFIRE`.
+    pub weapon_noautofire: bool,
+    /// `+WEAPON.AMMO_OPTIONAL`.
+    pub weapon_ammo_optional: bool,
+    /// `Inventory.Icon` lump / sprite name.
+    pub inventory_icon: String,
+    /// `Ammo.BackpackAmount`.
+    pub ammo_backpack_amount: i32,
+    /// `Ammo.BackpackMaxAmount`.
+    pub ammo_backpack_max_amount: i32,
+    /// Treated as ammo (Ammo.* props or Ammo parent).
+    pub is_ammo: bool,
+    /// Treated as inventory (Inventory.* props or Inventory parent).
+    pub is_inventory: bool,
+    /// `+INVENTORY.AUTOACTIVATE`.
+    pub inventory_autoactivate: bool,
+    /// `ProjectileKickBack`.
+    pub projectile_kickback: i32,
+    /// `BounceCount` max (−1 = unlimited).
+    pub bounce_count_max: i32,
+    /// `WallBounceFactor` (default = bounce_factor).
+    pub wall_bounce_factor: f64,
     /// `DropItem` class names (spawned on death).
     pub drop_items: Vec<String>,
     /// `SeeSound` logical name (empty = none).
@@ -413,6 +447,23 @@ impl ClassRegistry {
             ammo_type: String::new(),
             ammo_use: 0,
             ammo_give: 0,
+            selection_order: 9999,
+            ready_sound: String::new(),
+            up_sound: String::new(),
+            kickback: 100,
+            slot_number: 0,
+            weapon_noalert: false,
+            weapon_noautofire: false,
+            weapon_ammo_optional: false,
+            inventory_icon: String::new(),
+            ammo_backpack_amount: 0,
+            ammo_backpack_max_amount: 0,
+            is_ammo: false,
+            is_inventory: false,
+            inventory_autoactivate: false,
+            projectile_kickback: 0,
+            bounce_count_max: -1,
+            wall_bounce_factor: 0.7,
             drop_items: Vec::new(),
             see_sound: String::new(),
             death_sound: String::new(),
@@ -490,6 +541,35 @@ impl ClassRegistry {
         }
         for &(flag, on) in &reg.class_flags {
             apply_script_flag(&mut def, flag, on);
+        }
+        // Inherit Weapon/Ammo/Inventory roles from the parent chain by name.
+        let mut walk = def.parent;
+        for _ in 0..64 {
+            let Some(pid) = walk else {
+                break;
+            };
+            let Some(p) = self.get(pid) else {
+                break;
+            };
+            match p.name.to_ascii_lowercase().as_str() {
+                "weapon" => def.is_weapon = true,
+                "ammo" => {
+                    def.is_ammo = true;
+                    def.is_inventory = true;
+                }
+                "inventory" | "custominventory" => def.is_inventory = true,
+                _ => {}
+            }
+            if p.is_weapon {
+                def.is_weapon = true;
+            }
+            if p.is_ammo {
+                def.is_ammo = true;
+            }
+            if p.is_inventory {
+                def.is_inventory = true;
+            }
+            walk = p.parent;
         }
         self.push(def)
     }
@@ -593,6 +673,9 @@ impl ClassRegistry {
         let mut ammo_type = parent.ammo_type.clone();
         let mut ammo_use = parent.ammo_use;
         let mut ammo_give = parent.ammo_give;
+        let mut selection_order = parent.selection_order;
+        let mut ready_sound = parent.ready_sound.clone();
+        let mut up_sound = parent.up_sound.clone();
         let mut drop_items = parent.drop_items.clone();
         let mut start_items = parent.start_items.clone();
         let mut own_start_items = false;
@@ -978,6 +1061,24 @@ impl ClassRegistry {
                         ammo_give = a.parse().unwrap_or(ammo_give);
                     }
                 }
+                "weapon.selectionorder" => {
+                    is_weapon = true;
+                    if let Some(a) = p.args.first() {
+                        selection_order = a.parse().unwrap_or(selection_order);
+                    }
+                }
+                "weapon.readysound" => {
+                    is_weapon = true;
+                    if let Some(a) = p.args.first() {
+                        ready_sound = a.trim_matches('"').to_owned();
+                    }
+                }
+                "weapon.upsound" => {
+                    is_weapon = true;
+                    if let Some(a) = p.args.first() {
+                        up_sound = a.trim_matches('"').to_owned();
+                    }
+                }
                 "player.startitem" => {
                     if !own_start_items {
                         start_items.clear();
@@ -1158,6 +1259,23 @@ impl ClassRegistry {
             slot.ammo_type = ammo_type;
             slot.ammo_use = ammo_use;
             slot.ammo_give = ammo_give;
+            slot.selection_order = selection_order;
+            slot.ready_sound = ready_sound;
+            slot.up_sound = up_sound;
+            slot.kickback = parent.kickback;
+            slot.slot_number = parent.slot_number;
+            slot.weapon_noalert = parent.weapon_noalert;
+            slot.weapon_noautofire = parent.weapon_noautofire;
+            slot.weapon_ammo_optional = parent.weapon_ammo_optional;
+            slot.inventory_icon = parent.inventory_icon.clone();
+            slot.ammo_backpack_amount = parent.ammo_backpack_amount;
+            slot.ammo_backpack_max_amount = parent.ammo_backpack_max_amount;
+            slot.is_ammo = parent.is_ammo;
+            slot.is_inventory = parent.is_inventory;
+            slot.inventory_autoactivate = parent.inventory_autoactivate;
+            slot.projectile_kickback = parent.projectile_kickback;
+            slot.bounce_count_max = parent.bounce_count_max;
+            slot.wall_bounce_factor = parent.wall_bounce_factor;
             slot.drop_items = drop_items;
             slot.start_items = start_items;
             slot.see_sound = see_sound;
@@ -1251,6 +1369,23 @@ impl ClassRegistry {
             ammo_type,
             ammo_use,
             ammo_give,
+            selection_order,
+            ready_sound,
+            up_sound,
+            kickback: parent.kickback,
+            slot_number: parent.slot_number,
+            weapon_noalert: parent.weapon_noalert,
+            weapon_noautofire: parent.weapon_noautofire,
+            weapon_ammo_optional: parent.weapon_ammo_optional,
+            inventory_icon: parent.inventory_icon.clone(),
+            ammo_backpack_amount: parent.ammo_backpack_amount,
+            ammo_backpack_max_amount: parent.ammo_backpack_max_amount,
+            is_ammo: parent.is_ammo,
+            is_inventory: parent.is_inventory,
+            inventory_autoactivate: parent.inventory_autoactivate,
+            projectile_kickback: parent.projectile_kickback,
+            bounce_count_max: parent.bounce_count_max,
+            wall_bounce_factor: parent.wall_bounce_factor,
             drop_items,
             see_sound,
             death_sound,
@@ -1364,6 +1499,61 @@ fn apply_script_prop_i32(def: &mut ClassDef, prop: u32, value: i32) {
         x if x == PropId::AlphaPercent as u32 => {
             def.alpha = f64::from(value.clamp(0, 100)) / 100.0;
         }
+        x if x == PropId::InventoryAmount as u32 => {
+            def.inventory_amount = value;
+            def.is_inventory = true;
+        }
+        x if x == PropId::InventoryMaxAmount as u32 => {
+            def.inventory_max_amount = value;
+            def.is_inventory = true;
+        }
+        x if x == PropId::AmmoBackpackAmount as u32 => {
+            def.ammo_backpack_amount = value;
+            def.is_ammo = true;
+            def.is_inventory = true;
+        }
+        x if x == PropId::AmmoBackpackMaxAmount as u32 => {
+            def.ammo_backpack_max_amount = value;
+            def.is_ammo = true;
+            def.is_inventory = true;
+        }
+        x if x == PropId::WeaponAmmoUse as u32 => {
+            def.ammo_use = value;
+            def.is_weapon = true;
+        }
+        x if x == PropId::WeaponAmmoGive as u32 => {
+            def.ammo_give = value;
+            def.is_weapon = true;
+        }
+        x if x == PropId::WeaponSelectionOrder as u32 => {
+            def.selection_order = value;
+            def.is_weapon = true;
+        }
+        x if x == PropId::WeaponKickback as u32 => {
+            def.kickback = value;
+            def.is_weapon = true;
+        }
+        x if x == PropId::WeaponSlotNumber as u32 => {
+            def.slot_number = value;
+            def.is_weapon = true;
+        }
+        x if x == PropId::Damage as u32 => def.damage = value,
+        x if x == PropId::BounceType as u32 => {
+            // 0 none; non-zero enables floor+wall bounce stand-in.
+            if value == 0 {
+                def.flags &= !(FLAG_BOUNCEONFLOORS | FLAG_BOUNCEONWALLS);
+            } else {
+                def.flags |= FLAG_BOUNCEONFLOORS | FLAG_BOUNCEONWALLS;
+            }
+        }
+        x if x == PropId::BounceCountMax as u32 => def.bounce_count_max = value,
+        x if x == PropId::BounceFactorPercent as u32 => {
+            def.bounce_factor = f64::from(value.max(0)) / 100.0;
+        }
+        x if x == PropId::WallBounceFactorPercent as u32 => {
+            def.wall_bounce_factor = f64::from(value.max(0)) / 100.0;
+        }
+        x if x == PropId::ProjectileKickBack as u32 => def.projectile_kickback = value,
         _ => {}
     }
 }
@@ -1373,25 +1563,88 @@ fn apply_script_prop_str(def: &mut ClassDef, prop: u32, value: &str) {
         x if x == PropId::Translation as u32 => def.translation = value.to_owned(),
         x if x == PropId::Tag as u32 => def.tag = value.to_owned(),
         x if x == PropId::Obituary as u32 => def.obituary = value.to_owned(),
+        x if x == PropId::WeaponAmmoType as u32 => {
+            def.ammo_type = value.to_owned();
+            def.is_weapon = true;
+        }
+        x if x == PropId::WeaponReadySound as u32 => {
+            def.ready_sound = value.to_owned();
+            def.is_weapon = true;
+        }
+        x if x == PropId::WeaponUpSound as u32 => {
+            def.up_sound = value.to_owned();
+            def.is_weapon = true;
+        }
+        x if x == PropId::InventoryPickupMessage as u32 => {
+            def.pickup_message = value.to_owned();
+            def.is_inventory = true;
+        }
+        x if x == PropId::InventoryPickupSound as u32 => {
+            def.pickup_sound = value.to_owned();
+            def.is_inventory = true;
+        }
+        x if x == PropId::InventoryIcon as u32 => {
+            def.inventory_icon = value.to_owned();
+            def.is_inventory = true;
+        }
+        x if x == PropId::SeeSound as u32 => def.see_sound = value.to_owned(),
+        x if x == PropId::DeathSound as u32 => def.death_sound = value.to_owned(),
+        x if x == PropId::BounceSound as u32 => def.bounce_sound = value.to_owned(),
+        x if x == PropId::ActiveSound as u32 => def.active_sound = value.to_owned(),
         _ => {}
     }
 }
 
 fn apply_script_flag(def: &mut ClassDef, flag: u32, on: bool) {
-    // ABI FlagId → engine bit (`room-script-sdk::flag`).
+    use room_script_abi::class_flag as cf;
+    match flag {
+        x if x == cf::INVENTORY_AUTOACTIVATE => {
+            def.inventory_autoactivate = on;
+            def.is_inventory = true;
+            return;
+        }
+        x if x == cf::WEAPON_NOALERT => {
+            def.weapon_noalert = on;
+            def.is_weapon = true;
+            return;
+        }
+        x if x == cf::WEAPON_NOAUTOFIRE => {
+            def.weapon_noautofire = on;
+            def.is_weapon = true;
+            return;
+        }
+        x if x == cf::WEAPON_AMMO_OPTIONAL => {
+            def.weapon_ammo_optional = on;
+            def.is_weapon = true;
+            return;
+        }
+        x if x == cf::FORCEXYBILLBOARD || x == cf::THRUGHOST || x == cf::NOTELEPORT => {
+            // Accepted no-ops / stand-ins until dedicated bits exist.
+            return;
+        }
+        _ => {}
+    }
     let bit = match flag {
-        1 => FLAG_SOLID,
-        2 => FLAG_SHOOTABLE,
-        3 => FLAG_COUNTKILL,
-        4 => FLAG_FRIENDLY,
-        5 => FLAG_NOGRAVITY,
-        6 => FLAG_FLOAT,
-        7 => FLAG_NOBLOOD,
-        8 => FLAG_BOSS,
-        9 => FLAG_NORADIUSDMG,
-        10 => FLAG_INVULNERABLE,
-        11 => FLAG_DONTDRAW,
-        12 => FLAG_NODAMAGE, // NOPAIN script toggle
+        x if x == cf::SOLID => FLAG_SOLID,
+        x if x == cf::SHOOTABLE => FLAG_SHOOTABLE,
+        x if x == cf::COUNTKILL => FLAG_COUNTKILL,
+        x if x == cf::FRIENDLY => FLAG_FRIENDLY,
+        x if x == cf::NOGRAVITY => FLAG_NOGRAVITY,
+        x if x == cf::FLOAT => FLAG_FLOAT,
+        x if x == cf::NOBLOOD => FLAG_NOBLOOD,
+        x if x == cf::BOSS => FLAG_BOSS,
+        x if x == cf::NORADIUSDMG => FLAG_NORADIUSDMG,
+        x if x == cf::INVULNERABLE => FLAG_INVULNERABLE,
+        x if x == cf::DONTDRAW => FLAG_DONTDRAW,
+        x if x == cf::NOPAIN => FLAG_NODAMAGE,
+        x if x == cf::BUDDHA => FLAG_BUDDHA,
+        x if x == cf::MISSILE => FLAG_MISSILE,
+        x if x == cf::DROPOFF => FLAG_DROPOFF,
+        x if x == cf::NOBLOCKMAP => FLAG_NOBLOCKMAP,
+        x if x == cf::BOUNCEONACTORS => FLAG_BOUNCEONFLOORS | FLAG_BOUNCEONWALLS,
+        x if x == cf::NOBLOODDECALS => FLAG_NOBLOOD,
+        x if x == cf::WALLSPRITE => FLAG_WALLSPRITE,
+        x if x == cf::FLATSPRITE => FLAG_FLATSPRITE,
         _ => return,
     };
     if on {

@@ -25,6 +25,7 @@ pub mod decals;
 pub mod device;
 pub mod faces;
 pub mod fonts;
+pub mod frame;
 pub mod fuzz;
 pub mod glsl_translate;
 pub mod hardware_shader;
@@ -45,6 +46,7 @@ pub mod pbr;
 pub mod post;
 pub mod render_style;
 pub mod scene;
+pub mod settings;
 pub mod skinning;
 pub mod sky;
 pub mod sprites;
@@ -70,6 +72,7 @@ pub use decals::{
 pub use device::{DeviceError, GpuContext, GpuTier};
 pub use faces::{FaceTextureKey, upsert_face_rgba};
 pub use fonts::{Fon1Face, TextDraw};
+pub use frame::{FrameTargets, PostChain, PostChainInputs};
 pub use fuzz::{FuzzType, fuzz_modulate};
 pub use glsl_translate::{GlslError, glsl_to_wgsl};
 pub use hardware_shader::{
@@ -106,12 +109,14 @@ pub use offscreen::{
 pub use particle_pass::ParticleInstancedPass;
 pub use particles::{
     MAX_PARTICLES, PARTICLE_TEX, PARTICLE_TEX_ADD, ParticleGpuInstance, ParticleInstance,
-    ParticleStore, ParticleStyle, append_particles, pack_particle_instances,
+    ParticleStore, ParticleStyle, append_particles, append_particles_ex, pack_particle_instances,
+    particle_tint_tex_name, soft_disc_rgba,
 };
 pub use pass::UnlitPass;
 pub use pbr::{MetalRough, fresnel_schlick, ggx_d, pbr_specular, specular_f0};
 pub use post::{
-    PostPass, PostUniforms, TonemapMode, quantize_playpal, tonemap_rgb, tonemap_rgb_pal,
+    PALETTE_LUT_SIZE, PostPass, PostUniforms, TonemapMode, build_palette_lut, quantize_playpal,
+    tonemap_rgb, tonemap_rgb_pal,
 };
 pub use render_style::RenderStyle;
 pub use scene::{
@@ -122,6 +127,7 @@ pub use scene::{
     collect_shadow_occluders, is_sky_flat, mirror_clip_plane, mirror_tex_name,
     plane_reflect_tex_name, portal_tex_name, portal_view_strips_portals,
 };
+pub use settings::{AaMode, CrtPreset, GoreLevel, RenderSettings, SHADER_CVAR_NAMES};
 pub use skinning::{
     BoneUniforms, MAX_BONES, SkinnedPass, SkinnedVertex, iqm_to_skinned_vertices, skin_matrices,
 };

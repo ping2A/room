@@ -232,6 +232,47 @@ impl CanvasGpu {
                         }
                     }
                 }
+                CanvasCmd::BlitRgba {
+                    x,
+                    y,
+                    w,
+                    h,
+                    pixels,
+                } => {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let x0 = (*x as i32).max(0) as u32;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let y0 = (*y as i32).max(0) as u32;
+                    let src_w = *w;
+                    let src_h = *h;
+                    let need = (src_w as usize).saturating_mul(src_h as usize).saturating_mul(4);
+                    if src_w == 0 || src_h == 0 || pixels.len() < need {
+                        continue;
+                    }
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let x_off = (*x as i32).min(0).unsigned_abs();
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let y_off = (*y as i32).min(0).unsigned_abs();
+                    for row in y_off..src_h {
+                        let dy = y0 + (row - y_off);
+                        if dy >= self.height {
+                            break;
+                        }
+                        for col in x_off..src_w {
+                            let dx = x0 + (col - x_off);
+                            if dx >= self.width {
+                                break;
+                            }
+                            let si = ((row * src_w + col) * 4) as usize;
+                            let a = pixels[si + 3];
+                            if a < 128 {
+                                continue;
+                            }
+                            let o = ((dy * self.width + dx) * 4) as usize;
+                            self.rgba[o..o + 4].copy_from_slice(&pixels[si..si + 4]);
+                        }
+                    }
+                }
                 CanvasCmd::Text { x, y, text, color } => {
                     if let Some(face) = font {
                         let c = rgba8(*color);

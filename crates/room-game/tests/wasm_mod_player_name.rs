@@ -19,6 +19,7 @@ fn name_mod() -> ModSource {
         name: "player_name".into(),
         scope: ModuleScope::Play,
         bytes: wasm,
+        options: Default::default(),
     }
 }
 
@@ -54,7 +55,11 @@ fn wasm_mod_player_name_checksum_and_fallback() {
     assert_ne!(c_named, c_fallback);
 
     let mut buf = [0u8; 32];
-    let n = game_fb.world().unwrap().player_names.write_display(0, &mut buf);
+    let n = game_fb
+        .world()
+        .unwrap()
+        .player_names
+        .write_display(0, &mut buf);
     assert_eq!(n, 8);
     assert_eq!(&buf[..8], b"Player 1");
 

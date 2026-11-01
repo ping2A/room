@@ -54,4 +54,18 @@
     results: ["i32"],
     doc: "Queue/start ACS script (args = n×i32 at ptr). Same-map only in v1.",
   ),
+  (
+    name: "lump_find",
+    scope: "common",
+    params: [("name_ptr", "i32"), ("name_len", "i32"), ("namespace", "i32")],
+    results: ["i32"],
+    doc: "Find a lump by name in namespace (0 global…4 flats) → index or −1.",
+  ),
+  (
+    name: "lump_read",
+    scope: "common",
+    params: [("index", "i32"), ("buf_ptr", "i32"), ("cap", "i32")],
+    results: ["i32"],
+    doc: "Copy lump bytes into guest buffer → bytes written (−1 on error).",
+  ),
 ]

@@ -37,6 +37,45 @@ impl SoftPatch {
         }
     }
 
+    /// Nearest-neighbour RGBA8 raster at `dest_w`×`dest_h` (holes `a=0`).
+    ///
+    /// Prefer this over [`Self::paint`] for HUD weapons — one image blit beats
+    /// thousands of per-span fill rects (plasma / BFG patches are especially hot).
+    #[must_use]
+    pub fn scale_rgba(
+        &self,
+        dest_w: u32,
+        dest_h: u32,
+        palette: &[[u8; 3]; 256],
+    ) -> Vec<u8> {
+        let sw = usize::from(self.width);
+        let sh = usize::from(self.height);
+        let dw = dest_w as usize;
+        let dh = dest_h as usize;
+        let mut out = vec![0u8; dw.saturating_mul(dh).saturating_mul(4)];
+        if sw == 0 || sh == 0 || dw == 0 || dh == 0 || self.indices.len() < sw * sh {
+            return out;
+        }
+        for dy in 0..dh {
+            let sy = dy * sh / dh;
+            for dx in 0..dw {
+                let sx = dx * sw / dw;
+                let si = sy * sw + sx;
+                if self.alpha.get(si).copied().unwrap_or(0) == 0 {
+                    continue;
+                }
+                let idx = usize::from(self.indices[si]);
+                let [r, g, b] = palette[idx];
+                let o = (dy * dw + dx) * 4;
+                out[o] = r;
+                out[o + 1] = g;
+                out[o + 2] = b;
+                out[o + 3] = 255;
+            }
+        }
+        out
+    }
+
     /// Paint opaque runs via `emit(x, y, w, h, rgba)`.
     ///
     /// Destination bounds use floor/ceil so fractional HUD scales (e.g. 1280×720
@@ -202,6 +241,26 @@ mod tests {
 
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn scale_rgba_keeps_opaque_texels() {
+        let gun = SoftPatch {
+            width: 2,
+            height: 1,
+            left_offset: 0,
+            top_offset: 0,
+            indices: vec![1, 2],
+            alpha: vec![255, 0],
+        };
+        let mut pal = [[0u8; 3]; 256];
+        pal[1] = [10, 20, 30];
+        pal[2] = [40, 50, 60];
+        let rgba = gun.scale_rgba(4, 2, &pal);
+        assert_eq!(&rgba[0..4], &[10, 20, 30, 255]);
+        assert_eq!(&rgba[4..8], &[10, 20, 30, 255]);
+        assert_eq!(&rgba[8..12], &[0, 0, 0, 0]);
+        assert_eq!(&rgba[12..16], &[0, 0, 0, 0]);
+    }
 
     #[test]
     fn paint_covers_fractional_scale_without_gaps() {

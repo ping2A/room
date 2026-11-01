@@ -25,7 +25,16 @@
 @external("room", "reg_class_property_str") declare function _reg_class_property_str(prop: i32, ptr: usize, len: i32): void;
 @external("room", "reg_class_flag") declare function _reg_class_flag(flag: i32, on: i32): void;
 @external("room", "reg_class_end") declare function _reg_class_end(): void;
+@external("room", "reg_state_label") declare function _reg_state_label(ptr: usize, len: i32): void;
+@external("room", "reg_state") declare function _reg_state(sprite: usize, frame: i32, tics: i32, flags: i32, callback: i32): i32;
+@external("room", "reg_state_flow") declare function _reg_state_flow(kind: i32, ptr: usize, len: i32, offset: i32): i32;
+@external("room", "reg_state_action") declare function _reg_state_action(nptr: usize, nlen: i32, aptr: usize, alen: i32): i32;
+@external("room", "reg_state_offset") declare function _reg_state_offset(x: i32, y: i32): i32;
 @external("room", "reg_event_handler") declare function _reg_event_handler(ptr: usize, len: i32, order: i32, flags: i32, lo: i32, hi: i32, base: i32): i32;
+@external("room", "reg_lump") declare function _reg_lump(nptr: usize, nlen: i32, ns: i32, dptr: usize, dlen: i32): i32;
+@external("room", "reg_sound_alias") declare function _reg_sound_alias(lptr: usize, llen: i32, pptr: usize, plen: i32, limit: i32): i32;
+@external("room", "lump_find") declare function _lump_find(ptr: usize, len: i32, ns: i32): i32;
+@external("room", "lump_read") declare function _lump_read(index: i32, buf: usize, cap: i32): i32;
 @external("room", "acs_execute") declare function _acs_execute(script: i32, map: i32, args: usize, n: i32): i32;
 @external("room", "game_skill") declare function _game_skill(): i32;
 @external("room", "level_mapname") declare function _level_mapname(buf: usize, cap: i32): i32;
@@ -184,6 +193,16 @@ export namespace Rule {
   export const TIME_LEFT: i32 = 2;
   /** Read-only: 1 once the match is over. */
   export const MATCH_OVER: i32 = 3;
+  /** Teammates may damage each other (0/1, default 1). */
+  export const TEAM_DAMAGE: i32 = 4;
+  /** Self damage allowed (0/1, default 1). */
+  export const SELF_DAMAGE: i32 = 5;
+  /** Squad DBNO floor (0/1). */
+  export const SQUAD_DBNO: i32 = 6;
+  /** Pause playsim (0/1). */
+  export const PAUSED: i32 = 7;
+  /** Weapon stay for netgames (0/1; docs/30 W17). */
+  export const WEAPON_STAY: i32 = 8;
 }
 
 /** `classProperty` ids (percent props are 0..100+). */
@@ -683,6 +702,104 @@ export function classPropertyString(prop: i32, value: string): void {
 }
 export function classFlag(flag: i32, on: bool = true): void { _reg_class_flag(flag, on ? 1 : 0); }
 export function endClass(): void { _reg_class_end(); }
+
+/** Start a state label (`Spawn:`, `Fire:`, …). */
+export function stateLabel(name: string): void {
+  const b = utf8(name);
+  _reg_state_label(changetype<usize>(b), b.byteLength);
+}
+/** Append a state frame. `sprite` must be 4 chars; `frame` is `'A'`.. or 0-based. */
+export function state(sprite: string, frame: i32, tics: i32, flags: i32 = 0, callbackId: i32 = -1): i32 {
+  const b = utf8(sprite);
+  return _reg_state(changetype<usize>(b), frame, tics, flags, callbackId);
+}
+/** Flow after the last state: 0 Loop, 1 Stop, 2 Wait, 3 Fail, 4 Goto. */
+export function stateFlow(kind: i32, label: string = "", offset: i32 = 0): i32 {
+  const b = utf8(label);
+  return _reg_state_flow(kind, changetype<usize>(b), b.byteLength, offset);
+}
+/** Bind a native action on the last state (`A_WeaponReady`, …). */
+export function stateAction(name: string, args: string = ""): i32 {
+  const n = utf8(name);
+  const a = utf8(args);
+  return _reg_state_action(changetype<usize>(n), n.byteLength, changetype<usize>(a), a.byteLength);
+}
+/** Weapon OFFSET(x,y) on the last state. */
+export function stateOffset(x: i32, y: i32): i32 { return _reg_state_offset(x, y); }
+
+/** Register a generated lump (`docs/31` MA3). Namespace: 0 global, 1 sprites, 2 graphics, 3 sounds, 4 flats. */
+export function regLump(name: string, namespace: i32, data: Uint8Array): i32 {
+  const n = utf8(name);
+  return _reg_lump(changetype<usize>(n), n.byteLength, namespace, changetype<usize>(data), data.length);
+}
+/** SNDINFO logical → lump alias (`limit` −1 = default). */
+export function regSoundAlias(logical: string, lump: string, limit: i32 = -1): i32 {
+  const a = utf8(logical);
+  const b = utf8(lump);
+  return _reg_sound_alias(changetype<usize>(a), a.byteLength, changetype<usize>(b), b.byteLength, limit);
+}
+/** Find a lump → index or −1. */
+export function lumpFind(name: string, namespace: i32 = 0): i32 {
+  const b = utf8(name);
+  return _lump_find(changetype<usize>(b), b.byteLength, namespace);
+}
+/** Read lump bytes into `buf`; returns bytes written or −1. */
+export function lumpRead(index: i32, buf: Uint8Array): i32 {
+  return _lump_read(index, changetype<usize>(buf), buf.length);
+}
+export namespace LumpNs {
+  export const GLOBAL: i32 = 0;
+  export const SPRITES: i32 = 1;
+  export const GRAPHICS: i32 = 2;
+  export const SOUNDS: i32 = 3;
+  export const FLATS: i32 = 4;
+}
+
+/** PropId / class_flag constants used by mods (`docs/31`). */
+export namespace Prop {
+  export const HEALTH: i32 = 1;
+  export const SPEED: i32 = 2;
+  export const RADIUS: i32 = 4;
+  export const HEIGHT: i32 = 5;
+  export const DAMAGE: i32 = 39;
+  export const INVENTORY_AMOUNT: i32 = 30;
+  export const INVENTORY_MAX_AMOUNT: i32 = 31;
+  export const AMMO_BACKPACK_AMOUNT: i32 = 32;
+  export const AMMO_BACKPACK_MAX_AMOUNT: i32 = 33;
+  export const WEAPON_AMMO_USE: i32 = 34;
+  export const WEAPON_AMMO_GIVE: i32 = 35;
+  export const WEAPON_SELECTION_ORDER: i32 = 36;
+  export const WEAPON_KICKBACK: i32 = 37;
+  export const WEAPON_SLOT_NUMBER: i32 = 38;
+  export const WEAPON_AMMO_TYPE: i32 = 50;
+  export const WEAPON_READY_SOUND: i32 = 51;
+  export const WEAPON_UP_SOUND: i32 = 52;
+  export const INVENTORY_PICKUP_MESSAGE: i32 = 53;
+  export const INVENTORY_PICKUP_SOUND: i32 = 54;
+  export const INVENTORY_ICON: i32 = 55;
+  export const SEE_SOUND: i32 = 56;
+  export const DEATH_SOUND: i32 = 57;
+  export const TAG: i32 = 21;
+  export const OBITUARY: i32 = 22;
+}
+export namespace Flag {
+  export const SOLID: i32 = 1;
+  export const SHOOTABLE: i32 = 2;
+  export const NOGRAVITY: i32 = 5;
+  export const MISSILE: i32 = 14;
+  export const DROPOFF: i32 = 15;
+  export const NOBLOCKMAP: i32 = 16;
+  export const WALLSPRITE: i32 = 22;
+  export const FLATSPRITE: i32 = 23;
+  export const WEAPON_NOALERT: i32 = 25;
+}
+export namespace Flow {
+  export const LOOP: i32 = 0;
+  export const STOP: i32 = 1;
+  export const WAIT: i32 = 2;
+  export const FAIL: i32 = 3;
+  export const GOTO: i32 = 4;
+}
 
 // ------------------------------------------------------------------ mods
 

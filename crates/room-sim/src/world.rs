@@ -16,7 +16,7 @@ use crate::think_player;
 use crate::thinker::ThinkerLists;
 use crate::vanilla::{SimMathMode, math_mode_for_vanilla_demo};
 use room_core::rng::{RngSet, VanillaRng};
-use room_core::{Angle, Bam, ClassId, DVec3};
+use room_core::{Angle, Bam, ClassId, DVec3, StateId};
 use room_map::MapGeometry;
 use std::sync::Arc;
 use thiserror::Error;
@@ -37,6 +37,20 @@ fn p1_fallback_offset(seat: usize) -> (f64, f64) {
         room_core::dmath::cos(ang) * 48.0,
         room_core::dmath::sin(ang) * 48.0,
     )
+}
+
+/// Wall-clock UTC `HH:MM:SS.mmmZ` for SHOOT / HIT terminal traces (debug only).
+fn shoot_log_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let Ok(dur) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return "--:--:--.---Z".into();
+    };
+    let secs = dur.as_secs();
+    let millis = dur.subsec_millis();
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    format!("{h:02}:{m:02}:{s:02}.{millis:03}Z")
 }
 /// MBF helper dog DoomEdNum.
 const THING_MBF_HELPER_DOG: i32 = 888;
@@ -306,6 +320,11 @@ pub struct World {
     pub(crate) thinking_up_move: i16,
     /// Weapon whose psprite action is running: state jumps resolve its labels.
     pub(crate) psprite_weapon: Option<ClassId>,
+    /// Current weapon psprite state while its action runs (flash offsets).
+    pub(crate) psprite_state: Option<StateId>,
+    /// Flash segment index requested by the fire action (`None` = no flash).
+    /// Set inside `A_Fire*` after a successful deplete (docs/30 N4/N5).
+    pub(crate) psprite_flash_request: Option<usize>,
     /// Active vertical door movers.
     pub doors: Vec<DoorMover>,
     /// Active floor movers.
@@ -437,6 +456,10 @@ pub struct World {
     pub decal_events: Vec<SimDecalEvent>,
     /// ACS `SpawnParticle` events this tic (drained by the shell / renderer).
     pub particle_events: Vec<SimParticleEvent>,
+    /// Render-only FX cues (`docs/29` §8.K). Empty unless [`Self::fx_events_enabled`].
+    pub fx_events: Vec<crate::fx_events::FxEvent>,
+    /// When false (servers / headless), [`Self::push_fx`] is a no-op.
+    pub fx_events_enabled: bool,
     /// ACS `SetHUDClipRect` (zero width disables).
     pub hud_clip: HudClipRect,
     /// ACS `SetHUDWrapWidth` (0 = default).
@@ -504,6 +527,10 @@ pub struct World {
     pub squad_dbno: bool,
     /// Dead players stay down instead of respawning with Use (mod rule).
     pub no_player_respawn: bool,
+    /// Netgame weapon stay (`sv_weaponstay` / docs/30 W17): map weapons are not
+    /// removed on pickup so each player can take them once. Dropped weapons
+    /// always disappear. Mods toggle via `game_set_rule(WEAPON_STAY)`.
+    pub weapon_stay: bool,
     /// Set once the match is decided (mod `game_end_match` or the time limit).
     pub match_over: Option<MatchOver>,
     /// Per-seat stats from the last `game_end_match_ex` call (BE11).
@@ -839,6 +866,14 @@ pub struct PlayerHud {
     pub weapon_patch: String,
     /// Muzzle flash patch (`PISFA0`, …); empty when inactive.
     pub flash_patch: String,
+    /// Sector light (0–1) + extralight for the gun (docs/30 W6).
+    pub weapon_light: f32,
+    /// Ready/fire frame has `Bright` (fullbright psprite).
+    pub weapon_bright: bool,
+    /// Flash frame has `Bright`.
+    pub flash_bright: bool,
+    /// Partial invisibility → fuzz the psprite.
+    pub weapon_fuzz: bool,
     /// Weapon bob X offset (screen pixels, Doom 320 space).
     pub bob_x: f32,
     /// Weapon bob Y offset.
@@ -859,6 +894,22 @@ pub struct PlayerHud {
     pub frags: i32,
     /// Netgame face background `STFB<n>` (player slot), `None` in single player.
     pub face_back: Option<u8>,
+}
+
+/// Doom `R_DrawPSprite` light: `scalelight[(lightlevel>>4)+extralight][MAXLIGHTSCALE-1]`
+/// as a 0..=1 RGB scale (docs/30 N8).
+///
+/// Mirrors linuxdoom `R_InitLightTables`: `startmap = (15-i)*4`, then
+/// `level = clamp(startmap - 23, 0, 31)` for column `MAXLIGHTSCALE-1` (47).
+#[must_use]
+pub fn psprite_scalelight(sector_light: i32, extralight: i32) -> f32 {
+    const LIGHTLEVELS: i32 = 16;
+    const NUMCOLORMAPS: i32 = 32;
+    let lightnum = ((sector_light >> 4) + extralight).clamp(0, LIGHTLEVELS - 1);
+    let startmap = (LIGHTLEVELS - 1 - lightnum) * 2 * NUMCOLORMAPS / LIGHTLEVELS;
+    // `j/DISTMAP` with j = MAXLIGHTSCALE-1 = 47, DISTMAP = 2 → 23.
+    let level = (startmap - 23).clamp(0, NUMCOLORMAPS - 1);
+    1.0 - (level as f32) / (NUMCOLORMAPS as f32)
 }
 
 /// Doom ready-frame patch for a weapon class (mirrors `room_ui::weapon_ready_patch`).
@@ -1026,8 +1077,15 @@ impl World {
                 let dz = shot.to[2] - shot.from[2];
                 (dx * dx + dy * dy + dz * dz).sqrt()
             };
+            let dt = self
+                .recent_shots
+                .iter()
+                .rev()
+                .find(|s| s.source == shot.source)
+                .map(|s| shot.tic.saturating_sub(s.tic));
+            let dt_s = dt.map(|d| format!(" Δ{d}")).unwrap_or_default();
             eprintln!(
-                "room: SHOOT @{tic} {kind}{missile} {src_seat} {}#{} ({:.0},{:.0},{:.0}) → {dst} ({:.0},{:.0},{:.0}) dist={dist:.0}{dmg}",
+                "room: [{ts}] SHOOT @{tic}{dt_s} {kind}{missile} {src_seat} {}#{} ({:.0},{:.0},{:.0}) → {dst} ({:.0},{:.0},{:.0}) dist={dist:.0}{dmg}",
                 shot.source_class,
                 shot.source.index(),
                 shot.from[0],
@@ -1036,6 +1094,7 @@ impl World {
                 shot.to[0],
                 shot.to[1],
                 shot.to[2],
+                ts = shoot_log_timestamp(),
                 tic = shot.tic,
             );
         }
@@ -1251,6 +1310,8 @@ impl World {
             thinking_refire: 0,
             thinking_up_move: 0,
             psprite_weapon: None,
+            psprite_state: None,
+            psprite_flash_request: None,
             doors: Vec::new(),
             floors: Vec::new(),
             plats: Vec::new(),
@@ -1316,6 +1377,8 @@ impl World {
             acs_font: String::new(),
             decal_events: Vec::new(),
             particle_events: Vec::new(),
+            fx_events: Vec::new(),
+            fx_events_enabled: false,
             hud_clip: HudClipRect::default(),
             hud_wrap_width: 0,
             acs_cvar_strings: std::collections::BTreeMap::new(),
@@ -1349,6 +1412,7 @@ impl World {
             self_damage: true,
             squad_dbno: false,
             no_player_respawn: false,
+            weapon_stay: false,
             match_over: None,
             match_standings: Vec::new(),
             match_tics_left: 0,
@@ -1722,6 +1786,8 @@ impl World {
         if total <= 1 {
             return Ok(self.players[0].is_some() as u8);
         }
+        // Vanilla coop: weapons stay on the map for each player (docs/30 W17).
+        self.weapon_stay = true;
         self.spawn_multiplayer_only_things()?;
         let mut alive = u8::from(self.players[0].is_some());
         let coop_starts: [i16; 3] = [
@@ -1989,7 +2055,7 @@ impl World {
             player.ready_weapon = Some(weapon);
         }
         player.pspr_state = None;
-        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_y = crate::player::WEAPON_BOTTOM;
         true
     }
 
@@ -2033,7 +2099,7 @@ impl World {
             if let Some(p) = self.players.iter_mut().flatten().find(|p| p.mo == Some(mo)) {
                 p.ready_weapon = Some(weapon);
                 p.pspr_state = None;
-                p.pspr_y = crate::player::WEAPON_TOP;
+                p.pspr_y = crate::player::WEAPON_BOTTOM;
             }
         }
         ready
@@ -2066,7 +2132,7 @@ impl World {
             if let Some(p) = self.players.iter_mut().flatten().find(|p| p.mo == Some(mo)) {
                 p.ready_weapon = Some(pistol);
                 p.pspr_state = None;
-                p.pspr_y = crate::player::WEAPON_TOP;
+                p.pspr_y = crate::player::WEAPON_BOTTOM;
             }
         }
         if let Some(clip) = self.classes.find_name("Clip") {
@@ -2115,101 +2181,15 @@ impl World {
         angle: Angle,
     ) -> Result<ActorId, SimError> {
         let class = self.classes.replacement(class);
-        let def = self
-            .classes
-            .get(class)
-            .cloned()
-            .unwrap_or_else(|| crate::class::ClassDef {
-                id: class,
-                name: "Actor".into(),
-                tag: String::new(),
-                parent: None,
-                doomednum: None,
-                health: 1000,
-                gib_health: 0,
-                wound_health: 0,
-                death_height: 0.0,
-                burn_height: 0.0,
-                radius: 16.0,
-                height: 56.0,
-                speed: 0.0,
-                melee_range: 64.0,
-                melee_threshold: 0.0,
-                mass: 100,
-                reaction_time: 8,
-                threshold: 100,
-                def_threshold: 100,
-                gravity: 1.0,
-                friction: 1.0,
-                jump_z: 8.0,
-                forward_move: 1.0,
-                ripper_level: 0,
-                rip_level_min: 0,
-                rip_level_max: 0,
-                float_bob_strength: 1.0,
-                max_target_range: 0.0,
-                min_missile_chance: 200,
-                damage_factor: 1.0,
-                typed_damage_factors: std::collections::BTreeMap::new(),
-                damage_type: String::new(),
-                float_speed: 4.0,
-                fast_speed: 0.0,
-                max_step_height: 24.0,
-                max_dropoff_height: 24.0,
-                species: String::new(),
-                infighting_group: -1,
-                projectile_group: -1,
-                splash_group: -1,
-                designated_team: 255,
-                view_height: 0.0,
-                camera_height: 0.0,
-                camera_fov: 0.0,
-                attack_z_offset: 0.0,
-                obituary: String::new(),
-                hit_obituary: String::new(),
-                blood_color: None,
-                blood_type: Vec::new(),
-                fill_color: None,
-                scale_x: 1.0,
-                scale_y: 1.0,
-                alpha: 1.0,
-                render_style: crate::class::RenderStyle::Normal,
-                translation: String::new(),
-                flags: 0,
-                spawn_tics: -1,
-                inventory_amount: 1,
-                inventory_max_amount: 1,
-                start_bullets: 50,
-                pickup_message: String::new(),
-                pickup_sound: String::new(),
-                is_weapon: false,
-                pain_chance: 0,
-                pain_threshold: 0,
-                typed_pain_chances: std::collections::BTreeMap::new(),
-                damage: 0,
-                contact_damage: 0,
-                kill_taunts: Vec::new(),
-                idle_taunts: Vec::new(),
-                ammo_type: String::new(),
-                ammo_use: 0,
-                ammo_give: 0,
-                drop_items: Vec::new(),
-                see_sound: String::new(),
-                death_sound: String::new(),
-                pain_sound: String::new(),
-                crush_pain_sound: String::new(),
-                howl_sound: String::new(),
-                active_sound: String::new(),
-                attack_sound: String::new(),
-                sound_class: String::new(),
-                friendly_see_blocks: 10,
-                bounce_sound: String::new(),
-                wall_bounce_sound: String::new(),
-                bounce_factor: 0.7,
-                push_sound: String::new(),
-                use_sound: String::new(),
-                start_items: Vec::new(),
-            });
+        let def = self.classes.get(class).cloned().unwrap_or_else(|| {
+            let mut d = self
+                .classes
+                .find_name("Actor")
+                .and_then(|id| self.classes.get(id).cloned())
+                .expect("Actor class required for spawn fallback");
+            d.id = class;
+            d
+        });
         let spawn_state = self.states.find_label(class, "Spawn");
         let (sprite, frame, tics) = if let Some(sid) = spawn_state {
             if let Some(st) = self.states.get(sid) {
@@ -2320,6 +2300,10 @@ impl World {
                 move_dir: crate::actor::MOVE_DIR_NONE,
                 destroyed: false,
                 action_skip: 0,
+                hit_kind: 0,
+                hit_actor: None,
+                hit_pos: DVec3::ZERO,
+                hit_normal: DVec3::ZERO,
             };
             let check = crate::physics::check_position(self, &probe, pos, None);
             spawn_pos = DVec3::new(pos.x(), pos.y(), check.ceiling_z - height);
@@ -2431,6 +2415,10 @@ impl World {
             move_dir: crate::actor::MOVE_DIR_NONE,
             destroyed: false,
             action_skip: 0,
+            hit_kind: 0,
+            hit_actor: None,
+            hit_pos: DVec3::ZERO,
+            hit_normal: DVec3::ZERO,
         };
         let id = self
             .actors
@@ -4040,6 +4028,18 @@ impl World {
         std::mem::take(&mut self.decal_events)
     }
 
+    /// Queue a render-only FX event (no-op when [`Self::fx_events_enabled`] is false).
+    pub fn push_fx(&mut self, ev: crate::fx_events::FxEvent) {
+        if self.fx_events_enabled {
+            self.fx_events.push(ev);
+        }
+    }
+
+    /// Drain render FX events for the shell / renderer.
+    pub fn drain_fx_events(&mut self) -> Vec<crate::fx_events::FxEvent> {
+        std::mem::take(&mut self.fx_events)
+    }
+
     /// Queue an ACS/DECORATE particle for the renderer.
     pub fn spawn_particle(
         &mut self,
@@ -4343,35 +4343,46 @@ impl World {
             keys |= 32;
         }
         let face = player.mugshot.lump();
-        // Vanilla `A_Lower` parks a dead player's gun at `WEAPONBOTTOM` (off screen).
-        let alive = player.player_state == crate::player::PlayerState::Live;
+        // Keep drawing while the gun lowers on death (docs/30 W13); `pspr_y`
+        // already offsets it off-screen at `WEAPONBOTTOM`.
         let weapon_patch = player
             .pspr_state
-            .filter(|_| alive)
             .and_then(|sid| self.states.get(sid))
             .and_then(|st| weapon_patch_from_sprite_frame(&st.sprite, st.frame))
             .or_else(|| {
                 player
                     .ready_weapon
-                    .filter(|_| alive)
+                    .filter(|_| player.player_state == crate::player::PlayerState::Live)
                     .and_then(|w| self.classes.get(w))
                     .map(|c| weapon_patch_for_class(&c.name).to_string())
             })
             .unwrap_or_default();
-        let flash_patch = player
+        let flash_st = player
             .pspr_flash_state
-            .filter(|_| alive)
-            .and_then(|sid| self.states.get(sid))
+            .filter(|_| player.player_state == crate::player::PlayerState::Live)
+            .and_then(|sid| self.states.get(sid));
+        let flash_patch = flash_st
             .and_then(|st| weapon_patch_from_sprite_frame(&st.sprite, st.frame))
             .unwrap_or_default();
-        // Classic fine-angle bob: cos(t) / |sin(t)| style in screen space.
-        let t = f64::from(self.level.maptime) * (core::f64::consts::PI / 32.0);
-        let bob = player.bob;
+        let flash_bright = flash_st.is_some_and(|st| st.bright);
+        let weapon_bright = player
+            .pspr_state
+            .and_then(|sid| self.states.get(sid))
+            .is_some_and(|st| st.bright);
+        // Vanilla `R_DrawPSprite`: scalelight[(lightlevel>>4)+extralight][MAXLIGHTSCALE-1]
+        // (docs/30 N8). Infrared fixedcolormap → fullbright weapon.
+        let sector_light = crate::physics::actor_light_level(self, actor).clamp(0, 255);
+        let weapon_light = if player.fixed_colormap() == 1 {
+            1.0
+        } else {
+            psprite_scalelight(sector_light, player.extralight)
+        };
+        let weapon_fuzz = player.blur;
+        // Sway frozen outside `A_WeaponReady` (docs/30 W8.3).
         #[allow(clippy::cast_possible_truncation)]
-        let bob_x = (bob * room_core::dmath::cos(t)) as f32;
+        let bob_x = player.pspr_bob_x as f32;
         #[allow(clippy::cast_possible_truncation)]
-        let bob_y = (bob * room_core::dmath::sin(t).abs()
-            + (player.pspr_y - crate::player::WEAPON_TOP)) as f32;
+        let bob_y = (player.pspr_bob_y + (player.pspr_y - crate::player::WEAPON_TOP)) as f32;
         Some(PlayerHud {
             health: actor.health,
             armor: player.armor,
@@ -4381,6 +4392,10 @@ impl World {
             face,
             weapon_patch,
             flash_patch,
+            weapon_light,
+            weapon_bright,
+            flash_bright,
+            weapon_fuzz,
             bob_x,
             bob_y,
             god: player.god,
@@ -4557,6 +4572,7 @@ impl World {
     /// DukeMatch: spawn deathmatch-only things, drop monsters, sit on a DM start.
     pub fn apply_duke_match(&mut self) {
         self.deathmatch = true;
+        self.weapon_stay = true;
         let _ = self.spawn_multiplayer_only_things();
         let duke = self.players.iter().flatten().any(|p| {
             self.classes
@@ -4920,6 +4936,8 @@ impl World {
         };
         let action = st.action.clone();
         let action_args = st.action_args.clone();
+        let callback_id = st.callback_id;
+        let module_index = st.module_index;
         if let Some(a) = self.actors.get_mut(id) {
             a.state = Some(sid);
             let tics = i32::from(st.tics);
@@ -4933,7 +4951,21 @@ impl World {
             a.frame = st.frame;
         }
         if call_action {
-            if let Some(name) = action.as_deref() {
+            // WASM state action wins over native when callback_id ≥ 0 (`docs/31` MA1).
+            if callback_id >= 0 {
+                if let Some(jump) = crate::script_mods::dispatch_actor_state_action(
+                    self,
+                    module_index,
+                    callback_id,
+                    id,
+                    sid,
+                ) {
+                    if let Some(j) = jump {
+                        self.set_state(id, Some(j), true);
+                        return;
+                    }
+                }
+            } else if let Some(name) = action.as_deref() {
                 let evaluated = crate::deco_eval::eval_action_args(self, id, &action_args);
                 match action::call_action_args(self, id, name, &evaluated) {
                     ActionResult::Continue => {}
@@ -5094,6 +5126,8 @@ impl World {
             bytes.extend_from_slice(&p.pspr_flash_tics.to_le_bytes());
             bytes.extend_from_slice(&p.extralight.to_le_bytes());
             bytes.extend_from_slice(&p.bob.to_bits().to_le_bytes());
+            bytes.extend_from_slice(&p.pspr_bob_x.to_bits().to_le_bytes());
+            bytes.extend_from_slice(&p.pspr_bob_y.to_bits().to_le_bytes());
             bytes.push(p.armor_class);
             bytes.extend_from_slice(&p.armor.to_le_bytes());
             bytes.push(u8::from(p.god));

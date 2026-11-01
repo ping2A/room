@@ -2,12 +2,12 @@
 
 use std::mem::size_of;
 
-use bytemuck::{Pod, Zeroable, bytes_of};
-use room_map::MapGeometry;
-use room_nodebuild::point_in_sector;
 use crate::camera::Camera;
 use crate::device::GpuContext;
 use crate::mesh::ViewUniforms;
+use bytemuck::{Pod, Zeroable, bytes_of};
+use room_map::MapGeometry;
+use room_nodebuild::point_in_sector;
 
 /// Draw flags (same bits as `room_sim::mod_zones::flags`).
 pub mod flags {
@@ -79,26 +79,28 @@ impl ModZonePass {
                 label: Some("zone-shader"),
                 source: wgpu::ShaderSource::Wgsl(include_str!("shaders/zone.wgsl").into()),
             });
-        let view_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("zone-view-layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let layout = gpu.device.create_pipeline_layout(
-            &wgpu::PipelineLayoutDescriptor {
+        let view_layout = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("zone-view-layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let layout = gpu
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("zone-layout"),
                 bind_group_layouts: &[&view_layout],
                 push_constant_ranges: &[],
-            },
-        );
+            });
         let pipeline_depth = make_zone_pipeline(
             &gpu.device,
             &shader,
@@ -257,7 +259,8 @@ fn make_zone_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fs_main"),
+            // MRT: colour + dummy R8 (same layout as UnlitPass / world pass).
+            entry_point: Some("fs_main_mrt"),
             targets: &[
                 Some(wgpu::ColorTargetState {
                     format: target_format,
@@ -265,7 +268,8 @@ fn make_zone_pipeline(
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
                 Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::R8Unorm,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    // WebGL2: same blend/write_mask on both targets.
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
@@ -341,10 +345,7 @@ fn sector_heights(map: &MapGeometry, x: f64, y: f64) -> (f32, f32) {
         return (0.0, 128.0);
     };
     let sec = &map.sectors[sid.raw() as usize];
-    (
-        sec.floor_height as f32,
-        sec.ceiling_height as f32,
-    )
+    (sec.floor_height as f32, sec.ceiling_height as f32)
 }
 
 /// Build cylinder wall + ground ring for all visible zones.

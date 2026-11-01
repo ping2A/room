@@ -28,6 +28,8 @@ pub enum Key {
     Right,
     /// Attack.
     Attack,
+    /// Alt / secondary attack (`docs/31` MA4).
+    AltAttack,
     /// Use.
     Use,
     /// Run / speed.
@@ -125,6 +127,8 @@ impl TicCmdBits {
     pub const BT_QUICKKICK: u32 = 1 << 7;
     /// Use carried inventory (Duke medkit / steroids).
     pub const BT_INVUSE: u32 = 1 << 8;
+    /// Alt / secondary attack.
+    pub const BT_ALTATTACK: u32 = 1 << 9;
 }
 
 /// Doom walk / run forward units.
@@ -187,6 +191,9 @@ pub fn build_ticcmd(sample: &InputSample) -> TicCmdBits {
     }
     if sample.keys.contains(&Key::Attack) {
         cmd.buttons |= TicCmdBits::BT_ATTACK;
+    }
+    if sample.keys.contains(&Key::AltAttack) {
+        cmd.buttons |= TicCmdBits::BT_ALTATTACK;
     }
     if sample.keys.contains(&Key::Use) {
         cmd.buttons |= TicCmdBits::BT_USE;

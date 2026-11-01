@@ -21,6 +21,22 @@ pub enum CanvasCmd {
         /// RGBA.
         color: [f32; 4],
     },
+    /// Pre-rasterized RGBA8 image (`w*h*4` bytes, straight alpha).
+    ///
+    /// Used for Doom weapon / HUD patches so the CPU path is one blit instead of
+    /// thousands of per-span [`Self::FillRect`] commands.
+    BlitRgba {
+        /// Left.
+        x: f32,
+        /// Top.
+        y: f32,
+        /// Width in pixels.
+        w: u32,
+        /// Height in pixels.
+        h: u32,
+        /// Row-major RGBA8.
+        pixels: Vec<u8>,
+    },
     /// Text run (font atlas later).
     Text {
         /// Left.
@@ -56,6 +72,11 @@ impl Canvas {
     /// Filled rectangle.
     pub fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
         self.cmds.push(CanvasCmd::FillRect { x, y, w, h, color });
+    }
+
+    /// Blit a pre-rasterized RGBA8 image.
+    pub fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: Vec<u8>) {
+        self.cmds.push(CanvasCmd::BlitRgba { x, y, w, h, pixels });
     }
 
     /// Text.

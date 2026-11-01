@@ -27,8 +27,13 @@ fn vs_main(in: VsIn) -> VsOut {
     return out;
 }
 
-@fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+struct FsOutMrt {
+    @location(0) color: vec4<f32>,
+    // Dummy aux (R8 stencil slot); matches UnlitPass MRT layout.
+    @location(1) aux: vec4<f32>,
+};
+
+fn shade(in: VsOut) -> vec4<f32> {
     let t = view.eye.w;
     // Vertical scroll bands + soft pulse (readable BR wall).
     let band = sin(in.uv.y * 40.0 - t * 3.5) * 0.5 + 0.5;
@@ -36,4 +41,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var c = in.color;
     c.a *= (0.72 + 0.28 * band) * pulse;
     return c;
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return shade(in);
+}
+
+/// World pass is colour + dummy R8; WebGPU requires a frag output per target.
+@fragment
+fn fs_main_mrt(in: VsOut) -> FsOutMrt {
+    return FsOutMrt(shade(in), vec4<f32>(0.0));
 }

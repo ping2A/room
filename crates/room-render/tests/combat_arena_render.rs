@@ -26,12 +26,14 @@ fn combat_arena_textured_offscreen() {
     let mut map = combat_arena().build_udmf("MAP01").unwrap();
     apply_nodes(&mut map);
     // Look down at the spawn floor so texels are not grazing-angle crushed.
+    let eye_x = 1280.0_f32;
+    let eye_y = 144.0_f32;
     let camera = Camera {
-        eye: Vec3::new(512.0, 96.0, 41.0),
+        eye: Vec3::new(eye_x, eye_y, 41.0),
         forward: Vec3::new(0.0, 0.6, -0.8).normalize(),
         ..Camera::default()
     };
-    let vis = walk_bsp(&map, 512.0, 96.0);
+    let vis = walk_bsp(&map, f64::from(eye_x), f64::from(eye_y));
     assert!(
         !vis.subsectors.is_empty(),
         "expected visible subsectors in arena"
@@ -188,7 +190,7 @@ fn combat_arena_textured_offscreen() {
 
     // Eye-level: bottom band must show floor (not clear / sky void).
     let camera_eye = Camera {
-        eye: Vec3::new(512.0, 96.0, 41.0),
+        eye: Vec3::new(eye_x, eye_y, 41.0),
         forward: Vec3::new(0.0, 1.0, 0.0),
         ..Camera::default()
     };

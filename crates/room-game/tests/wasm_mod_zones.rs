@@ -18,6 +18,7 @@ fn zone_mod() -> ModSource {
         name: "zone".into(),
         scope: ModuleScope::Play,
         bytes: wasm,
+        options: Default::default(),
     }
 }
 

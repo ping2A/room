@@ -242,8 +242,10 @@ reg_class_property_i32/f64/str/name(PropId, value…)        // any DECORATE pro
 reg_class_flag(FlagId, on)
 reg_class_field(name_ptr, len, FieldType, array_len) -> FieldId    // host-side per-actor storage (§7)
 reg_state_label(label_ptr, len)                             // starts a label at the next state
-reg_state(sprite_ptr /*4 bytes*/, frame: u8, tics: i32, flags: u32, callback_id: i32 (-1 none), action_args_ptr, n) -> StateRef
-reg_state_flow(kind /*Loop, Stop, Wait, Fail, Goto*/, label_ptr, len, offset)
+reg_state(sprite_ptr /*4 bytes*/, frame: u8, tics: i32, flags: u32, callback_id: i32 (-1 none)) -> StateRef
+reg_state_flow(kind /*0 Loop…4 Goto*/, label_ptr, len, offset) -> i32  // 0=ok; unresolved Goto = registration error
+reg_state_action(name_ptr, len, args_ptr, args_len) -> i32   // native action on last state (DECORATE args string)
+reg_state_offset(x, y) -> i32                                // weapon OFFSET on last state
 reg_class_virtual(VirtualSlot, callback_id)                 // override Tick, PostBeginPlay, DamageMobj, Die, Touch, TryPickup, Use, …
 reg_class_end()
 reg_action(name_ptr, len, signature_ptr, callback_id)       // globally callable action function, usable from DECORATE states of other mods
@@ -428,9 +430,13 @@ What runs today (play scope, `wasmi` on desktop and web):
 - **Example.** `mods/doom1-survival` (Rust, SDK): skill-scaled monster waves spawned at the map's own thing spots, a boss wave every fifth wave, two mod classes, kill-streak messages, heal-on-kill and wave rewards. `scripts/room-server.sh mods` builds `survival.wasm` and packs `survival.wad` (it builds every `mods/<dir>`: a `Cargo.toml` crate or `<module>.ts` AssemblyScript, packed as `ROOMMOD` + one lump per `[[module]]` + its `source` lump); `room-game/tests/wasm_mod_survival.rs` runs it end to end (and on `doom1.wad` E1M1 when present).
 - **Example (multiplayer).** `mods/doom1-royale` (Rust) — *Battle Royale* for room-server rooms (up to **8** seats, `room.toml` `max_players = 8`): monsters removed and replaced by loot, fists only, players scattered, deathmatch rules with one life, a closing zone, last player standing wins and the level ends. Empty seats can be filled by engine **bots** (`GameOptions.fill_bots`; sim generates deterministic `TicCmd`s in `room-sim/src/bot.rs` — no guest code required). Test `room-game/tests/wasm_mod_royale.rs`.
 - **Example (AssemblyScript).** `mods/doom1-bounty` — *Bounty Hunter*: a marked monster to hunt, compass hints, payouts and a final boss; see §16.
+- **Python play mods (host CPython, not WASM).** Two paths share the same `RoomMod` hook shape (`on_load` / `on_tick` / `on_thing_died`):
+  1. **Desktop:** `[[module]] language = "python"` in `ROOMMOD` / `room.toml`; pack with `./scripts/pack-python-mod.sh`; run `cargo run -p room-app --features python-mods -- --file hello.wad --play`. Host crate: `room-python-host` (optional `embed` feature). Example: `mods/doom1-python-hello`.
+  2. **Educational REPL:** Maturin package `python/` (workspace-excluded) — `./scripts/setup-python-edu.sh` then `python -m room mods/doom1-python-hello/hello_mod.py`.
+  Neither path is netplay-safe (not a `room-script` WASM guest). Port to Rust SDK or AssemblyScript for multiplayer PWADs.
 - **Multiplayer (room-server).** Mods run in lockstep rooms: the server loads a catalog of mod WADs (`--mods-dir`), an admin allows the ones players may pick (admin Settings → Mods), a room is created with `"mod": "<name>"`, `welcome.room.mod` carries `{name, title, fingerprint, size}`, and every client downloads `GET /api/mods/<name>.wad`, checks the fingerprint and mounts it after the IWAD before loading the map. The optional server verifier mounts the same bytes, so checksums agree. Mods must stay deterministic (playsim RNG, `math_*`, no host state) — anything else desyncs the room. See `docs/22-room-server.md` §4 *Mods*. The legacy `FTRL` gateway and the peer-hosted relay do not carry mods.
 
-Not yet: save games do not store module memory (§10), UI-scope modules are skipped (logged), and per-actor virtual overrides / custom states from modules. `Translation` is stored on classes but not yet rendered.
+Module states / actions (`reg_state*`, merge into `StateTable`), weapon/ammo/inventory props, and generated lumps (`lump_find`/`lump_read`/`reg_lump`/`reg_sound_alias` + in-memory PWAD layer; `docs/31` MA1–MA3) are implemented. Example art generator: `mods/doom1-shuriken` (SK0). Not yet: alt fire / missile hit info / slots (MA4), save games do not store module memory (§10), UI-scope modules are skipped (logged), per-actor virtual overrides. `Translation` is stored on classes but not yet rendered.
 
 ## 16. Writing mods in AssemblyScript
 

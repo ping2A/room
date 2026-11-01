@@ -189,6 +189,13 @@ manifest = (d / "room.toml").read_bytes()
 modules = tomllib.loads(manifest.decode()).get("module", [])
 if not modules:
     sys.exit(f"{d}/room.toml: no [[module]]")
+# Host Python mods: pack .py lumps (desktop `python-mods` feature).
+if all(
+    str(m.get("language", m.get("lang", "wasm"))).lower() in ("python", "py")
+    for m in modules
+):
+    subprocess.run(["./scripts/pack-python-mod.sh", str(d)], check=True)
+    raise SystemExit(0)
 cargo = d / "Cargo.toml"
 if cargo.is_file():
     crate = tomllib.loads(cargo.read_text())["package"]["name"].replace("-", "_")
@@ -196,6 +203,9 @@ if cargo.is_file():
     (d / f"{modules[0]['name']}.wasm").write_bytes(built.read_bytes())
 lumps = [("ROOMMOD", manifest)]
 for m in modules:
+    lang = str(m.get("language", m.get("lang", "wasm"))).lower()
+    if lang in ("python", "py"):
+        continue  # mixed manifests: python lumps packed separately
     wasm, ts = d / f"{m['name']}.wasm", d / f"{m['name']}.ts"
     if not cargo.is_file() and ts.is_file():
         subprocess.run(["node", "scripts/asc-compile.mjs", str(ts), str(wasm)], check=True)

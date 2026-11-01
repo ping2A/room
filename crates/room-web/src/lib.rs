@@ -60,8 +60,9 @@ mod browser {
     use room_game::GameRuntime;
     use room_nodebuild::apply_nodes;
     use room_render::{
-        Camera, CanvasGpu, GpuContext, LightMode, ModZonePass, SceneLists, UnlitPass, ZoneDraw,
-        build_scene_with_sky, build_scene_with_sky_ex_sized, build_zone_meshes,
+        Camera, CanvasGpu, GpuContext, LightMode, ModZonePass, PostChain, PostChainInputs,
+        RenderSettings, SceneLists, UnlitPass, ZoneDraw, build_scene_with_sky,
+        build_scene_with_sky_ex_sized, build_zone_meshes,
     };
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -100,6 +101,13 @@ mod browser {
         input_bound: bool,
         /// Weapon / HUD overlay (created when play starts).
         canvas: Option<CanvasGpu>,
+        /// Shader / post toggles (`docs/29`); set via [`room_set_shader_cvar`].
+        render_settings: RenderSettings,
+        /// Scene colour (post source) + ping + LDR when post is enabled.
+        post_chain: Option<PostChain>,
+        scene_color: Option<(wgpu::Texture, wgpu::TextureView)>,
+        post_ping: Option<(wgpu::Texture, wgpu::TextureView)>,
+        post_ldr: Option<(wgpu::Texture, wgpu::TextureView)>,
     }
 
     /// WebGPU canvas preferred format is non-sRGB (`bgra8unorm`). Pipelines
@@ -230,9 +238,12 @@ mod browser {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&gpu.device, &config);
-        let mut pass = UnlitPass::new(&gpu, format);
+        // Scene colour is always Rgba8Unorm (filterable on WebGL2). Unlit +
+        // zone pipelines must match that RT; the swapchain may be Bgra8Unorm.
+        let scene_format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut pass = UnlitPass::new(&gpu, scene_format);
         apply_web_lighting(&mut pass);
-        let zone_pass = ModZonePass::new(&gpu, format);
+        let zone_pass = ModZonePass::new(&gpu, scene_format);
         let depth = create_depth(&gpu.device, width, height);
         let stencil_aux = create_stencil_aux(&gpu.device, width, height);
         let mut map = load_embedded_demo_map()?;
@@ -245,6 +256,11 @@ mod browser {
         camera.aspect = f64::from(width) / f64::from(height.max(1));
         camera.fov_y_deg = 58.715;
         let start_ms = now_ms();
+        // Final tonemap / present targets the swapchain format (often Bgra8Unorm).
+        let post_chain = Some(PostChain::new(&gpu, scene_format, format));
+        let scene_color = Some(create_color_rt(&gpu.device, scene_format, width, height));
+        let post_ping = Some(create_color_rt(&gpu.device, scene_format, width, height));
+        let post_ldr = Some(create_color_rt(&gpu.device, format, width, height));
         let state = Rc::new(RefCell::new(FrameState {
             surface,
             gpu,
@@ -260,6 +276,11 @@ mod browser {
             },
             input_bound: false,
             canvas: None,
+            render_settings: RenderSettings::default(),
+            post_chain,
+            scene_color,
+            post_ping,
+            post_ldr,
         }));
         web_sys::console::log_1(
             &format!(
@@ -1520,7 +1541,34 @@ mod browser {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: room_render::DEPTH_STENCIL_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        (tex, view)
+    }
+
+    fn create_color_rt(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("web-color-rt"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1542,7 +1590,8 @@ mod browser {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
+            // Must match unlit MRT slot 1 (docs/29 U16 G-buffer-lite).
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
@@ -1587,8 +1636,10 @@ mod browser {
         if let Ok(canvas_el) = find_canvas() {
             sync_surface_size(&canvas_el, &mut s);
         }
-        // Re-assert web lighting each frame.
-        apply_web_lighting(&mut s.pass);
+        // Faithful path: Bright + in-shader sRGB. Post path keeps linear scene.
+        if !s.render_settings.needs_post() {
+            apply_web_lighting(&mut s.pass);
+        }
         let now = now_ms();
 
         // Advance sim / orbit, update camera, then build scene.
@@ -1682,8 +1733,57 @@ mod browser {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let use_post = s.render_settings.needs_post();
+        // Linear scene into post (R12): no gain/encode on top of tonemap.
+        // Restore web Bright+gain+encode when post is off (SH0).
+        if use_post {
+            s.pass.encode_srgb = false;
+            s.pass.output_gain = 1.0;
+        } else {
+            apply_web_lighting(&mut s.pass);
+        }
+        // Always draw the world into the Rgba8 scene RT (matches Unlit/zone
+        // pipelines), then present to the swapchain via post (identity when FX
+        // are off). Avoids Bgra filter/sample issues and surface COPY_DST.
+        let scene_color = s.scene_color.take();
         for (i, (cam, seat, rect)) in views.iter().enumerate() {
-            render_world_view(&mut s, &view, cam, *seat, *rect, i == 0, use_materials);
+            let target = &scene_color.as_ref().expect("scene rt").1;
+            render_world_view(&mut s, target, cam, *seat, *rect, i == 0, use_materials);
+        }
+        s.scene_color = scene_color;
+        {
+            let settings = s.render_settings.clone();
+            let time = s.pass.time;
+            let w = s.config.width;
+            let h = s.config.height;
+            let mut encoder =
+                s.gpu
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("post"),
+                    });
+            let mut chain = s.post_chain.take();
+            let scene = s.scene_color.as_ref();
+            let ping = s.post_ping.as_ref();
+            if let (Some(chain), Some(scene), Some(ping)) = (chain.as_mut(), scene, ping) {
+                chain.apply_views(
+                    &s.gpu,
+                    &mut encoder,
+                    &scene.1,
+                    &s.depth.0,
+                    &ping.1,
+                    &view,
+                    PostChainInputs {
+                        settings: &settings,
+                        blend: [0.0, 0.0, 0.0, 0.0],
+                        width: w,
+                        height: h,
+                        time,
+                    },
+                );
+            }
+            s.post_chain = chain;
+            s.gpu.queue.submit(Some(encoder.finish()));
         }
         let mut encoder = s
             .gpu
@@ -1801,31 +1901,32 @@ mod browser {
         }
 
         let zone_meshes = match &s.mode {
-            Mode::Play(play) | Mode::Lobby { prepared: Some(play), .. } => {
-                play.game.world().and_then(|world| {
-                    if world.mod_zones.is_empty() {
-                        return None;
-                    }
-                    let ticfrac_milli = (play.tic_accum * 1000.0 / (1.0 / 35.0))
-                        .clamp(0.0, 1000.0) as u32;
-                    let draws: Vec<ZoneDraw> = world
-                        .mod_zones
-                        .iter()
-                        .map(|z| {
-                            let (cx, cy, r) =
-                                z.interp_current(world.level.maptime, ticfrac_milli);
-                            ZoneDraw {
-                                cx: cx as f32,
-                                cy: cy as f32,
-                                r: r as f32,
-                                rgba: z.rgba,
-                                flags: z.flags,
-                            }
-                        })
-                        .collect();
-                    Some(build_zone_meshes(&play.map, &draws))
-                })
-            }
+            Mode::Play(play)
+            | Mode::Lobby {
+                prepared: Some(play),
+                ..
+            } => play.game.world().and_then(|world| {
+                if world.mod_zones.is_empty() {
+                    return None;
+                }
+                let ticfrac_milli =
+                    (play.tic_accum * 1000.0 / (1.0 / 35.0)).clamp(0.0, 1000.0) as u32;
+                let draws: Vec<ZoneDraw> = world
+                    .mod_zones
+                    .iter()
+                    .map(|z| {
+                        let (cx, cy, r) = z.interp_current(world.level.maptime, ticfrac_milli);
+                        ZoneDraw {
+                            cx: cx as f32,
+                            cy: cy as f32,
+                            r: r as f32,
+                            rgba: z.rgba,
+                            flags: z.flags,
+                        }
+                    })
+                    .collect();
+                Some(build_zone_meshes(&play.map, &draws))
+            }),
             _ => None,
         };
         {
@@ -2042,8 +2143,15 @@ mod browser {
         s.surface.configure(&s.gpu.device, &s.config);
         s.depth = create_depth(&s.gpu.device, w, h);
         s.stencil_aux = create_stencil_aux(&s.gpu.device, w, h);
+        let fmt = s.config.format;
+        let scene_format = wgpu::TextureFormat::Rgba8Unorm;
+        s.scene_color = Some(create_color_rt(&s.gpu.device, scene_format, w, h));
+        s.post_ping = Some(create_color_rt(&s.gpu.device, scene_format, w, h));
+        s.post_ldr = Some(create_color_rt(&s.gpu.device, fmt, w, h));
+        if let Some(chain) = s.post_chain.as_mut() {
+            chain.ensure_formats(&s.gpu, scene_format, fmt);
+        }
         if s.canvas.is_some() {
-            let fmt = s.config.format;
             s.canvas = Some(CanvasGpu::new(&s.gpu, fmt, w, h));
         }
     }
@@ -2206,6 +2314,56 @@ mod browser {
             }
         }
         Ok(())
+    }
+
+    /// Toggle a renderer / post CVar (`docs/29-shaders.md`).
+    ///
+    /// Examples: `roomSetShaderCvar("gl_bloom", "1")`, `roomSetShaderCvar("r_quality", "2")`.
+    /// Returns `false` if the name is unknown. Desktop post-chain wiring applies when
+    /// `needs_post()`; web applies settings for subsequent frames (scene path uses
+    /// `encode_srgb` / RoomSoft when a post effect is requested).
+    #[wasm_bindgen(js_name = roomSetShaderCvar)]
+    pub fn room_set_shader_cvar(name: &str, value: &str) -> bool {
+        APP.with(|app| {
+            let Some(shared) = app.borrow().as_ref().cloned() else {
+                return false;
+            };
+            let Ok(mut s) = shared.try_borrow_mut() else {
+                return false;
+            };
+            let ok = if name.eq_ignore_ascii_case("r_quality") {
+                if let Ok(level) = value.parse::<i32>() {
+                    s.render_settings.apply_quality(level.clamp(0, 3) as u8);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                let lower = value.trim().to_ascii_lowercase();
+                let b = matches!(lower.as_str(), "1" | "true" | "yes" | "on");
+                let i = value.parse::<i32>().ok();
+                let f = value.parse::<f64>().ok();
+                s.render_settings.sync_cvar(
+                    name,
+                    if i.is_none() && f.is_none() {
+                        Some(b)
+                    } else {
+                        None
+                    },
+                    i,
+                    f,
+                )
+            };
+            if ok {
+                if s.render_settings.needs_post() {
+                    s.pass.encode_srgb = false;
+                    s.pass.output_gain = 1.0;
+                } else {
+                    apply_web_lighting(&mut s.pass);
+                }
+            }
+            ok
+        })
     }
 
     /// Default key bindings as JSON (`KeyboardEvent.code` → action).

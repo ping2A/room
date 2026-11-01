@@ -21,6 +21,14 @@ pub struct HudState {
     pub weapon_patch: String,
     /// Muzzle flash patch (`PISFA0`, …); empty = none.
     pub flash_patch: String,
+    /// Sector light 0–1 for the gun (docs/30 W6).
+    pub weapon_light: f32,
+    /// Ready/fire frame is `Bright`.
+    pub weapon_bright: bool,
+    /// Flash frame is `Bright`.
+    pub flash_bright: bool,
+    /// Partial invisibility → fuzz the psprite.
+    pub weapon_fuzz: bool,
     /// Weapon bob X (Doom 320 screen space).
     pub bob_x: f32,
     /// Weapon bob Y.
@@ -74,6 +82,10 @@ impl HudState {
             face: "STFST00".into(),
             weapon_patch: "PISGA0".into(),
             flash_patch: String::new(),
+            weapon_light: 1.0,
+            weapon_bright: false,
+            flash_bright: false,
+            weapon_fuzz: false,
             bob_x: 0.0,
             bob_y: 0.0,
             // Classic STBAR strip. F5 toggles overlay numbers (no bar).
@@ -108,6 +120,10 @@ impl HudState {
             face: face.into(),
             weapon_patch: weapon_patch.into(),
             flash_patch: String::new(),
+            weapon_light: 1.0,
+            weapon_bright: false,
+            flash_bright: false,
+            weapon_fuzz: false,
             bob_x: 0.0,
             bob_y: 0.0,
             fullscreen,

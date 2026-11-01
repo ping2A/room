@@ -19,6 +19,8 @@ struct HostState {
     name_intern: crate::NameInternFn,
     class_find: crate::ClassFindFn,
     acs_execute: crate::AcsExecuteFn,
+    lump_find: crate::LumpFindFn,
+    lump_bytes: crate::LumpBytesFn,
     reg: SharedRegistration,
     game: Option<SharedGameBridge>,
 }
@@ -75,6 +77,8 @@ impl WasmBackend for WasmtimeBackend {
             name_intern: Arc::clone(&host.name_intern),
             class_find: Arc::clone(&host.class_find),
             acs_execute: Arc::clone(&host.acs_execute),
+            lump_find: Arc::clone(&host.lump_find),
+            lump_bytes: Arc::clone(&host.lump_bytes),
             reg: Arc::clone(&host.reg),
             game: host.game.clone(),
         };
@@ -145,6 +149,42 @@ impl WasmBackend for WasmtimeBackend {
                  n: i32| {
                     let args = read_guest_i32s(&mut caller, args_ptr, n);
                     (caller.data().acs_execute)(script, map, &args)
+                },
+            )
+            .map_err(|e| ScriptError::Backend(e.to_string()))?;
+        linker
+            .func_wrap(
+                "room",
+                "lump_find",
+                |mut caller: Caller<'_, HostState>, ptr: i32, len: i32, namespace: i32| {
+                    let name = read_guest_bytes(&mut caller, ptr, len);
+                    (caller.data().lump_find)(&name, namespace)
+                },
+            )
+            .map_err(|e| ScriptError::Backend(e.to_string()))?;
+        linker
+            .func_wrap(
+                "room",
+                "lump_read",
+                |mut caller: Caller<'_, HostState>, index: i32, buf_ptr: i32, cap: i32| {
+                    let Some(bytes) = (caller.data().lump_bytes)(index) else {
+                        return -1;
+                    };
+                    if cap < 0 || buf_ptr < 0 {
+                        return -1;
+                    }
+                    let n = (cap as usize).min(bytes.len());
+                    let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+                        return -1;
+                    };
+                    let data = mem.data_mut(&mut caller);
+                    let start = buf_ptr as usize;
+                    let end = start.saturating_add(n);
+                    if end > data.len() {
+                        return -1;
+                    }
+                    data[start..end].copy_from_slice(&bytes[..n]);
+                    n as i32
                 },
             )
             .map_err(|e| ScriptError::Backend(e.to_string()))?;
@@ -334,6 +374,59 @@ fn link_reg_imports(linker: &mut Linker<HostState>) -> Result<(), ScriptError> {
     linker
         .func_wrap(
             "room",
+            "reg_state_flow",
+            |mut caller: Caller<'_, HostState>,
+             kind: i32,
+             label_ptr: i32,
+             label_len: i32,
+             offset: i32| {
+                let label = read_guest_bytes(&mut caller, label_ptr, label_len);
+                caller
+                    .data()
+                    .reg
+                    .lock()
+                    .map(|mut g| g.state_flow(kind, &label, offset))
+                    .unwrap_or(-1)
+            },
+        )
+        .map_err(|e| ScriptError::Backend(e.to_string()))?;
+    linker
+        .func_wrap(
+            "room",
+            "reg_state_action",
+            |mut caller: Caller<'_, HostState>,
+             name_ptr: i32,
+             name_len: i32,
+             args_ptr: i32,
+             args_len: i32| {
+                let name = read_guest_bytes(&mut caller, name_ptr, name_len);
+                let args = read_guest_bytes(&mut caller, args_ptr, args_len);
+                caller
+                    .data()
+                    .reg
+                    .lock()
+                    .map(|mut g| g.state_action(&name, &args))
+                    .unwrap_or(-1)
+            },
+        )
+        .map_err(|e| ScriptError::Backend(e.to_string()))?;
+    linker
+        .func_wrap(
+            "room",
+            "reg_state_offset",
+            |caller: Caller<'_, HostState>, x: i32, y: i32| {
+                caller
+                    .data()
+                    .reg
+                    .lock()
+                    .map(|mut g| g.state_offset(x, y))
+                    .unwrap_or(-1)
+            },
+        )
+        .map_err(|e| ScriptError::Backend(e.to_string()))?;
+    linker
+        .func_wrap(
+            "room",
             "reg_class_virtual",
             |caller: Caller<'_, HostState>, slot: i32, callback_id: i32| {
                 if let Ok(mut g) = caller.data().reg.lock() {
@@ -402,6 +495,123 @@ fn link_reg_imports(linker: &mut Linker<HostState>) -> Result<(), ScriptError> {
                     .lock()
                     .map(|mut g| g.static_function(&class_name, &func_name, callback_id))
                     .unwrap_or(-1)
+            },
+        )
+        .map_err(|e| ScriptError::Backend(e.to_string()))?;
+    linker
+        .func_wrap(
+            "room",
+            "reg_lump",
+            |mut caller: Caller<'_, HostState>,
+             name_ptr: i32,
+             name_len: i32,
+             namespace: i32,
+             data_ptr: i32,
+             data_len: i32| {
+                let name = read_guest_bytes(&mut caller, name_ptr, name_len);
+                let data = read_guest_bytes(&mut caller, data_ptr, data_len);
+                caller
+                    .data()
+                    .reg
+                    .lock()
+                    .map(|mut g| g.lump(&name, namespace, &data))
+                    .unwrap_or(-1)
+            },
+        )
+        .map_err(|e| ScriptError::Backend(e.to_string()))?;
+    linker
+        .func_wrap(
+            "room",
+            "reg_sound_alias",
+            |mut caller: Caller<'_, HostState>,
+             logical_ptr: i32,
+             logical_len: i32,
+             lump_ptr: i32,
+             lump_len: i32,
+             limit: i32| {
+                let logical = read_guest_bytes(&mut caller, logical_ptr, logical_len);
+                let lump = read_guest_bytes(&mut caller, lump_ptr, lump_len);
+                caller
+                    .data()
+                    .reg
+                    .lock()
+                    .map(|mut g| g.sound_alias(&logical, &lump, limit))
+                    .unwrap_or(-1)
+            },
+        )
+        .map_err(|e| ScriptError::Backend(e.to_string()))?;
+    linker
+        .func_wrap(
+            "room",
+            "reg_weapon_slot",
+            |mut caller: Caller<'_, HostState>,
+             slot: i32,
+             class_ptr: i32,
+             class_len: i32,
+             priority: i32| {
+                let class_name = read_guest_bytes(&mut caller, class_ptr, class_len);
+                caller
+                    .data()
+                    .reg
+                    .lock()
+                    .map(|mut g| g.weapon_slot(slot, &class_name, priority))
+                    .unwrap_or(-1)
+            },
+        )
+        .map_err(|e| ScriptError::Backend(e.to_string()))?;
+    linker
+        .func_wrap(
+            "room",
+            "manifest_option_i32",
+            |mut caller: Caller<'_, HostState>, key_ptr: i32, key_len: i32, default: i32| {
+                let key = read_guest_bytes(&mut caller, key_ptr, key_len);
+                caller
+                    .data()
+                    .reg
+                    .lock()
+                    .map(|g| g.option_i32(&key, default))
+                    .unwrap_or(default)
+            },
+        )
+        .map_err(|e| ScriptError::Backend(e.to_string()))?;
+    linker
+        .func_wrap(
+            "room",
+            "manifest_option_str",
+            |mut caller: Caller<'_, HostState>,
+             key_ptr: i32,
+             key_len: i32,
+             buf_ptr: i32,
+             cap: i32| {
+                let key = read_guest_bytes(&mut caller, key_ptr, key_len);
+                if cap <= 0 || buf_ptr < 0 {
+                    return -1;
+                }
+                let Ok(cap_u) = usize::try_from(cap) else {
+                    return -1;
+                };
+                let mut tmp = vec![0u8; cap_u];
+                let n = caller
+                    .data()
+                    .reg
+                    .lock()
+                    .map(|g| g.option_str(&key, &mut tmp))
+                    .unwrap_or(-1);
+                if n < 0 {
+                    return n;
+                }
+                let write_n = (n as usize).min(cap_u);
+                let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+                    return -1;
+                };
+                let data = mem.data_mut(&mut caller);
+                let start = buf_ptr as usize;
+                let end = start.saturating_add(write_n);
+                if end > data.len() {
+                    return -1;
+                }
+                data[start..end].copy_from_slice(&tmp[..write_n]);
+                n
             },
         )
         .map_err(|e| ScriptError::Backend(e.to_string()))?;

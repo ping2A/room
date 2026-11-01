@@ -30,7 +30,7 @@ use room_sim::{
 use room_ui::{
     CanvasSink, DoomStatusBar, DrawCmd, DukeStatusBar, HudState, MenuCommand, MenuStack,
     ModHudMapCtx, PatchCache, Rect, Rgba, StatusBar, UiDrawList, blit_draw_list_full,
-    draw_mod_hud_layer, draw_mod_hud_modals, draw_stcfn_string, draw_title, draw_weapon,
+    draw_mod_hud_layer, draw_mod_hud_modals, draw_stcfn_string, draw_title, draw_weapon_lit,
     measure_stcfn_string, parse_titledef, player_map_poses, splash_ms, title_screen_pic,
 };
 use room_vfs::{Namespace, Vfs, VfsBuilder};
@@ -81,6 +81,8 @@ pub struct PlaySession {
     pub mouse_pitch: i32,
     /// Attack held (LMB / Ctrl).
     pub(crate) attack: bool,
+    /// Alt attack held (RMB; `docs/31` MA4).
+    pub(crate) alt_attack: bool,
     /// Fractional tic accumulator (seconds).
     pub tic_accum: f32,
     /// Timestamp of last frame (ms).
@@ -253,7 +255,7 @@ impl PlaySession {
                 .mount_memory(name, Bytes::copy_from_slice(bytes))
                 .map_err(|e| format!("{name}: {e}"))?;
         }
-        let vfs = builder.build().map_err(|e| e.to_string())?;
+        let mut vfs = builder.build().map_err(|e| e.to_string())?;
 
         let mut opts = opts;
         let requested = opts.map_name.as_deref().unwrap_or("").trim().to_owned();
@@ -349,7 +351,7 @@ impl PlaySession {
             web_sys::console::warn_1(&format!("room-web: mod: {e}").into());
         }
         if !mods.is_empty() {
-            match game.set_script_mods(mods) {
+            match game.set_script_mods_with_vfs(mods, Some(&mut vfs)) {
                 Ok(names) => web_sys::console::log_1(
                     &format!("room-web: WASM mods: {}", names.join(", ")).into(),
                 ),
@@ -422,6 +424,7 @@ impl PlaySession {
             mouse_yaw: 0,
             mouse_pitch: 0,
             attack: false,
+            alt_attack: false,
             tic_accum: 0.0,
             last_ms: 0.0,
             yaw: 0.0,
@@ -463,8 +466,7 @@ impl PlaySession {
     pub fn attach_net(&mut self, net: NetPlay) {
         for (seat, name) in net.session_names() {
             if !name.is_empty() {
-                self.game
-                    .set_player_display_name(usize::from(seat), &name);
+                self.game.set_player_display_name(usize::from(seat), &name);
             }
         }
         self.net = Some(net);
@@ -1213,6 +1215,9 @@ impl PlaySession {
         if self.attack {
             keys.push(Key::Attack);
         }
+        if self.alt_attack || self.held.contains("altattack") {
+            keys.push(Key::AltAttack);
+        }
         if self.held.contains("use") {
             keys.push(Key::Use);
         }
@@ -1368,6 +1373,9 @@ impl PlaySession {
             fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]) {
                 self.0.text(x, y, text, color);
             }
+            fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
+                self.0.blit_rgba(x, y, w, h, pixels.to_vec());
+            }
         }
         struct OffsetSink<'a> {
             inner: Sink<'a>,
@@ -1380,6 +1388,10 @@ impl PlaySession {
             }
             fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]) {
                 self.inner.text(x + self.ox, y + self.oy, text, color);
+            }
+            fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
+                self.inner
+                    .blit_rgba(x + self.ox, y + self.oy, w, h, pixels);
             }
         }
         blit_draw_list_full(
@@ -1654,6 +1666,10 @@ impl PlaySession {
             hud.face = h.face;
             hud.weapon_patch = h.weapon_patch;
             hud.flash_patch = h.flash_patch;
+            hud.weapon_light = h.weapon_light;
+            hud.weapon_bright = h.weapon_bright;
+            hud.flash_bright = h.flash_bright;
+            hud.weapon_fuzz = h.weapon_fuzz;
             hud.bob_x = h.bob_x;
             hud.bob_y = h.bob_y;
             hud.arms = h.arms;
@@ -1675,23 +1691,29 @@ impl PlaySession {
         }
 
         let soft = self.patches.get(&hud.weapon_patch);
-        draw_weapon(
+        draw_weapon_lit(
             ui,
             &hud.weapon_patch,
             hud.fullscreen,
             soft,
             hud.bob_x,
             hud.bob_y,
+            hud.weapon_light,
+            hud.weapon_bright,
+            hud.weapon_fuzz,
         );
         // A flash frame without a lump draws nothing (GZDoom).
         if let Some(soft_flash) = self.patches.get(&hud.flash_patch) {
-            draw_weapon(
+            draw_weapon_lit(
                 ui,
                 &hud.flash_patch,
                 hud.fullscreen,
                 Some(soft_flash),
                 hud.bob_x,
                 hud.bob_y,
+                hud.weapon_light,
+                hud.flash_bright,
+                hud.weapon_fuzz,
             );
         }
         if hud.inverse_colormap() {
@@ -2079,6 +2101,10 @@ impl PlaySession {
                 let is_monster = (flags & FLAG_COUNTKILL) != 0;
                 let is_missile = a.sprite.starts_with("BAL")
                     || a.sprite.starts_with("PLAS")
+                    || a.sprite.starts_with("PLSS")
+                    || a.sprite.starts_with("PLSE")
+                    || a.sprite.starts_with("BFS")
+                    || a.sprite.starts_with("BFE")
                     || a.sprite.starts_with("MISL");
                 let mut light = 0.7_f32;
                 if is_monster || is_missile {
@@ -2346,6 +2372,9 @@ impl PlaySession {
             fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]) {
                 self.0.text(x, y, text, color);
             }
+            fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
+                self.0.blit_rgba(x, y, w, h, pixels.to_vec());
+            }
         }
         struct OffsetSink<'a> {
             inner: Sink<'a>,
@@ -2358,6 +2387,10 @@ impl PlaySession {
             }
             fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]) {
                 self.inner.text(x + self.ox, y + self.oy, text, color);
+            }
+            fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
+                self.inner
+                    .blit_rgba(x + self.ox, y + self.oy, w, h, pixels);
             }
         }
         blit_draw_list_full(

@@ -1,8 +1,10 @@
-//! WASM mod discovery: `room.toml` (PK3 / directory root) or `ROOMMOD` (WAD lump).
+//! WASM / Python mod discovery: `room.toml` (PK3 / directory root) or `ROOMMOD` (WAD lump).
 
-use room_script::manifest::Manifest;
+use room_script::manifest::{Manifest, ModuleLanguage};
 use room_sim::script_mods::ModSource;
 use room_vfs::{LumpId, Vfs};
+
+use crate::native_mods::PythonModSource;
 
 /// WAD lump holding a mod manifest (same syntax as `room.toml`).
 pub const MANIFEST_LUMP: &str = "ROOMMOD";
@@ -30,12 +32,18 @@ fn resolve_module(vfs: &Vfs, manifest: LumpId, file: &str) -> Option<LumpId> {
         .or_else(|| (path.len() <= 8 && !path.contains('/')).then(|| vfs.find_any_ns(&path))?)
 }
 
-/// Every play/ui module declared by mounted manifests, in mount order. A later
-/// manifest with the same mod `id` replaces the earlier one (PWAD override).
-/// Problems are reported as messages; a broken mod never stops the others.
-#[must_use]
-pub fn discover_mods(vfs: &Vfs) -> (Vec<ModSource>, Vec<String>) {
-    let mut mods: Vec<(String, Vec<ModSource>)> = Vec::new();
+struct DiscoveredModule {
+    name: String,
+    scope: room_script::ModuleScope,
+    bytes: Vec<u8>,
+    options: room_script::manifest::ManifestOptions,
+}
+
+fn collect_manifests(
+    vfs: &Vfs,
+    language: ModuleLanguage,
+) -> (Vec<(String, Vec<DiscoveredModule>)>, Vec<String>) {
+    let mut mods: Vec<(String, Vec<DiscoveredModule>)> = Vec::new();
     let mut errors = Vec::new();
     for id in vfs.iter_lumps().filter(|&id| is_manifest(vfs, id)) {
         let Ok(bytes) = vfs.read(id) else {
@@ -56,26 +64,78 @@ pub fn discover_mods(vfs: &Vfs) -> (Vec<ModSource>, Vec<String>) {
         };
         let mut out = Vec::new();
         for m in &manifest.modules {
+            if m.language != language {
+                continue;
+            }
             let Some(lump) = resolve_module(vfs, id, &m.file) else {
                 errors.push(format!("{mod_id}: module file {} not found", m.file));
                 continue;
             };
             match vfs.read(lump) {
-                Ok(bytes) => out.push(ModSource {
-                    mod_id: mod_id.clone(),
+                Ok(bytes) => out.push(DiscoveredModule {
                     name: m.name.clone(),
                     scope: m.scope,
                     bytes: bytes.to_vec(),
+                    options: manifest.options.clone(),
                 }),
                 Err(e) => errors.push(format!("{mod_id}: {}: {e}", m.file)),
             }
+        }
+        if out.is_empty() && !manifest.modules.iter().any(|m| m.language == language) {
+            continue;
         }
         match mods.iter_mut().find(|(k, _)| *k == mod_id) {
             Some(slot) => slot.1 = out,
             None => mods.push((mod_id, out)),
         }
     }
-    (mods.into_iter().flat_map(|(_, v)| v).collect(), errors)
+    (mods, errors)
+}
+
+/// Every play/ui **WASM** module declared by mounted manifests, in mount order.
+/// A later manifest with the same mod `id` replaces the earlier one (PWAD override).
+/// Problems are reported as messages; a broken mod never stops the others.
+///
+/// Modules with `language = "python"` are skipped (see [`discover_python_mods`]).
+#[must_use]
+pub fn discover_mods(vfs: &Vfs) -> (Vec<ModSource>, Vec<String>) {
+    let (mods, errors) = collect_manifests(vfs, ModuleLanguage::Wasm);
+    (
+        mods.into_iter()
+            .flat_map(|(mod_id, modules)| {
+                modules.into_iter().map(move |m| ModSource {
+                    mod_id: mod_id.clone(),
+                    name: m.name,
+                    scope: m.scope,
+                    bytes: m.bytes,
+                    options: m.options,
+                })
+            })
+            .collect(),
+        errors,
+    )
+}
+
+/// Host Python modules (`language = "python"` in `ROOMMOD` / `room.toml`).
+///
+/// Desktop loads these via `room-python-host` (`room-app --features python-mods`).
+#[must_use]
+pub fn discover_python_mods(vfs: &Vfs) -> (Vec<PythonModSource>, Vec<String>) {
+    let (mods, mut errors) = collect_manifests(vfs, ModuleLanguage::Python);
+    let mut out = Vec::new();
+    for (mod_id, modules) in mods {
+        for m in modules {
+            match String::from_utf8(m.bytes) {
+                Ok(source) => out.push(PythonModSource {
+                    mod_id: mod_id.clone(),
+                    name: m.name,
+                    source,
+                }),
+                Err(_) => errors.push(format!("{mod_id}/{}: Python source is not UTF-8", m.name)),
+            }
+        }
+    }
+    (out, errors)
 }
 
 #[cfg(test)]
@@ -124,5 +184,29 @@ mod tests {
         assert_eq!(mods[0].name, "new");
         assert_eq!(mods[0].bytes, b"bbb");
         assert_eq!(errors.len(), 1, "{errors:?}");
+    }
+
+    #[test]
+    fn python_modules_skipped_by_wasm_discovery() {
+        let a = wad(&[
+            (
+                "ROOMMOD",
+                b"[mod]\nid = \"py\"\n[[module]]\nfile = \"HELLO\"\nname = \"hello\"\nlanguage = \"python\"\n",
+            ),
+            ("HELLO", b"print('hi')\n"),
+        ]);
+        let vfs = VfsBuilder::new()
+            .mount_memory("p.wad", a)
+            .unwrap()
+            .build()
+            .unwrap();
+        let (wasm, e1) = discover_mods(&vfs);
+        assert!(wasm.is_empty(), "{wasm:?}");
+        assert!(e1.is_empty(), "{e1:?}");
+        let (py, e2) = discover_python_mods(&vfs);
+        assert_eq!(py.len(), 1);
+        assert_eq!(py[0].name, "hello");
+        assert!(py[0].source.contains("print"));
+        assert!(e2.is_empty(), "{e2:?}");
     }
 }

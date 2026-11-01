@@ -1352,6 +1352,17 @@ pub fn z_movement(world: &mut World, actor_id: ActorId) {
         a.vel = DVec3::new(a.vel.x(), a.vel.y(), vel_z);
     }
     if is_missile && (hit_floor || hit_ceiling) {
+        let pos = world
+            .actors
+            .get(actor_id)
+            .map(|a| a.pos)
+            .unwrap_or(actor.pos);
+        let (kind, normal) = if hit_ceiling {
+            (room_script_abi::hit_kind::CEILING, DVec3::new(0.0, 0.0, -1.0))
+        } else {
+            (room_script_abi::hit_kind::FLOOR, DVec3::new(0.0, 0.0, 1.0))
+        };
+        set_missile_hit(world, actor_id, kind, None, pos, normal);
         explode_missile(world, actor_id);
         return;
     }
@@ -1565,6 +1576,33 @@ pub fn xy_movement(world: &mut World, actor_id: ActorId) {
                         y = ny;
                         continue;
                     }
+                    let pos = world
+                        .actors
+                        .get(actor_id)
+                        .map(|a| a.pos)
+                        .unwrap_or(DVec3::new(nx, ny, z));
+                    set_missile_hit(
+                        world,
+                        actor_id,
+                        room_script_abi::hit_kind::ACTOR,
+                        Some(victim),
+                        pos,
+                        DVec3::ZERO,
+                    );
+                } else {
+                    let pos = world
+                        .actors
+                        .get(actor_id)
+                        .map(|a| a.pos)
+                        .unwrap_or(DVec3::new(nx, ny, z));
+                    set_missile_hit(
+                        world,
+                        actor_id,
+                        room_script_abi::hit_kind::WALL,
+                        None,
+                        pos,
+                        DVec3::ZERO,
+                    );
                 }
                 explode_missile(world, actor_id);
             } else {
@@ -1668,6 +1706,23 @@ pub(crate) fn apply_missile_damage(world: &mut World, missile_id: ActorId, victi
     let _ = crate::damage::damage_mobj(world, victim, Some(missile_id), source, dmg);
 }
 
+/// Record missile impact metadata before [`explode_missile`] (`docs/31` MA4).
+pub(crate) fn set_missile_hit(
+    world: &mut World,
+    actor_id: ActorId,
+    kind: i32,
+    hit_actor: Option<ActorId>,
+    pos: DVec3,
+    normal: DVec3,
+) {
+    if let Some(a) = world.actors.get_mut(actor_id) {
+        a.hit_kind = kind;
+        a.hit_actor = hit_actor;
+        a.hit_pos = pos;
+        a.hit_normal = normal;
+    }
+}
+
 /// Enter Death (or destroy) and zero velocity when a missile hits geometry.
 ///
 /// Doom `P_ExplodeMissile`: clear mom → death state → `tics -= P_Random()&3` (min 1).
@@ -1678,6 +1733,12 @@ pub(crate) fn explode_missile(world: &mut World, actor_id: ActorId) {
     if let Some(a) = world.actors.get_mut(actor_id) {
         a.vel = DVec3::ZERO;
         a.flags &= !FLAG_MISSILE;
+        // Default wall hit when callers forgot to set metadata.
+        if a.hit_kind == 0 {
+            a.hit_kind = room_script_abi::hit_kind::WALL;
+            a.hit_pos = a.pos;
+            a.hit_normal = DVec3::ZERO;
+        }
     }
     if let Some(death) = world.states.find_label(actor.class, "Death") {
         world.set_state(actor_id, Some(death), true);

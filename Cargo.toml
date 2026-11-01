@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# Educational Maturin package (needs a local Python; not part of default CI).
+# Desktop Python mods: `room-app --features python-mods` (enables room-python-host/embed).
+exclude = ["python"]
 
 [workspace.package]
 version = "0.1.0"

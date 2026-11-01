@@ -20,6 +20,7 @@ fn map_hud_mod() -> ModSource {
         name: "map_hud".into(),
         scope: ModuleScope::Play,
         bytes: wasm,
+        options: Default::default(),
     }
 }
 
@@ -34,6 +35,7 @@ fn hud_mod() -> ModSource {
         name: "hud".into(),
         scope: ModuleScope::Play,
         bytes: wasm,
+        options: Default::default(),
     }
 }
 
@@ -54,6 +56,7 @@ fn noop_mod() -> ModSource {
         name: "noop".into(),
         scope: ModuleScope::Play,
         bytes: wasm,
+        options: Default::default(),
     }
 }
 

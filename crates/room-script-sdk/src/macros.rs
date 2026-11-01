@@ -45,12 +45,18 @@ macro_rules! export_mod {
         #[unsafe(no_mangle)]
         pub extern "C" fn room_dispatch(callback_id: i32, ptr: i32, len: i32) -> i64 {
             use $crate::game::RoomMod as _;
+            // SAFETY: `ptr`/`len` are exactly what the host passed in.
+            let bytes = unsafe { $crate::game::payload(ptr, len) };
+            if callback_id < $crate::game::EVENT_CALLBACK_BASE {
+                let payload = room_script_abi::ActionPayload::read_le(bytes).unwrap_or_default();
+                return __ROOM_MOD
+                    .with(|m| m.on_state_action(payload))
+                    .unwrap_or(0);
+            }
             let index = callback_id - $crate::game::EVENT_CALLBACK_BASE;
             if !(0..64).contains(&index) {
                 return 0;
             }
-            // SAFETY: `ptr`/`len` are exactly what the host passed in.
-            let bytes = unsafe { $crate::game::payload(ptr, len) };
             let event = $crate::game::Event::decode(index, bytes);
             __ROOM_MOD.with(|m| m.on_event(event));
             0

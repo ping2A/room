@@ -1736,6 +1736,18 @@ fn push_flat_tri_oriented_ex(
     };
     let ang = uv.angle_deg.to_radians();
     let (ca, sa) = (ang.cos(), ang.sin());
+    // Geometric normal from the (possibly flipped) triangle; tangent along UV X.
+    let [(ax, ay, az), (bx, by, bz), (cx, cy, cz)] = verts;
+    let n = {
+        let e1 = glam::DVec3::new(bx - ax, by - ay, bz - az);
+        let e2 = glam::DVec3::new(cx - ax, cy - ay, cz - az);
+        let c = e1.cross(e2);
+        let len = c.length().max(1e-12);
+        #[allow(clippy::cast_possible_truncation)]
+        glam::Vec3::new((c.x / len) as f32, (c.y / len) as f32, (c.z / len) as f32)
+    };
+    // Flat UV X axis in world XY, rotated by sector angle.
+    let tangent = glam::Vec4::new(ca as f32, sa as f32, 0.0, 1.0);
     for (x, y, z) in verts {
         let xr = x * ca - y * sa;
         let yr = x * sa + y * ca;
@@ -1756,7 +1768,8 @@ fn push_flat_tri_oriented_ex(
         buf.push(
             FlatVertex::new(pos, uv, light)
                 .with_alpha(alpha)
-                .with_lm_uv(lm),
+                .with_lm_uv(lm)
+                .with_tbn(n, tangent),
         );
     }
     push_range(ranges, tex, start, 3);
@@ -2675,18 +2688,29 @@ fn push_sloped_wall_quad(lists: &mut SceneLists, tex: &str, q: WallQuad, ends: W
             })
             .unwrap_or(Vec2::ZERO)
     };
+    // Wall TBN: tangent along the seg, normal = left-hand perpendicular in XY
+    // (Doom front side faces into the sector to the left of the directed seg).
+    let dx = (q.x2 - q.x1) as f32;
+    let dy = (q.y2 - q.y1) as f32;
+    let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+    let tangent = glam::Vec4::new(dx / len, dy / len, 0.0, 1.0);
+    let normal = glam::Vec3::new(-dy / len, dx / len, 0.0);
     let mut a = WallVertex::new(p(q.x1, q.y1, lo1), Vec2::new(u1, v_bot1), q.light)
         .with_alpha(q.alpha)
-        .with_lm_uv(lm(q.x1, q.y1));
+        .with_lm_uv(lm(q.x1, q.y1))
+        .with_tbn(normal, tangent);
     let mut b = WallVertex::new(p(q.x2, q.y2, lo2), Vec2::new(u2, v_bot2), q.light)
         .with_alpha(q.alpha)
-        .with_lm_uv(lm(q.x2, q.y2));
+        .with_lm_uv(lm(q.x2, q.y2))
+        .with_tbn(normal, tangent);
     let mut c = WallVertex::new(p(q.x2, q.y2, hi2), Vec2::new(u2, v_top2), q.light)
         .with_alpha(q.alpha)
-        .with_lm_uv(lm(q.x2, q.y2));
+        .with_lm_uv(lm(q.x2, q.y2))
+        .with_tbn(normal, tangent);
     let mut d = WallVertex::new(p(q.x1, q.y1, hi1), Vec2::new(u1, v_top1), q.light)
         .with_alpha(q.alpha)
-        .with_lm_uv(lm(q.x1, q.y1));
+        .with_lm_uv(lm(q.x1, q.y1))
+        .with_tbn(normal, tangent);
     if q.masked {
         a = a.with_masked();
         b = b.with_masked();
@@ -3401,20 +3425,23 @@ mod tests {
         let mut map = combat_arena().build_udmf("MAP01").unwrap();
         apply_nodes(&mut map);
         let cam = Camera {
-            eye: Vec3::new(512.0, 96.0, 41.0),
+            eye: Vec3::new(1280.0, 144.0, 41.0),
             forward: Vec3::new(0.0, 1.0, 0.0),
             ..Camera::default()
         };
         let scene = build_scene(&map, &cam, None);
         assert!(!scene.flats.is_empty(), "need flats");
-        let eye = glam::Vec3::new(512.0, 96.0, 41.0);
+        let eye = glam::Vec3::new(1280.0, 144.0, 41.0);
         let mut floor_tris = 0usize;
         let mut facing = 0usize;
         let mut back = 0usize;
         let mut nz_neg = 0usize;
         for tri in scene.flats.chunks_exact(3) {
             let zavg = (tri[0].pos[2] + tri[1].pos[2] + tri[2].pos[2]) / 3.0;
-            if zavg > 8.0 {
+            // Floors sit at 0 or raised cover (~24). Skip ceilings (incl. door
+            // strips whose ceiling is z≈8 and would otherwise look like floors).
+            let is_floor = zavg < 4.0 || (zavg - 24.0).abs() < 2.0;
+            if !is_floor {
                 continue;
             }
             floor_tris += 1;

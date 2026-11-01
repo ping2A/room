@@ -318,6 +318,11 @@ impl LruCache {
         self.used += data.len();
         self.map.insert(id, data);
     }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.used = 0;
+    }
 }
 
 /// Mounted virtual filesystem.
@@ -336,6 +341,84 @@ impl Vfs {
     #[must_use]
     pub fn builder() -> VfsBuilder {
         VfsBuilder::new()
+    }
+
+    /// Append an in-memory WAD/ZIP as a late-mounted container (overrides prior
+    /// short names). Used for mod-generated lumps (`docs/31` MA3).
+    ///
+    /// # Errors
+    ///
+    /// Parse / size failures from the container.
+    pub fn mount_memory(
+        &mut self,
+        name: impl Into<String>,
+        data: impl Into<bytes::Bytes>,
+    ) -> Result<(), VfsError> {
+        let name = name.into();
+        let data = data.into();
+        let source: Arc<dyn ContainerSource> = Arc::new(MemorySource::new(data.clone()));
+        let md5 = md5_bytes(data.as_ref());
+        let kind = detect_kind(data.as_ref(), Path::new(&name));
+        let id = ContainerId(
+            u32::try_from(self.containers.len())
+                .map_err(|_| VfsError::parse("too many containers"))?,
+        );
+        self.containers.push(ContainerSlot {
+            info: ContainerInfo {
+                name: name.clone(),
+                kind,
+                md5,
+            },
+            source: Arc::clone(&source),
+        });
+        let mut new_lumps: Vec<(LumpInfo, LumpData)> = Vec::new();
+        match kind {
+            ContainerKind::Wad => {
+                let entries = parse_wad(source.as_ref(), id)?;
+                for e in entries {
+                    if e.truncated {
+                        self.warnings
+                            .push(format!("{name}: truncated lump {}", e.info.short_name));
+                    }
+                    new_lumps.push((e.info.clone(), LumpData::Wad(e)));
+                }
+            }
+            ContainerKind::Zip => {
+                let entries = parse_zip(data.as_ref(), id, &[])?;
+                for e in entries {
+                    new_lumps.push((e.info.clone(), LumpData::Archive(e)));
+                }
+            }
+            _ => {
+                return Err(VfsError::parse(
+                    "mount_memory on Vfs only supports WAD/ZIP containers",
+                ));
+            }
+        }
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.clear();
+        }
+        for (info, payload) in new_lumps {
+            let lid = LumpId(
+                u32::try_from(self.infos.len()).map_err(|_| VfsError::parse("too many lumps"))?,
+            );
+            if !info.short_name.is_empty() && !info.flags.contains(crate::lump::LumpFlags::FULLPATH)
+            {
+                self.by_short
+                    .entry((info.namespace, info.short_name.as_u64()))
+                    .or_default()
+                    .push(lid);
+            }
+            if !info.full_path.is_empty() {
+                self.by_full.insert(info.full_path.clone(), lid);
+                if let Some((stem, _)) = info.full_path.rsplit_once('.') {
+                    self.by_full.insert(stem.to_owned(), lid);
+                }
+            }
+            self.infos.push(info);
+            self.data.push(payload);
+        }
+        Ok(())
     }
 
     /// Last-loaded short name in `ns`.

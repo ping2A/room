@@ -222,6 +222,8 @@ impl Royale {
         self.deploy_tic = t;
         game::set_music("D_E1M1");
         host.set_rule(rule::DEATHMATCH, 1);
+        // Loot guns must despawn after pickup (docs/30 N6).
+        host.set_rule(rule::WEAPON_STAY, 0);
         self.clear_landing_shields(host);
         if !self.looted {
             self.looted = true;
@@ -298,6 +300,8 @@ impl Royale {
     pub(crate) fn on_loaded<H: Host>(&mut self, host: &mut H) {
         host.set_rule(rule::DEATHMATCH, 0);
         host.set_rule(rule::RESPAWN, 0);
+        // Coop default enables stay; BR loot must despawn (docs/30 N6).
+        host.set_rule(rule::WEAPON_STAY, 0);
         for (slot, name) in self.items.iter_mut().zip(ITEM_CLASSES) {
             *slot = host.class_find(name);
         }

@@ -48,12 +48,7 @@ async fn br_leaderboard(
     Query(q): Query<BrLeaderboardQuery>,
 ) -> Json<Vec<crate::br_stats::BrPlayerStats>> {
     let n = q.limit.clamp(1, 100);
-    Json(
-        state
-            .registry
-            .br_stats()
-            .top(crate::br_stats::MODE_BR, n),
-    )
+    Json(state.registry.br_stats().top(crate::br_stats::MODE_BR, n))
 }
 
 #[derive(serde::Deserialize)]
@@ -70,9 +65,8 @@ async fn quick_play_br(
         return Err(StatusCode::BAD_REQUEST);
     };
     let (ticket, claims) = state.registry.quick_play_br(&name).map_err(|e| match e {
-        crate::registry::RegistryError::UnknownMod | crate::registry::RegistryError::ModNotAllowed => {
-            StatusCode::SERVICE_UNAVAILABLE
-        }
+        crate::registry::RegistryError::UnknownMod
+        | crate::registry::RegistryError::ModNotAllowed => StatusCode::SERVICE_UNAVAILABLE,
         crate::registry::RegistryError::Full | crate::registry::RegistryError::Draining => {
             StatusCode::SERVICE_UNAVAILABLE
         }

@@ -468,11 +468,24 @@ actor ChaingunGuy : Actor 65
   }
 }
 
-actor Chaingun : Actor 2002
+// Base for Doom guns: shared `LightDone` flash terminator (docs/30 W16 / N1).
+actor Weapon : Actor
+{
+  Weapon.Kickback 100
+  States
+  {
+  LightDone:
+    SHTG E 0 A_Light0
+    Stop
+  }
+}
+
+actor Chaingun : Weapon 2002
 {
   Weapon.AmmoType "Clip"
   Weapon.AmmoGive 20
   Weapon.AmmoUse 1
+  Weapon.SelectionOrder 700
   Inventory.Amount 1
   Inventory.MaxAmount 1
   States
@@ -495,6 +508,8 @@ actor Chaingun : Actor 2002
     Goto Ready
   Flash:
     CHGF A 5 Bright A_Light1
+    Goto LightDone
+    CHGF B 5 Bright A_Light2
     Goto LightDone
   }
 }
@@ -1615,16 +1630,21 @@ actor Backpack : Actor 8
   }
 }
 
-actor Chainsaw : Actor 2005
+actor Chainsaw : Weapon 2005
 {
   Weapon.SelectionOrder 2200
   Weapon.Kickback 0
+  Weapon.ReadySound "weapons/sawidle"
+  Weapon.UpSound "weapons/sawup"
   Inventory.Amount 1
   Inventory.MaxAmount 1
   States
   {
+  Spawn:
+    CSAW A -1
+    Stop
   Ready:
-    SAWG C 4 A_WeaponReady
+    SAWG CD 4 A_WeaponReady
     Loop
   Deselect:
     SAWG C 1 A_Lower
@@ -1639,7 +1659,7 @@ actor Chainsaw : Actor 2005
   }
 }
 
-actor Fist : Actor
+actor Fist : Weapon
 {
   Weapon.SelectionOrder 3700
   Weapon.Kickback 100
@@ -1666,7 +1686,7 @@ actor Fist : Actor
   }
 }
 
-actor Pistol : Actor
+actor Pistol : Weapon
 {
   Weapon.AmmoType "Clip"
   Weapon.AmmoGive 20
@@ -1676,6 +1696,9 @@ actor Pistol : Actor
   Inventory.MaxAmount 1
   States
   {
+  Spawn:
+    PIST A -1
+    Stop
   Ready:
     PISG A 1 A_WeaponReady
     Loop
@@ -1692,7 +1715,7 @@ actor Pistol : Actor
     PISG B 5 A_ReFire
     Goto Ready
   Flash:
-    PISF A 7 A_Light1
+    PISF A 7 Bright A_Light1
     Goto LightDone
   }
 }
@@ -1725,11 +1748,12 @@ actor ShellBox : Actor 2049
   }
 }
 
-actor Shotgun : Actor 2001
+actor Shotgun : Weapon 2001
 {
   Weapon.AmmoType "Shell"
   Weapon.AmmoGive 8
   Weapon.AmmoUse 1
+  Weapon.SelectionOrder 1300
   Inventory.Amount 1
   Inventory.MaxAmount 1
   States
@@ -1755,14 +1779,19 @@ actor Shotgun : Actor 2001
     SHTG A 3
     SHTG A 7 A_ReFire
     Goto Ready
+  Flash:
+    SHTF A 4 Bright A_Light1
+    SHTF B 3 Bright A_Light2
+    Goto LightDone
   }
 }
 
-actor SuperShotgun : Actor 82
+actor SuperShotgun : Weapon 82
 {
   Weapon.AmmoType "Shell"
   Weapon.AmmoGive 8
   Weapon.AmmoUse 2
+  Weapon.SelectionOrder 400
   Inventory.Amount 1
   Inventory.MaxAmount 1
   States
@@ -1785,13 +1814,15 @@ actor SuperShotgun : Actor 82
     SHT2 B 7
     SHT2 C 7 A_CheckReload
     SHT2 D 7 A_OpenShotgun2
-    SHT2 E 7 A_LoadShotgun2
-    SHT2 F 7 A_CloseShotgun2
+    SHT2 E 7
+    SHT2 F 7 A_LoadShotgun2
+    SHT2 G 6
+    SHT2 H 6 A_CloseShotgun2
     SHT2 A 5 A_ReFire
     Goto Ready
   Flash:
-    SHT2 G 5 A_Light1
-    SHT2 H 4 A_Light2
+    SHT2 I 5 Bright A_Light1
+    SHT2 J 4 Bright A_Light2
     Goto LightDone
   }
 }
@@ -1824,11 +1855,12 @@ actor RocketBox : Actor 2046
   }
 }
 
-actor RocketLauncher : Actor 2003
+actor RocketLauncher : Weapon 2003
 {
   Weapon.AmmoType "RocketAmmo"
   Weapon.AmmoGive 2
   Weapon.AmmoUse 1
+  Weapon.SelectionOrder 2500
   Inventory.Amount 1
   Inventory.MaxAmount 1
   States
@@ -1851,9 +1883,10 @@ actor RocketLauncher : Actor 2003
     MISG B 0 A_ReFire
     Goto Ready
   Flash:
-    MISF A 3 A_Light1
-    MISF B 4 A_Light2
-    MISF CD 4 A_Light2
+    MISF A 3 Bright A_Light1
+    MISF B 4 Bright
+    MISF C 4 Bright A_Light2
+    MISF D 4 Bright A_Light2
     Goto LightDone
   }
 }
@@ -1947,11 +1980,12 @@ actor BFGBall : Actor
   }
 }
 
-actor PlasmaRifle : Actor 2004
+actor PlasmaRifle : Weapon 2004
 {
   Weapon.AmmoType "Cell"
   Weapon.AmmoGive 40
   Weapon.AmmoUse 1
+  Weapon.SelectionOrder 100
   Inventory.Amount 1
   Inventory.MaxAmount 1
   States
@@ -1973,16 +2007,19 @@ actor PlasmaRifle : Actor 2004
     PLSG B 20 A_ReFire
     Goto Ready
   Flash:
-    PLSF A 4 A_Light1
+    PLSF A 4 Bright A_Light1
+    Goto LightDone
+    PLSF B 4 Bright A_Light1
     Goto LightDone
   }
 }
 
-actor BFG9000 : Actor 2006
+actor BFG9000 : Weapon 2006
 {
   Weapon.AmmoType "Cell"
   Weapon.AmmoGive 40
   Weapon.AmmoUse 40
+  Weapon.SelectionOrder 2800
   Inventory.Amount 1
   Inventory.MaxAmount 1
   States
@@ -2006,8 +2043,8 @@ actor BFG9000 : Actor 2006
     BFGG B 20 A_ReFire
     Goto Ready
   Flash:
-    BFGF A 11 A_Light1
-    BFGF B 6 A_Light2
+    BFGF A 11 Bright A_Light1
+    BFGF B 6 Bright A_Light2
     Goto LightDone
   }
 }

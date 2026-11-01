@@ -1,7 +1,7 @@
 //! In-process room registry.
 
-use crate::config::ServerConfig;
 use crate::br_stats::BrStats;
+use crate::config::ServerConfig;
 use crate::leaderboard::Leaderboard;
 use crate::room::{
     AdminCmd, CreateRoomRequest, CreateRoomResponse, GAMES, RoomCmd, RoomHandle, RoomSettings,
@@ -513,8 +513,7 @@ impl RoomRegistry {
             if let Some(id) = slot.clone() {
                 if let Some(h) = self.get(&id) {
                     if !h.started.load(Ordering::Relaxed)
-                        && h.occupied.load(Ordering::Relaxed)
-                            < usize::from(h.settings.max_players)
+                        && h.occupied.load(Ordering::Relaxed) < usize::from(h.settings.max_players)
                     {
                         return self.issue_join_ticket(&id, name);
                     }

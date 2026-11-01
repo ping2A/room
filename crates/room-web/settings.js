@@ -97,8 +97,87 @@ function defaultsFromMod(mod) {
     renderCap: 0,
     windowScale: 1,
     binds,
+    /** @type {Record<string, string>} */
+    shaders: shaderDefaults(),
   };
 }
+
+/** Faithful / classic look — every modern FX off (`docs/29`). */
+function shaderDefaults() {
+  return {
+    r_quality: "0",
+    gl_bloom: "0",
+    gl_ssao: "0",
+    gl_tonemap: "0",
+    gl_fxaa: "0",
+    r_aa: "0",
+    r_crt: "0",
+    r_dither: "0",
+    r_banding: "0",
+    r_vignette: "0",
+    r_grain: "0",
+    r_chromatic: "0",
+    r_softparticles: "0",
+    r_damagefx: "0",
+    r_colorgrade: "0",
+    r_gore: "1",
+    r_bloodfx: "0",
+    r_blooddrips: "0",
+    r_screenblood: "0",
+    r_muzzlefx: "0",
+    r_tracers: "0",
+    r_impactfx: "0",
+    r_explosionfx: "0",
+    r_viewkick: "0",
+    r_trails: "0",
+    r_casings: "0",
+    r_weaponsmoke: "0",
+    r_hitconfirm: "0",
+    r_corpsepools: "0",
+    r_gibs: "0",
+    r_reduce_flashing: "0",
+    r_sharpen: "0",
+    r_exposure: "1",
+    gl_bloom_amount: "0.8",
+  };
+}
+
+/** Graphics toggles shown in Settings (maps to roomSetShaderCvar). */
+const SHADER_TOGGLES = [
+  { key: "gl_bloom", label: "Bloom", kind: "bool" },
+  { key: "gl_ssao", label: "SSAO", kind: "int", min: 0, max: 3 },
+  { key: "gl_fxaa", label: "Anti-alias", kind: "aa" },
+  { key: "r_crt", label: "CRT", kind: "bool" },
+  { key: "r_dither", label: "Dither", kind: "bool" },
+  { key: "r_vignette", label: "Vignette", kind: "float", on: "0.35" },
+  { key: "r_grain", label: "Film grain", kind: "float", on: "0.15" },
+  { key: "r_chromatic", label: "Chromatic aberration", kind: "float", on: "0.2" },
+  { key: "r_softparticles", label: "Soft particles", kind: "bool" },
+  { key: "r_damagefx", label: "Damage FX", kind: "bool" },
+  { key: "r_muzzlefx", label: "Muzzle FX", kind: "bool" },
+  { key: "r_tracers", label: "Tracers", kind: "bool" },
+  { key: "r_impactfx", label: "Impact FX", kind: "bool" },
+  { key: "r_explosionfx", label: "Explosion FX", kind: "bool" },
+  { key: "r_viewkick", label: "View kick", kind: "bool" },
+  { key: "r_bloodfx", label: "Blood FX", kind: "bool" },
+  { key: "r_screenblood", label: "Screen blood", kind: "bool" },
+  { key: "r_reduce_flashing", label: "Reduce flashing", kind: "bool" },
+];
+
+const QUALITY_LABELS = ["Faithful", "Low", "Medium", "Ultra"];
+const TONEMAP_LABELS = [
+  "None",
+  "Reinhard",
+  "Linear",
+  "Hejl",
+  "Palette",
+  "Uncharted2",
+  "AgX",
+  "Khronos",
+  "RoomSoft",
+];
+const GORE_LABELS = ["Off", "Vanilla", "Enhanced", "Full"];
+const AA_LABELS = ["Off", "FXAA", "SMAA", "TAA"];
 
 function codesForAction(binds, action) {
   return Object.keys(binds)
@@ -116,10 +195,11 @@ export function initSettings(mod, opts = {}) {
     return { open() {}, apply() {} };
   }
 
-  let state = { ...defaultsFromMod(mod), ...(loadStored() || {}) };
-  // Merge missing default binds so new actions appear after updates.
-  const factory = defaultsFromMod(mod).binds;
-  state.binds = { ...factory, ...(state.binds || {}) };
+  const factoryAll = defaultsFromMod(mod);
+  let state = { ...factoryAll, ...(loadStored() || {}) };
+  // Merge missing default binds / shader keys so new toggles appear after updates.
+  state.binds = { ...factoryAll.binds, ...(state.binds || {}) };
+  state.shaders = { ...factoryAll.shaders, ...(state.shaders || {}) };
 
   const root = document.createElement("div");
   root.id = "settings";
@@ -145,6 +225,22 @@ export function initSettings(mod, opts = {}) {
           </label>
           <p class="settings-hint">Caps the longest edge of the render buffer (internal pixels).</p>
           <button type="button" id="settings-fs" class="settings-btn">Toggle fullscreen</button>
+        </section>
+        <section>
+          <h3>Graphics</h3>
+          <p class="settings-hint">All effects default off (faithful look). Quality preset fills the toggles below.</p>
+          <label class="settings-row">Quality
+            <select id="settings-quality"></select>
+          </label>
+          <label class="settings-row">Tonemap
+            <select id="settings-tonemap"></select>
+          </label>
+          <label class="settings-row">Gore
+            <select id="settings-gore"></select>
+          </label>
+          <div id="settings-shaders" class="settings-shaders"></div>
+          <button type="button" id="settings-reset-shaders" class="settings-btn ghost">Reset shaders to defaults</button>
+          <p class="settings-hint">Turns off bloom, blood FX, muzzle, CRT, etc. (faithful look). Does not change mouse/keys.</p>
         </section>
         <section>
           <h3>Mouse</h3>
@@ -181,8 +277,112 @@ export function initSettings(mod, opts = {}) {
     o.textContent = p.label;
     winSel.appendChild(o);
   }
+  const qualitySel = root.querySelector("#settings-quality");
+  QUALITY_LABELS.forEach((label, i) => {
+    const o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = label;
+    qualitySel.appendChild(o);
+  });
+  const tonemapSel = root.querySelector("#settings-tonemap");
+  TONEMAP_LABELS.forEach((label, i) => {
+    const o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = label;
+    tonemapSel.appendChild(o);
+  });
+  const goreSel = root.querySelector("#settings-gore");
+  GORE_LABELS.forEach((label, i) => {
+    const o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = label;
+    goreSel.appendChild(o);
+  });
 
   let listening = null;
+
+  function shaderOn(key, kind, onVal) {
+    const v = state.shaders[key] ?? "0";
+    if (kind === "float") return Number(v) > 0.01;
+    if (kind === "aa" || kind === "int") return Number(v) !== 0;
+    return v === "1" || v === "true" || v === "on";
+  }
+
+  function renderShaderToggles() {
+    const box = root.querySelector("#settings-shaders");
+    box.innerHTML = "";
+    for (const t of SHADER_TOGGLES) {
+      if (t.kind === "aa") {
+        const row = document.createElement("label");
+        row.className = "settings-row";
+        row.textContent = t.label + " ";
+        const sel = document.createElement("select");
+        AA_LABELS.forEach((label, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = label;
+          sel.appendChild(o);
+        });
+        sel.value = String(Number(state.shaders[t.key] || 0));
+        sel.addEventListener("change", () => {
+          state.shaders[t.key] = sel.value;
+          state.shaders.r_aa = sel.value;
+          applyShaders();
+        });
+        row.appendChild(sel);
+        box.appendChild(row);
+        continue;
+      }
+      if (t.kind === "int") {
+        const row = document.createElement("label");
+        row.className = "settings-row";
+        row.textContent = t.label + " ";
+        const sel = document.createElement("select");
+        for (let i = t.min; i <= t.max; i++) {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = String(i);
+          sel.appendChild(o);
+        }
+        sel.value = String(Number(state.shaders[t.key] || 0));
+        sel.addEventListener("change", () => {
+          state.shaders[t.key] = sel.value;
+          applyShaders();
+        });
+        row.appendChild(sel);
+        box.appendChild(row);
+        continue;
+      }
+      const row = document.createElement("label");
+      row.className = "settings-check";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = shaderOn(t.key, t.kind, t.on);
+      cb.addEventListener("change", () => {
+        if (t.kind === "float") {
+          state.shaders[t.key] = cb.checked ? t.on || "1" : "0";
+        } else {
+          state.shaders[t.key] = cb.checked ? "1" : "0";
+        }
+        applyShaders();
+      });
+      row.appendChild(cb);
+      row.appendChild(document.createTextNode(" " + t.label));
+      box.appendChild(row);
+    }
+  }
+
+  function applyShaders() {
+    if (typeof mod.roomSetShaderCvar !== "function") return;
+    try {
+      for (const [k, v] of Object.entries(state.shaders || {})) {
+        mod.roomSetShaderCvar(k, String(v));
+      }
+    } catch (e) {
+      console.warn("room-web: shader cvars failed", e);
+    }
+    saveStored(state);
+  }
 
   function nearestWindowScale(v) {
     const n = Number(v) || 1;
@@ -205,6 +405,10 @@ export function initSettings(mod, opts = {}) {
     sens.value = String(Math.round((state.mouseSens || 1) * 100));
     root.querySelector("#settings-sens-val").textContent = (state.mouseSens || 1).toFixed(2);
     root.querySelector("#settings-invert").checked = !!state.invertY;
+    qualitySel.value = String(Number(state.shaders.r_quality || 0));
+    tonemapSel.value = String(Number(state.shaders.gl_tonemap || 0));
+    goreSel.value = String(Number(state.shaders.r_gore || 1));
+    renderShaderToggles();
     renderBinds();
   }
 
@@ -243,6 +447,7 @@ export function initSettings(mod, opts = {}) {
     } catch (e) {
       console.warn("room-web: apply settings failed", e);
     }
+    applyShaders();
     saveStored(state);
   }
 
@@ -279,6 +484,15 @@ export function initSettings(mod, opts = {}) {
     syncForm();
     apply();
   });
+  root.querySelector("#settings-reset-shaders").addEventListener("click", () => {
+    state.shaders = shaderDefaults();
+    qualitySel.value = "0";
+    tonemapSel.value = "0";
+    goreSel.value = "1";
+    renderShaderToggles();
+    applyShaders();
+    saveStored(state);
+  });
   root.querySelector("#settings-sens").addEventListener("input", (ev) => {
     state.mouseSens = Number(ev.target.value) / 100;
     root.querySelector("#settings-sens-val").textContent = state.mouseSens.toFixed(2);
@@ -295,6 +509,58 @@ export function initSettings(mod, opts = {}) {
   winSel.addEventListener("change", () => {
     state.windowScale = Number(winSel.value) || 1;
     apply();
+  });
+  qualitySel.addEventListener("change", () => {
+    state.shaders.r_quality = qualitySel.value;
+    // Mirror desktop preset writes into local shader map for the form.
+    const presets = {
+      0: {
+        gl_tonemap: "0",
+        gl_fxaa: "0",
+        gl_bloom: "0",
+        gl_ssao: "0",
+        r_crt: "0",
+        r_softparticles: "0",
+        r_damagefx: "0",
+      },
+      1: {
+        gl_tonemap: "8",
+        gl_fxaa: "1",
+        gl_bloom: "1",
+        gl_ssao: "0",
+        r_softparticles: "1",
+      },
+      2: {
+        gl_tonemap: "6",
+        gl_fxaa: "2",
+        gl_bloom: "1",
+        gl_ssao: "1",
+        r_softparticles: "1",
+        r_damagefx: "1",
+      },
+      3: {
+        gl_tonemap: "7",
+        gl_fxaa: "3",
+        gl_bloom: "1",
+        gl_ssao: "3",
+        r_softparticles: "1",
+        r_damagefx: "1",
+        r_gore: "2",
+      },
+    };
+    Object.assign(state.shaders, presets[qualitySel.value] || {});
+    tonemapSel.value = String(Number(state.shaders.gl_tonemap || 0));
+    goreSel.value = String(Number(state.shaders.r_gore || 1));
+    renderShaderToggles();
+    applyShaders();
+  });
+  tonemapSel.addEventListener("change", () => {
+    state.shaders.gl_tonemap = tonemapSel.value;
+    applyShaders();
+  });
+  goreSel.addEventListener("change", () => {
+    state.shaders.r_gore = goreSel.value;
+    applyShaders();
   });
   root.querySelector("#settings-fs").addEventListener("click", () => {
     const el = document.documentElement;
@@ -352,8 +618,11 @@ export function initSettings(mod, opts = {}) {
     true
   );
 
-  // Apply saved settings as soon as wasm is ready.
+  // GPU init is async (`room-ready`); applying before then no-ops shader CVars.
   apply();
+  window.addEventListener("room-ready", () => {
+    applyShaders();
+  });
 
   return { open, close, apply, isOpen: () => !root.hidden };
 }

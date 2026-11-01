@@ -28,6 +28,7 @@ fn hello_source() -> ModSource {
         name: "hello_as".into(),
         scope: ModuleScope::Play,
         bytes: HELLO_AS.to_vec(),
+        options: Default::default(),
     }
 }
 

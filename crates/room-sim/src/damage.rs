@@ -856,7 +856,8 @@ pub(crate) fn die(
     let is_player = world.players.iter().flatten().any(|p| p.mo == Some(target));
     let mut drop_player_weapon = None;
     if is_player {
-        for slot in world.players.iter_mut() {
+        let mut seat = None;
+        for (i, slot) in world.players.iter_mut().enumerate() {
             let Some(p) = slot.as_mut() else {
                 continue;
             };
@@ -865,13 +866,17 @@ pub(crate) fn die(
             }
             drop_player_weapon = p.ready_weapon;
             p.player_state = crate::player::PlayerState::Dead;
-            p.pending_weapon = None;
-            p.pspr_state = None;
-            p.pspr_tics = 0;
             p.pspr_flash_state = None;
             p.pspr_flash_tics = 0;
             p.extralight = 0;
+            seat = Some(i);
             break;
+        }
+        if let Some(i) = seat {
+            if let Some(mut player) = world.players[i].take() {
+                crate::think_player::start_death_weapon_lower(world, &mut player);
+                world.players[i] = Some(player);
+            }
         }
         crate::acs::start_death_scripts(world, target);
         if let Some(src) = source {
@@ -927,6 +932,40 @@ pub(crate) fn die(
     if let Some(a) = world.actors.get_mut(target) {
         a.flags &= !FLAG_SHOOTABLE;
         a.flags |= crate::class::FLAG_DROPOFF | crate::class::FLAG_CORPSE;
+    }
+    {
+        let (pos, mass, color) = world
+            .actors
+            .get(target)
+            .map(|a| {
+                let mass = if a.mass > 0 {
+                    a.mass
+                } else {
+                    world
+                        .classes
+                        .get(a.class)
+                        .map(|c| c.mass.max(1))
+                        .unwrap_or(100)
+                };
+                let color = world
+                    .classes
+                    .get(a.class)
+                    .and_then(|c| c.blood_color)
+                    .map(|rgb| crate::fx_events::Rgb8 {
+                        r: rgb[0],
+                        g: rgb[1],
+                        b: rgb[2],
+                    });
+                (a.pos, mass, color)
+            })
+            .unwrap_or((room_core::DVec3::ZERO, 100, None));
+        world.push_fx(crate::fx_events::FxEvent::ActorDied {
+            actor: target,
+            pos,
+            color,
+            mass,
+            gibbed: use_xdeath,
+        });
     }
     if let Some(death) = label {
         world.set_state(target, Some(death), true);
@@ -1279,7 +1318,14 @@ actor PlayerPawn : Actor 0
         w.tick();
         let hud = w.player_hud(0).unwrap();
         assert_eq!(hud.face, "STFDEAD0");
-        assert!(hud.weapon_patch.is_empty(), "gun drops off screen on death");
+        // W13: gun lowers via Deselect → A_Lower; patch may remain while
+        // `pspr_y` (bob_y) parks it at `WEAPONBOTTOM`.
+        assert!(
+            hud.weapon_patch.is_empty() || hud.bob_y >= 90.0,
+            "gun off screen on death (patch={:?} bob_y={})",
+            hud.weapon_patch,
+            hud.bob_y
+        );
         assert!((1..=8).contains(&hud.palette), "red flash while dead");
     }
 

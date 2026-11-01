@@ -7,6 +7,7 @@ mod engine_data;
 mod headless;
 mod mods;
 mod music;
+mod native_mods;
 mod runtime;
 mod save;
 mod sound;
@@ -26,7 +27,8 @@ pub use headless::{
     apply_complevel_to_world, default_next_map_name, default_par_seconds, keyconf_alias_lines,
     keyconf_default_binds,
 };
-pub use mods::{MANIFEST_LUMP, discover_mods};
+pub use mods::{MANIFEST_LUMP, discover_mods, discover_python_mods};
+pub use native_mods::{NativePlayMod, PythonModSource};
 pub use music::{
     doom1_music_lump, doom2_music_lump, intermission_music_candidates, play_first_music_lump,
     play_map_music, play_music_lump, resolve_map_music, title_music_candidates,

@@ -437,7 +437,17 @@ impl MapBuilder {
                 let sa = room_sec[&a.room];
                 let sb = room_sec[&b.room];
                 // Peg step faces so raised platforms / uneven ceilings draw.
-                let step = default_wall.clone();
+                let key = if a.room <= b.room {
+                    (a.room.clone(), b.room.clone())
+                } else {
+                    (b.room.clone(), a.room.clone())
+                };
+                // Door faces use BIGDOOR2 so closed low-ceiling strips read as doors.
+                let step = if door_for.contains_key(&key) {
+                    "BIGDOOR2".to_owned()
+                } else {
+                    default_wall.clone()
+                };
                 let front = sidedefs.len();
                 sidedefs.push(SideOut {
                     sector: sa,
@@ -452,11 +462,6 @@ impl MapBuilder {
                     top: step.clone(),
                     bottom: step,
                 });
-                let key = if a.room <= b.room {
-                    (a.room.clone(), b.room.clone())
-                } else {
-                    (b.room.clone(), a.room.clone())
-                };
                 let (special, line_id, comment) = if let Some(d) = door_for.get(&key) {
                     (
                         Some((d.spec.special, d.spec.args, d.spec.playeruse, d.spec.repeat)),
@@ -609,71 +614,119 @@ impl MapBuilder {
 /// Closed combat arena: weapons/ammo at the south wall, monsters facing the player.
 ///
 /// DoomEdNums: ZombieMan 3004, ShotgunGuy 9, DoomImp 3001, ChaingunGuy 65;
-/// weapons Shotgun/Chaingun/RL/Plasma/SSG + ammo.
+/// weapons Shotgun/Chaingun/RL/Plasma/SSG/BFG + ammo.
 ///
-/// Uses common Freedoom/Doom flats + `STARTAN2` walls (one-sided sides from [`MapBuilder`]).
+/// Layout is a **full-edge grid** (MapBuilder only merges identical shared edges —
+/// partial T-junctions leave one-sided overlaps and void floors). Thin low-ceiling
+/// strips are real `Door_Raise` doors (`BIGDOOR2` faces). Walls: `STONE2`.
 #[must_use]
 pub fn combat_arena() -> MapBuilder {
-    // Compact multi-room arena (shared edges → step sidedefs). Lower ceiling
-    // + side cover platforms so it reads as a Doom fight space, not a hangar.
-    // Player faces north (Doom angle 90); monsters face south (270).
+    // ~2560×1920 fight space. Columns x=0/512/2048/2560; door strips are 32 uu.
+    // Player faces north (90); monsters face south (270) or inward from flanks.
+    let door = |tag: i32| DoorSpec {
+        special: 12, // Door_Raise — args[0]=tag (Room), speed, delay
+        args: [tag, 16, 150, 0, 0],
+        playeruse: true,
+        repeat: true,
+    };
     MapBuilder::new()
-        .room("spawn", rect(256.0, 0.0, 768.0, 192.0), 0.0, 128.0)
+        // --- spawn vestibule (arsenal) ---
+        .room("spawn", rect(512.0, 0.0, 2048.0, 288.0), 0.0, 144.0)
         .sector_textures("spawn", "FLOOR5_1", "CEIL3_5")
-        .sector_light("spawn", 200)
-        .room("arena", rect(256.0, 192.0, 768.0, 768.0), 0.0, 144.0)
-        .sector_textures("arena", "FLOOR4_8", "FLAT5_4")
-        .sector_light("arena", 192)
-        // West corridor + raised cover slab
-        .room("west_s", rect(64.0, 192.0, 256.0, 384.0), 0.0, 128.0)
+        .sector_light("spawn", 208)
+        // --- door: spawn → arena (starts open; use toggles Door_Raise) ---
+        .room("door_spawn", rect(512.0, 288.0, 2048.0, 320.0), 0.0, 128.0)
+        .sector_textures("door_spawn", "FLAT5_4", "FLAT5_4")
+        .sector_light("door_spawn", 144)
+        .sector_tag("door_spawn", 1)
+        // --- main floor (split so side galleries share full edges) ---
+        .room("arena_s", rect(512.0, 320.0, 2048.0, 768.0), 0.0, 160.0)
+        .sector_textures("arena_s", "FLOOR4_8", "FLAT5_4")
+        .sector_light("arena_s", 192)
+        .room("arena_m", rect(512.0, 768.0, 2048.0, 1088.0), 0.0, 160.0)
+        .sector_textures("arena_m", "FLOOR4_8", "FLAT5_4")
+        .sector_light("arena_m", 200)
+        .room("arena_n", rect(512.0, 1088.0, 2048.0, 1600.0), 0.0, 160.0)
+        .sector_textures("arena_n", "FLOOR4_8", "FLAT5_4")
+        .sector_light("arena_n", 184)
+        // --- door: arena → north alcove ---
+        .room("door_north", rect(512.0, 1600.0, 2048.0, 1632.0), 0.0, 8.0)
+        .sector_textures("door_north", "FLAT5_4", "FLAT5_4")
+        .sector_light("door_north", 144)
+        .sector_tag("door_north", 2)
+        .room("north", rect(512.0, 1632.0, 2048.0, 1920.0), 0.0, 144.0)
+        .sector_textures("north", "FLOOR5_1", "CEIL3_5")
+        .sector_light("north", 176)
+        // --- west gallery + raised cover ---
+        .room("west_s", rect(0.0, 320.0, 512.0, 768.0), 0.0, 144.0)
         .sector_textures("west_s", "FLOOR0_1", "CEIL3_5")
         .sector_light("west_s", 168)
-        .room("west_hi", rect(64.0, 384.0, 256.0, 576.0), 24.0, 128.0)
+        .room("west_hi", rect(0.0, 768.0, 512.0, 1088.0), 24.0, 144.0)
         .sector_textures("west_hi", "FLOOR7_1", "CEIL3_5")
-        .sector_light("west_hi", 192)
-        .room("west_n", rect(64.0, 576.0, 256.0, 768.0), 0.0, 128.0)
+        .sector_light("west_hi", 200)
+        .room("west_n", rect(0.0, 1088.0, 512.0, 1600.0), 0.0, 144.0)
         .sector_textures("west_n", "FLOOR0_1", "CEIL3_5")
         .sector_light("west_n", 152)
-        // East corridor + raised cover slab
-        .room("east_s", rect(768.0, 192.0, 960.0, 384.0), 0.0, 128.0)
+        // --- east gallery + raised cover ---
+        .room("east_s", rect(2048.0, 320.0, 2560.0, 768.0), 0.0, 144.0)
         .sector_textures("east_s", "FLOOR0_1", "CEIL3_5")
         .sector_light("east_s", 168)
-        .room("east_hi", rect(768.0, 384.0, 960.0, 576.0), 24.0, 128.0)
+        .room("east_hi", rect(2048.0, 768.0, 2560.0, 1088.0), 24.0, 144.0)
         .sector_textures("east_hi", "FLOOR7_1", "CEIL3_5")
-        .sector_light("east_hi", 192)
-        .room("east_n", rect(768.0, 576.0, 960.0, 768.0), 0.0, 128.0)
+        .sector_light("east_hi", 200)
+        .room("east_n", rect(2048.0, 1088.0, 2560.0, 1600.0), 0.0, 144.0)
         .sector_textures("east_n", "FLOOR0_1", "CEIL3_5")
         .sector_light("east_n", 152)
-        .wall_texture("STARTAN2")
-        .player_start(512.0, 96.0, 90)
+        .wall_texture("STONE2")
+        .door_between("spawn", "door_spawn", door(1))
+        .door_between("arena_s", "door_spawn", door(1))
+        .door_between("arena_n", "door_north", door(2))
+        .door_between("north", "door_north", door(2))
+        .player_start(1280.0, 144.0, 90)
         // Arsenal strip (spawn vestibule)
-        .thing(82, 320.0, 140.0, 0) // SuperShotgun
-        .thing(2001, 384.0, 140.0, 0) // Shotgun
-        .thing(2002, 448.0, 140.0, 0) // Chaingun
-        .thing(2003, 512.0, 140.0, 0) // RocketLauncher
-        .thing(2004, 576.0, 140.0, 0) // PlasmaRifle
-        .thing(2008, 352.0, 168.0, 0) // Shell
-        .thing(2049, 400.0, 168.0, 0) // ShellBox
-        .thing(2007, 448.0, 168.0, 0) // Clip
-        .thing(2048, 496.0, 168.0, 0) // ClipBox
-        .thing(2010, 544.0, 168.0, 0) // RocketAmmo
-        .thing(2046, 592.0, 168.0, 0) // RocketBox
-        .thing(2047, 640.0, 168.0, 0) // Cell
-        .thing(17, 688.0, 168.0, 0) // CellPack
-        // Front line — zombiemen
-        .thing(3004, 400.0, 560.0, 270)
-        .thing(3004, 464.0, 560.0, 270)
-        .thing(3004, 528.0, 560.0, 270)
-        .thing(3004, 592.0, 560.0, 270)
-        .thing(3004, 656.0, 560.0, 270)
-        // Shotgunners + chaingunner
-        .thing(9, 400.0, 640.0, 270)
-        .thing(9, 624.0, 640.0, 270)
-        .thing(65, 512.0, 640.0, 270)
-        // Imps behind
-        .thing(3001, 448.0, 704.0, 270)
-        .thing(3001, 512.0, 704.0, 270)
-        .thing(3001, 576.0, 704.0, 270)
+        .thing(82, 700.0, 200.0, 0) // SuperShotgun
+        .thing(2001, 860.0, 200.0, 0) // Shotgun
+        .thing(2002, 1020.0, 200.0, 0) // Chaingun
+        .thing(2003, 1180.0, 200.0, 0) // RocketLauncher
+        .thing(2004, 1340.0, 200.0, 0) // PlasmaRifle
+        .thing(2006, 1500.0, 200.0, 0) // BFG9000
+        .thing(2008, 780.0, 248.0, 0) // Shell
+        .thing(2049, 900.0, 248.0, 0) // ShellBox
+        .thing(2007, 1020.0, 248.0, 0) // Clip
+        .thing(2048, 1140.0, 248.0, 0) // ClipBox
+        .thing(2010, 1260.0, 248.0, 0) // RocketAmmo
+        .thing(2046, 1380.0, 248.0, 0) // RocketBox
+        .thing(2047, 1500.0, 248.0, 0) // Cell
+        .thing(17, 1620.0, 248.0, 0) // CellPack
+        .thing(2014, 640.0, 248.0, 0) // HealthBonus
+        .thing(2015, 1760.0, 248.0, 0) // ArmorBonus
+        // Mid-field zombiemen
+        .thing(3004, 800.0, 560.0, 270)
+        .thing(3004, 1040.0, 560.0, 270)
+        .thing(3004, 1280.0, 560.0, 270)
+        .thing(3004, 1520.0, 560.0, 270)
+        .thing(3004, 1760.0, 560.0, 270)
+        .thing(3004, 960.0, 920.0, 270)
+        .thing(3004, 1600.0, 920.0, 270)
+        // Shotgunners + chaingunners
+        .thing(9, 880.0, 1200.0, 270)
+        .thing(9, 1280.0, 1200.0, 270)
+        .thing(9, 1680.0, 1200.0, 270)
+        .thing(65, 1040.0, 1400.0, 270)
+        .thing(65, 1520.0, 1400.0, 270)
+        // Imps (back line)
+        .thing(3001, 960.0, 1500.0, 270)
+        .thing(3001, 1280.0, 1500.0, 270)
+        .thing(3001, 1600.0, 1500.0, 270)
+        // Gallery flankers
+        .thing(3004, 256.0, 920.0, 0)
+        .thing(9, 256.0, 1300.0, 0)
+        .thing(3004, 2304.0, 920.0, 180)
+        .thing(9, 2304.0, 1300.0, 180)
+        // North alcove
+        .thing(3001, 1040.0, 1760.0, 270)
+        .thing(3001, 1520.0, 1760.0, 270)
+        .thing(2011, 1280.0, 1720.0, 0) // Stimpack
 }
 
 #[cfg(test)]
@@ -690,8 +743,8 @@ mod tests {
         assert!(map.things.iter().any(|t| t.type_id == 3004));
         assert!(map.things.iter().any(|t| t.type_id == 2001));
         assert!(
-            map.sectors.len() >= 8,
-            "expected multi-room arena, got {} sectors",
+            map.sectors.len() >= 13,
+            "expected grid + door strips, got {} sectors",
             map.sectors.len()
         );
         assert!(
@@ -699,6 +752,20 @@ mod tests {
                 .iter()
                 .any(|s| s.lower != "-" && !s.lower.is_empty()),
             "expected step lower textures on raised platforms"
+        );
+        assert!(
+            map.lines.iter().filter(|l| l.special == 12).count() >= 4,
+            "expected Door_Raise on both faces of each door strip"
+        );
+        assert!(
+            map.sides.iter().any(|s| s.upper.eq_ignore_ascii_case("BIGDOOR2")),
+            "expected BIGDOOR2 on door faces"
+        );
+        // Every two-sided line must come from a full shared edge (no T-junction orphans).
+        let twosided = map.lines.iter().filter(|l| l.back_sector.is_some()).count();
+        assert!(
+            twosided >= 12,
+            "expected many shared edges in the grid, got {twosided}"
         );
     }
 

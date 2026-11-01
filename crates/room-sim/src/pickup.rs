@@ -247,7 +247,13 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
         }
         world.push_message("Picked up a backpack full of ammo!");
     } else if world.classes.get(class).is_some_and(|c| c.is_weapon) {
+        // docs/30 W17: weapon stay — each player may take a map weapon once;
+        // the actor stays for others. Dropped weapons always vanish.
+        let stay = world.weapon_stay && !dropped;
         let already = world.inventory.count(toucher, class) > 0;
+        if stay && already {
+            return false;
+        }
         if !already && !give_inventory(world, toucher, class, amount) {
             return false;
         }
@@ -288,6 +294,25 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
         }
         if !already {
             switch_player_weapon(world, toucher, class);
+        }
+        if stay {
+            // Vanilla `P_GiveWeapon` returns false so TouchSpecialThing leaves
+            // the mobj (no remove, no item count). Still show pickup FX.
+            let (pickup_msg, pickup_snd) = world
+                .classes
+                .get(class)
+                .map(|c| (c.pickup_message.clone(), c.pickup_sound.clone()))
+                .unwrap_or_default();
+            if !pickup_msg.is_empty() {
+                world.push_message(pickup_msg);
+            }
+            if !pickup_snd.is_empty() {
+                if let Some(a) = world.actors.get(toucher) {
+                    world.play_sound(&pickup_snd, a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
+                }
+            }
+            // Return false so callers treat this like "not consumed".
+            return false;
         }
     } else if let Some(ammo_name) = ammo_box_grants(&class_name) {
         // Boxes are separate DoomEdNums but feed the base ammo class.
@@ -1390,6 +1415,42 @@ GOTARMOR = BEX remapped armor pickup.
                 .iter()
                 .any(|m| m == "BEX remapped armor pickup.")
         );
+    }
+
+    #[test]
+    fn weapon_stay_leaves_map_gun_for_second_player() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        w.weapon_stay = true;
+        let shotgun = classes.find_name("Shotgun").unwrap();
+        let p0 = w.players[0].as_ref().unwrap().mo.unwrap();
+        let item = w
+            .spawn_at(shotgun, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO)
+            .unwrap();
+        // Stay path returns false (not consumed) but still grants the weapon.
+        assert!(!try_pickup(&mut w, p0, item));
+        assert!(!w.actors.get(item).unwrap().destroyed);
+        assert!(w.inventory.count(p0, shotgun) > 0);
+        // Already owned → ignore.
+        assert!(!try_pickup(&mut w, p0, item));
+        // Dropped guns always vanish.
+        let dropped = w
+            .spawn_at(shotgun, DVec3::new(48.0, 32.0, 0.0), Angle::ZERO)
+            .unwrap();
+        w.actors.get_mut(dropped).unwrap().flags |= crate::class::FLAG_DROPPED;
+        // Fresh pawn without the gun — use inventory clear via second class give path.
+        let _ = w.inventory.take(p0, shotgun, 99);
+        assert!(try_pickup(&mut w, p0, dropped));
+        assert!(w.actors.get(dropped).unwrap().destroyed);
     }
 
     #[test]

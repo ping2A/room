@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 thread_local! {
     static HELD: RefCell<BTreeSet<&'static str>> = const { RefCell::new(BTreeSet::new()) };
     static ATTACK: Cell<bool> = const { Cell::new(false) };
+    static ALT_ATTACK: Cell<bool> = const { Cell::new(false) };
     static WEAPON: Cell<u8> = const { Cell::new(0) };
     /// Queued weapon cycles (positive = next). Fractional notches live in `WHEEL_FRAC`.
     static WHEEL: Cell<i32> = const { Cell::new(0) };
@@ -195,6 +196,8 @@ pub fn set_key(code: &str, down: bool) {
 pub fn set_mouse_button(button: i16, down: bool) {
     if button == 0 {
         ATTACK.set(down || HELD.with(|h| h.borrow().contains("attack")));
+    } else if button == 2 {
+        ALT_ATTACK.set(down || HELD.with(|h| h.borrow().contains("altattack")));
     }
 }
 
@@ -224,6 +227,7 @@ pub fn drain_into(play: &mut PlaySession) {
         play.held.clone_from(&h.borrow());
     });
     play.attack = ATTACK.get();
+    play.alt_attack = ALT_ATTACK.get();
     let w = WEAPON.get();
     if w != 0 {
         play.weapon = w;
@@ -245,6 +249,7 @@ pub fn drain_into(play: &mut PlaySession) {
 pub fn reset() {
     HELD.with(|h| h.borrow_mut().clear());
     ATTACK.set(false);
+    ALT_ATTACK.set(false);
     WEAPON.set(0);
     WHEEL.set(0);
     WHEEL_FRAC.set(0.0);

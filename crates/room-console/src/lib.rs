@@ -7,7 +7,10 @@ mod cvar;
 mod dispatch;
 mod error;
 
-pub use config::{IniApplyResult, apply_ini, load_ini_file, save_ini_file, write_ini};
+pub use config::{
+    IniApplyResult, apply_ini, load_ini_file, save_ini_file, save_ini_file_excluding, write_ini,
+    write_ini_excluding,
+};
 pub use cvar::{CvarFlags, CvarStore, CvarType, CvarValue};
 pub use dispatch::{Console, ExecResult, HostCommand};
 pub use error::ConsoleError;

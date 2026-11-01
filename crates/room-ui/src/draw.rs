@@ -130,6 +130,10 @@ pub enum DrawCmd {
         apply_offsets: bool,
         /// Draw through Doom's `INVERSECOLORMAP` (invulnerability psprites).
         inverse: bool,
+        /// RGB scale 0–1 (sector light / extralight for psprites; docs/30 W6).
+        light: f32,
+        /// Spectre-style fuzz (partial invisibility psprite).
+        fuzz: bool,
     },
     /// Coloured line segment (automap).
     Line {
@@ -191,12 +195,19 @@ impl UiDrawList {
 
     /// Push patch.
     pub fn patch(&mut self, name: &str, pos: Vec2, size: Vec2) {
+        self.patch_lit(name, pos, size, 1.0, false);
+    }
+
+    /// Push patch with psprite lighting / fuzz (docs/30 W6).
+    pub fn patch_lit(&mut self, name: &str, pos: Vec2, size: Vec2, light: f32, fuzz: bool) {
         self.cmds.push(DrawCmd::Patch {
             name: name.to_owned(),
             pos,
             size,
             apply_offsets: false,
             inverse: false,
+            light: light.clamp(0.0, 1.0),
+            fuzz,
         });
     }
 
@@ -218,6 +229,8 @@ impl UiDrawList {
             size: Vec2::new(0.0, 0.0),
             apply_offsets: true,
             inverse: false,
+            light: 1.0,
+            fuzz: false,
         });
     }
 }

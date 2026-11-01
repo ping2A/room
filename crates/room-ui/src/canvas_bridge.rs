@@ -9,6 +9,31 @@ pub trait CanvasSink {
     fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]);
     /// Text run (fallback when no [`crate::FontRegistry`] glyph is available).
     fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]);
+    /// Pre-rasterized RGBA8 image (`w*h*4`, straight alpha). Default expands to fills.
+    fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
+        let need = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+        if w == 0 || h == 0 || pixels.len() < need {
+            return;
+        }
+        for row in 0..h {
+            for col in 0..w {
+                let i = ((row * w + col) * 4) as usize;
+                if pixels[i + 3] < 128 {
+                    continue;
+                }
+                let r = f32::from(pixels[i]) / 255.0;
+                let g = f32::from(pixels[i + 1]) / 255.0;
+                let b = f32::from(pixels[i + 2]) / 255.0;
+                self.fill_rect(
+                    x + col as f32,
+                    y + row as f32,
+                    1.0,
+                    1.0,
+                    [r, g, b, 1.0],
+                );
+            }
+        }
+    }
 }
 
 use crate::draw::{DrawCmd, UiDrawList, Vec2};
@@ -41,6 +66,46 @@ pub fn inverse_palette(pal: &[[u8; 3]; 256]) -> [[u8; 3]; 256] {
     })
 }
 
+/// Vanilla `fuzzoffset` signs (`±FUZZOFF` → ±1 row). Docs/30 N8.
+const FUZZ_SIGN: [i8; 50] = [
+    1, -1, 1, -1, 1, 1, -1, 1, 1, -1, 1, 1, 1, -1, 1, 1, 1, -1, -1, -1, -1, 1, -1, -1, 1, 1, 1, 1,
+    -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, -1, -1, -1, 1, 1, 1, 1, -1, 1, 1, -1, 1,
+];
+
+/// Apply Doom software fuzz to a scaled RGBA patch (docs/30 N8).
+///
+/// Without a framebuffer sample of the scene behind the gun, each opaque pixel
+/// is replaced by a **darkened** (±1-row jittered) sample from the same patch —
+/// colormap row 6 ≈ keep ~50 % luminance — matching the spectre silhouette.
+fn apply_psprite_fuzz(pixels: &mut [u8], w: u32, h: u32) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    let src = pixels.to_vec();
+    let mut fuzzpos = 0usize;
+    for row in 0..h {
+        for col in 0..w {
+            let i = ((row * w + col) * 4) as usize;
+            if src[i + 3] < 16 {
+                pixels[i + 3] = 0;
+                continue;
+            }
+            let dy = i32::from(FUZZ_SIGN[fuzzpos]);
+            fuzzpos = (fuzzpos + 1) % FUZZ_SIGN.len();
+            let sy = (row as i32 + dy).clamp(0, h as i32 - 1) as u32;
+            let si = ((sy * w + col) * 4) as usize;
+            // Colormap 6: mid darken (vanilla samples the *background*).
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            {
+                pixels[i] = (u16::from(src[si]) / 2) as u8;
+                pixels[i + 1] = (u16::from(src[si + 1]) / 2) as u8;
+                pixels[i + 2] = (u16::from(src[si + 2]) / 2) as u8;
+                pixels[i + 3] = 220;
+            }
+        }
+    }
+}
+
 /// Full blit path: soft fonts + optional Doom picture cache for [`DrawCmd::Patch`].
 pub fn blit_draw_list_full(
     list: &UiDrawList,
@@ -52,7 +117,6 @@ pub fn blit_draw_list_full(
 ) {
     let sx = fb_w / list.virtual_w;
     let sy = fb_h / list.virtual_h;
-    let uniform = sx.min(sy);
     for cmd in &list.cmds {
         match cmd {
             DrawCmd::Fill { rect, color } => {
@@ -74,10 +138,20 @@ pub fn blit_draw_list_full(
                 if let Some(soft) = fonts.and_then(|r| r.get(font)) {
                     let px = pos.x * sx;
                     let py = pos.y * sy;
-                    let sc = (*scale) * uniform;
-                    soft.paint_text(text, px, py, sc, *color, |x, y, w, h, rgba| {
-                        sink.fill_rect(x, y, w, h, rgba);
-                    });
+                    // Match virtual→fb axes independently. Using `min(sx,sy)` for
+                    // glyph advance while positions use full `sx` crushed
+                    // BigFont/SmallFont on widescreen (overlapping QUALITY etc.).
+                    soft.paint_text_xy(
+                        text,
+                        px,
+                        py,
+                        (*scale) * sx,
+                        (*scale) * sy,
+                        *color,
+                        |x, y, w, h, rgba| {
+                            sink.fill_rect(x, y, w, h, rgba);
+                        },
+                    );
                 } else {
                     sink.text(
                         pos.x * sx,
@@ -93,6 +167,8 @@ pub fn blit_draw_list_full(
                 size,
                 apply_offsets,
                 inverse,
+                light,
+                fuzz,
             } => {
                 let dest_w = if size.x > 0.0 { size.x } else { 16.0 };
                 let dest_h = if size.y > 0.0 { size.y } else { 16.0 };
@@ -116,8 +192,14 @@ pub fn blit_draw_list_full(
                         } else {
                             f32::from(patch.height)
                         };
-                        let scale_x = (dest_w / f32::from(patch.width).max(1.0)) * sx;
-                        let scale_y = (dest_h / f32::from(patch.height).max(1.0)) * sy;
+                        let mut scale_x = (dest_w / f32::from(patch.width).max(1.0)) * sx;
+                        let mut scale_y = (dest_h / f32::from(patch.height).max(1.0)) * sy;
+                        // Match SoftPatch::paint: near-uniform keeps Doom aspect.
+                        if (scale_x - scale_y).abs() <= scale_x.max(scale_y) * 0.02 {
+                            let s = scale_x.min(scale_y);
+                            scale_x = s;
+                            scale_y = s;
+                        }
                         let inverted;
                         let palette = if *inverse {
                             inverted = inverse_palette(cache.palette());
@@ -125,14 +207,33 @@ pub fn blit_draw_list_full(
                         } else {
                             cache.palette()
                         };
-                        patch.paint(
-                            pos.x * sx,
-                            pos.y * sy,
-                            scale_x,
-                            scale_y,
-                            palette,
-                            |x, y, w, h, rgba| sink.fill_rect(x, y, w, h, rgba),
-                        );
+                        let origin_x = pos.x * sx;
+                        let origin_y = pos.y * sy;
+                        let x0 = origin_x.floor();
+                        let y0 = origin_y.floor();
+                        let x1 = (origin_x + f32::from(patch.width) * scale_x).ceil();
+                        let y1 = (origin_y + f32::from(patch.height) * scale_y).ceil();
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        let dw = (x1 - x0).max(1.0) as u32;
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        let dh = (y1 - y0).max(1.0) as u32;
+                        let mut pixels = patch.scale_rgba(dw, dh, palette);
+                        let lit = light.clamp(0.0, 1.0);
+                        if *fuzz {
+                            // Vanilla `R_DrawFuzzColumn`: ±1 row jitter via
+                            // `fuzzoffset[50]`, then colormap row 6 (~darken).
+                            apply_psprite_fuzz(&mut pixels, dw, dh);
+                        } else if lit < 0.999 {
+                            for px in pixels.chunks_exact_mut(4) {
+                                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                                {
+                                    px[0] = (f32::from(px[0]) * lit) as u8;
+                                    px[1] = (f32::from(px[1]) * lit) as u8;
+                                    px[2] = (f32::from(px[2]) * lit) as u8;
+                                }
+                            }
+                        }
+                        sink.blit_rgba(x0, y0, dw, dh, &pixels);
                         continue;
                     }
                 }

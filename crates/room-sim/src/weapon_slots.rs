@@ -128,6 +128,11 @@ impl WeaponSlots {
 
     /// `addslotdefault n weapon` — append only if slot is empty / missing the weapon.
     pub fn add_slot_default(&mut self, slot: i32, weapon: &str) {
+        self.add_slot_default_priority(slot, weapon, i32::MAX);
+    }
+
+    /// Like [`Self::add_slot_default`], inserting at `priority` (0 = first).
+    pub fn add_slot_default_priority(&mut self, slot: i32, weapon: &str, priority: i32) {
         let Some(s) = slot_key(slot) else {
             return;
         };
@@ -137,9 +142,11 @@ impl WeaponSlots {
                 .map(|n| (*n).to_owned())
                 .collect()
         });
-        if !list.iter().any(|w| w.eq_ignore_ascii_case(weapon)) {
-            list.push(weapon.to_owned());
+        if list.iter().any(|w| w.eq_ignore_ascii_case(weapon)) {
+            return;
         }
+        let idx = usize::try_from(priority.max(0)).unwrap_or(0).min(list.len());
+        list.insert(idx, weapon.to_owned());
     }
 
     /// `clearplayerclasses`.

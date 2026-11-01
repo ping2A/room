@@ -202,6 +202,8 @@ game_fns! {
     PlayerTrace = "player_trace"(I32, F64, I32) -> I32;
     /// `player_name(PlayerRef, buf, cap) -> len` (play; BE3 session names).
     PlayerName = "player_name"(I32, I32, I32) -> I32;
+    /// `actor_hit_info(ActorRef, out_ptr) -> kind` — writes 6×f64 (pos xyz, normal xyz).
+    ActorHitInfo = "actor_hit_info"(I64, I32) -> I32;
 }
 
 pub use room_script_abi::game::{
@@ -340,8 +342,8 @@ mod tests {
         );
         assert_eq!(GameFn::ActorSpawn.result(), Some(ValKind::I64));
         assert_eq!(GameFn::ActorDestroy.result(), None);
-        assert_eq!(GameFn::ALL.len(), 68);
-        assert_eq!(GameFn::ALL[GameFn::ALL.len() - 1], GameFn::PlayerName);
+        assert_eq!(GameFn::ALL.len(), 69);
+        assert_eq!(GameFn::ALL[GameFn::ALL.len() - 1], GameFn::ActorHitInfo);
         assert_eq!(
             GameFn::HudWidgetSet.params(),
             &[ValKind::I32, ValKind::I32, ValKind::I32, ValKind::I32]

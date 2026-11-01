@@ -19,6 +19,7 @@ fn mod1_probe_mod() -> ModSource {
         name: "mod1".into(),
         scope: ModuleScope::Play,
         bytes: wasm,
+        options: Default::default(),
     }
 }
 

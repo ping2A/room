@@ -19,6 +19,7 @@ fn track_c_mod() -> ModSource {
         name: "track_c".into(),
         scope: ModuleScope::Play,
         bytes: wasm,
+        options: Default::default(),
     }
 }
 

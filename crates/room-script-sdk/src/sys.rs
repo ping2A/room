@@ -29,6 +29,19 @@ mod imp {
             flags: i32,
             callback_id: i32,
         ) -> i32;
+        pub fn reg_state_flow(
+            kind: i32,
+            label_ptr: i32,
+            label_len: i32,
+            offset: i32,
+        ) -> i32;
+        pub fn reg_state_action(
+            name_ptr: i32,
+            name_len: i32,
+            args_ptr: i32,
+            args_len: i32,
+        ) -> i32;
+        pub fn reg_state_offset(x: i32, y: i32) -> i32;
         pub fn reg_class_virtual(slot: i32, callback_id: i32);
         pub fn reg_event_handler(
             name_ptr: i32,
@@ -52,6 +65,30 @@ mod imp {
             func_len: i32,
             callback_id: i32,
         ) -> i32;
+        pub fn reg_lump(
+            name_ptr: i32,
+            name_len: i32,
+            namespace: i32,
+            data_ptr: i32,
+            data_len: i32,
+        ) -> i32;
+        pub fn reg_sound_alias(
+            logical_ptr: i32,
+            logical_len: i32,
+            lump_ptr: i32,
+            lump_len: i32,
+            limit: i32,
+        ) -> i32;
+        pub fn reg_weapon_slot(
+            slot: i32,
+            class_ptr: i32,
+            class_len: i32,
+            priority: i32,
+        ) -> i32;
+        pub fn manifest_option_i32(key_ptr: i32, key_len: i32, default: i32) -> i32;
+        pub fn manifest_option_str(key_ptr: i32, key_len: i32, buf_ptr: i32, cap: i32) -> i32;
+        pub fn lump_find(name_ptr: i32, name_len: i32, namespace: i32) -> i32;
+        pub fn lump_read(index: i32, buf_ptr: i32, cap: i32) -> i32;
         pub fn acs_execute(script: i32, map: i32, args_ptr: i32, n: i32) -> i32;
     }
 }
@@ -102,6 +139,25 @@ mod imp {
     ) -> i32 {
         0
     }
+    pub unsafe fn reg_state_flow(
+        _kind: i32,
+        _label_ptr: i32,
+        _label_len: i32,
+        _offset: i32,
+    ) -> i32 {
+        0
+    }
+    pub unsafe fn reg_state_action(
+        _name_ptr: i32,
+        _name_len: i32,
+        _args_ptr: i32,
+        _args_len: i32,
+    ) -> i32 {
+        0
+    }
+    pub unsafe fn reg_state_offset(_x: i32, _y: i32) -> i32 {
+        0
+    }
     pub unsafe fn reg_class_virtual(_slot: i32, _callback_id: i32) {}
     pub unsafe fn reg_event_handler(
         _name_ptr: i32,
@@ -130,6 +186,49 @@ mod imp {
         _callback_id: i32,
     ) -> i32 {
         0
+    }
+    pub unsafe fn reg_lump(
+        _name_ptr: i32,
+        _name_len: i32,
+        _namespace: i32,
+        _data_ptr: i32,
+        _data_len: i32,
+    ) -> i32 {
+        0
+    }
+    pub unsafe fn reg_sound_alias(
+        _logical_ptr: i32,
+        _logical_len: i32,
+        _lump_ptr: i32,
+        _lump_len: i32,
+        _limit: i32,
+    ) -> i32 {
+        0
+    }
+    pub unsafe fn reg_weapon_slot(
+        _slot: i32,
+        _class_ptr: i32,
+        _class_len: i32,
+        _priority: i32,
+    ) -> i32 {
+        0
+    }
+    pub unsafe fn manifest_option_i32(_key_ptr: i32, _key_len: i32, default: i32) -> i32 {
+        default
+    }
+    pub unsafe fn manifest_option_str(
+        _key_ptr: i32,
+        _key_len: i32,
+        _buf_ptr: i32,
+        _cap: i32,
+    ) -> i32 {
+        -1
+    }
+    pub unsafe fn lump_find(_name_ptr: i32, _name_len: i32, _namespace: i32) -> i32 {
+        -1
+    }
+    pub unsafe fn lump_read(_index: i32, _buf_ptr: i32, _cap: i32) -> i32 {
+        -1
     }
     pub unsafe fn acs_execute(_script: i32, _map: i32, _args_ptr: i32, _n: i32) -> i32 {
         0

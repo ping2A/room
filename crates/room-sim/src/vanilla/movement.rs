@@ -1026,6 +1026,17 @@ pub fn z_movement_fixed(world: &mut World, actor_id: ActorId) {
         a.vel = DVec3::new(a.vel.x(), a.vel.y(), momz.to_f64());
     }
     if is_missile && (hit_floor || hit_ceiling) {
+        let pos = world
+            .actors
+            .get(actor_id)
+            .map(|a| a.pos)
+            .unwrap_or(actor.pos);
+        let (kind, normal) = if hit_ceiling {
+            (room_script_abi::hit_kind::CEILING, room_core::DVec3::new(0.0, 0.0, -1.0))
+        } else {
+            (room_script_abi::hit_kind::FLOOR, room_core::DVec3::new(0.0, 0.0, 1.0))
+        };
+        crate::physics::set_missile_hit(world, actor_id, kind, None, pos, normal);
         crate::physics::explode_missile(world, actor_id);
         return;
     }

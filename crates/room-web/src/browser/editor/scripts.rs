@@ -146,6 +146,7 @@ impl Editor {
             name: name.to_owned(),
             scope: ModuleScope::Play,
             bytes: wasm.to_vec(),
+            options: Default::default(),
         };
         let rt =
             ModRuntime::new(&[src], Arc::clone(&self.data.classes)).map_err(|e| e.to_string())?;

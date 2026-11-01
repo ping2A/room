@@ -9,6 +9,7 @@ mod launcher;
 mod midi_device;
 mod netplay;
 mod screen_capture;
+mod shader_cvars;
 mod soundfont;
 
 use audio_out::AudioOut;
@@ -32,13 +33,15 @@ use room_map::{MapGeometry, load_map};
 use room_nodebuild::{apply_nodes, ensure_nodes};
 use room_render::{
     Camera, Canvas, CanvasGpu, CubemapFaces, DecalStore, DynLightInstance, GpuContext, LightMode,
-    MAX_VOXEL_WALL_VERTS_PER_FRAME, MaterialCatalog, MaterialMaps, ModelActorPose, ModelCatalog,
-    OffscreenTarget, PARTICLE_TEX, ParticleStore, SceneLists, SpriteInstance, SpriteOrient,
-    ModZonePass, TextureAnimator, UnlitPass, VoxelActorPose, VoxelCatalog, ZoneDraw,
-    ZoneMeshes, append_actor_models, append_decals, append_particles, apply_glow_fullbright,
-    build_scene, build_scene_with_sky_ex_sized, build_zone_meshes, clip_scene_to_mirror_line,
-    mirror_clip_plane, read_rgba, read_texture_rgba, render_offscreen, scroll_sky_u,
-    sprite_lump_candidates_rot, sprite_rotation_digit, voxel_spin_degrees, voxel_view_angles,
+    MAX_VOXEL_WALL_VERTS_PER_FRAME, MaterialCatalog, MaterialMaps, ModZonePass, ModelActorPose,
+    ModelCatalog, OffscreenTarget, PARTICLE_TEX, PARTICLE_TEX_ADD, ParticleStore, PostChain,
+    PostChainInputs, RenderSettings, SceneLists, SpriteInstance, SpriteOrient, TextureAnimator,
+    UnlitPass, VoxelActorPose, VoxelCatalog, ZoneDraw, ZoneMeshes, append_actor_models,
+    append_decals, append_particles_ex, apply_glow_fullbright, build_scene,
+    build_scene_with_sky_ex_sized, build_zone_meshes, clip_scene_to_mirror_line, mirror_clip_plane,
+    particle_tint_tex_name, read_rgba, read_texture_rgba, render_offscreen, scroll_sky_u,
+    soft_disc_rgba, sprite_lump_candidates_rot, sprite_rotation_digit, voxel_spin_degrees,
+    voxel_view_angles,
 };
 use room_sim::mod_hud::layer as mod_hud_layer;
 use room_sim::{
@@ -52,11 +55,15 @@ use room_ui::{
     IntermissionStats, MenuCommand, MenuSfx, MenuStack, MessageQueue, ModHudMapCtx, PatchCache,
     Rect, Rgba, StatusBar, UiDrawList, anim_pic, blit_draw_list_full, draw_automap, draw_finale,
     draw_intermission, draw_mod_hud_layer, draw_mod_hud_modals, draw_mod_zones_automap,
-    draw_outside_zone_tint, draw_title, draw_weapon, finale_anm_prefix, parse_titledef,
-    player_map_poses, splash_ms, title_screen_pic,
+    draw_outside_zone_tint, draw_stcfn_string, draw_title, draw_weapon_lit, finale_anm_prefix,
+    parse_titledef, player_map_poses, splash_ms, title_screen_pic,
 };
 use room_vfs::{Namespace, Vfs, VfsBuilder};
 use screen_capture::GifRecorder;
+use shader_cvars::{
+    cycle_cvar, graphics_menu, render_settings_from_cvars, reset_shaders_to_defaults,
+    toggle_float_cvar,
+};
 use soundfont::load_first_soundfont;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -95,6 +102,9 @@ struct Args {
     /// Start with all weapons, ammo, keys, and armor (`give all`).
     #[arg(long, default_value_t = false)]
     give_all: bool,
+    /// Start with god mode on (`iddqd` / console `god`). Handy with `--combat-demo`.
+    #[arg(long, default_value_t = false)]
+    god: bool,
     /// Save a screenshot after this many frames, then quit (smoke checks).
     #[arg(long)]
     shot_after: Option<u64>,
@@ -132,6 +142,10 @@ struct Args {
     /// Local display name for netplay / session (also `name` cvar when `--import-ini`).
     #[arg(long, default_value = "")]
     name: String,
+    /// Set a CVar at startup (`--set gl_bloom=1`, repeatable). Applied after
+    /// `room.ini` / `--import-ini` so launcher menus can override graphics.
+    #[arg(long = "set", value_name = "NAME=VALUE")]
+    set_cvars: Vec<String>,
 }
 
 fn main() {
@@ -178,7 +192,7 @@ fn main() {
             }
         }
     }
-    let (map, vfs) = match load_viewer_map(&args) {
+    let (map, mut vfs) = match load_viewer_map(&args) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("room: {e}");
@@ -297,14 +311,19 @@ fn main() {
         let (mut game, decaldef) = start_play_session(
             &map,
             args.decorate.as_deref(),
-            vfs.as_ref(),
+            vfs.as_mut(),
             skill,
             audio_rate,
             rng_seed,
             coop_players,
         );
         if let Some(net) = net.as_ref() {
-            for (i, n) in net.seat_names.iter().enumerate().take(usize::from(coop_players)) {
+            for (i, n) in net
+                .seat_names
+                .iter()
+                .enumerate()
+                .take(usize::from(coop_players))
+            {
                 if !n.is_empty() {
                     game.set_player_display_name(i, n);
                 }
@@ -331,6 +350,13 @@ fn main() {
                     eprintln!("room: give all → seat {seat}: {n} items");
                 }
             }
+            if args.god {
+                for seat in 0..coop_players {
+                    if game.cheat_god(seat as usize) {
+                        eprintln!("room: god on → seat {seat}");
+                    }
+                }
+            }
             if net.is_some() {
                 eprintln!(
                     "room: netplay — WASD/mouse control seat {local_seat}; lockstep with {coop_players} peers"
@@ -349,7 +375,8 @@ fn main() {
                     }
                 }
                 eprintln!(
-                    "room: combat demo — WASD move, mouse look, Ctrl/F/LMB fire, 1–7 weapons, E use, L toggle look"
+                    "room: combat demo — WASD move, mouse look, Ctrl/F/LMB fire, 1–7 weapons, E use, L toggle look{}",
+                    if args.god { " (god)" } else { "" }
                 );
             } else {
                 eprintln!("room: use --title for the main menu");
@@ -417,6 +444,9 @@ fn main() {
         materials,
         decals: DecalStore::default(),
         particles: ParticleStore::default(),
+        view_kick: (0.0, 0.0),
+        hit_flash: std::collections::BTreeMap::new(),
+        heat_haze_tics: 0,
         decaldef,
         sky_texture: initial_sky,
         sky_cubemap: initial_cube,
@@ -440,6 +470,11 @@ fn main() {
         depth: None,
         stencil_aux: None,
         frame_color: None,
+        post_ping: None,
+        post_ldr: None,
+        post_chain: None,
+        render_settings: RenderSettings::default(),
+        ephemeral_shaders: args.combat_demo,
         canvas_gpu: None,
         camera: Camera::default(),
         pending_screenshot: false,
@@ -496,6 +531,31 @@ fn main() {
             } else if let Some(gz) = launcher::discover_gzdoom_ini().into_iter().next() {
                 if let Ok(r) = room_console::load_ini_file(&mut con.cvars, &gz) {
                     eprintln!("room: imported {} ({} cvars)", gz.display(), r.set);
+                }
+            }
+            // Combat demo: ignore archived shader prefs; start faithful / all FX off.
+            // `--set NAME=VALUE` below can still enable effects for this run.
+            if args.combat_demo {
+                reset_shaders_to_defaults(&mut con.cvars);
+                eprintln!("room: combat-demo — shader CVars reset (not saved on writeconfig)");
+            }
+            for spec in &args.set_cvars {
+                let Some((name, value)) = spec.split_once('=') else {
+                    eprintln!("room: --set expects NAME=VALUE, got `{spec}`");
+                    continue;
+                };
+                let name = name.trim();
+                let value = value.trim();
+                if name.eq_ignore_ascii_case("r_quality") {
+                    if let Ok(level) = value.parse::<i32>() {
+                        con.cvars.apply_quality_preset(level);
+                        eprintln!("room: r_quality={level}");
+                        continue;
+                    }
+                }
+                match con.cvars.set(name, value) {
+                    Ok(()) => eprintln!("room: set {name}={value}"),
+                    Err(e) => eprintln!("room: --set {name}: {e}"),
                 }
             }
             for (key, cmd) in default_bind_pairs() {
@@ -892,6 +952,8 @@ struct Keys {
     right: bool,
     /// Attack held (Ctrl / mouse left in play mode).
     attack: AttackLatch,
+    /// Alt attack held (mouse right in play mode; `docs/31` MA4).
+    alt_attack: bool,
     /// Use (E).
     use_btn: bool,
     /// Weapon slots 1..=9 edge (cleared after sample).
@@ -919,6 +981,12 @@ struct ViewerApp {
     decals: DecalStore,
     /// ACS `SpawnParticle` billboards (renderer-owned).
     particles: ParticleStore,
+    /// Render-only view kick (pitch/yaw radians); never written to the sim.
+    view_kick: (f32, f32),
+    /// Hit-flash remaining tics per actor (`r_hitflash` / E3).
+    hit_flash: std::collections::BTreeMap<u32, u8>,
+    /// Heat-haze pulse remaining tics (`r_heathaze` / D3 stand-in).
+    heat_haze_tics: u8,
     /// DECALDEF registry for fader / pic lookup (`--play`).
     decaldef: Option<room_defs::DecalInfo>,
     /// Current MAPINFO `sky1` texture (empty = default bind).
@@ -960,6 +1028,16 @@ struct ViewerApp {
     stencil_aux: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// Colour buffer with `COPY_SRC` (surface itself often cannot be read back).
     frame_color: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Ping buffer for SSAO when the post chain runs.
+    post_ping: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// LDR output of the post chain (HUD draws here when post is on).
+    post_ldr: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Bloom / SSAO / tonemap chain (`docs/29`); created with the GPU.
+    post_chain: Option<PostChain>,
+    /// Live shader toggles (synced from console CVars each frame).
+    render_settings: RenderSettings,
+    /// `--combat-demo`: do not persist shader CVars via `writeconfig`.
+    ephemeral_shaders: bool,
     canvas_gpu: Option<CanvasGpu>,
     window: Option<Arc<Window>>,
     camera: Camera,
@@ -1186,10 +1264,30 @@ fn load_sky_defs(
     (skyboxes, sky, cubemap)
 }
 
+fn install_basic_decorate(game: &mut Headless) {
+    let src = include_str!("../../../testdata/actors/doom_basic.txt");
+    let ir = match parse_decorate(src) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("room: decorate parse: {e}");
+            std::process::exit(1);
+        }
+    };
+    let classes = match ClassRegistry::from_decorate(&ir) {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            eprintln!("room: class registry: {e}");
+            std::process::exit(1);
+        }
+    };
+    let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+    game.set_defs(classes, states);
+}
+
 fn start_play_session(
     map: &MapGeometry,
     decorate: Option<&std::path::Path>,
-    vfs: Option<&Vfs>,
+    vfs: Option<&mut Vfs>,
     skill: Skill,
     audio_rate: u32,
     rng_seed: u32,
@@ -1236,8 +1334,93 @@ fn start_play_session(
                 game.set_acs_libraries(libs);
             }
         }
-    }
-    if let Some(path) = decorate {
+        if let Some(path) = decorate {
+            let src = match std::fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("room: decorate {path:?}: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let ir = match parse_decorate(&src) {
+                Ok(i) => i,
+                Err(e) => {
+                    eprintln!("room: decorate parse: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let classes = match ClassRegistry::from_decorate(&ir) {
+                Ok(c) => Arc::new(c),
+                Err(e) => {
+                    eprintln!("room: class registry: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+            game.set_defs(classes, states);
+        } else if let Some(data) = match room_game::load_embedded_engine_data_with(vfs) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                eprintln!("room: PWAD DECORATE: {e}");
+                try_load_engine_data()
+            }
+        } {
+            game.set_defs(data.classes, data.states);
+            if let Some(db) = data.compat_db {
+                game.set_compat_db(db);
+            }
+            if let Some(fixes) = data.level_fixes {
+                game.set_level_fixes(fixes);
+            }
+            eprintln!("room: loaded embedded engine data (room.pk3)");
+        } else {
+            install_basic_decorate(&mut game);
+        }
+        game.drop_weapons_without_sprites(vfs);
+        let (mods, mod_errors) = room_game::discover_mods(vfs);
+        for e in mod_errors {
+            eprintln!("room: mod: {e}");
+        }
+        if !mods.is_empty() {
+            match game.set_script_mods_with_vfs(mods, Some(vfs)) {
+                Ok(names) => {
+                    eprintln!("room: WASM mods: {}", names.join(", "));
+                    if !game.generated_mod_wad().is_empty() {
+                        eprintln!(
+                            "room: mounted mod-generated.wad ({} bytes)",
+                            game.generated_mod_wad().len()
+                        );
+                    }
+                }
+                Err(e) => eprintln!("room: {e}"),
+            }
+        }
+        let (py_mods, py_errors) = room_game::discover_python_mods(vfs);
+        for e in py_errors {
+            eprintln!("room: python mod: {e}");
+        }
+        if !py_mods.is_empty() {
+            match room_python_host::load_native_mods(&py_mods) {
+                Ok((native, log)) => {
+                    for line in log {
+                        eprintln!("room: {line}");
+                    }
+                    let names: Vec<_> = native.iter().map(|m| m.name().to_owned()).collect();
+                    game.set_native_mods(native);
+                    eprintln!("room: Python mods: {}", names.join(", "));
+                }
+                Err(e) => eprintln!("room: python mod: {e}"),
+            }
+        }
+        let mut sounds = SoundSystem::with_sample_rate(audio_rate);
+        match sounds.load_sndinfo_from_vfs(vfs) {
+            Ok(()) => {
+                game.set_sounds(sounds);
+                eprintln!("room: SNDINFO loaded ({audio_rate} Hz)");
+            }
+            Err(e) => eprintln!("room: SNDINFO: {e}"),
+        }
+    } else if let Some(path) = decorate {
         let src = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
@@ -1261,16 +1444,7 @@ fn start_play_session(
         };
         let states = Arc::new(StateTable::from_decorate(&ir, &classes));
         game.set_defs(classes, states);
-    } else if let Some(data) = vfs
-        .and_then(|v| match room_game::load_embedded_engine_data_with(v) {
-            Ok(d) => Some(d),
-            Err(e) => {
-                eprintln!("room: PWAD DECORATE: {e}");
-                None
-            }
-        })
-        .or_else(try_load_engine_data)
-    {
+    } else if let Some(data) = try_load_engine_data() {
         game.set_defs(data.classes, data.states);
         if let Some(db) = data.compat_db {
             game.set_compat_db(db);
@@ -1280,44 +1454,7 @@ fn start_play_session(
         }
         eprintln!("room: loaded embedded engine data (room.pk3)");
     } else {
-        let src = include_str!("../../../testdata/actors/doom_basic.txt");
-        let ir = match parse_decorate(src) {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("room: decorate parse: {e}");
-                std::process::exit(1);
-            }
-        };
-        let classes = match ClassRegistry::from_decorate(&ir) {
-            Ok(c) => Arc::new(c),
-            Err(e) => {
-                eprintln!("room: class registry: {e}");
-                std::process::exit(1);
-            }
-        };
-        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
-        game.set_defs(classes, states);
-    }
-    if let Some(vfs) = vfs {
-        game.drop_weapons_without_sprites(vfs);
-        let (mods, mod_errors) = room_game::discover_mods(vfs);
-        for e in mod_errors {
-            eprintln!("room: mod: {e}");
-        }
-        if !mods.is_empty() {
-            match game.set_script_mods(mods) {
-                Ok(names) => eprintln!("room: WASM mods: {}", names.join(", ")),
-                Err(e) => eprintln!("room: {e}"),
-            }
-        }
-        let mut sounds = SoundSystem::with_sample_rate(audio_rate);
-        match sounds.load_sndinfo_from_vfs(vfs) {
-            Ok(()) => {
-                game.set_sounds(sounds);
-                eprintln!("room: SNDINFO loaded ({audio_rate} Hz)");
-            }
-            Err(e) => eprintln!("room: SNDINFO: {e}"),
-        }
+        install_basic_decorate(&mut game);
     }
     game.set_pending_map(map.clone());
     eprintln!(
@@ -1327,37 +1464,44 @@ fn start_play_session(
 }
 
 fn draw_console_overlay(list: &mut UiDrawList, console: &Console, line: &str) {
-    use room_ui::{Rect, Rgba, Vec2};
+    use room_ui::{Rect, Rgba};
+    // SoftFont `list.text` is hard to read at HUD scale (fill-rects blur).
+    // Match menus/HUD: Doom `STCFN###` patches at 1.5× in 320×200 space.
+    const SCALE: f32 = 1.5;
+    const LINE_H: f32 = 12.0; // ≈ (8+1)*1.5 tracking pitch
+    const MAX_CHARS: usize = 34; // ~320 / ((8+1)*1.5)
+    const HISTORY: usize = 6;
+    let panel_h = 8.0 + LINE_H * (HISTORY as f32 + 1.0) + 6.0;
     list.fill(
-        Rect::new(0.0, 0.0, 320.0, 72.0),
-        Rgba::new(0.0, 0.0, 0.0, 0.72),
+        Rect::new(0.0, 0.0, 320.0, panel_h),
+        Rgba::new(0.0, 0.0, 0.0, 0.82),
     );
-    let mut y = 4.0;
+    let trunc = |s: &str| -> String {
+        let mut out = String::new();
+        for ch in s.chars() {
+            if out.chars().count() >= MAX_CHARS {
+                out.push('…');
+                break;
+            }
+            out.push(ch);
+        }
+        out
+    };
+    let mut y = 6.0;
     for msg in console
         .scrollback
         .iter()
         .rev()
-        .take(4)
+        .take(HISTORY)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
     {
-        list.text(
-            "SmallFont",
-            Vec2::new(4.0, y),
-            msg.as_str(),
-            Rgba::new(0.85, 0.85, 0.85, 1.0),
-            1.0,
-        );
-        y += 12.0;
+        draw_stcfn_string(list, 4.0, y, &trunc(msg.as_str()), SCALE);
+        y += LINE_H;
     }
-    list.text(
-        "SmallFont",
-        Vec2::new(4.0, 58.0),
-        format!("]{line}_"),
-        Rgba::new(1.0, 1.0, 0.55, 1.0),
-        1.0,
-    );
+    let prompt = trunc(&format!("]{line}_"));
+    draw_stcfn_string(list, 4.0, y + 2.0, &prompt, SCALE);
 }
 
 fn try_load_engine_data() -> Option<room_game::EngineData> {
@@ -1486,6 +1630,9 @@ impl ApplicationHandler for ViewerApp {
         let depth = create_depth(&gpu.device, config.width, config.height);
         let stencil_aux = create_stencil_aux(&gpu.device, config.width, config.height);
         let frame_color = create_frame_color(&gpu.device, format, config.width, config.height);
+        let post_ping = create_frame_color(&gpu.device, format, config.width, config.height);
+        let post_ldr = create_frame_color(&gpu.device, format, config.width, config.height);
+        let post_chain = PostChain::new(&gpu, format, format);
         let canvas_gpu = CanvasGpu::new(&gpu, format, config.width, config.height);
         self.camera.aspect = f64::from(config.width) / f64::from(config.height.max(1));
         if let Some(t) = self.map.things.iter().find(|t| t.type_id == 1) {
@@ -1505,6 +1652,9 @@ impl ApplicationHandler for ViewerApp {
         self.depth = Some(depth);
         self.stencil_aux = Some(stencil_aux);
         self.frame_color = Some(frame_color);
+        self.post_ping = Some(post_ping);
+        self.post_ldr = Some(post_ldr);
+        self.post_chain = Some(post_chain);
         self.canvas_gpu = Some(canvas_gpu);
         // Startup called `set_play_look` before any window existed — apply it now.
         if self.mouse_look
@@ -1531,6 +1681,18 @@ impl ApplicationHandler for ViewerApp {
                     self.stencil_aux =
                         Some(create_stencil_aux(&gpu.device, config.width, config.height));
                     self.frame_color = Some(create_frame_color(
+                        &gpu.device,
+                        config.format,
+                        config.width,
+                        config.height,
+                    ));
+                    self.post_ping = Some(create_frame_color(
+                        &gpu.device,
+                        config.format,
+                        config.width,
+                        config.height,
+                    ));
+                    self.post_ldr = Some(create_frame_color(
                         &gpu.device,
                         config.format,
                         config.width,
@@ -1698,6 +1860,9 @@ impl ApplicationHandler for ViewerApp {
                             self.play_advance();
                         }
                     }
+                    KeyCode::F5 if down && self.play.is_some() => {
+                        self.open_graphics_menu();
+                    }
                     KeyCode::F6 if down && self.play.is_some() => {
                         self.apply_console("god");
                     }
@@ -1810,10 +1975,11 @@ impl ApplicationHandler for ViewerApp {
                 button: MouseButton::Right,
                 ..
             } => {
-                // Viewer: hold RMB to look. Play: look stays on (RMB must not
-                // touch attack or release grab — that was breaking LMB on macOS).
+                // Viewer: hold RMB to look. Play: RMB = alt attack (`docs/31` MA4).
                 if self.play.is_none() {
                     self.set_play_look(state == ElementState::Pressed);
+                } else if self.menu.is_none() {
+                    self.keys.alt_attack = state == ElementState::Pressed;
                 }
             }
             WindowEvent::Focused(focused) => {
@@ -1984,11 +2150,14 @@ impl ViewerApp {
         self.materials.load_playpal(vfs);
         self.materials.load_texturex(vfs);
         self.materials.ensure_sampler(&gpu.device);
-        // Solid white for ACS SpawnParticle billboards.
-        let white = vec![255u8; 8 * 8 * 4];
+        // Soft white discs for ACS SpawnParticle / additive FX billboards.
+        let white = soft_disc_rgba([255, 255, 255]);
         let _ = self
             .materials
-            .upsert_rgba(&gpu.device, &gpu.queue, PARTICLE_TEX, 8, 8, &white);
+            .upsert_rgba(&gpu.device, &gpu.queue, PARTICLE_TEX, 16, 16, &white);
+        let _ =
+            self.materials
+                .upsert_rgba(&gpu.device, &gpu.queue, PARTICLE_TEX_ADD, 16, 16, &white);
         // Prefer a midtexture from the first sidedef, else a common Doom wall.
         let candidates: Vec<String> = self
             .map
@@ -2083,11 +2252,42 @@ impl ViewerApp {
     }
 
     fn sync_forward(&mut self) {
-        let cp = self.pitch.cos();
-        self.camera.forward = Vec3::new(self.yaw.cos() * cp, self.yaw.sin() * cp, self.pitch.sin())
-            .normalize_or_zero();
+        // Render-only kick (I5): offset look without touching sim angles.
+        let yaw = self.yaw + self.view_kick.1;
+        let pitch = (self.pitch + self.view_kick.0).clamp(-1.5, 1.5);
+        let cp = pitch.cos();
+        self.camera.forward =
+            Vec3::new(yaw.cos() * cp, yaw.sin() * cp, pitch.sin()).normalize_or_zero();
         if self.camera.forward.length_squared() < 1e-6 {
             self.camera.forward = Vec3::X;
+        }
+    }
+
+    /// Upload soft tint discs used by blood / muzzle / impact particles.
+    fn ensure_particle_tint_textures(
+        materials: &mut MaterialCatalog,
+        particles: &ParticleStore,
+        gpu: &GpuContext,
+    ) {
+        let mut needed: std::collections::BTreeSet<[u8; 3]> = std::collections::BTreeSet::new();
+        for p in &particles.particles {
+            let q = [
+                ((p.color[0].clamp(0.0, 1.0) * 31.0).round() as u8).saturating_mul(8),
+                ((p.color[1].clamp(0.0, 1.0) * 31.0).round() as u8).saturating_mul(8),
+                ((p.color[2].clamp(0.0, 1.0) * 31.0).round() as u8).saturating_mul(8),
+            ];
+            if q[0] > 240 && q[1] > 240 && q[2] > 240 {
+                continue;
+            }
+            needed.insert(q);
+        }
+        for rgb in needed {
+            let name = particle_tint_tex_name(rgb);
+            if materials.get(&name).is_some() {
+                continue;
+            }
+            let rgba = soft_disc_rgba(rgb);
+            let _ = materials.upsert_rgba(&gpu.device, &gpu.queue, &name, 16, 16, &rgba);
         }
     }
 
@@ -2194,7 +2394,56 @@ impl ViewerApp {
             .map(|w| w.map.as_ref());
         if in_level {
             append_decals(&mut scene, &self.decals, &self.camera, map_ref);
-            append_particles(&mut scene, &self.particles, &self.camera);
+            if let Some(gpu) = self.gpu.as_ref() {
+                Self::ensure_particle_tint_textures(&mut self.materials, &self.particles, gpu);
+                for d in &self.decals.decals {
+                    if !d.on_floor || !d.name.starts_with("__PARTICLE_T_") {
+                        continue;
+                    }
+                    if self.materials.get(&d.name).is_some() {
+                        continue;
+                    }
+                    // Recover RGB from `__PARTICLE_T_rrggbb`.
+                    if let Ok(hex) =
+                        u32::from_str_radix(d.name.trim_start_matches("__PARTICLE_T_"), 16)
+                    {
+                        let rgb = [
+                            ((hex >> 16) & 0xff) as u8,
+                            ((hex >> 8) & 0xff) as u8,
+                            (hex & 0xff) as u8,
+                        ];
+                        let rgba = soft_disc_rgba(rgb);
+                        let _ = self.materials.upsert_rgba(
+                            &gpu.device,
+                            &gpu.queue,
+                            &d.name,
+                            16,
+                            16,
+                            &rgba,
+                        );
+                    }
+                }
+                if self.render_settings.actor_sprite_shadow {
+                    let name = particle_tint_tex_name([16, 16, 16]);
+                    if self.materials.get(&name).is_none() {
+                        let rgba = soft_disc_rgba([16, 16, 16]);
+                        let _ = self.materials.upsert_rgba(
+                            &gpu.device,
+                            &gpu.queue,
+                            &name,
+                            16,
+                            16,
+                            &rgba,
+                        );
+                    }
+                }
+            }
+            append_particles_ex(
+                &mut scene,
+                &self.particles,
+                &self.camera,
+                self.render_settings.particle_fx,
+            );
             if let (Some(vfs), poses) = (self.vfs.as_ref(), self.collect_model_poses()) {
                 if !poses.is_empty() && !self.modeldefs.by_actor.is_empty() {
                     append_actor_models(&mut scene, &mut self.models, vfs, &self.modeldefs, &poses);
@@ -2226,29 +2475,35 @@ impl ViewerApp {
         const TIC_SEC: f32 = 1.0 / 35.0;
         let ticfrac_milli = (self.tic_accum / TIC_SEC * 1000.0).clamp(0.0, 1000.0) as u32;
         let zone_meshes: Option<ZoneMeshes> = if in_level {
-            self.play.as_ref().and_then(|g| g.world()).and_then(|world| {
-                if world.mod_zones.is_empty() {
-                    return None;
-                }
-                let draws: Vec<ZoneDraw> = world
-                    .mod_zones
-                    .iter()
-                    .map(|z| {
-                        let (cx, cy, r) = z.interp_current(world.level.maptime, ticfrac_milli);
-                        ZoneDraw {
-                            cx: cx as f32,
-                            cy: cy as f32,
-                            r: r as f32,
-                            rgba: z.rgba,
-                            flags: z.flags,
-                        }
-                    })
-                    .collect();
-                Some(build_zone_meshes(&self.map, &draws))
-            })
+            self.play
+                .as_ref()
+                .and_then(|g| g.world())
+                .and_then(|world| {
+                    if world.mod_zones.is_empty() {
+                        return None;
+                    }
+                    let draws: Vec<ZoneDraw> = world
+                        .mod_zones
+                        .iter()
+                        .map(|z| {
+                            let (cx, cy, r) = z.interp_current(world.level.maptime, ticfrac_milli);
+                            ZoneDraw {
+                                cx: cx as f32,
+                                cy: cy as f32,
+                                r: r as f32,
+                                rgba: z.rgba,
+                                flags: z.flags,
+                            }
+                        })
+                        .collect();
+                    Some(build_zone_meshes(&self.map, &draws))
+                })
         } else {
             None
         };
+        self.render_settings = render_settings_from_cvars(&self.console.cvars);
+        let render_settings = self.render_settings.clone();
+        let use_post = render_settings.needs_post();
         let capture_rgba = {
             let (
                 Some(surface),
@@ -2258,6 +2513,9 @@ impl ViewerApp {
                 Some(depth),
                 Some(stencil_aux),
                 Some(frame_color),
+                Some(post_ping),
+                Some(post_ldr),
+                Some(post_chain),
                 Some(canvas_gpu),
                 materials,
                 vfs,
@@ -2269,6 +2527,9 @@ impl ViewerApp {
                 &self.depth,
                 &self.stencil_aux,
                 &self.frame_color,
+                &self.post_ping,
+                &self.post_ldr,
+                &mut self.post_chain,
                 &mut self.canvas_gpu,
                 &mut self.materials,
                 self.vfs.as_ref(),
@@ -2276,6 +2537,8 @@ impl ViewerApp {
             else {
                 return;
             };
+            // Linear scene when the post chain will tonemap / encode (SH0).
+            pass.encode_srgb = !use_post;
             pass.set_fog_density(fog_density);
             pass.inverse_colormap = inverse_colormap;
             pass.time += dt; // fuzz animation clock
@@ -2403,23 +2666,29 @@ impl ViewerApp {
                         }
                         let weapon_cmds = ui.cmds.len();
                         let soft = self.patches.get(&self.hud.weapon_patch);
-                        draw_weapon(
+                        draw_weapon_lit(
                             &mut ui,
                             &self.hud.weapon_patch,
                             self.hud.fullscreen,
                             soft,
                             self.hud.bob_x,
                             self.hud.bob_y,
+                            self.hud.weapon_light,
+                            self.hud.weapon_bright,
+                            self.hud.weapon_fuzz,
                         );
                         // A flash frame without a lump draws nothing (GZDoom).
                         if let Some(soft_flash) = self.patches.get(&self.hud.flash_patch) {
-                            draw_weapon(
+                            draw_weapon_lit(
                                 &mut ui,
                                 &self.hud.flash_patch,
                                 self.hud.fullscreen,
                                 Some(soft_flash),
                                 self.hud.bob_x,
                                 self.hud.bob_y,
+                                self.hud.weapon_light,
+                                self.hud.flash_bright,
+                                self.hud.weapon_fuzz,
                             );
                         }
                         if self.hud.inverse_colormap() {
@@ -2566,6 +2835,9 @@ impl ViewerApp {
                 fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]) {
                     self.0.text(x, y, text, color);
                 }
+                fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
+                    self.0.blit_rgba(x, y, w, h, pixels.to_vec());
+                }
             }
             let (fb_w, fb_h) = self
                 .config
@@ -2596,6 +2868,10 @@ impl ViewerApp {
                 fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]) {
                     self.inner.text(x + self.ox, y + self.oy, text, color);
                 }
+                fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
+                    self.inner
+                        .blit_rgba(x + self.ox, y + self.oy, w, h, pixels);
+                }
             }
             blit_draw_list_full(
                 &ui,
@@ -2614,7 +2890,7 @@ impl ViewerApp {
                 return;
             };
             // Draw into a COPY_SRC colour buffer, then blit to the swapchain.
-            let color_view = &frame_color.1;
+            let scene_view = &frame_color.1;
             let mut encoder = gpu
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -2635,7 +2911,7 @@ impl ViewerApp {
                     label: Some("main"),
                     color_attachments: &[
                         Some(wgpu::RenderPassColorAttachment {
-                            view: color_view,
+                            view: scene_view,
                             resolve_target: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(clear),
@@ -2685,6 +2961,145 @@ impl ViewerApp {
                     }
                 }
             }
+            let (cap_w, cap_h) = self
+                .config
+                .as_ref()
+                .map(|c| (c.width, c.height))
+                .unwrap_or((1, 1));
+            let present_tex = if use_post && !ui_only {
+                let mut blend = [0.0_f32, 0.0, 0.0, 0.0];
+                if let Some(tint) = room_ui::screen_blend(self.hud.palette) {
+                    blend = [tint.r, tint.g, tint.b, tint.a];
+                }
+                if render_settings.damage_fx && self.hud.health > 0 && self.hud.health < 25 {
+                    let low = ((25 - self.hud.health) as f32 / 25.0).clamp(0.0, 1.0);
+                    blend[0] = blend[0].max(0.85);
+                    blend[1] = blend[1].min(0.05);
+                    blend[2] = blend[2].min(0.02);
+                    blend[3] = blend[3].max(0.2 + low * 0.55);
+                }
+                if render_settings.screen_blood && self.hud.palette >= 4 {
+                    blend[0] = blend[0].max(0.75);
+                    blend[3] = blend[3].max(0.35);
+                }
+                let mut look = render_settings.clone();
+                {
+                    let water = self
+                        .play
+                        .as_ref()
+                        .and_then(|g| g.world())
+                        .and_then(|w| {
+                            w.players
+                                .get(usize::from(self.local_seat))
+                                .and_then(|p| p.as_ref())
+                                .and_then(|p| p.mo)
+                                .and_then(|mo| w.actors.get(mo))
+                                .map(|a| room_sim::actor_waterlevel(w, a))
+                        })
+                        .unwrap_or(0);
+                    let liquids = render_settings.liquids;
+                    if (render_settings.underwater_fx && water >= 2) || (liquids > 0 && water >= 1)
+                    {
+                        let amt = if water >= 2 { 1.0 } else { 0.45 };
+                        look.chromatic = look.chromatic.max(0.35 * amt);
+                        look.vignette = look.vignette.max(0.45 * amt);
+                        if liquids >= 2 {
+                            look.grain = look.grain.max(0.12 * amt);
+                        }
+                        blend[2] = blend[2].max(0.35 * amt);
+                        blend[1] = blend[1].max(0.15 * amt);
+                        blend[3] = blend[3].max(0.2 * amt);
+                    }
+                }
+                if render_settings.powerup_fx {
+                    match self.hud.palette {
+                        // Light-amp / invuln-ish classic flashes → green phosphor edge.
+                        1 if self.fixed_colormap == 1 => {
+                            blend = [0.1, 0.85, 0.2, blend[3].max(0.25)];
+                            look.grain = look.grain.max(0.2);
+                            look.vignette = look.vignette.max(0.4);
+                        }
+                        12..=15 => {
+                            // Radiation suit-ish green.
+                            blend[1] = blend[1].max(0.35);
+                            blend[3] = blend[3].max(0.15);
+                        }
+                        _ => {}
+                    }
+                }
+                if render_settings.color_grade {
+                    look.vignette = look.vignette.max(0.12);
+                    look.grain = look.grain.max(0.05);
+                    look.sharpen = look.sharpen.max(0.15);
+                }
+                if render_settings.menu_blur && self.menu.is_some() {
+                    // G1 stand-in until dual-Kawase menu blur: soften via bloom + vignette.
+                    look.bloom = true;
+                    look.bloom_amount = look.bloom_amount.max(0.9);
+                    look.vignette = look.vignette.max(0.55);
+                    look.chromatic = look.chromatic.max(0.08);
+                }
+                if self.heat_haze_tics > 0 {
+                    let pulse = f32::from(self.heat_haze_tics) / 12.0;
+                    look.chromatic = look.chromatic.max(0.15 + pulse * 0.35);
+                    look.grain = look.grain.max(0.08 * pulse);
+                }
+                if look.motion_blur {
+                    // F12 stand-in: smear via bloom + mild CA until velocity buffer lands.
+                    look.bloom = true;
+                    look.bloom_amount = look.bloom_amount.max(0.7);
+                    look.chromatic = look.chromatic.max(0.12);
+                    look.sharpen = 0.0;
+                }
+                if look.dof {
+                    // F11 stand-in: edge soften for menus/death cam until bokeh pass.
+                    look.bloom = true;
+                    look.vignette = look.vignette.max(0.35);
+                    look.sharpen = 0.0;
+                }
+                if look.auto_exposure {
+                    // F2 stand-in: nudge exposure from sector light until histogram compute.
+                    let sector_l = self
+                        .play
+                        .as_ref()
+                        .and_then(|g| g.world())
+                        .and_then(|w| {
+                            w.players
+                                .get(usize::from(self.local_seat))
+                                .and_then(|p| p.as_ref())
+                                .and_then(|p| p.mo)
+                                .and_then(|mo| w.actors.get(mo))
+                                .map(|a| room_sim::actor_light_level(w, a) as f32 / 255.0)
+                        })
+                        .unwrap_or(0.5);
+                    let target = (0.55 / sector_l.max(0.15)).clamp(0.7, 1.6);
+                    look.exposure = look.exposure * 0.85 + target * 0.15;
+                }
+                if look.outlines {
+                    // E2 stand-in: slight edge pop via sharpen + mild CA.
+                    look.sharpen = look.sharpen.max(0.45);
+                    look.chromatic = look.chromatic.max(0.06);
+                }
+                post_chain.apply_views(
+                    gpu,
+                    &mut encoder,
+                    scene_view,
+                    &depth.0,
+                    &post_ping.1,
+                    &post_ldr.1,
+                    PostChainInputs {
+                        settings: &look,
+                        blend,
+                        width: cap_w,
+                        height: cap_h,
+                        time: pass.time,
+                    },
+                );
+                &post_ldr
+            } else {
+                frame_color
+            };
+            let color_view = &present_tex.1;
             {
                 canvas_gpu.rasterize(&hud, None);
                 let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2703,14 +3118,9 @@ impl ViewerApp {
                 });
                 canvas_gpu.blit(gpu, &mut rp);
             }
-            let (cap_w, cap_h) = self
-                .config
-                .as_ref()
-                .map(|c| (c.width, c.height))
-                .unwrap_or((1, 1));
             encoder.copy_texture_to_texture(
                 wgpu::TexelCopyTextureInfo {
-                    texture: &frame_color.0,
+                    texture: &present_tex.0,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
@@ -2729,7 +3139,7 @@ impl ViewerApp {
             );
             gpu.queue.submit(Some(encoder.finish()));
             let captured = if want_shot || want_gif {
-                match read_texture_rgba(gpu, &frame_color.0, cap_w, cap_h) {
+                match read_texture_rgba(gpu, &present_tex.0, cap_w, cap_h) {
                     Ok(rgba) => Some((rgba, cap_w, cap_h)),
                     Err(e) => {
                         eprintln!("room: capture failed: {e}");
@@ -2839,7 +3249,112 @@ impl ViewerApp {
             let mut line_alphas = Vec::new();
             let mut new_decals = Vec::new();
             let mut new_particles = Vec::new();
+            let mut blood_sprays: Vec<(glam::Vec3, glam::Vec3, [u8; 3], i32, u64, Option<f32>)> =
+                Vec::new();
+            // Floor splat: (x, y, floor_z, rgb, radius, seed)
+            let mut floor_splats: Vec<(f32, f32, f32, [u8; 3], f32, u64)> = Vec::new();
+            // Wall splat: (x, y, z, line, rgb, seed)
+            let mut wall_splats: Vec<(f32, f32, f32, u32, [u8; 3], u64)> = Vec::new();
+            let mut muzzle_flashes: Vec<(glam::Vec3, glam::Vec3, u64)> = Vec::new();
+            let mut tracers: Vec<(glam::Vec3, glam::Vec3, u64)> = Vec::new();
+            let mut impacts: Vec<(glam::Vec3, glam::Vec3, u64)> = Vec::new();
+            let mut explosions: Vec<(glam::Vec3, f32, u64)> = Vec::new();
+            let mut corpse_pools: Vec<(glam::Vec3, [u8; 3], i32, bool, u64, Option<f32>)> =
+                Vec::new();
+            let mut trail_puffs: Vec<(glam::Vec3, glam::Vec3, u64)> = Vec::new();
+            let mut casings: Vec<(glam::Vec3, glam::Vec3, u64)> = Vec::new();
+            let mut weapon_smoke: Vec<(glam::Vec3, glam::Vec3, u64)> = Vec::new();
+            let mut kick_impulse = (0.0_f32, 0.0_f32);
             let mut entered_intermission = false;
+            let gore_level = match self.console.cvars.get("r_gore") {
+                Some(room_console::CvarValue::Int(i)) => *i,
+                _ => 1,
+            };
+            let blood_fx_on = match self.console.cvars.get("r_bloodfx") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let muzzle_fx_on = match self.console.cvars.get("r_muzzlefx") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let tracers_on = match self.console.cvars.get("r_tracers") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let impact_fx_on = match self.console.cvars.get("r_impactfx") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let view_kick_on = match self.console.cvars.get("r_viewkick") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let view_kick_scale = match self.console.cvars.get("r_viewkick_scale") {
+                Some(room_console::CvarValue::Float(f)) => *f as f32,
+                Some(room_console::CvarValue::Int(i)) => *i as f32,
+                _ => 1.0,
+            };
+            let explosion_fx_on = match self.console.cvars.get("r_explosionfx") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let hit_confirm_on = match self.console.cvars.get("r_hitconfirm") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let hit_flash_on = match self.console.cvars.get("r_hitflash") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let corpse_pools_on = match self.console.cvars.get("r_corpsepools") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let gibs_on = match self.console.cvars.get("r_gibs") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let trails_on = match self.console.cvars.get("r_trails") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let casings_on = match self.console.cvars.get("r_casings") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let weapon_smoke_on = match self.console.cvars.get("r_weaponsmoke") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let heat_haze_on = match self.console.cvars.get("r_heathaze") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let dissolve_on = match self.console.cvars.get("r_dissolve") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            let blood_drips_on = match self.console.cvars.get("r_blooddrips") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
             if let Some(game) = self.play.as_mut() {
                 let autoaim = !matches!(
                     self.console.cvars.get("autoaim"),
@@ -2847,6 +3362,7 @@ impl ViewerApp {
                 );
                 if let Some(world) = game.world_mut() {
                     world.autoaim = autoaim;
+                    world.fx_events_enabled = true;
                 }
                 let prev_state = game.state;
                 game.tick(&cmds);
@@ -2911,6 +3427,287 @@ impl ViewerApp {
                         .into_iter()
                         .map(|e| (e.color, e.fullbright, e.lifetime, e.size, e.x, e.y, e.z))
                         .collect();
+                    let maptime = world.level.maptime;
+                    if trails_on {
+                        for (ti, id) in world.thinkers.default.iter().copied().enumerate() {
+                            let Some(a) = world.actors.get(id) else {
+                                continue;
+                            };
+                            if a.destroyed || (a.flags & FLAG_MISSILE) == 0 {
+                                continue;
+                            }
+                            let speed = (a.vel.x() * a.vel.x()
+                                + a.vel.y() * a.vel.y()
+                                + a.vel.z() * a.vel.z())
+                            .sqrt();
+                            if speed < 1.0 {
+                                continue;
+                            }
+                            #[allow(clippy::cast_possible_truncation)]
+                            trail_puffs.push((
+                                glam::Vec3::new(
+                                    a.pos.x() as f32,
+                                    a.pos.y() as f32,
+                                    a.pos.z() as f32,
+                                ),
+                                glam::Vec3::new(
+                                    a.vel.x() as f32,
+                                    a.vel.y() as f32,
+                                    a.vel.z() as f32,
+                                ),
+                                room_sim::FxEvent::render_seed(maptime, ti as u32),
+                            ));
+                        }
+                    }
+                    for (ei, ev) in world.drain_fx_events().into_iter().enumerate() {
+                        let seed = room_sim::FxEvent::render_seed(maptime, ei as u32);
+                        match ev {
+                            room_sim::FxEvent::BloodHit {
+                                victim,
+                                pos,
+                                dir,
+                                damage,
+                                color,
+                            } => {
+                                if hit_flash_on {
+                                    self.hit_flash.insert(victim.index(), 5);
+                                }
+                                if gore_level >= 2 && blood_fx_on {
+                                    let floor_z = room_sim::floor_at_xy(world, pos.x(), pos.y())
+                                        .unwrap_or(pos.z());
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    let floor_zf = floor_z as f32;
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    let p = glam::Vec3::new(
+                                        pos.x() as f32,
+                                        pos.y() as f32,
+                                        pos.z() as f32,
+                                    );
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    blood_sprays.push((
+                                        p,
+                                        glam::Vec3::new(
+                                            dir.x() as f32,
+                                            dir.y() as f32,
+                                            dir.z() as f32,
+                                        ),
+                                        [color.r, color.g, color.b],
+                                        damage,
+                                        seed,
+                                        Some(floor_zf),
+                                    ));
+                                    let radius = (8.0 + damage.clamp(1, 40) as f32 * 0.4).min(32.0);
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    floor_splats.push((
+                                        pos.x() as f32,
+                                        pos.y() as f32,
+                                        floor_zf,
+                                        [color.r, color.g, color.b],
+                                        radius,
+                                        seed,
+                                    ));
+                                    // Secondary puddles along exit direction.
+                                    for k in 1u32..=2 {
+                                        let t = f64::from(k) * 10.0;
+                                        let sx = pos.x() + dir.x() * t;
+                                        let sy = pos.y() + dir.y() * t;
+                                        if let Some(fz) = room_sim::floor_at_xy(world, sx, sy) {
+                                            #[allow(clippy::cast_possible_truncation)]
+                                            floor_splats.push((
+                                                sx as f32,
+                                                sy as f32,
+                                                fz as f32,
+                                                [color.r, color.g, color.b],
+                                                radius * (1.0 - 0.2 * k as f32),
+                                                seed ^ (u64::from(k) * 0x9E37),
+                                            ));
+                                        }
+                                    }
+                                    if let Some((line, wx, wy)) =
+                                        nearest_blood_wall(&world.map, pos.x(), pos.y(), 72.0)
+                                    {
+                                        let wz = pos.z().clamp(floor_z + 8.0, floor_z + 56.0);
+                                        #[allow(clippy::cast_possible_truncation)]
+                                        wall_splats.push((
+                                            wx as f32,
+                                            wy as f32,
+                                            wz as f32,
+                                            line,
+                                            [color.r, color.g, color.b],
+                                            seed ^ 0xB100_D,
+                                        ));
+                                    }
+                                }
+                            }
+                            room_sim::FxEvent::WeaponFired {
+                                player,
+                                origin,
+                                forward,
+                                ..
+                            } => {
+                                #[allow(clippy::cast_possible_truncation)]
+                                let o = glam::Vec3::new(
+                                    origin.x() as f32,
+                                    origin.y() as f32,
+                                    origin.z() as f32,
+                                );
+                                #[allow(clippy::cast_possible_truncation)]
+                                let f = glam::Vec3::new(
+                                    forward.x() as f32,
+                                    forward.y() as f32,
+                                    forward.z() as f32,
+                                );
+                                if muzzle_fx_on {
+                                    muzzle_flashes.push((o, f, seed));
+                                }
+                                if casings_on {
+                                    casings.push((o, f, seed ^ 0xC45E));
+                                }
+                                if weapon_smoke_on {
+                                    weapon_smoke.push((o, f, seed ^ 0xA5A5_A5A5_5A5A_5A5A));
+                                }
+                                if view_kick_on && player == self.local_seat {
+                                    let s = view_kick_scale.clamp(0.0, 4.0);
+                                    kick_impulse.0 += 0.012 * s;
+                                    kick_impulse.1 +=
+                                        (((seed >> 8) as i64 % 7) - 3) as f32 * 0.0025 * s;
+                                }
+                            }
+                            room_sim::FxEvent::HitscanFired {
+                                origin,
+                                end,
+                                hit_actor,
+                                shooter,
+                                ..
+                            } => {
+                                if tracers_on {
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    tracers.push((
+                                        glam::Vec3::new(
+                                            origin.x() as f32,
+                                            origin.y() as f32,
+                                            origin.z() as f32,
+                                        ),
+                                        glam::Vec3::new(
+                                            end.x() as f32,
+                                            end.y() as f32,
+                                            end.z() as f32,
+                                        ),
+                                        seed,
+                                    ));
+                                }
+                                if impact_fx_on && hit_actor.is_none() {
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    let o = glam::Vec3::new(
+                                        origin.x() as f32,
+                                        origin.y() as f32,
+                                        origin.z() as f32,
+                                    );
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    let e = glam::Vec3::new(
+                                        end.x() as f32,
+                                        end.y() as f32,
+                                        end.z() as f32,
+                                    );
+                                    impacts.push((e, e - o, seed));
+                                }
+                                if hit_confirm_on && hit_actor.is_some() {
+                                    let local_mo = world
+                                        .players
+                                        .get(usize::from(self.local_seat))
+                                        .and_then(|p| p.as_ref())
+                                        .and_then(|p| p.mo);
+                                    if local_mo == Some(shooter) {
+                                        self.hud.palette = self.hud.palette.max(2);
+                                    }
+                                }
+                            }
+                            room_sim::FxEvent::ActorDied {
+                                pos,
+                                color,
+                                mass,
+                                gibbed,
+                                ..
+                            } => {
+                                let want_gore = gore_level >= 2
+                                    && ((corpse_pools_on && !gibbed)
+                                        || (gibs_on && gibbed)
+                                        || blood_fx_on);
+                                let floor_z = room_sim::floor_at_xy(world, pos.x(), pos.y())
+                                    .unwrap_or(pos.z());
+                                #[allow(clippy::cast_possible_truncation)]
+                                let floor_zf = floor_z as f32;
+                                if want_gore {
+                                    let rgb =
+                                        color.map(|c| [c.r, c.g, c.b]).unwrap_or([180, 16, 16]);
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    corpse_pools.push((
+                                        glam::Vec3::new(
+                                            pos.x() as f32,
+                                            pos.y() as f32,
+                                            pos.z() as f32,
+                                        ),
+                                        rgb,
+                                        mass,
+                                        gibbed,
+                                        seed,
+                                        Some(floor_zf),
+                                    ));
+                                    let radius = if gibbed {
+                                        18.0 + (mass as f32 * 0.04).min(20.0)
+                                    } else {
+                                        12.0 + (mass as f32 * 0.03).min(14.0)
+                                    };
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    floor_splats.push((
+                                        pos.x() as f32,
+                                        pos.y() as f32,
+                                        floor_zf,
+                                        rgb,
+                                        radius,
+                                        seed ^ 0xC0_FF_EE,
+                                    ));
+                                }
+                                if dissolve_on {
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    corpse_pools.push((
+                                        glam::Vec3::new(
+                                            pos.x() as f32,
+                                            pos.y() as f32,
+                                            pos.z() as f32,
+                                        ),
+                                        [40, 40, 40],
+                                        mass.max(50),
+                                        true,
+                                        seed ^ 0xD155_015E_A11A,
+                                        Some(floor_zf),
+                                    ));
+                                }
+                            }
+                            room_sim::FxEvent::Explosion { pos, radius, .. } => {
+                                #[allow(clippy::cast_possible_truncation)]
+                                let p =
+                                    glam::Vec3::new(pos.x() as f32, pos.y() as f32, pos.z() as f32);
+                                #[allow(clippy::cast_possible_truncation)]
+                                let rad = radius as f32;
+                                if explosion_fx_on {
+                                    explosions.push((p, rad, seed));
+                                }
+                                let eye = self.camera.eye;
+                                let dist = (eye - p).length().max(1.0);
+                                if dist < rad * 2.5 {
+                                    if view_kick_on {
+                                        let s = view_kick_scale.clamp(0.0, 4.0);
+                                        let falloff = (1.0 - dist / (rad * 2.5)).clamp(0.0, 1.0);
+                                        kick_impulse.0 += 0.04 * falloff * s;
+                                    }
+                                    if heat_haze_on {
+                                        self.heat_haze_tics = self.heat_haze_tics.max(12);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     let (extralight, colormap) = world
                         .players
                         .get(usize::from(self.local_seat))
@@ -3202,6 +3999,104 @@ impl ViewerApp {
             }
             self.decals.tick();
             self.particles.ingest(new_particles);
+            for (pos, dir, rgb, damage, seed, floor_z) in blood_sprays {
+                self.particles
+                    .ingest_blood_spray(pos, dir, rgb, damage, seed, floor_z);
+            }
+            for (x, y, floor_z, rgb, radius, seed) in floor_splats {
+                let q = [
+                    ((f32::from(rgb[0]) / 255.0 * 31.0).round() as u8).saturating_mul(8),
+                    ((f32::from(rgb[1]) / 255.0 * 31.0).round() as u8).saturating_mul(8),
+                    ((f32::from(rgb[2]) / 255.0 * 31.0).round() as u8).saturating_mul(8),
+                ];
+                let name = particle_tint_tex_name(q);
+                let lum = (0.2126 * f32::from(rgb[0])
+                    + 0.7152 * f32::from(rgb[1])
+                    + 0.0722 * f32::from(rgb[2]))
+                    / 255.0;
+                self.decals.ingest_floor_splat(
+                    name,
+                    f64::from(x),
+                    f64::from(y),
+                    f64::from(floor_z),
+                    radius,
+                    lum.clamp(0.25, 0.85),
+                    seed,
+                );
+            }
+            for (x, y, z, line, rgb, seed) in wall_splats {
+                let q = [
+                    ((f32::from(rgb[0]) / 255.0 * 31.0).round() as u8).saturating_mul(8),
+                    ((f32::from(rgb[1]) / 255.0 * 31.0).round() as u8).saturating_mul(8),
+                    ((f32::from(rgb[2]) / 255.0 * 31.0).round() as u8).saturating_mul(8),
+                ];
+                let name = particle_tint_tex_name(q);
+                let drip = blood_drips_on && gore_level >= 2;
+                self.decals.ingest_one(
+                    name,
+                    f64::from(x),
+                    f64::from(y),
+                    f64::from(z),
+                    Some(line),
+                    room_render::DecalIngestAnim {
+                        fade: Some((35 * 12, 35 * 10)),
+                        slide: if drip { Some((8, 35 * 8, -36.0)) } else { None },
+                        stretch: Some((0, 20, Some(1.35), Some(1.6))),
+                        color: None,
+                    },
+                );
+                let _ = seed;
+            }
+            for (origin, forward, seed) in muzzle_flashes {
+                self.particles.ingest_muzzle_flash(origin, forward, seed);
+            }
+            for (origin, forward, seed) in casings {
+                self.particles.ingest_casing(origin, forward, seed);
+            }
+            for (origin, forward, seed) in weapon_smoke {
+                self.particles.ingest_weapon_smoke(origin, forward, seed);
+            }
+            for (origin, end, seed) in tracers {
+                self.particles.ingest_tracer(origin, end, seed);
+            }
+            for (pos, inward, seed) in impacts {
+                self.particles.ingest_impact_sparks(pos, inward, seed);
+            }
+            for (pos, radius, seed) in explosions {
+                self.particles.ingest_explosion(pos, radius, seed);
+            }
+            for (pos, rgb, mass, gibbed, seed, floor_z) in corpse_pools {
+                self.particles
+                    .ingest_corpse_pool(pos, rgb, mass, gibbed, seed, floor_z);
+            }
+            for (pos, vel, seed) in trail_puffs {
+                self.particles.ingest_trail_puff(pos, vel, seed);
+            }
+            self.view_kick.0 = (self.view_kick.0 + kick_impulse.0) * 0.82;
+            self.view_kick.1 = (self.view_kick.1 + kick_impulse.1) * 0.82;
+            if self.view_kick.0.abs() < 1e-4 {
+                self.view_kick.0 = 0.0;
+            }
+            if self.view_kick.1.abs() < 1e-4 {
+                self.view_kick.1 = 0.0;
+            }
+            self.hit_flash.retain(|_, t| {
+                *t = t.saturating_sub(1);
+                *t > 0
+            });
+            self.heat_haze_tics = self.heat_haze_tics.saturating_sub(1);
+            let soft_particles = match self.console.cvars.get("r_softparticles") {
+                Some(room_console::CvarValue::Bool(b)) => *b,
+                Some(room_console::CvarValue::Int(i)) => *i != 0,
+                _ => false,
+            };
+            if soft_particles {
+                for p in &mut self.particles.particles {
+                    if p.style == room_render::ParticleStyle::Translucent {
+                        p.style = room_render::ParticleStyle::Soft;
+                    }
+                }
+            }
             self.particles.tick();
             if let Some((x, y, vz, ang, pit, fov)) = cam {
                 #[allow(clippy::cast_possible_truncation)]
@@ -3248,6 +4143,10 @@ impl ViewerApp {
                 self.hud.face = h.face;
                 self.hud.weapon_patch = h.weapon_patch;
                 self.hud.flash_patch = h.flash_patch;
+                self.hud.weapon_light = h.weapon_light;
+                self.hud.weapon_bright = h.weapon_bright;
+                self.hud.flash_bright = h.flash_bright;
+                self.hud.weapon_fuzz = h.weapon_fuzz;
                 self.hud.bob_x = h.bob_x;
                 self.hud.bob_y = h.bob_y;
                 self.hud.arms = h.arms;
@@ -3879,12 +4778,19 @@ impl ViewerApp {
                 // Imp/caco balls etc. — keep readable against dark flats.
                 let is_missile = a.sprite.starts_with("BAL")
                     || a.sprite.starts_with("PLAS")
+                    || a.sprite.starts_with("PLSS")
+                    || a.sprite.starts_with("PLSE")
+                    || a.sprite.starts_with("BFS")
+                    || a.sprite.starts_with("BFE")
                     || a.sprite.starts_with("MISL")
                     || a.sprite.starts_with("ROKE");
                 let mut light = (actor_light_level(world, a) as f32 / 255.0).clamp(0.2, 1.0);
                 // COUNTKILL always fullbright: DoomSoftware + dark computer-room
                 // sectors made zombies unreadable ("invisible killer after the door").
                 if is_monster || is_missile || bright || is_other_player {
+                    light = 1.0;
+                }
+                if self.hit_flash.contains_key(&id.index()) {
                     light = 1.0;
                 }
                 let alpha = a.alpha.clamp(0.0, 1.0);
@@ -3997,6 +4903,23 @@ impl ViewerApp {
                 anchor_u,
                 orient,
             });
+            if self.render_settings.actor_sprite_shadow && (flags & FLAG_COUNTKILL) != 0 && !fuzz {
+                let shadow_tex = particle_tint_tex_name([16, 16, 16]);
+                out.push(SpriteInstance {
+                    pos: Vec3::new(x as f32, y as f32, z as f32 + 0.5),
+                    width: (w as f32 * 0.9).max(8.0),
+                    height: (w as f32 * 0.35).max(4.0),
+                    light: 0.15,
+                    alpha: 0.35,
+                    fuzz: false,
+                    texture: shadow_tex,
+                    flip_u: false,
+                    anchor_u: 0.5,
+                    orient: SpriteOrient::Flat {
+                        yaw: angle_deg.to_radians() as f32,
+                    },
+                });
+            }
         }
         Some(out)
     }
@@ -4335,6 +5258,50 @@ impl ViewerApp {
         }
     }
 
+    /// Open the live Graphics / shader menu (F5). Pauses the level if needed.
+    fn open_graphics_menu(&mut self) {
+        let Some(game) = self.play.as_mut() else {
+            return;
+        };
+        if game.state != GameState::Level {
+            // Title / other: still allow browsing the CVar list.
+            if let Some(stack) = self.menu.as_mut() {
+                stack.push_menu(graphics_menu(&self.console.cvars));
+            } else {
+                let mut stack = MenuStack::doom_main();
+                stack.push_menu(graphics_menu(&self.console.cvars));
+                self.menu = Some(stack);
+            }
+            self.messages.push("Graphics", 35);
+            self.set_play_look(false);
+            return;
+        }
+        let menudef = game.menudef().cloned();
+        let Some(world) = game.world_mut() else {
+            return;
+        };
+        if !world.paused {
+            world.paused = true;
+            let mut stack = MenuStack::pause();
+            stack.menudef = menudef;
+            self.menu = Some(stack);
+            self.keys.attack.clear();
+            self.set_play_look(false);
+        }
+        if let Some(stack) = self.menu.as_mut() {
+            if stack
+                .top_title()
+                .is_some_and(|t| t.eq_ignore_ascii_case("Graphics"))
+            {
+                stack.replace_top(graphics_menu(&self.console.cvars));
+            } else {
+                stack.push_menu(graphics_menu(&self.console.cvars));
+            }
+        }
+        self.messages
+            .push("Graphics — arrows / Enter, Esc back", 70);
+    }
+
     /// Grab / release the cursor for mouselook.
     ///
     /// Safe to call before the window exists (`mouse_look` is remembered) and
@@ -4413,6 +5380,14 @@ impl ViewerApp {
                 // Confirm sheet pushed inside MenuStack::activate.
             }
             MenuCommand::QuitConfirmed => event_loop.exit(),
+            MenuCommand::OpenMenu(name)
+                if name.eq_ignore_ascii_case("GraphicsMenu")
+                    || name.eq_ignore_ascii_case("Graphics") =>
+            {
+                if let Some(stack) = self.menu.as_mut() {
+                    stack.push_menu(graphics_menu(&self.console.cvars));
+                }
+            }
             MenuCommand::EndGame | MenuCommand::OpenMenu(_) | MenuCommand::SelectEpisode(_) => {
                 // Confirm / submenus handled inside MenuStack::activate.
             }
@@ -4438,11 +5413,45 @@ impl ViewerApp {
                 self.messages.push("Read This — help screen TBD", 70);
             }
             MenuCommand::Other(action) => {
-                if let Some(cvar) = action.strip_prefix("option ") {
+                if let Some(rest) = action.strip_prefix("optioncycle ") {
+                    // `optioncycle <cvar> <lo> <hi>`
+                    let parts: Vec<&str> = rest.split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        let name = parts[0];
+                        let lo: i32 = parts[1].parse().unwrap_or(0);
+                        let hi: i32 = parts[2].parse().unwrap_or(lo);
+                        let v = cycle_cvar(&mut self.console.cvars, name, lo, hi);
+                        self.messages.push(format!("{name} = {v}"), 35);
+                        self.refresh_graphics_menu();
+                    }
+                } else if let Some(rest) = action.strip_prefix("optiontogglefloat ") {
+                    // `optiontogglefloat <cvar> <on_value>`
+                    let parts: Vec<&str> = rest.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        let name = parts[0];
+                        let on_v: f64 = parts[1].parse().unwrap_or(1.0);
+                        let v = toggle_float_cvar(&mut self.console.cvars, name, on_v);
+                        self.messages.push(format!("{name} = {v:.2}"), 35);
+                        self.refresh_graphics_menu();
+                    }
+                } else if let Some(cvar) = action.strip_prefix("option ") {
                     let name = cvar.trim();
                     if !name.is_empty() {
-                        let _ = self.console.exec(&format!("toggle {name}"));
+                        // Bool toggle; also accept int 0/1 CVars via set flip.
+                        match self.console.cvars.get(name) {
+                            Some(room_console::CvarValue::Bool(_)) => {
+                                let _ = self.console.exec(&format!("toggle {name}"));
+                            }
+                            Some(room_console::CvarValue::Int(i)) => {
+                                let next = if *i != 0 { 0 } else { 1 };
+                                let _ = self.console.cvars.set(name, &next.to_string());
+                            }
+                            _ => {
+                                let _ = self.console.exec(&format!("toggle {name}"));
+                            }
+                        }
                         self.messages.push(format!("toggled {name}"), 35);
+                        self.refresh_graphics_menu();
                         if name == "mouse_look"
                             && self
                                 .play
@@ -4455,11 +5464,58 @@ impl ViewerApp {
                     }
                 } else if let Some(cmd) = action.strip_prefix("cmd ") {
                     let line = cmd.trim();
-                    if !line.is_empty() {
+                    if line.eq_ignore_ascii_case("writeconfig")
+                        || line.eq_ignore_ascii_case("saveconfig")
+                    {
+                        self.write_user_config();
+                    } else if !line.is_empty() {
                         self.apply_console(line);
                     }
                 }
             }
+        }
+    }
+
+    /// Refresh live Graphics menu labels after a CVar change.
+    fn refresh_graphics_menu(&mut self) {
+        let Some(stack) = self.menu.as_mut() else {
+            return;
+        };
+        if stack
+            .top_title()
+            .is_some_and(|t| t.eq_ignore_ascii_case("Graphics"))
+        {
+            let (sel, scroll) = stack
+                .top()
+                .map(|m| (m.selected, m.scroll))
+                .unwrap_or((0, 0));
+            let mut menu = graphics_menu(&self.console.cvars);
+            menu.selected = sel.min(menu.items.len().saturating_sub(1));
+            menu.scroll = scroll;
+            menu.ensure_scroll_visible();
+            stack.replace_top(menu);
+        }
+    }
+
+    /// Persist config; skips shader CVars when [`Self::ephemeral_shaders`].
+    fn write_user_config(&mut self) {
+        let path = dirs_room_ini();
+        let exclude: &[&str] = if self.ephemeral_shaders {
+            room_render::SHADER_CVAR_NAMES
+        } else {
+            &[]
+        };
+        match room_console::save_ini_file_excluding(&self.console.cvars, &path, exclude) {
+            Ok(()) => {
+                let note = if self.ephemeral_shaders {
+                    " (shaders not saved — combat-demo)"
+                } else {
+                    ""
+                };
+                self.messages
+                    .push(format!("wrote {}{note}", path.display()), 70);
+            }
+            Err(e) => self.messages.push(format!("writeconfig: {e}"), 70),
         }
     }
 
@@ -4551,7 +5607,17 @@ impl ViewerApp {
     }
 
     fn apply_console(&mut self, line: &str) {
-        if self.mod_buttons.apply_cmd(line.trim()) {
+        let trimmed = line.trim();
+        if self.mod_buttons.apply_cmd(trimmed) {
+            return;
+        }
+        let head = trimmed
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if head == "writeconfig" || head == "saveconfig" {
+            self.write_user_config();
             return;
         }
         let Ok(result) = self.console.exec(line) else {
@@ -5590,6 +6656,9 @@ impl ViewerApp {
             keys.push(Key::Attack);
         }
         self.keys.attack.tick();
+        if self.keys.alt_attack {
+            keys.push(Key::AltAttack);
+        }
         if self.keys.use_btn {
             keys.push(Key::Use);
         }
@@ -5681,11 +6750,61 @@ fn create_depth(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: room_render::DEPTH_STENCIL_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        // TEXTURE_BINDING: SSAO samples depth when `gl_ssao` is on.
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     (tex, view)
+}
+
+/// Closest solid / near wall for blood splatter (`docs/29` J3).
+///
+/// Returns `(linedef index, projected x, projected y)` within `max_dist`.
+fn nearest_blood_wall(map: &MapGeometry, x: f64, y: f64, max_dist: f64) -> Option<(u32, f64, f64)> {
+    let max2 = max_dist * max_dist;
+    let mut best: Option<(u32, f64, f64, f64)> = None;
+    for (i, line) in map.lines.iter().enumerate() {
+        // Prefer one-sided or blocking walls; allow close two-sided for thin partitions.
+        let blocking = (line.flags & 1) != 0; // ML_BLOCKING
+        let one_sided = line.back_sector.is_none();
+        if !one_sided && !blocking {
+            // Still consider if we'll be very close (≤ 28).
+        }
+        let Some(v1) = map.vertices.get(line.v1.raw() as usize) else {
+            continue;
+        };
+        let Some(v2) = map.vertices.get(line.v2.raw() as usize) else {
+            continue;
+        };
+        let ax = v1.pos.x();
+        let ay = v1.pos.y();
+        let bx = v2.pos.x();
+        let by = v2.pos.y();
+        let dx = bx - ax;
+        let dy = by - ay;
+        let len2 = dx * dx + dy * dy;
+        if len2 < 1e-8 {
+            continue;
+        }
+        let t = ((x - ax) * dx + (y - ay) * dy) / len2;
+        let t = t.clamp(0.0, 1.0);
+        let px = ax + t * dx;
+        let py = ay + t * dy;
+        let d2 = (x - px) * (x - px) + (y - py) * (y - py);
+        if d2 > max2 {
+            continue;
+        }
+        if !one_sided && !blocking && d2 > 28.0 * 28.0 {
+            continue;
+        }
+        // Prefer solid walls when distances are similar.
+        let score = d2 - if one_sided || blocking { 64.0 } else { 0.0 };
+        if best.as_ref().is_none_or(|(_, _, _, s)| score < *s) {
+            best = Some((i as u32, px, py, score));
+        }
+    }
+    best.map(|(i, px, py, _)| (i, px, py))
 }
 
 fn create_stencil_aux(
@@ -5703,7 +6822,8 @@ fn create_stencil_aux(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::R8Unorm,
+        // Must match unlit MRT slot 1 (docs/29 U16 G-buffer-lite).
+        format: wgpu::TextureFormat::Rgba8Unorm,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });

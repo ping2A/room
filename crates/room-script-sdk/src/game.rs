@@ -8,7 +8,7 @@ use room_script_abi::{ActorRef, ClassRef};
 pub use room_script_abi::game::{
     actor_f64, actor_i32, actor_ptr, level_stat, player_prop, rule, spawn_flags, thing_type,
 };
-pub use room_script_abi::{class_flag, class_prop, event_mask};
+pub use room_script_abi::{class_flag, class_prop, event_mask, hit_kind};
 
 fn str_args(s: &str) -> (i32, i32) {
     (s.as_ptr() as i32, s.len() as i32)
@@ -163,6 +163,35 @@ impl Actor {
     #[must_use]
     pub fn target(self) -> Option<Self> {
         self.get_ref(actor_ptr::TARGET)
+    }
+
+    /// Missile impact kind ([`room_script_abi::hit_kind`]); 0 = none.
+    #[must_use]
+    pub fn hit_kind(self) -> i32 {
+        self.get_i32(actor_i32::HIT_KIND)
+    }
+
+    /// Actor hit by this missile (if any).
+    #[must_use]
+    pub fn hit_actor(self) -> Option<Self> {
+        self.get_ref(actor_ptr::HIT_ACTOR)
+    }
+
+    /// Missile hit info: `(kind, pos xyz, normal xyz)` (`docs/31` MA4).
+    #[must_use]
+    pub fn hit_info(self) -> (i32, [f64; 3], [f64; 3]) {
+        let mut buf = [0u8; 48];
+        // SAFETY: 48-byte LE f64 buffer for the host write.
+        let kind = unsafe { sys::actor_hit_info(self.bits(), buf.as_mut_ptr() as i32) };
+        let mut pos = [0.0f64; 3];
+        let mut normal = [0.0f64; 3];
+        for i in 0..3 {
+            let o = i * 8;
+            pos[i] = f64::from_le_bytes(buf[o..o + 8].try_into().unwrap_or([0; 8]));
+            let o = 24 + i * 8;
+            normal[i] = f64::from_le_bytes(buf[o..o + 8].try_into().unwrap_or([0; 8]));
+        }
+        (kind, pos, normal)
     }
 
     /// 3D distance.
@@ -679,6 +708,11 @@ pub enum Event {
         /// Item class.
         item: ClassRef,
     },
+    /// An actor was destroyed without a death event (`docs/31` MA4).
+    ThingDestroyed {
+        /// Removed actor.
+        thing: Actor,
+    },
     /// Map ending.
     Unloaded,
     /// An event this SDK version does not decode (bit index).
@@ -743,6 +777,9 @@ impl Event {
                 toucher: actor_at(p, 0),
                 item: ClassRef(rd_i32(p, 8) as u32),
             },
+            11 => Self::ThingDestroyed {
+                thing: actor_at(p, 0),
+            },
             other => Self::Other(other),
         }
     }
@@ -766,6 +803,12 @@ pub trait RoomMod: Default {
 
     /// One event.
     fn on_event(&mut self, event: Event);
+
+    /// WASM state action (`reg_state` `callback_id` &lt; [`EVENT_CALLBACK_BASE`]).
+    /// Return a `StateRef` jump (0 = continue).
+    fn on_state_action(&mut self, _payload: room_script_abi::ActionPayload) -> i64 {
+        0
+    }
 }
 
 /// Callback id of event bit 0 for [`crate::export_mod!`] handlers.

@@ -1097,6 +1097,19 @@ impl<'a> Duke<'a> {
                     g.ammo
                 );
             }
+            // Lower = preferred on ammo dry (docs/30 N3). Keep `Gun.slot` for keys only.
+            let order = match g.class {
+                "DukeDevastator" => 400,
+                "DukeRipper" => 700,
+                "DukeShotgun" => 1300,
+                "DukePistol" => 1900,
+                "DukeFreezer" => 2000,
+                "DukeShrinker" | "DukeExpander" => 2300,
+                "DukeRPG" => 2500,
+                "DukeKick" => 3700,
+                _ => u32::from(g.slot) * 1000,
+            };
+            let _ = writeln!(s, "  Weapon.SelectionOrder {order}");
             s.push_str("  States\n  {\n");
             if let Some(t) = pickup {
                 let (n, l) = self.out.sprites.frame(g.class, t, 1, 0);

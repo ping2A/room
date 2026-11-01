@@ -3,6 +3,8 @@
 use crate::class::ClassRegistry;
 use room_core::{ClassId, StateId};
 use room_decorate::{ActorDef, ClassDefIr, StateFlow, StateItem};
+use room_script::RegCall;
+use room_script_abi::{state_flags, state_flow_kind};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// One compiled state (`FState` subset).
@@ -24,6 +26,20 @@ pub struct State {
     pub bright: bool,
     /// DECORATE `Fast` — tics halved (rounded up) under fast monsters.
     pub fast: bool,
+    /// DECORATE `CanRaise`.
+    pub canraise: bool,
+    /// DECORATE `NoDelay`.
+    pub nodelay: bool,
+    /// Weapon psprite OFFSET x (0 = unset).
+    pub offset_x: i32,
+    /// Weapon psprite OFFSET y (0 = unset).
+    pub offset_y: i32,
+    /// WASM `room_dispatch` callback (−1 = none).
+    pub callback_id: i32,
+    /// Module that owns [`Self::callback_id`].
+    pub module_index: usize,
+    /// Guest `StateRef` from registration (0 if DECORATE).
+    pub guest_ref: u32,
     /// Next state (`None` = Stop).
     pub next: Option<StateId>,
 }
@@ -50,7 +66,7 @@ impl StateTable {
             let Some(cid) = classes.find_name(&def.name) else {
                 continue;
             };
-            table.compile_actor(cid, def);
+            table.compile_actor(cid, def, classes);
         }
         table.inherit_labels(classes);
         table
@@ -91,7 +107,33 @@ impl StateTable {
         }
     }
 
-    fn compile_actor(&mut self, class: ClassId, def: &ActorDef) {
+    /// Resolve `Goto Label` against this class's labels, then the parent chain
+    /// (so `Goto LightDone` on a gun finds `Weapon.LightDone`).
+    fn resolve_goto_base(
+        &self,
+        classes: &ClassRegistry,
+        class: ClassId,
+        label_at: &BTreeMap<String, usize>,
+        key: &str,
+    ) -> Option<usize> {
+        let short = key.rsplit("::").next().unwrap_or(key);
+        if let Some(&i) = label_at.get(short) {
+            return Some(i);
+        }
+        let mut cur = classes.get(class).and_then(|c| c.parent);
+        for _ in 0..64 {
+            let Some(pid) = cur else {
+                return None;
+            };
+            if let Some(&sid) = self.labels.get(&(pid.raw(), short.to_owned())) {
+                return Some(sid.raw() as usize);
+            }
+            cur = classes.get(pid).and_then(|c| c.parent);
+        }
+        None
+    }
+
+    fn compile_actor(&mut self, class: ClassId, def: &ActorDef, classes: &ClassRegistry) {
         let Some(block) = &def.states else {
             return;
         };
@@ -144,6 +186,19 @@ impl StateTable {
                             action_args: line.action_args.clone(),
                             bright,
                             fast,
+                            canraise: line
+                                .modifiers
+                                .iter()
+                                .any(|m| m.eq_ignore_ascii_case("canraise")),
+                            nodelay: line
+                                .modifiers
+                                .iter()
+                                .any(|m| m.eq_ignore_ascii_case("nodelay")),
+                            offset_x: 0,
+                            offset_y: 0,
+                            callback_id: -1,
+                            module_index: 0,
+                            guest_ref: 0,
                             // Temporary: chain to next frame; flows patched later.
                             next: Some(StateId::from_raw((id + 1) as u32)),
                         });
@@ -167,39 +222,185 @@ impl StateTable {
         }
         // Pass 2: apply flow keywords to the last state of the preceding line.
         for (idx, flow) in flow_slots {
-            match flow {
-                StateFlow::Stop | StateFlow::Fail => {
-                    self.states[idx].next = None;
-                }
-                StateFlow::Wait => {
-                    self.states[idx].next = Some(StateId::from_raw(idx as u32));
-                }
-                StateFlow::Loop => {
-                    // Jump to most recent label before this state.
-                    let target = label_at
-                        .values()
-                        .copied()
-                        .filter(|&i| i <= idx)
-                        .max()
-                        .unwrap_or(start_index);
-                    self.states[idx].next = Some(StateId::from_raw(target as u32));
-                }
-                StateFlow::Goto { label, offset } => {
-                    let key = label.to_ascii_lowercase();
-                    let base = label_at.get(&key).copied().or_else(|| {
-                        // Super::Label — resolve later; for now treat as local.
-                        let short = key.rsplit("::").next()?.to_owned();
-                        label_at.get(&short).copied()
-                    });
-                    if let Some(b) = base {
-                        let dest = (b as i32 + offset).max(0) as usize;
-                        if dest < self.states.len() {
-                            self.states[idx].next = Some(StateId::from_raw(dest as u32));
-                        }
+            let _ = self.apply_flow(classes, class, &label_at, start_index, idx, &flow, false);
+        }
+    }
+
+    fn apply_flow(
+        &mut self,
+        classes: &ClassRegistry,
+        class: ClassId,
+        label_at: &BTreeMap<String, usize>,
+        start_index: usize,
+        idx: usize,
+        flow: &StateFlow,
+        strict_goto: bool,
+    ) -> Result<(), String> {
+        match flow {
+            StateFlow::Stop | StateFlow::Fail => {
+                self.states[idx].next = None;
+            }
+            StateFlow::Wait => {
+                self.states[idx].next = Some(StateId::from_raw(idx as u32));
+            }
+            StateFlow::Loop => {
+                let target = label_at
+                    .values()
+                    .copied()
+                    .filter(|&i| i <= idx)
+                    .max()
+                    .unwrap_or(start_index);
+                self.states[idx].next = Some(StateId::from_raw(target as u32));
+            }
+            StateFlow::Goto { label, offset } => {
+                let key = label.to_ascii_lowercase();
+                if let Some(b) = self.resolve_goto_base(classes, class, label_at, &key) {
+                    let dest = (b as i32 + offset).max(0) as usize;
+                    if dest < self.states.len() {
+                        self.states[idx].next = Some(StateId::from_raw(dest as u32));
+                    } else if strict_goto {
+                        return Err(format!("Goto {label}+{offset} out of range"));
+                    } else {
+                        self.states[idx].next = None;
                     }
+                } else if strict_goto {
+                    return Err(format!("unresolved Goto {label}"));
+                } else {
+                    // Unresolved Goto must not fall through (docs/30 N1).
+                    self.states[idx].next = None;
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Merge module `reg_state*` calls into this table for `class` (`docs/31` MA1).
+    ///
+    /// # Errors
+    ///
+    /// Unresolved `Goto`, empty action name, or flow with no preceding state.
+    pub fn import_script_states(
+        &mut self,
+        classes: &ClassRegistry,
+        class: ClassId,
+        module_index: usize,
+        calls: &[RegCall],
+    ) -> Result<(), String> {
+        if calls.is_empty() {
+            return Ok(());
+        }
+        let start_index = self.states.len();
+        let mut label_at: BTreeMap<String, usize> = BTreeMap::new();
+        let mut pending_labels: Vec<String> = Vec::new();
+        let mut flow_slots: Vec<(usize, StateFlow)> = Vec::new();
+
+        for call in calls {
+            match call {
+                RegCall::StateLabel { label } => {
+                    pending_labels.push(label.clone());
+                }
+                RegCall::State {
+                    sprite,
+                    frame,
+                    tics,
+                    flags,
+                    callback_id,
+                    state_ref,
+                } => {
+                    let first = self.states.len();
+                    for lab in pending_labels.drain(..) {
+                        let key = lab.to_ascii_lowercase();
+                        label_at.insert(key.clone(), first);
+                        self.labels
+                            .insert((class.raw(), key), StateId::from_raw(first as u32));
+                    }
+                    let frame = match *frame {
+                        b @ b'A'..=b'Z' => b - b'A',
+                        b @ b'a'..=b'z' => b - b'a',
+                        n if n < 29 => n,
+                        _ => 0,
+                    };
+                    #[allow(clippy::cast_possible_truncation)]
+                    let tics_i16 = (*tics).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+                    let id = self.states.len();
+                    self.states.push(State {
+                        owner: class,
+                        sprite: sprite.clone(),
+                        frame,
+                        tics: tics_i16,
+                        action: None,
+                        action_args: Vec::new(),
+                        bright: flags & state_flags::BRIGHT != 0,
+                        fast: flags & state_flags::FAST != 0,
+                        canraise: flags & state_flags::CANRAISE != 0,
+                        nodelay: flags & state_flags::NODELAY != 0,
+                        offset_x: 0,
+                        offset_y: 0,
+                        callback_id: *callback_id,
+                        module_index,
+                        guest_ref: *state_ref,
+                        next: Some(StateId::from_raw((id + 1) as u32)),
+                    });
+                }
+                RegCall::StateAction { name, args } => {
+                    let Some(last) = self.states.len().checked_sub(1) else {
+                        return Err("reg_state_action with no state".into());
+                    };
+                    if last < start_index {
+                        return Err("reg_state_action with no state".into());
+                    }
+                    if name.is_empty() {
+                        return Err("empty state action name".into());
+                    }
+                    self.states[last].action = Some(name.clone());
+                    self.states[last].action_args = split_decorate_args(args);
+                }
+                RegCall::StateOffset { x, y } => {
+                    let Some(last) = self.states.len().checked_sub(1) else {
+                        return Err("reg_state_offset with no state".into());
+                    };
+                    if last < start_index {
+                        return Err("reg_state_offset with no state".into());
+                    }
+                    self.states[last].offset_x = *x;
+                    self.states[last].offset_y = *y;
+                }
+                RegCall::StateFlow {
+                    kind,
+                    label,
+                    offset,
+                } => {
+                    let Some(last) = self.states.len().checked_sub(1) else {
+                        return Err("reg_state_flow with no state".into());
+                    };
+                    if last < start_index {
+                        return Err("reg_state_flow with no state".into());
+                    }
+                    let flow = match *kind {
+                        state_flow_kind::LOOP => StateFlow::Loop,
+                        state_flow_kind::STOP => StateFlow::Stop,
+                        state_flow_kind::WAIT => StateFlow::Wait,
+                        state_flow_kind::FAIL => StateFlow::Fail,
+                        state_flow_kind::GOTO => StateFlow::Goto {
+                            label: label.clone(),
+                            offset: *offset,
+                        },
+                        k => return Err(format!("unknown state flow kind {k}")),
+                    };
+                    flow_slots.push((last, flow));
+                }
+                _ => {}
+            }
+        }
+        if let Some(last) = self.states.len().checked_sub(1) {
+            if last >= start_index {
+                self.states[last].next = None;
+            }
+        }
+        for (idx, flow) in flow_slots {
+            self.apply_flow(classes, class, &label_at, start_index, idx, &flow, true)?;
+        }
+        Ok(())
     }
 
     /// Borrow a state.
@@ -238,6 +439,32 @@ impl StateTable {
     }
 }
 
+/// Split a DECORATE-style argument list (`"Foo", 1, true`) into tokens.
+fn split_decorate_args(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_str = false;
+    for ch in raw.chars() {
+        match ch {
+            '"' if !in_str => in_str = true,
+            '"' if in_str => in_str = false,
+            ',' if !in_str => {
+                let t = cur.trim().to_owned();
+                if !t.is_empty() {
+                    out.push(t);
+                }
+                cur.clear();
+            }
+            c => cur.push(c),
+        }
+    }
+    let t = cur.trim().to_owned();
+    if !t.is_empty() {
+        out.push(t);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -245,6 +472,99 @@ mod tests {
     use super::*;
     use crate::ClassRegistry;
     use room_decorate::parse_decorate;
+
+    #[test]
+    fn import_script_states_spawn_loop_and_action() {
+        use room_script::RegCall;
+        use room_script_abi::state_flow_kind;
+        let ir = parse_decorate(
+            r#"
+actor Actor 0 { States { Spawn: TNT1 A -1 Stop } }
+actor ZombieMan : Actor 3004 { States { Spawn: POSS A 10 Loop } }
+"#,
+        )
+        .unwrap();
+        let classes = ClassRegistry::from_decorate(&ir).unwrap();
+        let mut table = StateTable::from_decorate(&ir, &classes);
+        let cid = classes.find_name("ZombieMan").unwrap();
+        // Replace Spawn with a two-frame Look loop from a module.
+        let calls = vec![
+            RegCall::StateLabel {
+                label: "Spawn".into(),
+            },
+            RegCall::State {
+                sprite: "POSS".into(),
+                frame: b'A',
+                tics: 10,
+                flags: 0,
+                callback_id: -1,
+                state_ref: 1000,
+            },
+            RegCall::StateAction {
+                name: "A_Look".into(),
+                args: String::new(),
+            },
+            RegCall::State {
+                sprite: "POSS".into(),
+                frame: b'B',
+                tics: 10,
+                flags: 0,
+                callback_id: -1,
+                state_ref: 1001,
+            },
+            RegCall::StateAction {
+                name: "A_Look".into(),
+                args: String::new(),
+            },
+            RegCall::StateFlow {
+                kind: state_flow_kind::LOOP,
+                label: String::new(),
+                offset: 0,
+            },
+        ];
+        table
+            .import_script_states(&classes, cid, 0, &calls)
+            .unwrap();
+        let spawn = table.find_label(cid, "Spawn").unwrap();
+        let a = table.get(spawn).unwrap();
+        assert_eq!(a.action.as_deref(), Some("A_Look"));
+        assert_eq!(a.guest_ref, 1000);
+        let b = table.get(a.next.unwrap()).unwrap();
+        assert_eq!(b.frame, 1);
+        assert_eq!(b.next.unwrap(), spawn);
+    }
+
+    #[test]
+    fn import_script_states_unresolved_goto_errors() {
+        use room_script::RegCall;
+        use room_script_abi::state_flow_kind;
+        let ir = parse_decorate("actor Actor 0 { States { Spawn: TNT1 A -1 Stop } }").unwrap();
+        let classes = ClassRegistry::from_decorate(&ir).unwrap();
+        let mut table = StateTable::from_decorate(&ir, &classes);
+        let cid = classes.find_name("Actor").unwrap();
+        let calls = vec![
+            RegCall::StateLabel {
+                label: "Spawn".into(),
+            },
+            RegCall::State {
+                sprite: "TNT1".into(),
+                frame: b'A',
+                tics: 1,
+                flags: 0,
+                callback_id: -1,
+                state_ref: 1000,
+            },
+            RegCall::StateFlow {
+                kind: state_flow_kind::GOTO,
+                label: "Missing".into(),
+                offset: 0,
+            },
+        ];
+        let err = table
+            .import_script_states(&classes, cid, 0, &calls)
+            .unwrap_err();
+        assert!(err.contains("unresolved"), "{err}");
+    }
 
     #[test]
     fn compiles_zombieman_spawn_loop() {
@@ -325,6 +645,29 @@ actor ZombieMan : Actor 3004
             at = s.next;
         }
         assert_eq!(frames, [26, 27, 28]);
+    }
+
+    #[test]
+    fn weapon_lightdone_goto_stops_not_fallthrough() {
+        let ir = parse_decorate(include_str!("../../../testdata/actors/doom_basic.txt")).unwrap();
+        let classes = ClassRegistry::from_decorate(&ir).unwrap();
+        let t = StateTable::from_decorate(&ir, &classes);
+        let cg = classes.find_name("Chaingun").unwrap();
+        let flash = t.find_label(cg, "Flash").unwrap();
+        let a = t.get(flash).unwrap();
+        assert_eq!(a.sprite.to_ascii_uppercase(), "CHGF");
+        assert_eq!(a.frame, 0);
+        // Goto LightDone → Weapon.LightDone (A_Light0), not CHGF B.
+        let next = a.next.expect("flash A must Goto LightDone");
+        let ld = t.get(next).unwrap();
+        assert_eq!(ld.action.as_deref(), Some("A_Light0"));
+        assert!(ld.next.is_none(), "LightDone must Stop");
+        // Offset 1 is the second flash segment (CHGF B).
+        let b = t.get(StateId::from_raw(flash.raw() + 1)).unwrap();
+        assert_eq!(b.sprite.to_ascii_uppercase(), "CHGF");
+        assert_eq!(b.frame, 1);
+        let ld2 = t.get(b.next.expect("flash B Goto")).unwrap();
+        assert_eq!(ld2.action.as_deref(), Some("A_Light0"));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 use futures_util::{SinkExt, StreamExt};
 use room_proto::{ControlMsg, HelloMsg, ResultRow, encode_control, parse_control};
 use room_server::{
-    BrStats, CreateRoomRequest, ModCatalog, MODE_BR, RoomRegistry, ServerConfig, bind_ephemeral,
+    BrStats, CreateRoomRequest, MODE_BR, ModCatalog, RoomRegistry, ServerConfig, bind_ephemeral,
 };
 use std::sync::Arc;
 use std::time::Duration;

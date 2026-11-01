@@ -55,4 +55,4 @@ pub use title::{
     anim_pic, anim_pic_loop, draw_title, parse_titledef, splash_ms, title_anim_pic,
     title_screen_pic,
 };
-pub use weapon::{draw_weapon, weapon_ready_patch};
+pub use weapon::{draw_weapon, draw_weapon_lit, weapon_ready_patch};

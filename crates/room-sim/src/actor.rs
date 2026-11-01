@@ -174,6 +174,14 @@ pub struct Actor {
     pub destroyed: bool,
     /// Skip the next N action dispatches (DecoBlock `if` false-path).
     pub action_skip: u32,
+    /// Missile impact kind (`room_script_abi::hit_kind`; 0 = none).
+    pub hit_kind: i32,
+    /// Actor hit by this missile (if `hit_kind == ACTOR`).
+    pub hit_actor: Option<ActorId>,
+    /// Impact position.
+    pub hit_pos: DVec3,
+    /// Impact normal (wall outward or ±Z).
+    pub hit_normal: DVec3,
 }
 
 /// No chase direction (`DI_NODIR`).

@@ -47,6 +47,10 @@ pub struct ListMenu {
     pub items: Vec<MenuItem>,
     /// Selected index.
     pub selected: usize,
+    /// First visible item index (long lists / Graphics).
+    pub scroll: usize,
+    /// How many rows fit on screen (`0` = draw all, no scroll).
+    pub visible_rows: usize,
     /// Top-left of the list in virtual coords.
     pub origin: Vec2,
     /// Dim the playfield behind the menu (pause / options). Off for title+MENUDEF.
@@ -72,6 +76,8 @@ impl ListMenu {
                 MenuItem::text("QUIT", "menu_quit"),
             ],
             selected: 0,
+            scroll: 0,
+            visible_rows: 0,
             // Doom/GZDoom-style column (BigFont + skull); no chrome panel.
             origin: Vec2::new(104.0, 72.0),
             dim_background: true,
@@ -90,6 +96,8 @@ impl ListMenu {
                 MenuItem::text("NO", "menu_quit_no"),
             ],
             selected: 1,
+            scroll: 0,
+            visible_rows: 0,
             origin: Vec2::new(96.0, 96.0),
             dim_background: true,
             line_spacing: 16.0,
@@ -107,6 +115,8 @@ impl ListMenu {
                 MenuItem::text("NO", "menu_endgame_no"),
             ],
             selected: 1,
+            scroll: 0,
+            visible_rows: 0,
             origin: Vec2::new(100.0, 96.0),
             dim_background: true,
             line_spacing: 16.0,
@@ -127,6 +137,8 @@ impl ListMenu {
                 MenuItem::patch_item("M_QUITG", "menu_quit"),
             ],
             selected: 0,
+            scroll: 0,
+            visible_rows: 0,
             origin: Vec2::new(97.0, 72.0),
             dim_background: false,
             line_spacing: 16.0,
@@ -147,6 +159,8 @@ impl ListMenu {
                 MenuItem::text("Nightmare!", "skill 5"),
             ],
             selected: 2,
+            scroll: 0,
+            visible_rows: 0,
             origin: Vec2::new(48.0, 64.0),
             dim_background: true,
             line_spacing: 16.0,
@@ -185,6 +199,8 @@ impl ListMenu {
                 .map(|(i, n)| MenuItem::text(n.as_str(), format!("episode {}", i + 1)))
                 .collect(),
             selected: 0,
+            scroll: 0,
+            visible_rows: 0,
             origin: Vec2::new(48.0, 56.0),
             dim_background: true,
             line_spacing: 16.0,
@@ -204,11 +220,30 @@ impl ListMenu {
                 MenuItem::text("Thy Flesh Consumed", "episode 4"),
             ],
             selected: 0,
+            scroll: 0,
+            visible_rows: 0,
             origin: Vec2::new(48.0, 64.0),
             dim_background: true,
             line_spacing: 16.0,
             show_title: true,
         }
+    }
+
+    /// Keep [`Self::scroll`] so [`Self::selected`] stays in the visible window.
+    pub fn ensure_scroll_visible(&mut self) {
+        let vis = self.visible_rows;
+        if vis == 0 || self.items.is_empty() {
+            self.scroll = 0;
+            return;
+        }
+        let vis = vis.min(self.items.len());
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        } else if self.selected >= self.scroll + vis {
+            self.scroll = self.selected + 1 - vis;
+        }
+        let max_scroll = self.items.len().saturating_sub(vis);
+        self.scroll = self.scroll.min(max_scroll);
     }
 
     /// Move selection.
@@ -227,6 +262,7 @@ impl ListMenu {
             self.selected = (self.selected + if delta >= 0 { 1 } else { self.items.len() - 1 })
                 % self.items.len();
         }
+        self.ensure_scroll_visible();
     }
 
     /// Activate selection; returns action string.
@@ -248,15 +284,22 @@ impl ListMenu {
     /// Hit-test a virtual 320×200 point; returns item index when inside a row.
     #[must_use]
     pub fn hit_test(&self, x: f32, y: f32) -> Option<usize> {
-        let spacing = self.line_spacing.max(12.0);
+        let spacing = self.line_spacing.max(8.0);
         let origin = self.list_origin();
-        for (i, item) in self.items.iter().enumerate() {
+        let start = self.scroll;
+        let end = if self.visible_rows == 0 {
+            self.items.len()
+        } else {
+            (start + self.visible_rows).min(self.items.len())
+        };
+        for (row, i) in (start..end).enumerate() {
+            let item = &self.items[i];
             if item.action == "noop" {
                 continue;
             }
-            let row_y = origin.y + i as f32 * spacing;
-            let h = if item.patch.is_some() { 16.0 } else { 14.0 };
-            let w = 200.0;
+            let row_y = origin.y + row as f32 * spacing;
+            let h = if item.patch.is_some() { 16.0 } else { 12.0 };
+            let w = 280.0;
             if x >= origin.x - 24.0 && x <= origin.x + w && y >= row_y && y <= row_y + h {
                 return Some(i);
             }
@@ -270,10 +313,13 @@ impl ListMenu {
     /// `STCFN*` patches (Doom 1 IWADs). Dimmed menus only darken the playfield
     /// — no custom chrome box / selection bar.
     pub fn draw(&self, list: &mut UiDrawList, tic: u32, fonts: Option<&FontRegistry>) {
-        let spacing = self.line_spacing.max(12.0);
+        let spacing = self.line_spacing.max(8.0);
         let list_origin = self.list_origin();
         let (list_x, list_y) = (list_origin.x, list_origin.y);
         let big = fonts.and_then(|r| r.get(FontId::BIG));
+        // Scrollable menus use STCFN patches (see item loop); SmallFont SoftFont
+        // is reserved for non-menu SoftFont callers.
+        let use_small = self.visible_rows > 0;
         if self.dim_background {
             list.fill(
                 Rect::new(0.0, 0.0, 320.0, 200.0),
@@ -281,7 +327,7 @@ impl ListMenu {
             );
         }
         if self.show_title && !self.title.is_empty() {
-            let ty = (list_y - 28.0).max(12.0);
+            let ty = (list_y - 22.0).max(8.0);
             if let Some(font) = big {
                 let tw = font.measure(&self.title);
                 let tx = ((320.0 - tw) * 0.5).max(8.0);
@@ -304,8 +350,18 @@ impl ListMenu {
         } else {
             "M_SKULL2"
         };
-        for (i, item) in self.items.iter().enumerate() {
-            let y = list_y + i as f32 * spacing;
+        let start = self.scroll;
+        let end = if self.visible_rows == 0 {
+            self.items.len()
+        } else {
+            (start + self.visible_rows).min(self.items.len())
+        };
+        if self.visible_rows > 0 && start > 0 {
+            draw_stcfn_string(list, list_x + 200.0, list_y - 10.0, "^ MORE", 0.85);
+        }
+        for (row, i) in (start..end).enumerate() {
+            let item = &self.items[i];
+            let y = list_y + row as f32 * spacing;
             let selected = i == self.selected;
             if selected && item.action != "noop" {
                 list.patch(
@@ -316,6 +372,13 @@ impl ListMenu {
             }
             if let Some(patch) = &item.patch {
                 list.patch(patch, Vec2::new(list_x, y), Vec2::new(0.0, 0.0));
+            } else if item.action == "noop" {
+                draw_stcfn_string(list, list_x, y, &item.label, 0.7);
+            } else if use_small {
+                // Dense scroll menus (Graphics): STCFN patches keep palette
+                // shading + fixed pitch. SoftFont SmallFont fill-rects fatten
+                // edge-ink glyphs into an unreadable mash at framebuffer scale.
+                draw_stcfn_string(list, list_x, y, &item.label, 1.0);
             } else if let Some(font) = big {
                 font.draw(
                     list,
@@ -328,6 +391,10 @@ impl ListMenu {
             } else {
                 draw_stcfn_string(list, list_x, y, &item.label, 1.0);
             }
+        }
+        if self.visible_rows > 0 && end < self.items.len() {
+            let foot_y = list_y + (end - start) as f32 * spacing + 2.0;
+            draw_stcfn_string(list, list_x + 180.0, foot_y.min(190.0), "v MORE", 0.85);
         }
     }
 }
@@ -548,6 +615,7 @@ impl MenuStack {
             return None;
         }
         m.selected = idx;
+        m.ensure_scroll_visible();
         Some(MenuSfx::Cursor)
     }
 
@@ -602,11 +670,14 @@ impl MenuStack {
                     }
                 }
                 // Wired Options (prefer over MENUDEF stubs so toggles actually work).
+                // Graphics submenu is pushed by the shell with live CVar labels
+                // (`openmenu GraphicsMenu` → [`MenuCommand::OpenMenu`]).
                 if name.eq_ignore_ascii_case("Options") || name.eq_ignore_ascii_case("OptionsMenu")
                 {
                     self.stack.push(ListMenu {
                         title: "Options".into(),
                         items: vec![
+                            MenuItem::text("GRAPHICS", "openmenu GraphicsMenu"),
                             MenuItem::text("AUTO AIM", "option autoaim"),
                             MenuItem::text("MOUSE AIMING", "option mouse_look"),
                             MenuItem::text("INVERT MOUSE", "option invertmouse"),
@@ -618,12 +689,21 @@ impl MenuStack {
                             MenuItem::text("BACK", "menu_back"),
                         ],
                         selected: 0,
+                        scroll: 0,
+                        visible_rows: 0,
                         origin: Vec2::new(48.0, 48.0),
                         dim_background: true,
                         line_spacing: 14.0,
                         show_title: true,
                     });
                     return (None, Some(MenuSfx::Activate));
+                }
+                if name.eq_ignore_ascii_case("GraphicsMenu")
+                    || name.eq_ignore_ascii_case("Graphics")
+                {
+                    // Shell replaces this stub with live CVar labels when it
+                    // receives OpenMenu("GraphicsMenu").
+                    return (Some(cmd), Some(MenuSfx::Activate));
                 }
                 (Some(cmd), Some(MenuSfx::Activate))
             }
@@ -638,6 +718,28 @@ impl MenuStack {
             }
             other => (Some(other.clone()), Some(MenuSfx::Activate)),
         }
+    }
+
+    /// Replace the top menu (used to refresh live CVar labels) or push if empty.
+    pub fn replace_top(&mut self, menu: ListMenu) {
+        if let Some(top) = self.stack.last_mut() {
+            let sel = top.selected.min(menu.items.len().saturating_sub(1));
+            *top = menu;
+            top.selected = sel;
+        } else {
+            self.stack.push(menu);
+        }
+    }
+
+    /// Push a menu onto the stack.
+    pub fn push_menu(&mut self, menu: ListMenu) {
+        self.stack.push(menu);
+    }
+
+    /// Title of the top menu, if any.
+    #[must_use]
+    pub fn top_title(&self) -> Option<&str> {
+        self.top().map(|m| m.title.as_str())
     }
 
     /// Pop one menu (Escape / backup). Returns whether a menu remains and an optional cue.

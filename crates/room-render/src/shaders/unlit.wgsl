@@ -92,6 +92,10 @@ struct VsIn {
     // x = alpha; y = 0 solid (holes→black), ≥0.45 masked discard, 1 fuzz
     @location(3) style: vec2<f32>,
     @location(4) lm_uv: vec2<f32>,
+    // Geometric world normal (docs/29 U1).
+    @location(5) normal: vec3<f32>,
+    // Tangent XYZ + bitangent sign (docs/29 U2).
+    @location(6) tangent: vec4<f32>,
 };
 
 struct VsOut {
@@ -102,6 +106,8 @@ struct VsOut {
     @location(3) alpha: f32,
     @location(4) fuzz: f32,
     @location(5) lm_uv: vec2<f32>,
+    @location(6) normal: vec3<f32>,
+    @location(7) tangent: vec4<f32>,
 };
 
 struct FsOutMrt {
@@ -119,7 +125,28 @@ fn vs_main(v: VsIn) -> VsOut {
     o.alpha = v.style.x;
     o.fuzz = v.style.y;
     o.lm_uv = v.lm_uv;
+    o.normal = v.normal;
+    o.tangent = v.tangent;
     return o;
+}
+
+/// Build a world-space normal from tangent-space sample + vertex TBN (U1/U2).
+fn world_normal_from_map(n_ts: vec3<f32>, geom_n: vec3<f32>, tangent: vec4<f32>) -> vec3<f32> {
+    var n = normalize(geom_n);
+    if (dot(n, n) < 1e-6) {
+        n = vec3<f32>(0.0, 0.0, 1.0);
+    }
+    var t = tangent.xyz;
+    if (dot(t, t) < 1e-6) {
+        // Arbitrary tangent perpendicular to N.
+        let up = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(n.z) > 0.9);
+        t = normalize(cross(up, n));
+    } else {
+        t = normalize(t - n * dot(n, t));
+    }
+    let b = cross(n, t) * sign(tangent.w);
+    let ts = normalize(vec3<f32>(n_ts.x, n_ts.y, abs(n_ts.z)));
+    return normalize(t * ts.x + b * ts.y + n * ts.z);
 }
 
 fn hash21(p: vec2<f32>) -> f32 {
@@ -231,8 +258,13 @@ fn shade(v: VsOut) -> vec4<f32> {
     // so Missile attack poses and muzzle flashes stay readable in dark sectors.
     let lit = select(apply_lightmode(v.light, v.world_pos), 1.0, v.light >= 0.999);
     let bm_w = clamp(max(bm.r, max(bm.g, bm.b)), 0.0, 1.0);
+    // Sector light, optionally replaced by lightmap (docs/29 U3: modulate, not add).
+    var sector_term = vec3<f32>(lit);
+    if (lm_str > 1e-4 && !lm_fallback) {
+        sector_term = mix(sector_term, lm, clamp(lm_str, 0.0, 1.0));
+    }
     // Brightmap: mix sector-lit albedo toward fullbright albedo (GZDoom-style).
-    var color = mix(albedo * lit, albedo, bm_w);
+    var color = mix(albedo * sector_term, albedo, bm_w);
     let n_ts = n_samp * 2.0 - 1.0;
     let metallic = clamp(mr_samp.b, 0.0, 1.0);
     let roughness = clamp(mr_samp.g, 0.04, 1.0);
@@ -262,18 +294,21 @@ fn shade(v: VsOut) -> vec4<f32> {
                 let spot = clamp((cd - outer_cos) / max(inner_cos - outer_cos, 1e-4), 0.0, 1.0);
                 fall = fall * spot * spot;
             }
-            // Normal-map Lambert + metal-rough GGX specular bootstrap (M10).
-            // Flat map (≈0.5,0.5,1) → identity; else modulate by N·L / GGX.
-            let is_flat = length(n_ts - vec3<f32>(0.0, 0.0, 1.0)) < 0.05;
+            // Geometric N·L (U1) + optional tangent-space normal map via TBN (U2).
+            let is_flat_nm = length(n_ts - vec3<f32>(0.0, 0.0, 1.0)) < 0.05;
+            let n_world = select(
+                world_normal_from_map(n_ts, v.normal, v.tangent),
+                normalize(select(v.normal, vec3<f32>(0.0, 0.0, 1.0), dot(v.normal, v.normal) < 1e-6)),
+                is_flat_nm,
+            );
+            let ldir = normalize(L.pos_radius.xyz - v.world_pos);
+            let ndotl = max(dot(n_world, ldir), 0.0);
+            fall = fall * ndotl;
             var spec_rgb = vec3<f32>(0.0);
-            if (!is_flat) {
-                let n = normalize(vec3<f32>(n_ts.x, n_ts.y, abs(n_ts.z)));
-                let ldir = normalize(L.pos_radius.xyz - v.world_pos);
-                let ndotl = max(dot(n, ldir), 0.0);
-                fall = fall * ndotl;
+            if (!is_flat_nm) {
                 let view_dir = normalize(view.eye.xyz - v.world_pos);
                 let h = normalize(ldir + view_dir);
-                let ndoth = max(dot(n, h), 0.0);
+                let ndoth = max(dot(n_world, h), 0.0);
                 let vdoth = max(dot(view_dir, h), 0.0);
                 // GGX D
                 let a = roughness * roughness;
@@ -285,13 +320,11 @@ fn shade(v: VsOut) -> vec4<f32> {
                 let fres = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - vdoth, 5.0);
                 spec_rgb = fres * d * 0.25;
             } else if (metallic > 0.01 || roughness < 0.49) {
-                // Metal-rough without normal map: cheap Blinn stand-in.
+                // Metal-rough without normal map: Blinn on geometric normal.
                 let shin = mix(8.0, 256.0, 1.0 - roughness);
-                let ldir = normalize(L.pos_radius.xyz - v.world_pos);
                 let view_dir = normalize(view.eye.xyz - v.world_pos);
                 let h = normalize(ldir + view_dir);
-                // Assume flat N = +Z in light-space approx via light direction.
-                let ndoth = max(dot(normalize(vec3<f32>(0.0, 0.0, 1.0)), h), 0.0);
+                let ndoth = max(dot(n_world, h), 0.0);
                 let f0 = mix(vec3<f32>(0.04), albedo, metallic);
                 spec_rgb = f0 * pow(ndoth, shin) * 0.35;
             }
@@ -306,8 +339,6 @@ fn shade(v: VsOut) -> vec4<f32> {
         }
     }
     color = color + albedo * dyn_add;
-    // Lightmap: per-vertex atlas UV (sampled above); strength may be 0.
-    color = color + lm * lm_str;
     var out_a = v.alpha * texel_a;
     if (v.fuzz > 0.5) {
         let kind = i32(view.light_params.w + 0.5);
@@ -352,10 +383,33 @@ fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
     return shade(v);
 }
 
-/// Stencil Equal draw with dummy MRT slot 1 (write masked off).
+/// Pack a unit normal into octahedral RG in [0,1] (docs/29 U16 bootstrap).
+fn encode_oct_normal(n: vec3<f32>) -> vec2<f32> {
+    var v = normalize(n);
+    let inv = 1.0 / max(abs(v.x) + abs(v.y) + abs(v.z), 1e-6);
+    var o = v.xy * inv;
+    if (v.z < 0.0) {
+        let sx = select(-1.0, 1.0, o.x >= 0.0);
+        let sy = select(-1.0, 1.0, o.y >= 0.0);
+        o = (vec2<f32>(1.0) - abs(o.yx)) * vec2<f32>(sx, sy);
+    }
+    return o * 0.5 + 0.5;
+}
+
+/// Stencil Equal draw with aux G-buffer-lite (oct normal + flags).
 @fragment
 fn fs_main_mrt(v: VsOut) -> FsOutMrt {
-    return FsOutMrt(shade(v), vec4<f32>(0.0));
+    let n = normalize(select(v.normal, vec3<f32>(0.0, 0.0, 1.0), dot(v.normal, v.normal) < 1e-6));
+    let oct = encode_oct_normal(n);
+    // Flags in B (U16): bit0 emissive/fullbright, bit1 sprite-ish (fuzz≥0.45).
+    var flags = 0.0;
+    if (v.light >= 0.999) {
+        flags = flags + 1.0 / 255.0;
+    }
+    if (v.fuzz >= 0.45) {
+        flags = flags + 2.0 / 255.0;
+    }
+    return FsOutMrt(shade(v), vec4<f32>(oct.x, oct.y, flags, 1.0));
 }
 
 /// Stencil mask: no RGB on slot 0; write dummy slot 1 so Metal updates stencil.
