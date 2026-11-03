@@ -93,6 +93,16 @@ uses. Click a frame to edit it in the same tab.
   (+ `S_*` source) lumps in the exported PWAD. Guide and API: docs/12 §16. The AssemblyScript
   compiler is vendored by `scripts/fetch-assemblyscript.sh` (run automatically by
   `play-web.sh` when npm exists; otherwise loaded from jsDelivr).
+- **Import a PK3**: **📦 Open PK3…** in the toolbar (or drop the file on the
+  editor) opens a `.pk3` / `.pk7` / `.zip` / `.ipk3`, with or without an IWAD.
+  With an IWAD loaded the pack is mounted on top of it. Without one, the editor
+  first tries the served IWAD (`doom1.wad`, `freedoom1.wad`, `freedoom2.wad`);
+  if none is found, the pack opens on its own and the editor warns about it.
+  The pack becomes the working archive: the Lumps tab opens on its tree, its
+  maps (including `maps/*.wad`) are listed and open, its ZScript files can be
+  edited and checked, and **Export PK3** rebuilds it by default. A pack with
+  one wrapper folder (`MyMod/zscript.txt`, …) is unwrapped. Broken DECORATE or
+  ZScript no longer stops the import; the error is shown instead.
 - **PK3 packs** (`src/pk3_edit.rs`): the Lumps tab shows PK3 / PK7 / folder
   packs as a folder tree. Text files are edited by full path (saved to
   `editor-overrides.pk3`, mounted last); **+ New file in pack…** adds one.

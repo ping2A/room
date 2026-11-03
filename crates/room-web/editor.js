@@ -170,14 +170,14 @@ async function boot() {
       .then((b) => { if (b && b.byteLength > 64) mod.roomSetSoundfont(new Uint8Array(b)); })
       .catch(() => {});
   }
-  const urls = [params.get("iwad"), "doom1.wad", "freedoom1.wad", "freedoom2.wad"].filter(Boolean);
+  const urls = [params.get("iwad"), ...DEFAULT_IWADS].filter(Boolean);
   for (const url of urls) {
     try {
       const res = await fetch(url, { cache: "no-cache" });
       if (!res.ok) continue;
       const buf = new Uint8Array(await res.arrayBuffer());
       if (buf.length < 12) continue;
-      openIwad(buf, url.split("/").pop());
+      if (!openIwad(buf, url.split("/").pop())) continue;
       const pwad = params.get("pwad");
       if (pwad) {
         const r2 = await fetch(pwad);
@@ -195,8 +195,8 @@ async function boot() {
   }
   setIwadLabel("");
   status(ROOM_UI_SHOW_DUKE
-    ? "Choose IWAD… (or drop a Doom / Freedoom / Duke file) to start editing"
-    : "Choose IWAD… (or drop a Doom / Freedoom WAD) to start editing");
+    ? "Choose IWAD…, 📦 Open PK3… (or drop a Doom / Freedoom / Duke file or a PK3) to start editing"
+    : "Choose IWAD…, 📦 Open PK3… (or drop a Doom / Freedoom WAD or a PK3) to start editing");
 }
 
 function setSummary(json) {
@@ -375,6 +375,22 @@ function buildIwadPage() {
   return wrap;
 }
 
+const DEFAULT_IWADS = ["doom1.wad", "freedoom1.wad", "freedoom2.wad"];
+
+/** Open the IWAD served next to the editor (?iwad=, doom1.wad, Freedoom); false if none. */
+async function loadDefaultIwad() {
+  const params = new URLSearchParams(location.search);
+  for (const url of [params.get("iwad"), ...DEFAULT_IWADS].filter(Boolean)) {
+    try {
+      const res = await fetch(url, { cache: "no-cache" });
+      if (!res.ok) continue;
+      const buf = new Uint8Array(await res.arrayBuffer());
+      if (buf.length >= 12 && !isPk3Bytes(buf) && openIwad(buf, url.split("/").pop())) return true;
+    } catch (_) { /* try the next one */ }
+  }
+  return false;
+}
+
 function openIwad(bytes, name) {
   try {
     setSummary(S.mod.roomEditorOpen(bytes, name));
@@ -386,15 +402,74 @@ function openIwad(bytes, name) {
       : ["ITYTD", "HNTR", "HMP", "UV", "NM"];
     [...$("#skill").options].forEach((o, i) => (o.textContent = labels[i]));
     status(`Opened ${name} — ${S.summary.maps.length} maps, ${S.summary.lumps.length} lumps`);
+    return true;
   } catch (e) {
     toast(`Open failed: ${errText(e)}`, true);
+    return false;
   }
 }
 
-/** ZIP local header, empty archive, or spanned marker — PK3 / ZIP. */
+/** ZIP local header, empty archive, or spanned marker — PK3 / ZIP; or a 7z signature — PK7. */
 function isPk3Bytes(buf) {
-  return buf && buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b
-    && (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07);
+  if (!buf || buf.length < 4) return false;
+  if (buf[0] === 0x50 && buf[1] === 0x4b && (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07)) return true;
+  return buf.length >= 6 && buf[0] === 0x37 && buf[1] === 0x7a && buf[2] === 0xbc && buf[3] === 0xaf && buf[4] === 0x27 && buf[5] === 0x1c;
+}
+
+/** IPK3 / IPK7 (a whole game): its name says so or it ships a PLAYPAL. */
+function isGamePack(name, bytes) {
+  return /\.ipk[37]$/i.test(String(name || "")) || bytesHaveName(bytes, "PLAYPAL");
+}
+
+/**
+ * Import a PK3 / PK7 / ZIP / IPK3 as the working archive, with or without a
+ * base game open: no base yet → the served IWAD (doom1 / Freedoom) is opened
+ * first for textures and palette (an IPK3, or no IWAD available, becomes the
+ * base itself); then the pack is mounted on top, its files shown as a tree in
+ * the Lumps tab, and its first map opened. Export PK3 rebuilds it.
+ */
+async function importPk3Files(files) {
+  if (!S.mod) { toast("The engine is still loading — try again in a moment", true); return; }
+  for (const f of files || []) {
+    const buf = new Uint8Array(await f.arrayBuffer());
+    if (!isPk3Bytes(buf)) { toast(`${f.name}: not a PK3 / PK7 / ZIP archive`, true); continue; }
+    status(`Importing ${f.name} (${fmtSize(buf.length)})…`);
+    let ok;
+    let note = "";
+    if (!S.summary && !isGamePack(f.name, buf)) await loadDefaultIwad();
+    if (!S.summary) {
+      ok = openIwad(buf, f.name);
+      if (ok && !S.summary.iwadDetected && !/\.ipk[37]$/i.test(f.name)) note = `No IWAD found — ${f.name} opened on its own (textures it does not ship will be missing; use IWAD… to add a base game)`;
+      if (ok) {
+        const maps = S.summary.maps;
+        const first = maps.find((m) => m === "E1M1" || m === "MAP01") || maps[0];
+        if (first) loadMap(first);
+      }
+    } else {
+      if (S.summary.pwads.includes(f.name)) {
+        // Re-import replaces the mounted copy.
+        try { setSummary(S.mod.roomEditorRemovePwad(f.name)); } catch (_) { /* add anyway */ }
+      }
+      ok = addPwad(buf, f.name);
+    }
+    if (ok) focusArchive(f.name, note);
+  }
+}
+
+/** Make `name` the working archive: Lumps tab with its folders open, summary toast (`note` = extra warning). */
+function focusArchive(name, note = "") {
+  S.workPk3 = name;
+  const files = S.summary.lumps.filter((l) => l.src === name);
+  const maps = S.summary.lumps.filter((l) => l.kind === "map" && (l.src === name || l.src.startsWith(`${name}:`)));
+  const zs = files.filter((l) => textLang(l.name, l.path) === "zs").length;
+  const tops = new Set(files.map((l) => (l.path || "").split("/")).filter((p) => p.length > 1).map((p) => p[0]));
+  for (const d of tops) if (/^(zscript|maps|actors|decorate|acs)$/i.test(d)) S.openDirs.add(`${name}:${d}/`);
+  S.tab = "lumps";
+  syncBrowserTab();
+  renderBrowser();
+  const warn = [S.summary.decorateError && `definitions: ${S.summary.decorateError}`, note].filter(Boolean).join(" — ");
+  toast(`${name}: ${files.length} file(s), ${maps.length} map(s), ${zs} ZScript file(s)${warn ? ` — ${warn}` : ""}`, !!warn);
+  status(`Working archive: ${name}`);
 }
 
 /** Replace the base IWAD / PK3 / GRP from a file picker. */
@@ -409,11 +484,13 @@ async function openIwadFile(file) {
     return;
   }
   if (isPack) {
+    // Chosen as the base game: replaces whatever is open.
     status(`Loading ${file.name}…`);
-    openIwad(buf, file.name);
+    if (!openIwad(buf, file.name)) return;
     const maps = S.summary?.maps || [];
     const first = maps.find((m) => m === "E1M1" || m === "MAP01") || maps[0];
     if (first) loadMap(first);
+    focusArchive(file.name);
     return;
   }
   if (!isGrp && magic4 !== "IWAD" && magic4 !== "PWAD") {
@@ -435,14 +512,19 @@ async function openIwadFile(file) {
 
 /** Archive that may carry VOXELDEF / extra content. */
 function isContentPackName(name) {
-  return /\.(pk3|pk7|zip)$/i.test(String(name || ""));
+  return /\.(pk3|pk7|zip|ipk3|ipk7)$/i.test(String(name || ""));
 }
 
 /** True if bytes look like a ZIP/PK3 that includes a VOXELDEF lump path. */
 function bytesHaveVoxeldef(bytes) {
+  return bytesHaveName(bytes, "VOXELDEF");
+}
+
+/** Case-insensitive ASCII `word` in the first / last 512 KiB (ZIP entry names). */
+function bytesHaveName(bytes, word) {
   if (!bytes || bytes.length < 32) return false;
   // Local headers + central directory (often near EOF) both store entry names.
-  const needle = [0x56, 0x4f, 0x58, 0x45, 0x4c, 0x44, 0x45, 0x46]; // VOXELDEF
+  const needle = [...word.toUpperCase()].map((c) => c.charCodeAt(0));
   const windows = [];
   windows.push([0, Math.min(bytes.length, 512 * 1024)]);
   if (bytes.length > 512 * 1024) {
@@ -506,17 +588,20 @@ function addPwad(bytes, name) {
     if (ROOM_UI_SHOW_DUKE && /\.map$/i.test(name) && S.summary.duke) {
       const added = S.summary.duke.userMaps.find((m) => !before.has(m)) || S.summary.duke.userMaps.at(-1);
       if (added) loadMap(added);
-      return;
+      return true;
     }
-    const own = S.summary.lumps.filter((l) => l.src === name && l.kind === "map").map((l) => l.name);
+    // Maps of the pack itself and of its maps/*.wad ("pack.pk3:maps/x.wad").
+    const own = S.summary.lumps.filter((l) => (l.src === name || l.src.startsWith(`${name}:`)) && l.kind === "map").map((l) => l.name);
     if (own.length) {
       loadMap(own[0]);
-      return;
+      return true;
     }
     // VOXELDEF/KVX (and other defs) apply after the live session remounts.
     if (remount && mapBefore) loadMap(mapBefore);
+    return true;
   } catch (e) {
     toast(`Mount failed: ${errText(e)}`, true);
+    return false;
   }
 }
 
@@ -556,14 +641,7 @@ async function openFiles(files) {
       const m = S.summary.maps.find((x) => x === "E1M1" || x === "MAP01") || S.summary.maps[0];
       if (m) loadMap(m);
     } else if (isPk3Bytes(buf) || isContentPackName(f.name)) {
-      if (!S.summary) {
-        status(`Loading ${f.name}…`);
-        openIwad(buf, f.name);
-        const m = S.summary?.maps?.find((x) => x === "E1M1" || x === "MAP01") || S.summary?.maps?.[0];
-        if (m) loadMap(m);
-      } else {
-        addPwad(buf, f.name);
-      }
+      await importPk3Files([f]);
     } else if (!S.summary) {
       toast("Open an IWAD or PK3 first", true);
     } else if (!ROOM_UI_SHOW_DUKE && /\.map$/i.test(f.name)) {
@@ -1609,14 +1687,7 @@ function setVisualMode(on) {
 }
 
 async function addPackFiles(files) {
-  if (!S.summary) {
-    toast("Open an IWAD first", true);
-    return;
-  }
-  for (const f of files || []) {
-    const buf = new Uint8Array(await f.arrayBuffer());
-    addPwad(buf, f.name);
-  }
+  await importPk3Files(files);
 }
 
 function pollCamera() {
@@ -2704,7 +2775,8 @@ function exportPk3() {
   if (S.doc) S.docs[S.doc.name] = S.doc;
   const archives = new Set((S.summary.containers || []).filter((c) => ["pk3", "pk7", "dir"].includes(c.kind)).map((c) => c.name));
   const opened = [S.summary.iwad, ...S.summary.pwads].filter((n) => archives.has(n));
-  let target = opened.at(-1) || "";
+  // The imported (working) archive by default, else the last opened pack.
+  let target = opened.includes(S.workPk3) ? S.workPk3 : opened.at(-1) || "";
   if (opened.length > 1) {
     const pick = prompt(`Rebuild which pack? (${opened.join(", ")})\nLeave empty for a new PK3 with only your changes.`, target);
     if (pick === null) return;
@@ -2758,10 +2830,8 @@ document.querySelectorAll(".layout .btn[data-layout]").forEach((b) => b.addEvent
   applyLayout(b.dataset.layout);
 }));
 $("#btn-visual")?.addEventListener("click", () => setVisualMode(!S.visual));
-$("#btn-add-pack")?.addEventListener("click", () => {
-  if (!S.summary) { toast("Open an IWAD first", true); return; }
-  $("#file-pack")?.click();
-});
+$("#btn-add-pack")?.addEventListener("click", () => $("#file-pack")?.click());
+$("#file-pk3")?.addEventListener("change", (e) => { importPk3Files([...e.target.files]); e.target.value = ""; });
 $("#file-pack")?.addEventListener("change", (e) => {
   addPackFiles([...e.target.files]);
   e.target.value = "";

@@ -45,17 +45,16 @@ pub(crate) fn strip_single_root(paths: &mut [String]) {
         return;
     }
     let prefix = format!("{root}/");
-    if !paths.iter().all(|p| {
-        let p = p.trim_start_matches('/');
-        p == root || p.starts_with(&prefix)
-    }) {
+    // Only a folder is a wrapper: a lone root *file* (a PK3 holding just
+    // `zscript.zs`) must stay, or the archive mounts empty.
+    if !paths
+        .iter()
+        .all(|p| p.trim_start_matches('/').starts_with(&prefix))
+    {
         return;
     }
     for p in paths.iter_mut() {
-        let trimmed = p.trim_start_matches('/');
-        if trimmed == root {
-            *p = String::new();
-        } else if let Some(rest) = trimmed.strip_prefix(&prefix) {
+        if let Some(rest) = p.trim_start_matches('/').strip_prefix(&prefix) {
             *p = rest.to_owned();
         }
     }
@@ -313,4 +312,41 @@ pub(crate) fn parse_sevenz(
         });
     }
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_single_root;
+
+    fn strip(paths: &[&str]) -> Vec<String> {
+        let mut v: Vec<String> = paths.iter().map(|p| (*p).to_owned()).collect();
+        strip_single_root(&mut v);
+        v
+    }
+
+    #[test]
+    fn strips_one_wrapper_folder() {
+        assert_eq!(
+            strip(&["mymod/zscript.txt", "mymod/maps/e1m1.wad"]),
+            ["zscript.txt", "maps/e1m1.wad"]
+        );
+    }
+
+    #[test]
+    fn keeps_a_lone_root_file() {
+        assert_eq!(strip(&["zscript.zs"]), ["zscript.zs"]);
+        assert_eq!(
+            strip(&["mapinfo", "mapinfo/extra.txt"]),
+            ["mapinfo", "mapinfo/extra.txt"]
+        );
+    }
+
+    #[test]
+    fn keeps_namespace_folders_and_mixed_roots() {
+        assert_eq!(
+            strip(&["sprites/a.png", "sprites/b.png"]),
+            ["sprites/a.png", "sprites/b.png"]
+        );
+        assert_eq!(strip(&["a/x.txt", "b/y.txt"]), ["a/x.txt", "b/y.txt"]);
+    }
 }

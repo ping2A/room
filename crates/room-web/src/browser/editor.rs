@@ -208,17 +208,8 @@ fn mount_with(
     paths: &BTreeMap<String, Vec<u8>>,
     nested: &[NestedWad],
 ) -> Result<Vfs, String> {
-    let add = |b: VfsBuilder, name: &str, data: Bytes| -> Result<VfsBuilder, String> {
-        let mut b = b
-            .mount_memory(name.to_owned(), data)
-            .map_err(|e| e.to_string())?;
-        for n in nested.iter().filter(|n| n.owner == name) {
-            b = b
-                .mount_memory(n.name.clone(), n.data.clone())
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(b)
-    };
+    let add =
+        |b: VfsBuilder, name: &str, data: Bytes| pk3_edit::mount_with_nested(b, name, data, nested);
     let mut b = mount_embedded_engine(VfsBuilder::new()).map_err(|e| e.to_string())?;
     b = add(b, &iwad.0, iwad.1.clone())?;
     for (name, data) in pwads {
@@ -305,7 +296,15 @@ impl Editor {
         let overrides = BTreeMap::new();
         let vfs = mount(&iwad, &[], &overrides, &BTreeMap::new())?;
         let materials = catalog(&vfs);
-        let data = load_layered_engine_data(&vfs).map_err(|e| e.to_string())?;
+        // A mod PK3 opened on its own may carry DECORATE / ZScript the engine
+        // rejects: still open it (like `rebuild`), with stock actors.
+        let (data, data_error) = match load_layered_engine_data(&vfs) {
+            Ok(d) => (d, None),
+            Err(e) => (
+                load_embedded_engine_data().map_err(|e| e.to_string())?,
+                Some(e.to_string()),
+            ),
+        };
         Ok(Self {
             iwad,
             duke,
@@ -315,7 +314,7 @@ impl Editor {
             vfs,
             materials,
             data,
-            data_error: None,
+            data_error,
             actor_edits: BTreeMap::new(),
             doc: None,
             geom: None,

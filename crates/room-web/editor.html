@@ -11,11 +11,14 @@
     <div class="brand">ROOM<span>editor</span></div>
     <div class="group">
       <label class="btn" title="Replace the base game: Doom / Freedoom IWAD (.wad) or a PK3 / ZIP.">
-        IWAD…<input id="file-iwad" type="file" accept=".wad,.iwad,.pk3,.pk7,.zip,application/octet-stream,application/zip" hidden />
+        IWAD…<input id="file-iwad" type="file" accept=".wad,.iwad,.pk3,.pk7,.zip,.ipk3,.ipk7,application/octet-stream,application/zip" hidden />
       </label>
       <span id="iwad-label" class="iwad-label" title="Base IWAD">—</span>
       <label class="btn" title="Add PWADs, PK3s, PK7s, or ZIPs on top of the base archive (or drop files anywhere)">
-        Open…<input id="file-open" type="file" accept=".wad,.pk3,.pk7,.zip,.pwad,application/zip" multiple hidden />
+        Open…<input id="file-open" type="file" accept=".wad,.pk3,.pk7,.zip,.ipk3,.ipk7,.pwad,application/zip" multiple hidden />
+      </label>
+      <label id="btn-open-pk3" class="btn go" title="Import a PK3 / PK7 / ZIP / IPK3 as the working archive: browse its files, edit its ZScript, open its maps, then Export PK3. Works with or without an IWAD open (or drop the file anywhere).">
+        📦 Open PK3…<input id="file-pk3" type="file" accept=".pk3,.pk7,.zip,.ipk3,.ipk7,application/zip,application/x-7z-compressed" multiple hidden />
       </label>
       <select id="map-select" title="Map"></select>
       <button id="btn-new-map" class="btn" title="New map">New map</button>
@@ -69,7 +72,7 @@
     </div>
     <div class="group packs">
       <button id="btn-add-pack" type="button" class="btn" title="Mount a content pack (.pk3 / .zip)">+ Pack…</button>
-      <input id="file-pack" type="file" accept=".pk3,.zip,.pk7,application/zip" multiple hidden />
+      <input id="file-pack" type="file" accept=".pk3,.zip,.pk7,.ipk3,.ipk7,application/zip" multiple hidden />
       <span id="packs-label" class="iwad-label" title="Mounted content packs">—</span>
     </div>
   </header>

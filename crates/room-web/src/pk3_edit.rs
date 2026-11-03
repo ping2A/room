@@ -5,7 +5,7 @@
 //! Host-testable (no `web-sys`); the wasm bridge lives in `browser/editor.rs`.
 
 use bytes::Bytes;
-use room_vfs::{ContainerKind, Namespace, Vfs, zip_from_files};
+use room_vfs::{ContainerKind, Namespace, Vfs, VfsBuilder, zip_from_files};
 use room_zscript::{Diagnostic, Severity};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -52,6 +52,25 @@ pub(crate) fn map_wads(vfs: &Vfs) -> Vec<NestedWad> {
         });
     }
     out
+}
+
+/// Mount the archive `name`, then each `maps/*.wad` of it (from a first
+/// [`map_wads`] pass) right after it, so later archives still override them.
+pub(crate) fn mount_with_nested(
+    b: VfsBuilder,
+    name: &str,
+    data: Bytes,
+    nested: &[NestedWad],
+) -> Result<VfsBuilder, String> {
+    let mut b = b
+        .mount_memory(name.to_owned(), data)
+        .map_err(|e| e.to_string())?;
+    for n in nested.iter().filter(|n| n.owner == name) {
+        b = b
+            .mount_memory(n.name.clone(), n.data.clone())
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(b)
 }
 
 /// Normalised archive path: `/` separators, no leading `/`, lowercase.
@@ -303,7 +322,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use room_vfs::{VfsBuilder, WadWriter};
+    use room_vfs::WadWriter;
 
     fn map_wad(name: &str) -> Vec<u8> {
         WadWriter::pwad()
@@ -471,5 +490,151 @@ mod tests {
         let v = check_zscript(&vfs, "zscript/foo.zs", src);
         assert_eq!(v["scope"], "program", "{v}");
         assert!(v["files"].as_u64().unwrap() >= 1);
+    }
+
+    /// Mount like the editor does: archive, then its map WADs (two passes).
+    fn mount_editor(name: &str, data: Vec<u8>, paths: &BTreeMap<String, Vec<u8>>) -> Vfs {
+        let data = Bytes::from(data);
+        let build = |nested: &[NestedWad]| {
+            let mut b = mount_with_nested(VfsBuilder::new(), name, data.clone(), nested).unwrap();
+            if !paths.is_empty() {
+                b = mount_with_nested(
+                    b,
+                    PATH_OVERRIDES,
+                    overrides_pk3(paths).unwrap().into(),
+                    nested,
+                )
+                .unwrap();
+            }
+            b.build().unwrap()
+        };
+        let first = build(&[]);
+        let nested = map_wads(&first);
+        if nested.is_empty() {
+            first
+        } else {
+            build(&nested)
+        }
+    }
+
+    /// Deterministic, poorly compressible bytes.
+    fn noise(n: usize) -> Vec<u8> {
+        let mut x: u32 = 0x1234_5678;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                (x >> 24) as u8
+            })
+            .collect()
+    }
+
+    /// Imported PK3 wrapped in one top-level folder (as zipped by many
+    /// tools), with a root zscript.txt that #includes, a map in
+    /// maps/*.wad and a large file: open → edit → Export PK3 → re-open.
+    #[test]
+    fn import_wrapped_pk3_round_trips() {
+        let big = noise(12 << 20);
+        let root = "version \"4.10\"\n#include \"zscript/monsters.zs\"\n";
+        let monsters = "class FastImp : Actor\n{\n  Default\n  {\n    Health 90;\n    +SOLID\n  }\n  States\n  {\n  Spawn:\n    TROO A 10;\n    Loop;\n  }\n}\n";
+        let pk3 = zip_from_files(&[
+            ("MyMod/zscript.txt", root.as_bytes()),
+            ("MyMod/zscript/monsters.zs", monsters.as_bytes()),
+            ("MyMod/maps/e1m1.wad", map_wad("E1M1").as_slice()),
+            ("MyMod/music/big.ogg", big.as_slice()),
+        ])
+        .unwrap();
+        let mut paths = BTreeMap::new();
+        let vfs = mount_editor("mymod.pk3", pk3.clone(), &paths);
+        // Wrapper folder stripped; the map inside maps/ is mounted and found.
+        assert!(vfs.find_full("zscript/monsters.zs").is_some());
+        assert!(vfs.find_full("MyMod/zscript.txt").is_none());
+        let nested = map_wads(&vfs);
+        assert_eq!(nested.len(), 1);
+        assert_eq!(nested[0].name, "mymod.pk3:maps/e1m1.wad");
+        assert!(vfs.find("E1M1", Namespace::Global).is_some());
+        // The root ZSCRIPT pulls the included file into the program.
+        let (sources, _) = room_game::zscript_sources_from_vfs(&vfs);
+        assert!(
+            sources
+                .iter()
+                .any(|(p, _)| p.eq_ignore_ascii_case("zscript/monsters.zs")),
+            "{sources:?}"
+        );
+        let v = check_zscript(&vfs, "zscript/monsters.zs", monsters);
+        assert_eq!(v["scope"], "program", "{v}");
+        // Edit the included file by path, as roomEditorSetPath does.
+        let edited = monsters.replace("Health 90", "Health 45");
+        paths.insert(
+            normalize_path("ZScript/Monsters.zs").unwrap(),
+            edited.clone().into_bytes(),
+        );
+        let vfs = mount_editor("mymod.pk3", pk3, &paths);
+        let id = vfs.find_full("zscript/monsters.zs").unwrap();
+        assert_eq!(vfs.read(id).unwrap().as_ref(), edited.as_bytes());
+        assert!(vfs.find("E1M1", Namespace::Global).is_some());
+        // Export PK3 of the working archive, then import that.
+        let ex = Pk3Export {
+            base: archive_entries(&vfs, "mymod.pk3"),
+            paths: paths.clone(),
+            maps: vec![("E1M1".into(), map_wad("E1M1"))],
+            ..Pk3Export::default()
+        };
+        assert_eq!(ex.base.len(), 4);
+        let out = build_pk3(&ex).unwrap();
+        let back = mount_editor("mymod-room-edit.pk3", out, &BTreeMap::new());
+        let read = |p: &str| back.read(back.find_full(p).unwrap()).unwrap().to_vec();
+        assert_eq!(read("zscript/monsters.zs"), edited.as_bytes());
+        assert_eq!(read("zscript.txt"), root.as_bytes());
+        assert_eq!(read("music/big.ogg"), big);
+        assert_eq!(archive_entries(&back, "mymod-room-edit.pk3").len(), 4);
+        assert!(back.find("E1M1", Namespace::Global).is_some());
+        let (sources, _) = room_game::zscript_sources_from_vfs(&back);
+        assert!(sources.iter().any(|(_, t)| t.contains("Health 45")));
+    }
+
+    /// A PK3 with only a root zscript.zs and nothing else round-trips with a
+    /// brand-new file added in a folder.
+    #[test]
+    fn root_zscript_zs_and_new_file() {
+        let pk3 = zip_from_files(&[(
+            "zscript.zs",
+            b"version \"4.10\"\n#include \"zscript/new.zs\"\n".as_slice(),
+        )])
+        .unwrap();
+        let mut paths = BTreeMap::new();
+        paths.insert(
+            "zscript/new.zs".to_owned(),
+            b"class NewThing : Actor {}\n".to_vec(),
+        );
+        let vfs = mount_editor("solo.pk3", pk3, &paths);
+        // A lone root file is not a wrapper folder: it stays mounted.
+        assert!(vfs.find_full("zscript.zs").is_some());
+        let (sources, _) = room_game::zscript_sources_from_vfs(&vfs);
+        assert!(
+            sources
+                .iter()
+                .any(|(p, _)| p.eq_ignore_ascii_case("zscript.zs")),
+            "{sources:?}"
+        );
+        assert!(
+            sources
+                .iter()
+                .any(|(p, _)| p.eq_ignore_ascii_case("zscript/new.zs")),
+            "{sources:?}"
+        );
+        let ex = Pk3Export {
+            base: archive_entries(&vfs, "solo.pk3"),
+            paths,
+            ..Pk3Export::default()
+        };
+        let back = mount_editor(
+            "solo-room-edit.pk3",
+            build_pk3(&ex).unwrap(),
+            &BTreeMap::new(),
+        );
+        assert!(back.find_full("zscript.zs").is_some());
+        assert!(back.find_full("zscript/new.zs").is_some());
     }
 }
