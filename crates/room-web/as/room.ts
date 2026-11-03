@@ -222,6 +222,24 @@ export namespace ClassProp {
   export const TRANSLATION: i32 = 20;
   export const TAG: i32 = 21;
   export const OBITUARY: i32 = 22;
+  export const DAMAGE: i32 = 39;
+  export const INVENTORY_AMOUNT: i32 = 30;
+  export const INVENTORY_MAX_AMOUNT: i32 = 31;
+  export const AMMO_BACKPACK_AMOUNT: i32 = 32;
+  export const AMMO_BACKPACK_MAX_AMOUNT: i32 = 33;
+  export const WEAPON_AMMO_USE: i32 = 34;
+  export const WEAPON_AMMO_GIVE: i32 = 35;
+  export const WEAPON_SELECTION_ORDER: i32 = 36;
+  export const WEAPON_KICKBACK: i32 = 37;
+  export const WEAPON_SLOT_NUMBER: i32 = 38;
+  export const WEAPON_AMMO_TYPE: i32 = 50;
+  export const WEAPON_READY_SOUND: i32 = 51;
+  export const WEAPON_UP_SOUND: i32 = 52;
+  export const INVENTORY_PICKUP_MESSAGE: i32 = 53;
+  export const INVENTORY_PICKUP_SOUND: i32 = 54;
+  export const INVENTORY_ICON: i32 = 55;
+  export const SEE_SOUND: i32 = 56;
+  export const DEATH_SOUND: i32 = 57;
 }
 
 /** `classFlag` ids. */
@@ -237,6 +255,12 @@ export namespace ClassFlag {
   export const NORADIUSDMG: i32 = 9;
   export const INVULNERABLE: i32 = 10;
   export const DONTDRAW: i32 = 11;
+  export const MISSILE: i32 = 14;
+  export const DROPOFF: i32 = 15;
+  export const NOBLOCKMAP: i32 = 16;
+  export const WALLSPRITE: i32 = 22;
+  export const FLATSPRITE: i32 = 23;
+  export const WEAPON_NOALERT: i32 = 25;
 }
 
 /** Mod HUD widget kinds (`docs/27` §9.2). */
@@ -755,44 +779,6 @@ export namespace LumpNs {
   export const FLATS: i32 = 4;
 }
 
-/** PropId / class_flag constants used by mods (`docs/31`). */
-export namespace Prop {
-  export const HEALTH: i32 = 1;
-  export const SPEED: i32 = 2;
-  export const RADIUS: i32 = 4;
-  export const HEIGHT: i32 = 5;
-  export const DAMAGE: i32 = 39;
-  export const INVENTORY_AMOUNT: i32 = 30;
-  export const INVENTORY_MAX_AMOUNT: i32 = 31;
-  export const AMMO_BACKPACK_AMOUNT: i32 = 32;
-  export const AMMO_BACKPACK_MAX_AMOUNT: i32 = 33;
-  export const WEAPON_AMMO_USE: i32 = 34;
-  export const WEAPON_AMMO_GIVE: i32 = 35;
-  export const WEAPON_SELECTION_ORDER: i32 = 36;
-  export const WEAPON_KICKBACK: i32 = 37;
-  export const WEAPON_SLOT_NUMBER: i32 = 38;
-  export const WEAPON_AMMO_TYPE: i32 = 50;
-  export const WEAPON_READY_SOUND: i32 = 51;
-  export const WEAPON_UP_SOUND: i32 = 52;
-  export const INVENTORY_PICKUP_MESSAGE: i32 = 53;
-  export const INVENTORY_PICKUP_SOUND: i32 = 54;
-  export const INVENTORY_ICON: i32 = 55;
-  export const SEE_SOUND: i32 = 56;
-  export const DEATH_SOUND: i32 = 57;
-  export const TAG: i32 = 21;
-  export const OBITUARY: i32 = 22;
-}
-export namespace Flag {
-  export const SOLID: i32 = 1;
-  export const SHOOTABLE: i32 = 2;
-  export const NOGRAVITY: i32 = 5;
-  export const MISSILE: i32 = 14;
-  export const DROPOFF: i32 = 15;
-  export const NOBLOCKMAP: i32 = 16;
-  export const WALLSPRITE: i32 = 22;
-  export const FLATSPRITE: i32 = 23;
-  export const WEAPON_NOALERT: i32 = 25;
-}
 export namespace Flow {
   export const LOOP: i32 = 0;
   export const STOP: i32 = 1;

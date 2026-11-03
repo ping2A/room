@@ -13,6 +13,7 @@ workspace = true
 room-core = { path = "../room-core" }
 room-formats = { path = "../room-formats" }
 room-sc = { path = "../room-sc" }
+serde_json.workspace = true
 room-vfs = { path = "../room-vfs" }
 thiserror.workspace = true
 

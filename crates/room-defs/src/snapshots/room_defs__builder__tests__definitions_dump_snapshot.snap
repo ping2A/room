@@ -138,5 +138,22 @@ Definitions {
     tranmap: None,
     switches: [],
     complevel: Default,
+    id24: Id24Defs {
+        skydefs: None,
+        demoloop: None,
+        gameconf: GameConf {
+            title: None,
+            author: None,
+            description: None,
+            version: None,
+            iwad: None,
+            pwads: [],
+            player_translations: None,
+            executable: None,
+            mode: None,
+            options: "",
+        },
+        raw: {},
+    },
     warnings: [],
 }

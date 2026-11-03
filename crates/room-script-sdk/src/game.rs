@@ -806,7 +806,7 @@ pub trait RoomMod: Default {
 
     /// WASM state action (`reg_state` `callback_id` &lt; [`EVENT_CALLBACK_BASE`]).
     /// Return a `StateRef` jump (0 = continue).
-    fn on_state_action(&mut self, _payload: room_script_abi::ActionPayload) -> i64 {
+    fn on_state_action(&mut self, _payload: crate::ActionPayload) -> i64 {
         0
     }
 }

@@ -225,9 +225,49 @@ export function textLang(name, path, text = "") {
   if (["zs", "zc", "zsc"].includes(ext) || stem === "zscript" || p.startsWith("zscript/")) return "zs";
   if (["acs", "bcs"].includes(ext) || stem === "scripts" && ext !== "o" || p.startsWith("acs_source/")) return "acs";
   if (["mapinfo", "zmapinfo", "umapinfo", "emapinfo", "gameinfo"].includes(stem)) return "mapinfo";
+  if (looksZscript(text)) return "zs";
   if (stem === "decorate" || ext === "dec" || ext === "decorate" || p.startsWith("actors/") || p.startsWith("decorate/")) return "decorate";
   if (/^\s*(?:\/\/[^\n]*\n\s*)*actor\s+[\w.]+/i.test(text.slice(0, 4096))) return "decorate";
   return "text";
+}
+
+/**
+ * True when a text sample reads as ZScript: a `version "x.y"` line, or a
+ * `class` / `extend class` / `struct` / `mixin class` declaration with a body.
+ * DECORATE uses `actor`, never `class`, so `actors/foo.txt` holding ZScript
+ * (common in mods that #include from their ZSCRIPT lump) is caught here.
+ */
+export function looksZscript(text = "") {
+  const t = String(text).slice(0, 16384).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  if (/^\s*version\s+"\d+(?:\.\d+)*"/m.test(t)) return true;
+  return /^\s*(?:extend\s+class|mixin\s+class|(?:(?:abstract|native|play|ui|final|clearscope)\s+)*class|struct|enum)\s+\w+[^;{]*\{/im.test(t)
+    && !/^\s*actor\s+[\w.]+/im.test(t);
+}
+
+/**
+ * Every ZScript file the engine would load: the `ZSCRIPT` roots (a top-level
+ * `zscript.*` in a PK3, the `ZSCRIPT` lump of a WAD) and whatever they
+ * `#include`, transitively — whatever the files are called (`actors/x.txt`).
+ * `lumps` are summary rows `{name, path, src, kind}`; `read(l)` returns a
+ * lump's text; `resolve(path, from)` finds an included lump. Returns a Set of
+ * rows (identity), so callers can test `set.has(l)`.
+ */
+export function zscriptClosure(lumps, read, resolve) {
+  const isRoot = (l) => l.kind !== "map" && l.name === "ZSCRIPT" && !String(l.path || "").includes("/");
+  const out = new Set();
+  const queue = lumps.filter((l) => isRoot(l) || textLang(l.name, l.path) === "zs");
+  while (queue.length) {
+    const l = queue.shift();
+    if (!l || out.has(l)) continue;
+    out.add(l);
+    let src = "";
+    try { src = read(l) || ""; } catch (_) { continue; }
+    for (const inc of includesOf(src)) {
+      const hit = resolve(inc.path, l);
+      if (hit && !out.has(hit)) queue.push(hit);
+    }
+  }
+  return out;
 }
 
 /** `#include "path"` lines in a ZScript / DECORATE / ACS source: [{line, path}] (1-based lines). */

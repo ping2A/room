@@ -10,10 +10,15 @@ use room_zvm::{CompiledFunction, CompiledProgram, Op, Zvm};
 use std::collections::BTreeMap;
 
 /// Cache of compiled DECORATE argument expressions.
+///
+/// Each expression keeps one linked VM. Building a [`Zvm`] registers every
+/// builtin native (about a thousand map inserts), and Brutal Doom evaluates
+/// `random(...)` arguments for every gib and particle it spawns: a single
+/// gory death used to spend seconds rebuilding native tables.
 #[derive(Default)]
 pub struct DecoExprCache {
-    programs: BTreeMap<String, CompiledProgram>,
-    float_programs: BTreeMap<String, CompiledProgram>,
+    programs: BTreeMap<String, Zvm>,
+    float_programs: BTreeMap<String, Zvm>,
 }
 
 impl DecoExprCache {
@@ -28,21 +33,17 @@ impl DecoExprCache {
         if !zvm_suitable(expr) {
             return None;
         }
-        let prog = self
-            .programs
-            .entry(raw.to_owned())
-            .or_insert_with(|| {
-                let mut f = compile_expr(expr);
-                f.name = "__deco".into();
-                let mut p = CompiledProgram {
-                    functions: vec![f],
-                    ..Default::default()
-                };
-                p.finalize();
-                p
-            })
-            .clone();
-        run_i(world, self_id, &prog)
+        let vm = self.programs.entry(raw.to_owned()).or_insert_with(|| {
+            let mut f = compile_expr(expr);
+            f.name = "__deco".into();
+            let mut p = CompiledProgram {
+                functions: vec![f],
+                ..Default::default()
+            };
+            p.finalize();
+            link_i(p)
+        });
+        run_i(world, self_id, vm)
     }
 
     /// Compile (or fetch) and evaluate a float-suitable expression.
@@ -56,7 +57,7 @@ impl DecoExprCache {
         if !zvm_suitable_f(expr) {
             return None;
         }
-        let prog = self
+        let vm = self
             .float_programs
             .entry(raw.to_owned())
             .or_insert_with(|| {
@@ -67,10 +68,9 @@ impl DecoExprCache {
                     ..Default::default()
                 };
                 p.finalize();
-                p
-            })
-            .clone();
-        run_f(world, self_id, &prog)
+                link_f(p)
+            });
+        run_f(world, self_id, vm)
     }
 }
 
@@ -486,9 +486,9 @@ fn fill_host(world: &mut World, self_id: ActorId) -> Host {
     host
 }
 
-fn run_i(world: &mut World, self_id: ActorId, prog: &CompiledProgram) -> Option<i64> {
-    HOST.with(|c| *c.borrow_mut() = fill_host(world, self_id));
-    let mut vm = Zvm::new(prog.clone());
+/// Link an integer expression program once (builtins + `deco.*` natives).
+fn link_i(prog: CompiledProgram) -> Zvm {
+    let mut vm = Zvm::new(prog);
     let id_i = vm.natives.register("deco.ident", native_ident);
     let id_c = vm.natives.register("deco.call", native_call);
     let id_x = vm.natives.register("deco.index", native_index);
@@ -497,12 +497,31 @@ fn run_i(world: &mut World, self_id: ActorId, prog: &CompiledProgram) -> Option<
         patch(&mut f.code, N_CALL, id_c);
         patch(&mut f.code, N_INDEX, id_x);
     }
+    vm
+}
+
+/// Reset per-call VM state so a cached VM behaves like a fresh one.
+fn reset_vm(vm: &mut Zvm) {
+    vm.heap = room_zvm::ZvmHeap::new();
+    vm.play = Default::default();
+}
+
+fn run_i(world: &mut World, self_id: ActorId, vm: &mut Zvm) -> Option<i64> {
+    HOST.with(|c| *c.borrow_mut() = fill_host(world, self_id));
+    reset_vm(vm);
     vm.call("__deco").ok()
 }
 
-fn run_f(world: &mut World, self_id: ActorId, prog: &CompiledProgram) -> Option<f64> {
+fn run_f(world: &mut World, self_id: ActorId, vm: &mut Zvm) -> Option<f64> {
     HOST.with(|c| *c.borrow_mut() = fill_host(world, self_id));
-    let mut vm = Zvm::new(prog.clone());
+    reset_vm(vm);
+    vm.call("__deco_f").ok()?;
+    Some(HOST.with(|c| c.borrow().last_f))
+}
+
+/// Link a float expression program once.
+fn link_f(prog: CompiledProgram) -> Zvm {
+    let mut vm = Zvm::new(prog);
     let id_i = vm.natives.register("deco.ident", native_ident);
     let id_if = vm.natives.register("deco.ident_f", native_ident_f);
     let id_x = vm.natives.register("deco.index", native_index);
@@ -517,8 +536,7 @@ fn run_f(world: &mut World, self_id: ActorId, prog: &CompiledProgram) -> Option<
         patch(&mut f.code, N_FRET, id_fr);
         patch(&mut f.code, N_FMOD, id_fm);
     }
-    vm.call("__deco_f").ok()?;
-    Some(HOST.with(|c| c.borrow().last_f))
+    vm
 }
 
 fn patch(code: &mut [u32], from: u32, to: u32) {

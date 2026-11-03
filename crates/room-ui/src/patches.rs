@@ -221,6 +221,70 @@ pub struct PatchCache {
     palette: [[u8; 3]; 256],
     /// Loaded patches.
     patches: BTreeMap<String, SoftPatch>,
+    /// Sprite frame table (built on first use), see [`Self::sprite_frame_lump`].
+    sprite_frames: Option<SpriteFrames>,
+}
+
+/// `(sprite, frame)` → per-rotation `(lump, flip)` for rotations 1–8.
+type SpriteFrames = std::collections::HashMap<(String, u8), [Option<(String, bool)>; 8]>;
+
+/// Frame letter → index (`A` = 0 … `Z` = 25, `[` `\\` `]` = 26–28).
+fn frame_index(c: u8) -> Option<u8> {
+    match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'[' => Some(26),
+        b'\\' => Some(27),
+        b']' => Some(28),
+        _ => None,
+    }
+}
+
+/// Record one `frame`/`rot` pair of a sprite lump (GZDoom `R_InstallSprite`):
+/// rotation 0 fills all eight views; a later rotated lump overrides its view.
+fn install_frame(table: &mut SpriteFrames, sprite: &str, frame: u8, rot: u8, lump: &str, flip: bool) {
+    let slots = table
+        .entry((sprite.to_owned(), frame))
+        .or_insert_with(|| std::array::from_fn(|_| None));
+    if rot == 0 {
+        for slot in slots.iter_mut() {
+            *slot = Some((lump.to_owned(), flip));
+        }
+    } else if let Some(slot) = slots.get_mut(usize::from(rot - 1)) {
+        *slot = Some((lump.to_owned(), flip));
+    }
+}
+
+/// Parse sprite lump names (`POSSA1`, `POSSA2A8`, `BOS2A2C8`) in load order.
+///
+/// The second pair of an 8-character name is the mirrored view of a frame
+/// that may be a different letter: `BOS2A2C8` is frame A seen from 2 and
+/// frame C seen from 8 (flipped). Brutal Doom names most monster frames this
+/// way; matching only `A2A8` left those frames with no lump, so enemies
+/// vanished mid-animation from some angles.
+#[must_use]
+fn build_sprite_frames<'a>(names: impl Iterator<Item = &'a str>) -> SpriteFrames {
+    let mut table = SpriteFrames::new();
+    for name in names {
+        let b = name.as_bytes();
+        if (b.len() != 6 && b.len() != 8) || !name.is_ascii() {
+            continue;
+        }
+        let sprite = &name[..4];
+        let rot_of = |c: u8| (b'0'..=b'8').contains(&c).then(|| c - b'0');
+        let (Some(f1), Some(r1)) = (frame_index(b[4]), rot_of(b[5])) else {
+            continue;
+        };
+        if b.len() == 8 {
+            let (Some(f2), Some(r2)) = (frame_index(b[6]), rot_of(b[7])) else {
+                continue;
+            };
+            install_frame(&mut table, sprite, f1, r1, name, false);
+            install_frame(&mut table, sprite, f2, r2, name, true);
+        } else {
+            install_frame(&mut table, sprite, f1, r1, name, false);
+        }
+    }
+    table
 }
 
 impl Default for PatchCache {
@@ -233,6 +297,7 @@ impl Default for PatchCache {
         Self {
             palette,
             patches: BTreeMap::new(),
+            sprite_frames: None,
         }
     }
 }
@@ -261,7 +326,32 @@ impl PatchCache {
         Self {
             palette,
             patches: BTreeMap::new(),
+            sprite_frames: None,
         }
+    }
+
+    /// Lump for `sprite` `frame` seen from rotation `rot` (1–8), with its flip.
+    ///
+    /// Built once from every sprite-namespace lump, later archives overriding
+    /// earlier ones, like GZDoom's sprite installer. Handles mixed-letter
+    /// pairs (`BOS2A2C8`) that a name guess cannot find.
+    pub fn sprite_frame_lump(
+        &mut self,
+        vfs: &Vfs,
+        sprite: &str,
+        frame: u8,
+        rot: u8,
+    ) -> Option<(String, bool)> {
+        let table = self.sprite_frames.get_or_insert_with(|| {
+            let names: Vec<String> = vfs
+                .iter()
+                .filter(|(_, li)| li.namespace == Namespace::Sprites)
+                .map(|(_, li)| li.short_name.as_str().to_ascii_uppercase())
+                .collect();
+            build_sprite_frames(names.iter().map(String::as_str))
+        });
+        let slots = table.get(&(sprite.trim().to_ascii_uppercase(), frame))?;
+        slots.get(usize::from(rot.clamp(1, 8) - 1))?.clone()
     }
 
     /// Ensure `name` is loaded (Sprites → Graphics → Global).
@@ -532,5 +622,34 @@ mod tests {
         let p = cache.ensure(&vfs, "STBAR").expect("STBAR");
         assert_eq!(p.width, 320);
         assert_eq!(p.height, 32);
+    }
+}
+
+#[cfg(test)]
+mod sprite_frame_tests {
+    use super::*;
+
+    #[test]
+    fn mixed_letter_pairs_install_the_mirrored_frame() {
+        let t = build_sprite_frames(
+            ["BOS2A1C1", "BOS2A2C8", "BOS2A3C7", "BOS2A5C5", "BOS2C4", "POSSA0"].into_iter(),
+        );
+        let a = t.get(&("BOS2".into(), 0)).unwrap();
+        let c = t.get(&("BOS2".into(), 2)).unwrap();
+        assert_eq!(a[1], Some(("BOS2A2C8".into(), false)));
+        // Frame C from view 8 is the flipped second half of A2C8.
+        assert_eq!(c[7], Some(("BOS2A2C8".into(), true)));
+        assert_eq!(c[0], Some(("BOS2A1C1".into(), true)));
+        assert_eq!(c[3], Some(("BOS2C4".into(), false)));
+        let p = t.get(&("POSS".into(), 0)).unwrap();
+        assert!(p.iter().all(|s| s.as_ref().is_some_and(|(n, f)| n == "POSSA0" && !f)));
+    }
+
+    #[test]
+    fn later_rotated_lump_overrides_one_view_of_rotation_zero() {
+        let t = build_sprite_frames(["TROOA0", "TROOA3"].into_iter());
+        let a = t.get(&("TROO".into(), 0)).unwrap();
+        assert_eq!(a[2].as_ref().unwrap().0, "TROOA3");
+        assert_eq!(a[0].as_ref().unwrap().0, "TROOA0");
     }
 }

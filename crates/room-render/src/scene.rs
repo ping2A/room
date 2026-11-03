@@ -10,6 +10,55 @@ use crate::sprites::{SpriteInstance, emit_sprite_quad};
 use glam::{Vec2, Vec3};
 use room_map::{GameNodes, GlNodes, MapGeometry, Seg};
 
+/// Reorder sprite quads far-to-near (painter's order), as GZDoom sorts sprites.
+///
+/// Sprites write depth even where their texels are only partly opaque (soft
+/// PNG edges, `Alpha 0.4` smoke and blood). Drawn in actor order, a smoke or
+/// blood quad in front of a monster could land first and depth-reject the
+/// monster behind it, so enemies blinked as Brutal Doom's particles came and
+/// went. Far-to-near order draws the monster first; whatever lies in front is
+/// blended over it. Equal distances keep their order (stable sort), so an
+/// overlay at its owner's position never swaps with it from frame to frame.
+#[must_use]
+pub fn sprites_back_to_front(
+    verts: &[crate::mesh::WallVertex],
+    ranges: &[MaterialRange],
+    eye: glam::Vec3,
+) -> (Vec<crate::mesh::WallVertex>, Vec<MaterialRange>) {
+    let mut keyed: Vec<(f32, &MaterialRange)> = ranges
+        .iter()
+        .filter_map(|r| {
+            let (s, n) = (r.start as usize, r.count as usize);
+            let quad = verts.get(s..s + n)?;
+            if quad.is_empty() {
+                return None;
+            }
+            let mut c = glam::Vec3::ZERO;
+            for v in quad {
+                c += glam::Vec3::from_array(v.pos);
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let c = c / quad.len() as f32;
+            Some((c.distance_squared(eye), r))
+        })
+        .collect();
+    keyed.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut out_v = Vec::with_capacity(verts.len());
+    let mut out_r = Vec::with_capacity(keyed.len());
+    for (_, r) in keyed {
+        #[allow(clippy::cast_possible_truncation)]
+        let start = out_v.len() as u32;
+        let (s, n) = (r.start as usize, r.count as usize);
+        out_v.extend_from_slice(&verts[s..s + n]);
+        out_r.push(MaterialRange {
+            name: r.name.clone(),
+            start,
+            count: r.count,
+        });
+    }
+    (out_v, out_r)
+}
+
 /// Contiguous draw range sharing one material name.
 #[derive(Clone, Debug)]
 pub struct MaterialRange {
@@ -274,7 +323,7 @@ pub fn build_scene_with_sky_ex_sized(
         v.pos[2] += eye.z;
     }
     match live_sprites {
-        Some(sprites) => append_sprites(&mut lists, sprites, camera),
+        Some(sprites) => append_sprites_in_map(&mut lists, sprites, camera, Some(map)),
         None => emit_thing_sprites(map, camera, &mut lists),
     }
     lists
@@ -406,11 +455,26 @@ fn lift_sprite_off_surface(quad: &mut [crate::mesh::WallVertex], eye: Vec3, norm
 
 /// Append pre-built sprite instances as Y-billboards facing the camera.
 pub fn append_sprites(lists: &mut SceneLists, sprites: &[SpriteInstance], camera: &Camera) {
+    append_sprites_in_map(lists, sprites, camera, None);
+}
+
+/// [`append_sprites`], de-clipping billboards against `map` walls first
+/// (see [`declip_billboard`]).
+pub fn append_sprites_in_map(
+    lists: &mut SceneLists,
+    sprites: &[SpriteInstance],
+    camera: &Camera,
+    map: Option<&MapGeometry>,
+) {
+    let mut scratch = Vec::new();
     for inst in sprites {
         #[allow(clippy::cast_possible_truncation)]
         let start = lists.sprites.len() as u32;
         let mut quad = emit_sprite_quad(inst.clone(), camera.forward);
         let eye = camera.eye;
+        if let (Some(map), crate::sprites::SpriteOrient::Billboard) = (map, inst.orient) {
+            declip_billboard(map, eye, inst.pos, &mut quad, &mut scratch);
+        }
         match inst.orient {
             // Nudge a billboard toward the eye so feet and walls cannot win the
             // depth test and bury it (common HW Doom-port fix).
@@ -444,6 +508,168 @@ pub fn append_sprites(lists: &mut SceneLists, sprites: &[SpriteInstance], camera
             start,
             count: 6,
         });
+    }
+}
+
+/// Lines that can hide a sprite: one-sided walls, and two-sided lines with an
+/// upper or lower wall (floor or ceiling heights differ) or a mid texture.
+fn line_can_occlude(map: &MapGeometry, line: &room_map::Line) -> bool {
+    let (Some(f), Some(b)) = (line.front_sector, line.back_sector) else {
+        return true;
+    };
+    let (Some(fs), Some(bs)) = (
+        map.sectors.get(f.raw() as usize),
+        map.sectors.get(b.raw() as usize),
+    ) else {
+        return true;
+    };
+    if (fs.floor_height - bs.floor_height).abs() > 0.5
+        || (fs.ceiling_height - bs.ceiling_height).abs() > 0.5
+    {
+        return true;
+    }
+    line.sides.iter().flatten().any(|sid| {
+        map.sides
+            .get(sid.raw() as usize)
+            .is_some_and(|sd| !sd.middle.is_empty() && sd.middle != "-")
+    })
+}
+
+fn cross2(a: Vec2, b: Vec2) -> f32 {
+    a.x * b.y - a.y * b.x
+}
+
+/// Parameter `t` along `p0→p1` where it crosses segment `q0→q1`, if it does.
+fn seg_cross_t(p0: Vec2, p1: Vec2, q0: Vec2, q1: Vec2) -> Option<f32> {
+    let r = p1 - p0;
+    let s = q1 - q0;
+    let den = cross2(r, s);
+    if den.abs() < 1e-9 {
+        return None;
+    }
+    let qp = q0 - p0;
+    let t = cross2(qp, s) / den;
+    let u = cross2(qp, r) / den;
+    ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)).then_some(t)
+}
+
+/// Keep a billboard from being cut by walls its actor stands in front of.
+///
+/// Doom's software renderer never clips a sprite by a wall when the actor is
+/// on the viewer's side of that wall (`R_DrawSprite` drawseg test). With a
+/// depth buffer, a billboard wider than its actor (most Brutal Doom frames,
+/// any monster beside a wall seen off-axis) pokes through the wall and is cut,
+/// or vanishes near corners. This scales the quad toward the eye: every vertex
+/// slides along its own view ray, so the picture on screen is unchanged and
+/// only the depth moves. It moves just far enough to clear such walls, never
+/// past a wall that stands between the eye and the actor, and never more than
+/// half the sprite width plus 16 units.
+pub fn declip_billboard(
+    map: &MapGeometry,
+    eye: Vec3,
+    actor: Vec3,
+    quad: &mut [crate::mesh::WallVertex; 6],
+    scratch: &mut Vec<u32>,
+) {
+    let eye2 = eye.truncate();
+    let c = actor.truncate();
+    let to_c = c - eye2;
+    let dist = to_c.length();
+    if dist < 24.0 {
+        return;
+    }
+    // quad[0] / quad[1] are the bottom-left / bottom-right corners.
+    let e1 = Vec2::new(quad[0].pos[0], quad[0].pos[1]);
+    let e2 = Vec2::new(quad[1].pos[0], quad[1].pos[1]);
+    let half = (e2 - e1).length() * 0.5;
+    let max_pull = (half + 16.0).min(dist - 16.0);
+    if max_pull <= 0.0 {
+        return;
+    }
+    let s_lo = 1.0 - max_pull / dist;
+    let pulled = eye2 + to_c * s_lo;
+    let lo = e1.min(e2).min(c).min(pulled) - Vec2::splat(2.0);
+    let hi = e1.max(e2).max(c).max(pulled) + Vec2::splat(2.0);
+
+    scratch.clear();
+    let bm = &map.blockmap;
+    if bm.columns > 0 && bm.rows > 0 && !bm.blocks.is_empty() {
+        let ox = f32::from(bm.origin_x);
+        let oy = f32::from(bm.origin_y);
+        let cols = i32::from(bm.columns);
+        let rows = i32::from(bm.rows);
+        #[allow(clippy::cast_possible_truncation)]
+        let cell = |v: f32, o: f32, n: i32| (((v - o) / 128.0).floor() as i32).clamp(0, n - 1);
+        for by in cell(lo.y, oy, rows)..=cell(hi.y, oy, rows) {
+            for bx in cell(lo.x, ox, cols)..=cell(hi.x, ox, cols) {
+                #[allow(clippy::cast_sign_loss)]
+                let idx = (by * cols + bx) as usize;
+                if let Some(list) = bm.blocks.get(idx) {
+                    scratch.extend(list.iter().map(|l| l.raw()));
+                }
+            }
+        }
+        scratch.sort_unstable();
+        scratch.dedup();
+    } else {
+        #[allow(clippy::cast_possible_truncation)]
+        scratch.extend(0..map.lines.len() as u32);
+    }
+
+    let mut want = 1.0f32; // largest scale that clears every wall the actor faces
+    let mut floor = 0.0f32; // smallest scale that stays behind walls in front of it
+    for &li in scratch.iter() {
+        let Some(line) = map.lines.get(li as usize) else {
+            continue;
+        };
+        let (Some(v1), Some(v2)) = (
+            map.vertices.get(line.v1.raw() as usize),
+            map.vertices.get(line.v2.raw() as usize),
+        ) else {
+            continue;
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let p = Vec2::new(v1.pos.x() as f32, v1.pos.y() as f32);
+        #[allow(clippy::cast_possible_truncation)]
+        let q = Vec2::new(v2.pos.x() as f32, v2.pos.y() as f32);
+        if p.max(q).cmplt(lo).any() || p.min(q).cmpgt(hi).any() {
+            continue;
+        }
+        if !line_can_occlude(map, line) {
+            continue;
+        }
+        let d = q - p;
+        let se = cross2(d, eye2 - p);
+        if se.abs() < 1e-3 {
+            continue;
+        }
+        let sc = cross2(d, c - p);
+        if se * sc > 0.0 {
+            // Actor on the viewer's side: pull any far-side corner back over.
+            for e in [e1, e2] {
+                if cross2(d, e - p) * se >= 0.0 || seg_cross_t(c, e, p, q).is_none() {
+                    continue;
+                }
+                let k = cross2(d, e - eye2);
+                if k.abs() < 1e-6 {
+                    continue;
+                }
+                let s_star = -se / k;
+                let len = (e - eye2).length().max(1.0);
+                want = want.min(s_star - 0.5 / len);
+            }
+        } else if let Some(t) = seg_cross_t(eye2, c, p, q) {
+            // A wall between the eye and the actor must keep hiding it.
+            floor = floor.max(t + 0.5 / dist);
+        }
+    }
+    let s = want.max(s_lo).max(floor).min(1.0);
+    if s >= 0.9999 {
+        return;
+    }
+    for v in quad.iter_mut() {
+        let pos = Vec3::from_array(v.pos);
+        v.pos = (eye + (pos - eye) * s).to_array();
     }
 }
 
@@ -3508,6 +3734,169 @@ mod tests {
         assert!(
             avg_x > 150.0,
             "expected live sprite near 200, avg_x={avg_x}"
+        );
+    }
+
+    fn corridor() -> MapGeometry {
+        // 512×128 corridor; walls at y=0 and y=128.
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 128.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        map
+    }
+
+    fn wide_billboard(x: f32, y: f32, width: f32) -> SpriteInstance {
+        SpriteInstance {
+            pos: Vec3::new(x, y, 0.0),
+            width,
+            height: 64.0,
+            light: 1.0,
+            alpha: 1.0,
+            fuzz: false,
+            texture: "POSSA1".into(),
+            flip_u: false,
+            anchor_u: 0.5,
+            orient: crate::sprites::SpriteOrient::Billboard,
+        }
+    }
+
+    fn on_view_ray(eye: Vec3, before: Vec3, after: Vec3) -> bool {
+        (before - eye)
+            .normalize()
+            .cross((after - eye).normalize())
+            .length()
+            < 1e-4
+    }
+
+    #[test]
+    fn billboard_beside_a_wall_is_pulled_out_of_it() {
+        let map = corridor();
+        // Eye in the middle of the corridor looking down +X; the monster stands
+        // 24 units from the y=0 wall with an 80-wide frame, so 16 units of the
+        // frame poke through that wall.
+        let cam = Camera {
+            eye: Vec3::new(100.0, 64.0, 41.0),
+            forward: Vec3::new(1.0, 0.0, 0.0),
+            ..Camera::default()
+        };
+        let inst = wide_billboard(300.0, 24.0, 80.0);
+        let raw = emit_sprite_quad(inst.clone(), cam.forward);
+        assert!(
+            raw.iter().any(|v| v.pos[1] < 0.0),
+            "precondition: crosses wall"
+        );
+        let mut lists = SceneLists::default();
+        append_sprites_in_map(&mut lists, &[inst], &cam, Some(&map));
+        for (r, v) in raw.iter().zip(&lists.sprites) {
+            assert!(
+                v.pos[1] >= -0.01,
+                "vertex still behind the wall: {:?}",
+                v.pos
+            );
+            assert!(
+                on_view_ray(cam.eye, Vec3::from_array(r.pos), Vec3::from_array(v.pos)),
+                "must stay on its view ray (same pixel on screen)"
+            );
+        }
+    }
+
+    #[test]
+    fn sprites_are_drawn_far_to_near() {
+        let cam = Camera {
+            eye: Vec3::new(0.0, 0.0, 41.0),
+            forward: Vec3::new(1.0, 0.0, 0.0),
+            ..Camera::default()
+        };
+        let inst = |x: f32, tex: &str| SpriteInstance {
+            pos: Vec3::new(x, 0.0, 0.0),
+            width: 16.0,
+            height: 16.0,
+            light: 1.0,
+            alpha: 1.0,
+            fuzz: false,
+            texture: tex.into(),
+            flip_u: false,
+            anchor_u: 0.5,
+            orient: crate::sprites::SpriteOrient::Billboard,
+        };
+        let mut lists = SceneLists::default();
+        // Actor order: near smoke, far monster, middle blood.
+        append_sprites(
+            &mut lists,
+            &[inst(64.0, "SMOK"), inst(512.0, "POSS"), inst(200.0, "BLUD")],
+            &cam,
+        );
+        let (v, r) = sprites_back_to_front(&lists.sprites, &lists.sprite_ranges, cam.eye);
+        let names: Vec<&str> = r.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["POSS", "BLUD", "SMOK"]);
+        assert_eq!(v.len(), lists.sprites.len());
+        assert_eq!((r[1].start, r[2].start), (6, 12));
+        // Each range still carries its own quad.
+        assert!(v[0].pos[0] > 400.0 && v[12].pos[0] < 100.0);
+    }
+
+    #[test]
+    fn billboard_with_no_wall_nearby_is_untouched() {
+        let map = corridor();
+        let cam = Camera {
+            eye: Vec3::new(100.0, 64.0, 41.0),
+            forward: Vec3::new(1.0, 0.0, 0.0),
+            ..Camera::default()
+        };
+        let inst = wide_billboard(300.0, 64.0, 48.0);
+        let raw = emit_sprite_quad(inst.clone(), cam.forward);
+        let mut lists = SceneLists::default();
+        append_sprites_in_map(&mut lists, &[inst.clone()], &cam, Some(&map));
+        let mut plain = SceneLists::default();
+        append_sprites(&mut plain, &[inst], &cam);
+        assert_eq!(lists.sprites.len(), 6);
+        for (a, b) in lists.sprites.iter().zip(&plain.sprites) {
+            assert_eq!(a.pos, b.pos);
+        }
+        let _ = raw;
+    }
+
+    #[test]
+    fn wall_between_eye_and_actor_still_hides_it() {
+        // Room a (floor 0) then room b (floor 64): the x=256 line is a 64-high
+        // ledge between the eye and the monster. The monster also stands next to
+        // b's y=0 wall, which alone would ask for a pull.
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 128.0), 0.0, 192.0)
+            .room("b", rect(256.0, 0.0, 512.0, 128.0), 64.0, 192.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let cam = Camera {
+            eye: Vec3::new(200.0, 64.0, 41.0),
+            forward: Vec3::new(1.0, 0.0, 0.0),
+            ..Camera::default()
+        };
+        // 6 units past the ledge: clearing the side wall would need a pull of
+        // ~15 units, which would cross the ledge, so the ledge wins.
+        let mut inst = wide_billboard(262.0, 20.0, 80.0);
+        inst.pos.z = 64.0;
+        let mut lists = SceneLists::default();
+        append_sprites_in_map(&mut lists, &[inst], &cam, Some(&map));
+        for v in &lists.sprites {
+            assert!(
+                v.pos[0] > 256.0,
+                "pulled in front of the ledge: {:?}",
+                v.pos
+            );
+        }
+        let pulled = lists
+            .sprites
+            .iter()
+            .map(|v| v.pos[0])
+            .fold(f32::MAX, f32::min);
+        assert!(
+            pulled < 261.0,
+            "it should still move as far as the ledge allows: {pulled}"
         );
     }
 

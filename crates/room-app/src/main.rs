@@ -5060,7 +5060,12 @@ impl ViewerApp {
                 let a = world.actors.get(id)?;
                 let class_flags = world.classes.get(a.class).map(|c| c.flags).unwrap_or(0);
                 let flags = a.flags | class_flags;
-                if a.destroyed || Some(id) == local_mo || (flags & FLAG_DONTDRAW) != 0 {
+                // RenderStyle None draws nothing in GZDoom (BD helpers / tokens).
+                if a.destroyed
+                    || Some(id) == local_mo
+                    || (flags & FLAG_DONTDRAW) != 0
+                    || matches!(a.render_style, RenderStyle::None)
+                {
                     return None;
                 }
                 let is_other_player = world
@@ -5170,8 +5175,12 @@ impl ViewerApp {
             let grounded = (flags & (FLAG_NOGRAVITY | FLAG_SPAWNCEILING | FLAG_FLOAT)) == 0;
             if !sprite.is_empty() {
                 let rot = sprite_rotation_digit(x, y, angle_deg, view_x, view_y);
-                let candidates = sprite_lump_candidates_rot(&sprite, frame, rot);
+                let mut candidates = sprite_lump_candidates_rot(&sprite, frame, rot);
                 if let Some(vfs) = self.vfs.as_ref() {
+                    // Indexed lookup first: mixed-letter pairs (`BOS2A2C8`).
+                    if let Some(hit) = self.patches.sprite_frame_lump(vfs, &sprite, frame, rot) {
+                        candidates.insert(0, hit);
+                    }
                     for (name, flip) in &candidates {
                         if let Some(patch) = self.patches.ensure(vfs, name) {
                             let pw = (f64::from(patch.width) * scale_x.abs()).clamp(0.25, 4096.0);

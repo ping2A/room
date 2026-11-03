@@ -11,6 +11,7 @@ use crate::gldefs::{GlDefs, parse_gldefs};
 use crate::keyconf::{KeyConf, parse_keyconf};
 use crate::language::{Language, parse_language};
 use crate::loadacs::{LoadAcs, parse_loadacs};
+use crate::id24::{GameConf, Id24Defs, parse_demoloop, parse_json_lump, parse_skydefs};
 use crate::lockdefs::{LockDefs, parse_lockdefs};
 use crate::mapinfo::{MapInfo, parse_mapinfo};
 use crate::menudef::{MenuDef, parse_menudef};
@@ -81,6 +82,8 @@ pub struct Definitions {
     pub switches: Vec<room_formats::SwitchRecord>,
     /// `COMPLVL` lump preset (default when absent).
     pub complevel: Complevel,
+    /// ID24 JSON lumps (`SKYDEFS`, `DEMOLOOP`, `GAMECONF`, raw `TRAKINFO`/`SBARDEF`).
+    pub id24: Id24Defs,
     /// Warnings collected during build.
     pub warnings: Vec<String>,
 }
@@ -302,6 +305,36 @@ impl<'a> DefinitionsBuilder<'a> {
                 Err(e) => defs.warnings.push(format!("LOCKDEFS: {e}")),
             }
         }
+        // ID24 JSON lumps. DEMOLOOP / SKYDEFS: the last lump wins; GAMECONF merges in
+        // load order (IWAD first); TRAKINFO / SBARDEF are kept as validated raw JSON.
+        for text in self.read_each_text("SKYDEFS") {
+            match parse_skydefs(&text) {
+                Ok(s) => defs.id24.skydefs = Some(s),
+                Err(e) => defs.warnings.push(format!("{e}")),
+            }
+        }
+        for text in self.read_each_text("DEMOLOOP") {
+            match parse_demoloop(&text) {
+                Ok(d) => defs.id24.demoloop = Some(d),
+                Err(e) => defs.warnings.push(format!("{e}")),
+            }
+        }
+        for text in self.read_each_text("GAMECONF") {
+            match GameConf::parse(&text) {
+                Ok(c) => defs.id24.gameconf.merge(c),
+                Err(e) => defs.warnings.push(format!("{e}")),
+            }
+        }
+        for name in ["TRAKINFO", "SBARDEF"] {
+            for text in self.read_each_text(name) {
+                match parse_json_lump(&text, None) {
+                    Ok(r) => {
+                        defs.id24.raw.insert(name.to_owned(), r);
+                    }
+                    Err(e) => defs.warnings.push(format!("{name}: {e}")),
+                }
+            }
+        }
         // KEYCONF: additive command list (GZDoom executes each lump in order).
         if let Some(text) = self.read_all_text("KEYCONF") {
             match parse_keyconf(&text) {
@@ -448,6 +481,15 @@ impl<'a> DefinitionsBuilder<'a> {
         Some(out)
     }
 
+    /// Every lump named `name` (load order), each decoded separately.
+    fn read_each_text(&self, name: &str) -> Vec<String> {
+        self.vfs
+            .find_all(name, Namespace::Global)
+            .filter_map(|id| self.vfs.read(id).ok())
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .collect()
+    }
+
     fn read_all_text(&self, name: &str) -> Option<String> {
         let ids: Vec<_> = self.vfs.find_all(name, Namespace::Global).collect();
         if ids.is_empty() {
@@ -516,6 +558,46 @@ mod tests {
         let defs = DefinitionsBuilder::new(&vfs).build().unwrap();
         let tm = defs.tranmap.as_ref().unwrap();
         assert_eq!(tm.blend(0, 0), 42);
+    }
+
+    #[test]
+    fn id24_lumps_load_and_merge_in_load_order() {
+        let sky = |n: &str| {
+            format!(r#"{{"type":"skydefs","version":"1.0.0","data":{{"skies":[{{"type":0,"name":"{n}"}}]}}}}"#)
+        };
+        let gc = |d: &str| format!(r#"{{"type":"gameconf","version":"1.0.0","data":{d}}}"#);
+        let iwad = WadWriter::pwad()
+            .add("SKYDEFS", sky("FIRST").as_bytes())
+            .add("GAMECONF", gc(r#"{"title":"Base","pwads":["a.wad"],"executable":"mbf","options":"x 1"}"#).as_bytes())
+            .add("DEMOLOOP", br#"{"type":"demoloop","version":"1.0.0","data":{"entries":[{"primarylump":"D1","type":1}]}}"#)
+            .add("TRAKINFO", br#"{"type":"trakinfo","version":"1.0.0","data":{"tracks":[]}}"#)
+            .finish()
+            .unwrap();
+        let pwad = WadWriter::pwad()
+            .add("SKYDEFS", sky("SECOND").as_bytes())
+            .add("GAMECONF", gc(r#"{"pwads":["b.wad"],"executable":"boom2.02","options":"y 2"}"#).as_bytes())
+            .add("DEMOLOOP", b"{ not json")
+            .finish()
+            .unwrap();
+        let vfs = VfsBuilder::new()
+            .mount_memory("base.wad", iwad)
+            .unwrap()
+            .mount_memory("mod.wad", pwad)
+            .unwrap()
+            .build()
+            .unwrap();
+        let defs = DefinitionsBuilder::new(&vfs).build().unwrap();
+        let sd = defs.id24.skydefs.as_ref().unwrap();
+        assert_eq!(sd.skies.len(), 1);
+        assert_eq!(sd.skies[0].name, "SECOND"); // last lump wins
+        assert_eq!(defs.id24.demoloop.as_ref().unwrap().entries[0].primary, "D1"); // bad later lump ignored
+        assert!(defs.warnings.iter().any(|w| w.starts_with("DEMOLOOP:")));
+        let g = &defs.id24.gameconf;
+        assert_eq!(g.title.as_deref(), Some("Base"));
+        assert_eq!(g.pwads, vec!["a.wad", "b.wad"]);
+        assert_eq!(g.executable, Some(crate::Executable::Mbf)); // max(mbf, boom2.02)
+        assert_eq!(g.option_lines().collect::<Vec<_>>(), ["x 1", "y 2"]);
+        assert_eq!(defs.id24.raw["TRAKINFO"].kind, "trakinfo");
     }
 
     #[test]

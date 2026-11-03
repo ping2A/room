@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { highlight, includesOf, textLang } from "../editor-scripts.js";
+import { highlight, includesOf, looksZscript, textLang, zscriptClosure } from "../editor-scripts.js";
 
 const spans = (html, cls) => [...html.matchAll(new RegExp(`<span class="hl-${cls}">([^<]*)</span>`, "g"))].map((m) => m[1]);
 const strip = (html) => html.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
@@ -98,4 +98,28 @@ test("language detection and #include lines", () => {
   assert.equal(textLang("SCRIPTS", "acs/scripts.acs"), "acs");
   assert.equal(textLang("SNDINFO", "sndinfo.txt"), "text");
   assert.deepEqual(includesOf(ZS), [{ line: 2, path: "zscript/weapons.zs" }]);
+});
+
+test("ZScript is recognised by content, not only by name", () => {
+  assert.equal(textLang("PISTOL", "actors/pistol.txt", "// gun\nclass BDPistol : Weapon\n{\n  Default { Weapon.SlotNumber 2; }\n}"), "zs");
+  assert.equal(textLang("PISTOL", "actors/pistol.txt", "actor BDPistol : Pistol {}"), "decorate");
+  assert.equal(textLang("ROOT", "root.txt", 'version "4.10"\n'), "zs");
+  assert.equal(textLang("SNDINFO", "sndinfo.txt", "misc/x dsx\n"), "text");
+  assert.ok(looksZscript("extend class DoomImp\n{\n  void Hi() {}\n}"));
+  assert.ok(!looksZscript("/* class X { */\nactor X {}"));
+});
+
+test("zscriptClosure follows #include from the ZSCRIPT root, whatever the file names", () => {
+  const files = {
+    "zscript.zc": 'version "3.2"\n#include "src/handlers.txt"\n',
+    "src/handlers.txt": '#include "src/more.txt"\nclass H : EventHandler {}\n',
+    "src/more.txt": "class M : Actor {}\n",
+    "src/unrelated.txt": "not included\n",
+    "decorate.txt": "actor A {}\n",
+  };
+  const lumps = Object.keys(files).map((path) => ({ path, src: "mod.pk3", kind: "text",
+    name: path.split("/").pop().replace(/\.[^.]*$/, "").toUpperCase().slice(0, 8) }));
+  const resolve = (p) => lumps.find((l) => l.path === p.toLowerCase());
+  const got = [...zscriptClosure(lumps, (l) => files[l.path], resolve)].map((l) => l.path).sort();
+  assert.deepEqual(got, ["src/handlers.txt", "src/more.txt", "zscript.zc"]);
 });

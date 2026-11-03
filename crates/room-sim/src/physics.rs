@@ -449,7 +449,7 @@ pub fn check_position(
         }
     }
     // Thing-thing: block on solid actors whose XY disks overlap.
-    for id in &world.thinkers.default {
+    for id in world.collision_candidates() {
         if self_id == Some(*id) {
             continue;
         }

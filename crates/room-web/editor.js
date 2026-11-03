@@ -4,7 +4,7 @@
 
 import { install as installTools, HEXEN_LINE_SPECIALS } from "./editor-tools.js";
 import { install as installPaint, paintNs } from "./editor-paint.js";
-import { install as installScripts, highlight, textLang, includesOf } from "./editor-scripts.js";
+import { install as installScripts, highlight, textLang, includesOf, zscriptClosure } from "./editor-scripts.js";
 
 /** Flip to `true` to re-expose Duke Nukem 3D GRP / .MAP UI (code paths kept). */
 const ROOM_UI_SHOW_DUKE = false;
@@ -201,6 +201,7 @@ async function boot() {
 
 function setSummary(json) {
   S.summary = JSON.parse(json);
+  S.zsKeys = null;
   S.thingInfo = new Map(S.summary.things.map((t) => [t.num, t]));
   const sel = $("#map-select");
   const cur = S.doc?.name;
@@ -461,7 +462,7 @@ function focusArchive(name, note = "") {
   S.workPk3 = name;
   const files = S.summary.lumps.filter((l) => l.src === name);
   const maps = S.summary.lumps.filter((l) => l.kind === "map" && (l.src === name || l.src.startsWith(`${name}:`)));
-  const zs = files.filter((l) => textLang(l.name, l.path) === "zs").length;
+  const zs = zscriptLumps(name).length;
   const tops = new Set(files.map((l) => (l.path || "").split("/")).filter((p) => p.length > 1).map((p) => p[0]));
   for (const d of tops) if (/^(zscript|maps|actors|decorate|acs)$/i.test(d)) S.openDirs.add(`${name}:${d}/`);
   S.tab = "lumps";
@@ -470,6 +471,8 @@ function focusArchive(name, note = "") {
   const warn = [S.summary.decorateError && `definitions: ${S.summary.decorateError}`, note].filter(Boolean).join(" — ");
   toast(`${name}: ${files.length} file(s), ${maps.length} map(s), ${zs} ZScript file(s)${warn ? ` — ${warn}` : ""}`, !!warn);
   status(`Working archive: ${name}`);
+  // Mods with ZScript: open their ZSCRIPT root, ready to edit.
+  if (zs) openZscriptOf(name);
 }
 
 /** Replace the base IWAD / PK3 / GRP from a file picker. */
@@ -626,6 +629,10 @@ async function openFiles(files) {
   for (const f of files) {
     const buf = new Uint8Array(await f.arrayBuffer());
     const magic = String.fromCharCode(...buf.slice(0, 4));
+    if (/\.(zs|zc|zsc)$/i.test(f.name) || (/\.txt$/i.test(f.name) && textLang("", f.name, new TextDecoder().decode(buf.slice(0, 16384))) === "zs")) {
+      openLooseZscript(f.name, buf);
+      continue;
+    }
     if (isDukeGrpBytes(buf)) {
       if (!ROOM_UI_SHOW_DUKE) {
         toast("Duke Nukem 3D is hidden in this UI — pick a Doom / Freedoom IWAD (.wad)", true);
@@ -646,8 +653,9 @@ async function openFiles(files) {
       toast("Open an IWAD or PK3 first", true);
     } else if (!ROOM_UI_SHOW_DUKE && /\.map$/i.test(f.name)) {
       toast("Duke .MAP files are hidden in this UI", true);
-    } else {
-      addPwad(buf, f.name);
+    } else if (addPwad(buf, f.name)) {
+      const n = openZscriptOf(f.name);
+      if (n) toast(`${f.name}: ${n} ZScript file(s) — ZSCRIPT opened for editing`);
     }
   }
 }
@@ -2152,6 +2160,20 @@ function renderBrowser() {
       el("span", { class: `kind ${l.kind}` }, l.kind), el("span", { class: "name" }, label),
       isOverride(l) ? el("span", { class: "kind map" }, "override") : null,
       el("span", { class: "meta" }, l.ns === "global" ? fmtSize(l.size) : `${l.ns} · ${fmtSize(l.size)}`));
+    // Every loaded ZScript file in one place (roots first), whatever its folder.
+    const zsRows = q ? [] : zscriptLumps();
+    if (zsRows.length) {
+      const det = el("details", { class: "tree-dir" }, el("summary", {}, "ZScript", el("span", { class: "meta" }, String(zsRows.length))));
+      const box = el("div", { class: "tree-kids" });
+      det.append(box);
+      const fill = () => { if (!box.childElementCount) for (const l of zsRows) box.append(row(l, `${l.path || l.name}${l.src !== S.workPk3 ? `  (${l.src})` : ""}`)); };
+      if (!S.openDirs.has("zs:") && !S.zsClosedOnce) S.openDirs.add("zs:");
+      if (S.openDirs.has("zs:")) { det.open = true; fill(); }
+      det.addEventListener("toggle", () => {
+        if (det.open) { S.openDirs.add("zs:"); fill(); } else { S.openDirs.delete("zs:"); S.zsClosedOnce = true; }
+      });
+      body.append(el("div", { class: "section-head" }, "ZScript files"), det);
+    }
     // Group by container (load order); PK3 / PK7 / folders show as a tree.
     const groups = [];
     for (const l of sm.lumps) {
@@ -2419,6 +2441,67 @@ function renderDocTabs() {
 
 function lumpBytes(l) { return l.id == null ? new Uint8Array() : S.mod.roomEditorReadLump(l.id); }
 
+/** Identity of a file across summaries: container + full path (or lump name). */
+const lumpKey = (l) => `${l.src}|${String(l.path || l.name).toLowerCase()}`;
+
+/**
+ * Keys of every ZScript file loaded (ZSCRIPT roots + their #includes), cached
+ * per summary. A file is edited as ZScript when it is in here, whatever its
+ * name — `actors/pistol.txt` pulled in by `#include` included.
+ */
+function zscriptKeys() {
+  if (S.zsKeys) return S.zsKeys;
+  const lumps = (S.summary?.lumps || []).filter((l) => l.kind !== "map" && l.kind !== "mapwad");
+  const rows = zscriptClosure(lumps, (l) => new TextDecoder("utf-8").decode(lumpBytes(l)), (path, from) => findInclude(path, from));
+  // Also by path alone, so the edited copy of a PK3 file (held in the
+  // overrides pack) stays ZScript.
+  S.zsKeys = new Set([...rows].flatMap((l) => [lumpKey(l), `*|${String(l.path || l.name).toLowerCase()}`]));
+  return S.zsKeys;
+}
+const isZscriptLump = (l) => {
+  try {
+    const k = zscriptKeys();
+    return k.has(lumpKey(l)) || (!!l.path && k.has(`*|${String(l.path).toLowerCase()}`));
+  } catch (_) { return false; }
+};
+
+/** ZScript files of the loaded archives (optionally of one container), roots first. */
+function zscriptLumps(src = null) {
+  const keys = zscriptKeys();
+  const rows = (S.summary?.lumps || []).filter((l) => keys.has(lumpKey(l)) && (!src || l.src === src));
+  // The working archive first (its ZSCRIPT root on top), engine built-ins last.
+  const rank = (l) => (l.src === S.workPk3 ? 0 : l.src === "room.pk3" ? 2 : 1) * 2
+    + (l.name === "ZSCRIPT" && !String(l.path || "").includes("/") ? 0 : 1);
+  return rows.sort((a, b) => rank(a) - rank(b) || String(a.path || a.name).localeCompare(String(b.path || b.name)));
+}
+
+/** Open the ZSCRIPT root of `src` (the archive just loaded) in the text editor. */
+function openZscriptOf(src) {
+  const rows = zscriptLumps(src);
+  if (!rows.length) return 0;
+  openLump(rows[0]);
+  return rows.length;
+}
+
+/** A ZScript file picked on its own (.zs/.zc/.zsc): add it to the pack under zscript/ and open it. */
+function openLooseZscript(name, bytes) {
+  if (!S.summary) { toast("Open an IWAD or PK3 first, then add the ZScript file", true); return; }
+  const base = String(name).split(/[\\/]/).pop().toLowerCase();
+  const p = /^zscript\./.test(base) ? base : `zscript/${base}`;
+  try {
+    S.mod.roomEditorSetPath(p, bytes);
+    setSummary(S.mod.roomEditorApplyLumps());
+    setPlaying(false);
+  } catch (e) { toast(errText(e), true); return; }
+  const row = S.summary.lumps.find((l) => l.src === PATH_OVERRIDES && String(l.path).toLowerCase() === p);
+  if (row) openLump(row);
+  // Room loads every .zs/.zc/.zsc file; GZDoom only what a ZSCRIPT root #includes.
+  const included = p === base || zscriptLumps().some((l) => l !== row && includesOf(new TextDecoder().decode(lumpBytes(l)))
+    .some((x) => x.path.replace(/\\/g, "/").replace(/^\.?\//, "").toLowerCase() === p));
+  toast(included ? `${p} added and loaded`
+    : `${p} added and loaded — for GZDoom, also add #include "${p}" to your ZSCRIPT lump`);
+}
+
 function download(bytes, name) {
   const url = URL.createObjectURL(new Blob([bytes]));
   const a = el("a", { href: url, download: name });
@@ -2470,8 +2553,11 @@ function openLump(l) {
     const m = S.summary.lumps.find((x) => x.kind === "map" && x.src === `${l.src}:${l.path}`);
     if (m) { loadMap(m.name); return; }
   }
+  // Files in PK3 subfolders the VFS does not map to a namespace have no
+  // 8-char name; show their file name instead of an empty title.
+  const title = l.name || String(l.path || "").split("/").pop() || "(file)";
   const view = el("div", {});
-  const head = el("div", { class: "doc-head" }, el("h2", {}, l.name),
+  const head = el("div", { class: "doc-head" }, el("h2", {}, title),
     el("span", { class: `kind ${l.kind}` }, l.kind), el("span", { class: "muted" }, `${l.ns} · ${fmtSize(l.size)} · ${l.src}${l.path && l.path !== l.name ? ` · ${l.path}` : ""}`));
   const actions = el("div", { class: "actions" },
     el("button", { class: "btn small", onclick: () => download(lumpBytes(l), l.path?.split("/").pop() || `${l.name}.lmp`) }, "Download"),
@@ -2497,7 +2583,7 @@ function openLump(l) {
   else if (l.kind === "palette") view.append(paletteView(l.name, bytes));
   else if (l.kind === "texdefs") view.append(el("p", { class: "muted" }, "Composite textures defined here appear in the Textures tab. Add new ones with a TEXTURES text lump (+ New text lump)."), hexView(bytes));
   else view.append(hexView(bytes));
-  S.lumpTabs.set(id, { title: l.name, view });
+  S.lumpTabs.set(id, { title, view });
   selectDocTab(id);
 }
 
@@ -2531,7 +2617,7 @@ function findInclude(path, from) {
 function textEditor(l, bytes) {
   const wrap = el("div", {});
   const text0 = new TextDecoder("utf-8").decode(bytes);
-  const lang = textLang(l.name, l.path || l.name, text0);
+  const lang = isZscriptLump(l) ? "zs" : textLang(l.name, l.path || l.name, text0);
   const zscript = lang === "zs";
   const ta = el("textarea", { class: "code hl-input", spellcheck: "false" });
   ta.value = text0;

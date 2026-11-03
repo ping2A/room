@@ -28,7 +28,13 @@ impl ShortName {
         let bytes = stem.as_bytes();
         let n = bytes.len().min(8);
         for (i, &b) in bytes.iter().take(n).enumerate() {
-            out[i] = b.to_ascii_uppercase();
+            // `\` is a sprite frame letter but can't appear in a file name, so
+            // archives spell it `^` (GZDoom `LumpNameSetup` maps it back).
+            out[i] = if b == b'^' {
+                b'\\'
+            } else {
+                b.to_ascii_uppercase()
+            };
         }
         Self(out)
     }
@@ -80,5 +86,19 @@ impl PartialOrd for ShortName {
 impl Ord for ShortName {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.0.cmp(&other.0)
+    }
+}
+
+#[cfg(test)]
+mod caret_tests {
+    use super::*;
+
+    #[test]
+    fn caret_spells_the_backslash_frame() {
+        assert_eq!(
+            ShortName::from_stem("2sar^0"),
+            ShortName::from_stem("2SAR\\0")
+        );
+        assert_eq!(ShortName::from_stem("2sar^0").as_str(), "2SAR\\0");
     }
 }

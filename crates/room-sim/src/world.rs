@@ -315,6 +315,13 @@ pub struct World {
     pub rng: RngSet,
     /// Thinker lists.
     pub thinkers: ThinkerLists,
+    /// Non-destroyed subset of [`ThinkerLists::default`], same order: rebuilt at
+    /// the start of every tic, extended on spawn. Destroyed actors stay on the
+    /// thinker list (checksums and demos hash them), so per-move scans read
+    /// this instead (`collision_candidates`). Brutal Doom destroys ~8 effect
+    /// actors a tic; scanning the full list from every `check_position` made
+    /// each tic cost O(moving × everything ever spawned).
+    live_ids: Vec<ActorId>,
     /// Length of [`ThinkerLists::default`] after map-thing spawn (before mid-game
     /// missiles / drops). Doom runs levspec lights after these, before later spawns.
     map_thinker_count: usize,
@@ -1474,6 +1481,7 @@ impl World {
             rng,
             thinkers: ThinkerLists::default(),
             map_thinker_count: 0,
+            live_ids: Vec::new(),
             players: std::array::from_fn(|_| None),
             thinking_refire: 0,
             thinking_up_move: 0,
@@ -2738,6 +2746,7 @@ impl World {
             .insert(actor)
             .map_err(|e| SimError::Message(e.to_string()))?;
         self.thinkers.link_default(id);
+        self.live_ids.push(id);
         if let Some(sid) = spawn_state {
             // GZDoom `P_SpawnMobj` → `SetState(Spawn)` so 0-tic / anon Spawn actions run.
             self.set_state(id, Some(sid), true);
@@ -5275,6 +5284,17 @@ impl World {
                 self.end_match(None, true);
             }
         }
+        {
+            let actors = &self.actors;
+            self.live_ids.clear();
+            self.live_ids.extend(
+                self.thinkers
+                    .default
+                    .iter()
+                    .copied()
+                    .filter(|&i| actors.get(i).is_some_and(|a| !a.destroyed)),
+            );
+        }
         self.scripts.sync_from_world(self);
         self.sound_heard = self.sound_events.iter().map(|e| e.name.clone()).collect();
         self.sound_events.clear();
@@ -5348,6 +5368,12 @@ impl World {
         while ti < n_map {
             let id = self.thinkers.default[ti];
             ti += 1;
+            // Destroyed actors stay on the list (checksums hash them) but no
+            // longer think or move. Running physics on them cloned every
+            // corpse-less effect Brutal Doom ever spawned, every tic.
+            if self.actors.get(id).is_none_or(|a| a.destroyed) {
+                continue;
+            }
             if self.actors.get(id).is_some_and(|a| {
                 (a.flags & crate::class::FLAG_DORMANT) != 0 || crate::damage::is_frozen(self, id)
             }) {
@@ -5379,6 +5405,12 @@ impl World {
         while ti < self.thinkers.default.len() {
             let id = self.thinkers.default[ti];
             ti += 1;
+            // Destroyed actors stay on the list (checksums hash them) but no
+            // longer think or move. Running physics on them cloned every
+            // corpse-less effect Brutal Doom ever spawned, every tic.
+            if self.actors.get(id).is_none_or(|a| a.destroyed) {
+                continue;
+            }
             if self.actors.get(id).is_some_and(|a| {
                 (a.flags & crate::class::FLAG_DORMANT) != 0 || crate::damage::is_frozen(self, id)
             }) {
@@ -5433,11 +5465,42 @@ impl World {
     /// Zero-tic chains and action jumps are iterative with a GZDoom-style
     /// 1000-state guard (BD3) so accidental loops cannot overflow the stack.
     pub fn set_state(&mut self, id: ActorId, state: Option<room_core::StateId>, call_action: bool) {
+        // Actor state actions never run in the weapon (psprite) context. A
+        // gun's A_FirePistol spawns a puff, the puff's 0-tic chain spawns a
+        // flare, and the flare's `A_Jump(128, 2)` must offset the flare's own
+        // state — not the psprite's — or the flare walks the weapon's states
+        // and shows up as a ghost gun billboard (BD "phantom gun frames").
+        let saved = (self.psprite_weapon.take(), self.psprite_state.take());
+        self.set_state_chain(id, state, call_action);
+        self.psprite_weapon = saved.0;
+        self.psprite_state = saved.1;
+    }
+
+    fn set_state_chain(&mut self, id: ActorId, state: Option<room_core::StateId>, call_action: bool) {
         const MAX_STATE_CYCLE: u32 = 1000;
         let mut next = state;
         let mut call = call_action;
         let mut cycle = 0u32;
+        // Last few states of the chain, reported when the cycle limit trips.
+        let mut recent: [Option<room_core::StateId>; 8] = [None; 8];
+        // Cheap endless-loop probe: a real chain (even a long 0-tic spawn
+        // burst) does not keep coming back to one state. Remember the state
+        // entered at transition 64; seeing it 16 more times means a cycle, so
+        // stop there instead of spending 1000 transitions (and their spawns).
+        let mut probe: Option<room_core::StateId> = None;
+        let mut probe_hits = 0u32;
         loop {
+            if let Some(sid) = next {
+                recent[(cycle as usize) % recent.len()] = Some(sid);
+                if cycle == 64 {
+                    probe = Some(sid);
+                } else if probe == Some(sid) {
+                    probe_hits += 1;
+                    if probe_hits >= 16 {
+                        cycle = MAX_STATE_CYCLE - 1;
+                    }
+                }
+            }
             let Some(sid) = next else {
                 if let Some(a) = self.actors.get_mut(id) {
                     a.state = None;
@@ -5548,9 +5611,39 @@ impl World {
             }
             cycle += 1;
             if cycle >= MAX_STATE_CYCLE {
-                self.push_message(format!(
-                    "Warning: state cycle limit ({MAX_STATE_CYCLE}) exceeded for actor {id:?}; aborting chain"
+                let class = self
+                    .actors
+                    .get(id)
+                    .and_then(|a| self.classes.get(a.class))
+                    .map_or_else(|| "?".to_owned(), |c| c.name.clone());
+                let mut chain = Vec::new();
+                for k in 0..recent.len() {
+                    let slot = (cycle as usize + k) % recent.len();
+                    if let Some(st) = recent[slot].and_then(|s| self.states.get(s)) {
+                        chain.push(format!(
+                            "{}{}:{}:{}",
+                            st.sprite,
+                            char::from(b'A'.saturating_add(st.frame.min(25))),
+                            st.tics,
+                            st.action.as_deref().unwrap_or("-")
+                        ));
+                    }
+                }
+                // Console only, like GZDoom's red `Printf`: a HUD line per stuck
+                // Brutal Doom effect actor covered the screen.
+                self.push_debug(format!(
+                    "Warning: endless 0-tic state loop in {class} #{}; destroying it [{}]",
+                    id.index(),
+                    chain.join(" > ")
                 ));
+                // GZDoom `AActor::SetState` destroys an actor stuck in an endless
+                // 0-tic loop. Leaving it in place re-ran the whole loop (and its
+                // spawns) every tic: Brutal Doom's `BurningZombie` Spawn state
+                // fires `A_CustomMissile` in a 0-tic `Loop`.
+                if let Some(a) = self.actors.get_mut(id) {
+                    a.state = None;
+                    a.destroyed = true;
+                }
                 return;
             }
         }
@@ -5632,6 +5725,19 @@ impl World {
     #[must_use]
     pub fn mod_zones_hash(&self) -> u64 {
         self.mod_zones.hash()
+    }
+
+    /// Actors that may still block or be hit, in thinker order: every
+    /// non-destroyed actor plus, at most, ones destroyed earlier this tic
+    /// (callers re-check `destroyed`). Falls back to the full thinker list
+    /// before the first tic (e.g. straight after a load).
+    #[must_use]
+    pub fn collision_candidates(&self) -> &[ActorId] {
+        if self.live_ids.is_empty() {
+            &self.thinkers.default
+        } else {
+            &self.live_ids
+        }
     }
 
     /// Stable checksum for determinism / netplay (`World::checksum`).

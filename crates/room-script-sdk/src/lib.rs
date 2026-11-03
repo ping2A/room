@@ -38,7 +38,9 @@ pub mod mem {
     pub use alloc::vec::Vec;
 }
 
-pub use room_script_abi::{ABI_VERSION as ABI_MAJOR, ActorRef, ClassRef, NameRef, SessionKind};
+pub use room_script_abi::{
+    ABI_VERSION as ABI_MAJOR, ActionPayload, ActorRef, ClassRef, NameRef, SessionKind,
+};
 pub use room_script_sdk_macros::{actor, register_stub};
 
 /// Log level: error.

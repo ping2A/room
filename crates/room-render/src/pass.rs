@@ -79,6 +79,8 @@ pub struct UnlitPass {
     sky_cap: u64,
     sprite_buf: wgpu::Buffer,
     sprite_cap: u64,
+    /// Sprite ranges in far-to-near order, matching [`Self::sprite_buf`].
+    sprite_ranges: Vec<MaterialRange>,
     /// Active sector light mode.
     pub light_mode: LightMode,
     /// Software-renderer visibility (`r_visibility` / globVis stand-in).
@@ -706,6 +708,7 @@ impl UnlitPass {
             sky_cap: 64 * 32,
             sprite_buf,
             sprite_cap: 64 * 32,
+            sprite_ranges: Vec::new(),
             light_mode: LightMode::Standard,
             // GZDoom `GlobVis` is derived from `r_visibility` × view size and is
             // typically hundreds; 8 made every wall/sprite beyond ~15mu sit at the
@@ -992,14 +995,23 @@ impl UnlitPass {
             "sky",
             &scene.sky_parts,
         );
+        let (sorted_sprites, sorted_ranges) =
+            crate::scene::sprites_back_to_front(&scene.sprites, &scene.sprite_ranges, camera.eye);
+        // Ranges that did not cover the buffer (none emitted) keep the raw list.
+        let sprite_verts = if sorted_ranges.is_empty() {
+            &scene.sprites
+        } else {
+            &sorted_sprites
+        };
         self.sprite_buf = ensure_vb(
             &gpu.device,
             &gpu.queue,
             &self.sprite_buf,
             &mut self.sprite_cap,
             "sprites",
-            &scene.sprites,
+            sprite_verts,
         );
+        self.sprite_ranges = sorted_ranges;
     }
 
     /// Write `stencil_ref` into the stencil buffer for `mask` wall ranges.
@@ -1161,13 +1173,15 @@ impl UnlitPass {
             pass.set_pipeline(&self.opaque_sprite_pipeline);
             pass.set_bind_group(0, &self.view_bind, &[]);
             pass.set_vertex_buffer(0, self.sprite_buf.slice(..));
-            if scene.sprite_ranges.is_empty() {
+            if self.sprite_ranges.is_empty() {
                 pass.set_bind_group(1, &self.mat_bind, &[]);
                 #[allow(clippy::cast_possible_truncation)]
                 let n = scene.sprites.len() as u32;
                 pass.draw(0..n, 0..1);
             } else {
-                self.draw_ranges(gpu, pass, &scene.sprite_ranges, catalog, vfs);
+                let ranges = std::mem::take(&mut self.sprite_ranges);
+                self.draw_ranges(gpu, pass, &ranges, catalog, vfs);
+                self.sprite_ranges = ranges;
             }
         }
         if !scene.translucent_walls.is_empty() {

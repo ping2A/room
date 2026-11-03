@@ -48,7 +48,7 @@ macro_rules! export_mod {
             // SAFETY: `ptr`/`len` are exactly what the host passed in.
             let bytes = unsafe { $crate::game::payload(ptr, len) };
             if callback_id < $crate::game::EVENT_CALLBACK_BASE {
-                let payload = room_script_abi::ActionPayload::read_le(bytes).unwrap_or_default();
+                let payload = $crate::ActionPayload::read_le(bytes).unwrap_or_default();
                 return __ROOM_MOD
                     .with(|m| m.on_state_action(payload))
                     .unwrap_or(0);

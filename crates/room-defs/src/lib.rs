@@ -13,6 +13,7 @@ pub mod error;
 pub mod fontdefs;
 pub mod gameinfo;
 pub mod gldefs;
+pub mod id24;
 pub mod keyconf;
 pub mod language;
 pub mod loadacs;
@@ -42,6 +43,11 @@ pub use gameinfo::{GameInfo, parse_gameinfo};
 pub use gldefs::{
     BrightmapDef, DynLightDef, DynLightKind, GlDefs, GlTexKind, GlowTextureDef, HardwareShaderDef,
     HardwareShaderKind, MaterialDef, ObjectLightAssoc, SkyboxDef, parse_gldefs,
+};
+pub use id24::{
+    DemoKind, DemoLoop, DemoLoopEntry, Executable, FireSky, FlatMap, ForeTex, GameConf, GameMode,
+    Id24Defs, OutroWipe, RawJsonLump, SkyDef, SkyDefs, SkyKind, parse_demoloop, parse_json_lump,
+    parse_skydefs,
 };
 pub use keyconf::{KeyConf, KeyConfCmd, parse_keyconf};
 pub use language::{Language, parse_language};

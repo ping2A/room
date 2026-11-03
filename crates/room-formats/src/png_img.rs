@@ -66,7 +66,11 @@ pub fn parse_png(data: &[u8]) -> Result<Image, FormatError> {
     let meta = scan_zdoom_png_chunks(data)?;
     let (left_offset, top_offset) = meta.grab.unwrap_or((0, 0));
 
-    let decoder = png::Decoder::new(Cursor::new(data));
+    let cleaned = strip_invalid_trns(data);
+    let mut decoder = png::Decoder::new(Cursor::new(cleaned.as_ref()));
+    // 16-bit channels → 8-bit. Sub-byte samples (1/2/4-bit) stay packed and
+    // are unpacked below so indexed sprites keep their raw palette indices.
+    decoder.set_transformations(png::Transformations::STRIP_16);
     let mut reader = decoder
         .read_info()
         .map_err(|_| FormatError::Invalid("PNG header"))?;
@@ -78,12 +82,33 @@ pub fn parse_png(data: &[u8]) -> Result<Image, FormatError> {
         .next_frame(&mut buf)
         .map_err(|_| FormatError::Invalid("PNG frame"))?;
     let color = frame.color_type;
+    let depth = frame.bit_depth as u8;
+    if depth < 8 && matches!(color, png::ColorType::Indexed | png::ColorType::Grayscale) {
+        let unpacked = unpack_samples(&buf, frame.line_size, width, height, depth);
+        let scale = matches!(color, png::ColorType::Grayscale);
+        buf = if scale {
+            let max = (1u16 << depth) - 1;
+            unpacked
+                .into_iter()
+                .map(|v| u8::try_from(u16::from(v) * 255 / max).unwrap_or(255))
+                .collect()
+        } else {
+            unpacked
+        };
+    }
+    let samples = match color {
+        png::ColorType::Indexed | png::ColorType::Grayscale if depth < 8 => {
+            usize::try_from(u64::from(width) * u64::from(height)).unwrap_or(0)
+        }
+        _ => frame.buffer_size(),
+    };
+    let buf = &buf[..samples.min(buf.len())];
 
     match color {
         png::ColorType::Indexed => {
             // Expand with the PNG palette. Mapping the indices through PLAYPAL
             // turns Brutal Doom sprites into the wrong colours.
-            let indices = &buf[..frame.buffer_size()];
+            let indices = buf;
             let pal = info.palette.as_deref().unwrap_or(&[]);
             let trns = info.trns.as_deref().unwrap_or(&[]);
             let mut pixels = Vec::with_capacity(indices.len() * 4);
@@ -121,7 +146,7 @@ pub fn parse_png(data: &[u8]) -> Result<Image, FormatError> {
         }
         png::ColorType::Grayscale if meta.alph => {
             // Alpha map: gray → A, RGB white.
-            let gray = &buf[..frame.buffer_size()];
+            let gray = buf;
             let mut pixels = Vec::with_capacity(gray.len() * 4);
             let mut has_translucency = false;
             for &g in gray {
@@ -142,7 +167,7 @@ pub fn parse_png(data: &[u8]) -> Result<Image, FormatError> {
             })
         }
         png::ColorType::Grayscale => {
-            let gray = &buf[..frame.buffer_size()];
+            let gray = buf;
             let mut pixels = Vec::with_capacity(gray.len() * 4);
             for &g in gray {
                 pixels.extend_from_slice(&[g, g, g, 255]);
@@ -159,7 +184,7 @@ pub fn parse_png(data: &[u8]) -> Result<Image, FormatError> {
             })
         }
         png::ColorType::GrayscaleAlpha => {
-            let src = &buf[..frame.buffer_size()];
+            let src = buf;
             let mut pixels = Vec::with_capacity(src.len() * 2);
             let mut has_translucency = false;
             for chunk in src.chunks_exact(2) {
@@ -182,7 +207,7 @@ pub fn parse_png(data: &[u8]) -> Result<Image, FormatError> {
             })
         }
         png::ColorType::Rgb => {
-            let src = &buf[..frame.buffer_size()];
+            let src = buf;
             let mut pixels = Vec::with_capacity(src.len() / 3 * 4);
             for chunk in src.chunks_exact(3) {
                 pixels.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
@@ -199,7 +224,7 @@ pub fn parse_png(data: &[u8]) -> Result<Image, FormatError> {
             })
         }
         png::ColorType::Rgba => {
-            let pixels = buf[..frame.buffer_size()].to_vec();
+            let pixels = buf.to_vec();
             let has_translucency = pixels.chunks_exact(4).any(|p| p[3] != 255);
             Ok(Image {
                 left_offset,
@@ -215,6 +240,62 @@ pub fn parse_png(data: &[u8]) -> Result<Image, FormatError> {
     }
 }
 
+/// Drop `tRNS` chunks from RGBA / grey-alpha PNGs. The PNG spec forbids them
+/// there and the decoder rejects the file; ZDoom ignores them. Brutal Doom
+/// ships hundreds of such sprites (blood, gibs, particles).
+fn strip_invalid_trns(data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    // IHDR is the first chunk: sig(8) len(4) "IHDR"(4) w(4) h(4) depth(1) color(1).
+    let color = data.get(25).copied().unwrap_or(0);
+    if data.get(12..16) != Some(b"IHDR".as_slice()) || !(color == 4 || color == 6) {
+        return std::borrow::Cow::Borrowed(data);
+    }
+    let mut out = Vec::with_capacity(data.len());
+    out.extend_from_slice(&data[..8.min(data.len())]);
+    let mut i = 8usize;
+    let mut changed = false;
+    while i + 12 <= data.len() {
+        let len = u32::from_be_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]) as usize;
+        let end = i.saturating_add(12).saturating_add(len);
+        if end > data.len() {
+            out.extend_from_slice(&data[i..]);
+            i = data.len();
+            break;
+        }
+        if &data[i + 4..i + 8] == b"tRNS" {
+            changed = true;
+        } else {
+            out.extend_from_slice(&data[i..end]);
+        }
+        i = end;
+    }
+    out.extend_from_slice(&data[i..]);
+    if changed {
+        std::borrow::Cow::Owned(out)
+    } else {
+        std::borrow::Cow::Borrowed(data)
+    }
+}
+
+/// Unpack 1/2/4-bit samples (MSB first, rows padded to a byte) to one byte each.
+fn unpack_samples(buf: &[u8], line_size: usize, width: u32, height: u32, depth: u8) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let per_byte = 8 / usize::from(depth.max(1));
+    let mask = (1u16 << depth) - 1;
+    let mut out = Vec::with_capacity(w * h);
+    for row in 0..h {
+        let line = buf
+            .get(row * line_size..(row + 1) * line_size)
+            .unwrap_or(&[]);
+        for x in 0..w {
+            let byte = line.get(x / per_byte).copied().unwrap_or(0);
+            let shift = 8 - usize::from(depth) * (x % per_byte + 1);
+            out.push(u8::try_from((u16::from(byte) >> shift) & mask).unwrap_or(0));
+        }
+    }
+    out
+}
+
 /// True if `data` starts with a PNG signature.
 #[must_use]
 pub fn is_png(data: &[u8]) -> bool {
@@ -226,6 +307,118 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    fn encode(
+        w: u32,
+        h: u32,
+        color: png::ColorType,
+        depth: png::BitDepth,
+        pal: Option<Vec<u8>>,
+        trns: Option<Vec<u8>>,
+        data: &[u8],
+    ) -> Vec<u8> {
+        let mut raw = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut raw, w, h);
+            enc.set_color(color);
+            enc.set_depth(depth);
+            if let Some(p) = pal {
+                enc.set_palette(p);
+            }
+            if let Some(t) = trns {
+                enc.set_trns(t);
+            }
+            let mut wr = enc.write_header().unwrap();
+            wr.write_image_data(data).unwrap();
+        }
+        raw
+    }
+
+    fn rgba(img: &Image) -> &[u8] {
+        match &img.pixels {
+            ImagePixels::Rgba8(r) => &r.pixels,
+            _ => panic!("expected rgba"),
+        }
+    }
+
+    #[test]
+    fn four_bit_indexed_sprite_decodes_every_pixel() {
+        // 3×2, 4-bit: row0 = 1,2,0  row1 = 3,1,2 (rows padded to whole bytes).
+        let pal = vec![0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255];
+        let png = encode(
+            3,
+            2,
+            png::ColorType::Indexed,
+            png::BitDepth::Four,
+            Some(pal),
+            Some(vec![0]),
+            &[0x12, 0x00, 0x31, 0x20],
+        );
+        let img = parse_png(&png).unwrap();
+        let px = rgba(&img);
+        assert_eq!(px.len(), 3 * 2 * 4);
+        assert_eq!(&px[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&px[4..8], &[0, 255, 0, 255]);
+        assert_eq!(px[11], 0, "index 0 is transparent via tRNS");
+        assert_eq!(&px[12..16], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn one_and_two_bit_indexed_unpack() {
+        let pal = vec![0, 0, 0, 9, 9, 9, 7, 7, 7, 5, 5, 5];
+        let one = encode(
+            9,
+            1,
+            png::ColorType::Indexed,
+            png::BitDepth::One,
+            Some(pal[..6].to_vec()),
+            None,
+            &[0b1010_0000, 0b1000_0000],
+        );
+        let px = parse_png(&one).unwrap();
+        let px = rgba(&px);
+        assert_eq!(px.len(), 9 * 4);
+        assert_eq!((px[0], px[4], px[8], px[32]), (9, 0, 9, 9));
+        let two = encode(
+            5,
+            1,
+            png::ColorType::Indexed,
+            png::BitDepth::Two,
+            Some(pal),
+            None,
+            &[0b0110_1100, 0b0100_0000],
+        );
+        let px = parse_png(&two).unwrap();
+        let px = rgba(&px);
+        assert_eq!(px.len(), 5 * 4);
+        assert_eq!((px[0], px[4], px[8], px[12], px[16]), (9, 7, 5, 0, 9));
+    }
+
+    #[test]
+    fn rgba_png_with_stray_trns_still_decodes() {
+        let good = encode(
+            1,
+            1,
+            png::ColorType::Rgba,
+            png::BitDepth::Eight,
+            None,
+            None,
+            &[10, 20, 30, 40],
+        );
+        // Splice a 1-byte tRNS chunk right after IHDR (as Brutal Doom's blood does).
+        let ihdr_end = 8 + 12 + 13;
+        let mut chunk = Vec::new();
+        chunk.extend_from_slice(&1u32.to_be_bytes());
+        chunk.extend_from_slice(b"tRNS");
+        chunk.push(0);
+        let crc = crc32(&chunk[4..]);
+        chunk.extend_from_slice(&crc.to_be_bytes());
+        let mut bad = good[..ihdr_end].to_vec();
+        bad.extend_from_slice(&chunk);
+        bad.extend_from_slice(&good[ihdr_end..]);
+        let img = parse_png(&bad).unwrap();
+        assert_eq!(rgba(&img), &[10, 20, 30, 40]);
+    }
 
     fn tiny_rgba_png_with_grab() -> Vec<u8> {
         // Build via png encoder then splice grAb before IEND.

@@ -4806,6 +4806,7 @@ dependencies = [
  "room-formats",
  "room-sc",
  "room-vfs",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 

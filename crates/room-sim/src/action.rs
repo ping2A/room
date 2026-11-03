@@ -251,7 +251,8 @@ pub fn call_action_args(
         "A_JumpIfTargetInLOS" => a_jump_if_target_in_los(world, self_id, args),
         "A_Die" => a_die(world, self_id, args),
         "A_Remove" => a_remove(world, self_id),
-        "A_SpawnItem" | "A_SpawnItemEx" => a_spawn_item(world, self_id, args),
+        "A_SpawnItem" => a_spawn_item_plain(world, self_id, args),
+        "A_SpawnItemEx" => a_spawn_item(world, self_id, args),
         "A_CustomMissile" | "A_SpawnProjectile" => a_custom_missile(world, self_id, args),
         "A_ThrowGrenade" => a_throw_grenade(world, self_id, args),
         "A_SpawnDebris" => a_spawn_debris(world, self_id, args),
@@ -3861,6 +3862,35 @@ fn a_remove(world: &mut World, self_id: ActorId) -> ActionResult {
 
 /// `A_SpawnItem` / `A_SpawnItemEx("class" [, x, y, z [, xvel, yvel, zvel, angle]])`.
 /// Offsets are relative to the spawner's yaw.
+/// `A_SpawnItem(type, distance = 0, zheight = 0, useammo, transfer)`.
+///
+/// Not `A_SpawnItemEx`: the second argument is the distance ahead and the
+/// third the height. A distance of 0 means "just clear of me", the two radii
+/// (GZDoom `A_SpawnItem`). Brutal Doom's `A_SpawnItem("RipGuts", 0, 10)` read
+/// as `A_SpawnItemEx` put the guts 10 units to the side instead of 10 up.
+fn a_spawn_item_plain(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let Some(class_name) = args.first().map(|s| s.trim_matches('"').to_owned()) else {
+        return ActionResult::Continue;
+    };
+    let Some(cid) = world.classes.find_name(&class_name) else {
+        return ActionResult::Continue;
+    };
+    let mut distance = parse_f64_arg(args, 1, 0.0);
+    let zheight = parse_f64_arg(args, 2, 0.0);
+    if distance == 0.0 {
+        let own = world.actors.get(self_id).map_or(0.0, |a| a.radius);
+        let other = world.classes.get(cid).map_or(0.0, |c| c.radius);
+        distance = own + other;
+    }
+    let ex = [
+        args[0].clone(),
+        format!("{distance}"),
+        "0".to_owned(),
+        format!("{zheight}"),
+    ];
+    a_spawn_item(world, self_id, &ex)
+}
+
 fn a_spawn_item(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
     let class_name = args
         .first()
@@ -15041,6 +15071,59 @@ actor Brawler : Actor 9006
     }
 
     #[test]
+    fn a_spawn_item_takes_distance_and_height_not_ex_offsets() {
+        let ir = parse_decorate(
+            r#"
+actor Guts : Actor 9003
+{
+  Radius 6
+  +NOGRAVITY
+  States { Spawn: BAL1 A -1 Stop }
+}
+actor Ripper : Actor 9004
+{
+  Radius 20
+  States { Spawn: POSS A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let ripper = classes.find_name("Ripper").unwrap();
+        let guts = classes.find_name("Guts").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let id = w
+            .spawn_at(ripper, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let find = |w: &World| {
+            w.thinkers
+                .default
+                .iter()
+                .rev()
+                .copied()
+                .find(|&c| w.actors.get(c).is_some_and(|a| a.class == guts))
+                .unwrap()
+        };
+        // `A_SpawnItem("Guts", 0, 10)`: just clear of both radii ahead, 10 up.
+        call_action_args(&mut w, id, "A_SpawnItem", &["\"Guts\"".into(), "0".into(), "10".into()]);
+        let g = w.actors.get(find(&w)).unwrap().pos;
+        assert!((g.x() - 90.0).abs() < 1e-6 && (g.y() - 64.0).abs() < 1e-6, "{g:?}");
+        assert!((g.z() - 10.0).abs() < 1e-6, "{g:?}");
+        // An explicit distance is used as given.
+        call_action_args(&mut w, id, "A_SpawnItem", &["Guts".into(), "32".into()]);
+        let g = w.actors.get(find(&w)).unwrap().pos;
+        assert!((g.x() - 96.0).abs() < 1e-6 && (g.y() - 64.0).abs() < 1e-6, "{g:?}");
+    }
+
+    #[test]
     fn a_spawn_item_ex_offsets_relative_to_yaw() {
         let ir = parse_decorate(
             r#"
@@ -16393,14 +16476,24 @@ actor Spin : Actor 9949
             .spawn_at(spin, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
             .unwrap();
         w.set_state(id, Some(spawn), true);
-        // Guard leaves the actor on Spawn (last entered) without overflowing.
-        assert_eq!(w.actors.get(id).unwrap().state, Some(spawn));
+        // GZDoom `SetState`: an endless 0-tic loop destroys the actor, so it
+        // does not run the whole loop again next tic.
+        let a = w.actors.get(id).unwrap();
+        assert!(a.destroyed, "stuck actor must be destroyed");
+        assert_eq!(a.state, None);
         assert!(
-            w.messages
+            w.drain_debug()
                 .iter()
-                .any(|m| m.text.contains("state cycle limit")),
-            "expected cycle-limit warning"
+                .any(|m| m.contains("endless 0-tic state loop") && m.contains("Spin")),
+            "expected a console warning naming the class"
         );
+        assert!(
+            !w.messages.iter().any(|m| m.text.contains("state loop")),
+            "the warning stays off the HUD"
+        );
+        // Ticking again does not re-enter the loop.
+        w.tick();
+        assert!(!w.drain_debug().iter().any(|m| m.contains("state loop")));
     }
 
     #[test]
@@ -16501,6 +16594,75 @@ actor Gun : Actor 9946
             ActionResult::Continue
         );
         assert!(w.drain_debug().iter().any(|l| l.contains("JUMP miss")));
+    }
+
+    #[test]
+    fn actor_spawned_during_a_weapon_action_jumps_on_its_own_states() {
+        // BD: A_FirePistol -> puff -> A_SpawnItem("YellowFlareSmall"); the
+        // flare's `A_Jump(256, 2)` ran with the psprite context still set and
+        // offset the gun's state, so the flare played the gun frames in the
+        // world ("phantom gun"). Actor chains must ignore the psprite context.
+        let ir = parse_decorate(
+            r#"
+actor Flare : Actor 9945
+{
+  States
+  {
+  Spawn:
+    LENY A 0
+    TNT1 A 0 A_Jump(256, 2)
+    LENY A 2
+    Stop
+    TNT1 A 0
+    LENY B 2
+    Stop
+  }
+}
+actor Gun : Actor 9944
+{
+  States
+  {
+  Spawn:
+    TNT1 A -1
+    Stop
+  Ready:
+    PISG A 1
+    PISG B 1
+    PISG C 1
+    PISG D 1
+    Loop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let flare = classes.find_name("Flare").unwrap();
+        let gun = classes.find_name("Gun").unwrap();
+        let ready = states.find_label(gun, "Ready").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        w.psprite_weapon = Some(gun);
+        w.psprite_state = Some(ready);
+        let id = w
+            .spawn_at(flare, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let spawn = states.find_label(flare, "Spawn").unwrap();
+        w.set_state(id, Some(spawn), true);
+        let a = w.actors.get(id).unwrap();
+        let st = w.states.get(a.state.unwrap()).unwrap();
+        assert_eq!(st.owner, flare, "flare must stay in its own states");
+        assert_eq!((st.sprite.as_str(), st.frame), ("LENY", 1));
+        // The weapon context survives the nested actor chain.
+        assert_eq!(w.psprite_weapon, Some(gun));
+        assert_eq!(w.psprite_state, Some(ready));
     }
 
     #[test]
