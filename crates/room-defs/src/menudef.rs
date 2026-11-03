@@ -79,6 +79,7 @@ pub fn parse_menudef(text: &str) -> Result<MenuDef, DefsError> {
         ScanOptions {
             c_mode: true,
             semicolon_comments: false,
+            ..Default::default()
         },
     );
     let mut info = MenuDef::default();

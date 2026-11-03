@@ -421,6 +421,15 @@ fn encode_world(world: &World) -> Result<Vec<u8>, SaveError> {
         write_pascal_str(&mut p, &name);
         p.extend_from_slice(&amount.to_le_bytes());
     }
+    // Optional UZ1 trailer. Older blobs end after inventory and load with
+    // the extra flags left at their spawn defaults.
+    if let Some(a) = world.actors.get(mo) {
+        let words = a.extra_flags.to_words();
+        p.extend_from_slice(&(words.len() as u16).to_le_bytes());
+        for word in words {
+            p.extend_from_slice(&word.to_le_bytes());
+        }
+    }
     Ok(p)
 }
 
@@ -535,6 +544,23 @@ fn decode_world(world: &mut World, bin: &[u8]) -> Result<(), SaveError> {
         o += 4;
         if let Some(cid) = world.classes.find_name(&name) {
             set_inventory(world, mo, cid, amount);
+        }
+    }
+    // Optional extra-flag words. Missing trailer (saves from before UZ1) leaves
+    // the spawned actor's flags alone.
+    if o + 2 <= bin.len() {
+        let nwords = read_u16(bin, o)? as usize;
+        o += 2;
+        if nwords > 64 {
+            return Err(SaveError::Message("flag word count too large".into()));
+        }
+        let mut words = Vec::with_capacity(nwords);
+        for _ in 0..nwords {
+            words.push(read_u64(bin, o)?);
+            o += 8;
+        }
+        if let Some(a) = world.actors.get_mut(mo) {
+            a.extra_flags.load_words(&words);
         }
     }
     let _ = o;
@@ -810,5 +836,65 @@ mod tests {
         assert_eq!(w2.scripts.dispatch_first(1, 0, 0).unwrap(), 1);
         load_world(&mut w2, &blob).unwrap();
         assert_eq!(w2.scripts.dispatch_first(2, 0, 0).unwrap(), 2);
+    }
+
+    #[test]
+    fn extra_flags_roundtrip_and_old_blob_still_loads() {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(128.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        w.actors.get_mut(mo).unwrap().health = 40;
+        assert!(
+            w.actors
+                .get_mut(mo)
+                .unwrap()
+                .extra_flags
+                .set_name("NOFRICTION", true)
+        );
+        let bin = encode_world(&w).unwrap();
+
+        let mut map2 = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(128.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map2);
+        let mut w2 = World::from_map(map2).unwrap();
+        decode_world(&mut w2, &bin).unwrap();
+        let mo2 = w2.players[0].as_ref().unwrap().mo.unwrap();
+        assert_eq!(w2.actors.get(mo2).unwrap().health, 40);
+        assert!(
+            w2.actors
+                .get(mo2)
+                .unwrap()
+                .extra_flags
+                .get_name("NOFRICTION")
+        );
+
+        // A blob written before the flag trailer: drop the word count and six u64s.
+        let old = &bin[..bin.len() - (2 + 8 * room_sim::FLAG_WORDS)];
+        let mut map3 = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(128.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map3);
+        let mut w3 = World::from_map(map3).unwrap();
+        decode_world(&mut w3, old).unwrap();
+        let mo3 = w3.players[0].as_ref().unwrap().mo.unwrap();
+        assert_eq!(w3.actors.get(mo3).unwrap().health, 40);
+        assert!(
+            !w3.actors
+                .get(mo3)
+                .unwrap()
+                .extra_flags
+                .get_name("NOFRICTION"),
+            "a pre-UZ1 blob loads and leaves extra flags at spawn defaults"
+        );
     }
 }

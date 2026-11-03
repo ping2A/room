@@ -43,6 +43,22 @@ pub enum HostCommand {
     StopDemo,
     /// Replay a Room `.fdem` (`playdemo` / `playdemo <slot>`).
     PlayDemo(Option<String>),
+    /// `puke <script> [arg1] [arg2] [arg3]` — start ACS by number (`docs/33` BD5).
+    Puke {
+        /// Script number.
+        script: i32,
+        /// Up to three script args.
+        args: [i32; 3],
+    },
+    /// `pukename <name> [always] [arg1] [arg2] [arg3]`.
+    PukeName {
+        /// Script name (`SNAM`).
+        name: String,
+        /// Prefer `ACS_ExecuteAlways` semantics.
+        always: bool,
+        /// Up to three script args.
+        args: [i32; 3],
+    },
 }
 
 /// Result of executing a console line.
@@ -358,6 +374,62 @@ impl Console {
                     self.print(&msg);
                     output.push(msg);
                 }
+                "puke" => {
+                    if args.is_empty() {
+                        return Err(ConsoleError::Message(
+                            "usage: puke <script> [arg1] [arg2] [arg3]".into(),
+                        ));
+                    }
+                    let script: i32 = args[0].parse().map_err(|_| {
+                        ConsoleError::Message(format!("puke: bad script '{}'", args[0]))
+                    })?;
+                    let mut script_args = [0i32; 3];
+                    for (i, a) in args.iter().skip(1).take(3).enumerate() {
+                        script_args[i] = a.parse().map_err(|_| {
+                            ConsoleError::Message(format!("puke: bad arg '{a}'"))
+                        })?;
+                    }
+                    host.push(HostCommand::Puke {
+                        script,
+                        args: script_args,
+                    });
+                    let msg = format!("Puke {script}");
+                    self.print(&msg);
+                    output.push(msg);
+                }
+                "pukename" => {
+                    if args.is_empty() {
+                        return Err(ConsoleError::Message(
+                            "usage: pukename <name> [always] [arg1] [arg2] [arg3]".into(),
+                        ));
+                    }
+                    let name = args[0].clone();
+                    let mut rest = &args[1..];
+                    let always = rest
+                        .first()
+                        .is_some_and(|s| s.eq_ignore_ascii_case("always"));
+                    if always {
+                        rest = &rest[1..];
+                    }
+                    let mut script_args = [0i32; 3];
+                    for (i, a) in rest.iter().take(3).enumerate() {
+                        script_args[i] = a.parse().map_err(|_| {
+                            ConsoleError::Message(format!("pukename: bad arg '{a}'"))
+                        })?;
+                    }
+                    host.push(HostCommand::PukeName {
+                        name: name.clone(),
+                        always,
+                        args: script_args,
+                    });
+                    let msg = if always {
+                        format!("PukeName {name} always")
+                    } else {
+                        format!("PukeName {name}")
+                    };
+                    self.print(&msg);
+                    output.push(msg);
+                }
                 "alias" => {
                     if args.is_empty() {
                         let listed: Vec<String> = self
@@ -638,6 +710,28 @@ mod tests {
                 HostCommand::Give("all".into()),
                 HostCommand::Map("MAP01".into()),
                 HostCommand::Kill(Some("monsters".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn puke_and_pukename_emit_host() {
+        let mut con = Console::with_defaults();
+        let r = con
+            .exec("puke 7 1 2; pukename DoorOpen always 3")
+            .unwrap();
+        assert_eq!(
+            r.host,
+            vec![
+                HostCommand::Puke {
+                    script: 7,
+                    args: [1, 2, 0],
+                },
+                HostCommand::PukeName {
+                    name: "DoorOpen".into(),
+                    always: true,
+                    args: [3, 0, 0],
+                },
             ]
         );
     }

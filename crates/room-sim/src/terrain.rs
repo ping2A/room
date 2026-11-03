@@ -129,6 +129,10 @@ pub fn hit_floor_splash(world: &mut World, actor_id: crate::actor::ActorId, vel_
             let _ = crate::damage::damage_mobj(world, actor_id, None, None, terrain.damage_on_land);
         }
     }
+    // A liquid hit wakes monsters unless `+NOSPLASHALERT` (UZ1).
+    if !actor.extra_flags.get_name("NOSPLASHALERT") {
+        crate::action::noise_alert(world, actor_id);
+    }
 }
 
 #[cfg(test)]
@@ -196,5 +200,30 @@ mod tests {
             sounds.iter().any(|n| n.contains("watersplash")),
             "expected watersplash, got {sounds:?}"
         );
+        assert_eq!(world.sectors[0].soundtarget, Some(mo));
+    }
+
+    #[test]
+    fn nosplashalert_skips_the_noise() {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        if let Some(s) = map.sectors.get_mut(0) {
+            s.floor_pic = "FWATER1".into();
+        }
+        apply_nodes(&mut map);
+        let mut world = World::from_map(map).unwrap();
+        world.terrain = water_table();
+        let mo = world.players[0].as_ref().unwrap().mo.unwrap();
+        world
+            .actors
+            .get_mut(mo)
+            .unwrap()
+            .extra_flags
+            .set_name("NOSPLASHALERT", true);
+        hit_floor_splash(&mut world, mo, -20.0);
+        assert_eq!(world.sectors[0].soundtarget, None);
     }
 }

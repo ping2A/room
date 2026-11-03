@@ -297,15 +297,16 @@ impl UnlitPass {
                 clamp: 0.0,
             },
         );
-        // Monster/item billboards: REPLACE + depth write + strong camera bias so
-        // they cannot wash out or lose to coplanar walls (E1M1 "invisible killer").
+        // Billboards: alpha blend so PNG flashes (soft alpha, dark RGB) don't
+        // paint a black rectangle. Opaque texels (a = 1) still cover the scene.
+        // Depth write + camera bias so they don't lose to coplanar walls.
         let opaque_sprite_pipeline = make_unlit_pipeline_bias(
             device,
             &shader,
             &layout,
             target_format,
             "opaque-sprite-pipe",
-            wgpu::BlendState::REPLACE,
+            wgpu::BlendState::ALPHA_BLENDING,
             true,
             None,
             wgpu::ColorWrites::ALL,

@@ -84,6 +84,8 @@ pub struct MapInfo {
     pub clusters: BTreeMap<i32, ClusterDef>,
     /// Skills in menu order (empty: the game's defaults).
     pub skills: Vec<SkillDef>,
+    /// `gameinfo { AddEventHandlers = … }` / `EventHandlers` — ZScript class names.
+    pub event_handlers: Vec<String>,
 }
 
 impl MapInfo {
@@ -143,6 +145,7 @@ pub fn parse_mapinfo(text: &str) -> Result<MapInfo, DefsError> {
         ScanOptions {
             c_mode: true,
             semicolon_comments: true,
+            ..Default::default()
         },
     );
     let mut info = MapInfo::default();
@@ -155,11 +158,16 @@ pub fn parse_mapinfo(text: &str) -> Result<MapInfo, DefsError> {
                     name: normalize_map_name(&map_name),
                     ..Default::default()
                 };
-                // Optional quoted title.
+                // Optional title: `"Title"`, `lookup "KEY"`, or `lookup KEY`.
                 match sc.next_token()? {
                     Tok::String(t) => {
                         def.title = Some(t.into_owned());
                     }
+                    Tok::Ident(kw) if Scanner::compare(kw, "lookup") => match sc.next_token()? {
+                        Tok::String(t) => def.title = Some(t.into_owned()),
+                        Tok::Ident(t) => def.title = Some(t.to_owned()),
+                        other => sc.unget(other),
+                    },
                     other => {
                         sc.unget(other);
                     }
@@ -182,11 +190,13 @@ pub fn parse_mapinfo(text: &str) -> Result<MapInfo, DefsError> {
                         match sc.next_token()? {
                             Tok::Punct(Punct::RBrace) | Tok::Eof => break,
                             Tok::Ident(k) => {
-                                let _ = sc.check_punct(Punct::Eq)?;
-                                let v = read_name(&mut sc)?;
-                                if Scanner::compare(k, "name") {
-                                    ep.name = Some(v);
+                                if sc.check_punct(Punct::Eq)? {
+                                    let v = read_name(&mut sc)?;
+                                    if Scanner::compare(k, "name") {
+                                        ep.name = Some(v);
+                                    }
                                 }
+                                // else flag-only (`optional`, `remove`, …)
                                 let _ = sc.check_punct(Punct::Semi)?;
                             }
                             _ => {}
@@ -247,6 +257,30 @@ pub fn parse_mapinfo(text: &str) -> Result<MapInfo, DefsError> {
                     }
                 }
                 info.clusters.insert(id, def);
+            }
+            Tok::Ident(kw) if Scanner::compare(kw, "gameinfo") => {
+                if sc.check_punct(Punct::LBrace)? {
+                    parse_gameinfo_block(&mut sc, &mut info)?;
+                }
+            }
+            // `Intermission Name { … }` / `DoomedNums { … }` — skip braced body.
+            Tok::Ident(kw)
+                if Scanner::compare(kw, "intermission")
+                    || Scanner::compare(kw, "doomednums")
+                    || Scanner::compare(kw, "spawnnums")
+                    || Scanner::compare(kw, "conversationids")
+                    || Scanner::compare(kw, "automap") =>
+            {
+                // Optional name before `{`.
+                match sc.next_token()? {
+                    Tok::Punct(Punct::LBrace) => skip_block(&mut sc)?,
+                    Tok::Ident(_) | Tok::String(_) => {
+                        if sc.check_punct(Punct::LBrace)? {
+                            skip_block(&mut sc)?;
+                        }
+                    }
+                    other => sc.unget(other),
+                }
             }
             Tok::Ident(kw) if Scanner::compare(kw, "clearskills") => info.skills.clear(),
             Tok::Ident(kw) if Scanner::compare(kw, "skill") => {
@@ -336,42 +370,31 @@ fn normalize_map_name(name: &str) -> String {
     name.to_ascii_uppercase()
 }
 
-fn is_map_flag_keyword(key: &str) -> bool {
-    matches!(
-        key.to_ascii_lowercase().as_str(),
-        "fallingdamage"
-            | "oldfallingdamage"
-            | "strifefallingdamage"
-            | "forcefallingdamage"
-            | "monsterfallingdamage"
-            | "nofallingdamage"
-            | "clipmidtextures"
-            | "wrapmidtextures"
-    )
-}
-
 fn parse_map_block_new(sc: &mut Scanner<'_>, def: &mut MapDef) -> Result<(), DefsError> {
     loop {
         match sc.next_token()? {
             Tok::Punct(Punct::RBrace) | Tok::Eof => return Ok(()),
             Tok::Ident(key) => {
-                if is_map_flag_keyword(key) {
-                    // Flag-only; optional `= true` / `= false`.
-                    let val = if sc.check_punct(Punct::Eq)? {
-                        read_name(sc)?
-                    } else {
-                        String::new()
-                    };
-                    apply_map_prop(def, key, &val);
+                let key_l = key.to_ascii_lowercase();
+                // Flag-only when no `=`; otherwise `key = value` (sky1 may take `, speed`).
+                if !sc.check_punct(Punct::Eq)? {
+                    apply_map_prop(def, key, "");
                     let _ = sc.check_punct(Punct::Semi)?;
                     continue;
                 }
-                let _ = sc.check_punct(Punct::Eq)?;
+                if matches!(key_l.as_str(), "sky1" | "sky" | "sky2") {
+                    def.sky1 = Some(read_name(sc)?);
+                    consume_optional_number(sc)?;
+                    let _ = sc.check_punct(Punct::Semi)?;
+                    continue;
+                }
                 let val = read_name(sc)?;
                 apply_map_prop(def, key, &val);
+                // Ignore trailing `, number` on unknown props (titlepatch etc. don't need it).
+                consume_optional_number(sc)?;
                 let _ = sc.check_punct(Punct::Semi)?;
             }
-            Tok::Punct(Punct::Semi) => {}
+            Tok::Punct(Punct::Semi) | Tok::Punct(Punct::Comma) => {}
             other => {
                 return Err(DefsError::Message(format!(
                     "MAPINFO map block: unexpected {other:?}"
@@ -529,6 +552,7 @@ fn parse_map_body_old(sc: &mut Scanner<'_>, def: &mut MapDef) -> Result<(), Defs
 }
 
 fn consume_optional_number(sc: &mut Scanner<'_>) -> Result<(), DefsError> {
+    let _ = sc.check_punct(Punct::Comma)?;
     let tok = sc.next_token()?;
     match tok {
         Tok::Int(_) | Tok::Float(_) => Ok(()),
@@ -672,6 +696,84 @@ fn skip_block(sc: &mut Scanner<'_>) -> Result<(), DefsError> {
     Ok(())
 }
 
+/// `gameinfo { AddEventHandlers = "A", "B"; … }` (docs/34 ZS4 / docs/33 BD6).
+fn parse_gameinfo_block(sc: &mut Scanner<'_>, info: &mut MapInfo) -> Result<(), DefsError> {
+    let mut depth = 1i32;
+    while depth > 0 {
+        match sc.next_token()? {
+            Tok::Eof => break,
+            Tok::Punct(Punct::LBrace) => depth += 1,
+            Tok::Punct(Punct::RBrace) => depth -= 1,
+            Tok::Ident(key) if depth == 1 => {
+                let key_l = key.to_ascii_lowercase();
+                let _ = sc.check_punct(Punct::Eq)?;
+                match key_l.as_str() {
+                    "addeventhandlers" | "eventhandlers" => {
+                        let names = read_string_list(sc)?;
+                        for n in names {
+                            if !info
+                                .event_handlers
+                                .iter()
+                                .any(|e| e.eq_ignore_ascii_case(&n))
+                            {
+                                info.event_handlers.push(n);
+                            }
+                        }
+                    }
+                    _ => {
+                        // Skip value until `;` or end of block.
+                        loop {
+                            match sc.next_token()? {
+                                Tok::Punct(Punct::Semi) | Tok::Eof => break,
+                                Tok::Punct(Punct::RBrace) => {
+                                    sc.unget(Tok::Punct(Punct::RBrace));
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                let _ = sc.check_punct(Punct::Semi)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn read_string_list(sc: &mut Scanner<'_>) -> Result<Vec<String>, DefsError> {
+    let mut out = Vec::new();
+    loop {
+        match sc.next_token()? {
+            Tok::String(s) => out.push(s.into_owned()),
+            Tok::Ident(s) => out.push(s.to_owned()),
+            Tok::Punct(Punct::Comma) => continue,
+            Tok::Punct(Punct::Semi) => {
+                sc.unget(Tok::Punct(Punct::Semi));
+                break;
+            }
+            Tok::Punct(Punct::RBrace) => {
+                sc.unget(Tok::Punct(Punct::RBrace));
+                break;
+            }
+            Tok::Eof => break,
+            other => {
+                return Err(DefsError::Message(format!(
+                    "MAPINFO gameinfo: expected handler name, got {other:?}"
+                )));
+            }
+        }
+        // Optional comma before next name.
+        if sc.check_punct(Punct::Comma)? {
+            continue;
+        }
+        // End of list if `;` / `}` ahead — leave for caller.
+        break;
+    }
+    Ok(out)
+}
+
 fn read_name(sc: &mut Scanner<'_>) -> Result<String, DefsError> {
     match sc.next_token()? {
         Tok::Ident(s) => Ok(s.to_owned()),
@@ -688,6 +790,29 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn parse_gameinfo_add_event_handlers() {
+        let info = parse_mapinfo(
+            r#"
+            gameinfo
+            {
+                AddEventHandlers = "ZC_TMapHack", "Script_DamageMult"
+                DimColor = "00 00 00"
+            }
+            map MAP01 "Test"
+            {
+                next = MAP02
+            }
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            info.event_handlers,
+            vec!["ZC_TMapHack".to_owned(), "Script_DamageMult".to_owned()]
+        );
+        assert!(info.maps.contains_key("MAP01"));
+    }
 
     #[test]
     fn parse_new_mapinfo() {

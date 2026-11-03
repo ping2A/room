@@ -99,6 +99,7 @@ pub fn parse_sndseq(text: &str) -> Result<SoundSeqRegistry, DefsError> {
         ScanOptions {
             c_mode: false,
             semicolon_comments: true,
+            ..Default::default()
         },
     );
     let mut reg = SoundSeqRegistry::default();

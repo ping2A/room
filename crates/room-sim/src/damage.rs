@@ -309,6 +309,68 @@ fn apply_damage_thrust(
     }
 }
 
+/// `Inventory.ModifyDamage`: source items (active) then target items (passive).
+fn apply_inventory_modify_damage(
+    world: &mut World,
+    target: ActorId,
+    inflictor: Option<ActorId>,
+    source: Option<ActorId>,
+    damage: i32,
+    dtype: Option<&str>,
+) -> i32 {
+    if !world.zscript.is_active() || damage <= 0 {
+        return damage;
+    }
+    let dtype = dtype.unwrap_or("");
+    let source_monster = source.is_some_and(|id| {
+        world
+            .actors
+            .get(id)
+            .is_some_and(|a| (a.flags & crate::class::FLAG_COUNTKILL) != 0)
+    });
+    let class_name = |id: ActorId| -> String {
+        world
+            .actors
+            .get(id)
+            .and_then(|a| world.classes.get(a.class))
+            .map(|c| c.name.clone())
+            .unwrap_or_default()
+    };
+    let source_class = source.map(class_name).unwrap_or_default();
+    let inflictor_class = inflictor.map(class_name).unwrap_or_default();
+    let mut names = Vec::new();
+    if let Some(src) = source {
+        for item in world.inventory.iter(src) {
+            if let Some(c) = world.classes.get(item.class) {
+                names.push((c.name.clone(), false));
+            }
+        }
+    }
+    for item in world.inventory.iter(target) {
+        if let Some(c) = world.classes.get(item.class) {
+            names.push((c.name.clone(), true));
+        }
+    }
+    let mut damage = damage;
+    for (name, passive) in names {
+        damage = world.zscript.modify_damage(
+            &name,
+            damage,
+            dtype,
+            passive,
+            source.is_some(),
+            source_monster,
+            &source_class,
+            inflictor.is_some(),
+            &inflictor_class,
+        );
+        if damage <= 0 {
+            return 0;
+        }
+    }
+    damage
+}
+
 /// Apply damage. Returns damage actually dealt (0 if ignored).
 pub fn damage_mobj(
     world: &mut World,
@@ -423,6 +485,8 @@ pub fn damage_mobj(
     } else {
         damage
     };
+    let damage =
+        apply_inventory_modify_damage(world, target, inflictor, source, damage, dtype.as_deref());
     if damage <= 0 {
         return 0;
     }
@@ -456,6 +520,18 @@ pub fn damage_mobj(
             let src_class = src_a.map(|a| a.class);
             let src_flags = src_a.map(|a| a.flags).unwrap_or(0);
             let tgt_flags = world.actors.get(target).map(|a| a.flags).unwrap_or(0);
+            // Friendlies spare each other unless the source has `+HARMFRIENDS` (UZ1).
+            if (src_flags & crate::class::FLAG_FRIENDLY) != 0
+                && (tgt_flags & crate::class::FLAG_FRIENDLY) != 0
+                && !source.is_some_and(|id| {
+                    world
+                        .actors
+                        .get(id)
+                        .is_some_and(|s| s.extra_flags.get_name("HARMFRIENDS"))
+                })
+            {
+                return 0;
+            }
             if ((src_flags | tgt_flags) & crate::class::FLAG_DONTHARMCLASS) != 0
                 && src_class == Some(class)
             {
@@ -551,7 +627,19 @@ pub fn damage_mobj(
         if actor.destroyed || (actor.flags & FLAG_SHOOTABLE) == 0 {
             return 0;
         }
-        if (actor.flags & (crate::class::FLAG_NODAMAGE | crate::class::FLAG_INVULNERABLE)) != 0 {
+        // `+FOILINVUL` on the source pierces `INVULNERABLE` (UZ1). `NODAMAGE` still holds.
+        let foil_invul = source.is_some_and(|id| {
+            world
+                .actors
+                .get(id)
+                .is_some_and(|s| s.extra_flags.get_name("FOILINVUL"))
+        });
+        let block = if foil_invul {
+            crate::class::FLAG_NODAMAGE
+        } else {
+            crate::class::FLAG_NODAMAGE | crate::class::FLAG_INVULNERABLE
+        };
+        if (actor.flags & block) != 0 {
             return 0;
         }
     }
@@ -600,13 +688,19 @@ pub fn damage_mobj(
         .map(|c| c.name.clone())
         .unwrap_or_default();
     let is_player_pawn = world.players.iter().flatten().any(|p| p.mo == Some(target));
+    let foil_buddha = source.is_some_and(|id| {
+        world
+            .actors
+            .get(id)
+            .is_some_and(|s| s.extra_flags.get_name("FOILBUDDHA"))
+    });
     let health = {
         let Some(actor) = world.actors.get_mut(target) else {
             return 0;
         };
         actor.health = actor.health.saturating_sub(health_damage);
         if actor.health <= 0 {
-            let buddha = (actor.flags & crate::class::FLAG_BUDDHA) != 0;
+            let buddha = (actor.flags & crate::class::FLAG_BUDDHA) != 0 && !foil_buddha;
             let pvp_dbno = world.squad_dbno
                 && is_player_pawn
                 && source.is_some_and(|src| {
@@ -630,14 +724,22 @@ pub fn damage_mobj(
         }
         actor.health
     };
+    let mut pain_flash = None;
     if is_player_pawn {
         for p in world.players.iter_mut().flatten() {
             if p.mo == Some(target) {
                 p.attacker = source;
                 p.damage_count = (p.damage_count + health_damage).min(100);
+                pain_flash = Some(p.damage_count);
                 break;
             }
         }
+    }
+    if let Some(flash) = pain_flash {
+        let palette = ((flash + 7) >> 3).min(7) + 1;
+        world.push_debug(format!(
+            "PAIN +{health_damage} flash={flash} palette={palette} (full-window tint)"
+        ));
     }
     if health_damage > 0 {
         let source_player = source.and_then(|src| {
@@ -2074,6 +2176,19 @@ actor RedBot : Actor 9910
         w.actors.get_mut(mo1).unwrap().flags |= crate::class::FLAG_BUDDHA;
         assert!(damage_mobj(&mut w, mo1, None, Some(mo0), 500) > 0);
         assert_eq!(w.actors.get(mo1).unwrap().health, 1);
+    }
+
+    #[test]
+    fn foilbuddha_pierces_the_health_floor() {
+        let (mut w, mo0, mo1) = two_player_dm_world();
+        w.actors.get_mut(mo1).unwrap().flags |= crate::class::FLAG_BUDDHA;
+        w.actors
+            .get_mut(mo0)
+            .unwrap()
+            .extra_flags
+            .set_name("FOILBUDDHA", true);
+        assert!(damage_mobj(&mut w, mo1, None, Some(mo0), 500) > 0);
+        assert!(w.actors.get(mo1).unwrap().health <= 0);
     }
 
     #[test]

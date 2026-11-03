@@ -65,6 +65,7 @@ pub fn parse_lockdefs(text: &str) -> Result<LockDefs, DefsError> {
         ScanOptions {
             c_mode: true,
             semicolon_comments: false,
+            ..Default::default()
         },
     );
     let mut info = LockDefs::default();

@@ -4,12 +4,16 @@
 
 mod attack;
 mod mod_buttons;
+mod weapon_impulses;
 
 pub use attack::{
     ATTACK_HOLD_TICS, AttackLatch, DeviceButtonOs, device_button_is_primary,
     device_button_is_primary_on,
 };
 pub use mod_buttons::{ModButtonState, apply_mod_buttons, default_bind_pairs};
+pub use weapon_impulses::{
+    WeaponImpulseState, apply_weapon_impulses, bd_impulse_bind_pairs,
+};
 
 /// Logical keys the binder cares about (M5 subset).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -30,6 +34,18 @@ pub enum Key {
     Attack,
     /// Alt / secondary attack (`docs/31` MA4).
     AltAttack,
+    /// Reload (`+reload` / BD4).
+    Reload,
+    /// Zoom (`+zoom` / BD4).
+    Zoom,
+    /// User1 (`+user1` / BD4).
+    User1,
+    /// User2 (`+user2` / BD4).
+    User2,
+    /// User3 (`+user3` / BD4).
+    User3,
+    /// User4 (`+user4` / BD4).
+    User4,
     /// Use.
     Use,
     /// Run / speed.
@@ -129,6 +145,18 @@ impl TicCmdBits {
     pub const BT_INVUSE: u32 = 1 << 8;
     /// Alt / secondary attack.
     pub const BT_ALTATTACK: u32 = 1 << 9;
+    /// Reload (`docs/33` BD4).
+    pub const BT_RELOAD: u32 = 1 << 10;
+    /// Zoom.
+    pub const BT_ZOOM: u32 = 1 << 11;
+    /// User1.
+    pub const BT_USER1: u32 = 1 << 12;
+    /// User2.
+    pub const BT_USER2: u32 = 1 << 13;
+    /// User3.
+    pub const BT_USER3: u32 = 1 << 14;
+    /// User4.
+    pub const BT_USER4: u32 = 1 << 15;
 }
 
 /// Doom walk / run forward units.
@@ -195,6 +223,24 @@ pub fn build_ticcmd(sample: &InputSample) -> TicCmdBits {
     if sample.keys.contains(&Key::AltAttack) {
         cmd.buttons |= TicCmdBits::BT_ALTATTACK;
     }
+    if sample.keys.contains(&Key::Reload) {
+        cmd.buttons |= TicCmdBits::BT_RELOAD;
+    }
+    if sample.keys.contains(&Key::Zoom) {
+        cmd.buttons |= TicCmdBits::BT_ZOOM;
+    }
+    if sample.keys.contains(&Key::User1) {
+        cmd.buttons |= TicCmdBits::BT_USER1;
+    }
+    if sample.keys.contains(&Key::User2) {
+        cmd.buttons |= TicCmdBits::BT_USER2;
+    }
+    if sample.keys.contains(&Key::User3) {
+        cmd.buttons |= TicCmdBits::BT_USER3;
+    }
+    if sample.keys.contains(&Key::User4) {
+        cmd.buttons |= TicCmdBits::BT_USER4;
+    }
     if sample.keys.contains(&Key::Use) {
         cmd.buttons |= TicCmdBits::BT_USE;
     }
@@ -240,13 +286,25 @@ pub fn build_ticcmd(sample: &InputSample) -> TicCmdBits {
 /// Like [`build_ticcmd`] but merges held mod buttons from [`ModButtonState`].
 #[must_use]
 pub fn build_ticcmd_with_mods(sample: &InputSample, mods: ModButtonState) -> TicCmdBits {
+    build_ticcmd_with_mods_and_impulses(sample, mods, WeaponImpulseState::default())
+}
+
+/// Like [`build_ticcmd_with_mods`] plus KEYCONF weapon impulses (`+reload`…).
+#[must_use]
+pub fn build_ticcmd_with_mods_and_impulses(
+    sample: &InputSample,
+    mods: ModButtonState,
+    impulses: WeaponImpulseState,
+) -> TicCmdBits {
     let mut cmd = build_ticcmd(sample);
-    // `build_ticcmd` already merged keys; re-apply mods without double-counting keys.
+    // `build_ticcmd` already merged keys; re-apply latched console bits.
     cmd.buttons &= !(ModButtonState::MOD1
         | ModButtonState::MOD2
         | ModButtonState::MOD3
-        | ModButtonState::MOD4);
+        | ModButtonState::MOD4
+        | WeaponImpulseState::MASK);
     apply_mod_buttons(&mut cmd, mods, &sample.keys);
+    apply_weapon_impulses(&mut cmd, impulses, &sample.keys);
     cmd
 }
 

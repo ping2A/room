@@ -422,9 +422,11 @@ impl MapBuilder {
                     top: "-".into(),
                     bottom: "-".into(),
                 });
+                // Room loops are CCW (interior on the left). Doom wants the front
+                // side on the *right* of v1→v2, so reverse the edge.
                 linedefs.push(LineOut {
-                    v1: o.v1,
-                    v2: o.v2,
+                    v1: o.v2,
+                    v2: o.v1,
                     side_front: si,
                     side_back: None,
                     special: None,
@@ -477,9 +479,11 @@ impl MapBuilder {
                 } else {
                     (None, 0, None)
                 };
+                // Reverse `a`'s CCW edge so front sector `sa` sits on the right
+                // (Doom BSP / `point_in_sector` convention).
                 linedefs.push(LineOut {
-                    v1: a.v1,
-                    v2: a.v2,
+                    v1: a.v2,
+                    v2: a.v1,
                     side_front: front,
                     side_back: Some(back),
                     special,

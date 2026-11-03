@@ -31,6 +31,18 @@ impl Buttons {
     pub const INVUSE: u32 = 1 << 8;
     /// Alt / secondary attack (`docs/31` MA4).
     pub const ALTATTACK: u32 = 1 << 9;
+    /// Reload (`+reload` / BD KEYCONF R; `docs/33` BD4).
+    pub const RELOAD: u32 = 1 << 10;
+    /// Zoom / kick (`+zoom` / BD Q; `docs/33` BD4).
+    pub const ZOOM: u32 = 1 << 11;
+    /// User1 (`+user1` / BD grenade G).
+    pub const USER1: u32 = 1 << 12;
+    /// User2 (`+user2` / BD unload).
+    pub const USER2: u32 = 1 << 13;
+    /// User3 (`+user3` / BD dual-wield X).
+    pub const USER3: u32 = 1 << 14;
+    /// User4 (`+user4` / BD ammo drop).
+    pub const USER4: u32 = 1 << 15;
     /// Mod bind `+mod1` (ping / primary mod action; `docs/28` BE4).
     pub const MOD1: u32 = 1 << 16;
     /// Mod bind `+mod2` (map / secondary mod action).
@@ -132,6 +144,8 @@ pub struct Player {
     pub capture_started: u32,
     /// Previous tic's raw button bits (for pressed/released edges).
     pub prev_buttons: u32,
+    /// Button mask ACS saw on the previous tic (`INPUT_OLDBUTTONS`).
+    pub acs_prev_buttons: u32,
     /// Life-cycle.
     pub player_state: PlayerState,
     /// Player class.
@@ -140,6 +154,8 @@ pub struct Player {
     pub view_height: f64,
     /// Current eye Z.
     pub view_z: f64,
+    /// Extra eye height from `SetViewPos` (map units).
+    pub view_ofs_z: f64,
     /// On ground this tic.
     pub on_ground: bool,
     /// Duke crouch (`up_move` down while grounded).
@@ -156,10 +172,60 @@ pub struct Player {
     pub pspr_state: Option<StateId>,
     /// Remaining tics on the current psprite frame (`-1` = hold).
     pub pspr_tics: i32,
+    /// Sprite the weapon overlay is actually showing.
+    ///
+    /// DECORATE `####` does not replace this. The state itself still says `####`.
+    pub pspr_sprite: String,
+    /// Frame letter index for [`Self::pspr_sprite`].
+    pub pspr_frame: u8,
     /// Muzzle flash psprite (`psp_flash`).
     pub pspr_flash_state: Option<StateId>,
     /// Remaining tics on the flash frame.
     pub pspr_flash_tics: i32,
+    /// Layer-2 overlay state from `A_Overlay`.
+    pub overlay2_state: Option<StateId>,
+    /// Remaining tics on the layer-2 overlay frame.
+    pub overlay2_tics: i32,
+    /// Sprite the layer-2 overlay is showing.
+    pub overlay2_sprite: String,
+    /// Frame letter index for [`Self::overlay2_sprite`].
+    pub overlay2_frame: u8,
+    /// Extra screen X for the layer-2 overlay (`A_OverlayOffset`).
+    pub overlay2_ofs_x: f64,
+    /// Extra screen Y for the layer-2 overlay, above `WEAPONTOP`.
+    pub overlay2_ofs_y: f64,
+    /// Layer-2 alpha from `A_OverlayAlpha`. Absent means fully opaque.
+    pub overlay2_alpha: Option<f64>,
+    /// Layer-2 scale from `A_OverlayScale`. Absent means 1×1.
+    pub overlay2_scale: Option<(f64, f64)>,
+    /// `PSPF_FLIP` on the layer-2 overlay.
+    pub overlay2_flip: bool,
+    /// `PSPF_MIRROR` on the layer-2 overlay.
+    pub overlay2_mirror: bool,
+    /// Layer-2 rotation in degrees from `A_OverlayRotate`. 0 is upright.
+    pub overlay2_angle: f64,
+    /// Layer-2 scale pivot from `A_OverlayPivot`. Absent means the patch center.
+    pub overlay2_pivot: Option<(f64, f64)>,
+    /// Layer-2 translation from `A_OverlayTranslation`. Empty is untinted.
+    pub overlay2_translation: String,
+    /// Layer-2 render style from `A_OverlayRenderStyle`. Absent keeps the sprite solid.
+    pub overlay2_style: Option<crate::class::RenderStyle>,
+    /// `PSPF_PIVOTPERCENT` on the layer-2 overlay. False means the pivot is in pixels.
+    pub overlay2_pivot_percent: bool,
+    /// `PSPF_ADDBOB` on the layer-2 overlay. False drops weapon sway from that sprite.
+    pub overlay2_add_bob: bool,
+    /// `PSPF_ADDWEAPON` on the layer-2 overlay. False drops `A_WeaponOffset` from that sprite.
+    pub overlay2_add_weapon: bool,
+    /// `PSPF_INTERPOLATE` on the layer-2 overlay. False snaps that sprite between tics.
+    pub overlay2_interpolate: bool,
+    /// `PSPF_FORCEALPHA` on the layer-2 overlay. True keeps that sprite off the body alpha.
+    pub overlay2_force_alpha: bool,
+    /// `PSPF_FORCESTYLE` on the layer-2 overlay. True ignores player invisibility fuzz.
+    pub overlay2_force_style: bool,
+    /// `PSPF_CVARFAST` on the layer-2 overlay. True shortens that layer when fast weapons are on.
+    pub overlay2_cvar_fast: bool,
+    /// `PSPF_POWDOUBLE` on the layer-2 overlay. True halves that layer while double firing speed is held.
+    pub overlay2_pow_double: bool,
     /// Weapon muzzle extralight (`A_Light1`/`A_Light2` → 1/2; `A_Light0` → 0).
     pub extralight: i32,
     /// Weapon bob amplitude (map units; from XY speed).
@@ -168,6 +234,40 @@ pub struct Player {
     pub pspr_bob_x: f64,
     /// Last weapon sway Y written by `A_WeaponReady` (docs/30 W8.3).
     pub pspr_bob_y: f64,
+    /// Extra screen X from `A_WeaponOffset` (pixels).
+    pub weapon_ofs_x: f64,
+    /// Extra screen Y from `A_WeaponOffset` (pixels above `WEAPONTOP`).
+    pub weapon_ofs_y: f64,
+    /// Weapon-layer alpha from `A_OverlayAlpha`. Absent means fully opaque.
+    pub weapon_alpha: Option<f64>,
+    /// Weapon-layer scale from `A_OverlayScale`. Absent means 1×1.
+    pub weapon_scale: Option<(f64, f64)>,
+    /// `PSPF_FLIP` on the weapon layer.
+    pub weapon_flip: bool,
+    /// `PSPF_ADDBOB` (bit 1). True keeps weapon sway on the gun.
+    pub weapon_add_bob: bool,
+    /// `PSPF_ADDWEAPON` (bit 0). True keeps `A_WeaponOffset` on the gun.
+    pub weapon_add_ofs: bool,
+    /// `PSPF_CVARFAST` (bit 3). `sv_fastweapons` shortens weapon frames.
+    pub weapon_cvar_fast: bool,
+    /// `PSPF_POWDOUBLE` (bit 2). `PowerDoubleFiringSpeed` shortens weapon frames.
+    pub weapon_pow_double: bool,
+    /// `PSPF_MIRROR` (bit 5). Flips the weapon sprite top to bottom.
+    pub weapon_mirror: bool,
+    /// `PSPF_PIVOTPERCENT` (bit 7). Pivot values are fractions of the sprite.
+    pub weapon_pivot_percent: bool,
+    /// `PSPF_FORCEALPHA` (bit 10). Overlay alpha ignores the player's translucency.
+    pub weapon_force_alpha: bool,
+    /// `PSPF_FORCESTYLE` (bit 9). Overlay style ignores the player's fuzz.
+    pub weapon_force_style: bool,
+    /// `PSPF_INTERPOLATE` (bit 8). Ease the gun offset between tics.
+    pub weapon_interpolate: bool,
+    /// Scale pivot from `A_OverlayPivot`. Absent means the patch center.
+    pub weapon_pivot: Option<(f64, f64)>,
+    /// Weapon-layer rotation in degrees from `A_OverlayRotate`. 0 is upright.
+    pub weapon_angle: f64,
+    /// Weapon-layer render style from `A_OverlayRenderStyle`. Absent keeps the gun solid.
+    pub weapon_style: Option<crate::class::RenderStyle>,
     /// Attack button was held last tic (edge detect).
     pub attack_down: bool,
     /// Alt-attack button was held last tic (`docs/31` MA4).
@@ -176,6 +276,12 @@ pub struct Player {
     pub alt_fire_active: bool,
     /// Doom `player->refire` — consecutive `A_ReFire` shots (`P_GunShot` spread).
     pub refire: i32,
+    /// `A_ZoomFactor` scale (1.0 = default FOV; BD4 / UI).
+    pub weapon_zoom: f32,
+    /// `A_SetCrosshair` index (0 = default).
+    pub crosshair: i32,
+    /// Weapon-layer translation from `A_OverlayTranslation`. Empty is untinted.
+    pub weapon_translation: String,
     /// Jump button was held last tic (edge detect).
     pub jump_down: bool,
     /// Use button was held last tic (Doom `player->usedown` edge).
@@ -289,6 +395,13 @@ pub struct Player {
 }
 
 impl Player {
+    /// View FOV after `A_ZoomFactor`. A factor of 2 halves `base_deg`.
+    #[must_use]
+    pub fn zoomed_fov(base_deg: f64, zoom: f32) -> f64 {
+        let z = f64::from(zoom).clamp(0.1, 10.0);
+        (base_deg / z).clamp(1.0, 175.0)
+    }
+
     /// Doom `player->fixedcolormap`: [`INVERSE_COLORMAP`] while invulnerable,
     /// `1` (light amp) with infrared goggles, else `0`. Both blink during the
     /// last 4 seconds (`> 4*32 || & 8`), and invulnerability masks infrared.
@@ -322,16 +435,60 @@ impl Player {
         self.pspr_y = WEAPON_BOTTOM;
         self.pspr_state = None;
         self.pspr_tics = 0;
+        self.pspr_sprite.clear();
+        self.pspr_frame = 0;
         self.pspr_flash_state = None;
         self.pspr_flash_tics = 0;
+        self.overlay2_state = None;
+        self.overlay2_tics = 0;
+        self.overlay2_sprite.clear();
+        self.overlay2_frame = 0;
+        self.overlay2_ofs_x = 0.0;
+        self.overlay2_ofs_y = 0.0;
+        self.overlay2_alpha = None;
+        self.overlay2_scale = None;
+        self.overlay2_flip = false;
+        self.overlay2_mirror = false;
+        self.overlay2_angle = 0.0;
+        self.overlay2_pivot = None;
+        self.overlay2_translation.clear();
+        self.overlay2_style = None;
+        self.overlay2_pivot_percent = true;
+        self.overlay2_add_bob = true;
+        self.overlay2_add_weapon = true;
+        self.overlay2_interpolate = true;
+        self.overlay2_force_alpha = false;
+        self.overlay2_force_style = false;
+        self.overlay2_cvar_fast = true;
+        self.overlay2_pow_double = true;
         self.extralight = 0;
         self.bob = 0.0;
         self.pspr_bob_x = 0.0;
         self.pspr_bob_y = 0.0;
+        self.weapon_ofs_x = 0.0;
+        self.weapon_ofs_y = 0.0;
+        self.weapon_alpha = None;
+        self.weapon_scale = None;
+        self.weapon_flip = false;
+        self.weapon_add_bob = true;
+        self.weapon_add_ofs = true;
+        self.weapon_cvar_fast = false;
+        self.weapon_pow_double = false;
+        self.weapon_mirror = false;
+        self.weapon_pivot_percent = true;
+        self.weapon_force_alpha = false;
+        self.weapon_force_style = false;
+        self.weapon_interpolate = true;
+        self.weapon_pivot = None;
+        self.weapon_angle = 0.0;
+        self.weapon_style = None;
         self.attack_down = false;
         self.alt_attack_down = false;
         self.alt_fire_active = false;
         self.refire = 0;
+        self.weapon_zoom = 1.0;
+        self.crosshair = 0;
+        self.weapon_translation.clear();
         self.jump_down = false;
         self.use_down = false;
         self.invuse_down = false;

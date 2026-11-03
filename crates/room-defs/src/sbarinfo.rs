@@ -121,6 +121,7 @@ pub fn parse_sbarinfo(text: &str) -> Result<SbarInfo, DefsError> {
             c_mode: true,
             // `;` terminates statements in SBARINFO (not Hexen-style comments).
             semicolon_comments: false,
+            ..Default::default()
         },
     );
     let mut info = SbarInfo::default();
@@ -344,13 +345,29 @@ fn parse_cmd_block(sc: &mut Scanner<'_>) -> Result<Vec<SbarCmd>, DefsError> {
                 // `else` / block openers that take `{` with optional args.
                 if is_block_keyword(&lower) {
                     let mut args = Vec::new();
+                    let mut braced = false;
                     loop {
                         match sc.next_token()? {
-                            Tok::Punct(Punct::LBrace) => break,
+                            Tok::Punct(Punct::LBrace) => {
+                                braced = true;
+                                break;
+                            }
+                            // `gamemode deathmatch;` — flag-style, no nested body.
+                            Tok::Punct(Punct::Semi) => break,
                             Tok::Punct(Punct::Comma) => {}
                             Tok::Ident(a) => args.push(a.to_owned()),
                             Tok::String(a) => args.push(a.into_owned()),
                             Tok::Int(n) => args.push(n.to_string()),
+                            Tok::Float(f) => args.push(f.to_string()),
+                            Tok::Punct(Punct::OrOr) => args.push("||".into()),
+                            Tok::Punct(Punct::AndAnd) => args.push("&&".into()),
+                            Tok::Punct(Punct::Pipe) => args.push("|".into()),
+                            Tok::Punct(Punct::Amp) => args.push("&".into()),
+                            Tok::Punct(Punct::Bang) => args.push("!".into()),
+                            Tok::Punct(Punct::EqEq) => args.push("==".into()),
+                            Tok::Punct(Punct::NotEq) => args.push("!=".into()),
+                            Tok::Punct(Punct::Minus) => args.push("-".into()),
+                            Tok::Punct(Punct::Plus) => args.push("+".into()),
                             other => {
                                 return Err(DefsError::Message(format!(
                                     "SBARINFO block {lower}: unexpected {other:?}"
@@ -358,7 +375,11 @@ fn parse_cmd_block(sc: &mut Scanner<'_>) -> Result<Vec<SbarCmd>, DefsError> {
                             }
                         }
                     }
-                    let body = parse_cmd_block(sc)?;
+                    let body = if braced {
+                        parse_cmd_block(sc)?
+                    } else {
+                        Vec::new()
+                    };
                     cmds.push(SbarCmd::Block {
                         kind: lower,
                         args,
@@ -524,6 +545,39 @@ fn read_arg_list(sc: &mut Scanner<'_>) -> Result<Vec<String>, DefsError> {
             }
             Tok::Punct(Punct::Plus) => {
                 cur.push('+');
+            }
+            Tok::Punct(Punct::OrOr) => {
+                if !cur.is_empty() {
+                    cur.push(' ');
+                }
+                cur.push_str("||");
+            }
+            Tok::Punct(Punct::AndAnd) => {
+                if !cur.is_empty() {
+                    cur.push(' ');
+                }
+                cur.push_str("&&");
+            }
+            Tok::Punct(Punct::Pipe) => {
+                cur.push('|');
+            }
+            Tok::Punct(Punct::Amp) => {
+                cur.push('&');
+            }
+            Tok::Punct(Punct::Bang) => {
+                cur.push('!');
+            }
+            Tok::Punct(Punct::EqEq) => {
+                if !cur.is_empty() {
+                    cur.push(' ');
+                }
+                cur.push_str("==");
+            }
+            Tok::Punct(Punct::NotEq) => {
+                if !cur.is_empty() {
+                    cur.push(' ');
+                }
+                cur.push_str("!=");
             }
             Tok::Punct(Punct::LBrace) => {
                 sc.unget(Tok::Punct(Punct::LBrace));

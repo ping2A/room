@@ -84,6 +84,12 @@ Semantics to replicate:
 
 ## 3. ZScript policy
 
+> **Superseded (2026-11-01).** Room now compiles and runs ZScript with its own
+> front end and VM — see `docs/34-zscript-vm.md` and
+> `docs/decisions/0005-zscript-vm.md`. The text below is kept for history;
+> the ZScript→WASM transpiler stretch goal is dropped. WASM modules
+> (`docs/12`) remain the recommended API for new mods.
+
 ### 3.1 Decision
 
 ZScript source is **not executed** by Room. Rationale: ZScript is a large, GZDoom-internal language tightly coupled to C++ class layouts; reproducing its VM and ~3000 native bindings would duplicate GZDoom without improving the modding experience. WASM modules replace it with a smaller, versioned, language-agnostic API.

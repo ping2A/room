@@ -31,6 +31,7 @@ Definitions {
         episodes: [],
         clusters: {},
         skills: [],
+        event_handlers: [],
     },
     sounds: SoundRegistry {
         sounds: {

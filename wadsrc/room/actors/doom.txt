@@ -48,9 +48,103 @@ actor PlayerPawn : Actor 0
 }
 
 // DeHackEd thing 1 alias (no DoomEdNum — PlayerPawn owns 0).
+
 actor DoomPlayer : PlayerPawn
 {
 }
+
+// --- GZDoom native bases (docs/33 BD2) — stubs for inheritance ---
+actor Inventory : Actor
+{
+  Inventory.Amount 1
+  Inventory.MaxAmount 1
+}
+
+actor CustomInventory : Inventory
+{
+}
+
+actor Ammo : Inventory
+{
+  Inventory.Amount 1
+  Inventory.MaxAmount 0
+  Ammo.BackpackAmount 1
+  Ammo.BackpackMaxAmount 0
+}
+
+actor BackpackItem : Inventory
+{
+}
+
+actor Health : Inventory
+{
+  Inventory.Amount 0
+  Inventory.MaxAmount 0
+}
+
+actor BasicArmorPickup : Inventory
+{
+}
+
+actor BasicArmorBonus : Inventory
+{
+}
+
+actor Powerup : Inventory
+{
+}
+
+actor PowerupGiver : Inventory
+{
+}
+
+actor PowerProtection : Powerup
+{
+}
+
+actor PowerTimeFreezer : Powerup
+{
+}
+
+actor PowerMorph : Powerup
+{
+}
+
+actor FastProjectile : Actor
+{
+  Projectile
+  +NOBLOCKMAP
+  +NOGRAVITY
+  +DROPOFF
+  +MISSILE
+}
+
+actor SwitchableDecoration : Actor
+{
+  +USESPECIAL
+}
+
+actor RandomSpawner : Actor
+{
+  +NOBLOCKMAP
+  +NOSECTOR
+  +NOGRAVITY
+  +DONTDRAW
+}
+
+actor GibbedMarine : Actor 10
+{
+  Radius 20
+  Height 16
+  +SOLID
+  States
+  {
+  Spawn:
+    PLAY W -1
+    Stop
+  }
+}
+
 
 actor TeleportFog
 {
@@ -478,6 +572,10 @@ actor Weapon : Actor
     SHTG E 0 A_Light0
     Stop
   }
+}
+
+actor DoomWeapon : Weapon
+{
 }
 
 actor Chaingun : Weapon 2002

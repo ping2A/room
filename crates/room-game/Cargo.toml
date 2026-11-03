@@ -22,6 +22,8 @@ room-script = { path = "../room-script" }
 room-sim = { path = "../room-sim" }
 room-ui = { path = "../room-ui" }
 room-vfs = { path = "../room-vfs" }
+room-zscript = { path = "../room-zscript" }
+room-zvm = { path = "../room-zvm" }
 thiserror.workspace = true
 xxhash-rust.workspace = true
 zip.workspace = true
@@ -35,4 +37,5 @@ room-map = { path = "../room-map" }
 room-net = { path = "../room-net" }
 room-nodebuild = { path = "../room-nodebuild" }
 room-testkit = { path = "../room-testkit" }
+room-zscript = { path = "../room-zscript" }
 wat = { workspace = true }

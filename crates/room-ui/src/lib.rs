@@ -23,6 +23,7 @@ mod sbarinfo_draw;
 mod statusbar;
 mod title;
 mod weapon;
+mod zscript_bar;
 
 pub use automap::{AutomapView, draw_automap};
 pub use canvas_bridge::{
@@ -55,4 +56,8 @@ pub use title::{
     anim_pic, anim_pic_loop, draw_title, parse_titledef, splash_ms, title_anim_pic,
     title_screen_pic,
 };
-pub use weapon::{draw_weapon, draw_weapon_lit, weapon_ready_patch};
+pub use weapon::{
+    draw_crosshair, draw_weapon, draw_weapon_lit, draw_weapon_tinted, overlay_bob,
+    overlay_layer_bob, weapon_ready_patch,
+};
+pub use zscript_bar::ZscriptStatusBar;

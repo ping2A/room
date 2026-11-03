@@ -47,11 +47,25 @@ pub enum SpriteOrient {
     },
 }
 
+/// Doom sprite frame letter. `0..25` is `A`–`Z`; `26..28` is `[` `\` `]`
+/// (GZDoom's extra frames). Clamping those to `Z` looks up a lump that is not
+/// there, so the actor vanishes for that tic.
+#[must_use]
+pub fn sprite_frame_letter(frame: u8) -> char {
+    match frame {
+        0..=25 => char::from(b'A' + frame),
+        26 => '[',
+        27 => '\\',
+        28 => ']',
+        _ => 'A',
+    }
+}
+
 /// Build candidate lump names for a DECORATE sprite + frame (rotation 0 then 1).
 #[must_use]
 pub fn sprite_lump_candidates(sprite: &str, frame: u8) -> [String; 2] {
     let s = sprite.trim().to_ascii_uppercase();
-    let letter = char::from(b'A' + frame.min(25));
+    let letter = sprite_frame_letter(frame);
     [format!("{s}{letter}0"), format!("{s}{letter}1")]
 }
 
@@ -100,7 +114,7 @@ pub fn sprite_lump_candidates_rot(sprite: &str, frame: u8, rot_digit: u8) -> Vec
     if s.is_empty() {
         return Vec::new();
     }
-    let letter = char::from(b'A' + frame.min(25));
+    let letter = sprite_frame_letter(frame);
     let rot = rot_digit.clamp(1, 8);
     let mut out = Vec::with_capacity(8);
     out.push((format!("{s}{letter}{rot}"), false));
@@ -114,6 +128,19 @@ pub fn sprite_lump_candidates_rot(sprite: &str, frame: u8, rot_digit: u8) -> Vec
     out.push((format!("{s}{letter}0"), false));
     out.push((format!("{s}{letter}1"), false));
     out
+}
+
+/// World shift for `A_SpriteOffset`. `ox` is to the camera's right, `oy` is up.
+#[must_use]
+pub fn sprite_offset_delta(view_forward: Vec3, ox: f32, oy: f32) -> Vec3 {
+    let fwd = Vec3::new(view_forward.x, view_forward.y, 0.0);
+    let right = if fwd.length_squared() < 1e-8 {
+        Vec3::Y
+    } else {
+        let fwd = fwd.normalize();
+        Vec3::new(-fwd.y, fwd.x, 0.0)
+    };
+    right * ox + Vec3::Z * oy
 }
 
 /// Emit a Y-axis billboard quad facing `view_forward` (XY), standing on `pos`.
@@ -172,6 +199,15 @@ pub fn emit_sprite_quad(inst: SpriteInstance, view_forward: Vec3) -> [WallVertex
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sprite_offset_moves_right_and_up() {
+        // Looking toward -Y, camera-right is +X.
+        let d = sprite_offset_delta(Vec3::new(0.0, -1.0, 0.0), 4.0, 6.0);
+        assert!((d.x - 4.0).abs() < 1e-4, "{d:?}");
+        assert!(d.y.abs() < 1e-4, "{d:?}");
+        assert!((d.z - 6.0).abs() < 1e-4, "{d:?}");
+    }
 
     #[test]
     fn billboard_has_area() {
@@ -317,6 +353,12 @@ mod tests {
     }
 
     #[test]
+    fn extra_frames_keep_their_letters() {
+        assert_eq!(sprite_lump_candidates("POSS", 26)[1], "POSS[1");
+        assert_eq!(sprite_lump_candidates("POSS", 27)[0], "POSS\\0");
+        assert_eq!(sprite_lump_candidates_rot("POSS", 28, 1)[0].0, "POSS]1");
+    }
+
     fn candidates_include_mirror_compound() {
         let c = sprite_lump_candidates_rot("TROO", 0, 2);
         assert!(c.iter().any(|(n, flip)| n == "TROOA2" && !flip));

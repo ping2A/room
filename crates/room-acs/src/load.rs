@@ -49,6 +49,11 @@ impl ScriptType {
     }
 }
 
+/// `SCRIPTF_NET` — only runs on the net arbiter (safe to honour as normal offline).
+pub const SCRIPTF_NET: u16 = 1;
+/// `SCRIPTF_CLIENTSIDE` — client-only (bootstrap: still run; netplay filters later).
+pub const SCRIPTF_CLIENTSIDE: u16 = 2;
+
 /// One script entry from the module directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScriptDef {
@@ -60,6 +65,34 @@ pub struct ScriptDef {
     pub argc: u8,
     /// Script type.
     pub script_type: ScriptType,
+    /// `SFLG` flags (`SCRIPTF_*`); 0 when absent.
+    pub flags: u16,
+    /// `SVCT` local var count; `0` means Hexen default (20).
+    pub local_count: u16,
+}
+
+/// One ACS function from the `FUNC` chunk (`ScriptFunctionInFile`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AcsFunction {
+    /// Argument count (also first locals).
+    pub argc: u8,
+    /// Extra local variables beyond args.
+    pub local_count: u8,
+    /// Non-zero when the function returns a value.
+    pub has_return: u8,
+    /// Import library index (`0` = local).
+    pub import_num: u8,
+    /// Bytecode entry PC (0 when imported unresolved).
+    pub address: u32,
+}
+
+/// One map array from `ARAY` (+ optional `AINI` elements).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AcsMapArray {
+    /// Map-var index that stores this array's runtime slot.
+    pub map_var: u32,
+    /// Element storage (zero-filled, then `AINI`).
+    pub elements: Vec<i32>,
 }
 
 /// Loaded ACS module (immutable bytecode + directory).
@@ -77,6 +110,16 @@ pub struct AcsModule {
     pub libraries: Vec<String>,
     /// `SNAM` names for negative script numbers (`names[0]` → script −1).
     pub script_names: Vec<String>,
+    /// `FUNC` function table.
+    pub functions: Vec<AcsFunction>,
+    /// `FNAM` function names (parallel to `functions` when present).
+    pub function_names: Vec<String>,
+    /// `MINI` map-var defaults (applied when the module is attached).
+    pub map_var_defaults: [i32; 128],
+    /// `ARAY`/`AINI` map arrays (runtime copies live on `AcsState`).
+    pub map_arrays: Vec<AcsMapArray>,
+    /// `MEXP` exported map-variable / array names (for library linking).
+    pub map_exports: Vec<String>,
 }
 
 impl AcsModule {
@@ -263,10 +306,24 @@ fn parse_chunks(
     let mut data = bytes.to_vec();
     unencrypt_stre(&mut data, chunks_off, data_end);
 
-    let scripts = parse_sptr(&data, chunks_off, data_end, hybrid_sptr)?;
+    let mut scripts = parse_sptr(&data, chunks_off, data_end, hybrid_sptr)?;
+    apply_sflg_svct(&mut scripts, &data, chunks_off, data_end);
     let string_offsets = parse_strl(&data, chunks_off, data_end)?;
     let libraries = parse_load_chunk(&data, chunks_off, data_end);
     let script_names = parse_snam_chunk(&data, chunks_off, data_end);
+    let mut functions = parse_func_chunk(&data, chunks_off, data_end);
+    let function_names = parse_fnam_chunk(&data, chunks_off, data_end);
+    apply_sary_fary(&mut scripts, &mut functions, &data, chunks_off, data_end);
+    let mut map_var_defaults = parse_mini_chunk(&data, chunks_off, data_end);
+    let mut map_arrays = parse_aray_aini(&data, chunks_off, data_end, &mut map_var_defaults);
+    apply_astr_atag(
+        &mut map_arrays,
+        &data,
+        chunks_off,
+        data_end,
+        &map_var_defaults,
+    );
+    let map_exports = parse_mexp_chunk(&data, chunks_off, data_end);
     Ok(AcsModule {
         data,
         format,
@@ -274,6 +331,11 @@ fn parse_chunks(
         string_offsets,
         libraries,
         script_names,
+        functions,
+        function_names,
+        map_var_defaults,
+        map_arrays,
+        map_exports,
     })
 }
 
@@ -324,6 +386,8 @@ fn parse_sptr(
                 address,
                 argc,
                 script_type: ScriptType::from_u8(ty),
+                flags: 0,
+                local_count: 0,
             });
         }
     } else {
@@ -343,10 +407,40 @@ fn parse_sptr(
                 address,
                 argc: argc as u8,
                 script_type: ScriptType::from_u8(ty),
+                flags: 0,
+                local_count: 0,
             });
         }
     }
     Ok(scripts)
+}
+
+/// Apply `SFLG` / `SVCT` onto an already-parsed script directory.
+fn apply_sflg_svct(scripts: &mut [ScriptDef], data: &[u8], chunks_off: usize, data_end: usize) {
+    if let Some(off) = find_chunk(data, chunks_off, data_end, b"SFLG") {
+        let size = u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]])
+            as usize;
+        let payload = data.get(off + 8..off + 8 + size).unwrap_or(&[]);
+        for ent in payload.chunks_exact(4) {
+            let number = i16::from_le_bytes([ent[0], ent[1]]) as i32;
+            let flags = u16::from_le_bytes([ent[2], ent[3]]);
+            if let Some(s) = scripts.iter_mut().find(|s| s.number == number) {
+                s.flags = flags;
+            }
+        }
+    }
+    if let Some(off) = find_chunk(data, chunks_off, data_end, b"SVCT") {
+        let size = u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]])
+            as usize;
+        let payload = data.get(off + 8..off + 8 + size).unwrap_or(&[]);
+        for ent in payload.chunks_exact(4) {
+            let number = i16::from_le_bytes([ent[0], ent[1]]) as i32;
+            let locals = u16::from_le_bytes([ent[2], ent[3]]);
+            if let Some(s) = scripts.iter_mut().find(|s| s.number == number) {
+                s.local_count = locals;
+            }
+        }
+    }
 }
 
 fn parse_strl(data: &[u8], chunks_off: usize, data_end: usize) -> Result<Vec<u32>, AcsError> {
@@ -464,6 +558,8 @@ fn parse_acs0(bytes: &[u8], dir_off: usize) -> Result<AcsModule, AcsError> {
             address,
             argc: argc as u8,
             script_type,
+            flags: 0,
+            local_count: 0,
         });
     }
     if cursor + 4 > bytes.len() {
@@ -486,7 +582,275 @@ fn parse_acs0(bytes: &[u8], dir_off: usize) -> Result<AcsModule, AcsError> {
         string_offsets,
         libraries: Vec::new(),
         script_names: Vec::new(),
+        functions: Vec::new(),
+        function_names: Vec::new(),
+        map_var_defaults: [0; 128],
+        map_arrays: Vec::new(),
+        map_exports: Vec::new(),
     })
+}
+
+/// `FUNC` — 8-byte entries: argc, localcount, hasreturn, importnum, address.
+fn parse_func_chunk(data: &[u8], chunks_off: usize, data_end: usize) -> Vec<AcsFunction> {
+    let Some(off) = find_chunk(data, chunks_off, data_end, b"FUNC") else {
+        return Vec::new();
+    };
+    let size =
+        u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]) as usize;
+    let payload = data.get(off + 8..off + 8 + size).unwrap_or(&[]);
+    let mut out = Vec::with_capacity(payload.len() / 8);
+    for ent in payload.chunks_exact(8) {
+        out.push(AcsFunction {
+            argc: ent[0],
+            local_count: ent[1],
+            has_return: ent[2],
+            import_num: ent[3],
+            address: u32::from_le_bytes([ent[4], ent[5], ent[6], ent[7]]),
+        });
+    }
+    out
+}
+
+/// `FNAM` — same layout as `SNAM` (count + offsets, or packed C strings).
+fn parse_fnam_chunk(data: &[u8], chunks_off: usize, data_end: usize) -> Vec<String> {
+    let Some(off) = find_chunk(data, chunks_off, data_end, b"FNAM") else {
+        return Vec::new();
+    };
+    let size =
+        u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]) as usize;
+    let start = off + 8;
+    let end = start.saturating_add(size).min(data_end);
+    let payload = &data[start..end];
+    if payload.len() >= 4 {
+        let count = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
+        if count > 0 && count < 4096 && payload.len() >= 4 + count * 4 {
+            let mut names = Vec::with_capacity(count);
+            for i in 0..count {
+                let base = 4 + i * 4;
+                let ofs = u32::from_le_bytes([
+                    payload[base],
+                    payload[base + 1],
+                    payload[base + 2],
+                    payload[base + 3],
+                ]) as usize;
+                if ofs < payload.len() {
+                    let rest = &payload[ofs..];
+                    let len = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+                    if let Ok(s) = std::str::from_utf8(&rest[..len]) {
+                        names.push(s.to_owned());
+                    }
+                }
+            }
+            if !names.is_empty() {
+                return names;
+            }
+        }
+    }
+    parse_nul_strings(payload)
+}
+
+/// `MINI` — map-var initialisers (`first_var` + `i32` values); may repeat.
+fn parse_mini_chunk(data: &[u8], chunks_off: usize, data_end: usize) -> [i32; 128] {
+    let mut vars = [0i32; 128];
+    let mut off = chunks_off;
+    while off + 8 <= data_end {
+        let id = &data[off..off + 4];
+        let size = u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]])
+            as usize;
+        let payload_end = off.saturating_add(8).saturating_add(size);
+        if payload_end > data_end {
+            break;
+        }
+        if id == b"MINI" && size >= 4 {
+            let payload = &data[off + 8..payload_end];
+            let first =
+                u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
+            let count = (size / 4).saturating_sub(1);
+            for i in 0..count {
+                let base = 4 + i * 4;
+                if base + 4 > payload.len() {
+                    break;
+                }
+                let v = i32::from_le_bytes([
+                    payload[base],
+                    payload[base + 1],
+                    payload[base + 2],
+                    payload[base + 3],
+                ]);
+                if let Some(slot) = vars.get_mut(first + i) {
+                    *slot = v;
+                }
+            }
+        }
+        off = payload_end;
+    }
+    vars
+}
+
+/// `ARAY` sizes + `AINI` element values. Writes array indices into `map_vars`.
+fn parse_aray_aini(
+    data: &[u8],
+    chunks_off: usize,
+    data_end: usize,
+    map_vars: &mut [i32; 128],
+) -> Vec<AcsMapArray> {
+    let Some(off) = find_chunk(data, chunks_off, data_end, b"ARAY") else {
+        return Vec::new();
+    };
+    let size =
+        u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]) as usize;
+    let payload = data.get(off + 8..off + 8 + size).unwrap_or(&[]);
+    let mut arrays = Vec::new();
+    for ent in payload.chunks_exact(8) {
+        let map_var = u32::from_le_bytes([ent[0], ent[1], ent[2], ent[3]]);
+        let arr_size = u32::from_le_bytes([ent[4], ent[5], ent[6], ent[7]]) as usize;
+        let slot = arrays.len() as i32;
+        if let Some(mv) = map_vars.get_mut(map_var as usize) {
+            *mv = slot;
+        }
+        arrays.push(AcsMapArray {
+            map_var,
+            elements: vec![0; arr_size.min(1_048_576)],
+        });
+    }
+    // AINI chunks: first dword = mapvar index holding the array slot.
+    let mut coff = chunks_off;
+    while coff + 8 <= data_end {
+        let id = &data[coff..coff + 4];
+        let csize = u32::from_le_bytes([
+            data[coff + 4],
+            data[coff + 5],
+            data[coff + 6],
+            data[coff + 7],
+        ]) as usize;
+        let payload_end = coff.saturating_add(8).saturating_add(csize);
+        if payload_end > data_end {
+            break;
+        }
+        if id == b"AINI" && csize >= 4 {
+            let p = &data[coff + 8..payload_end];
+            let map_var = u32::from_le_bytes([p[0], p[1], p[2], p[3]]) as usize;
+            let arraynum = map_vars.get(map_var).copied().unwrap_or(-1);
+            if arraynum >= 0 {
+                if let Some(arr) = arrays.get_mut(arraynum as usize) {
+                    let inits = (csize / 4).saturating_sub(1);
+                    for j in 0..inits.min(arr.elements.len()) {
+                        let base = 4 + j * 4;
+                        if base + 4 > p.len() {
+                            break;
+                        }
+                        arr.elements[j] =
+                            i32::from_le_bytes([p[base], p[base + 1], p[base + 2], p[base + 3]]);
+                    }
+                }
+            }
+        }
+        coff = payload_end;
+    }
+    arrays
+}
+
+/// `SARY` / `FARY` — local array size lists; bump script/function local counts.
+fn apply_sary_fary(
+    scripts: &mut [ScriptDef],
+    functions: &mut [AcsFunction],
+    data: &[u8],
+    chunks_off: usize,
+    data_end: usize,
+) {
+    let mut off = chunks_off;
+    while off + 8 <= data_end {
+        let id = [data[off], data[off + 1], data[off + 2], data[off + 3]];
+        let size = u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]])
+            as usize;
+        let payload_end = off.saturating_add(8).saturating_add(size);
+        if payload_end > data_end {
+            break;
+        }
+        if size >= 6 {
+            if &id == b"SARY" {
+                if let Some((num, total)) = parse_local_array_chunk(data, off, size) {
+                    if let Some(s) = scripts.iter_mut().find(|s| s.number == i32::from(num)) {
+                        let base = if s.local_count == 0 {
+                            20u32
+                        } else {
+                            u32::from(s.local_count)
+                        };
+                        s.local_count = base.saturating_add(total).min(u32::from(u16::MAX)) as u16;
+                    }
+                }
+            } else if &id == b"FARY" {
+                if let Some((num, total)) = parse_local_array_chunk(data, off, size) {
+                    if let Some(f) = functions.get_mut(usize::from(num)) {
+                        let base = u32::from(f.local_count) + u32::from(f.argc);
+                        let new_total = base.saturating_add(total);
+                        f.local_count = new_total.saturating_sub(u32::from(f.argc)).min(255) as u8;
+                    }
+                }
+            }
+        }
+        off = payload_end;
+    }
+}
+
+/// GZDoom `ParseLocalArrayChunk` — returns (script_or_func index, total elements).
+fn parse_local_array_chunk(data: &[u8], chunk_off: usize, size: usize) -> Option<(u16, u32)> {
+    if size < 6 || chunk_off + 10 > data.len() {
+        return None;
+    }
+    let num = u16::from_le_bytes([data[chunk_off + 8], data[chunk_off + 9]]);
+    let count = size.saturating_sub(2) / 4;
+    let mut total = 0u32;
+    for i in 0..count {
+        let base = chunk_off + 10 + i * 4;
+        if base + 4 > data.len() {
+            break;
+        }
+        total = total.saturating_add(u32::from_le_bytes([
+            data[base],
+            data[base + 1],
+            data[base + 2],
+            data[base + 3],
+        ]));
+    }
+    Some((num, total.min(1_048_576)))
+}
+
+/// `ASTR` / `ATAG` — mark map-array cells as strings (lookup into string table → leave
+/// indices as-is for Room; presence is accepted so BD libraries load).
+fn apply_astr_atag(
+    _map_arrays: &mut [AcsMapArray],
+    data: &[u8],
+    chunks_off: usize,
+    data_end: usize,
+    _map_vars: &[i32; 128],
+) {
+    // Soft-accept: walk chunks so malformed sizes don't panic; no runtime rewrite yet.
+    let mut off = chunks_off;
+    while off + 8 <= data_end {
+        let id = &data[off..off + 4];
+        let size = u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]])
+            as usize;
+        let payload_end = off.saturating_add(8).saturating_add(size);
+        if payload_end > data_end {
+            break;
+        }
+        let _seen = id == b"ASTR" || id == b"ATAG";
+        let _ = _seen;
+        off = payload_end;
+    }
+}
+
+/// `MEXP` — exported map variable names (same packed layout as `SNAM`/`FNAM`).
+fn parse_mexp_chunk(data: &[u8], chunks_off: usize, data_end: usize) -> Vec<String> {
+    let Some(off) = find_chunk(data, chunks_off, data_end, b"MEXP") else {
+        return Vec::new();
+    };
+    let size =
+        u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]) as usize;
+    let start = off + 8;
+    let end = start.saturating_add(size).min(data_end);
+    parse_nul_strings(&data[start..end])
 }
 
 /// `SNAM` chunk: NUL-terminated script names (index 0 → script −1).
@@ -744,5 +1108,100 @@ mod tests {
         assert_eq!(modu.script_names, vec!["Alpha", "Beta"]);
         assert_eq!(modu.script_number_by_name("alpha"), Some(-1));
         assert_eq!(modu.script_number_by_name("Beta"), Some(-2));
+    }
+
+    #[test]
+    fn parse_func_aray_mini_aini() {
+        // BD5: FUNC / ARAY / MINI / AINI chunks.
+        let mut code = vec![0u8; 16];
+        code[0..4].copy_from_slice(&1u32.to_le_bytes()); // TERMINATE
+        let chunks_off = 8 + code.len();
+        let mut out = Vec::new();
+        out.extend_from_slice(b"ACSE");
+        out.extend_from_slice(&(chunks_off as u32).to_le_bytes());
+        out.extend_from_slice(&code);
+        // FUNC: one function, argc=1, locals=2, hasret=1, import=0, addr=12
+        let mut func = Vec::new();
+        func.push(1u8);
+        func.push(2u8);
+        func.push(1u8);
+        func.push(0u8);
+        func.extend_from_slice(&12u32.to_le_bytes());
+        out.extend_from_slice(b"FUNC");
+        out.extend_from_slice(&(func.len() as u32).to_le_bytes());
+        out.extend_from_slice(&func);
+        // MINI: first_var=3, value=99
+        let mut mini = Vec::new();
+        mini.extend_from_slice(&3u32.to_le_bytes());
+        mini.extend_from_slice(&99i32.to_le_bytes());
+        out.extend_from_slice(b"MINI");
+        out.extend_from_slice(&(mini.len() as u32).to_le_bytes());
+        out.extend_from_slice(&mini);
+        // ARAY: mapvar 5 → size 4
+        let mut aray = Vec::new();
+        aray.extend_from_slice(&5u32.to_le_bytes());
+        aray.extend_from_slice(&4u32.to_le_bytes());
+        out.extend_from_slice(b"ARAY");
+        out.extend_from_slice(&(aray.len() as u32).to_le_bytes());
+        out.extend_from_slice(&aray);
+        // AINI for mapvar 5: elements 7,8
+        let mut aini = Vec::new();
+        aini.extend_from_slice(&5u32.to_le_bytes());
+        aini.extend_from_slice(&7i32.to_le_bytes());
+        aini.extend_from_slice(&8i32.to_le_bytes());
+        out.extend_from_slice(b"AINI");
+        out.extend_from_slice(&(aini.len() as u32).to_le_bytes());
+        out.extend_from_slice(&aini);
+
+        let modu = load_behavior(&out).expect("parse");
+        assert_eq!(modu.functions.len(), 1);
+        assert_eq!(modu.functions[0].argc, 1);
+        assert_eq!(modu.functions[0].local_count, 2);
+        assert_eq!(modu.functions[0].address, 12);
+        assert_eq!(modu.map_var_defaults[3], 99);
+        assert_eq!(modu.map_var_defaults[5], 0); // array slot 0
+        assert_eq!(modu.map_arrays.len(), 1);
+        assert_eq!(modu.map_arrays[0].elements.len(), 4);
+        assert_eq!(modu.map_arrays[0].elements[0], 7);
+        assert_eq!(modu.map_arrays[0].elements[1], 8);
+    }
+
+    #[test]
+    fn parse_sflg_svct() {
+        let mut code = vec![0u8; 16];
+        code[0..4].copy_from_slice(&1u32.to_le_bytes());
+        let chunks_off = 8 + code.len();
+        let mut out = Vec::new();
+        out.extend_from_slice(b"ACSE");
+        out.extend_from_slice(&(chunks_off as u32).to_le_bytes());
+        out.extend_from_slice(&code);
+        let mut sptr = Vec::new();
+        sptr.extend_from_slice(&7i16.to_le_bytes());
+        sptr.extend_from_slice(&0u16.to_le_bytes());
+        sptr.extend_from_slice(&8u32.to_le_bytes());
+        sptr.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(b"SPTR");
+        out.extend_from_slice(&(sptr.len() as u32).to_le_bytes());
+        out.extend_from_slice(&sptr);
+        // SFLG: script 7 → NET|CLIENTSIDE
+        let mut sflg = Vec::new();
+        sflg.extend_from_slice(&7i16.to_le_bytes());
+        sflg.extend_from_slice(&(SCRIPTF_NET | SCRIPTF_CLIENTSIDE).to_le_bytes());
+        out.extend_from_slice(b"SFLG");
+        out.extend_from_slice(&(sflg.len() as u32).to_le_bytes());
+        out.extend_from_slice(&sflg);
+        // SVCT: script 7 → 40 locals
+        let mut svct = Vec::new();
+        svct.extend_from_slice(&7i16.to_le_bytes());
+        svct.extend_from_slice(&40u16.to_le_bytes());
+        out.extend_from_slice(b"SVCT");
+        out.extend_from_slice(&(svct.len() as u32).to_le_bytes());
+        out.extend_from_slice(&svct);
+
+        let modu = load_behavior(&out).expect("parse");
+        assert_eq!(modu.scripts.len(), 1);
+        assert_eq!(modu.scripts[0].number, 7);
+        assert_eq!(modu.scripts[0].flags, SCRIPTF_NET | SCRIPTF_CLIENTSIDE);
+        assert_eq!(modu.scripts[0].local_count, 40);
     }
 }

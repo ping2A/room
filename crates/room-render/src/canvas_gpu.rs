@@ -35,12 +35,12 @@ fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
 @fragment
 fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
     let c = textureSample(tex, samp, v.uv);
-    // Doom patches are opaque-or-hole — never soft-blend weapon/HUD texels over
-    // the 3D scene (that made the pistol look translucent against walls).
-    if (c.a < 0.5) {
+    // Holes stay holes. Partial alpha must blend: the pain flash is a red
+    // fill around a=0.1..0.9, and forcing it to 1 painted a solid red sheet.
+    if (c.a < 0.02) {
         discard;
     }
-    return vec4(c.rgb, 1.0);
+    return c;
 }
 "#;
 
@@ -232,20 +232,16 @@ impl CanvasGpu {
                         }
                     }
                 }
-                CanvasCmd::BlitRgba {
-                    x,
-                    y,
-                    w,
-                    h,
-                    pixels,
-                } => {
+                CanvasCmd::BlitRgba { x, y, w, h, pixels } => {
                     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                     let x0 = (*x as i32).max(0) as u32;
                     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                     let y0 = (*y as i32).max(0) as u32;
                     let src_w = *w;
                     let src_h = *h;
-                    let need = (src_w as usize).saturating_mul(src_h as usize).saturating_mul(4);
+                    let need = (src_w as usize)
+                        .saturating_mul(src_h as usize)
+                        .saturating_mul(4);
                     if src_w == 0 || src_h == 0 || pixels.len() < need {
                         continue;
                     }

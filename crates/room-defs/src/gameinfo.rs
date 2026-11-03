@@ -14,6 +14,8 @@ pub struct GameInfo {
     pub iwad: Option<String>,
     /// Extra `load` entries.
     pub load: Vec<String>,
+    /// `AddEventHandlers` / `EventHandlers` class names (ZScript).
+    pub event_handlers: Vec<String>,
 }
 
 /// Parse a GAMEINFO text lump.
@@ -45,6 +47,12 @@ pub fn parse_gameinfo(text: &str) -> Result<GameInfo, DefsError> {
                     "load" => {
                         info.load.push(read_value(&mut sc)?);
                     }
+                    "addeventhandlers" | "eventhandlers" => loop {
+                        info.event_handlers.push(read_value(&mut sc)?);
+                        if !sc.check_punct(Punct::Comma)? {
+                            break;
+                        }
+                    },
                     _ => {
                         // Skip unknown key value for forward compatibility.
                         let _ = read_value(&mut sc);

@@ -6,10 +6,11 @@
 
 mod acs;
 pub use acs::{
-    push_acs_library, start_death_scripts, start_enter_scripts, start_respawn_scripts,
-    start_return_scripts, start_unloading_scripts,
+    puke_named, puke_script, push_acs_library, start_death_scripts, start_enter_scripts,
+    start_respawn_scripts, start_return_scripts, start_unloading_scripts,
 };
 mod action;
+mod action_known;
 mod actor;
 mod bot;
 mod class;
@@ -17,6 +18,10 @@ mod compat;
 mod cross_lines;
 mod damage;
 mod deco_eval;
+mod deco_zvm;
+mod flags;
+mod render_pose;
+pub use render_pose::{SpritePose, sprite_pose};
 pub mod fx_events;
 mod hitscan;
 mod inventory;
@@ -35,6 +40,7 @@ pub mod script_mods;
 mod sector_specials;
 mod sight;
 mod sndseq;
+mod special_names;
 mod specials;
 mod state;
 mod terrain;
@@ -45,8 +51,12 @@ mod vanilla;
 pub mod view;
 mod weapon_slots;
 mod world;
+pub mod zscript;
 
-pub use action::{ActionResult, call_action, call_action_args};
+pub use action::{ActionResult, call_action, call_action_args, call_zscript_action};
+pub use action_known::{
+    canonical_action_name, is_known_action, is_known_action_ci, known_action_names,
+};
 pub use actor::{Actor, ActorArena, ActorId};
 pub use bot::run_bot_brains;
 pub use class::{
@@ -54,15 +64,18 @@ pub use class::{
     FLAG_BOUNCEONWALLS, FLAG_BUDDHA, FLAG_CORPSE, FLAG_COUNTITEM, FLAG_COUNTKILL, FLAG_DONTDRAW,
     FLAG_DONTTHRUST, FLAG_DROPOFF, FLAG_DROPPED, FLAG_FLATSPRITE, FLAG_FLOAT, FLAG_FLOATBOB,
     FLAG_FLOORCLIP, FLAG_FRIENDLY, FLAG_INVULNERABLE, FLAG_MISSILE, FLAG_NOBLOCKMAP, FLAG_NOBLOOD,
-    FLAG_NODAMAGE, FLAG_NOGRAVITY, FLAG_NORADIUSDMG, FLAG_NOTARGET, FLAG_RIPPER, FLAG_SHOOTABLE,
-    FLAG_SOLID, FLAG_SPAWNCEILING, FLAG_USESPECIAL, FLAG_WALLSPRITE, RenderStyle,
+    FLAG_NODAMAGE, FLAG_NOGRAVITY, FLAG_NOINTERACTION, FLAG_NORADIUSDMG, FLAG_NOTARGET,
+    FLAG_RIPPER, FLAG_SHOOTABLE, FLAG_SOLID, FLAG_SPAWNCEILING, FLAG_USESPECIAL, FLAG_WALLSPRITE,
+    RenderStyle,
 };
+pub use class::{is_known_flag, is_known_property};
 pub use compat::{
     COMPATF_BOOMSCROLL, COMPATF_MBFMONSTERMOVE, COMPATF_TRACE, COMPATF2_NOMBF21, CompatFlags,
     CompatMode,
 };
 pub use cross_lines::cross_special_lines;
 pub use damage::damage_mobj;
+pub use flags::{ActorFlags, FLAG_WORDS, UZDOOM_FLAGS, is_uzdoom_flag};
 pub use fx_events::{FxEvent, Rgb8 as FxRgb8};
 pub use hitscan::{TraceHit, ViewTrace, line_attack, view_trace};
 pub use inventory::{
@@ -83,6 +96,7 @@ pub use polyobj::{PolyDoor, PolyMotion, PolyMotionResume, PolyobjDynamic, tick_p
 pub use script_host::{ModuleMemorySnapshot, ScriptHost};
 pub use sight::check_sight;
 pub use sndseq::{ActiveSndSeq, SndSeqDef, SndSeqStep, SndSeqTable, start_sequence, stop_sequence};
+pub use special_names::{is_named_acs_action, is_special_action, special_number};
 pub use specials::{
     ActivationType, CeilingMover, CeilingScroller, DoorMover, ElevatorMover, FloorMover,
     FloorScroller, FloorSkew, FloorSpinner, FloorStretch, FloorSubway, FloorTeeth, HeightTransfer,
@@ -103,5 +117,6 @@ pub use world::{
     BossAction, CameraTextureBind, DEFAULT_BODY_QUEUE_SIZE, DEFAULT_CORPSE_QUEUE_SIZE, HudClipRect,
     HudMessage, KillEvent, LastDamageInfo, MAX_KILL_EVENTS, MatchOver, MatchStanding, MessageTo,
     PlayerHud, Quake, ScreenFade, SectorDynamic, ShotKind, ShotTrace, SimDecalEvent, SimError,
-    SimParticleEvent, SimSoundEvent, Standing, World, psprite_scalelight,
+    SimParticleEvent, SimSoundAdjust, SimSoundEvent, Standing, World, psprite_scalelight,
 };
+pub use zscript::{ZscriptRuntime, ZscriptSaveBlob};

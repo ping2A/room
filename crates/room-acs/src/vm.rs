@@ -757,6 +757,31 @@ pub trait AcsHost {
     fn set_hud_wrap_width(&mut self, w: i32) {
         let _ = w;
     }
+    /// `SetHudSize(w, h [, statusbar])` — coordinate space for HudMessage.
+    fn set_hud_size(&mut self, w: i32, h: i32, statusbar: i32) {
+        let _ = (w, h, statusbar);
+    }
+    /// `HudMessage` / `ENDHUDMESSAGE` — show `text` (bold when requested).
+    fn hud_message(&mut self, text: &str, bold: bool) {
+        self.print(text, bold);
+    }
+    /// `GetPlayerInput(playernum, input)` — button / mouse axes (0 stub).
+    fn get_player_input(&self, player: i32, input: i32) -> i32 {
+        let _ = (player, input);
+        0
+    }
+    /// `SetMugShotState(state)`.
+    fn set_mugshot_state(&mut self, state: &str) {
+        let _ = state;
+    }
+    /// Console player number (−1 when dedicated / no local seat).
+    fn console_player_number(&self) -> i32 {
+        0
+    }
+    /// Network game? (0 = single-player bootstrap).
+    fn is_network_game(&self) -> i32 {
+        0
+    }
     /// ACSF `SetCVar(name, value)` — integer/bool bootstrap.
     fn set_cvar(&mut self, name: &str, value: i32) -> i32 {
         let _ = (name, value);
@@ -910,6 +935,17 @@ pub enum ScriptRunState {
     Terminated,
 }
 
+/// Saved state for an ACS `CALL` / `CALLDISCARD` frame.
+#[derive(Clone, Debug)]
+pub struct CallFrame {
+    /// PC to resume after `RETURN*`.
+    pub return_pc: u32,
+    /// Caller locals restored on return.
+    pub locals: Vec<i32>,
+    /// When true, discard the function return value (`CALLDISCARD`).
+    pub discard_result: bool,
+}
+
 /// One live script instance (`DLevelScript` subset).
 #[derive(Clone, Debug)]
 pub struct RunningScript {
@@ -925,6 +961,8 @@ pub struct RunningScript {
     pub stack: Vec<i32>,
     /// Script-local variables (Hexen default 20).
     pub locals: Vec<i32>,
+    /// `CALL` / `RETURN` frame stack.
+    pub frames: Vec<CallFrame>,
     /// Print buffer between BEGINPRINT / ENDPRINT.
     pub print_buf: String,
     /// Activator side (0 = front).
@@ -947,6 +985,8 @@ pub struct AcsState {
     pub scripts: Vec<RunningScript>,
     /// Map variables (module 0; 128 slots).
     pub map_vars: [i32; 128],
+    /// Map arrays from `ARAY`/`AINI` (module 0).
+    pub map_arrays: Vec<Vec<i32>>,
     /// World variables (hub-persistent; 256).
     pub world_vars: [i32; 256],
     /// Global variables (64).
@@ -963,6 +1003,7 @@ impl Default for AcsState {
             modules: Vec::new(),
             scripts: Vec::new(),
             map_vars: [0; 128],
+            map_arrays: Vec::new(),
             world_vars: [0; 256],
             global_vars: [0; 64],
             result_value: 0,
@@ -985,7 +1026,18 @@ impl AcsState {
     }
 
     /// Attach a parsed module (typically map `BEHAVIOR`).
+    ///
+    /// Applies `MINI` map-var defaults and clones `ARAY`/`AINI` arrays when this
+    /// is the first (map) module.
     pub fn push_module(&mut self, module: AcsModule) {
+        if self.modules.is_empty() {
+            self.map_vars = module.map_var_defaults;
+            self.map_arrays = module
+                .map_arrays
+                .iter()
+                .map(|a| a.elements.clone())
+                .collect();
+        }
         self.modules.push(module);
     }
 
@@ -1016,20 +1068,29 @@ pub fn start_scripts_of_type(
     script_type: ScriptType,
     activator: u64,
 ) {
-    let batch: Vec<(i32, u32, u8)> = state
+    let batch: Vec<(i32, u32, u8, u16)> = state
         .modules
         .iter()
         .flat_map(|m| {
             m.scripts
                 .iter()
                 .filter(|s| s.script_type == script_type)
-                .map(|s| (s.number, s.address, s.argc))
+                .map(|s| (s.number, s.address, s.argc, s.local_count))
                 .collect::<Vec<_>>()
         })
         .collect();
-    for (number, address, argc) in batch {
+    for (number, address, argc, local_count) in batch {
         let _ = start_script_inner(
-            state, host, number, address, argc, &[0; 3], activator, -1, 0,
+            state,
+            host,
+            number,
+            address,
+            argc,
+            local_count,
+            &[0; 3],
+            activator,
+            -1,
+            0,
         );
     }
 }
@@ -1122,15 +1183,23 @@ pub fn start_script_with_line(
     if !always && state.is_active(number) {
         return 0;
     }
-    let Some((address, argc)) = state
-        .modules
-        .iter()
-        .find_map(|m| m.find_script(number).map(|s| (s.address, s.argc)))
-    else {
+    let Some((address, argc, local_count)) = state.modules.iter().find_map(|m| {
+        m.find_script(number)
+            .map(|s| (s.address, s.argc, s.local_count))
+    }) else {
         return 0;
     };
     start_script_inner(
-        state, host, number, address, argc, args, activator, line, side,
+        state,
+        host,
+        number,
+        address,
+        argc,
+        local_count,
+        args,
+        activator,
+        line,
+        side,
     )
 }
 
@@ -1141,13 +1210,19 @@ fn start_script_inner(
     number: i32,
     address: u32,
     argc: u8,
+    local_count: u16,
     args: &[i32; 3],
     activator: u64,
     line: i32,
     side: u8,
 ) -> i32 {
-    let mut locals = vec![0i32; 20];
-    let n = usize::from(argc.min(3));
+    let n_locals = if local_count == 0 {
+        20
+    } else {
+        usize::from(local_count).max(20)
+    };
+    let mut locals = vec![0i32; n_locals];
+    let n = usize::from(argc.min(3)).min(locals.len());
     locals[..n].copy_from_slice(&args[..n]);
     let script = RunningScript {
         number,
@@ -1156,6 +1231,7 @@ fn start_script_inner(
         state: ScriptRunState::Running,
         stack: Vec::new(),
         locals,
+        frames: Vec::new(),
         print_buf: String::new(),
         side,
         line,
@@ -2121,6 +2197,10 @@ fn dispatch_acs_func(
                 -(((-n) + 0x8000) >> 16)
             }
         }
+        // Zandronum-only ACSFs BD guards with `IsZandronum()` — safe defaults.
+        pcd::acsf::CONSOLE_PLAYER_NUMBER => host.console_player_number(),
+        pcd::acsf::PLAYER_IS_SPECTATOR => 0,
+        pcd::acsf::RESET_MAP => 0,
         _ => host.call_func(func_index, args, activator),
     }
 }
@@ -2935,6 +3015,82 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             host.print(&text, true);
             Step::Continue
         }
+        pcd::MOREHUDMESSAGE => {
+            // GZDoom keeps the print buffer; subsequent PRINT* continue it.
+            Step::Continue
+        }
+        pcd::OPTHUDMESSAGE => {
+            // type, id, color, x, y, hold [, …] — consume stack for BD5 bootstrap.
+            for _ in 0..6 {
+                let _ = pop(state, idx);
+            }
+            Step::Continue
+        }
+        pcd::ENDHUDMESSAGE | pcd::ENDHUDMESSAGEBOLD => {
+            let bold = op == pcd::ENDHUDMESSAGEBOLD;
+            let text = std::mem::take(&mut state.scripts[idx].print_buf);
+            host.hud_message(&text, bold);
+            Step::Continue
+        }
+        pcd::SETHUDSIZE => {
+            // Stack: width, height [, statusbar] — GZDoom pops 3 after SetHudSize.
+            let statusbar = pop(state, idx);
+            let h = pop(state, idx);
+            let w = pop(state, idx);
+            host.set_hud_size(w, h, statusbar);
+            Step::Continue
+        }
+        pcd::GETPLAYERINPUT => {
+            let input = pop(state, idx);
+            let player = pop(state, idx);
+            state.scripts[idx]
+                .stack
+                .push(host.get_player_input(player, input));
+            Step::Continue
+        }
+        pcd::SETMUGSHOTSTATE => {
+            let i = pop(state, idx);
+            let name = acs_string(state, i);
+            host.set_mugshot_state(&name);
+            Step::Continue
+        }
+        pcd::SAVESTRING => {
+            // Intern the print buffer as a dynamic string id (GZDoom StrParam).
+            let text = std::mem::take(&mut state.scripts[idx].print_buf);
+            let id = add_dyn_string(state, text);
+            state.scripts[idx].stack.push(id);
+            Step::Continue
+        }
+        pcd::PRINTMAPCHARARRAY
+        | pcd::PRINTWORLDCHARARRAY
+        | pcd::PRINTGLOBALCHARARRAY
+        | pcd::PRINTSCRIPTCHARARRAY => {
+            // Stack: array id, index — bootstrap: append nothing, pop 2.
+            let _index = pop(state, idx);
+            let _array = pop(state, idx);
+            Step::Continue
+        }
+        pcd::PRINTMAPCHRANGE
+        | pcd::PRINTWORLDCHRANGE
+        | pcd::PRINTGLOBALCHRANGE
+        | pcd::PRINTSCRIPTCHRANGE => {
+            // Stack: array, index, length (approx.) — consume 3.
+            let _ = pop(state, idx);
+            let _ = pop(state, idx);
+            let _ = pop(state, idx);
+            Step::Continue
+        }
+        pcd::STRCPYTOMAPCHRANGE
+        | pcd::STRCPYTOWORLDCHRANGE
+        | pcd::STRCPYTOGLOBALCHRANGE
+        | pcd::STRCPYTOSCRIPTCHRANGE => {
+            // GZDoom pops 5 operands and pushes success (1).
+            for _ in 0..5 {
+                let _ = pop(state, idx);
+            }
+            state.scripts[idx].stack.push(1);
+            Step::Continue
+        }
         pcd::PRINTSTRING => {
             let i = pop(state, idx) as usize;
             let s = state
@@ -3522,6 +3678,175 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             state.result_value = pop(state, idx);
             Step::Continue
         }
+        pcd::PUSHFUNCTION => {
+            let Some(funcnum) = take_byte_or_word(state, idx) else {
+                state.scripts[idx].state = ScriptRunState::Terminated;
+                return Step::Break;
+            };
+            // Tag like a string id so CALLSTACK can clear the high bits.
+            state.scripts[idx]
+                .stack
+                .push(DYN_STRING_TAG | (funcnum & 0xffff));
+            Step::Continue
+        }
+        pcd::CALL | pcd::CALLDISCARD | pcd::CALLSTACK => {
+            let discard = op == pcd::CALLDISCARD;
+            let funcnum: u32 = if op == pcd::CALLSTACK {
+                let tagged = pop(state, idx);
+                (tagged & 0xffff) as u32
+            } else {
+                let Some(n) = take_byte_or_word(state, idx) else {
+                    state.scripts[idx].state = ScriptRunState::Terminated;
+                    return Step::Break;
+                };
+                n as u32
+            };
+            let Some(func) = state
+                .modules
+                .first()
+                .and_then(|m| m.functions.get(funcnum as usize).cloned())
+            else {
+                host.print(&format!("Function {funcnum} out of range"), false);
+                state.scripts[idx].state = ScriptRunState::Terminated;
+                return Step::Break;
+            };
+            if func.import_num != 0 || func.address == 0 {
+                // Cross-library resolve deferred; CALLSTACK always pushes 0,
+                // CALL pushes 0 when the result is kept.
+                if !discard || op == pcd::CALLSTACK {
+                    state.scripts[idx].stack.push(0);
+                }
+                return Step::Continue;
+            }
+            let argc = usize::from(func.argc);
+            let local_extra = usize::from(func.local_count);
+            let mut new_locals = vec![0i32; argc + local_extra];
+            for i in (0..argc).rev() {
+                new_locals[i] = pop(state, idx);
+            }
+            let old_locals = std::mem::replace(&mut state.scripts[idx].locals, new_locals);
+            let return_pc = state.scripts[idx].pc;
+            state.scripts[idx].frames.push(CallFrame {
+                return_pc,
+                locals: old_locals,
+                discard_result: discard,
+            });
+            state.scripts[idx].pc = func.address;
+            Step::Continue
+        }
+        pcd::RETURNVOID | pcd::RETURNVAL => {
+            let value = if op == pcd::RETURNVAL {
+                pop(state, idx)
+            } else {
+                0
+            };
+            let Some(frame) = state.scripts[idx].frames.pop() else {
+                // Return from top-level script ≈ terminate.
+                state.scripts[idx].state = ScriptRunState::Terminated;
+                return Step::Break;
+            };
+            state.scripts[idx].locals = frame.locals;
+            state.scripts[idx].pc = frame.return_pc;
+            if !frame.discard_result {
+                state.scripts[idx].stack.push(value);
+            }
+            Step::Continue
+        }
+        pcd::PUSHMAPARRAY => {
+            let Some(mapvar) = take_byte_or_word(state, idx) else {
+                state.scripts[idx].state = ScriptRunState::Terminated;
+                return Step::Break;
+            };
+            let index = pop(state, idx);
+            let arr_idx = state.map_vars.get(mapvar as usize).copied().unwrap_or(0);
+            let v = state
+                .map_arrays
+                .get(arr_idx as usize)
+                .and_then(|a| a.get(index as usize))
+                .copied()
+                .unwrap_or(0);
+            state.scripts[idx].stack.push(v);
+            Step::Continue
+        }
+        pcd::ASSIGNMAPARRAY => {
+            let Some(mapvar) = take_byte_or_word(state, idx) else {
+                state.scripts[idx].state = ScriptRunState::Terminated;
+                return Step::Break;
+            };
+            let value = pop(state, idx);
+            let index = pop(state, idx);
+            let arr_idx = state.map_vars.get(mapvar as usize).copied().unwrap_or(0);
+            if let Some(slot) = state
+                .map_arrays
+                .get_mut(arr_idx as usize)
+                .and_then(|a| a.get_mut(index as usize))
+            {
+                *slot = value;
+            }
+            Step::Continue
+        }
+        pcd::ADDMAPARRAY
+        | pcd::SUBMAPARRAY
+        | pcd::MULMAPARRAY
+        | pcd::DIVMAPARRAY
+        | pcd::MODMAPARRAY => {
+            let Some(mapvar) = take_byte_or_word(state, idx) else {
+                state.scripts[idx].state = ScriptRunState::Terminated;
+                return Step::Break;
+            };
+            let value = pop(state, idx);
+            let index = pop(state, idx);
+            let arr_idx = state.map_vars.get(mapvar as usize).copied().unwrap_or(0);
+            if let Some(slot) = state
+                .map_arrays
+                .get_mut(arr_idx as usize)
+                .and_then(|a| a.get_mut(index as usize))
+            {
+                *slot = match op {
+                    pcd::ADDMAPARRAY => slot.wrapping_add(value),
+                    pcd::SUBMAPARRAY => slot.wrapping_sub(value),
+                    pcd::MULMAPARRAY => slot.wrapping_mul(value),
+                    pcd::DIVMAPARRAY => {
+                        if value == 0 {
+                            host.print("Division by zero", false);
+                            state.scripts[idx].state = ScriptRunState::Terminated;
+                            return Step::Break;
+                        }
+                        *slot / value
+                    }
+                    pcd::MODMAPARRAY => {
+                        if value == 0 {
+                            host.print("Division by zero", false);
+                            state.scripts[idx].state = ScriptRunState::Terminated;
+                            return Step::Break;
+                        }
+                        *slot % value
+                    }
+                    _ => *slot,
+                };
+            }
+            Step::Continue
+        }
+        pcd::INCMAPARRAY | pcd::DECMAPARRAY => {
+            let Some(mapvar) = take_byte_or_word(state, idx) else {
+                state.scripts[idx].state = ScriptRunState::Terminated;
+                return Step::Break;
+            };
+            let index = pop(state, idx);
+            let arr_idx = state.map_vars.get(mapvar as usize).copied().unwrap_or(0);
+            if let Some(slot) = state
+                .map_arrays
+                .get_mut(arr_idx as usize)
+                .and_then(|a| a.get_mut(index as usize))
+            {
+                if op == pcd::INCMAPARRAY {
+                    *slot = slot.wrapping_add(1);
+                } else {
+                    *slot = slot.wrapping_sub(1);
+                }
+            }
+            Step::Continue
+        }
         pcd::CALLFUNC => {
             // NEXTBYTE argc, NEXTSHORT index; pop argc args; push retval.
             let Some(argc) = take_byte_or_word(state, idx) else {
@@ -3956,10 +4281,17 @@ mod tests {
                 address: 8,
                 argc: 0,
                 script_type: ScriptType::Closed,
+                flags: 0,
+                local_count: 0,
             }],
             string_offsets: Vec::new(),
             libraries: Vec::new(),
             script_names: Vec::new(),
+            functions: Vec::new(),
+            function_names: Vec::new(),
+            map_var_defaults: [0; 128],
+            map_arrays: Vec::new(),
+            map_exports: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -3992,10 +4324,17 @@ mod tests {
                 address: 8,
                 argc: 0,
                 script_type: ScriptType::Closed,
+                flags: 0,
+                local_count: 0,
             }],
             string_offsets: Vec::new(),
             libraries: Vec::new(),
             script_names: Vec::new(),
+            functions: Vec::new(),
+            function_names: Vec::new(),
+            map_var_defaults: [0; 128],
+            map_arrays: Vec::new(),
+            map_exports: Vec::new(),
         });
         let mut host = TestHost::new();
         assert_eq!(start_script(&mut state, &mut host, 1, &[0; 3], false), 1);
@@ -4221,10 +4560,17 @@ mod tests {
                 address: 16,
                 argc: 0,
                 script_type: crate::load::ScriptType::Closed,
+                flags: 0,
+                local_count: 0,
             }],
             string_offsets: vec![8, 11],
             libraries: Vec::new(),
             script_names: Vec::new(),
+            functions: Vec::new(),
+            function_names: Vec::new(),
+            map_var_defaults: [0; 128],
+            map_arrays: Vec::new(),
+            map_exports: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -4267,10 +4613,17 @@ mod tests {
                 address: code_at as u32,
                 argc: 0,
                 script_type: crate::load::ScriptType::Closed,
+                flags: 0,
+                local_count: 0,
             }],
             string_offsets: vec![8],
             libraries: Vec::new(),
             script_names: Vec::new(),
+            functions: Vec::new(),
+            function_names: Vec::new(),
+            map_var_defaults: [0; 128],
+            map_arrays: Vec::new(),
+            map_exports: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -4325,10 +4678,17 @@ mod tests {
                 address: code_at as u32,
                 argc: 0,
                 script_type: crate::load::ScriptType::Closed,
+                flags: 0,
+                local_count: 0,
             }],
             string_offsets: vec![8, 14],
             libraries: Vec::new(),
             script_names: Vec::new(),
+            functions: Vec::new(),
+            function_names: Vec::new(),
+            map_var_defaults: [0; 128],
+            map_arrays: Vec::new(),
+            map_exports: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -4372,10 +4732,17 @@ mod tests {
                 address: code_at as u32,
                 argc: 0,
                 script_type: crate::load::ScriptType::Closed,
+                flags: 0,
+                local_count: 0,
             }],
             string_offsets: vec![8],
             libraries: Vec::new(),
             script_names: Vec::new(),
+            functions: Vec::new(),
+            function_names: Vec::new(),
+            map_var_defaults: [0; 128],
+            map_arrays: Vec::new(),
+            map_exports: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -4419,10 +4786,17 @@ mod tests {
                 address: code_at as u32,
                 argc: 0,
                 script_type: crate::load::ScriptType::Closed,
+                flags: 0,
+                local_count: 0,
             }],
             string_offsets: vec![8],
             libraries: Vec::new(),
             script_names: Vec::new(),
+            functions: Vec::new(),
+            function_names: Vec::new(),
+            map_var_defaults: [0; 128],
+            map_arrays: Vec::new(),
+            map_exports: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -4466,15 +4840,65 @@ mod tests {
                 address: code_at as u32,
                 argc: 0,
                 script_type: crate::load::ScriptType::Closed,
+                flags: 0,
+                local_count: 0,
             }],
             string_offsets: vec![8, 20],
             libraries: Vec::new(),
             script_names: Vec::new(),
+            functions: Vec::new(),
+            function_names: Vec::new(),
+            map_var_defaults: [0; 128],
+            map_arrays: Vec::new(),
+            map_exports: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
         assert_eq!(state.dyn_strings, vec!["ell".to_owned()]);
         assert_eq!(state.result_value, 0);
+    }
+
+    #[test]
+    fn savestring_interns_print_buffer() {
+        use crate::load::{AcsFormat, ScriptDef, ScriptType};
+        let mut code = Vec::new();
+        code.extend_from_slice(&pcd::BEGINPRINT.to_le_bytes());
+        code.extend_from_slice(&pcd::PUSHNUMBER.to_le_bytes());
+        code.extend_from_slice(&0i32.to_le_bytes()); // "Hi"
+        code.extend_from_slice(&pcd::PRINTSTRING.to_le_bytes());
+        code.extend_from_slice(&pcd::SAVESTRING.to_le_bytes());
+        code.extend_from_slice(&pcd::SETRESULTVALUE.to_le_bytes());
+        code.extend_from_slice(&pcd::TERMINATE.to_le_bytes());
+        let code_at = 16usize;
+        let mut data = vec![0u8; code_at + code.len()];
+        data[8..11].copy_from_slice(b"Hi\0");
+        data[code_at..code_at + code.len()].copy_from_slice(&code);
+        let mut state = AcsState::new();
+        state.push_module(crate::load::AcsModule {
+            data,
+            format: AcsFormat::Acs0,
+            scripts: vec![ScriptDef {
+                number: 1,
+                address: code_at as u32,
+                argc: 0,
+                script_type: ScriptType::Closed,
+                flags: 0,
+                local_count: 0,
+            }],
+            string_offsets: vec![8],
+            libraries: Vec::new(),
+            script_names: Vec::new(),
+            functions: Vec::new(),
+            function_names: Vec::new(),
+            map_var_defaults: [0; 128],
+            map_arrays: Vec::new(),
+            map_exports: Vec::new(),
+        });
+        let mut host = TestHost::new();
+        start_script(&mut state, &mut host, 1, &[0; 3], false);
+        assert_eq!(state.dyn_strings, vec!["Hi".to_owned()]);
+        assert_eq!(state.result_value, DYN_STRING_TAG);
+        assert!(state.scripts[0].print_buf.is_empty());
     }
 
     #[test]
@@ -4520,17 +4944,26 @@ mod tests {
                     address: 16,
                     argc: 0,
                     script_type: ScriptType::Closed,
+                    flags: 0,
+                    local_count: 0,
                 },
                 ScriptDef {
                     number: 1,
                     address: 40,
                     argc: 0,
                     script_type: ScriptType::Closed,
+                    flags: 0,
+                    local_count: 0,
                 },
             ],
             string_offsets: vec![4],
             libraries: Vec::new(),
             script_names: vec!["Go".into()],
+            functions: Vec::new(),
+            function_names: Vec::new(),
+            map_var_defaults: [0; 128],
+            map_arrays: Vec::new(),
+            map_exports: Vec::new(),
         });
         let mut host = TestHost::new();
         assert_eq!(start_script(&mut state, &mut host, 1, &[0; 3], false), 1);
@@ -4599,5 +5032,121 @@ mod tests {
         assert_eq!(host.line_specials.len(), 1);
         assert_eq!(host.line_specials[0].0, 3);
         assert_eq!(host.line_specials[0].1, 80);
+    }
+
+    #[test]
+    fn call_return_and_map_array() {
+        // Script @8: PUSHNUMBER 5; CALL 0; SETRESULTVALUE; TERMINATE
+        // Func 0 @40: PUSHSCRIPTVAR 0; PUSHNUMBER 1; ADD; RETURNVAL
+        // Also: map array[0]=9 via PUSHMAPARRAY after MINI/ARAY applied by push_module.
+        use crate::load::{AcsFormat, AcsFunction, AcsMapArray, ScriptDef, ScriptType};
+
+        let mut data = vec![0u8; 80];
+        data[0..4].copy_from_slice(b"ACSE");
+        data[4..8].copy_from_slice(&80u32.to_le_bytes()); // chunks at EOF (empty)
+        // script body at 8
+        let mut pc = 8usize;
+        data[pc..pc + 4].copy_from_slice(&pcd::PUSHNUMBER.to_le_bytes());
+        pc += 4;
+        data[pc..pc + 4].copy_from_slice(&5i32.to_le_bytes());
+        pc += 4;
+        data[pc..pc + 4].copy_from_slice(&pcd::CALL.to_le_bytes());
+        pc += 4;
+        data[pc..pc + 4].copy_from_slice(&0i32.to_le_bytes()); // func 0
+        pc += 4;
+        data[pc..pc + 4].copy_from_slice(&pcd::SETRESULTVALUE.to_le_bytes());
+        pc += 4;
+        data[pc..pc + 4].copy_from_slice(&pcd::TERMINATE.to_le_bytes());
+        // function body at 40
+        let func_pc = 40usize;
+        pc = func_pc;
+        data[pc..pc + 4].copy_from_slice(&pcd::PUSHSCRIPTVAR.to_le_bytes());
+        pc += 4;
+        data[pc..pc + 4].copy_from_slice(&0i32.to_le_bytes());
+        pc += 4;
+        data[pc..pc + 4].copy_from_slice(&pcd::PUSHNUMBER.to_le_bytes());
+        pc += 4;
+        data[pc..pc + 4].copy_from_slice(&1i32.to_le_bytes());
+        pc += 4;
+        data[pc..pc + 4].copy_from_slice(&pcd::ADD.to_le_bytes());
+        pc += 4;
+        data[pc..pc + 4].copy_from_slice(&pcd::RETURNVAL.to_le_bytes());
+
+        let mut map_var_defaults = [0i32; 128];
+        map_var_defaults[0] = 0; // array slot
+        let mut state = AcsState::new();
+        state.push_module(crate::load::AcsModule {
+            data,
+            format: AcsFormat::Acse,
+            scripts: vec![ScriptDef {
+                number: 1,
+                address: 8,
+                argc: 0,
+                script_type: ScriptType::Closed,
+                flags: 0,
+                local_count: 0,
+            }],
+            string_offsets: Vec::new(),
+            libraries: Vec::new(),
+            script_names: Vec::new(),
+            functions: vec![AcsFunction {
+                argc: 1,
+                local_count: 0,
+                has_return: 1,
+                import_num: 0,
+                address: func_pc as u32,
+            }],
+            function_names: vec!["inc".into()],
+            map_var_defaults,
+            map_arrays: vec![AcsMapArray {
+                map_var: 0,
+                elements: vec![9, 0, 0],
+            }],
+            map_exports: Vec::new(),
+        });
+        assert_eq!(state.map_arrays[0][0], 9);
+        let mut host = TestHost::new();
+        assert_eq!(start_script(&mut state, &mut host, 1, &[0; 3], false), 1);
+        assert_eq!(state.result_value, 6); // 5+1
+    }
+
+    /// BD5: load commercial `acs/BD_Main.o` and run OPEN scripts for a few ticks.
+    #[test]
+    fn bd_main_open_scripts_gated() {
+        let Ok(pk3) = std::env::var("ROOM_BRUTALDOOM_PK3") else {
+            return;
+        };
+        if !std::path::Path::new(&pk3).is_file() {
+            return;
+        }
+        let out = std::process::Command::new("unzip")
+            .args(["-p", &pk3, "acs/BD_Main.o"])
+            .output()
+            .expect("unzip BD_Main.o");
+        assert!(
+            out.status.success() && !out.stdout.is_empty(),
+            "failed to extract acs/BD_Main.o"
+        );
+        let module = load_behavior(&out.stdout).expect("load BD_Main");
+        let open_n = module
+            .scripts
+            .iter()
+            .filter(|s| s.script_type == ScriptType::Open)
+            .count();
+        assert!(open_n > 0, "BD_Main should declare OPEN scripts");
+        let mut state = AcsState::default();
+        state.push_module(module);
+        let mut host = TestHost::new();
+        start_open_scripts(&mut state, &mut host);
+        for _ in 0..35 {
+            tick_scripts(&mut state, &mut host);
+            host.time = host.time.saturating_add(1);
+        }
+        eprintln!(
+            "BD_Main OPEN smoke: open_scripts={open_n} active={} prints={} callfuncs={}",
+            state.scripts.len(),
+            host.prints.len(),
+            host.callfuncs.len()
+        );
     }
 }

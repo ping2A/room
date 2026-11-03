@@ -24,13 +24,7 @@ pub trait CanvasSink {
                 let r = f32::from(pixels[i]) / 255.0;
                 let g = f32::from(pixels[i + 1]) / 255.0;
                 let b = f32::from(pixels[i + 2]) / 255.0;
-                self.fill_rect(
-                    x + col as f32,
-                    y + row as f32,
-                    1.0,
-                    1.0,
-                    [r, g, b, 1.0],
-                );
+                self.fill_rect(x + col as f32, y + row as f32, 1.0, 1.0, [r, g, b, 1.0]);
             }
         }
     }
@@ -169,6 +163,12 @@ pub fn blit_draw_list_full(
                 inverse,
                 light,
                 fuzz,
+                flip,
+                mirror,
+                angle,
+                pivot_x,
+                pivot_y,
+                tint,
             } => {
                 let dest_w = if size.x > 0.0 { size.x } else { 16.0 };
                 let dest_h = if size.y > 0.0 { size.y } else { 16.0 };
@@ -233,7 +233,20 @@ pub fn blit_draw_list_full(
                                 }
                             }
                         }
-                        sink.blit_rgba(x0, y0, dw, dh, &pixels);
+                        apply_rgb_tint(&mut pixels, *tint);
+                        if *flip {
+                            mirror_rgba_rows(&mut pixels, dw);
+                        }
+                        if *mirror {
+                            mirror_rgba_cols(&mut pixels, dw, dh);
+                        }
+                        if angle.abs() > 0.01 {
+                            let (rotated, rw, rh, ox, oy) =
+                                rotate_rgba(&pixels, dw, dh, *angle, *pivot_x, *pivot_y);
+                            sink.blit_rgba(x0 + ox, y0 + oy, rw, rh, &rotated);
+                        } else {
+                            sink.blit_rgba(x0, y0, dw, dh, &pixels);
+                        }
                         continue;
                     }
                 }
@@ -260,6 +273,118 @@ pub fn blit_draw_list_full(
                 let t = (*thickness * sx.max(sy)).max(1.0);
                 let rgba = [color.r, color.g, color.b, color.a];
                 stroke_line(sink, x0, y0, x1, y1, t, rgba);
+            }
+        }
+    }
+}
+
+/// Multiply RGB by a 0–1 tint. White leaves the pixels alone.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn apply_rgb_tint(pixels: &mut [u8], tint: [f32; 3]) {
+    if tint[0] > 0.999 && tint[1] > 0.999 && tint[2] > 0.999 {
+        return;
+    }
+    for px in pixels.chunks_exact_mut(4) {
+        px[0] = (f32::from(px[0]) * tint[0].clamp(0.0, 1.0)) as u8;
+        px[1] = (f32::from(px[1]) * tint[1].clamp(0.0, 1.0)) as u8;
+        px[2] = (f32::from(px[2]) * tint[2].clamp(0.0, 1.0)) as u8;
+    }
+}
+
+/// Rotate tightly packed RGBA around a fractional pivot.
+/// Positive degrees are counter-clockwise on a y-down screen.
+/// Returns the new buffer, its size, and the top-left shift from the old origin.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn rotate_rgba(
+    src: &[u8],
+    width: u32,
+    height: u32,
+    degrees: f32,
+    pivot_x: f32,
+    pivot_y: f32,
+) -> (Vec<u8>, u32, u32, f32, f32) {
+    let w = width.max(1);
+    let h = height.max(1);
+    let px = pivot_x * w as f32;
+    let py = pivot_y * h as f32;
+    let rad = degrees.to_radians();
+    let (sin, cos) = rad.sin_cos();
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+    for (cx, cy) in [
+        (0.0, 0.0),
+        (w as f32, 0.0),
+        (0.0, h as f32),
+        (w as f32, h as f32),
+    ] {
+        let dx = cx - px;
+        let dy = cy - py;
+        let rx = dx * cos + dy * sin;
+        let ry = -dx * sin + dy * cos;
+        min_x = min_x.min(rx);
+        min_y = min_y.min(ry);
+        max_x = max_x.max(rx);
+        max_y = max_y.max(ry);
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let dw = (max_x - min_x).ceil().max(1.0) as u32;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let dh = (max_y - min_y).ceil().max(1.0) as u32;
+    let mut dst = vec![0u8; dw as usize * dh as usize * 4];
+    for j in 0..dh {
+        for i in 0..dw {
+            let rx = min_x + i as f32 + 0.5;
+            let ry = min_y + j as f32 + 0.5;
+            let dx = rx * cos - ry * sin;
+            let dy = rx * sin + ry * cos;
+            let sx = px + dx - 0.5;
+            let sy = py + dy - 0.5;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let ix = sx.round() as i32;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let iy = sy.round() as i32;
+            if ix < 0 || iy < 0 || ix >= w as i32 || iy >= h as i32 {
+                continue;
+            }
+            let src_i = (iy as usize * w as usize + ix as usize) * 4;
+            let dst_i = (j as usize * dw as usize + i as usize) * 4;
+            dst[dst_i..dst_i + 4].copy_from_slice(&src[src_i..src_i + 4]);
+        }
+    }
+    (dst, dw, dh, px + min_x, py + min_y)
+}
+
+/// Reverse the rows of tightly packed RGBA pixels.
+fn mirror_rgba_cols(pixels: &mut [u8], width: u32, height: u32) {
+    let w = width as usize;
+    let h = height as usize;
+    if w == 0 || h < 2 {
+        return;
+    }
+    let row = w * 4;
+    for y in 0..h / 2 {
+        let a = y * row;
+        let b = (h - 1 - y) * row;
+        for i in 0..row {
+            pixels.swap(a + i, b + i);
+        }
+    }
+}
+
+/// Reverse each row of tightly packed RGBA pixels.
+fn mirror_rgba_rows(pixels: &mut [u8], width: u32) {
+    let w = width as usize;
+    if w < 2 {
+        return;
+    }
+    for row in pixels.chunks_exact_mut(w * 4) {
+        for x in 0..w / 2 {
+            let a = x * 4;
+            let b = (w - 1 - x) * 4;
+            for channel in 0..4 {
+                row.swap(a + channel, b + channel);
             }
         }
     }
@@ -305,6 +430,59 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn rotate_rgba_sends_the_right_pixel_up() {
+        // Two pixels: red on the left, green on the right. 90° CCW lifts green.
+        let src = [
+            255, 0, 0, 255, // red
+            0, 255, 0, 255, // green
+        ];
+        let (dst, dw, dh, _, _) = rotate_rgba(&src, 2, 1, 90.0, 0.5, 0.5);
+        assert!(dw >= 1 && dh >= 2, "rotated size {dw}x{dh}");
+        let top = &dst[0..4];
+        let bottom_row = (dh as usize - 1) * dw as usize * 4;
+        let bottom = &dst[bottom_row..bottom_row + 4];
+        assert_eq!(top, &[0, 255, 0, 255], "top should be the right-hand green");
+        assert_eq!(
+            bottom,
+            &[255, 0, 0, 255],
+            "bottom should be the left-hand red"
+        );
+    }
+
+    #[test]
+    fn mirror_rgba_cols_swaps_the_top_and_bottom() {
+        let mut pixels = [
+            255, 0, 0, 255, // top red
+            0, 255, 0, 255, // bottom green
+        ];
+        mirror_rgba_cols(&mut pixels, 1, 2);
+        assert_eq!(&pixels[0..4], &[0, 255, 0, 255]);
+        assert_eq!(&pixels[4..8], &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn green_tint_keeps_green_and_dims_red() {
+        let mut pixels = [200, 200, 200, 255];
+        apply_rgb_tint(&mut pixels, [0.5, 1.0, 0.25]);
+        assert_eq!(pixels[0], 100);
+        assert_eq!(pixels[1], 200);
+        assert_eq!(pixels[2], 50);
+    }
+
+    #[test]
+    fn mirror_rgba_rows_swaps_the_ends_of_a_row() {
+        let mut pixels = [
+            1, 0, 0, 255, //
+            2, 0, 0, 255, //
+            3, 0, 0, 255,
+        ];
+        mirror_rgba_rows(&mut pixels, 3);
+        assert_eq!(pixels[0], 3);
+        assert_eq!(pixels[8], 1);
+        assert_eq!(pixels[4], 2);
+    }
+
+    #[test]
     fn inverse_palette_is_inverted_greyscale() {
         let mut pal = [[0u8; 3]; 256];
         pal[1] = [255, 255, 255];
@@ -334,6 +512,7 @@ mod tests {
                 top_offset: 0,
                 indices: vec![0],
                 alpha: vec![255],
+                rgba: None,
             },
         );
         let mut list = UiDrawList::new();

@@ -367,4 +367,44 @@ echo should_warn
         );
         assert!(info.warnings.is_empty());
     }
+
+    #[test]
+    fn parses_bd_like_impulses_and_ten_slots() {
+        // docs/33 §3.8 / BD4 — KEYCONF binds + 10 weapon slots.
+        let text = r#"
+weaponsection "Brutal"
+setslot 0 Melee
+setslot 8 DualPistols
+setslot 9 BFG9000
+defaultbind r "+reload"
+defaultbind q "+zoom"
+defaultbind g "+user1"
+defaultbind x "+user3"
+"#;
+        let info = parse_keyconf(text).unwrap();
+        assert!(matches!(
+            info.commands.iter().find(|c| matches!(c, KeyConfCmd::SetSlot { slot: 0, .. })),
+            Some(KeyConfCmd::SetSlot { weapons, .. }) if weapons == &["Melee".to_owned()]
+        ));
+        assert!(info.commands.iter().any(|c| matches!(
+            c,
+            KeyConfCmd::DefaultBind { key, cmd }
+                if key == "r" && cmd == "+reload"
+        )));
+        assert!(info.commands.iter().any(|c| matches!(
+            c,
+            KeyConfCmd::DefaultBind { key, cmd }
+                if key == "q" && cmd == "+zoom"
+        )));
+        assert!(
+            info.commands
+                .iter()
+                .any(|c| matches!(c, KeyConfCmd::SetSlot { slot: 8, .. }))
+        );
+        assert!(
+            info.commands
+                .iter()
+                .any(|c| matches!(c, KeyConfCmd::SetSlot { slot: 9, .. }))
+        );
+    }
 }

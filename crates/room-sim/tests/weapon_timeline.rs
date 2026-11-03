@@ -120,7 +120,9 @@ fn walk_label(
         // Contiguous flash: next state in table even when `next` points at LightDone.
         if label.eq_ignore_ascii_case("Flash") {
             let next_id = room_core::StateId::from_raw(sid.raw() + 1);
-            if states.get(next_id).is_some_and(|s| Some(s.owner) == owner0 && !s.sprite.is_empty())
+            if states
+                .get(next_id)
+                .is_some_and(|s| Some(s.owner) == owner0 && !s.sprite.is_empty())
             {
                 sid = next_id;
                 continue;
@@ -163,7 +165,10 @@ macro_rules! weapon_case {
     ($name:ident, $class:expr, $file:expr) => {
         #[test]
         fn $name() {
-            let reference = parse_ref($class, include_str!(concat!("../../../testdata/weapons/", $file)));
+            let reference = parse_ref(
+                $class,
+                include_str!(concat!("../../../testdata/weapons/", $file)),
+            );
             let (classes, states) = load_classes();
             let cid = classes.find_name(reference.class).unwrap_or_else(|| {
                 panic!("missing class {}", reference.class);

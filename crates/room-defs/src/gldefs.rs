@@ -318,6 +318,7 @@ pub fn parse_gldefs(text: &str) -> Result<GlDefs, DefsError> {
         ScanOptions {
             c_mode: true,
             semicolon_comments: false,
+            ..Default::default()
         },
     );
     let mut info = GlDefs::default();
@@ -492,9 +493,22 @@ fn parse_light(sc: &mut Scanner<'_>, kind: DynLightKind) -> Result<DynLightDef, 
                     }
                     "angle" => def.spot_angle = read_f32(sc)?,
                     "pitch" | "innerangle" | "spotinner" => def.spot_inner = read_f32(sc)?,
-                    "subtractive" => def.subtractive = true,
-                    "attenuate" => def.attenuate = true,
-                    "dontlightself" => def.dont_light_self = true,
+                    "subtractive" | "attenuate" | "dontlightself" => {
+                        if matches!(k.as_str(), "subtractive") {
+                            def.subtractive = true;
+                        } else if matches!(k.as_str(), "attenuate") {
+                            def.attenuate = true;
+                        } else {
+                            def.dont_light_self = true;
+                        }
+                        // GZDoom allows optional `1`/`0` after flag keywords.
+                        match sc.next_token()? {
+                            Tok::Int(_) | Tok::Float(_) => {}
+                            Tok::Ident(v)
+                                if Scanner::compare(v, "true") || Scanner::compare(v, "false") => {}
+                            other => sc.unget(other),
+                        }
+                    }
                     _ => {
                         // Skip one value token for unknown keys.
                         let _ = sc.next_token()?;
@@ -920,22 +934,40 @@ fn expect_lbrace(sc: &mut Scanner<'_>) -> Result<(), DefsError> {
 }
 
 fn read_f32(sc: &mut Scanner<'_>) -> Result<f32, DefsError> {
-    match sc.next_token()? {
-        Tok::Float(f) => Ok(f as f32),
-        Tok::Int(n) => Ok(n as f32),
+    let neg = sc.check_punct(Punct::Minus)?;
+    let v = match sc.next_token()? {
+        Tok::Float(f) => f as f32,
+        Tok::Int(n) => n as f32,
         Tok::Ident(s) => s
             .parse()
-            .map_err(|_| DefsError::Message(format!("GLDEFS: bad number {s}"))),
-        other => Err(DefsError::Message(format!(
-            "GLDEFS: expected number, got {other:?}"
-        ))),
-    }
+            .map_err(|_| DefsError::Message(format!("GLDEFS: bad number {s}")))?,
+        other => {
+            return Err(DefsError::Message(format!(
+                "GLDEFS: expected number, got {other:?}"
+            )));
+        }
+    };
+    Ok(if neg { -v } else { v })
 }
 
 fn read_name(sc: &mut Scanner<'_>) -> Result<String, DefsError> {
     match sc.next_token()? {
         Tok::Ident(s) => Ok(s.to_owned()),
         Tok::String(s) => Ok(s.into_owned()),
+        // `pointlight 2SHADOW` — leading digits lex as Int then Ident.
+        Tok::Int(n) => {
+            let mut s = n.to_string();
+            match sc.next_token()? {
+                Tok::Ident(id) => {
+                    s.push_str(id);
+                    Ok(s)
+                }
+                other => {
+                    sc.unget(other);
+                    Ok(s)
+                }
+            }
+        }
         other => Err(DefsError::Message(format!(
             "GLDEFS: expected name, got {other:?}"
         ))),

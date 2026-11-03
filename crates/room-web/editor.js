@@ -4,7 +4,7 @@
 
 import { install as installTools, HEXEN_LINE_SPECIALS } from "./editor-tools.js";
 import { install as installPaint, paintNs } from "./editor-paint.js";
-import { install as installScripts } from "./editor-scripts.js";
+import { install as installScripts, highlight } from "./editor-scripts.js";
 
 /** Flip to `true` to re-expose Duke Nukem 3D GRP / .MAP UI (code paths kept). */
 const ROOM_UI_SHOW_DUKE = false;
@@ -390,24 +390,39 @@ function openIwad(bytes, name) {
   }
 }
 
-/** Replace the base IWAD / GRP from a file picker (retail Doom over Freedoom, etc.). */
+/** ZIP local header, empty archive, or spanned marker — PK3 / ZIP. */
+function isPk3Bytes(buf) {
+  return buf && buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b
+    && (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07);
+}
+
+/** Replace the base IWAD / PK3 / GRP from a file picker. */
 async function openIwadFile(file) {
   if (!file) return;
   const buf = new Uint8Array(await file.arrayBuffer());
   const magic4 = String.fromCharCode(...buf.slice(0, 4));
   const isGrp = isDukeGrpBytes(buf);
+  const isPack = isPk3Bytes(buf) || isContentPackName(file.name);
   if (isGrp && !ROOM_UI_SHOW_DUKE) {
-    toast("Duke Nukem 3D is hidden in this UI — pick a Doom / Freedoom IWAD (.wad)", true);
+    toast("Duke Nukem 3D is hidden in this UI — pick a Doom / Freedoom IWAD (.wad) or a PK3", true);
+    return;
+  }
+  if (isPack) {
+    status(`Loading ${file.name}…`);
+    openIwad(buf, file.name);
+    const maps = S.summary?.maps || [];
+    const first = maps.find((m) => m === "E1M1" || m === "MAP01") || maps[0];
+    if (first) loadMap(first);
     return;
   }
   if (!isGrp && magic4 !== "IWAD" && magic4 !== "PWAD") {
     toast(ROOM_UI_SHOW_DUKE
-      ? "Pick a Doom / Freedoom IWAD (.wad) or Duke DUKE3D.GRP"
-      : "Pick a Doom / Freedoom IWAD (.wad)", true);
+      ? "Pick a Doom / Freedoom IWAD (.wad), a PK3, or Duke DUKE3D.GRP"
+      : "Pick a Doom / Freedoom IWAD (.wad) or a PK3", true);
     return;
   }
   if (magic4 === "PWAD" && !isGrp) {
-    toast("That file is a PWAD — use Open… to mount it on top of an IWAD", true);
+    toast("That file is a PWAD — use Open… to mount it on top of an IWAD or PK3", true);
     return;
   }
   status(isGrp ? `Converting ${file.name}…` : `Loading ${file.name}…`);
@@ -535,12 +550,21 @@ async function openFiles(files) {
       const m = S.summary?.maps.find((x) => x === "E1M1") || S.summary?.maps[0];
       if (m) loadMap(m);
     } else if (magic === "IWAD" || (!S.summary && magic === "PWAD")) {
-      if (magic === "PWAD") { toast("Open an IWAD first, then add PWADs on top", true); continue; }
+      if (magic === "PWAD") { toast("Open an IWAD or PK3 first, then add PWADs on top", true); continue; }
       openIwad(buf, f.name);
       const m = S.summary.maps.find((x) => x === "E1M1" || x === "MAP01") || S.summary.maps[0];
       if (m) loadMap(m);
+    } else if (isPk3Bytes(buf) || isContentPackName(f.name)) {
+      if (!S.summary) {
+        status(`Loading ${f.name}…`);
+        openIwad(buf, f.name);
+        const m = S.summary?.maps?.find((x) => x === "E1M1" || x === "MAP01") || S.summary?.maps?.[0];
+        if (m) loadMap(m);
+      } else {
+        addPwad(buf, f.name);
+      }
     } else if (!S.summary) {
-      toast("Open an IWAD first", true);
+      toast("Open an IWAD or PK3 first", true);
     } else if (!ROOM_UI_SHOW_DUKE && /\.map$/i.test(f.name)) {
       toast("Duke .MAP files are hidden in this UI", true);
     } else {
@@ -2300,15 +2324,35 @@ function looksText(b) {
   return bad / n < 0.02;
 }
 
+function isZscriptLump(l) {
+  const name = String(l.name || "");
+  const path = String(l.path || name).toLowerCase();
+  const stem = name.split(".").pop().toLowerCase();
+  if (name.toUpperCase() === "ZSCRIPT") return true;
+  if (path.endsWith(".zs") || path.endsWith(".zc") || path.endsWith(".zsc")) return true;
+  if (stem === "zs" || stem === "zc" || stem === "zsc") return true;
+  return path.includes("zscript");
+}
+
 function textEditor(l, bytes) {
   const wrap = el("div", {});
-  const ta = el("textarea", { class: "code", spellcheck: "false" });
+  const zscript = isZscriptLump(l);
+  const ta = el("textarea", { class: zscript ? "code hl-input" : "code", spellcheck: "false" });
   ta.value = new TextDecoder("utf-8").decode(bytes);
   const gutter = el("div", { class: "gutter" });
-  const lines = () => { const n = ta.value.split("\n").length; gutter.textContent = Array.from({ length: n }, (_, i) => i + 1).join("\n"); };
+  const hl = zscript ? el("pre", { class: "code-hl", "aria-hidden": "true" }) : null;
+  const lines = () => {
+    const n = ta.value.split("\n").length;
+    gutter.textContent = Array.from({ length: n }, (_, i) => i + 1).join("\n");
+    if (hl) hl.innerHTML = highlight(ta.value, "zs");
+  };
+  const syncScroll = () => {
+    gutter.scrollTop = ta.scrollTop;
+    if (hl) { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; }
+  };
   lines();
   ta.addEventListener("input", lines);
-  ta.addEventListener("scroll", () => { gutter.scrollTop = ta.scrollTop; });
+  ta.addEventListener("scroll", syncScroll);
   ta.addEventListener("keydown", (e) => {
     if (e.key === "Tab") { e.preventDefault(); const s = ta.selectionStart; ta.setRangeText("    ", s, ta.selectionEnd, "end"); lines(); }
     if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(); }
@@ -2322,9 +2366,15 @@ function textEditor(l, bytes) {
       toast(err ? "Applied with errors" : `${l.name} applied — level reloaded`, !!err);
     } catch (e) { errBox.hidden = false; errBox.textContent = errText(e); }
   };
+  const note = zscript
+    ? "ZScript (.zs / .zc / ZSCRIPT). Syntax colors update as you type. Ctrl+S reloads the level."
+    : "Text lumps (DECORATE, MAPINFO, SNDINFO, TEXTURES, GLDEFS…) reload the level with your changes.";
   wrap.append(el("div", { class: "actions" }, el("button", { class: "btn primary", onclick: save }, "Apply & reload (Ctrl+S)"),
-    el("span", { class: "muted" }, "Text lumps (DECORATE, MAPINFO, SNDINFO, TEXTURES, GLDEFS…) reload the level with your changes.")));
-  wrap.append(el("div", { class: "code-wrap" }, gutter, ta), errBox);
+    el("span", { class: "muted" }, note)));
+  const editor = zscript
+    ? el("div", { class: "code-wrap" }, gutter, el("div", { class: "code-area" }, hl, ta))
+    : el("div", { class: "code-wrap" }, gutter, ta);
+  wrap.append(editor, errBox);
   return wrap;
 }
 

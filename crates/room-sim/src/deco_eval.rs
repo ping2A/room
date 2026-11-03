@@ -1,6 +1,11 @@
 //! Evaluate DECORATE [`DecoExpr`] arguments at action call time.
+//!
+//! Integer and float expressions are compiled to `room-zvm` bytecode (ZS5) and
+//! cached on [`World::deco_expr_cache`]; string labels / exotic calls keep the
+//! tree-walker.
 
 use crate::actor::ActorId;
+use crate::deco_zvm;
 use crate::world::World;
 use room_decorate::{BinOp, DecoExpr, is_trivial_arg, parse_deco_expr};
 
@@ -15,17 +20,38 @@ pub fn eval_action_arg(world: &mut World, self_id: ActorId, raw: &str) -> String
         return raw.to_owned();
     }
     match parse_deco_expr(raw) {
-        Ok(expr) => match eval_expr(world, self_id, &expr) {
-            EvalValue::Int(n) => n.to_string(),
-            EvalValue::Float(f) => {
-                if f.fract() == 0.0 && f.abs() < 1e15 {
-                    (f as i64).to_string()
-                } else {
-                    f.to_string()
+        Ok(expr) => {
+            if deco_zvm::zvm_suitable(&expr) {
+                let mut cache = std::mem::take(&mut world.deco_expr_cache);
+                let zvm = cache.eval_i64(world, self_id, raw, &expr);
+                world.deco_expr_cache = cache;
+                if let Some(n) = zvm {
+                    return n.to_string();
+                }
+            } else if deco_zvm::zvm_suitable_f(&expr) {
+                let mut cache = std::mem::take(&mut world.deco_expr_cache);
+                let zvm = cache.eval_f64(world, self_id, raw, &expr);
+                world.deco_expr_cache = cache;
+                if let Some(f) = zvm {
+                    return if f.fract() == 0.0 && f.abs() < 1e15 {
+                        (f as i64).to_string()
+                    } else {
+                        f.to_string()
+                    };
                 }
             }
-            EvalValue::Str(s) => s,
-        },
+            match eval_expr(world, self_id, &expr) {
+                EvalValue::Int(n) => n.to_string(),
+                EvalValue::Float(f) => {
+                    if f.fract() == 0.0 && f.abs() < 1e15 {
+                        (f as i64).to_string()
+                    } else {
+                        f.to_string()
+                    }
+                }
+                EvalValue::Str(s) => s,
+            }
+        }
         Err(_) => raw.to_owned(),
     }
 }
@@ -75,6 +101,10 @@ fn eval_expr(world: &mut World, self_id: ActorId, expr: &DecoExpr) -> EvalValue 
                 EvalValue::Int(n) => EvalValue::Int(n.wrapping_neg()),
                 other => EvalValue::Float(-other.as_f64()),
             }
+        }
+        DecoExpr::Not(inner) => {
+            let v = eval_expr(world, self_id, inner);
+            EvalValue::Int(i32::from(v.as_i32() == 0))
         }
         DecoExpr::Bin { op, lhs, rhs } => {
             let l = eval_expr(world, self_id, lhs);
@@ -133,6 +163,19 @@ fn eval_ident(world: &World, self_id: ActorId, name: &str) -> EvalValue {
         }
         "alpha" => EvalValue::Float(a.alpha),
         "args" => EvalValue::Int(a.args[0]),
+        // BD3 expr idents (docs/33 §3.7).
+        "waterlevel" => EvalValue::Int(crate::physics::actor_waterlevel(world, a)),
+        "x" => EvalValue::Float(a.pos.x()),
+        "y" => EvalValue::Float(a.pos.y()),
+        "z" => EvalValue::Float(a.pos.z()),
+        "floorz" => {
+            let z = crate::physics::check_position(world, a, a.pos, Some(self_id)).floor_z;
+            EvalValue::Float(z)
+        }
+        "scalex" => EvalValue::Float(a.scale_x),
+        "scaley" => EvalValue::Float(a.scale_y),
+        "true" => EvalValue::Int(1),
+        "false" => EvalValue::Int(0),
         _ if lower.starts_with("user_") => a
             .user_vars
             .get(name)
@@ -140,6 +183,7 @@ fn eval_ident(world: &World, self_id: ActorId, name: &str) -> EvalValue {
             .copied()
             .map(EvalValue::Int)
             .unwrap_or(EvalValue::Int(0)),
+        _ if lower.starts_with("aaptr_") => EvalValue::Str(name.to_owned()),
         _ => EvalValue::Str(name.to_owned()),
     }
 }
@@ -185,58 +229,197 @@ fn eval_call(world: &mut World, self_id: ActorId, name: &str, args: &[DecoExpr])
             };
             EvalValue::Int(crate::inventory::count_inventory(world, self_id, cid))
         }
+        "checkclass" => {
+            let class_name = match args.first() {
+                Some(DecoExpr::String(s) | DecoExpr::Ident(s)) => s.clone(),
+                _ => return EvalValue::Int(0),
+            };
+            let ptr = match args.get(1) {
+                Some(DecoExpr::String(s) | DecoExpr::Ident(s)) => s.as_str(),
+                _ => "AAPTR_DEFAULT",
+            };
+            let match_super = args
+                .get(2)
+                .map(|e| eval_expr(world, self_id, e).as_i32() != 0)
+                .unwrap_or(false);
+            let Some(tid) = resolve_aaptr(world, self_id, ptr) else {
+                return EvalValue::Int(0);
+            };
+            let Some(cid) = world.actors.get(tid).map(|a| a.class) else {
+                return EvalValue::Int(0);
+            };
+            EvalValue::Int(i32::from(class_is_a(world, cid, &class_name, match_super)))
+        }
+        "callacs" | "acs_namedexecutewithresult" => {
+            let script = match args.first() {
+                Some(DecoExpr::String(s) | DecoExpr::Ident(s)) => s.clone(),
+                _ => return EvalValue::Int(0),
+            };
+            let a1 = args
+                .get(1)
+                .map(|e| eval_expr(world, self_id, e).as_i32())
+                .unwrap_or(0);
+            let a2 = args
+                .get(2)
+                .map(|e| eval_expr(world, self_id, e).as_i32())
+                .unwrap_or(0);
+            let a3 = args
+                .get(3)
+                .map(|e| eval_expr(world, self_id, e).as_i32())
+                .unwrap_or(0);
+            let r = crate::acs::acs_named_execute_by_name(
+                world,
+                &script,
+                0,
+                [a1, a2, a3],
+                true,
+                Some(self_id),
+            );
+            EvalValue::Int(r)
+        }
+        "sin" => {
+            let deg = args
+                .first()
+                .map(|e| eval_expr(world, self_id, e).as_f64())
+                .unwrap_or(0.0);
+            EvalValue::Float(room_core::dmath::sin(deg.to_radians()))
+        }
+        "cos" => {
+            let deg = args
+                .first()
+                .map(|e| eval_expr(world, self_id, e).as_f64())
+                .unwrap_or(0.0);
+            EvalValue::Float(room_core::dmath::cos(deg.to_radians()))
+        }
+        "abs" => {
+            let v = args
+                .first()
+                .map(|e| eval_expr(world, self_id, e))
+                .unwrap_or(EvalValue::Int(0));
+            match v {
+                EvalValue::Int(n) => EvalValue::Int(n.wrapping_abs()),
+                other => EvalValue::Float(other.as_f64().abs()),
+            }
+        }
+        "sqrt" => {
+            let v = args
+                .first()
+                .map(|e| eval_expr(world, self_id, e).as_f64())
+                .unwrap_or(0.0);
+            EvalValue::Float(if v <= 0.0 {
+                0.0
+            } else {
+                room_core::dmath::sqrt(v)
+            })
+        }
+        "random2" => {
+            // GZDoom: random2() → −255…255; random2(mask) → (−mask)…mask.
+            let mask = args
+                .first()
+                .map(|e| eval_expr(world, self_id, e).as_i32())
+                .unwrap_or(255)
+                .unsigned_abs();
+            let r = i32::from(world.p_random("decorate"));
+            let span = (mask as i32).saturating_mul(2).saturating_add(1).max(1);
+            EvalValue::Int(r % span - mask as i32)
+        }
         _ => EvalValue::Int(0),
     }
 }
 
+fn resolve_aaptr(world: &World, self_id: ActorId, ptr: &str) -> Option<ActorId> {
+    let key = ptr.trim_matches('"').to_ascii_lowercase();
+    match key.as_str() {
+        "aaptr_null" | "null" | "none" => None,
+        "" | "aaptr_default" | "default" | "self" => Some(self_id),
+        "aaptr_target" | "target" => world.actors.get(self_id).and_then(|a| a.target),
+        "aaptr_master" | "master" => world.actors.get(self_id).and_then(|a| a.master),
+        "aaptr_tracer" | "tracer" => world.actors.get(self_id).and_then(|a| a.tracer),
+        "aaptr_player1" | "player1" => world.players[0].as_ref().and_then(|p| p.mo),
+        _ => Some(self_id),
+    }
+}
+
+fn class_is_a(world: &World, mut id: room_core::ClassId, want: &str, match_super: bool) -> bool {
+    loop {
+        let Some(def) = world.classes.get(id) else {
+            return false;
+        };
+        if def.name.eq_ignore_ascii_case(want) {
+            return true;
+        }
+        if !match_super {
+            return false;
+        }
+        let Some(parent) = def.parent else {
+            return false;
+        };
+        id = parent;
+    }
+}
+
 fn bin_op(op: BinOp, lhs: EvalValue, rhs: EvalValue) -> EvalValue {
-    match (&lhs, &rhs) {
-        (EvalValue::Int(a), EvalValue::Int(b)) => {
-            let v = match op {
-                BinOp::Add => a.wrapping_add(*b),
-                BinOp::Sub => a.wrapping_sub(*b),
-                BinOp::Mul => a.wrapping_mul(*b),
-                BinOp::Div => {
-                    if *b == 0 {
-                        0
-                    } else {
-                        a / b
+    match op {
+        BinOp::Eq => EvalValue::Int(i32::from(lhs.as_f64() == rhs.as_f64())),
+        BinOp::Ne => EvalValue::Int(i32::from(lhs.as_f64() != rhs.as_f64())),
+        BinOp::Lt => EvalValue::Int(i32::from(lhs.as_f64() < rhs.as_f64())),
+        BinOp::Le => EvalValue::Int(i32::from(lhs.as_f64() <= rhs.as_f64())),
+        BinOp::Gt => EvalValue::Int(i32::from(lhs.as_f64() > rhs.as_f64())),
+        BinOp::Ge => EvalValue::Int(i32::from(lhs.as_f64() >= rhs.as_f64())),
+        BinOp::And => EvalValue::Int(i32::from(lhs.as_i32() != 0 && rhs.as_i32() != 0)),
+        BinOp::Or => EvalValue::Int(i32::from(lhs.as_i32() != 0 || rhs.as_i32() != 0)),
+        BinOp::BitOr => EvalValue::Int(lhs.as_i32() | rhs.as_i32()),
+        BinOp::BitAnd => EvalValue::Int(lhs.as_i32() & rhs.as_i32()),
+        _ => match (&lhs, &rhs) {
+            (EvalValue::Int(a), EvalValue::Int(b)) => {
+                let v = match op {
+                    BinOp::Add => a.wrapping_add(*b),
+                    BinOp::Sub => a.wrapping_sub(*b),
+                    BinOp::Mul => a.wrapping_mul(*b),
+                    BinOp::Div => {
+                        if *b == 0 {
+                            0
+                        } else {
+                            a / b
+                        }
                     }
-                }
-                BinOp::Mod => {
-                    if *b == 0 {
-                        0
-                    } else {
-                        a % b
+                    BinOp::Mod => {
+                        if *b == 0 {
+                            0
+                        } else {
+                            a % b
+                        }
                     }
-                }
-            };
-            EvalValue::Int(v)
-        }
-        _ => {
-            let a = lhs.as_f64();
-            let b = rhs.as_f64();
-            let v = match op {
-                BinOp::Add => a + b,
-                BinOp::Sub => a - b,
-                BinOp::Mul => a * b,
-                BinOp::Div => {
-                    if b == 0.0 {
-                        0.0
-                    } else {
-                        a / b
+                    _ => 0,
+                };
+                EvalValue::Int(v)
+            }
+            _ => {
+                let a = lhs.as_f64();
+                let b = rhs.as_f64();
+                let v = match op {
+                    BinOp::Add => a + b,
+                    BinOp::Sub => a - b,
+                    BinOp::Mul => a * b,
+                    BinOp::Div => {
+                        if b == 0.0 {
+                            0.0
+                        } else {
+                            a / b
+                        }
                     }
-                }
-                BinOp::Mod => {
-                    if b == 0.0 {
-                        0.0
-                    } else {
-                        a % b
+                    BinOp::Mod => {
+                        if b == 0.0 {
+                            0.0
+                        } else {
+                            a % b
+                        }
                     }
-                }
-            };
-            EvalValue::Float(v)
-        }
+                    _ => 0.0,
+                };
+                EvalValue::Float(v)
+            }
+        },
     }
 }
 
@@ -313,5 +496,59 @@ actor Probe : Actor 9001
             "(0.86 - 0.075 * pitch) * (1 - playercrouch) + (-0.075 * pitch) * playercrouch",
         );
         assert_eq!(z, "0");
+    }
+
+    #[test]
+    fn evals_bd3_idents_and_calls() {
+        let ir = parse_decorate(
+            r#"
+actor Probe : Actor 9002
+{
+  Health 50
+  States { Spawn: POSS A -1 Stop }
+}
+actor Imp : Actor 9003
+{
+  Health 60
+  States { Spawn: POSS A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let probe = classes.find_name("Probe").unwrap();
+        let imp = classes.find_name("Imp").unwrap();
+        let id = w
+            .spawn_at(probe, DVec3::new(40.0, 50.0, 8.0), Angle::ZERO)
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(id) {
+            a.scale_x = 1.5;
+            a.scale_y = 2.0;
+            a.class = imp; // CheckClass against Imp
+        }
+        // Bare idents are trivial and skipped by `eval_action_arg`; force expr form.
+        assert_eq!(eval_action_arg(&mut w, id, "0 + x"), "40");
+        assert_eq!(eval_action_arg(&mut w, id, "0 + y"), "50");
+        assert_eq!(eval_action_arg(&mut w, id, "0 + z"), "8");
+        assert_eq!(eval_action_arg(&mut w, id, "0 + scalex"), "1.5");
+        assert_eq!(eval_action_arg(&mut w, id, "0 + waterlevel"), "0");
+        assert_eq!(eval_action_arg(&mut w, id, "0 + true"), "1");
+        assert_eq!(eval_action_arg(&mut w, id, "CheckClass(\"Imp\")"), "1");
+        assert_eq!(
+            eval_action_arg(&mut w, id, "CheckClass(\"Probe\", AAPTR_DEFAULT, 1)"),
+            "0"
+        );
+        let s = eval_action_arg(&mut w, id, "sin(90)");
+        let s: f64 = s.parse().unwrap();
+        assert!((s - 1.0).abs() < 1e-6, "{s}");
+        assert_eq!(eval_action_arg(&mut w, id, "abs(-7)"), "7");
     }
 }

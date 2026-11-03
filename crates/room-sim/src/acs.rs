@@ -8,6 +8,32 @@ use room_acs::{
 use room_core::{Angle, DVec3, Fixed};
 use room_nodebuild::{point_in_sector, point_in_sector_vanilla};
 
+/// Room `Buttons` bits → GZDoom `BT_*` (`GetPlayerInput` / `BT_RELOAD` = 1<<6).
+pub(crate) fn gzdoom_button_bits(room: u32) -> i32 {
+    use crate::player::Buttons as B;
+    let mut g = 0i32;
+    let map = [
+        (B::ATTACK, 1 << 0),
+        (B::USE, 1 << 1),
+        (B::JUMP, 1 << 2),
+        (B::ALTATTACK, 1 << 5),
+        (B::RELOAD, 1 << 6),
+        (B::ZOOM, 1 << 7),
+        (B::SPEED, 1 << 8),
+        (B::STRAFE, 1 << 9),
+        (B::USER1, 1 << 21),
+        (B::USER2, 1 << 22),
+        (B::USER3, 1 << 23),
+        (B::USER4, 1 << 24),
+    ];
+    for (bit, gz) in map {
+        if room & bit != 0 {
+            g |= gz;
+        }
+    }
+    g
+}
+
 /// World as ACS host (line specials, RNG, queries).
 pub(crate) struct WorldAcsHost<'a> {
     pub world: &'a mut World,
@@ -36,6 +62,44 @@ impl AcsHost for WorldAcsHost<'_> {
 
     fn player_count(&self) -> i32 {
         self.world.players.iter().filter(|p| p.is_some()).count() as i32
+    }
+
+    fn get_player_input(&self, player: i32, input: i32) -> i32 {
+        // `-1` is the script activator / console player, not "nobody".
+        let seat = if player < 0 { 0 } else { player as usize };
+        let Some(p) = self.world.players.get(seat).and_then(|s| s.as_ref()) else {
+            return 0;
+        };
+        match input {
+            // GZDoom `EInputFlags`: OLDBUTTONS, BUTTONS, then axes.
+            0 | 8 => gzdoom_button_bits(p.acs_prev_buttons),
+            1 | 9 => gzdoom_button_bits(p.cmd.buttons.0),
+            5 | 13 => i32::from(p.cmd.forward_move),
+            6 | 14 => i32::from(p.cmd.side_move),
+            7 | 15 => i32::from(p.cmd.up_move),
+            _ => 0,
+        }
+    }
+
+    fn console_player_number(&self) -> i32 {
+        // Local seat 0 offline; dedicated would return −1.
+        if self.world.players[0].is_some() {
+            0
+        } else {
+            -1
+        }
+    }
+
+    fn set_mugshot_state(&mut self, state: &str) {
+        let state = state.trim();
+        if state.is_empty() {
+            return;
+        }
+        // Bootstrap: force evil-grin priority face via existing mugshot fields.
+        if let Some(p) = self.world.players[0].as_mut() {
+            let _ = state;
+            p.mugshot = crate::mugshot::MugShot::default();
+        }
     }
 
     fn game_skill(&self) -> i32 {
@@ -617,11 +681,15 @@ impl AcsHost for WorldAcsHost<'_> {
         } else {
             (secs * 35.0).ceil() as i32
         };
+        let (tr, tg, tb, ta) = (to_f(r), to_f(g), to_f(b), to_f(a));
+        self.world.push_debug(format!(
+            "FADE acs ({tr:.2},{tg:.2},{tb:.2}) a={ta:.2} tics={tics}"
+        ));
         let fade = &mut self.world.screen_fade;
-        fade.target_r = to_f(r);
-        fade.target_g = to_f(g);
-        fade.target_b = to_f(b);
-        fade.target_a = to_f(a);
+        fade.target_r = tr;
+        fade.target_g = tg;
+        fade.target_b = tb;
+        fade.target_a = ta;
         if tics <= 0 {
             fade.r = fade.target_r;
             fade.g = fade.target_g;
@@ -977,6 +1045,30 @@ impl AcsHost for WorldAcsHost<'_> {
             return 0;
         }
         let rest = args.get(2..).unwrap_or(&[]);
+        // Prefer ZScript VM (`docs/34` ZS4 / BD6) when a program is loaded.
+        if self.world.zscript.is_active() {
+            let qname = format!("{class}.{func}");
+            self.world.zscript.sync_host(self.world.skill, 0, 0);
+            let mut i_args = Vec::new();
+            let mut s_owned = Vec::new();
+            for &v in rest {
+                // Dynamic string indices are positive and carry `0x40000000`.
+                // Negative integers such as `-2` stay ints.
+                if v > 0 && (v & 0x4000_0000) != 0 && (v & 0x0FFF_FFFF) < 4096 {
+                    s_owned.push(self.world.acs.resolve_string(v));
+                } else {
+                    i_args.push(i64::from(v));
+                }
+            }
+            let s_refs: Vec<&str> = s_owned.iter().map(String::as_str).collect();
+            if let Ok(v) = self
+                .world
+                .zscript
+                .script_call_with(&qname, &i_args, &s_refs)
+            {
+                return i32::try_from(v).unwrap_or(i32::MAX);
+            }
+        }
         match self.world.scripts.call_static(&class, &func, rest) {
             Ok(v) => i32::try_from(v).unwrap_or(i32::MAX),
             Err(_) => 0,
@@ -3944,6 +4036,43 @@ pub(crate) fn acs_execute(
     result
 }
 
+/// Console `puke <n> [args]` — start script by number with the local player as activator.
+pub fn puke_script(world: &mut World, script: i32, args: [i32; 3], always: bool) -> i32 {
+    let activator = world.players[0].as_ref().and_then(|p| p.mo);
+    let a = [script, 0, args[0], args[1], args[2]];
+    acs_execute(world, &a, always, activator, None)
+}
+
+/// Console `pukename <name> [always] [args]`.
+pub fn puke_named(world: &mut World, name: &str, args: [i32; 3], always: bool) -> i32 {
+    let activator = world.players[0].as_ref().and_then(|p| p.mo);
+    acs_named_execute_by_name(world, name, 0, args, always, activator)
+}
+
+/// Resolve a script name across loaded ACS modules and start it (BD3).
+pub(crate) fn acs_named_execute_by_name(
+    world: &mut World,
+    name: &str,
+    map: i32,
+    script_args: [i32; 3],
+    always: bool,
+    activator: Option<ActorId>,
+) -> i32 {
+    if map != 0 {
+        return 0;
+    }
+    let Some(number) = world
+        .acs
+        .modules
+        .iter()
+        .find_map(|m| m.script_number_by_name(name))
+    else {
+        return 0;
+    };
+    let args = [number, 0, script_args[0], script_args[1], script_args[2]];
+    acs_execute(world, &args, always, activator, None)
+}
+
 /// `ACS_Suspend(script, map)`.
 pub(crate) fn acs_suspend(world: &mut World, args: &[i32; 5]) -> i32 {
     if args[1] != 0 {
@@ -3967,6 +4096,18 @@ mod tests {
     use crate::specials::num;
     use room_nodebuild::apply_nodes;
     use room_testkit::{MapBuilder, rect};
+
+    #[test]
+    fn reload_bit_matches_gzdoom_bt_reload() {
+        use crate::player::Buttons;
+        assert_eq!(gzdoom_button_bits(Buttons::RELOAD), 1 << 6);
+        assert_eq!(gzdoom_button_bits(Buttons::ZOOM), 1 << 7);
+        assert_eq!(gzdoom_button_bits(Buttons::USER1), 1 << 21);
+        assert_eq!(
+            gzdoom_button_bits(Buttons::ATTACK | Buttons::RELOAD),
+            (1 << 0) | (1 << 6)
+        );
+    }
 
     fn behavior_delay_open() -> Vec<u8> {
         // OPEN script 1: DELAYDIRECT 1; PUSHNUMBER 9; ASSIGNMAPVAR 0; TERMINATE
@@ -4457,10 +4598,17 @@ actor Marker : Actor 3004
                 address: 0,
                 argc: 0,
                 script_type: ScriptType::Closed,
+                flags: 0,
+                local_count: 0,
             }],
             string_offsets: Vec::new(),
             libraries: Vec::new(),
             script_names: vec!["Go".into()],
+            functions: Vec::new(),
+            function_names: Vec::new(),
+            map_var_defaults: [0; 128],
+            map_arrays: Vec::new(),
+            map_exports: Vec::new(),
         });
         resolve_actor_arg0_str(&mut w);
         let a = w.actors.get(w.find_by_tid(22).unwrap()).unwrap();
@@ -5488,5 +5636,158 @@ actor Clip : Actor 2007
             host.clear_actor_inventory(5, 0);
             assert_eq!(host.check_actor_inventory(5, "Clip", 0), 0);
         }
+    }
+
+    #[test]
+    fn bd5_acs_script_call_dispatches_to_zscript() {
+        // docs/33 BD5/BD6: ACSF ScriptCall → ZandroCompat.* on the Room ZVM.
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/zscript/bd_like");
+        let mut sources = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let p = entry.unwrap().path();
+            if p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                e.eq_ignore_ascii_case("zs")
+                    || e.eq_ignore_ascii_case("zc")
+                    || e.eq_ignore_ascii_case("zsc")
+            }) {
+                sources.push((
+                    p.display().to_string(),
+                    std::fs::read_to_string(&p).unwrap(),
+                ));
+            }
+        }
+        sources.sort_by(|a, b| {
+            let score = |n: &str| {
+                let base = n.rsplit(['/', '\\']).next().unwrap_or(n);
+                if base.eq_ignore_ascii_case("zscript.zc") {
+                    0
+                } else {
+                    1
+                }
+            };
+            score(&a.0).cmp(&score(&b.0)).then_with(|| a.0.cmp(&b.0))
+        });
+        let result = room_zscript::check(&sources);
+        assert!(result.ok(), "{:?}", result.diagnostics);
+        let map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        let mut w = World::from_map(map).unwrap();
+        w.load_zscript_program(result.program.unwrap());
+        w.acs.dyn_strings.push("ZandroCompat".into());
+        w.acs.dyn_strings.push("ConsolePlayerNumber".into());
+        const DYN: i32 = 0x4000_0000;
+        let mut host = WorldAcsHost { world: &mut w };
+        let v = host.script_call(&[DYN, DYN | 1], 0);
+        assert_eq!(v, 0, "ConsolePlayerNumber via ACS ScriptCall; got {v}");
+    }
+
+    #[test]
+    fn bd_lump_api_via_acs() {
+        let src = std::fs::read_to_string(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../testdata/zscript/bd_real/BD_WCS.zc"),
+        )
+        .expect("BD_WCS.zc");
+        let result = room_zscript::check(&[("BD_WCS.zc".into(), src)]);
+        assert!(result.ok(), "{:?}", result.diagnostics);
+        let map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        let mut w = World::from_map(map).unwrap();
+        w.load_zscript_program(result.program.unwrap());
+        w.zscript.set_event_handlers(["ZC_TMapHack".into()]);
+        w.zscript.activate_map_handlers().unwrap();
+        let body: String = ['M', 'A', 'P', '\u{80}'].into_iter().collect();
+        w.zscript.set_wad_lumps(std::collections::BTreeMap::from([(
+            "MAP01".into(),
+            body.clone(),
+        )]));
+        for name in [
+            "ZandroCompat",
+            "LumpOpen",
+            "MAP01",
+            "LumpRead",
+            "LumpReadString",
+            "LumpGetInfoInt",
+            "LumpClose",
+        ] {
+            w.acs.dyn_strings.push(name.into());
+        }
+        const DYN: i32 = 0x4000_0000;
+        let mut host = WorldAcsHost { world: &mut w };
+        let lump = host.script_call(&[DYN, DYN | 1, DYN | 2, -2, 0], 0);
+        assert_eq!(lump, 0, "LumpOpen MAP01");
+        assert_eq!(
+            host.script_call(&[DYN, DYN | 3, lump, 0, 1], 0),
+            b'M' as i32
+        );
+        let _ = host.script_call(&[DYN, DYN | 4, lump, 0, 4], 0);
+        assert_eq!(host.world.zscript.vm.as_ref().unwrap().last_s, body);
+        assert_eq!(host.script_call(&[DYN, DYN | 5, lump, 0], 0), 4);
+        let _ = host.script_call(&[DYN, DYN | 6, lump], 0);
+        let _ = host.world.zscript.take_printf();
+        assert_eq!(host.script_call(&[DYN, DYN | 3, lump, 0, 1], 0), 0);
+        let msgs = host.world.zscript.take_printf();
+        assert!(
+            msgs.iter().any(|m| m.contains("non-existent")),
+            "LumpRead after close prints, got {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn bd_save_load_mid_map() {
+        let src = std::fs::read_to_string(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../testdata/zscript/bd_real/BD_WCS.zc"),
+        )
+        .unwrap();
+        let result = room_zscript::check(&[("BD_WCS.zc".into(), src)]);
+        assert!(result.ok(), "{:?}", result.diagnostics);
+        let prog = result.program.unwrap();
+        let map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        let mut w = World::from_map(map).unwrap();
+        w.load_zscript_program(prog.clone());
+        w.zscript.set_event_handlers(["ZC_TMapHack".into()]);
+        w.zscript.activate_map_handlers().unwrap();
+        let body: String = ['M', 'A', 'P', '\u{80}'].into_iter().collect();
+        w.zscript.set_wad_lumps(std::collections::BTreeMap::from([(
+            "MAP01".into(),
+            body.clone(),
+        )]));
+        w.zscript
+            .script_call_with("ZandroCompat.LumpOpen", &[-2, 0], &["MAP01"])
+            .unwrap();
+        let checksum = w.zscript.checksum_bytes().unwrap();
+        let blob = w.zscript.save_blob().unwrap();
+
+        let mut w2 = World::from_map(
+            MapBuilder::new()
+                .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+                .player_start(64.0, 64.0, 0)
+                .build_udmf("MAP01")
+                .unwrap(),
+        )
+        .unwrap();
+        w2.load_zscript_program(prog);
+        w2.zscript.set_wad_lumps(std::collections::BTreeMap::from([(
+            "MAP01".into(),
+            body.clone(),
+        )]));
+        w2.zscript.load_blob(&blob, false).unwrap();
+        assert_eq!(w2.zscript.checksum_bytes().unwrap(), checksum);
+        w2.zscript
+            .script_call_with("ZandroCompat.LumpReadString", &[0, 0, 4], &[])
+            .unwrap();
+        assert_eq!(w2.zscript.vm.as_ref().unwrap().last_s, body);
     }
 }

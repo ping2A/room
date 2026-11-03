@@ -4825,6 +4825,45 @@ pub fn tick_glows(world: &mut World) {
     }
 }
 
+/// Kill shootable actors overlapping `mo` after a teleport. `+NOTELEFRAG` is spared (UZ1).
+fn telefrag_occupants(world: &mut World, mo: ActorId) {
+    let Some(mover) = world.actors.get(mo).cloned() else {
+        return;
+    };
+    let victims: Vec<ActorId> = world
+        .thinkers
+        .default
+        .iter()
+        .copied()
+        .filter(|&id| {
+            if id == mo {
+                return false;
+            }
+            let Some(a) = world.actors.get(id) else {
+                return false;
+            };
+            if a.destroyed || a.health <= 0 || (a.flags & crate::class::FLAG_SHOOTABLE) == 0 {
+                return false;
+            }
+            if a.extra_flags.get_name("NOTELEFRAG") {
+                return false;
+            }
+            let dx = a.pos.x() - mover.pos.x();
+            let dy = a.pos.y() - mover.pos.y();
+            let reach = a.radius + mover.radius;
+            if dx * dx + dy * dy > reach * reach {
+                return false;
+            }
+            let top = (a.pos.z() + a.height).min(mover.pos.z() + mover.height);
+            let bot = a.pos.z().max(mover.pos.z());
+            top > bot
+        })
+        .collect();
+    for id in victims {
+        let _ = damage_mobj(world, id, Some(mo), Some(mo), 10_000);
+    }
+}
+
 fn teleport(
     world: &mut World,
     args: &[i32; 5],
@@ -4875,6 +4914,7 @@ fn teleport(
     if let Some(a) = world.actors.get_mut(mo) {
         a.pos = DVec3::new(a.pos.x(), a.pos.y(), floor_z);
     }
+    telefrag_occupants(world, mo);
     if source_fog {
         spawn_teleport_fog(world, old_pos);
     }
@@ -8804,21 +8844,22 @@ pub fn tick_floors(world: &mut World) {
 
 /// Ride actors standing on a moving floor (`dropactors` gates downward carry).
 fn carry_floor_actors(world: &mut World, sector: SectorId, old_floor: f64, delta: f64) {
-    if delta < 0.0
-        && !world
-            .map
-            .sectors
-            .get(sector.raw() as usize)
-            .is_some_and(|s| s.drop_actors)
-    {
-        return;
-    }
+    let drop = world
+        .map
+        .sectors
+        .get(sector.raw() as usize)
+        .is_some_and(|s| s.drop_actors);
+    // Downward floors leave actors behind unless `dropactors` or `+STAYONLIFT`.
+    let downward = delta < 0.0 && !drop;
     let ids: Vec<ActorId> = world.thinkers.default.clone();
     for id in ids {
         let Some(a) = world.actors.get(id) else {
             continue;
         };
         if a.destroyed {
+            continue;
+        }
+        if downward && !a.extra_flags.get_name("STAYONLIFT") {
             continue;
         }
         let Some(sid) = room_nodebuild::point_in_sector(&world.map, a.pos.x(), a.pos.y())
@@ -9852,6 +9893,75 @@ actor PlayerPawn : Actor 0
             "dropactors=false should not ride the floor down"
         );
         assert!((w.sectors[0].floor_z + 32.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn stayonlift_rides_a_floor_that_does_not_drop_actors() {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        map.sectors[0].tags.push(16);
+        map.sectors[0].drop_actors = false;
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        w.actors
+            .get_mut(mo)
+            .unwrap()
+            .extra_flags
+            .set_name("STAYONLIFT", true);
+        let z0 = w.actors.get(mo).unwrap().pos.z();
+        assert_eq!(
+            execute_special(
+                &mut w,
+                num::FLOOR_LOWER_BY_VALUE,
+                &[16, 16, 32, 0, 0],
+                None,
+                None
+            ),
+            1
+        );
+        for _ in 0..32 {
+            tick_floors(&mut w);
+        }
+        assert!(
+            (w.actors.get(mo).unwrap().pos.z() - (z0 - 32.0)).abs() < 1e-6,
+            "STAYONLIFT rides the floor down"
+        );
+    }
+
+    #[test]
+    fn notelefrag_survives_an_overlapping_teleport() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let ir = room_decorate::parse_decorate(src).unwrap();
+        let classes = std::sync::Arc::new(crate::ClassRegistry::from_decorate(&ir).unwrap());
+        let states = std::sync::Arc::new(crate::StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes.clone(), states).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let pos = w.actors.get(mo).unwrap().pos;
+        let imp = classes.find_name("DoomImp").unwrap();
+        let victim = w.spawn_at(imp, pos, room_core::Angle::ZERO).unwrap();
+        w.actors.get_mut(victim).unwrap().flags |= crate::class::FLAG_SHOOTABLE;
+        telefrag_occupants(&mut w, mo);
+        assert!(w.actors.get(victim).unwrap().health <= 0);
+
+        let spared = w.spawn_at(imp, pos, room_core::Angle::ZERO).unwrap();
+        {
+            let a = w.actors.get_mut(spared).unwrap();
+            a.flags |= crate::class::FLAG_SHOOTABLE;
+            a.extra_flags.set_name("NOTELEFRAG", true);
+            a.health = 60;
+        }
+        telefrag_occupants(&mut w, mo);
+        assert!(w.actors.get(spared).unwrap().health > 0);
     }
 
     #[test]

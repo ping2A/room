@@ -299,13 +299,8 @@ impl PostChain {
         } else {
             s.tonemap
         };
-        self.post.uniforms = PostUniforms::new(
-            tonemap,
-            s.exposure,
-            s.gamma,
-            bloom_intensity,
-            inputs.blend,
-        );
+        self.post.uniforms =
+            PostUniforms::new(tonemap, s.exposure, s.gamma, bloom_intensity, inputs.blend);
         self.post.uniforms.set_fxaa(aa_on, w, h);
         let crt = if s.crt { 0.65 } else { 0.0 };
         let damage_pulse = if s.damage_fx {
@@ -324,8 +319,7 @@ impl PostChain {
             damage_pulse,
             inputs.time,
         );
-        self.post
-            .apply(gpu, encoder, src_view, bloom_view, ldr);
+        self.post.apply(gpu, encoder, src_view, bloom_view, ldr);
     }
 }
 

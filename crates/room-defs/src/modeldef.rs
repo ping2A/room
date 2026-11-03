@@ -44,6 +44,8 @@ pub struct ModelDef {
     pub pitch_offset: f32,
     /// Roll offset (degrees).
     pub roll_offset: f32,
+    /// First-person weapon FOV (`ViewModelFOV`). 0 means use the player FOV.
+    pub view_model_fov: f32,
     /// Flag names (uppercase) collected from the block.
     pub flags: Vec<String>,
     /// Sprite frame bindings.
@@ -57,6 +59,17 @@ pub struct ModelDefs {
     pub by_actor: BTreeMap<String, ModelDef>,
 }
 
+/// How much to enlarge a first-person weapon when `ViewModelFOV` is narrower
+/// than the player FOV. 0 keeps the gun at 1×.
+#[must_use]
+pub fn view_model_weapon_scale(player_fov: f32, view_model_fov: f32) -> f32 {
+    if view_model_fov <= 0.1 || player_fov <= 0.1 {
+        1.0
+    } else {
+        (player_fov / view_model_fov).clamp(0.25, 4.0)
+    }
+}
+
 /// Parse a MODELDEF lump.
 pub fn parse_modeldef(text: &str) -> Result<ModelDefs, DefsError> {
     let mut sc = Scanner::from_str(
@@ -64,6 +77,7 @@ pub fn parse_modeldef(text: &str) -> Result<ModelDefs, DefsError> {
         ScanOptions {
             c_mode: true,
             semicolon_comments: false,
+            ..Default::default()
         },
     );
     let mut out = ModelDefs::default();
@@ -144,6 +158,7 @@ fn parse_model_block(sc: &mut Scanner<'_>) -> Result<ModelDef, DefsError> {
                     "angleoffset" => def.angle_offset = read_f32(sc)?,
                     "pitchoffset" => def.pitch_offset = read_f32(sc)?,
                     "rolloffset" => def.roll_offset = read_f32(sc)?,
+                    "viewmodelfov" => def.view_model_fov = read_f32(sc)?,
                     "frameindex" => {
                         let sprite = read_name(sc)?.to_ascii_uppercase();
                         let frame = read_frame_letter(sc)?;
@@ -247,16 +262,20 @@ fn read_u32(sc: &mut Scanner<'_>) -> Result<u32, DefsError> {
 }
 
 fn read_f32(sc: &mut Scanner<'_>) -> Result<f32, DefsError> {
-    match sc.next_token()? {
-        Tok::Float(f) => Ok(f as f32),
-        Tok::Int(n) => Ok(n as f32),
+    let neg = sc.check_punct(Punct::Minus)?;
+    let v = match sc.next_token()? {
+        Tok::Float(f) => f as f32,
+        Tok::Int(n) => n as f32,
         Tok::Ident(s) => s
             .parse()
-            .map_err(|_| DefsError::Message(format!("MODELDEF: bad number {s}"))),
-        other => Err(DefsError::Message(format!(
-            "MODELDEF: expected number, got {other:?}"
-        ))),
-    }
+            .map_err(|_| DefsError::Message(format!("MODELDEF: bad number {s}")))?,
+        other => {
+            return Err(DefsError::Message(format!(
+                "MODELDEF: expected number, got {other:?}"
+            )));
+        }
+    };
+    Ok(if neg { -v } else { v })
 }
 
 fn skip_block(sc: &mut Scanner<'_>) -> Result<(), DefsError> {
@@ -317,5 +336,21 @@ Model Rocket
         let m = defs.by_actor.get("rocket").unwrap();
         assert_eq!(m.frames[0].frame_name.as_deref(), Some("spawn"));
         assert!(m.frames[0].keyframe.is_none());
+    }
+
+    #[test]
+    fn view_model_fov_half_the_player_fov_doubles_the_gun() {
+        let text = r#"
+Model Pistol
+{
+	ViewModelFOV 45
+}
+"#;
+        let defs = parse_modeldef(text).unwrap();
+        let m = defs.by_actor.get("pistol").unwrap();
+        assert!((m.view_model_fov - 45.0).abs() < 1e-4);
+        let scale = view_model_weapon_scale(90.0, m.view_model_fov);
+        assert!((scale - 2.0).abs() < 1e-4);
+        assert!((view_model_weapon_scale(90.0, 0.0) - 1.0).abs() < 1e-4);
     }
 }

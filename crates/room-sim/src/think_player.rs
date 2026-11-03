@@ -172,7 +172,7 @@ fn death_think(world: &mut World, player: &mut Player, mo: ActorId) -> bool {
     let Some(a) = world.actors.get(mo) else {
         return false;
     };
-    player.view_z = a.pos.z() + player.view_height;
+    player.view_z = a.pos.z() + player.view_height + player.view_ofs_z;
     let killer = player
         .attacker
         .filter(|&k| k != mo)
@@ -283,11 +283,7 @@ pub fn player_think(world: &mut World, player: &mut Player) {
     // Jump edge while grounded (`JumpZ` impulse → `z_movement`).
     let jump = cmd.buttons.any(Buttons::JUMP);
     if jump && !player.jump_down && player.on_ground && !player.crouching {
-        let jump_z = world.actors.get(mo).map(|a| a.jump_z).unwrap_or(8.0);
-        if jump_z > 0.0 {
-            if let Some(a) = world.actors.get_mut(mo) {
-                a.vel = DVec3::new(a.vel.x(), a.vel.y(), jump_z);
-            }
+        if world.try_actor_jump(mo) {
             player.on_ground = false;
             play_player_sound(world, mo, "player/male/jump");
         }
@@ -429,6 +425,8 @@ pub fn player_think(world: &mut World, player: &mut Player) {
         use_inventory(world, player, mo, !player.invuse_down);
     }
     player.invuse_down = inv_btn;
+    // Slot/cycle selection; `WRF_DISABLESWITCH` is enforced inside `A_WeaponReady`
+    // for pending Deselect — slot requests still queue `pending_weapon`.
     if cmd.weapon_select != 0 {
         player.quick_kick_restore = None;
         select_weapon_slot(world, player, mo, cmd.weapon_select % 10);
@@ -452,6 +450,7 @@ pub fn player_think(world: &mut World, player: &mut Player) {
         ensure_psprite(world, player, mo);
     }
     advance_flash_psprite(world, player);
+    advance_overlay2(world, player);
     // Sync view_z to eye height / grounded flag (pre-`z_movement` this tic).
     if let Some(a) = world.actors.get(mo).cloned() {
         let planes = crate::physics::check_position(world, &a, a.pos, Some(mo));
@@ -469,7 +468,7 @@ pub fn player_think(world: &mut World, player: &mut Player) {
         } else {
             0.0
         };
-        let mut view_z = a.pos.z() + player.view_height + bob_z;
+        let mut view_z = a.pos.z() + player.view_height + player.view_ofs_z + bob_z;
         if let Some(n) = player.pycount {
             let n = (n.wrapping_add(27)) & 2047;
             player.pycount = Some(n);
@@ -483,7 +482,125 @@ pub fn player_think(world: &mut World, player: &mut Player) {
         player.view_z = view_z;
     }
     tick_idle_taunt(world, player, mo, &cmd);
+    // Brutal Doom `CheckWeaponAction`: R / Q / G give a token the weapon's
+    // Ready state jumps on. ACS `GiveInventory` does not implement that yet.
+    pulse_bd_weapon_tokens(world, mo, cmd.buttons.0, player.prev_buttons);
+    log_attack_status(world, player, mo, cmd.buttons.0);
     player.prev_buttons = raw.buttons.0;
+}
+
+/// Why the gun did or did not fire. Printed on the attack edge, and once a
+/// second while the button is held in a state that refuses fire.
+fn log_attack_status(world: &mut World, player: &Player, mo: ActorId, buttons: u32) {
+    let attack = buttons & Buttons::ATTACK != 0;
+    if !attack {
+        return;
+    }
+    let edge = player.prev_buttons & Buttons::ATTACK == 0;
+    let (sprite, frame, action, args, tics) = player
+        .pspr_state
+        .and_then(|sid| world.states.get(sid))
+        .map(|st| {
+            (
+                st.sprite.clone(),
+                st.frame,
+                st.action.clone().unwrap_or_default(),
+                st.action_args.clone(),
+                player.pspr_tics,
+            )
+        })
+        .unwrap_or_else(|| (String::new(), 0, String::new(), Vec::new(), 0));
+    let nofire = action.eq_ignore_ascii_case("A_WeaponReady")
+        && args
+            .iter()
+            .any(|a| a.to_ascii_uppercase().contains("NOFIRE"));
+    let raising = (player.pspr_y - crate::player::WEAPON_TOP).abs() > 0.5;
+    let reason = if player.pending_weapon.is_some() {
+        "switching"
+    } else if raising {
+        "raising"
+    } else if nofire {
+        "NOFIRE"
+    } else if action.eq_ignore_ascii_case("A_WeaponReady") {
+        "ready"
+    } else if action.is_empty() {
+        "no-action"
+    } else {
+        "busy"
+    };
+    let stuck = matches!(reason, "switching" | "raising" | "NOFIRE" | "no-action");
+    if !edge && (!stuck || world.level.maptime % 35 != 0) {
+        return;
+    }
+    let wname = player
+        .ready_weapon
+        .and_then(|c| world.classes.get(c))
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| "-".into());
+    let ammo = player
+        .ready_weapon
+        .and_then(|c| world.classes.get(c))
+        .map(|def| {
+            let one = |name: &str| -> String {
+                if name.is_empty() {
+                    return "-".into();
+                }
+                match world.classes.find_name(name) {
+                    Some(cid) => format!("{name}={}", world.inventory.count(mo, cid)),
+                    None => format!("{name}=MISSING"),
+                }
+            };
+            format!("{} {}", one(&def.ammo_type), one(&def.ammo_type2))
+        })
+        .unwrap_or_else(|| "no-ammo-def".into());
+    let can = player.ready_weapon.is_some_and(|w| has_ammo(world, mo, w));
+    let frame_ch = if frame == crate::state::FRAME_NOCHANGE {
+        '#'
+    } else {
+        char::from(b'A' + frame.min(25))
+    };
+    world.push_debug(format!(
+        "FIRE {wname} {reason} {sprite}{frame_ch} act={action} tics={tics} y={:.0} can={can} {ammo}",
+        player.pspr_y
+    ));
+}
+
+/// Edge-triggered stand-in for ACS script `CheckWeaponAction`.
+fn pulse_bd_weapon_tokens(world: &mut World, mo: ActorId, cur: u32, old: u32) {
+    let pressed = cur & !old;
+    if pressed == 0 {
+        return;
+    }
+    let mut give = |name: &str| {
+        if let Some(cid) = world.classes.find_name(name) {
+            let _ = crate::inventory::give_inventory(world, mo, cid, 1);
+        }
+    };
+    if pressed & Buttons::RELOAD != 0 {
+        give("Reloading");
+        give("BDWeaponAction");
+        give("GoSpecial");
+    }
+    if pressed & Buttons::ZOOM != 0 {
+        give("Kicking");
+        give("BDWeaponAction");
+        give("GoSpecial");
+    }
+    if pressed & Buttons::USER1 != 0 {
+        give("TossGrenade");
+        give("BDWeaponAction");
+        give("GoSpecial");
+    }
+    if pressed & Buttons::USER2 != 0 {
+        give("Unloading");
+        give("BDWeaponAction");
+        give("GoSpecial");
+    }
+    if pressed & Buttons::USER3 != 0 {
+        give("StartDualWield");
+        give("BDWeaponAction");
+        give("GoSpecial");
+    }
 }
 
 /// Duke `crack_time`: after ~4 s still, play an `IdleTaunt`.
@@ -537,6 +654,32 @@ fn tick_idle_taunt(world: &mut World, player: &mut Player, mo: ActorId, cmd: &Ti
     play_player_sound(world, mo, &taunts[i]);
 }
 
+/// Layer-2 frame length after `PSPF_POWDOUBLE`, then `PSPF_CVARFAST`. They do not stack.
+fn overlay2_frame_tics(player: &Player, world: &World, tics: i32) -> i32 {
+    let powered = player.overlay2_pow_double
+        && tics > 1
+        && player.mo.is_some_and(|mo| double_firing_speed(world, mo));
+    if powered {
+        (tics / 2).max(1)
+    } else if player.overlay2_cvar_fast && tics > 1 {
+        match world.fast_weapons {
+            1 => (tics / 2).max(1),
+            n if n >= 2 => 1,
+            _ => tics,
+        }
+    } else {
+        tics
+    }
+}
+
+/// `PowerDoubleFiringSpeed` in the player's inventory.
+fn double_firing_speed(world: &World, mo: ActorId) -> bool {
+    world
+        .classes
+        .find_name("PowerDoubleFiringSpeed")
+        .is_some_and(|id| world.inventory.count(mo, id) > 0)
+}
+
 /// Jump the weapon psprite to a class label (`Ready`, `Fire`, …).
 ///
 /// Doom `P_SetPsprite`: call the state's action on **enter**, then keep advancing
@@ -545,6 +688,14 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
     // Cap zero-tic chains so a broken Loop with tics=0 cannot spin forever.
     for _ in 0..64 {
         player.pspr_state = Some(state);
+        if let Some(st) = world.states.get(state) {
+            if !crate::state::sprite_unchanged(&st.sprite) {
+                player.pspr_sprite = st.sprite.clone();
+            }
+            if st.frame != crate::state::FRAME_NOCHANGE {
+                player.pspr_frame = st.frame;
+            }
+        }
         let (tics, action, args, callback_id, module_index) = world
             .states
             .get(state)
@@ -558,6 +709,17 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                 )
             })
             .unwrap_or((-1, None, Vec::new(), -1, 0));
+        let tics = if player.weapon_pow_double && tics > 1 && double_firing_speed(world, mo) {
+            (tics / 2).max(1)
+        } else if player.weapon_cvar_fast && tics > 1 {
+            match world.fast_weapons {
+                1 => (tics / 2).max(1),
+                n if n >= 2 => 1,
+                _ => tics,
+            }
+        } else {
+            tics
+        };
         player.pspr_tics = tics;
         // WASM psprite action (`docs/31` MA1) before native arms.
         if callback_id >= 0 {
@@ -583,6 +745,223 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
             }
         } else if let Some(action) = action {
             match action.as_str() {
+                "A_WeaponOffset" => {
+                    apply_weapon_offset(
+                        player,
+                        action_f64(&args, 0, 0.0),
+                        action_f64(&args, 1, crate::player::WEAPON_TOP),
+                        action_i32(&args, 2, 0),
+                    );
+                }
+                "A_OverlayScale" => {
+                    // A Y of 0 copies X. Layer 1 is the gun. Layer 2 is the overlay.
+                    let sx = action_f64(&args, 1, 1.0);
+                    let sy_arg = action_f64(&args, 2, 0.0);
+                    let sy = if sy_arg == 0.0 { sx } else { sy_arg };
+                    let flags = action_i32(&args, 3, 0);
+                    match action_i32(&args, 0, 1) {
+                        1 => {
+                            player.weapon_scale =
+                                Some(scaled_pair(player.weapon_scale, sx, sy, flags));
+                        }
+                        2 => {
+                            player.overlay2_scale =
+                                Some(scaled_pair(player.overlay2_scale, sx, sy, flags));
+                        }
+                        _ => {}
+                    }
+                }
+                "A_Overlay" => {
+                    // Layer 2 plays `start` on the ready weapon. Layer 1 stays the gun.
+                    if action_i32(&args, 0, 0) == 2 {
+                        if let Some(wpn) = player.ready_weapon {
+                            let label = args
+                                .get(1)
+                                .map(|s| s.trim().trim_matches('"').to_string())
+                                .unwrap_or_default();
+                            if let Some(state) = world.states.find_label(wpn, &label) {
+                                if let Some(st) = world.states.get(state) {
+                                    player.overlay2_state = Some(state);
+                                    player.overlay2_tics =
+                                        overlay2_frame_tics(player, world, i32::from(st.tics));
+                                    if !crate::state::sprite_unchanged(&st.sprite)
+                                        && !st.sprite.is_empty()
+                                    {
+                                        player.overlay2_sprite = st.sprite.clone();
+                                        player.overlay2_frame = st.frame;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                "A_OverlayFlags" => {
+                    let layer = action_i32(&args, 0, 1);
+                    let flags = action_i32(&args, 1, 0);
+                    let enable = args.get(2).is_none_or(|s| {
+                        let t = s.trim().trim_matches('"');
+                        !t.eq_ignore_ascii_case("false") && t != "0"
+                    });
+                    let flip_bit = (flags & (1 << 4)) != 0 || (flags & (1 << 6)) != 0;
+                    if layer == 2 {
+                        if flip_bit {
+                            player.overlay2_flip = enable;
+                        }
+                        if (flags & (1 << 5)) != 0 {
+                            player.overlay2_mirror = enable;
+                        }
+                        if (flags & (1 << 7)) != 0 {
+                            player.overlay2_pivot_percent = enable;
+                        }
+                        if (flags & (1 << 1)) != 0 {
+                            player.overlay2_add_bob = enable;
+                        }
+                        if (flags & 1) != 0 {
+                            player.overlay2_add_weapon = enable;
+                        }
+                        if (flags & (1 << 8)) != 0 {
+                            player.overlay2_interpolate = enable;
+                        }
+                        if (flags & (1 << 10)) != 0 {
+                            player.overlay2_force_alpha = enable;
+                        }
+                        if (flags & (1 << 9)) != 0 {
+                            player.overlay2_force_style = enable;
+                        }
+                        if (flags & (1 << 3)) != 0 {
+                            player.overlay2_cvar_fast = enable;
+                        }
+                        if (flags & (1 << 2)) != 0 {
+                            player.overlay2_pow_double = enable;
+                        }
+                    } else if layer == 1 {
+                        // Bit 4 is GZDoom `PSPF_FLIP`. Bit 6 stays the earlier flip binding.
+                        if flip_bit {
+                            player.weapon_flip = enable;
+                        }
+                        // `PSPF_ADDBOB` is bit 1. Clearing it drops weapon sway.
+                        if flags & (1 << 1) != 0 {
+                            player.weapon_add_bob = enable;
+                        }
+                        // `PSPF_ADDWEAPON` is bit 0. Clearing it drops `A_WeaponOffset`.
+                        if (flags & 1) != 0 {
+                            player.weapon_add_ofs = enable;
+                        }
+                        // `PSPF_CVARFAST` is bit 3.
+                        if (flags & (1 << 3)) != 0 {
+                            player.weapon_cvar_fast = enable;
+                        }
+                        // `PSPF_POWDOUBLE` is bit 2.
+                        if (flags & (1 << 2)) != 0 {
+                            player.weapon_pow_double = enable;
+                        }
+                        // `PSPF_MIRROR` is bit 5.
+                        if (flags & (1 << 5)) != 0 {
+                            player.weapon_mirror = enable;
+                        }
+                        // `PSPF_PIVOTPERCENT` is bit 7.
+                        if (flags & (1 << 7)) != 0 {
+                            player.weapon_pivot_percent = enable;
+                        }
+                        // `PSPF_FORCEALPHA` is bit 10.
+                        if (flags & (1 << 10)) != 0 {
+                            player.weapon_force_alpha = enable;
+                        }
+                        // `PSPF_FORCESTYLE` is bit 9.
+                        if (flags & (1 << 9)) != 0 {
+                            player.weapon_force_style = enable;
+                        }
+                        // `PSPF_INTERPOLATE` is bit 8.
+                        if (flags & (1 << 8)) != 0 {
+                            player.weapon_interpolate = enable;
+                        }
+                    }
+                }
+                "A_OverlayPivot" => {
+                    let pivot = (action_f64(&args, 1, 0.5), action_f64(&args, 2, 0.5));
+                    match action_i32(&args, 0, 1) {
+                        1 => player.weapon_pivot = Some(pivot),
+                        2 => player.overlay2_pivot = Some(pivot),
+                        _ => {}
+                    }
+                }
+                "A_OverlayPivotAlign" => {
+                    // 0 = left/top, 1 = center, 2 = right/bottom.
+                    let axis = |slot: usize| match action_i32(&args, slot, 1) {
+                        0 => 0.0,
+                        2 => 1.0,
+                        _ => 0.5,
+                    };
+                    let pivot = (axis(1), axis(2));
+                    match action_i32(&args, 0, 1) {
+                        1 => player.weapon_pivot = Some(pivot),
+                        2 => player.overlay2_pivot = Some(pivot),
+                        _ => {}
+                    }
+                }
+                "A_OverlayRotate" => {
+                    // Degrees, positive is counter-clockwise.
+                    let angle = action_f64(&args, 1, 0.0);
+                    match action_i32(&args, 0, 1) {
+                        1 => player.weapon_angle = angle,
+                        2 => player.overlay2_angle = angle,
+                        _ => {}
+                    }
+                }
+                "A_OverlayRenderStyle" => {
+                    // `STYLE_Fuzzy` is 2, `STYLE_Normal` is 1.
+                    let style = render_style_code(action_i32(&args, 1, 1));
+                    match action_i32(&args, 0, 1) {
+                        1 => player.weapon_style = Some(style),
+                        2 => player.overlay2_style = Some(style),
+                        _ => {}
+                    }
+                }
+                "A_OverlayTranslation" => {
+                    // "None" clears the tint.
+                    let name = args
+                        .get(1)
+                        .map(|s| s.trim().trim_matches('"').to_string())
+                        .unwrap_or_default();
+                    let name = if name.eq_ignore_ascii_case("none") {
+                        String::new()
+                    } else {
+                        name
+                    };
+                    match action_i32(&args, 0, 1) {
+                        1 => player.weapon_translation = name,
+                        2 => player.overlay2_translation = name,
+                        _ => {}
+                    }
+                }
+                "A_OverlayAlpha" => {
+                    let alpha = action_f64(&args, 1, 1.0).clamp(0.0, 1.0);
+                    match action_i32(&args, 0, 1) {
+                        1 => player.weapon_alpha = Some(alpha),
+                        2 => player.overlay2_alpha = Some(alpha),
+                        _ => {}
+                    }
+                }
+                "A_OverlayOffset" => {
+                    let layer = action_i32(&args, 0, 1);
+                    let wx = action_f64(&args, 1, 0.0);
+                    let wy = action_f64(&args, 2, crate::player::WEAPON_TOP);
+                    let flags = action_i32(&args, 3, 0);
+                    if layer == 1 {
+                        apply_weapon_offset(player, wx, wy, flags);
+                    } else if layer == 2 {
+                        apply_overlay2_offset(player, wx, wy, flags);
+                    }
+                }
+                "A_ZoomFactor" => {
+                    // Weapon states run while the player slot is empty, so this
+                    // cannot go through `player_seat_of`.
+                    let scale = action_f64(&args, 0, 1.0) as f32;
+                    player.weapon_zoom = scale.clamp(0.1, 10.0);
+                }
+                "A_SetCrosshair" => {
+                    player.crosshair = action_i32(&args, 0, 0);
+                }
                 "A_ReFire" => {
                     // Hold attack → restart Fire/AltFire (ammo permitting); else fall through.
                     let holding = if player.alt_fire_active {
@@ -614,18 +993,18 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                                         .or_else(|| world.states.find_label(wpn, "Fire"))
                                 };
                                 if let Some(fire) = target {
-                                    let no_alert = world
-                                        .classes
-                                        .get(wpn)
-                                        .is_some_and(|c| c.weapon_noalert);
+                                    let no_alert =
+                                        world.classes.get(wpn).is_some_and(|c| c.weapon_noalert);
                                     if !no_alert {
                                         crate::action::noise_alert(world, mo);
                                     }
                                     state = fire;
                                     continue;
                                 }
-                            } else if let Some(alt) = best_weapon_with_ammo(world, mo, Some(wpn)) {
-                                request_weapon(world, player, mo, alt);
+                            } else if refire_auto_switch(&args) {
+                                if let Some(alt) = best_weapon_with_ammo(world, mo, Some(wpn)) {
+                                    request_weapon(world, player, mo, alt);
+                                }
                             }
                         }
                     } else {
@@ -654,6 +1033,7 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                 "A_Light2" => player.extralight = 2,
                 "A_Light0" | "A_LightDone" => player.extralight = 0,
                 "A_WeaponReady" => {
+                    let wrf = parse_wrf_flags(args.first());
                     if let Some(prev) = player.quick_kick_restore.take() {
                         player.ready_weapon = Some(prev);
                         player.pspr_y = crate::player::WEAPON_TOP;
@@ -673,7 +1053,9 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                         }
                     }
                     // Pending switch starts here (vanilla: only from Ready).
-                    if player.pending_weapon.is_some() {
+                    // `WRF_NOSWITCH` / `WRF_DISABLESWITCH` block Deselect (docs/33 BD4).
+                    let switch_ok = wrf & (WRF_NOSWITCH | WRF_DISABLESWITCH) == 0;
+                    if switch_ok && player.pending_weapon.is_some() {
                         if let Some(cur) = player.ready_weapon {
                             if let Some(deselect) = world.states.find_label(cur, "Deselect") {
                                 state = deselect;
@@ -682,10 +1064,35 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                         }
                     }
                     // Vanilla: sway only updates while Ready (docs/30 W8.3).
-                    {
-                        let t = f64::from(world.level.maptime) * (core::f64::consts::PI / 32.0);
-                        player.pspr_bob_x = player.bob * dmath::cos(t);
-                        player.pspr_bob_y = player.bob * dmath::sin(t).abs();
+                    // `Weapon.BobSpeed` / `BobRangeX/Y` / `BobStyle` (docs/33 BD2).
+                    if wrf & WRF_NOBOB == 0 {
+                        let (bob_speed, range_x, range_y, style) = player
+                            .ready_weapon
+                            .and_then(|wpn| world.classes.get(wpn))
+                            .map(|c| {
+                                (
+                                    c.bob_speed,
+                                    c.bob_range_x,
+                                    c.bob_range_y,
+                                    c.bob_style.as_str(),
+                                )
+                            })
+                            .unwrap_or((1.0, 1.0, 1.0, ""));
+                        let speed = if bob_speed == 0.0 { 1.0 } else { bob_speed };
+                        let t =
+                            f64::from(world.level.maptime) * (core::f64::consts::PI / 32.0) * speed;
+                        let mut bx = player.bob * dmath::cos(t) * range_x;
+                        let by = player.bob * dmath::sin(t).abs() * range_y;
+                        // Inverse* styles flip X. Alpha styles also scale by weapon alpha in
+                        // GZDoom; Room keeps magnitude 1 until psprite alpha is tracked.
+                        if style.eq_ignore_ascii_case("Inverse")
+                            || style.eq_ignore_ascii_case("InverseAlpha")
+                            || style.eq_ignore_ascii_case("InverseSmooth")
+                        {
+                            bx = -bx;
+                        }
+                        player.pspr_bob_x = bx;
+                        player.pspr_bob_y = by;
                     }
                     // `Weapon.ReadySound` on the first Ready frame (Chainsaw idle).
                     if let Some(wpn) = player.ready_weapon {
@@ -706,13 +1113,29 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                             }
                         }
                     }
+                    // BD4: Reload / Zoom / User1–4 when WRF_ALLOW* and button held.
+                    if let Some(wpn) = player.ready_weapon {
+                        if let Some(next) =
+                            weapon_ready_special_state(world, wpn, wrf, player.cmd.buttons)
+                        {
+                            state = next;
+                            continue;
+                        }
+                    }
                     // Doom: held BT_ATTACK / ALTATTACK while Ready → fire (same tic).
-                    if player.cmd.buttons.any(Buttons::ATTACK) {
+                    let no_fire = wrf & WRF_NOFIRE != 0;
+                    if !no_fire
+                        && wrf & WRF_NOPRIMARY == 0
+                        && player.cmd.buttons.any(Buttons::ATTACK)
+                    {
                         player.alt_fire_active = false;
                         fire_weapon(world, player, mo, false);
                         return;
                     }
-                    if player.cmd.buttons.any(Buttons::ALTATTACK) {
+                    if !no_fire
+                        && wrf & WRF_NOSECONDARY == 0
+                        && player.cmd.buttons.any(Buttons::ALTATTACK)
+                    {
                         player.alt_fire_active = true;
                         fire_weapon(world, player, mo, true);
                         return;
@@ -801,6 +1224,29 @@ fn a_raise(world: &mut World, player: &mut Player, mo: ActorId) {
     }
 }
 
+/// Brutal Doom's draw animations are authored at `WEAPONTOP` and never call
+/// `A_Raise`. Vanilla `Select` loops on `A_Raise` from `WEAPONBOTTOM`.
+fn select_calls_raise(world: &World, start: room_core::StateId) -> bool {
+    let mut sid = Some(start);
+    for _ in 0..96 {
+        let Some(cur) = sid else {
+            break;
+        };
+        let Some(st) = world.states.get(cur) else {
+            break;
+        };
+        if st
+            .action
+            .as_deref()
+            .is_some_and(|a| a.eq_ignore_ascii_case("A_Raise"))
+        {
+            return true;
+        }
+        sid = st.next;
+    }
+    false
+}
+
 fn bring_up_weapon(world: &mut World, player: &mut Player, mo: ActorId) {
     let Some(wpn) = player.ready_weapon else {
         return;
@@ -817,6 +1263,11 @@ fn bring_up_weapon(world: &mut World, player: &mut Player, mo: ActorId) {
         play_player_sound(world, mo, &snd);
     }
     if let Some(sel) = world.states.find_label(wpn, "Select") {
+        // Overlay mods (Brutal Doom) play Select in view. Without `A_Raise`
+        // the sprite stays at `WEAPONBOTTOM`, below the status bar.
+        if !select_calls_raise(world, sel) {
+            player.pspr_y = crate::player::WEAPON_TOP;
+        }
         set_psprite(world, player, mo, sel);
     } else if let Some(ready) = world.states.find_label(wpn, "Ready") {
         player.pspr_y = crate::player::WEAPON_TOP;
@@ -851,6 +1302,41 @@ fn start_flash_psprite(world: &World, player: &mut Player, offset: usize) {
             "A_Light0" | "A_LightDone" => player.extralight = 0,
             _ => {}
         }
+    }
+}
+
+fn advance_overlay2(world: &World, player: &mut Player) {
+    let Some(sid) = player.overlay2_state else {
+        return;
+    };
+    if player.overlay2_tics < 0 {
+        return;
+    }
+    if player.overlay2_tics > 0 {
+        player.overlay2_tics -= 1;
+    }
+    if player.overlay2_tics != 0 {
+        return;
+    }
+    let next = world.states.get(sid).and_then(|st| st.next);
+    let Some(n) = next else {
+        player.overlay2_state = None;
+        player.overlay2_tics = 0;
+        player.overlay2_sprite.clear();
+        player.overlay2_frame = 0;
+        return;
+    };
+    let Some(st) = world.states.get(n) else {
+        player.overlay2_state = None;
+        player.overlay2_tics = 0;
+        player.overlay2_sprite.clear();
+        return;
+    };
+    player.overlay2_state = Some(n);
+    player.overlay2_tics = overlay2_frame_tics(player, world, i32::from(st.tics));
+    if !crate::state::sprite_unchanged(&st.sprite) && !st.sprite.is_empty() {
+        player.overlay2_sprite = st.sprite.clone();
+        player.overlay2_frame = st.frame;
     }
 }
 
@@ -972,7 +1458,9 @@ fn select_weapon_slot(world: &mut World, player: &mut Player, mo: ActorId, slot:
     if owned.is_empty() {
         return;
     }
-    let next = if let Some(cur) = player.ready_weapon.and_then(|c| owned.iter().position(|&x| x == c))
+    let next = if let Some(cur) = player
+        .ready_weapon
+        .and_then(|c| owned.iter().position(|&x| x == c))
     {
         owned[(cur + 1) % owned.len()]
     } else {
@@ -1278,6 +1766,70 @@ fn start_quick_kick(world: &mut World, player: &mut Player, mo: ActorId) {
     set_psprite(world, player, mo, fire);
 }
 
+/// GZDoom `EWeaponReadyFlags` (`docs/33` BD4).
+const WRF_NOBOB: i32 = 1;
+const WRF_NOSWITCH: i32 = 2;
+const WRF_NOPRIMARY: i32 = 4;
+const WRF_NOSECONDARY: i32 = 8;
+const WRF_NOFIRE: i32 = WRF_NOPRIMARY | WRF_NOSECONDARY;
+const WRF_ALLOWRELOAD: i32 = 16;
+const WRF_ALLOWZOOM: i32 = 32;
+const WRF_DISABLESWITCH: i32 = 64;
+const WRF_ALLOWUSER1: i32 = 128;
+const WRF_ALLOWUSER2: i32 = 256;
+const WRF_ALLOWUSER3: i32 = 512;
+const WRF_ALLOWUSER4: i32 = 1024;
+
+fn parse_wrf_flags(raw: Option<&String>) -> i32 {
+    let Some(s) = raw.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+        return 0;
+    };
+    if let Ok(n) = s.parse::<i32>() {
+        return n;
+    }
+    let mut flags = 0i32;
+    for part in s.split('|') {
+        let p = part.trim().trim_matches('"');
+        flags |= match p.to_ascii_uppercase().as_str() {
+            "WRF_NOBOB" => WRF_NOBOB,
+            "WRF_NOSWITCH" => WRF_NOSWITCH,
+            "WRF_NOPRIMARY" => WRF_NOPRIMARY,
+            "WRF_NOSECONDARY" => WRF_NOSECONDARY,
+            "WRF_NOFIRE" => WRF_NOFIRE,
+            "WRF_ALLOWRELOAD" => WRF_ALLOWRELOAD,
+            "WRF_ALLOWZOOM" => WRF_ALLOWZOOM,
+            "WRF_DISABLESWITCH" => WRF_DISABLESWITCH,
+            "WRF_ALLOWUSER1" => WRF_ALLOWUSER1,
+            "WRF_ALLOWUSER2" => WRF_ALLOWUSER2,
+            "WRF_ALLOWUSER3" => WRF_ALLOWUSER3,
+            "WRF_ALLOWUSER4" => WRF_ALLOWUSER4,
+            _ => 0,
+        };
+    }
+    flags
+}
+
+fn weapon_ready_special_state(
+    world: &World,
+    wpn: room_core::ClassId,
+    wrf: i32,
+    buttons: Buttons,
+) -> Option<room_core::StateId> {
+    let try_label = |flag: i32, btn: u32, label: &str| -> Option<room_core::StateId> {
+        if wrf & flag != 0 && buttons.any(btn) {
+            world.states.find_label(wpn, label)
+        } else {
+            None
+        }
+    };
+    try_label(WRF_ALLOWRELOAD, Buttons::RELOAD, "Reload")
+        .or_else(|| try_label(WRF_ALLOWZOOM, Buttons::ZOOM, "Zoom"))
+        .or_else(|| try_label(WRF_ALLOWUSER1, Buttons::USER1, "User1"))
+        .or_else(|| try_label(WRF_ALLOWUSER2, Buttons::USER2, "User2"))
+        .or_else(|| try_label(WRF_ALLOWUSER3, Buttons::USER3, "User3"))
+        .or_else(|| try_label(WRF_ALLOWUSER4, Buttons::USER4, "User4"))
+}
+
 fn fire_weapon(world: &mut World, player: &mut Player, mo: ActorId, alt: bool) {
     // Block fire while raising/lowering; pending is handled in Ready.
     if (player.pspr_y - crate::player::WEAPON_TOP).abs() > 0.5 {
@@ -1288,7 +1840,7 @@ fn fire_weapon(world: &mut World, player: &mut Player, mo: ActorId, alt: bool) {
     }
     if let Some(wpn) = player.ready_weapon {
         // Vanilla `P_FireWeapon` only *checks* ammo; actions deplete.
-        if !has_ammo(world, mo, wpn) {
+        if !has_ammo_mode(world, mo, wpn, alt) {
             if let Some(alt_w) = best_weapon_with_ammo(world, mo, Some(wpn)) {
                 request_weapon(world, player, mo, alt_w);
             }
@@ -1350,58 +1902,193 @@ fn play_player_sound(world: &mut World, mo: ActorId, name: &str) {
     }
 }
 
+/// `STYLE_Normal` is 1 and `STYLE_Fuzzy` is 2. Unknown codes are normal.
+fn render_style_code(mode: i32) -> RenderStyle {
+    match mode {
+        0 => RenderStyle::None,
+        2 => RenderStyle::Fuzzy,
+        3 => RenderStyle::SoulTrans,
+        4 => RenderStyle::OptFuzzy,
+        5 => RenderStyle::Stencil,
+        6 => RenderStyle::Translucent,
+        7 => RenderStyle::Add,
+        8 => RenderStyle::Shaded,
+        9 => RenderStyle::TranslucentStencil,
+        10 => RenderStyle::Shadow,
+        11 => RenderStyle::Subtract,
+        _ => RenderStyle::Normal,
+    }
+}
+
+/// `WOF_KEEPX` is 1, `WOF_KEEPY` is 2, `WOF_ADD` is 4. A missing scale is 1×1.
+fn scaled_pair(current: Option<(f64, f64)>, sx: f64, sy: f64, flags: i32) -> (f64, f64) {
+    const KEEP_X: i32 = 1;
+    const KEEP_Y: i32 = 2;
+    const ADD: i32 = 4;
+    let (ox, oy) = current.unwrap_or((1.0, 1.0));
+    let nx = if flags & KEEP_X != 0 {
+        ox
+    } else if flags & ADD != 0 {
+        ox + sx
+    } else {
+        sx
+    };
+    let ny = if flags & KEEP_Y != 0 {
+        oy
+    } else if flags & ADD != 0 {
+        oy + sy
+    } else {
+        sy
+    };
+    (nx, ny)
+}
+
+/// Layer-2 `A_OverlayOffset`. Same flag bits as [`apply_weapon_offset`].
+fn apply_overlay2_offset(player: &mut Player, wx: f64, wy: f64, flags: i32) {
+    const KEEP_X: i32 = 1;
+    const KEEP_Y: i32 = 2;
+    const ADD: i32 = 4;
+    if flags & KEEP_X == 0 {
+        if flags & ADD != 0 {
+            player.overlay2_ofs_x += wx;
+        } else {
+            player.overlay2_ofs_x = wx;
+        }
+    }
+    if flags & KEEP_Y == 0 {
+        if flags & ADD != 0 {
+            player.overlay2_ofs_y += wy;
+        } else {
+            player.overlay2_ofs_y = wy - crate::player::WEAPON_TOP;
+        }
+    }
+}
+
+/// `A_WeaponOffset` / weapon-layer `A_OverlayOffset`.
+/// `WOF_KEEPX` is 1, `WOF_KEEPY` is 2, `WOF_ADD` is 4.
+fn apply_weapon_offset(player: &mut Player, wx: f64, wy: f64, flags: i32) {
+    const KEEP_X: i32 = 1;
+    const KEEP_Y: i32 = 2;
+    const ADD: i32 = 4;
+    if flags & KEEP_X == 0 {
+        if flags & ADD != 0 {
+            player.weapon_ofs_x += wx;
+        } else {
+            player.weapon_ofs_x = wx;
+        }
+    }
+    if flags & KEEP_Y == 0 {
+        if flags & ADD != 0 {
+            player.weapon_ofs_y += wy;
+        } else {
+            player.weapon_ofs_y = wy - crate::player::WEAPON_TOP;
+        }
+    }
+}
+
+fn action_f64(args: &[String], index: usize, default: f64) -> f64 {
+    args.get(index)
+        .and_then(|s| s.trim().trim_matches('"').parse().ok())
+        .unwrap_or(default)
+}
+
+fn action_i32(args: &[String], index: usize, default: i32) -> i32 {
+    args.get(index)
+        .and_then(|s| s.trim().trim_matches('"').parse().ok())
+        .unwrap_or(default)
+}
+
+/// `A_ReFire`'s second argument. Omitted means switch when the gun is empty.
+fn refire_auto_switch(args: &[String]) -> bool {
+    args.get(1).is_none_or(|s| {
+        let t = s.trim().trim_matches('"');
+        !t.eq_ignore_ascii_case("false") && t != "0"
+    })
+}
+
 /// True if the player has at least `Weapon.AmmoUse` of the weapon's ammo type.
-fn has_ammo(world: &World, mo: ActorId, weapon: room_core::ClassId) -> bool {
+pub(crate) fn has_ammo(world: &World, mo: ActorId, weapon: room_core::ClassId) -> bool {
+    has_ammo_mode(world, mo, weapon, false)
+}
+
+/// Primary (`alt=false`) or secondary (`AmmoType2` / `AmmoUse2`) ammo check.
+pub(crate) fn has_ammo_mode(
+    world: &World,
+    mo: ActorId,
+    weapon: room_core::ClassId,
+    alt: bool,
+) -> bool {
     let Some(def) = world.classes.get(weapon) else {
         return true;
     };
-    if def.ammo_type.is_empty() || def.ammo_use <= 0 {
+    let (ty, need) = if alt && !def.ammo_type2.is_empty() {
+        (def.ammo_type2.as_str(), def.ammo_use2)
+    } else {
+        (def.ammo_type.as_str(), def.ammo_use)
+    };
+    if ty.is_empty() || need <= 0 {
         return true;
     }
-    let Some(ammo) = world.classes.find_name(&def.ammo_type) else {
+    let Some(ammo) = world.classes.find_name(ty) else {
         return false;
     };
-    world.inventory.count(mo, ammo) >= def.ammo_use
+    world.inventory.count(mo, ammo) >= need
 }
 
 /// Spend `Weapon.AmmoUse` of `Weapon.AmmoType`. Returns false if not enough ammo.
 /// Called from fire actions (docs/30 W2/W14), not from `P_FireWeapon`.
+#[allow(dead_code)]
 pub(crate) fn deplete_ammo(world: &mut World, mo: ActorId, weapon: room_core::ClassId) -> bool {
-    try_consume_ammo(world, mo, weapon)
+    try_consume_ammo(world, mo, weapon, false)
 }
 
-fn try_consume_ammo(world: &mut World, mo: ActorId, weapon: room_core::ClassId) -> bool {
+/// Spend primary or secondary ammo (BD4 dual ammo).
+pub(crate) fn deplete_ammo_mode(
+    world: &mut World,
+    mo: ActorId,
+    weapon: room_core::ClassId,
+    alt: bool,
+) -> bool {
+    try_consume_ammo(world, mo, weapon, alt)
+}
+
+fn try_consume_ammo(world: &mut World, mo: ActorId, weapon: room_core::ClassId, alt: bool) -> bool {
     let Some(def) = world.classes.get(weapon) else {
         return true;
     };
-    if def.ammo_use <= 0 || def.ammo_type.is_empty() {
+    let (ty, need) = if alt && !def.ammo_type2.is_empty() {
+        (def.ammo_type2.as_str(), def.ammo_use2)
+    } else {
+        (def.ammo_type.as_str(), def.ammo_use)
+    };
+    if need <= 0 || ty.is_empty() {
         return true;
     }
-    let Some(ammo) = world.classes.find_name(&def.ammo_type) else {
+    let Some(ammo) = world.classes.find_name(ty) else {
         return true;
     };
     let have = world.inventory.count(mo, ammo);
-    if have < def.ammo_use {
+    if have < need {
         if std::env::var_os("ROOM_TRACE_AMMO").is_some() {
             eprintln!(
                 "AMMOFAIL tic={} wpn={} have={} need={}",
-                world.level.time, def.name, have, def.ammo_use
+                world.level.time, def.name, have, need
             );
         }
         return false;
     }
-    let taken = world.inventory.take(mo, ammo, def.ammo_use);
+    let taken = world.inventory.take(mo, ammo, need);
     if std::env::var_os("ROOM_TRACE_AMMO").is_some() {
         eprintln!(
             "AMMOUSE tic={} wpn={} use={} had={} now={}",
             world.level.time,
             def.name,
-            def.ammo_use,
+            need,
             have,
             world.inventory.count(mo, ammo)
         );
     }
-    taken >= def.ammo_use
+    taken >= need
 }
 
 /// Advance the third-person `PLAY` sprite: See (run) while moving, Missile while
@@ -2298,6 +2985,265 @@ actor DukePlayer : DoomPlayer
     }
 
     #[test]
+    fn wrf_nofire_and_reload_state() {
+        let mut src = include_str!("../../../testdata/actors/doom_basic.txt").to_owned();
+        src.push_str(
+            r#"
+actor TestGun : Weapon
+{
+  Weapon.AmmoType1 "Clip"
+  Weapon.AmmoUse1 1
+  Weapon.AmmoType2 "Clip"
+  Weapon.AmmoUse2 2
+  States
+  {
+  Ready:
+    PISG A 1 A_WeaponReady(WRF_NOFIRE|WRF_ALLOWRELOAD|WRF_NOBOB)
+    Loop
+  Fire:
+    PISG B 4
+    Goto Ready
+  Reload:
+    PISG C 4
+    Goto Ready
+  }
+}
+"#,
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let gun = classes.find_name("TestGun").unwrap();
+        let def = classes.get(gun).unwrap();
+        assert_eq!(def.ammo_type, "Clip");
+        assert_eq!(def.ammo_use, 1);
+        assert_eq!(def.ammo_type2, "Clip");
+        assert_eq!(def.ammo_use2, 2);
+        assert_eq!(
+            parse_wrf_flags(Some(&"WRF_NOFIRE|WRF_ALLOWRELOAD".into())),
+            WRF_NOFIRE | WRF_ALLOWRELOAD
+        );
+
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let mut player = w.players[0].take().unwrap();
+        let mo = player.mo.unwrap();
+        player.ready_weapon = Some(gun);
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let ready = states.find_label(gun, "Ready").unwrap();
+        let reload = states.find_label(gun, "Reload").unwrap();
+        set_psprite(&mut w, &mut player, mo, ready);
+        // Attack must be ignored under WRF_NOFIRE.
+        player.cmd.buttons = Buttons(Buttons::ATTACK);
+        player_think(&mut w, &mut player);
+        assert_eq!(player.pspr_state, Some(ready), "NOFIRE must block Attack");
+        // Reload button → Reload state.
+        player.cmd.buttons = Buttons(Buttons::RELOAD);
+        player_think(&mut w, &mut player);
+        assert_eq!(
+            player.pspr_state,
+            Some(reload),
+            "ALLOWRELOAD+RELOAD → Reload"
+        );
+        w.players[0] = Some(player);
+    }
+
+    #[test]
+    fn overlay_weapon_without_a_raise_starts_on_screen() {
+        let mut src = include_str!("../../../testdata/actors/doom_basic.txt").to_owned();
+        src.push_str(
+            r#"
+actor OverlayGun : Weapon
+{
+  States
+  {
+  Select:
+    TNT1 A 1
+    Goto Ready
+  Ready:
+    PIST A 1 A_WeaponReady
+    Loop
+  }
+}
+"#,
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let gun = classes.find_name("OverlayGun").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        let mut player = w.players[0].take().unwrap();
+        let mo = player.mo.unwrap();
+        player.ready_weapon = Some(gun);
+        player.pspr_state = None;
+        player.pspr_y = crate::player::WEAPON_BOTTOM;
+        player_think(&mut w, &mut player);
+        assert!(
+            (player.pspr_y - crate::player::WEAPON_TOP).abs() < 0.5,
+            "draw anim without A_Raise must sit at WEAPONTOP, y={}",
+            player.pspr_y
+        );
+        w.players[0] = Some(player);
+        let _ = mo;
+    }
+
+    #[test]
+    fn keep_sprite_and_inventory_offset_pick_the_gun_frame() {
+        // Brutal Doom Ready: offset jump, then `"####" "#"` holds the frame.
+        let mut src = include_str!("../../../testdata/actors/doom_basic.txt").to_owned();
+        src.push_str(
+            r#####"
+actor Mag : Actor
+{
+  Inventory.MaxAmount 16
+}
+actor BdGun : Weapon
+{
+  States
+  {
+  Ready:
+    PIST E 0 A_JumpIfInventory("Mag", 1, 2)
+    PIST I 0
+    "####" "#" 0
+    "####" "#" 1 A_WeaponReady
+    Loop
+  }
+}
+"#####,
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let gun = classes.find_name("BdGun").unwrap();
+        let mag = classes.find_name("Mag").unwrap();
+        let ready = states.find_label(gun, "Ready").unwrap();
+        let hold = states.get(ready).unwrap().next.unwrap();
+        let hold = states.get(hold).unwrap().next.unwrap();
+        assert_eq!(states.get(hold).unwrap().sprite, "####");
+        assert_eq!(
+            states.get(hold).unwrap().frame,
+            crate::state::FRAME_NOCHANGE
+        );
+
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let mut player = w.players[0].take().unwrap();
+        let mo = player.mo.unwrap();
+        player.ready_weapon = Some(gun);
+        player.pspr_y = crate::player::WEAPON_TOP;
+        set_psprite(&mut w, &mut player, mo, ready);
+        assert_eq!(player.pspr_sprite, "PIST");
+        assert_eq!(player.pspr_frame, 8, "no mag stays on the empty frame");
+        w.players[0] = Some(player);
+        assert_eq!(w.player_hud(0).unwrap().weapon_patch, "PISTI0");
+
+        let _ = give_inventory(&mut w, mo, mag, 1);
+        let mut player = w.players[0].take().unwrap();
+        player.pspr_sprite.clear();
+        set_psprite(&mut w, &mut player, mo, ready);
+        assert_eq!(player.pspr_sprite, "PIST");
+        assert_eq!(player.pspr_frame, 4, "mag jumps to the loaded frame");
+        w.players[0] = Some(player);
+        assert_eq!(w.player_hud(0).unwrap().weapon_patch, "PISTE0");
+    }
+
+    #[test]
+    fn bd4_weapon_impulses_zoom_user_and_crosshair() {
+        // docs/33 BD4: Zoom/User1/User3 labels + A_ZoomFactor / A_SetCrosshair.
+        let mut src = include_str!("../../../testdata/actors/doom_basic.txt").to_owned();
+        src.push_str(
+            r#"
+actor BdPistol : Weapon
+{
+  States
+  {
+  Ready:
+    PISG A 1 A_WeaponReady(WRF_ALLOWZOOM|WRF_ALLOWUSER1|WRF_ALLOWUSER3)
+    Loop
+  Fire:
+    PISG B 4
+    Goto Ready
+  Zoom:
+    PISG D 4
+    Goto Ready
+  User1:
+    PISG E 4
+    Goto Ready
+  User3:
+    PISG F 4
+    Goto Ready
+  }
+}
+"#,
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let gun = classes.find_name("BdPistol").unwrap();
+        let zoom = states.find_label(gun, "Zoom").unwrap();
+        let user1 = states.find_label(gun, "User1").unwrap();
+        let user3 = states.find_label(gun, "User3").unwrap();
+        let ready = states.find_label(gun, "Ready").unwrap();
+        assert_eq!(
+            parse_wrf_flags(Some(&"WRF_ALLOWZOOM|WRF_ALLOWUSER1|WRF_ALLOWUSER3".into())),
+            WRF_ALLOWZOOM | WRF_ALLOWUSER1 | WRF_ALLOWUSER3
+        );
+
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let mut player = w.players[0].take().unwrap();
+        let mo = player.mo.unwrap();
+        player.ready_weapon = Some(gun);
+        player.pspr_y = crate::player::WEAPON_TOP;
+
+        player.cmd.buttons = Buttons(Buttons::ZOOM);
+        set_psprite(&mut w, &mut player, mo, ready);
+        player_think(&mut w, &mut player);
+        assert_eq!(player.pspr_state, Some(zoom), "ALLOWZOOM+ZOOM → Zoom");
+
+        player.cmd.buttons = Buttons(Buttons::USER1);
+        set_psprite(&mut w, &mut player, mo, ready);
+        player_think(&mut w, &mut player);
+        assert_eq!(player.pspr_state, Some(user1), "grenade / +user1");
+
+        player.cmd.buttons = Buttons(Buttons::USER3);
+        set_psprite(&mut w, &mut player, mo, ready);
+        player_think(&mut w, &mut player);
+        assert_eq!(player.pspr_state, Some(user3), "dual-wield / +user3");
+
+        w.players[0] = Some(player);
+        let _ = crate::action::call_action_args(&mut w, mo, "A_SetCrosshair", &["2".into()]);
+        let _ = crate::action::call_action_args(&mut w, mo, "A_ZoomFactor", &["2.0".into()]);
+        let p = w.players[0].as_ref().unwrap();
+        assert_eq!(p.crosshair, 2);
+        assert!((p.weapon_zoom - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
     fn psprite_scalelight_matches_doom_table_ends() {
         // Bright sector + no extralight → colormap 0 → 1.0
         assert!((crate::psprite_scalelight(255, 0) - 1.0).abs() < 1e-5);
@@ -2567,6 +3513,1954 @@ actor DukePlayer : DoomPlayer
             "empty pistol mid-refire should queue Fist"
         );
         w.players[0] = Some(player);
+    }
+
+    #[test]
+    fn refire_false_autoswitch_keeps_the_empty_weapon() {
+        let src = format!(
+            "{}\nACTOR NoSwitchPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG B 1 A_ReFire(null, false)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("NoSwitchPistol").unwrap();
+        let clip = classes.find_name("Clip").unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        while w.inventory.count(mo, clip) > 0 {
+            let _ = w.inventory.take(mo, clip, 1);
+        }
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        let action = w
+            .states
+            .get(fire)
+            .unwrap()
+            .next
+            .and_then(|n| w.states.get(n))
+            .and_then(|n| n.action.as_deref());
+        assert_eq!(action, Some("A_ReFire"));
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        player.attack_down = true;
+        player.cmd.buttons = Buttons(Buttons::ATTACK);
+        player_think(&mut w, &mut player);
+        assert_eq!(player.pending_weapon, None);
+        assert_eq!(player.ready_weapon, Some(pistol));
+        w.players[0] = Some(player);
+    }
+
+    #[test]
+    fn weapon_offset_moves_the_gun_and_keepx_holds_x() {
+        let src = format!(
+            "{}\nACTOR OffsetPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_WeaponOffset(10, 48)\n    PISG A 1 A_WeaponOffset(1, 2, 5)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("OffsetPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        let next_action = w
+            .states
+            .get(fire)
+            .unwrap()
+            .next
+            .and_then(|n| w.states.get(n))
+            .and_then(|n| n.action.as_deref());
+        assert_eq!(next_action, Some("A_WeaponOffset"));
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_ofs_x, 10.0);
+        assert_eq!(player.weapon_ofs_y, 16.0);
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_ofs_x, 10.0);
+        assert_eq!(player.weapon_ofs_y, 18.0);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.bob_x - 10.0).abs() < 1e-4);
+        assert!((hud.bob_y - 18.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn overlay_force_style_keeps_layer_two_solid_while_the_player_is_fuzzy() {
+        let src = format!(
+            "{}\nACTOR Style2ForcePistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(2, 512, true)\n    PISG A 1 A_OverlayRenderStyle(2, 2)\n    PISG A 1 A_OverlayRenderStyle(2, 1)\n    PISG A 1 A_OverlayFlags(2, 512, false)\n    PISG A 1 A_OverlayFlags(1, 512, true)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Style2ForcePistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.blur = true;
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(hud.overlay_fuzz);
+        assert!(hud.weapon_fuzz);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.overlay2_force_style);
+        assert!(!player.weapon_force_style);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(!hud.overlay_fuzz);
+        assert!(hud.weapon_fuzz);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(hud.overlay_fuzz);
+        assert!(hud.weapon_fuzz);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(!hud.overlay_fuzz);
+        assert!(hud.weapon_fuzz);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.overlay2_force_style);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(hud.overlay_fuzz);
+        assert!(hud.weapon_fuzz);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_force_style);
+        assert!(!player.overlay2_force_style);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(!hud.weapon_fuzz);
+        assert!(hud.overlay_fuzz);
+    }
+
+    #[test]
+    fn overlay_force_alpha_keeps_layer_two_off_the_body() {
+        let src = format!(
+            "{}\nACTOR Alpha2PistolForce : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(2, 1024, true)\n    PISG A 1 A_OverlayFlags(1, 1024, true)\n    PISG A 1 A_OverlayFlags(2, 1024, false)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Alpha2PistolForce").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        let mo = player.mo.unwrap();
+        w.actors.get_mut(mo).unwrap().alpha = 0.25;
+        player.overlay2_alpha = Some(0.5);
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.overlay_alpha - 0.125).abs() < 1e-3);
+        assert!((hud.weapon_alpha - 0.25).abs() < 1e-3);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.overlay2_force_alpha);
+        assert!(!player.weapon_force_alpha);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.overlay_alpha - 0.5).abs() < 1e-3);
+        assert!((hud.weapon_alpha - 0.25).abs() < 1e-3);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_force_alpha);
+        assert!(player.overlay2_force_alpha);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.weapon_alpha - 1.0).abs() < 1e-3);
+        assert!((hud.overlay_alpha - 0.5).abs() < 1e-3);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.overlay2_force_alpha);
+        assert!(player.weapon_force_alpha);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.overlay_alpha - 0.125).abs() < 1e-3);
+        assert!((hud.weapon_alpha - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overlay_interpolate_off_snaps_layer_two() {
+        let src = format!(
+            "{}\nACTOR Ease2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(2, 256, false)\n    PISG A 1 A_OverlayFlags(1, 256, false)\n    PISG A 1 A_OverlayFlags(2, 256, true)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Ease2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        assert!(player.overlay2_interpolate);
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        w.players[0] = Some(player);
+        assert!(w.player_hud(0).unwrap().overlay_interpolate);
+        assert!(w.player_hud(0).unwrap().weapon_interpolate);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.overlay2_interpolate);
+        assert!(player.weapon_interpolate);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(!hud.overlay_interpolate);
+        assert!(hud.weapon_interpolate);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_interpolate);
+        assert!(!player.overlay2_interpolate);
+        w.players[0] = Some(player);
+        assert!(!w.player_hud(0).unwrap().weapon_interpolate);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.overlay2_interpolate);
+        assert!(!player.weapon_interpolate);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(hud.overlay_interpolate);
+        assert!(!hud.weapon_interpolate);
+    }
+
+    #[test]
+    fn overlay_addweapon_off_drops_the_gun_offset_on_layer_two() {
+        let src = format!(
+            "{}\nACTOR Ofs2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(2, 1, false)\n    PISG A 1 A_OverlayFlags(1, 1, false)\n    PISG A 1 A_OverlayFlags(2, 1, true)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Ofs2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        assert!(player.overlay2_add_weapon);
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_bob_x = 10.0;
+        player.weapon_ofs_x = 3.0;
+        player.overlay2_ofs_x = 6.0;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.bob_x - 13.0).abs() < 1e-3);
+        assert!((hud.bob_ofs_x - 3.0).abs() < 1e-3);
+        assert!(hud.overlay_add_weapon);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.overlay2_add_weapon);
+        assert!(player.weapon_add_ofs);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(!hud.overlay_add_weapon);
+        assert!((hud.bob_x - 13.0).abs() < 1e-3);
+        assert!((hud.bob_ofs_x - 3.0).abs() < 1e-3);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_add_ofs);
+        assert!(!player.overlay2_add_weapon);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.bob_x - 10.0).abs() < 1e-3);
+        assert!(hud.bob_ofs_x.abs() < 1e-3);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.overlay2_add_weapon);
+        assert!(!player.weapon_add_ofs);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(hud.overlay_add_weapon);
+        assert!((hud.bob_x - 10.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overlay_addbob_off_drops_sway_on_layer_two() {
+        let src = format!(
+            "{}\nACTOR Bob2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(2, 2, false)\n    PISG A 1 A_OverlayFlags(1, 2, false)\n    PISG A 1 A_OverlayFlags(2, 2, true)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Bob2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        assert!(player.overlay2_add_bob);
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_bob_x = 10.0;
+        player.weapon_ofs_x = 3.0;
+        player.overlay2_ofs_x = 6.0;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.bob_x - 13.0).abs() < 1e-3);
+        assert!(hud.overlay_add_bob);
+        assert!((hud.overlay_ofs_x - 6.0).abs() < 1e-3);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.overlay2_add_bob);
+        assert!(player.weapon_add_bob);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(!hud.overlay_add_bob);
+        assert!((hud.bob_x - 13.0).abs() < 1e-3);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_add_bob);
+        assert!(!player.overlay2_add_bob);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.bob_x - 3.0).abs() < 1e-3);
+        assert!(!hud.overlay_add_bob);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.overlay2_add_bob);
+        assert!(!player.weapon_add_bob);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(hud.overlay_add_bob);
+        assert!((hud.bob_x - 3.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overlay_pivot_percent_off_uses_pixels_on_layer_two() {
+        let src = format!(
+            "{}\nACTOR Pct2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(2, 128, false)\n    PISG A 1 A_OverlayPivot(2, 4, 4)\n    PISG A 1 A_OverlayFlags(1, 128, false)\n    PISG A 1 A_OverlayFlags(2, 128, true)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Pct2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        assert!(player.overlay2_pivot_percent);
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(!player.overlay2_pivot_percent);
+        assert!(player.weapon_pivot_percent);
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_pivot, Some((4.0, 4.0)));
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_pivot_percent);
+        assert!(!player.overlay2_pivot_percent);
+        w.players[0] = Some(player);
+        assert!(!w.player_hud(0).unwrap().overlay_pivot_percent);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.overlay2_pivot_percent);
+        assert!(!player.weapon_pivot_percent);
+    }
+
+    #[test]
+    fn overlay_render_style_fuzzes_layer_two_and_leaves_the_gun() {
+        let src = format!(
+            "{}\nACTOR Style2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayRenderStyle(2, 2)\n    PISG A 1 A_OverlayRenderStyle(1, 2)\n    PISG A 1 A_OverlayRenderStyle(2, 1)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Style2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_style, Some(RenderStyle::Fuzzy));
+        assert!(player.weapon_style.is_none());
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(hud.overlay_fuzz);
+        assert!(!hud.weapon_fuzz);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(hud.overlay_fuzz);
+        assert!(hud.weapon_fuzz);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(!hud.overlay_fuzz);
+        assert!(hud.weapon_fuzz);
+    }
+
+    #[test]
+    fn overlay_translation_greens_layer_two_and_leaves_the_gun() {
+        let src = format!(
+            "{}\nACTOR Tint2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayTranslation(2, \"Green\")\n    PISG A 1 A_OverlayTranslation(1, \"Red\")\n    PISG A 1 A_OverlayTranslation(2, \"None\")\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Tint2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_translation, "Green");
+        assert!(player.weapon_translation.is_empty());
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_translation, "Red");
+        assert_eq!(player.overlay2_translation, "Green");
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(hud.overlay_tint_g > hud.overlay_tint_r);
+        assert!(hud.weapon_tint_r > hud.weapon_tint_g);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.overlay2_translation.is_empty());
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.overlay_tint_r - 1.0).abs() < 1e-3);
+        assert!((hud.overlay_tint_g - 1.0).abs() < 1e-3);
+        assert!(hud.weapon_tint_r > hud.weapon_tint_g);
+    }
+
+    #[test]
+    fn overlay_pivot_align_pins_layer_two_and_leaves_the_gun() {
+        let src = format!(
+            "{}\nACTOR Align2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayPivotAlign(2, 2, 0)\n    PISG A 1 A_OverlayPivotAlign(1, 0, 2)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Align2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_pivot, Some((1.0, 0.0)));
+        assert!(player.weapon_pivot.is_none());
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_pivot, Some((0.0, 1.0)));
+        assert_eq!(player.overlay2_pivot, Some((1.0, 0.0)));
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.overlay_pivot_x - 1.0).abs() < 1e-3);
+        assert!(hud.overlay_pivot_y.abs() < 1e-3);
+        assert!(hud.weapon_pivot_x.abs() < 1e-3);
+        assert!((hud.weapon_pivot_y - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overlay_pivot_moves_layer_two_and_leaves_the_gun() {
+        let src = format!(
+            "{}\nACTOR Piv2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayPivot(2, 0, 0)\n    PISG A 1 A_OverlayPivot(1, 0.25, 0.75)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Piv2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_pivot, Some((0.0, 0.0)));
+        assert!(player.weapon_pivot.is_none());
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_pivot, Some((0.25, 0.75)));
+        assert_eq!(player.overlay2_pivot, Some((0.0, 0.0)));
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(hud.overlay_pivot_x.abs() < 1e-3);
+        assert!(hud.overlay_pivot_y.abs() < 1e-3);
+        assert!((hud.weapon_pivot_x - 0.25).abs() < 1e-3);
+        assert!((hud.weapon_pivot_y - 0.75).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overlay_rotate_turns_layer_two_and_leaves_the_gun() {
+        let src = format!(
+            "{}\nACTOR Rot2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayRotate(2, 90)\n    PISG A 1 A_OverlayRotate(1, 15)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Rot2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!((player.overlay2_angle - 90.0).abs() < 1e-6);
+        assert!((player.weapon_angle).abs() < 1e-6);
+        player_think(&mut w, &mut player);
+        assert!((player.weapon_angle - 15.0).abs() < 1e-6);
+        assert!((player.overlay2_angle - 90.0).abs() < 1e-6);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.overlay_angle - 90.0).abs() < 1e-3);
+        assert!((hud.weapon_angle - 15.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overlay_mirror_flips_layer_two_and_leaves_the_gun() {
+        let src = format!(
+            "{}\nACTOR Mir2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(2, 32, true)\n    PISG A 1 A_OverlayFlags(1, 32, true)\n    PISG A 1 A_OverlayFlags(2, 32, false)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Mir2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(player.overlay2_mirror);
+        assert!(!player.weapon_mirror);
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_mirror);
+        assert!(player.overlay2_mirror);
+        w.players[0] = Some(player);
+        assert!(w.player_hud(0).unwrap().overlay_mirror);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.overlay2_mirror);
+        assert!(player.weapon_mirror);
+    }
+
+    #[test]
+    fn overlay_flip_mirrors_layer_two_and_leaves_the_gun() {
+        let src = format!(
+            "{}\nACTOR Flip2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(2, 16, true)\n    PISG A 1 A_OverlayFlags(1, 16, true)\n    PISG A 1 A_OverlayFlags(2, 16, false)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Flip2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(player.overlay2_flip);
+        assert!(!player.weapon_flip);
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_flip);
+        assert!(player.overlay2_flip);
+        w.players[0] = Some(player);
+        assert!(w.player_hud(0).unwrap().overlay_flip);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.overlay2_flip);
+        assert!(player.weapon_flip);
+    }
+
+    #[test]
+    fn overlay_scale_grows_layer_two_and_leaves_the_gun() {
+        let src = format!(
+            "{}\nACTOR Scale2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayScale(2, 2)\n    PISG A 1 A_OverlayScale(2, 2, 3)\n    PISG A 1 A_OverlayScale(1, 4)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Scale2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_scale, Some((2.0, 2.0)));
+        assert!(player.weapon_scale.is_none());
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_scale, Some((2.0, 3.0)));
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_scale, Some((4.0, 4.0)));
+        assert_eq!(player.overlay2_scale, Some((2.0, 3.0)));
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.overlay_scale_x - 2.0).abs() < 1e-3);
+        assert!((hud.overlay_scale_y - 3.0).abs() < 1e-3);
+        assert!((hud.weapon_scale_x - 4.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overlay_alpha_dims_layer_two_and_leaves_the_gun() {
+        let src = format!(
+            "{}\nACTOR Alpha2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayAlpha(2, 0.25)\n    PISG A 1 A_OverlayAlpha(1, 0.5)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Alpha2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_alpha, Some(0.25));
+        assert!(player.weapon_alpha.is_none());
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_alpha, Some(0.25));
+        assert_eq!(player.weapon_alpha, Some(0.5));
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.overlay_alpha - 0.25).abs() < 1e-3);
+        assert!((hud.weapon_alpha - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overlay_offset_moves_layer_two_and_leaves_the_gun() {
+        let src = format!(
+            "{}\nACTOR Ofs2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayOffset(2, 6, 40)\n    PISG A 1 A_OverlayOffset(1, 3, 36)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Ofs2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_ofs_x, 6.0);
+        assert_eq!(player.overlay2_ofs_y, 8.0);
+        assert_eq!(player.weapon_ofs_x, 0.0);
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_ofs_x, 6.0);
+        assert_eq!(player.weapon_ofs_x, 3.0);
+        assert_eq!(player.weapon_ofs_y, 4.0);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.overlay_ofs_x - 6.0).abs() < 1e-3);
+        assert!((hud.overlay_ofs_y - 8.0).abs() < 1e-3);
+        assert!((hud.bob_x - 3.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overlay_offset_moves_the_weapon_layer_only() {
+        let src = format!(
+            "{}\nACTOR OverlayPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayOffset(1, 4, 40)\n    PISG A 1 A_OverlayOffset(2, 9, 50)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("OverlayPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_ofs_x, 4.0);
+        assert_eq!(player.weapon_ofs_y, 8.0);
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_ofs_x, 4.0);
+        assert_eq!(player.weapon_ofs_y, 8.0);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.bob_x - 4.0).abs() < 1e-4);
+        assert!((hud.bob_y - 8.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn overlay_alpha_dims_the_weapon_layer_only() {
+        let src = format!(
+            "{}\nACTOR AlphaPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayAlpha(1, 0.25)\n    PISG A 1 A_OverlayAlpha(2, 0.9)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("AlphaPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_alpha, Some(0.25));
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_alpha, Some(0.25));
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.weapon_alpha - 0.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn overlay_scale_sizes_the_weapon_layer_only() {
+        let src = format!(
+            "{}\nACTOR ScalePistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayScale(1, 2)\n    PISG A 1 A_OverlayScale(1, 2, 3)\n    PISG A 1 A_OverlayScale(2, 9, 9)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("ScalePistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_scale, Some((2.0, 2.0)));
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_scale, Some((2.0, 3.0)));
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_scale, Some((2.0, 3.0)));
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.weapon_scale_x - 2.0).abs() < 1e-4);
+        assert!((hud.weapon_scale_y - 3.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn overlay_interpolate_flag_can_snap_the_gun() {
+        let src = format!(
+            "{}\nACTOR EasePistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(1, 256, false)\n    PISG A 1 A_OverlayFlags(2, 256, true)\n    PISG A 1 A_OverlayFlags(1, 256, true)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("EasePistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        assert!(player.weapon_interpolate);
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_interpolate);
+        w.players[0] = Some(player);
+        assert!(!w.player_hud(0).unwrap().weapon_interpolate);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_interpolate);
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_interpolate);
+    }
+
+    #[test]
+    fn overlay_force_style_ignores_player_fuzz() {
+        let src = format!(
+            "{}\nACTOR StylePistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(1, 512, true)\n    PISG A 1 A_OverlayRenderStyle(1, 2)\n    PISG A 1 A_OverlayFlags(2, 512, false)\n    PISG A 1 A_OverlayRenderStyle(1, 1)\n    PISG A 1 A_OverlayFlags(1, 512, false)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("StylePistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.blur = true;
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        w.players[0] = Some(player);
+        assert!(w.player_hud(0).unwrap().weapon_fuzz);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_force_style);
+        w.players[0] = Some(player);
+        assert!(!w.player_hud(0).unwrap().weapon_fuzz);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        w.players[0] = Some(player);
+        assert!(w.player_hud(0).unwrap().weapon_fuzz);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_force_style);
+        player_think(&mut w, &mut player);
+        w.players[0] = Some(player);
+        assert!(!w.player_hud(0).unwrap().weapon_fuzz);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_force_style);
+        w.players[0] = Some(player);
+        assert!(w.player_hud(0).unwrap().weapon_fuzz);
+    }
+
+    #[test]
+    fn overlay_force_alpha_ignores_player_translucency() {
+        let src = format!(
+            "{}\nACTOR AlphaPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(1, 1024, true)\n    PISG A 1 A_OverlayFlags(2, 1024, false)\n    PISG A 1 A_OverlayFlags(1, 1024, false)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("AlphaPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        let mo = player.mo.unwrap();
+        w.actors.get_mut(mo).unwrap().alpha = 0.25;
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.weapon_alpha - 0.25).abs() < 1e-3);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_force_alpha);
+        player.weapon_alpha = Some(0.5);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.weapon_alpha - 0.5).abs() < 1e-3);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_force_alpha);
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_force_alpha);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.weapon_alpha - 0.125).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overlay_pivot_percent_off_keeps_pixel_pivot() {
+        let src = format!(
+            "{}\nACTOR PivotPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(1, 128, false)\n    PISG A 1 A_OverlayPivot(1, 4, 4)\n    PISG A 1 A_OverlayFlags(2, 128, true)\n    PISG A 1 A_OverlayFlags(1, 128, true)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("PivotPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_pivot_percent);
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_pivot, Some((4.0, 4.0)));
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(!hud.weapon_pivot_percent);
+        assert!((hud.weapon_pivot_x - 4.0).abs() < 1e-3);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_pivot_percent);
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_pivot_percent);
+    }
+
+    #[test]
+    fn overlay_mirror_flag_flips_the_weapon_layer_vertically() {
+        let src = format!(
+            "{}\nACTOR MirrorPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(1, 32, true)\n    PISG A 1 A_OverlayFlags(2, 32, false)\n    PISG A 1 A_OverlayFlags(1, 32, false)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("MirrorPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_mirror);
+        w.players[0] = Some(player);
+        assert!(w.player_hud(0).unwrap().weapon_mirror);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_mirror);
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_mirror);
+    }
+
+    #[test]
+    fn overlay_powdouble_halves_layer_two_and_leaves_the_gun() {
+        let src = format!(
+            "{}\nACTOR PowerDoubleFiringSpeed {{ Inventory.MaxAmount 1 }}\nACTOR Pow2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 0 A_Overlay(2, \"Hold\")\n    PISG A 4\n    Stop\n  Hold:\n    PISG B 4\n    Stop\n  Off:\n    PISG A 1\n    PISG A 0 A_OverlayFlags(2, 4, false)\n    PISG A 0 A_Overlay(2, \"Hold\")\n    PISG A 4\n    Stop\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Pow2Pistol").unwrap();
+        let power = classes.find_name("PowerDoubleFiringSpeed").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        let mo = player.mo.unwrap();
+        assert!(player.overlay2_pow_double);
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_tics, 3);
+        assert_eq!(player.pspr_tics, 4);
+        assert!(!player.weapon_pow_double);
+        w.fast_weapons = 1;
+        let _ = give_inventory(&mut w, mo, power, 1);
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_tics, 1);
+        assert_eq!(player.pspr_tics, 4);
+        assert!(!player.weapon_pow_double);
+        w.fast_weapons = 0;
+        player.pspr_state = Some(w.states.find_label(pistol, "Off").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(!player.overlay2_pow_double);
+        assert_eq!(player.overlay2_tics, 3);
+        assert_eq!(player.pspr_tics, 4);
+    }
+
+    #[test]
+    fn overlay_powdouble_halves_a_weapon_frame() {
+        let src = format!(
+            "{}\nACTOR PowerDoubleFiringSpeed {{ Inventory.MaxAmount 1 }}\nACTOR PowPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 0 A_OverlayFlags(1, 4, true)\n    PISG A 4\n    Stop\n  }}\n}}\nACTOR PowLayer : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 0 A_OverlayFlags(2, 4, true)\n    PISG A 4\n    Stop\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("PowPistol").unwrap();
+        let power = classes.find_name("PowerDoubleFiringSpeed").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        let mo = player.mo.unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_pow_double);
+        assert_eq!(player.pspr_tics, 4);
+        let _ = give_inventory(&mut w, mo, power, 1);
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.pspr_tics, 2);
+        let layer = classes.find_name("PowLayer").unwrap();
+        player.weapon_pow_double = false;
+        player.ready_weapon = Some(layer);
+        player.pspr_state = Some(w.states.find_label(layer, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_pow_double);
+        assert_eq!(player.pspr_tics, 4);
+    }
+
+    #[test]
+    fn overlay_cvarfast_halves_layer_two_and_leaves_the_gun() {
+        let src = format!(
+            "{}\nACTOR Fast2Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 0 A_Overlay(2, \"Hold\")\n    PISG A 4\n    Stop\n  Hold:\n    PISG B 4\n    Stop\n  Slow:\n    PISG A 1\n    PISG A 0 A_OverlayFlags(2, 8, false)\n    PISG A 0 A_Overlay(2, \"Hold\")\n    PISG A 4\n    Stop\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        w.fast_weapons = 1;
+        let pistol = classes.find_name("Fast2Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        assert!(player.overlay2_cvar_fast);
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_tics, 1);
+        assert_eq!(player.pspr_tics, 4);
+        assert!(!player.weapon_cvar_fast);
+        w.fast_weapons = 2;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(player.overlay2_state.is_none());
+        assert_eq!(player.pspr_tics, 4);
+        w.fast_weapons = 1;
+        player.pspr_state = Some(w.states.find_label(pistol, "Slow").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(!player.overlay2_cvar_fast);
+        assert_eq!(player.overlay2_tics, 3);
+        assert_eq!(player.pspr_tics, 4);
+        assert!(!player.weapon_cvar_fast);
+    }
+
+    #[test]
+    fn overlay_cvarfast_halves_a_weapon_frame() {
+        let src = format!(
+            "{}\nACTOR FastPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 0 A_OverlayFlags(1, 8, true)\n    PISG A 4\n    Stop\n  }}\n}}\nACTOR LayerPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 0 A_OverlayFlags(2, 8, true)\n    PISG A 4\n    Stop\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        w.fast_weapons = 1;
+        let pistol = classes.find_name("FastPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_cvar_fast);
+        assert_eq!(player.pspr_tics, 2);
+        w.fast_weapons = 2;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.pspr_tics, 1);
+        let layer = classes.find_name("LayerPistol").unwrap();
+        w.fast_weapons = 1;
+        player.weapon_cvar_fast = false;
+        player.ready_weapon = Some(layer);
+        player.pspr_state = Some(w.states.find_label(layer, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_cvar_fast);
+        assert_eq!(player.pspr_tics, 4);
+    }
+
+    #[test]
+    fn overlay_addweapon_flag_drops_the_gun_offset() {
+        let src = format!(
+            "{}\nACTOR OfsPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(1, 1, false)\n    PISG A 1 A_OverlayFlags(2, 1, true)\n    PISG A 1 A_OverlayFlags(1, 1, true)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("OfsPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_bob_x = 10.0;
+        player.weapon_ofs_x = 3.0;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.bob_x - 13.0).abs() < 1e-3);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_add_ofs);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.bob_x - 10.0).abs() < 1e-3);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_add_ofs);
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_add_ofs);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.bob_x - 13.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overlay_addbob_flag_drops_weapon_sway() {
+        let src = format!(
+            "{}\nACTOR BobPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(1, 2, false)\n    PISG A 1 A_OverlayFlags(2, 2, true)\n    PISG A 1 A_OverlayFlags(1, 2, true)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("BobPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_bob_x = 10.0;
+        player.weapon_ofs_x = 3.0;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.bob_x - 13.0).abs() < 1e-3);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_add_bob);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.bob_x - 3.0).abs() < 1e-3);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_add_bob);
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_add_bob);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.bob_x - 13.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overlay_layer_two_shows_its_sprite() {
+        let src = format!(
+            "{}\nACTOR LayerPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_Overlay(1, \"Flash\")\n    PISG A 1 A_Overlay(2, \"Flash\")\n    PISG B 5\n    Stop\n  Flash:\n    PISF A 2\n    Stop\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("LayerPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(player.overlay2_sprite.is_empty());
+        player_think(&mut w, &mut player);
+        assert_eq!(player.overlay2_sprite, "PISF");
+        assert_eq!(player.overlay2_tics, 1);
+        w.players[0] = Some(player);
+        assert_eq!(w.player_hud(0).unwrap().overlay_patch, "PISFA0");
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.overlay2_state.is_none());
+        assert!(player.overlay2_sprite.is_empty());
+    }
+
+    #[test]
+    fn overlay_flip_bit4_mirrors_the_weapon_layer_only() {
+        let src = format!(
+            "{}\nACTOR Flip16Pistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(1, 16, true)\n    PISG A 1 A_OverlayFlags(2, 16, false)\n    PISG A 1 A_OverlayFlags(1, 16, false)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("Flip16Pistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        player.pspr_state = Some(w.states.find_label(pistol, "Fire").unwrap());
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_flip);
+        w.players[0] = Some(player);
+        assert!(w.player_hud(0).unwrap().weapon_flip);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_flip);
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_flip);
+    }
+
+    #[test]
+    fn overlay_flip_flag_mirrors_the_weapon_layer_only() {
+        let src = format!(
+            "{}\nACTOR FlipPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayFlags(1, 64, true)\n    PISG A 1 A_OverlayFlags(2, 64, false)\n    PISG A 1 A_OverlayFlags(1, 64, false)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("FlipPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_flip);
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_flip);
+        player_think(&mut w, &mut player);
+        assert!(!player.weapon_flip);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(!hud.weapon_flip);
+    }
+
+    #[test]
+    fn overlay_pivot_is_where_the_weapon_layer_scales() {
+        let src = format!(
+            "{}\nACTOR PivotPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayPivot(1, 0, 0)\n    PISG A 1 A_OverlayPivot(2, 1, 1)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("PivotPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_pivot, Some((0.0, 0.0)));
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_pivot, Some((0.0, 0.0)));
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(hud.weapon_pivot_x.abs() < 1e-4);
+        assert!(hud.weapon_pivot_y.abs() < 1e-4);
+    }
+
+    #[test]
+    fn overlay_pivot_align_picks_the_right_and_top() {
+        let src = format!(
+            "{}\nACTOR AlignPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayPivotAlign(1, 2, 0)\n    PISG A 1 A_OverlayPivotAlign(2, 0, 2)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("AlignPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_pivot, Some((1.0, 0.0)));
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_pivot, Some((1.0, 0.0)));
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.weapon_pivot_x - 1.0).abs() < 1e-4);
+        assert!(hud.weapon_pivot_y.abs() < 1e-4);
+    }
+
+    #[test]
+    fn overlay_rotate_turns_the_weapon_layer() {
+        let src = format!(
+            "{}\nACTOR RotatePistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayRotate(1, 90)\n    PISG A 1 A_OverlayRotate(2, 180)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("RotatePistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!((player.weapon_angle - 90.0).abs() < 1e-6);
+        player_think(&mut w, &mut player);
+        assert!((player.weapon_angle - 90.0).abs() < 1e-6);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.weapon_angle - 90.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn overlay_render_style_fuzzes_the_weapon_layer() {
+        let src = format!(
+            "{}\nACTOR StylePistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayRenderStyle(1, 2)\n    PISG A 1 A_OverlayRenderStyle(2, 1)\n    PISG A 1 A_OverlayRenderStyle(1, 1)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("StylePistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_style, Some(RenderStyle::Fuzzy));
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(hud.weapon_fuzz);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_style, Some(RenderStyle::Fuzzy));
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_style, Some(RenderStyle::Normal));
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(!hud.weapon_fuzz);
+    }
+
+    #[test]
+    fn set_view_pitch_moves_the_camera_and_leaves_aim() {
+        let src = format!(
+            "{}\nACTOR ViewPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_SetViewPitch(20)\n    PISG A 1 A_SetPitch(5)\n    PISG A 1 A_SetViewPitch(100, 1)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("ViewPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        let mo = player.mo.unwrap();
+        player_think(&mut w, &mut player);
+        {
+            let a = w.actors.get(mo).unwrap();
+            assert!(a.pitch.degrees().abs() < 1e-6);
+            assert!((a.camera_pitch().degrees() - 20.0).abs() < 1e-6);
+        }
+        player_think(&mut w, &mut player);
+        {
+            let a = w.actors.get(mo).unwrap();
+            assert!((a.pitch.degrees() - 5.0).abs() < 1e-6);
+            assert!((a.camera_pitch().degrees() - 20.0).abs() < 1e-6);
+        }
+        player_think(&mut w, &mut player);
+        let a = w.actors.get(mo).unwrap();
+        assert!((a.pitch.degrees() - 5.0).abs() < 1e-6);
+        assert!((a.camera_pitch().degrees() - 89.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_view_angle_turns_the_camera_and_leaves_aim() {
+        let src = format!(
+            "{}\nACTOR YawPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_SetViewAngle(30)\n    PISG A 1 A_SetAngle(90)\n    PISG A 1 A_SetViewAngle(200, 0, 1)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("YawPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        let mo = player.mo.unwrap();
+        player_think(&mut w, &mut player);
+        {
+            let a = w.actors.get(mo).unwrap();
+            assert!(a.angle.degrees().abs() < 1e-6);
+            assert!((a.camera_yaw().degrees() - 30.0).abs() < 1e-6);
+        }
+        player_think(&mut w, &mut player);
+        {
+            let a = w.actors.get(mo).unwrap();
+            assert!((a.angle.degrees() - 90.0).abs() < 1e-6);
+            assert!((a.camera_yaw().degrees() - 30.0).abs() < 1e-6);
+        }
+        player_think(&mut w, &mut player);
+        let a = w.actors.get(mo).unwrap();
+        assert!((a.angle.degrees() - 90.0).abs() < 1e-6);
+        assert!((a.camera_yaw().degrees() - 30.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_view_roll_banks_the_camera_and_leaves_the_sprite() {
+        let src = format!(
+            "{}\nACTOR RollPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_SetViewRoll(15)\n    PISG A 1 A_SetRoll(40)\n    PISG A 1 A_SetViewRoll(200, 0, 1)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("RollPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        let mo = player.mo.unwrap();
+        player_think(&mut w, &mut player);
+        {
+            let a = w.actors.get(mo).unwrap();
+            assert!(a.roll.degrees().abs() < 1e-6);
+            assert!((a.camera_roll().degrees() - 15.0).abs() < 1e-6);
+        }
+        player_think(&mut w, &mut player);
+        {
+            let a = w.actors.get(mo).unwrap();
+            assert!((a.roll.degrees() - 40.0).abs() < 1e-6);
+            assert!((a.camera_roll().degrees() - 15.0).abs() < 1e-6);
+        }
+        player_think(&mut w, &mut player);
+        let a = w.actors.get(mo).unwrap();
+        assert!((a.roll.degrees() - 40.0).abs() < 1e-6);
+        assert!((a.camera_roll().degrees() - 15.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_view_pos_moves_the_eye_and_leaves_the_actor() {
+        let src = format!(
+            "{}\nACTOR EyePistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 SetViewPos(8, 0, 2)\n    PISG A 1 A_SetAngle(90)\n    PISG A 1 SetViewPos(0, 6, 0, 2)\n    PISG A 1 SetViewPos(10, 20, 30, 4)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("EyePistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        let mo = player.mo.unwrap();
+        let origin = w.actors.get(mo).unwrap().pos;
+        player_think(&mut w, &mut player);
+        {
+            let a = w.actors.get(mo).unwrap();
+            let (x, y, z) = a.camera_eye(100.0);
+            assert!((a.pos.x() - origin.x()).abs() < 1e-6);
+            assert!((x - (origin.x() + 8.0)).abs() < 1e-6);
+            assert!((y - origin.y()).abs() < 1e-6);
+            assert!((z - 102.0).abs() < 1e-6);
+        }
+        player_think(&mut w, &mut player);
+        {
+            let a = w.actors.get(mo).unwrap();
+            let (x, y, _) = a.camera_eye(100.0);
+            assert!((a.angle.degrees() - 90.0).abs() < 1e-6);
+            assert!((x - origin.x()).abs() < 1e-6);
+            assert!((y - (origin.y() + 8.0)).abs() < 1e-6);
+        }
+        player_think(&mut w, &mut player);
+        {
+            let a = w.actors.get(mo).unwrap();
+            let (x, y, z) = a.camera_eye(100.0);
+            assert!((x - origin.x()).abs() < 1e-6);
+            assert!((y - (origin.y() + 6.0)).abs() < 1e-6);
+            assert!((z - 100.0).abs() < 1e-6);
+        }
+        player_think(&mut w, &mut player);
+        let a = w.actors.get(mo).unwrap();
+        assert!((a.pos.x() - origin.x()).abs() < 1e-6);
+        assert_eq!(a.camera_eye(100.0), (10.0, 20.0, 30.0));
+    }
+
+    #[test]
+    fn sprite_offset_shifts_the_picture_and_leaves_the_actor() {
+        let src = format!(
+            "{}\nACTOR ShiftPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_SpriteOffset(4, 6)\n    PISG A 1 A_SpriteOffset(1, 2)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("ShiftPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        let mo = player.mo.unwrap();
+        let origin = w.actors.get(mo).unwrap().pos;
+        player_think(&mut w, &mut player);
+        {
+            let a = w.actors.get(mo).unwrap();
+            assert!((a.pos.x() - origin.x()).abs() < 1e-6);
+            assert!((a.sprite_ofs_x - 4.0).abs() < 1e-6);
+            assert!((a.sprite_ofs_y - 6.0).abs() < 1e-6);
+        }
+        player_think(&mut w, &mut player);
+        let a = w.actors.get(mo).unwrap();
+        assert!((a.pos.x() - origin.x()).abs() < 1e-6);
+        assert!((a.sprite_ofs_x - 1.0).abs() < 1e-6);
+        assert!((a.sprite_ofs_y - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn zoom_factor_halves_a_ninety_degree_view() {
+        let src = format!(
+            "{}\nACTOR ZoomPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_ZoomFactor(2)\n    PISG A 1 A_ZoomFactor(1)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("ZoomPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert!((player.weapon_zoom - 2.0).abs() < 1e-5);
+        assert!((crate::player::Player::zoomed_fov(90.0, player.weapon_zoom) - 45.0).abs() < 1e-4);
+        player_think(&mut w, &mut player);
+        assert!((player.weapon_zoom - 1.0).abs() < 1e-5);
+        assert!((crate::player::Player::zoomed_fov(90.0, player.weapon_zoom) - 90.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn set_crosshair_two_is_what_the_hud_draws() {
+        let src = format!(
+            "{}\nACTOR HairPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_SetCrosshair(2)\n    PISG A 1 A_SetCrosshair(0)\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("HairPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.crosshair, 2);
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert_eq!(hud.crosshair, 2);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert_eq!(player.crosshair, 0);
+    }
+
+    #[test]
+    fn overlay_translation_greens_the_weapon_layer() {
+        let src = format!(
+            "{}\nACTOR TintPistol : Pistol\n{{\n  States\n  {{\n  Fire:\n    PISG A 1\n    PISG A 1 A_OverlayTranslation(1, \"Green\")\n    PISG A 1 A_OverlayTranslation(2, \"Red\")\n    PISG A 1 A_OverlayTranslation(1, \"None\")\n    Goto Ready\n  }}\n}}\n",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let pistol = classes.find_name("TintPistol").unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_TOP;
+        let fire = w.states.find_label(pistol, "Fire").unwrap();
+        player.pspr_state = Some(fire);
+        player.pspr_tics = 1;
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_translation, "Green");
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!(hud.weapon_tint_g > hud.weapon_tint_r);
+        let mut player = w.players[0].take().unwrap();
+        player_think(&mut w, &mut player);
+        assert_eq!(player.weapon_translation, "Green");
+        player_think(&mut w, &mut player);
+        assert!(player.weapon_translation.is_empty());
+        w.players[0] = Some(player);
+        let hud = w.player_hud(0).unwrap();
+        assert!((hud.weapon_tint_r - 1.0).abs() < 1e-4);
+        assert!((hud.weapon_tint_g - 1.0).abs() < 1e-4);
     }
 
     #[test]
@@ -3094,11 +5988,15 @@ actor FastWalker : Actor
         // Vanilla SSG Fire cycle = 62 tics through A_ReFire frame.
         assert_eq!(tics_sum, 62, "SSG fire tics={tics_sum} frames={sprites:?}");
         assert!(
-            sprites.iter().any(|(s, f, _)| s.eq_ignore_ascii_case("SHT2") && *f == 6),
+            sprites
+                .iter()
+                .any(|(s, f, _)| s.eq_ignore_ascii_case("SHT2") && *f == 6),
             "missing G frame: {sprites:?}"
         );
         assert!(
-            sprites.iter().any(|(s, f, _)| s.eq_ignore_ascii_case("SHT2") && *f == 7),
+            sprites
+                .iter()
+                .any(|(s, f, _)| s.eq_ignore_ascii_case("SHT2") && *f == 7),
             "missing H frame: {sprites:?}"
         );
         let flash = states.find_label(ssg, "Flash").unwrap();
@@ -3132,7 +6030,8 @@ actor FastWalker : Actor
             .build_udmf("MAP01")
             .unwrap();
         apply_nodes(&mut map);
-        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
         let clip = classes.find_name("Clip").unwrap();
         let mo = w.players[0].as_ref().and_then(|p| p.mo).unwrap();
         let _ = give_inventory(&mut w, mo, cg, 1);
@@ -3154,10 +6053,7 @@ actor FastWalker : Actor
             player_think(&mut w, &mut player);
             if player.pspr_flash_state == Some(flash_b) {
                 assert_eq!(player.extralight, 2, "CHGF B uses A_Light2");
-                assert!(
-                    player.pspr_flash_tics > 0,
-                    "CHGF B must still be running"
-                );
+                assert!(player.pspr_flash_tics > 0, "CHGF B must still be running");
                 w.players[0] = Some(player);
                 return;
             }
@@ -3214,8 +6110,14 @@ actor FastWalker : Actor
         let file = parse_decorate(src).unwrap();
         let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
         assert!(
-            classes.get(classes.find_name("PlasmaRifle").unwrap()).unwrap().selection_order
-                < classes.get(classes.find_name("Fist").unwrap()).unwrap().selection_order
+            classes
+                .get(classes.find_name("PlasmaRifle").unwrap())
+                .unwrap()
+                .selection_order
+                < classes
+                    .get(classes.find_name("Fist").unwrap())
+                    .unwrap()
+                    .selection_order
         );
         let states = Arc::new(StateTable::from_decorate(&file, &classes));
         let mut map = MapBuilder::new()
@@ -3399,8 +6301,7 @@ actor FastWalker : Actor
             .unwrap();
         apply_nodes(&mut map);
         let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
-        let (mo, _, ammo) =
-            ready_with_weapon(&mut w, &classes, "RocketLauncher", "RocketAmmo", 5);
+        let (mo, _, ammo) = ready_with_weapon(&mut w, &classes, "RocketLauncher", "RocketAmmo", 5);
         let before = w.inventory.count(mo, ammo);
         let mut player = w.players[0].take().unwrap();
         tap_fire(&mut w, &mut player, 3, 40);

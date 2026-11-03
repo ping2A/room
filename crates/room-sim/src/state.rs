@@ -7,6 +7,33 @@ use room_script::RegCall;
 use room_script_abi::{state_flags, state_flow_kind};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// DECORATE frame `#` — do not change the actor's current frame.
+pub(crate) const FRAME_NOCHANGE: u8 = 255;
+
+/// `####` / `----` — do not change the actor's current sprite.
+#[must_use]
+pub(crate) fn sprite_unchanged(sprite: &str) -> bool {
+    sprite.eq_ignore_ascii_case("####") || sprite.eq_ignore_ascii_case("----")
+}
+
+/// Parent-chain length, so a subclass's `Goto Super::…` compiles after the parent.
+fn zscript_parent_depth(classes: &ClassRegistry, name: &str) -> u32 {
+    let mut depth = 0u32;
+    let mut cur = classes.find_name(name);
+    for _ in 0..64 {
+        let Some(id) = cur else { break };
+        let Some(parent) = classes.get(id).and_then(|c| c.parent) else {
+            break;
+        };
+        if parent == id {
+            break;
+        }
+        depth += 1;
+        cur = Some(parent);
+    }
+    depth
+}
+
 /// One compiled state (`FState` subset).
 #[derive(Clone, Debug)]
 pub struct State {
@@ -70,6 +97,44 @@ impl StateTable {
         }
         table.inherit_labels(classes);
         table
+    }
+
+    /// Merge ZScript `States { … }` bodies (ZS3) onto matching DECORATE classes.
+    ///
+    /// Each body is wrapped as a synthetic DECORATE actor and compiled in place.
+    /// Unknown class names are skipped.
+    pub fn merge_zscript_states(
+        &mut self,
+        classes: &ClassRegistry,
+        class_states: &BTreeMap<String, String>,
+    ) {
+        // Parents first, so `Goto Super::Missile.Pistol` resolves while the
+        // parent labels already exist.
+        let mut names: Vec<&String> = class_states.keys().collect();
+        names.sort_by(|a, b| {
+            zscript_parent_depth(classes, a)
+                .cmp(&zscript_parent_depth(classes, b))
+                .then(a.cmp(b))
+        });
+        for name in names {
+            let Some(body) = class_states.get(name) else {
+                continue;
+            };
+            let Some(cid) = classes.find_name(name) else {
+                continue;
+            };
+            let synthetic = format!("actor {name} : Actor {{\nStates\n{body}\n}}");
+            let Ok(ir) = room_decorate::parse_decorate(&synthetic) else {
+                continue;
+            };
+            let Some(def) = ir.actors.first() else {
+                continue;
+            };
+            self.compile_actor(cid, def, classes);
+        }
+        if !class_states.is_empty() {
+            self.inherit_labels(classes);
+        }
     }
 
     /// DECORATE inheritance: a class keeps every parent label it does not
@@ -164,6 +229,8 @@ impl StateTable {
                             '[' => 26,
                             '\\' => 27,
                             ']' => 28,
+                            // `#` keeps the frame already on the actor (GZDoom).
+                            '#' => FRAME_NOCHANGE,
                             _ => 0,
                         };
                         #[allow(clippy::cast_possible_truncation)]
@@ -176,6 +243,7 @@ impl StateTable {
                             .modifiers
                             .iter()
                             .any(|m| m.eq_ignore_ascii_case("fast"));
+                        let (offset_x, offset_y) = offset_from_modifiers(&line.modifiers);
                         let id = self.states.len();
                         self.states.push(State {
                             owner: class,
@@ -194,8 +262,8 @@ impl StateTable {
                                 .modifiers
                                 .iter()
                                 .any(|m| m.eq_ignore_ascii_case("nodelay")),
-                            offset_x: 0,
-                            offset_y: 0,
+                            offset_x,
+                            offset_y,
                             callback_id: -1,
                             module_index: 0,
                             guest_ref: 0,
@@ -206,6 +274,36 @@ impl StateTable {
                     }
                 }
                 StateItem::Flow(flow) => {
+                    // `Missile: Goto Super::Missile.Pistol` has a label and no
+                    // frames. Hang both on a 0-tic state so the jump is kept.
+                    if !pending_labels.is_empty() {
+                        let id = self.states.len();
+                        for lab in pending_labels.drain(..) {
+                            label_at.insert(lab.to_ascii_lowercase(), id);
+                            self.labels.insert(
+                                (class.raw(), lab.to_ascii_lowercase()),
+                                StateId::from_raw(id as u32),
+                            );
+                        }
+                        self.states.push(State {
+                            owner: class,
+                            sprite: "TNT1".into(),
+                            frame: 0,
+                            tics: 0,
+                            action: None,
+                            action_args: Vec::new(),
+                            bright: false,
+                            fast: false,
+                            canraise: false,
+                            nodelay: false,
+                            offset_x: 0,
+                            offset_y: 0,
+                            callback_id: -1,
+                            module_index: 0,
+                            guest_ref: 0,
+                            next: None,
+                        });
+                    }
                     if let Some(last) = self.states.len().checked_sub(1) {
                         if last >= start_index {
                             flow_slots.push((last, flow.clone()));
@@ -440,6 +538,33 @@ impl StateTable {
 }
 
 /// Split a DECORATE-style argument list (`"Foo", 1, true`) into tokens.
+/// Parse `Offset(x,y)` from DECORATE state modifiers (BD1 D1).
+fn offset_from_modifiers(modifiers: &[String]) -> (i32, i32) {
+    for m in modifiers {
+        let t = m.trim();
+        let Some(rest) = t
+            .strip_prefix("Offset(")
+            .or_else(|| t.strip_prefix("offset("))
+        else {
+            continue;
+        };
+        let Some(inner) = rest.strip_suffix(')') else {
+            continue;
+        };
+        let mut parts = inner.split(',');
+        let x = parts
+            .next()
+            .and_then(|s| s.trim().trim_matches('"').parse().ok())
+            .unwrap_or(0);
+        let y = parts
+            .next()
+            .and_then(|s| s.trim().trim_matches('"').parse().ok())
+            .unwrap_or(0);
+        return (x, y);
+    }
+    (0, 0)
+}
+
 fn split_decorate_args(raw: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();

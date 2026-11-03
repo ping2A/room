@@ -22,6 +22,9 @@ pub struct SoftPatch {
     pub indices: Vec<u8>,
     /// Row-major opacity (`0` = hole, `255` = solid).
     pub alpha: Vec<u8>,
+    /// Truecolor pixels (`width * height * 4`) when the lump is PNG/JPEG/….
+    /// Palette `indices` are unused while this is set.
+    pub rgba: Option<Vec<u8>>,
 }
 
 impl SoftPatch {
@@ -34,6 +37,60 @@ impl SoftPatch {
             top_offset: p.top_offset,
             indices,
             alpha,
+            rgba: None,
+        }
+    }
+
+    /// Truecolor or paletted image (PNG `grAb` offsets included).
+    fn from_image(img: room_formats::Image) -> Option<Self> {
+        let w = u16::try_from(img.width()).ok()?;
+        let h = u16::try_from(img.height()).ok()?;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let n = usize::from(w) * usize::from(h);
+        let clamp_off =
+            |v: i32| -> i16 { i16::try_from(v).unwrap_or(if v < 0 { i16::MIN } else { i16::MAX }) };
+        let left_offset = clamp_off(img.left_offset);
+        let top_offset = clamp_off(img.top_offset);
+        match img.pixels {
+            room_formats::ImagePixels::Rgba8(rgba) => {
+                if rgba.pixels.len() < n * 4 {
+                    return None;
+                }
+                let alpha: Vec<u8> = rgba.pixels.chunks_exact(4).take(n).map(|p| p[3]).collect();
+                Some(Self {
+                    width: w,
+                    height: h,
+                    left_offset,
+                    top_offset,
+                    indices: vec![0; n],
+                    alpha,
+                    rgba: Some(rgba.pixels),
+                })
+            }
+            room_formats::ImagePixels::Paletted(p) => {
+                if p.indices.len() < n {
+                    return None;
+                }
+                let alpha = if p.alpha.len() >= n {
+                    p.alpha[..n].to_vec()
+                } else {
+                    p.indices[..n]
+                        .iter()
+                        .map(|&i| if i == 0 { 0 } else { 255 })
+                        .collect()
+                };
+                Some(Self {
+                    width: w,
+                    height: h,
+                    left_offset,
+                    top_offset,
+                    indices: p.indices[..n].to_vec(),
+                    alpha,
+                    rgba: None,
+                })
+            }
         }
     }
 
@@ -42,17 +99,30 @@ impl SoftPatch {
     /// Prefer this over [`Self::paint`] for HUD weapons — one image blit beats
     /// thousands of per-span fill rects (plasma / BFG patches are especially hot).
     #[must_use]
-    pub fn scale_rgba(
-        &self,
-        dest_w: u32,
-        dest_h: u32,
-        palette: &[[u8; 3]; 256],
-    ) -> Vec<u8> {
+    pub fn scale_rgba(&self, dest_w: u32, dest_h: u32, palette: &[[u8; 3]; 256]) -> Vec<u8> {
         let sw = usize::from(self.width);
         let sh = usize::from(self.height);
         let dw = dest_w as usize;
         let dh = dest_h as usize;
         let mut out = vec![0u8; dw.saturating_mul(dh).saturating_mul(4)];
+        if let Some(src) = &self.rgba {
+            if sw == 0 || sh == 0 || dw == 0 || dh == 0 || src.len() < sw * sh * 4 {
+                return out;
+            }
+            for dy in 0..dh {
+                let sy = dy * sh / dh;
+                for dx in 0..dw {
+                    let sx = dx * sw / dw;
+                    let si = (sy * sw + sx) * 4;
+                    if src[si + 3] == 0 {
+                        continue;
+                    }
+                    let o = (dy * dw + dx) * 4;
+                    out[o..o + 4].copy_from_slice(&src[si..si + 4]);
+                }
+            }
+            return out;
+        }
         if sw == 0 || sh == 0 || dw == 0 || dh == 0 || self.indices.len() < sw * sh {
             return out;
         }
@@ -206,7 +276,21 @@ impl PatchCache {
             .or_else(|| vfs.find(&key, Namespace::Global))
             .or_else(|| vfs.find_any_ns(&key))?;
         let bytes = vfs.read(id).ok()?;
-        let patch = SoftPatch::from_patch(parse_patch(&bytes).ok()?);
+        // Brutal Doom (and most GZDoom mods) ship sprites as PNG, not Doom patches.
+        let patch = if room_formats::is_png(&bytes)
+            || room_formats::is_jpeg(&bytes)
+            || room_formats::is_bmp(&bytes)
+            || room_formats::is_pcx(&bytes)
+            || room_formats::is_tga(&bytes)
+        {
+            SoftPatch::from_image(room_formats::decode_image(&bytes).ok()?)?
+        } else {
+            let parsed = parse_patch(&bytes).ok()?;
+            if parsed.width == 0 || parsed.height == 0 {
+                return None;
+            }
+            SoftPatch::from_patch(parsed)
+        };
         self.patches.insert(key.clone(), patch);
         self.patches.get(&key)
     }
@@ -243,6 +327,73 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn png_sprite_keeps_its_own_palette() {
+        // 1×1 indexed PNG: palette red, index 0, no tRNS → hole (ZDoom).
+        // Second pixel isn't needed; a 1×2 image: index 0 hole, index 1 green opaque.
+        let mut raw = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut raw, 2, 1);
+            encoder.set_color(png::ColorType::Indexed);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_palette(vec![0, 0, 0, 0, 255, 0]);
+            encoder.set_trns(vec![0, 255]);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[0, 1]).unwrap();
+        }
+        let dir = std::env::temp_dir().join(format!("room-png-sprite-{}", std::process::id()));
+        let sprites = dir.join("sprites");
+        std::fs::create_dir_all(&sprites).unwrap();
+        std::fs::write(sprites.join("POSSA1.png"), &raw).unwrap();
+        let vfs = room_vfs::VfsBuilder::new()
+            .mount_path(&dir)
+            .unwrap()
+            .build()
+            .unwrap();
+        let mut cache = PatchCache::from_vfs(&vfs);
+        let patch = cache.ensure(&vfs, "POSSA1").expect("png sprite");
+        assert_eq!((patch.width, patch.height), (2, 1));
+        let pal = [[9u8; 3]; 256];
+        let rgba = patch.scale_rgba(2, 1, &pal);
+        assert_eq!(&rgba[0..4], &[0, 0, 0, 0], "index 0 / tRNS stays a hole");
+        assert_eq!(
+            &rgba[4..8],
+            &[0, 255, 0, 255],
+            "colour comes from the PNG palette"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn brutal_pk3_png_sprites_decode() {
+        let Ok(pk3) = std::env::var("ROOM_BRUTALDOOM_PK3") else {
+            return;
+        };
+        if !std::path::Path::new(&pk3).is_file() {
+            return;
+        }
+        let vfs = room_vfs::VfsBuilder::new()
+            .mount_path(&pk3)
+            .unwrap()
+            .build()
+            .unwrap();
+        let mut cache = PatchCache::from_vfs(&vfs);
+        for name in ["PISTE0", "PISTI0", "PSPOA1"] {
+            let patch = cache
+                .ensure(&vfs, name)
+                .unwrap_or_else(|| panic!("{name} missing"));
+            assert!(patch.width > 8 && patch.height > 8, "{name} size");
+            let rgba = patch
+                .rgba
+                .as_deref()
+                .unwrap_or_else(|| panic!("{name} palette"));
+            assert!(
+                rgba.chunks(4).any(|px| px[3] > 0),
+                "{name} has a visible texel"
+            );
+        }
+    }
+
+    #[test]
     fn scale_rgba_keeps_opaque_texels() {
         let gun = SoftPatch {
             width: 2,
@@ -251,6 +402,7 @@ mod tests {
             top_offset: 0,
             indices: vec![1, 2],
             alpha: vec![255, 0],
+            rgba: None,
         };
         let mut pal = [[0u8; 3]; 256];
         pal[1] = [10, 20, 30];
@@ -271,6 +423,7 @@ mod tests {
             top_offset: 0,
             indices: vec![1, 1, 2, 2, 3, 3, 4, 4],
             alpha: vec![255; 8],
+            rgba: None,
         };
         let mut pal = [[0u8; 3]; 256];
         pal[1] = [255, 0, 0];
@@ -305,6 +458,7 @@ mod tests {
             top_offset: 0,
             indices: vec![0, 1, 0],
             alpha: vec![255, 255, 0],
+            rgba: None,
         };
         let mut pal = [[0u8; 3]; 256];
         pal[0] = [10, 20, 30];
@@ -329,6 +483,7 @@ mod tests {
             top_offset: 4,
             indices: vec![7; usize::from(w)],
             alpha: vec![255; usize::from(w)],
+            rgba: None,
         };
         cache.insert("possa1", pic(2));
         cache.insert("POSSA1", pic(5));

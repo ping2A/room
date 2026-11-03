@@ -83,6 +83,9 @@ that clean-room implementation is possible.
  **Battle Royale track:** **BR0**–**BR9** + **BE1**–**BE12** + **S-BR1** / **S-BR2** (MVP) / **S-BR4** done (`docs/28`, `docs/21` §0); **S-BR2** deferrals: OpenSkill, weekly reset.
  **Shader track:** **SHR** (§1.1 review fixes) then **SH0**–**SH1** + **SH5**/**SH10** (`docs/29-shaders.md`); catalogue CVars default off; combat-demo ephemeral.
  **Mod API / Shuriken:** **MA1**–**MA4** + **SK0**–**SK4** done (`docs/31`, `docs/32`); shuriken e2e green.
+ **ZScript VM track:** **ZS0**–**ZS10** scaffolded (`docs/34`, `docs/21` §0); GZDoom/BD e2e + Cranelift codegen still open.
+  **Brutal Doom track:** **BD0**–**BD9** done (`docs/33`, `docs/21` §0).
+  **UZDoom parity track:** **UZ0** done; **UZ1** and **UZ2** code complete; **UZ3** in progress (`docs/36` §7). **UZ8–UZ11** deferred.
 - Each crate has its own `README.md` stating its responsibility and public API
   surface. Keep public APIs small; prefer `pub(crate)`.
 - When a spec is ambiguous, look at the GZDoom source at
@@ -134,6 +137,10 @@ docs/
   31-mod-api-extensions.md     mod API: module states/actions, weapon/ammo/projectile props, generated sprites/sounds, slots, alt fire (MA1–MA4)
   32-shuriken-mod.md           shuriken weapon mod generated at startup — acceptance case for docs/31 (SK0–SK4)
   33-brutal-doom.md            running Brutal Doom v22: measured gaps (DECORATE, classes, flags, actions, ACS, ZScript) + plan (BD0–BD9)
+  34-zscript-vm.md             ZScript compiler + register VM (deterministic, GC, natives, optional JIT) — runs GZDoom ZScript mods (ZS0–ZS10)
+  35-engine-reference.md       one-page engine reference: layers, crate graph, load pipeline, tic/frame, scripting, netplay (diagrams)
+  36-uzdoom-parity.md          UZDoom (GZDoom successor) feature comparison, measured gaps, UZ0–UZ14 milestones
+  37-zscript-to-wasm.md        ZVM bytecode → WebAssembly (room-zvm-wasm): Tier-2 AOT (desktop/web) + standalone ABI v1 mods (room-zrt); ZW0–ZW7
   appendix-a-dependencies.md   allowed crates and policy
   appendix-b-gzdoom-source-map.md  GZDoom source → Room crate mapping
   appendix-c-glossary.md       terms

@@ -343,7 +343,7 @@ pub fn player_in_special_sector(world: &mut World, mo: ActorId) {
         .iter()
         .flatten()
         .any(|p| p.mo == Some(mo) && p.radsuit);
-    if dmg > 0 && !invul && world.level.time % 32 == 0 {
+    if dmg > 0 && sector_damage_applies(world, mo, invul) && world.level.time % 32 == 0 {
         if sector_damage_leaks(world, sid, radsuit) {
             damage_mobj(world, mo, None, None, dmg);
             if (special & 0x1f) == ST_DAMAGE_END {
@@ -359,12 +359,25 @@ pub fn player_in_special_sector(world: &mut World, mo: ActorId) {
     if let Some(dyn_s) = world.sectors.get(sid) {
         let amt = dyn_s.damage_amount;
         let iv = dyn_s.damage_interval.max(1) as u32;
-        if amt > 0 && !invul && world.level.time % iv == 0 {
+        if amt > 0 && sector_damage_applies(world, mo, invul) && world.level.time % iv == 0 {
             if sector_damage_leaks(world, sid, radsuit) {
                 damage_mobj(world, mo, None, None, amt);
             }
         }
     }
+}
+
+/// `+NOSECTORDAMAGE` skips floor damage. `+FORCESECTORDAMAGE` applies it even
+/// when the actor's player is invulnerable (UZ1).
+fn sector_damage_applies(world: &World, mo: ActorId, invul: bool) -> bool {
+    let Some(actor) = world.actors.get(mo) else {
+        return false;
+    };
+    let force = actor.extra_flags.get_name("FORCESECTORDAMAGE");
+    if actor.extra_flags.get_name("NOSECTORDAMAGE") && !force {
+        return false;
+    }
+    force || !invul
 }
 
 /// Radsuit blocks sector damage unless `leakiness`/256 succeeds (`P_Random`).
@@ -445,6 +458,32 @@ mod tests {
         assert_eq!(w.strobes[0].count, 1);
         assert_eq!(w.strobes[0].bright_time, STROBE_BRIGHT);
         assert_eq!(w.strobes[0].dark_time, STROBE_FAST_DARK);
+    }
+
+    #[test]
+    fn nosector_damage_and_force_flags() {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 64.0, 64.0), 0.0, 128.0)
+            .player_start(16.0, 16.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        assert!(sector_damage_applies(&w, mo, false));
+        assert!(!sector_damage_applies(&w, mo, true));
+        w.actors
+            .get_mut(mo)
+            .unwrap()
+            .extra_flags
+            .set_name("NOSECTORDAMAGE", true);
+        assert!(!sector_damage_applies(&w, mo, false));
+        w.actors
+            .get_mut(mo)
+            .unwrap()
+            .extra_flags
+            .set_name("FORCESECTORDAMAGE", true);
+        assert!(sector_damage_applies(&w, mo, true));
     }
 
     #[test]

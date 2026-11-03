@@ -134,6 +134,18 @@ pub enum DrawCmd {
         light: f32,
         /// Spectre-style fuzz (partial invisibility psprite).
         fuzz: bool,
+        /// `PSPF_FLIP`: mirror the patch left to right.
+        flip: bool,
+        /// `PSPF_MIRROR`: mirror the patch top to bottom.
+        mirror: bool,
+        /// Overlay rotation in degrees. 0 leaves the patch axis-aligned.
+        angle: f32,
+        /// Rotation pivot as a fraction of the patch. 0.5 is the center.
+        pivot_x: f32,
+        /// Rotation pivot Y.
+        pivot_y: f32,
+        /// RGB tint 0–1. White is untinted.
+        tint: [f32; 3],
     },
     /// Coloured line segment (automap).
     Line {
@@ -208,6 +220,44 @@ impl UiDrawList {
             inverse: false,
             light: light.clamp(0.0, 1.0),
             fuzz,
+            flip: false,
+            mirror: false,
+            angle: 0.0,
+            pivot_x: 0.5,
+            pivot_y: 0.5,
+            tint: [1.0, 1.0, 1.0],
+        });
+    }
+
+    /// Same as [`Self::patch_lit`] with `PSPF_FLIP`.
+    pub fn patch_lit_flip(
+        &mut self,
+        name: &str,
+        pos: Vec2,
+        size: Vec2,
+        light: f32,
+        fuzz: bool,
+        flip: bool,
+        mirror: bool,
+        angle: f32,
+        pivot_x: f32,
+        pivot_y: f32,
+        tint: [f32; 3],
+    ) {
+        self.cmds.push(DrawCmd::Patch {
+            name: name.to_owned(),
+            pos,
+            size,
+            apply_offsets: false,
+            inverse: false,
+            light: light.clamp(0.0, 1.0),
+            fuzz,
+            flip,
+            mirror,
+            angle,
+            pivot_x,
+            pivot_y,
+            tint,
         });
     }
 
@@ -231,6 +281,12 @@ impl UiDrawList {
             inverse: false,
             light: 1.0,
             fuzz: false,
+            flip: false,
+            mirror: false,
+            angle: 0.0,
+            pivot_x: 0.5,
+            pivot_y: 0.5,
+            tint: [1.0, 1.0, 1.0],
         });
     }
 }

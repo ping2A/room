@@ -12,6 +12,7 @@ mod runtime;
 mod save;
 mod sound;
 mod vanilla_lmp;
+mod zscript_load;
 
 pub use demo::{
     DemoBundle, DemoError, DemoPlayer, DemoRecorder, DemoVerifyResult, FDBN_FORMAT_VERSION,
@@ -28,12 +29,13 @@ pub use headless::{
     keyconf_default_binds,
 };
 pub use mods::{MANIFEST_LUMP, discover_mods, discover_python_mods};
-pub use native_mods::{NativePlayMod, PythonModSource};
 pub use music::{
     doom1_music_lump, doom2_music_lump, intermission_music_candidates, play_first_music_lump,
     play_map_music, play_music_lump, resolve_map_music, title_music_candidates,
 };
+pub use native_mods::{NativePlayMod, PythonModSource};
 pub use runtime::{GameCmd, GameRuntime};
 pub use save::{SaveError, SaveInfo, load_world, read_save_info, save_world, validate_world_bin};
 pub use sound::SoundSystem;
 pub use vanilla_lmp::VanillaLmp;
+pub use zscript_load::{ZscriptLoadReport, load_zscript_from_vfs, log_zscript_report};

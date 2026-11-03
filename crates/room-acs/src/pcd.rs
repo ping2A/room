@@ -212,6 +212,14 @@ pub const ENDPRINTBOLD: u32 = 101;
 pub const ACTIVATORSOUND: u32 = 102;
 /// `PCD_LOCALAMBIENTSOUND`
 pub const LOCALAMBIENTSOUND: u32 = 103;
+/// `PCD_MOREHUDMESSAGE` — begin HUD message construction from print buffer.
+pub const MOREHUDMESSAGE: u32 = 159;
+/// `PCD_OPTHUDMESSAGE` — optional HUD message params (type/id/color/…).
+pub const OPTHUDMESSAGE: u32 = 160;
+/// `PCD_ENDHUDMESSAGE`
+pub const ENDHUDMESSAGE: u32 = 161;
+/// `PCD_ENDHUDMESSAGEBOLD`
+pub const ENDHUDMESSAGEBOLD: u32 = 162;
 /// `PCD_SETFONT`
 pub const SETFONT: u32 = 165;
 /// `PCD_SETFONTDIRECT`
@@ -224,6 +232,32 @@ pub const FADETO: u32 = 190;
 pub const FADERANGE: u32 = 191;
 /// `PCD_CANCELFADE`
 pub const CANCELFADE: u32 = 192;
+/// `PCD_CALL` — call ACS function (`FUNC` index as NEXTBYTE).
+pub const CALL: u32 = 203;
+/// `PCD_CALLDISCARD` — call ACS function, discard return.
+pub const CALLDISCARD: u32 = 204;
+/// `PCD_RETURNVOID`
+pub const RETURNVOID: u32 = 205;
+/// `PCD_RETURNVAL`
+pub const RETURNVAL: u32 = 206;
+/// `PCD_PUSHMAPARRAY` — map array[index].
+pub const PUSHMAPARRAY: u32 = 207;
+/// `PCD_ASSIGNMAPARRAY`
+pub const ASSIGNMAPARRAY: u32 = 208;
+/// `PCD_ADDMAPARRAY`
+pub const ADDMAPARRAY: u32 = 209;
+/// `PCD_SUBMAPARRAY`
+pub const SUBMAPARRAY: u32 = 210;
+/// `PCD_MULMAPARRAY`
+pub const MULMAPARRAY: u32 = 211;
+/// `PCD_DIVMAPARRAY`
+pub const DIVMAPARRAY: u32 = 212;
+/// `PCD_MODMAPARRAY`
+pub const MODMAPARRAY: u32 = 213;
+/// `PCD_INCMAPARRAY`
+pub const INCMAPARRAY: u32 = 214;
+/// `PCD_DECMAPARRAY`
+pub const DECMAPARRAY: u32 = 215;
 /// `PCD_SIN` — BAM angle → fixed sine.
 pub const SIN: u32 = 220;
 /// `PCD_COS`
@@ -242,8 +276,14 @@ pub const GETSCREENWIDTH: u32 = 250;
 pub const GETSCREENHEIGHT: u32 = 251;
 /// `PCD_STRLEN`
 pub const STRLEN: u32 = 253;
+/// `PCD_SETHUDSIZE` — width, height, [, statusbar].
+pub const SETHUDSIZE: u32 = 254;
 /// `PCD_GETCVAR`
 pub const GETCVAR: u32 = 255;
+/// `PCD_SETMUGSHOTSTATE` — string state name for status bar face.
+pub const SETMUGSHOTSTATE: u32 = 341;
+/// `PCD_GETPLAYERINPUT` — playernum, input (buttons / mouse).
+pub const GETPLAYERINPUT: u32 = 344;
 /// `PCD_USEINVENTORY` (ACC / Hexen; was briefly misnumbered 335).
 pub const USEINVENTORY: u32 = 336;
 /// `PCD_USEACTORINVENTORY`
@@ -406,6 +446,36 @@ pub const THINGCOUNTSECTOR: u32 = 342;
 pub const THINGCOUNTNAMESECTOR: u32 = 343;
 /// `PCD_SCRIPTWAITNAMED` — wait for a named script (SNAM).
 pub const SCRIPTWAITNAMED: u32 = 361;
+/// `PCD_PUSHFUNCTION` — push a tagged function index (Eternity / ZDoom).
+pub const PUSHFUNCTION: u32 = 359;
+/// `PCD_CALLSTACK` — call function whose tagged index is on the stack.
+pub const CALLSTACK: u32 = 360;
+/// `PCD_SAVESTRING` — intern print buffer as a dynamic string (StrParam).
+pub const SAVESTRING: u32 = 352;
+/// `PCD_PRINTMAPCHRANGE` — print a range of map array chars.
+pub const PRINTMAPCHRANGE: u32 = 353;
+/// `PCD_PRINTWORLDCHRANGE`
+pub const PRINTWORLDCHRANGE: u32 = 354;
+/// `PCD_PRINTGLOBALCHRANGE`
+pub const PRINTGLOBALCHRANGE: u32 = 355;
+/// `PCD_STRCPYTOMAPCHRANGE` — copy string into map array range.
+pub const STRCPYTOMAPCHRANGE: u32 = 356;
+/// `PCD_STRCPYTOWORLDCHRANGE`
+pub const STRCPYTOWORLDCHRANGE: u32 = 357;
+/// `PCD_STRCPYTOGLOBALCHRANGE`
+pub const STRCPYTOGLOBALCHRANGE: u32 = 358;
+/// `PCD_PRINTMAPCHARARRAY` — append map array as chars to print buffer.
+pub const PRINTMAPCHARARRAY: u32 = 273;
+/// `PCD_PRINTWORLDCHARARRAY`
+pub const PRINTWORLDCHARARRAY: u32 = 274;
+/// `PCD_PRINTGLOBALCHARARRAY`
+pub const PRINTGLOBALCHARARRAY: u32 = 275;
+/// `PCD_PRINTSCRIPTCHARARRAY`
+pub const PRINTSCRIPTCHARARRAY: u32 = 378;
+/// `PCD_PRINTSCRIPTCHRANGE`
+pub const PRINTSCRIPTCHRANGE: u32 = 379;
+/// `PCD_STRCPYTOSCRIPTCHRANGE`
+pub const STRCPYTOSCRIPTCHRANGE: u32 = 380;
 
 /// ACSF indices (GZDoom `EACSFunctions`; starts at 1).
 pub mod acsf {
@@ -629,6 +699,12 @@ pub mod acsf {
     pub const CEIL: i32 = 209;
     /// `ACSF_ScriptCall` — ZScript bridge (bootstrap no-op).
     pub const SCRIPT_CALL: i32 = 210;
+    /// Zandronum `ConsolePlayerNumber` (negative ACSF; BD guards with `IsZandronum`).
+    pub const CONSOLE_PLAYER_NUMBER: i32 = -102;
+    /// Zandronum `PlayerIsSpectator`.
+    pub const PLAYER_IS_SPECTATOR: i32 = -101;
+    /// Zandronum `ResetMap`.
+    pub const RESET_MAP: i32 = -100;
     /// `ACSF_StartSlideshow`
     pub const START_SLIDESHOW: i32 = 211;
     /// `ACSF_GetSectorHealth`

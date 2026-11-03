@@ -34,6 +34,9 @@ pub fn call_action_args(
             return ActionResult::Continue;
         }
     }
+    // BD3: DECORATE is case-insensitive — canonicalise before the exact match.
+    let canonical = crate::action_known::canonical_action_name(name);
+    let name = canonical.unwrap_or(name);
     match name {
         "A_SkipUnlessHealthLower" => a_skip_unless_health_lower(world, self_id, args),
         "A_SkipUnlessHealth" => a_skip_unless_health(world, self_id, args),
@@ -135,6 +138,11 @@ pub fn call_action_args(
         "A_SetRipMax" => a_set_rip_max(world, self_id, args),
         "A_SetAngle" => a_set_angle(world, self_id, args),
         "A_SetPitch" => a_set_pitch(world, self_id, args),
+        "A_SetViewPitch" => a_set_view_pitch(world, self_id, args),
+        "A_SetViewAngle" => a_set_view_angle(world, self_id, args),
+        "A_SetViewRoll" => a_set_view_roll(world, self_id, args),
+        "SetViewPos" | "A_SetViewPos" => a_set_view_pos(world, self_id, args),
+        "A_SpriteOffset" => a_sprite_offset(world, self_id, args),
         "A_SetRoll" => a_set_roll(world, self_id, args),
         "A_SetFloatBobPhase" => a_set_float_bob_phase(world, self_id, args),
         "A_Weave" => a_weave(world, self_id, args),
@@ -156,6 +164,26 @@ pub fn call_action_args(
         "A_ChangeVelocity" => a_change_velocity(world, self_id, args),
         "A_ScaleVelocity" => a_scale_velocity(world, self_id, args),
         "A_Jump" => a_jump(world, self_id, args),
+        "A_JumpIf" => a_jump_if(world, self_id, args),
+        "A_ZoomFactor" => a_zoom_factor(world, self_id, args),
+        "A_SetCrosshair" => a_set_crosshair(world, self_id, args),
+        "A_ClearReFire" => a_clear_refire(world, self_id),
+        "A_SetInvulnerable" => a_set_invulnerable(world, self_id, true),
+        "A_UnSetInvulnerable" => a_set_invulnerable(world, self_id, false),
+        "A_NoGravity" => a_set_nogravity(world, self_id, true),
+        "A_Gravity" => a_set_nogravity(world, self_id, false),
+        "A_SetFloorClip" => a_set_floor_clip(world, self_id, true),
+        "A_UnSetFloorClip" => a_set_floor_clip(world, self_id, false),
+        "A_PlayWeaponSound" => a_play_weapon_sound(world, self_id, args),
+        "A_JumpIfNoAmmo" => a_jump_if_no_ammo(world, self_id, args),
+        "A_JumpIfInTargetLOS" => a_jump_if_in_target_los(world, self_id, args),
+        "A_FastChase" => a_fast_chase(world, self_id),
+        "A_BarrelDestroy" => a_barrel_destroy(world, self_id),
+        "A_MeleeAttack" => a_melee_attack(world, self_id, args),
+        // Weapon Select/Deselect actions live on the player psprite path
+        // (`think_player`); keep as known no-ops when called as actor actions.
+        "A_Lower" | "A_Raise" => ActionResult::Continue,
+        "A_SPosAttackUseAtkSound" => a_hitscan_attack(world, self_id, 3, "shotguy/attack"),
         "A_JumpIfHealthLower" => a_jump_if_health_lower(world, self_id, args),
         "A_JumpIfCloser" => a_jump_if_closer(world, self_id, args),
         "A_CheckFlag" => a_check_flag(world, self_id, args),
@@ -178,8 +206,12 @@ pub fn call_action_args(
         "A_SprayDecal" => a_spray_decal(world, self_id, args),
         "A_SpawnParticle" => a_spawn_particle(world, self_id, args),
         "A_ClearLastHeard" => a_clear_last_heard(world, self_id),
-        "A_PlaySound" | "A_StartSound" => a_play_sound(world, self_id, args),
-        "A_StopSound" => a_stop_sound(world, self_id),
+        "A_PlaySound" | "A_StartSound" | "A_PlaySoundEx" => a_play_sound(world, self_id, args),
+        "A_StartSoundIfNotSame" => a_start_sound_if_not_same(world, self_id, args),
+        "A_SoundVolume" => a_sound_volume(world, self_id, args),
+        "A_SoundPitch" => a_sound_pitch(world, self_id, args),
+        "A_StopAllSounds" => a_stop_all_sounds(world),
+        "A_StopSound" | "A_StopSoundEx" => a_stop_sound(world, self_id),
         "A_SetTranslation" => a_set_translation(world, self_id, args),
         "A_SetSprite" => a_set_sprite(world, self_id, args),
         "A_SetFrame" => a_set_frame(world, self_id, args),
@@ -488,8 +520,82 @@ pub fn call_action_args(
         "A_JumpIfQuake" => a_jump_if_quake(world, self_id, args),
         "A_JumpIfLaserHit" => a_jump_if_laser_hit(world, self_id, args),
         "A_SetBlend" => a_set_blend(world, args),
-        _ => ActionResult::Continue,
+        // ZScript action bodies (`A_MarineLook`, `A_M_FirePistol`, …).
+        other => {
+            let class_name = world
+                .actors
+                .get(self_id)
+                .and_then(|a| world.classes.get(a.class))
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            if world.zscript.resolve_method(&class_name, other).is_some() {
+                call_zscript_action(world, self_id, other)
+            } else {
+                // BD3: any Hexen/ZDoom line special name is valid as a state action.
+                try_special_as_action(world, self_id, other, args)
+            }
+        }
     }
+}
+
+/// Run a line special by name (`ACS_NamedExecuteAlways`, `Radius_Quake`, …).
+fn try_special_as_action(
+    world: &mut World,
+    self_id: ActorId,
+    name: &str,
+    args: &[String],
+) -> ActionResult {
+    // Named ACS: first arg is the script name string (not a line-special number —
+    // those collide with EE ceiling specials 267–269 in our table).
+    if crate::special_names::is_named_acs_action(name) {
+        let script = args
+            .first()
+            .map(|s| s.trim_matches('"').to_owned())
+            .unwrap_or_default();
+        if script.is_empty() {
+            return ActionResult::Continue;
+        }
+        let map = args
+            .get(1)
+            .and_then(|s| s.trim_matches('"').parse::<i32>().ok())
+            .unwrap_or(0);
+        let a1 = args
+            .get(2)
+            .and_then(|s| s.trim_matches('"').parse::<i32>().ok())
+            .unwrap_or(0);
+        let a2 = args
+            .get(3)
+            .and_then(|s| s.trim_matches('"').parse::<i32>().ok())
+            .unwrap_or(0);
+        let a3 = args
+            .get(4)
+            .and_then(|s| s.trim_matches('"').parse::<i32>().ok())
+            .unwrap_or(0);
+        let always = !name.eq_ignore_ascii_case("ACS_NamedExecute");
+        let _ = crate::acs::acs_named_execute_by_name(
+            world,
+            &script,
+            map,
+            [a1, a2, a3],
+            always,
+            Some(self_id),
+        );
+        return ActionResult::Continue;
+    }
+    let Some(special) = crate::special_names::special_number(name) else {
+        return ActionResult::Continue;
+    };
+    let mut sp_args = [0i32; 5];
+    for (i, slot) in sp_args.iter_mut().enumerate() {
+        if let Some(v) = args
+            .get(i)
+            .and_then(|s| s.trim_matches('"').parse::<i32>().ok())
+        {
+            *slot = v;
+        }
+    }
+    let _ = crate::specials::execute_special(world, special, &sp_args, Some(self_id), None);
+    ActionResult::Continue
 }
 
 /// Internal DecoBlock helper: if `health >= thresh`, skip the next `count` actions.
@@ -1261,6 +1367,115 @@ fn a_set_pitch(world: &mut World, self_id: ActorId, args: &[String]) -> ActionRe
     ActionResult::Continue
 }
 
+/// `A_SetViewPitch(degrees, flags)` — camera pitch, not the aim used by shots.
+fn a_set_view_pitch(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let Some(mut deg) = args
+        .first()
+        .and_then(|s| s.trim().trim_matches('"').parse::<f64>().ok())
+    else {
+        return ActionResult::Continue;
+    };
+    let flags = args
+        .get(1)
+        .and_then(|s| s.trim().trim_matches('"').parse::<i32>().ok())
+        .unwrap_or(0);
+    let ptr = args
+        .get(2)
+        .and_then(|s| s.trim().trim_matches('"').parse::<i32>().ok())
+        .unwrap_or(0);
+    // `AAPTR_DEFAULT` is 0. Other pointers stay on the caller this tick.
+    if ptr != 0 {
+        return ActionResult::Continue;
+    }
+    // `SPF_FORCECLAMP`: keep the look inside the player pitch range.
+    if flags & 1 != 0 {
+        deg = deg.clamp(-89.0, 89.0);
+    }
+    if let Some(a) = world.actors.get_mut(self_id) {
+        a.view_pitch = Some(Angle::from_degrees(deg));
+    }
+    ActionResult::Continue
+}
+
+/// `A_SetViewAngle(degrees, flags, ptr)` — camera yaw, not the body angle.
+fn a_set_view_angle(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let Some(deg) = args
+        .first()
+        .and_then(|s| s.trim().trim_matches('"').parse::<f64>().ok())
+    else {
+        return ActionResult::Continue;
+    };
+    let ptr = args
+        .get(2)
+        .and_then(|s| s.trim().trim_matches('"').parse::<i32>().ok())
+        .unwrap_or(0);
+    // `AAPTR_DEFAULT` is 0. Other pointers stay on the caller this tick.
+    if ptr != 0 {
+        return ActionResult::Continue;
+    }
+    if let Some(a) = world.actors.get_mut(self_id) {
+        a.view_angle = Some(Angle::from_degrees(deg));
+    }
+    ActionResult::Continue
+}
+
+/// `A_SetViewRoll(degrees, flags, ptr)` — camera bank, not the sprite roll.
+fn a_set_view_roll(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let Some(deg) = args
+        .first()
+        .and_then(|s| s.trim().trim_matches('"').parse::<f64>().ok())
+    else {
+        return ActionResult::Continue;
+    };
+    let ptr = args
+        .get(2)
+        .and_then(|s| s.trim().trim_matches('"').parse::<i32>().ok())
+        .unwrap_or(0);
+    // `AAPTR_DEFAULT` is 0. Other pointers stay on the caller this tick.
+    if ptr != 0 {
+        return ActionResult::Continue;
+    }
+    if let Some(a) = world.actors.get_mut(self_id) {
+        a.view_roll = Some(Angle::from_degrees(deg));
+    }
+    ActionResult::Continue
+}
+
+/// `SetViewPos(x, y, z, flags)` — move the camera eye, not the actor.
+fn a_set_view_pos(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let num = |slot: usize, default: f64| {
+        args.get(slot)
+            .and_then(|s| s.trim().trim_matches('"').parse::<f64>().ok())
+            .unwrap_or(default)
+    };
+    let mut flags = args
+        .get(3)
+        .and_then(|s| s.trim().trim_matches('"').parse::<i32>().ok())
+        .unwrap_or(0);
+    // The native default `-1` means a normal actor-relative offset.
+    if flags < 0 {
+        flags = 0;
+    }
+    if let Some(a) = world.actors.get_mut(self_id) {
+        a.view_pos = Some((num(0, 0.0), num(1, 0.0), num(2, 0.0), flags));
+    }
+    ActionResult::Continue
+}
+
+/// `A_SpriteOffset(x, y)` — shift the sprite right and up. Replaces the previous offset.
+fn a_sprite_offset(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let num = |slot: usize| {
+        args.get(slot)
+            .and_then(|s| s.trim().trim_matches('"').parse::<f64>().ok())
+            .unwrap_or(0.0)
+    };
+    if let Some(a) = world.actors.get_mut(self_id) {
+        a.sprite_ofs_x = num(0);
+        a.sprite_ofs_y = num(1);
+    }
+    ActionResult::Continue
+}
+
 /// `A_SetRoll(degrees)` — set roll (bank).
 fn a_set_roll(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
     if let Some(deg) = args
@@ -1633,28 +1848,282 @@ fn a_scale_velocity(world: &mut World, self_id: ActorId, args: &[String]) -> Act
 }
 
 /// `A_Jump(chance, "Label")` — random jump (chance 0..=256).
+///
+/// Weapon states run on the player pawn. The label is resolved on the ready
+/// gun (`psprite_weapon`) so `A_Jump(256, "Reload")` finds Brutal Doom's Reload.
 fn a_jump(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
     let chance = args
         .first()
         .and_then(|s| s.trim_matches('"').parse::<i32>().ok())
         .unwrap_or(0);
-    let label = args
-        .get(1)
-        .map(|s| s.trim_matches('"').to_owned())
-        .unwrap_or_default();
-    if chance <= 0 || label.is_empty() {
+    let labels: Vec<&str> = args
+        .iter()
+        .skip(1)
+        .map(|s| s.trim().trim_matches('"'))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if chance <= 0 || labels.is_empty() {
         return ActionResult::Continue;
     }
     let roll = i32::from(world.p_random("pr_jump"));
-    if roll >= chance {
+    // Chance is out of 256. 256 means always (the roll is 0..=255).
+    if chance < 256 && roll >= chance {
         return ActionResult::Continue;
     }
-    let class = world.actors.get(self_id).map(|a| a.class);
-    if let Some(class) = class {
-        if let Some(sid) = world.states.find_label(class, &label) {
-            return ActionResult::Jump(sid);
+    let pick = if labels.len() == 1 {
+        0
+    } else {
+        usize::from(world.p_random("pr_jump")) % labels.len()
+    };
+    let label = labels[pick];
+    let jumped = jump_to_label(world, self_id, label);
+    if matches!(jumped, ActionResult::Continue) {
+        let weapon = world
+            .psprite_weapon
+            .and_then(|c| world.classes.get(c))
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "-".into());
+        let actor = world
+            .actors
+            .get(self_id)
+            .and_then(|a| world.classes.get(a.class))
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "-".into());
+        world.push_debug(format!(
+            "JUMP miss '{label}' weapon={weapon} actor={actor} tic={}",
+            world.level.maptime
+        ));
+    }
+    jumped
+}
+
+/// `A_JumpIf(expression, "Label"|offset)` — jump when expression is non-zero (BD3).
+fn a_jump_if(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let cond = args.first().map(|s| s.as_str()).unwrap_or("0");
+    let dest = args
+        .get(1)
+        .map(|s| s.trim_matches('"').to_owned())
+        .unwrap_or_default();
+    if dest.is_empty() {
+        return ActionResult::Continue;
+    }
+    let evaluated = crate::deco_eval::eval_action_arg(world, self_id, cond);
+    let truthy = evaluated
+        .parse::<i64>()
+        .ok()
+        .map(|n| n != 0)
+        .unwrap_or_else(|| {
+            let t = evaluated.trim();
+            !t.is_empty() && !t.eq_ignore_ascii_case("false") && t != "0"
+        });
+    if !truthy {
+        return ActionResult::Continue;
+    }
+    if let Ok(offset) = dest.parse::<i32>() {
+        jump_by_offset(world, self_id, offset)
+    } else {
+        jump_to_label(world, self_id, &dest)
+    }
+}
+
+/// `A_ZoomFactor(scale)` — narrows the view. A factor of 2 halves the FOV.
+fn a_zoom_factor(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let scale = args
+        .first()
+        .and_then(|s| s.trim_matches('"').parse::<f32>().ok())
+        .unwrap_or(1.0);
+    if let Some(seat) = world.player_seat_of(self_id) {
+        if let Some(p) = world
+            .players
+            .get_mut(usize::from(seat))
+            .and_then(|s| s.as_mut())
+        {
+            p.weapon_zoom = scale.clamp(0.1, 10.0);
         }
     }
+    ActionResult::Continue
+}
+
+/// `A_SetCrosshair(id)` — center-screen mark. 0 draws nothing.
+fn a_set_crosshair(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let id = args
+        .first()
+        .and_then(|s| s.trim_matches('"').parse::<i32>().ok())
+        .unwrap_or(0);
+    if let Some(seat) = world.player_seat_of(self_id) {
+        if let Some(p) = world
+            .players
+            .get_mut(usize::from(seat))
+            .and_then(|s| s.as_mut())
+        {
+            p.crosshair = id;
+        }
+    }
+    ActionResult::Continue
+}
+
+fn a_clear_refire(world: &mut World, self_id: ActorId) -> ActionResult {
+    if let Some(seat) = world.player_seat_of(self_id) {
+        if let Some(p) = world
+            .players
+            .get_mut(usize::from(seat))
+            .and_then(|s| s.as_mut())
+        {
+            p.refire = 0;
+        }
+    }
+    ActionResult::Continue
+}
+
+fn a_set_invulnerable(world: &mut World, self_id: ActorId, on: bool) -> ActionResult {
+    if let Some(a) = world.actors.get_mut(self_id) {
+        if on {
+            a.flags |= crate::class::FLAG_INVULNERABLE;
+        } else {
+            a.flags &= !crate::class::FLAG_INVULNERABLE;
+        }
+    }
+    ActionResult::Continue
+}
+
+fn a_set_nogravity(world: &mut World, self_id: ActorId, on: bool) -> ActionResult {
+    if let Some(a) = world.actors.get_mut(self_id) {
+        if on {
+            a.flags |= crate::class::FLAG_NOGRAVITY;
+        } else {
+            a.flags &= !crate::class::FLAG_NOGRAVITY;
+        }
+    }
+    ActionResult::Continue
+}
+
+fn a_set_floor_clip(world: &mut World, self_id: ActorId, on: bool) -> ActionResult {
+    if let Some(a) = world.actors.get_mut(self_id) {
+        if on {
+            a.flags |= crate::class::FLAG_FLOORCLIP;
+        } else {
+            a.flags &= !crate::class::FLAG_FLOORCLIP;
+        }
+    }
+    ActionResult::Continue
+}
+
+/// `A_PlayWeaponSound("sfx")` — play a weapon cue at the caller.
+fn a_play_weapon_sound(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    a_play_sound(world, self_id, args)
+}
+
+/// `A_JumpIfNoAmmo("Label")` — jump when the ready / psprite weapon lacks ammo.
+fn a_jump_if_no_ammo(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let label = args
+        .first()
+        .map(|s| s.trim_matches('"').to_owned())
+        .unwrap_or_default();
+    if label.is_empty() {
+        return ActionResult::Continue;
+    }
+    let weapon = world.psprite_weapon.or_else(|| {
+        world
+            .players
+            .iter()
+            .flatten()
+            .find(|p| p.mo == Some(self_id))
+            .and_then(|p| p.ready_weapon)
+    });
+    let Some(wpn) = weapon else {
+        return jump_to_label(world, self_id, &label);
+    };
+    if crate::think_player::has_ammo(world, self_id, wpn) {
+        ActionResult::Continue
+    } else {
+        jump_to_label(world, self_id, &label)
+    }
+}
+
+/// `A_JumpIfInTargetLOS("Label" [, fov [, flags [, dist_max [, dist_close]]]])`.
+/// Jump when the caller is visible to its target (target→self sight).
+fn a_jump_if_in_target_los(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let label = args
+        .first()
+        .map(|s| s.trim_matches('"').to_owned())
+        .unwrap_or_default();
+    if label.is_empty() {
+        return ActionResult::Continue;
+    }
+    let Some(tid) = resolve_target(world, self_id) else {
+        return ActionResult::Continue;
+    };
+    let dist_max = args
+        .get(3)
+        .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
+        .unwrap_or(0.0);
+    if dist_max > 0.0 {
+        let Some((_, d)) = distance_to_target(world, self_id) else {
+            return ActionResult::Continue;
+        };
+        if d > dist_max {
+            return ActionResult::Continue;
+        }
+    }
+    if crate::sight::check_sight(world, tid, self_id) {
+        jump_to_label(world, self_id, &label)
+    } else {
+        ActionResult::Continue
+    }
+}
+
+/// `A_FastChase` — `A_Chase` with nightmare/fast movement forced on.
+fn a_fast_chase(world: &mut World, self_id: ActorId) -> ActionResult {
+    let prev = world.fast_monsters;
+    world.fast_monsters = true;
+    let r = a_chase(world, self_id);
+    world.fast_monsters = prev;
+    r
+}
+
+/// `A_BarrelDestroy` — remove without the explosive death sequence.
+fn a_barrel_destroy(world: &mut World, self_id: ActorId) -> ActionResult {
+    if let Some(a) = world.actors.get_mut(self_id) {
+        a.health = 0;
+        a.flags &= !(crate::class::FLAG_SOLID | crate::class::FLAG_SHOOTABLE);
+        a.destroyed = true;
+        a.state = None;
+    }
+    ActionResult::Continue
+}
+
+/// `A_MeleeAttack([damage [, sound]])` — face target and melee if in range.
+fn a_melee_attack(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let _ = a_face_target(world, self_id);
+    let damage = args
+        .first()
+        .and_then(|s| s.trim_matches('"').parse::<i32>().ok())
+        .unwrap_or(0);
+    let sound = args
+        .get(1)
+        .map(|s| s.trim_matches('"').to_owned())
+        .filter(|s| !s.is_empty());
+    let range = world
+        .actors
+        .get(self_id)
+        .map(|a| class_melee_range(world, a.class))
+        .unwrap_or(64.0);
+    let Some(tid) = player_in_melee_range(world, self_id, range).or_else(|| {
+        resolve_target(world, self_id).filter(|&t| check_melee_range(world, self_id, t))
+    }) else {
+        return ActionResult::Continue;
+    };
+    if let Some(ref s) = sound {
+        if let Some(a) = world.actors.get(self_id) {
+            world.play_sound(s, a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
+        }
+    }
+    let dmg = if damage > 0 {
+        damage
+    } else {
+        melee_dice(world, 10, 4)
+    };
+    crate::damage::damage_mobj(world, tid, Some(self_id), Some(self_id), dmg);
     ActionResult::Continue
 }
 
@@ -1674,18 +2143,20 @@ fn a_jump_if_health_lower(world: &mut World, self_id: ActorId, args: &[String]) 
     if a.health >= thresh || label.is_empty() {
         return ActionResult::Continue;
     }
-    let class = a.class;
-    if let Some(sid) = world.states.find_label(class, &label) {
-        ActionResult::Jump(sid)
-    } else {
-        ActionResult::Continue
-    }
+    jump_to_label(world, self_id, &label)
 }
 
 /// Resolve a class state label for `self_id`, if present.
+///
+/// A bare integer is a state-table offset (`A_Jump(128, 2)`), which Brutal
+/// Doom uses to pick an alternate sprite. Treating it as a label name misses
+/// and leaves the actor on the `TNT1` frame it was trying to skip.
 fn jump_to_label(world: &World, self_id: ActorId, label: &str) -> ActionResult {
     if label.is_empty() {
         return ActionResult::Continue;
+    }
+    if let Ok(offset) = label.parse::<i32>() {
+        return jump_by_offset(world, self_id, offset);
     }
     let Some(class) = world
         .psprite_weapon
@@ -1695,6 +2166,24 @@ fn jump_to_label(world: &World, self_id: ActorId, label: &str) -> ActionResult {
     };
     if let Some(sid) = world.states.find_label(class, label) {
         ActionResult::Jump(sid)
+    } else {
+        ActionResult::Continue
+    }
+}
+
+/// Relative jump by state-table index (`CallingState + offset` in GZDoom).
+///
+/// Weapon actions offset the psprite state, not the player pawn's state.
+fn jump_by_offset(world: &World, self_id: ActorId, offset: i32) -> ActionResult {
+    let cur = world
+        .psprite_state
+        .or_else(|| world.actors.get(self_id).and_then(|a| a.state));
+    let Some(cur) = cur else {
+        return ActionResult::Continue;
+    };
+    let dest = (i64::from(cur.raw()) + i64::from(offset)).max(0) as u32;
+    if world.states.get(StateId::from_raw(dest)).is_some() {
+        ActionResult::Jump(StateId::from_raw(dest))
     } else {
         ActionResult::Continue
     }
@@ -1862,6 +2351,293 @@ fn a_jump_if_closer(world: &mut World, self_id: ActorId, args: &[String]) -> Act
     }
 }
 
+/// Run a ZScript action body, then apply the actor natives it queued.
+pub fn call_zscript_action(world: &mut World, self_id: ActorId, name: &str) -> ActionResult {
+    let class_name = world
+        .actors
+        .get(self_id)
+        .and_then(|a| world.classes.get(a.class))
+        .map(|c| c.name.clone())
+        .unwrap_or_default();
+    if world.zscript.resolve_method(&class_name, name).is_none() {
+        return ActionResult::Continue;
+    }
+    let has_target = world.actors.get(self_id).and_then(|a| a.target).is_some();
+    world
+        .zscript
+        .mark_actor_target(self_id.index(), &class_name, has_target);
+    let _ = world
+        .zscript
+        .call_actor_virtual(self_id.index(), &class_name, name);
+    apply_zscript_actor_ops(world, self_id);
+    ActionResult::Continue
+}
+
+fn render_style_from_mode(mode: i32) -> Option<crate::class::RenderStyle> {
+    Some(match mode {
+        0 => crate::class::RenderStyle::None,
+        1 => crate::class::RenderStyle::Normal,
+        2 => crate::class::RenderStyle::Fuzzy,
+        3 => crate::class::RenderStyle::SoulTrans,
+        4 => crate::class::RenderStyle::OptFuzzy,
+        5 => crate::class::RenderStyle::Stencil,
+        6 => crate::class::RenderStyle::Translucent,
+        7 => crate::class::RenderStyle::Add,
+        8 => crate::class::RenderStyle::Shaded,
+        9 => crate::class::RenderStyle::TranslucentStencil,
+        10 => crate::class::RenderStyle::Shadow,
+        11 => crate::class::RenderStyle::Subtract,
+        _ => return None,
+    })
+}
+
+fn play_class_sound(
+    world: &mut World,
+    self_id: ActorId,
+    pick: impl FnOnce(&crate::class::ClassDef) -> String,
+) {
+    let name = world
+        .actors
+        .get(self_id)
+        .and_then(|actor| world.classes.get(actor.class))
+        .map(pick)
+        .unwrap_or_default();
+    if !name.is_empty() {
+        let _ = call_action_args(world, self_id, "A_PlaySound", &[name]);
+    }
+}
+
+/// Apply `A_Look` / `LineAttack` / … queued by the last ZScript call.
+pub fn apply_zscript_actor_ops(world: &mut World, self_id: ActorId) {
+    let ops = world.zscript.take_actor_ops();
+    for op in ops {
+        match op {
+            room_zvm::ZsActorOp::Look => {
+                if let ActionResult::Jump(state) = a_look(world, self_id) {
+                    world.set_state(self_id, Some(state), false);
+                }
+            }
+            room_zvm::ZsActorOp::Chase => {
+                if let ActionResult::Jump(state) = a_chase(world, self_id) {
+                    world.set_state(self_id, Some(state), false);
+                }
+            }
+            room_zvm::ZsActorOp::Face => {
+                let _ = a_face_target(world, self_id);
+            }
+            room_zvm::ZsActorOp::Sound(name) => {
+                if !name.is_empty() {
+                    let _ = call_action_args(world, self_id, "A_PlaySound", &[name]);
+                }
+            }
+            room_zvm::ZsActorOp::ActiveSound => {
+                play_class_sound(world, self_id, |class| class.active_sound.clone());
+            }
+            room_zvm::ZsActorOp::SpawnSound => {
+                play_class_sound(world, self_id, |class| class.see_sound.clone());
+            }
+            room_zvm::ZsActorOp::CopyFriend {
+                change_target,
+                reset_health,
+            } => {
+                let source = world.actors.get(self_id).and_then(|actor| {
+                    actor
+                        .master
+                        .filter(|id| *id != self_id)
+                        .or_else(|| actor.target.filter(|id| *id != self_id))
+                });
+                let friendly = source
+                    .and_then(|id| world.actors.get(id))
+                    .map(|actor| (actor.flags & crate::class::FLAG_FRIENDLY) != 0);
+                let spawn_hp = world
+                    .actors
+                    .get(self_id)
+                    .and_then(|actor| world.classes.get(actor.class))
+                    .map(|class| class.health.max(1));
+                if let Some(actor) = world.actors.get_mut(self_id) {
+                    if let Some(friendly) = friendly {
+                        if friendly {
+                            actor.flags |= crate::class::FLAG_FRIENDLY;
+                        } else {
+                            actor.flags &= !crate::class::FLAG_FRIENDLY;
+                        }
+                    }
+                    if change_target && let Some(source) = source {
+                        actor.target = Some(source);
+                        if reset_health && let Some(hp) = spawn_hp {
+                            actor.health = hp;
+                        }
+                    }
+                }
+            }
+            room_zvm::ZsActorOp::ViewZ { z } => {
+                for slot in &mut world.players {
+                    if let Some(player) = slot
+                        && player.mo == Some(self_id)
+                    {
+                        player.view_ofs_z = z;
+                    }
+                }
+            }
+            room_zvm::ZsActorOp::RenderMode { mode } => {
+                if let Some(style) = render_style_from_mode(mode)
+                    && let Some(actor) = world.actors.get_mut(self_id)
+                {
+                    actor.render_style = style;
+                }
+            }
+            room_zvm::ZsActorOp::Shade { rgb } => {
+                if let Some(actor) = world.actors.get_mut(self_id) {
+                    actor.fill_color = rgb;
+                }
+            }
+            room_zvm::ZsActorOp::LocalHide { hide } => {
+                if let Some(actor) = world.actors.get_mut(self_id) {
+                    if hide {
+                        actor.flags |= crate::class::FLAG_DONTDRAW;
+                    } else {
+                        actor.flags &= !crate::class::FLAG_DONTDRAW;
+                    }
+                }
+            }
+            room_zvm::ZsActorOp::Splash => {
+                let vel_z = world
+                    .actors
+                    .get(self_id)
+                    .map(|actor| actor.vel.z())
+                    .unwrap_or(0.0);
+                crate::terrain::hit_floor_splash(world, self_id, vel_z);
+            }
+            room_zvm::ZsActorOp::Bleed { damage } => {
+                let pos = world.actors.get(self_id).map(|actor| actor.pos);
+                if let Some(pos) = pos {
+                    crate::hitscan::spawn_blood(world, self_id, pos, None, damage);
+                }
+            }
+            room_zvm::ZsActorOp::ClearCounters => {
+                let counted = world.actors.get(self_id).map(|actor| {
+                    (
+                        (actor.flags & crate::class::FLAG_COUNTKILL) != 0,
+                        (actor.flags & crate::class::FLAG_COUNTITEM) != 0,
+                    )
+                });
+                if let Some(actor) = world.actors.get_mut(self_id) {
+                    actor.flags &= !(crate::class::FLAG_COUNTKILL | crate::class::FLAG_COUNTITEM);
+                }
+                if let Some((had_kill, had_item)) = counted {
+                    if had_kill {
+                        world.level.total_kills = world.level.total_kills.saturating_sub(1);
+                    }
+                    if had_item {
+                        world.level.total_items = world.level.total_items.saturating_sub(1);
+                    }
+                }
+            }
+            room_zvm::ZsActorOp::ClearTid => {
+                if let Some(actor) = world.actors.get_mut(self_id) {
+                    actor.tid = 0;
+                }
+            }
+            room_zvm::ZsActorOp::RestoreDamage => {
+                let dmg = world
+                    .actors
+                    .get(self_id)
+                    .and_then(|actor| world.classes.get(actor.class).map(|class| class.damage));
+                if let Some(dmg) = dmg
+                    && let Some(actor) = world.actors.get_mut(self_id)
+                {
+                    actor.damage = dmg.max(0);
+                }
+            }
+            room_zvm::ZsActorOp::FitSector => {
+                let pose = world
+                    .actors
+                    .get(self_id)
+                    .map(|actor| (actor.pos.x(), actor.pos.y(), actor.pos.z(), actor.height));
+                if let Some((x, y, z, height)) = pose {
+                    let floor = crate::physics::floor_at_xy(world, x, y);
+                    let ceiling = crate::physics::ceiling_at_xy(world, x, y);
+                    if let Some(actor) = world.actors.get_mut(self_id) {
+                        let mut nz = z;
+                        if let Some(floor) = floor
+                            && nz < floor
+                        {
+                            nz = floor;
+                        }
+                        if let Some(ceiling) = ceiling {
+                            let top = ceiling - height;
+                            if nz > top {
+                                nz = top;
+                            }
+                        }
+                        actor.pos = DVec3::new(x, y, nz);
+                    }
+                }
+            }
+            room_zvm::ZsActorOp::WorldLink { linked } => {
+                if let Some(actor) = world.actors.get_mut(self_id) {
+                    if linked {
+                        actor.flags &= !crate::class::FLAG_NOBLOCKMAP;
+                    } else {
+                        actor.flags |= crate::class::FLAG_NOBLOCKMAP;
+                    }
+                }
+            }
+            room_zvm::ZsActorOp::ClearBounce => {
+                if let Some(actor) = world.actors.get_mut(self_id) {
+                    actor.flags &=
+                        !(crate::class::FLAG_BOUNCEONFLOORS | crate::class::FLAG_BOUNCEONWALLS);
+                }
+            }
+            room_zvm::ZsActorOp::Howl => {
+                play_class_sound(world, self_id, |class| {
+                    if class.howl_sound.is_empty() {
+                        class.pain_sound.clone()
+                    } else {
+                        class.howl_sound.clone()
+                    }
+                });
+            }
+            room_zvm::ZsActorOp::Idle { call_action } => {
+                let class = world.actors.get(self_id).map(|actor| actor.class);
+                if let Some(spawn) = class.and_then(|class| world.states.find_label(class, "Spawn"))
+                {
+                    world.set_state(self_id, Some(spawn), call_action);
+                }
+            }
+            room_zvm::ZsActorOp::Thrust { vx, vy } => {
+                if let Some(actor) = world.actors.get_mut(self_id) {
+                    actor.vel = DVec3::new(actor.vel.x() + vx, actor.vel.y() + vy, actor.vel.z());
+                }
+            }
+            room_zvm::ZsActorOp::LineAttack { range, damage } => {
+                let angle = world
+                    .actors
+                    .get(self_id)
+                    .map(|a| a.angle)
+                    .unwrap_or(room_core::Angle::ZERO);
+                let range = if range > 0.0 { range } else { 2048.0 };
+                let _ = crate::hitscan::line_attack(world, self_id, angle, range, damage);
+            }
+            room_zvm::ZsActorOp::Pain => {
+                let _ = call_action(world, self_id, "A_Pain");
+            }
+            room_zvm::ZsActorOp::NoBlocking => {
+                let _ = call_action(world, self_id, "A_NoBlocking");
+            }
+            room_zvm::ZsActorOp::Action { name, args } => {
+                let last = args
+                    .iter()
+                    .rposition(|n| *n != 0)
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+                let text: Vec<String> = args[..last].iter().map(|n| n.to_string()).collect();
+                let _ = call_action_args(world, self_id, &name, &text);
+            }
+        }
+    }
+}
+
 /// `A_CheckRange(dist, "Label")` — jump if target is farther than `dist` (or missing).
 fn a_check_range(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
     let dist = args
@@ -2009,8 +2785,9 @@ fn a_check_block(world: &mut World, self_id: ActorId, args: &[String]) -> Action
         let dy = xofs * s + yofs * c;
         DVec3::new(a.pos.x() + dx, a.pos.y() + dy, a.pos.z() + zofs)
     };
-    let mut probe = a;
-    probe.pos = pos;
+    // Keep `probe.pos` at the caller origin so one-sided `on_back_side` skips
+    // still see a front-side actor (MapBuilder right-hand fronts / Build overlap).
+    let probe = a;
     let check = crate::physics::check_position(world, &probe, pos, Some(self_id));
     let actor_hit = check.blocking_actor.is_some();
     let line_hit = check.blocking_line.is_some() || (!check.ok && !actor_hit);
@@ -2219,17 +2996,30 @@ fn a_clear_last_heard(world: &mut World, self_id: ActorId) -> ActionResult {
 }
 
 /// `A_SprayDecal("Name" [, dist])` — queue a DECALDEF decal at self (optional forward offset).
+///
+/// Empty / omitted name falls back to the actor class `Decal` property (BD2/BD3).
 fn a_spray_decal(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
-    let name = args
+    let arg_name = args
         .first()
         .map(|s| s.trim_matches('"').to_owned())
         .filter(|s| !s.is_empty());
-    let Some(name) = name else {
-        return ActionResult::Continue;
-    };
     let dist = parse_f64_arg(args, 1, 0.0);
     let Some(a) = world.actors.get(self_id).cloned() else {
         return ActionResult::Continue;
+    };
+    let name = match arg_name {
+        Some(n) => n,
+        None => {
+            let class_decal = world
+                .classes
+                .get(a.class)
+                .map(|c| c.decal.clone())
+                .unwrap_or_default();
+            if class_decal.is_empty() {
+                return ActionResult::Continue;
+            }
+            class_decal
+        }
     };
     let rad = a.angle.radians();
     let x = a.pos.x() + dmath::cos(rad) * dist;
@@ -2268,6 +3058,24 @@ fn a_spawn_particle(world: &mut World, self_id: ActorId, args: &[String]) -> Act
     ActionResult::Continue
 }
 
+/// `A_StopAllSounds` — drop every queued sound and tell the mixer to stop.
+fn a_stop_all_sounds(world: &mut World) -> ActionResult {
+    world.sound_events.clear();
+    world.sound_events.push(crate::world::SimSoundEvent {
+        name: String::new(),
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+        volume: 0.0,
+        pitch: 1.0,
+        channel: 0,
+        adjust: crate::world::SimSoundAdjust::StopAll,
+        attenuation: 0.0,
+        seat: None,
+    });
+    ActionResult::Continue
+}
+
 /// `A_StopSound` — drop queued SFX events near this actor (channel tracking later).
 fn a_stop_sound(world: &mut World, self_id: ActorId) -> ActionResult {
     let Some(a) = world.actors.get(self_id) else {
@@ -2279,6 +3087,121 @@ fn a_stop_sound(world: &mut World, self_id: ActorId) -> ActionResult {
         let dy = ev.y - y;
         let dz = ev.z - z;
         dx * dx + dy * dy + dz * dz >= 1.0
+    });
+    ActionResult::Continue
+}
+
+/// `A_SoundPitch(channel, pitch)` — retune the rate of a queued or playing sound.
+fn a_sound_pitch(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let Some(a) = world.actors.get(self_id) else {
+        return ActionResult::Continue;
+    };
+    let (x, y, z) = (a.pos.x(), a.pos.y(), a.pos.z());
+    let channel = parse_i32_arg(args, 0, 0);
+    #[allow(clippy::cast_possible_truncation)]
+    let pitch = parse_f64_arg(args, 1, 1.0).clamp(0.01, 4.0) as f32;
+    for ev in &mut world.sound_events {
+        if ev.adjust != crate::world::SimSoundAdjust::Start || ev.channel != channel {
+            continue;
+        }
+        let dx = ev.x - x;
+        let dy = ev.y - y;
+        let dz = ev.z - z;
+        if dx * dx + dy * dy + dz * dz < 1.0 {
+            ev.pitch = pitch;
+        }
+    }
+    world.sound_events.push(crate::world::SimSoundEvent {
+        name: String::new(),
+        x,
+        y,
+        z,
+        volume: 1.0,
+        pitch,
+        channel,
+        adjust: crate::world::SimSoundAdjust::Pitch,
+        attenuation: 1.0,
+        seat: None,
+    });
+    ActionResult::Continue
+}
+
+/// `A_SoundVolume(channel, volume)` — retune a queued or playing sound on this actor.
+fn a_sound_volume(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let Some(a) = world.actors.get(self_id) else {
+        return ActionResult::Continue;
+    };
+    let (x, y, z) = (a.pos.x(), a.pos.y(), a.pos.z());
+    let channel = parse_i32_arg(args, 0, 0);
+    #[allow(clippy::cast_possible_truncation)]
+    let volume = parse_f64_arg(args, 1, 1.0).clamp(0.0, 1.0) as f32;
+    for ev in &mut world.sound_events {
+        if ev.adjust != crate::world::SimSoundAdjust::Start || ev.channel != channel {
+            continue;
+        }
+        let dx = ev.x - x;
+        let dy = ev.y - y;
+        let dz = ev.z - z;
+        if dx * dx + dy * dy + dz * dz < 1.0 {
+            ev.volume = volume;
+        }
+    }
+    world.sound_events.push(crate::world::SimSoundEvent {
+        name: String::new(),
+        x,
+        y,
+        z,
+        volume,
+        pitch: 1.0,
+        channel,
+        adjust: crate::world::SimSoundAdjust::Volume,
+        attenuation: 1.0,
+        seat: None,
+    });
+    ActionResult::Continue
+}
+
+/// `A_StartSoundIfNotSame(name, channel)` — skip when that name is already queued here.
+fn a_start_sound_if_not_same(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let Some(name) = args
+        .first()
+        .map(|s| s.trim().trim_matches('"').to_owned())
+        .filter(|s| !s.is_empty())
+    else {
+        return ActionResult::Continue;
+    };
+    let Some(a) = world.actors.get(self_id) else {
+        return ActionResult::Continue;
+    };
+    let (x, y, z) = (a.pos.x(), a.pos.y(), a.pos.z());
+    let channel = parse_i32_arg(args, 1, 0);
+    let wanted = name.to_ascii_lowercase();
+    let already = world.sound_events.iter().any(|ev| {
+        if ev.adjust != crate::world::SimSoundAdjust::Start || ev.channel != channel {
+            return false;
+        }
+        if ev.name.to_ascii_lowercase() != wanted {
+            return false;
+        }
+        let dx = ev.x - x;
+        let dy = ev.y - y;
+        let dz = ev.z - z;
+        dx * dx + dy * dy + dz * dz < 1.0
+    });
+    if already {
+        return ActionResult::Continue;
+    }
+    world.sound_events.push(crate::world::SimSoundEvent {
+        name,
+        x,
+        y,
+        z,
+        volume: 1.0,
+        pitch: 1.0,
+        channel,
+        adjust: crate::world::SimSoundAdjust::Start,
+        attenuation: 1.0,
+        seat: None,
     });
     ActionResult::Continue
 }
@@ -2428,11 +3351,16 @@ fn a_jump_if_inventory(world: &mut World, self_id: ActorId, args: &[String]) -> 
     let Some(cid) = world.classes.find_name(&item) else {
         return ActionResult::Continue;
     };
-    let have = world.inventory.count(self_id, cid);
-    if have >= amount {
-        jump_to_label(world, self_id, &label)
+    let owner = world.inventory_beneficiary.unwrap_or(self_id);
+    let have = world.inventory.count(owner, cid);
+    if have < amount {
+        return ActionResult::Continue;
+    }
+    // Brutal Doom weapons jump by state offset (`A_JumpIfInventory("Mag", 1, 2)`).
+    if let Ok(offset) = label.parse::<i32>() {
+        jump_by_offset(world, self_id, offset)
     } else {
-        ActionResult::Continue
+        jump_to_label(world, self_id, &label)
     }
 }
 
@@ -2489,9 +3417,32 @@ fn a_give_inventory(world: &mut World, self_id: ActorId, args: &[String]) -> Act
         return ActionResult::Continue;
     }
     if let Some(cid) = world.classes.find_name(&item) {
-        let _ = crate::inventory::give_inventory(world, self_id, cid, amount);
+        let owner = world.inventory_beneficiary.unwrap_or(self_id);
+        let had = world.inventory.count(owner, cid);
+        let _ = crate::inventory::give_inventory(world, owner, cid, amount);
+        if had == 0
+            && world.classes.get(cid).is_some_and(|c| c.is_weapon)
+            && world.inventory.count(owner, cid) > 0
+        {
+            arm_new_weapon(world, owner, cid);
+        }
     }
     ActionResult::Continue
+}
+
+fn arm_new_weapon(world: &mut World, owner: ActorId, cid: room_core::ClassId) {
+    for i in 0..crate::player::MAX_PLAYERS {
+        let Some(mut player) = world.players[i].take() else {
+            continue;
+        };
+        if player.mo != Some(owner) {
+            world.players[i] = Some(player);
+            continue;
+        }
+        crate::think_player::request_weapon_change(world, &mut player, owner, cid);
+        world.players[i] = Some(player);
+        break;
+    }
 }
 
 /// `A_DropItem("Item" [, amount [, chance]])` — spawn a dropped pickup at feet.
@@ -2548,7 +3499,8 @@ fn a_take_inventory(world: &mut World, self_id: ActorId, args: &[String]) -> Act
         return ActionResult::Continue;
     }
     if let Some(cid) = world.classes.find_name(&item) {
-        let _ = world.inventory.take(self_id, cid, amount);
+        let owner = world.inventory_beneficiary.unwrap_or(self_id);
+        let _ = world.inventory.take(owner, cid, amount);
     }
     ActionResult::Continue
 }
@@ -2567,7 +3519,8 @@ fn a_set_inventory(world: &mut World, self_id: ActorId, args: &[String]) -> Acti
         return ActionResult::Continue;
     }
     if let Some(cid) = world.classes.find_name(&item) {
-        crate::inventory::set_inventory(world, self_id, cid, amount);
+        let owner = world.inventory_beneficiary.unwrap_or(self_id);
+        crate::inventory::set_inventory(world, owner, cid, amount);
     }
     ActionResult::Continue
 }
@@ -2960,6 +3913,37 @@ fn a_spawn_item(world: &mut World, self_id: ActorId, args: &[String]) -> ActionR
     );
     let ang = Angle::from_degrees(src.angle.degrees() + ang_off);
     if let Ok(id) = world.spawn_at(cid, pos, ang) {
+        if world.level.maptime >= 1 {
+            let note = world.actors.get(id).and_then(|m| {
+                let class_flags = world.classes.get(m.class).map(|c| c.flags).unwrap_or(0);
+                if (m.flags | class_flags) & crate::class::FLAG_COUNTKILL == 0 {
+                    return None;
+                }
+                let who = world
+                    .classes
+                    .get(src.class)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| "?".into());
+                let name = world
+                    .classes
+                    .get(m.class)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| class_name.clone());
+                Some((
+                    name,
+                    who,
+                    m.pos.x(),
+                    m.pos.y(),
+                    m.pos.z(),
+                    world.level.maptime,
+                ))
+            });
+            if let Some((name, who, x, y, z, tic)) = note {
+                world.push_debug(format!(
+                    "SPAWN {name}#{id:?} by {who}#{self_id:?} @({x:.0},{y:.0},{z:.0}) tic={tic}"
+                ));
+            }
+        }
         if let Some(m) = world.actors.get_mut(id) {
             m.vel = DVec3::new(vx * c - vy * s, vx * s + vy * c, vz);
             m.target = src.target;
@@ -3327,16 +4311,20 @@ fn a_change_flag(world: &mut World, self_id: ActorId, args: &[String]) -> Action
         "RIPPER" => crate::class::FLAG_RIPPER,
         _ => 0,
     };
-    if bit != 0 {
-        if let Some(a) = world.actors.get_mut(self_id) {
+    if let Some(a) = world.actors.get_mut(self_id) {
+        if bit != 0 {
             if set {
                 a.flags |= bit;
             } else {
                 a.flags &= !bit;
             }
             if bit == crate::class::FLAG_FRIGHTENED {
-                a.frightened = set;
+                a.frightened = set && !a.extra_flags.get_name("NOFEAR");
             }
+        }
+        a.extra_flags.set_name(&name, set);
+        if a.extra_flags.get_name("NOFEAR") {
+            a.frightened = false;
         }
     }
     ActionResult::Continue
@@ -4584,7 +5572,7 @@ fn chase_move(world: &mut World, self_id: ActorId) -> bool {
             .filter(|&s| s > 0.0)
             .unwrap_or(8.0)
     };
-    if world.fast_monsters {
+    if world.fast_monsters || a.extra_flags.get_name("ALWAYSFAST") {
         let fast = if a.fast_speed > 0.0 {
             Some(a.fast_speed)
         } else {
@@ -6464,10 +7452,12 @@ fn a_boss_death(world: &mut World, self_id: ActorId) -> ActionResult {
         if id == self_id {
             return false;
         }
-        world
-            .actors
-            .get(id)
-            .is_some_and(|a| !a.destroyed && a.class == class && a.health > 0)
+        world.actors.get(id).is_some_and(|a| {
+            !a.destroyed
+                && a.class == class
+                && a.health > 0
+                && !a.extra_flags.get_name("BOSSSPAWNED")
+        })
     });
     if others_alive {
         return ActionResult::Continue;
@@ -6775,6 +7765,7 @@ fn a_skull_attack(world: &mut World, self_id: ActorId) -> ActionResult {
         .unwrap_or(0.0);
     if let Some(a) = world.actors.get_mut(self_id) {
         a.vel = DVec3::new(dmath::cos(ang) * speed, dmath::sin(ang) * speed, momz);
+        a.extra_flags.set_name("SKULLFLY", true);
     }
     world.play_sound("skull/melee", x, y, z, 1.0);
     ActionResult::Continue
@@ -6860,7 +7851,9 @@ fn a_custom_punch(world: &mut World, self_id: ActorId, args: &[String]) -> Actio
         })
         .unwrap_or(false);
     let flags = parse_i32_arg(args, 2, CPF_USEAMMO);
-    if flags & CPF_USEAMMO != 0 && world.psprite_weapon.is_some() && !deplete_ready_ammo(world, self_id)
+    if flags & CPF_USEAMMO != 0
+        && world.psprite_weapon.is_some()
+        && !deplete_ready_ammo(world, self_id)
     {
         return ActionResult::Continue;
     }
@@ -6924,7 +7917,9 @@ fn a_fire_bullets(world: &mut World, self_id: ActorId, args: &[String]) -> Actio
     let num = parse_i32_arg(args, 2, 1).max(1);
     let damage = parse_i32_arg(args, 3, 5).max(0);
     let flags = parse_i32_arg(args, 4, FBF_USEAMMO);
-    if flags & FBF_USEAMMO != 0 && world.psprite_weapon.is_some() && !deplete_ready_ammo(world, self_id)
+    if flags & FBF_USEAMMO != 0
+        && world.psprite_weapon.is_some()
+        && !deplete_ready_ammo(world, self_id)
     {
         return ActionResult::Continue;
     }
@@ -7079,18 +8074,17 @@ fn player_refire(world: &World, self_id: ActorId) -> i32 {
 
 /// Deplete ready-weapon ammo (docs/30 W2/W14). False → skip the shot.
 fn deplete_ready_ammo(world: &mut World, self_id: ActorId) -> bool {
-    let wpn = world.psprite_weapon.or_else(|| {
-        world
-            .players
-            .iter()
-            .flatten()
-            .find(|p| p.mo == Some(self_id))
-            .and_then(|p| p.ready_weapon)
-    });
+    let (wpn, alt) = world
+        .players
+        .iter()
+        .flatten()
+        .find(|p| p.mo == Some(self_id))
+        .map(|p| (p.ready_weapon.or(world.psprite_weapon), p.alt_fire_active))
+        .unwrap_or((world.psprite_weapon, false));
     let Some(wpn) = wpn else {
         return true;
     };
-    crate::think_player::deplete_ammo(world, self_id, wpn)
+    crate::think_player::deplete_ammo_mode(world, self_id, wpn, alt)
 }
 
 /// Chaingun Fire frame index → flash segment (A → 0, B → 1).
@@ -8872,6 +9866,10 @@ fn a_set_blend(world: &mut World, args: &[String]) -> ActionResult {
         .unwrap_or((0.0, 0.0, 0.0));
     let alpha = parse_f64_arg(args, 1, 0.0).clamp(0.0, 1.0) as f32;
     let duration = parse_i32_arg(args, 2, 0).max(0);
+    world.push_debug(format!(
+        "FADE blend ({:.2},{:.2},{:.2}) a={alpha:.2} tics={duration}",
+        color.0, color.1, color.2
+    ));
     let fade = &mut world.screen_fade;
     fade.target_r = color.0;
     fade.target_g = color.1;
@@ -10192,6 +11190,10 @@ actor ZombieMan : Actor 3004
             "should climb toward elevated target, vz={}",
             a.vel.z()
         );
+        assert!(
+            a.extra_flags.get_name("SKULLFLY"),
+            "A_SkullAttack sets SKULLFLY"
+        );
         assert!(a.vel.x() < 0.0, "should charge west toward player");
     }
 
@@ -10517,6 +11519,35 @@ actor Fatso : Actor 3002
         assert!(!w.level.exiting);
         assert_eq!(a_boss_death(&mut w, id), ActionResult::Continue);
         assert!(w.level.exiting);
+    }
+
+    #[test]
+    fn boss_spawned_copy_does_not_block_boss_death() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let cyber = classes.find_name("Cyberdemon").unwrap();
+        let id = w
+            .spawn_at(cyber, DVec3::new(200.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let copy = w
+            .spawn_at(cyber, DVec3::new(300.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        w.actors
+            .get_mut(copy)
+            .unwrap()
+            .extra_flags
+            .set_name("BOSSSPAWNED", true);
+        assert_eq!(a_boss_death(&mut w, id), ActionResult::Continue);
+        assert!(w.level.exiting, "a boss-spawned copy is not another boss");
     }
 
     #[test]
@@ -12180,6 +13211,245 @@ actor ZombieMan : Actor 3004
             .unwrap();
         assert_eq!(a_look(&mut w, id), ActionResult::Continue);
         assert!(w.drain_sound_events().is_empty());
+    }
+
+    #[test]
+    fn a_start_sound_if_not_same_skips_the_body_channel_only() {
+        let ir = parse_decorate(
+            r#"
+actor NoisySame : Actor 9998
+{
+  States
+  {
+  Spawn:
+    POSS A 1 A_PlaySound("weapons/pistol")
+    POSS A -1
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let noisy = classes.find_name("NoisySame").unwrap();
+        let spawn = states.find_label(noisy, "Spawn").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let id = w
+            .spawn_at(noisy, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        w.set_state(id, Some(spawn), true);
+        let _ = call_action_args(
+            &mut w,
+            id,
+            "A_StartSoundIfNotSame",
+            &["weapons/pistol".into()],
+        );
+        let body = w
+            .sound_events
+            .iter()
+            .filter(|e| e.name.eq_ignore_ascii_case("weapons/pistol") && e.channel == 0)
+            .count();
+        assert_eq!(body, 1, "{:?}", w.sound_events);
+        let _ = call_action_args(
+            &mut w,
+            id,
+            "A_StartSoundIfNotSame",
+            &["weapons/pistol".into(), "5".into()],
+        );
+        assert!(w.sound_events.iter().any(|e| {
+            e.name.eq_ignore_ascii_case("weapons/pistol")
+                && e.channel == 5
+                && e.adjust == crate::world::SimSoundAdjust::Start
+        }));
+        let _ = call_action_args(
+            &mut w,
+            id,
+            "A_StartSoundIfNotSame",
+            &["weapons/shotgf".into()],
+        );
+        assert!(
+            w.sound_events
+                .iter()
+                .any(|e| e.name == "weapons/shotgf" && e.channel == 0)
+        );
+        assert_eq!(
+            w.sound_events
+                .iter()
+                .filter(|e| e.name.eq_ignore_ascii_case("weapons/pistol") && e.channel == 0)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_stop_all_sounds_drops_every_queued_shot() {
+        let ir = parse_decorate(
+            r#"
+actor NoisyStop : Actor 9997
+{
+  States
+  {
+  Spawn:
+    POSS A 1 A_PlaySound("weapons/pistol")
+    POSS A -1
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let noisy = classes.find_name("NoisyStop").unwrap();
+        let spawn = states.find_label(noisy, "Spawn").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let id = w
+            .spawn_at(noisy, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        w.set_state(id, Some(spawn), true);
+        let _ = call_action_args(&mut w, id, "A_PlaySound", &["weapons/shotgf".into()]);
+        assert!(w.sound_events.iter().any(|e| e.name == "weapons/pistol"));
+        assert!(w.sound_events.iter().any(|e| e.name == "weapons/shotgf"));
+        let _ = call_action(&mut w, id, "A_StopAllSounds");
+        assert_eq!(w.sound_events.len(), 1);
+        assert_eq!(
+            w.sound_events[0].adjust,
+            crate::world::SimSoundAdjust::StopAll
+        );
+        assert!(w.sound_events.iter().all(|e| e.name != "weapons/pistol"));
+        assert!(w.sound_events.iter().all(|e| e.name != "weapons/shotgf"));
+    }
+
+    #[test]
+    fn a_sound_pitch_doubles_the_queued_body_channel() {
+        let ir = parse_decorate(
+            r#"
+actor NoisyPitch : Actor 9996
+{
+  States
+  {
+  Spawn:
+    POSS A 1 A_PlaySound("weapons/pistol")
+    POSS A -1
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let noisy = classes.find_name("NoisyPitch").unwrap();
+        let spawn = states.find_label(noisy, "Spawn").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let id = w
+            .spawn_at(noisy, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        w.set_state(id, Some(spawn), true);
+        assert!(
+            w.sound_events
+                .iter()
+                .any(|e| e.name == "weapons/pistol" && (e.pitch - 1.0).abs() < 1e-6)
+        );
+        let _ = call_action_args(&mut w, id, "A_SoundPitch", &["5".into(), "2".into()]);
+        assert!(
+            w.sound_events
+                .iter()
+                .any(|e| e.name == "weapons/pistol" && (e.pitch - 1.0).abs() < 1e-6)
+        );
+        let _ = call_action_args(&mut w, id, "A_SoundPitch", &["0".into(), "2".into()]);
+        assert!(w.sound_events.iter().any(|e| {
+            e.adjust == crate::world::SimSoundAdjust::Start
+                && e.name == "weapons/pistol"
+                && e.channel == 0
+                && (e.pitch - 2.0).abs() < 1e-6
+                && (e.volume - 1.0).abs() < 1e-6
+        }));
+        assert!(w.sound_events.iter().any(|e| {
+            e.adjust == crate::world::SimSoundAdjust::Pitch
+                && e.channel == 0
+                && (e.pitch - 2.0).abs() < 1e-6
+        }));
+    }
+
+    #[test]
+    fn a_sound_volume_retunes_the_queued_body_channel() {
+        let ir = parse_decorate(
+            r#"
+actor NoisyVol : Actor 9995
+{
+  States
+  {
+  Spawn:
+    POSS A 1 A_PlaySound("weapons/pistol")
+    POSS A -1
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let noisy = classes.find_name("NoisyVol").unwrap();
+        let spawn = states.find_label(noisy, "Spawn").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let id = w
+            .spawn_at(noisy, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        w.set_state(id, Some(spawn), true);
+        assert!(
+            w.sound_events
+                .iter()
+                .any(|e| e.name == "weapons/pistol" && (e.volume - 1.0).abs() < 1e-6)
+        );
+        let _ = call_action_args(&mut w, id, "A_SoundVolume", &["5".into(), "0.25".into()]);
+        assert!(
+            w.sound_events
+                .iter()
+                .any(|e| e.name == "weapons/pistol" && (e.volume - 1.0).abs() < 1e-6)
+        );
+        let _ = call_action_args(&mut w, id, "A_SoundVolume", &["0".into(), "0.25".into()]);
+        assert!(w.sound_events.iter().any(|e| {
+            e.adjust == crate::world::SimSoundAdjust::Start
+                && e.name == "weapons/pistol"
+                && e.channel == 0
+                && (e.volume - 0.25).abs() < 1e-6
+        }));
+        assert!(w.sound_events.iter().any(|e| {
+            e.adjust == crate::world::SimSoundAdjust::Volume
+                && e.channel == 0
+                && (e.volume - 0.25).abs() < 1e-6
+        }));
     }
 
     #[test]
@@ -14324,6 +15594,40 @@ actor Scout : Actor 9992
     }
 
     #[test]
+    fn a_spray_decal_falls_back_to_class_decal() {
+        let src = r#"
+actor DecalZombie : ZombieMan
+{
+  Decal "Scorch"
+}
+"#;
+        let base = include_str!("../../../testdata/actors/doom_basic.txt");
+        let combined = format!("{base}\n{src}");
+        let ir = parse_decorate(&combined).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let z = classes.find_name("DecalZombie").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let id = w
+            .spawn_at(z, DVec3::new(100.0, 100.0, 0.0), Angle::ZERO)
+            .unwrap();
+        assert_eq!(
+            call_action_args(&mut w, id, "A_SprayDecal", &[]),
+            ActionResult::Continue
+        );
+        let ev = w.drain_decal_events();
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].name, "Scorch");
+    }
+
+    #[test]
     fn a_set_and_swap_tele_fog() {
         let src = include_str!("../../../testdata/actors/doom_basic.txt");
         let ir = parse_decorate(src).unwrap();
@@ -14990,6 +16294,258 @@ actor Warper : Actor 9940
     }
 
     #[test]
+    fn a_jump_if_no_ammo_and_floor_clip() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let extra = r#"
+actor AmmoProbe : Actor 9911
+{
+  States
+  {
+  Spawn:
+    POSS A 1 A_JumpIfNoAmmo("Dry")
+    POSS A -1
+    Stop
+  Dry:
+    POSS B -1
+    Stop
+  }
+}
+"#;
+        let ir = parse_decorate(&format!("{src}\n{extra}")).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let pistol = classes.find_name("Pistol").unwrap();
+        let probe = classes.find_name("AmmoProbe").unwrap();
+        let spawn = states.find_label(probe, "Spawn").unwrap();
+        let dry = states.find_label(probe, "Dry").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let id = w
+            .spawn_at(probe, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        // Treat probe as the player mo holding an empty pistol.
+        if let Some(p) = w.players[0].as_mut() {
+            p.mo = Some(id);
+            p.ready_weapon = Some(pistol);
+        }
+        // Leave `psprite_weapon` clear so `jump_to_label` resolves on the actor
+        // (AmmoProbe), while ammo is still checked against the ready pistol.
+        w.psprite_weapon = None;
+        if let Some(clip) = classes.find_name("Clip") {
+            let _ = w.inventory.take(id, clip, 9999);
+        }
+        w.set_state(id, Some(spawn), true);
+        assert_eq!(w.actors.get(id).unwrap().state, Some(dry));
+        assert_eq!(
+            call_action_args(&mut w, id, "A_SetFloorClip", &[]),
+            ActionResult::Continue
+        );
+        assert_ne!(
+            w.actors.get(id).unwrap().flags & crate::class::FLAG_FLOORCLIP,
+            0
+        );
+        assert_eq!(
+            call_action_args(&mut w, id, "A_UnSetFloorClip", &[]),
+            ActionResult::Continue
+        );
+        assert_eq!(
+            w.actors.get(id).unwrap().flags & crate::class::FLAG_FLOORCLIP,
+            0
+        );
+    }
+
+    #[test]
+    fn zero_tic_loop_aborts_after_guard() {
+        let ir = parse_decorate(
+            r#"
+actor Spin : Actor 9949
+{
+  States
+  {
+  Spawn:
+    POSS A 0 A_Jump(256, "Spawn")
+    POSS B -1
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let spin = classes.find_name("Spin").unwrap();
+        let spawn = states.find_label(spin, "Spawn").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let id = w
+            .spawn_at(spin, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        w.set_state(id, Some(spawn), true);
+        // Guard leaves the actor on Spawn (last entered) without overflowing.
+        assert_eq!(w.actors.get(id).unwrap().state, Some(spawn));
+        assert!(
+            w.messages
+                .iter()
+                .any(|m| m.text.contains("state cycle limit")),
+            "expected cycle-limit warning"
+        );
+    }
+
+    #[test]
+    fn a_jump_numeric_offset_skips_the_tnt1_gap() {
+        let ir = parse_decorate(
+            r#"
+actor Z : Actor 9102
+{
+  States
+  {
+  Spawn:
+    POSS A 1
+    TNT1 A 0 A_Jump(256, 2)
+    POSS B 5
+    Stop
+    POSS C 5
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let zid = classes.find_name("Z").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let id = w
+            .spawn_at(
+                zid,
+                room_core::DVec3::new(64.0, 64.0, 0.0),
+                room_core::Angle::ZERO,
+            )
+            .unwrap();
+        w.tick();
+        let a = w.actors.get(id).unwrap();
+        assert_eq!(a.sprite, "POSS");
+        assert_eq!(
+            a.frame, 2,
+            "A_Jump(256, 2) must land on POSS C, not the TNT1 gap"
+        );
+    }
+
+    #[test]
+    fn a_jump_on_a_weapon_state_finds_the_gun_label() {
+        let ir = parse_decorate(
+            r#"
+actor Pawn : Actor 9947
+{
+  States { Spawn: TNT1 A -1 Stop }
+}
+actor Gun : Actor 9946
+{
+  States
+  {
+  Spawn:
+    TNT1 A -1
+    Stop
+  Reload:
+    TNT1 A 1
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let pawn = classes.find_name("Pawn").unwrap();
+        let gun = classes.find_name("Gun").unwrap();
+        let reload = states.find_label(gun, "Reload").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let id = w
+            .spawn_at(pawn, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        // The pawn has no Reload label. The ready gun does.
+        w.psprite_weapon = Some(gun);
+        assert_eq!(
+            call_action_args(&mut w, id, "A_Jump", &["256".into(), "Reload".into()]),
+            ActionResult::Jump(reload)
+        );
+        w.psprite_weapon = None;
+        assert_eq!(
+            call_action_args(&mut w, id, "A_Jump", &["256".into(), "Reload".into()]),
+            ActionResult::Continue
+        );
+        assert!(w.drain_debug().iter().any(|l| l.contains("JUMP miss")));
+    }
+
+    #[test]
+    fn special_as_action_acs_execute_runs() {
+        // ACS_Execute as a state action (numeric script) — no-op without BEHAVIOR,
+        // but must dispatch without treating the name as unknown.
+        let ir = parse_decorate(
+            r#"
+actor Spec : Actor 9948
+{
+  States
+  {
+  Spawn:
+    POSS A 1 ACS_Execute(1, 0)
+    POSS B -1
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let spec = classes.find_name("Spec").unwrap();
+        let spawn = states.find_label(spec, "Spawn").unwrap();
+        assert_eq!(
+            states.get(spawn).and_then(|s| s.action.as_deref()),
+            Some("ACS_Execute")
+        );
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let id = w
+            .spawn_at(spec, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        w.set_state(id, Some(spawn), true);
+        assert!(w.actors.get(id).is_some());
+    }
+
+    #[test]
     fn a_check_block_jumps_when_offset_hits_wall() {
         let ir = parse_decorate(
             r#"
@@ -15017,7 +16573,7 @@ actor Probe : Actor 9950
         let probe = classes.find_name("Probe").unwrap();
         let spawn = states.find_label(probe, "Spawn").unwrap();
         let hit = states.find_label(probe, "Hit").unwrap();
-        // Start near west wall facing west; +64 forward should leave the room.
+        // Start near west wall facing west; +24 forward should leave the room.
         let mut map = MapBuilder::new()
             .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
             .player_start(32.0, 32.0, 0)

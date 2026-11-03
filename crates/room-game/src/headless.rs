@@ -191,6 +191,10 @@ pub struct Headless {
     menudef: Option<room_defs::MenuDef>,
     /// Preloaded ACS library blobs (`LOADACS` / resolved `LOAD` chunk).
     acs_libraries: Vec<Vec<u8>>,
+    /// Compiled ZScript program (loaded into each new [`World`]).
+    zscript_program: Option<room_zvm::CompiledProgram>,
+    /// MAPINFO / GAMEINFO `AddEventHandlers` class names.
+    zscript_event_handlers: Vec<String>,
     /// Per-map `compatibility.txt` database (`sv_nomapfixes` clears this).
     compat_db: Option<Arc<room_map::CompatDatabase>>,
     /// Per-map `levelfixes.ron` geometry edits (`sv_nomapfixes` skips).
@@ -515,6 +519,8 @@ impl Headless {
             keyconf: None,
             menudef: None,
             acs_libraries: Vec::new(),
+            zscript_program: None,
+            zscript_event_handlers: Vec::new(),
             compat_db: None,
             level_fixes: None,
             sv_nomapfixes: false,
@@ -608,11 +614,8 @@ impl Headless {
             .merge_classes(&self.classes, &self.states)
             .map_err(|e| GameError::Message(format!("mod: {e}")))?;
         for slot in rt.weapon_slots() {
-            self.weapon_slots.add_slot_default_priority(
-                slot.slot,
-                &slot.class_name,
-                slot.priority,
-            );
+            self.weapon_slots
+                .add_slot_default_priority(slot.slot, &slot.class_name, slot.priority);
         }
         for def in classes.iter() {
             if def.slot_number != 0 {
@@ -878,6 +881,23 @@ impl Headless {
     }
 
     /// Install ACS library bytecode blobs (from `LOADACS` / VFS `acs/` lumps).
+    /// Install a compiled ZScript program and event-handler class names (`docs/34`).
+    pub fn set_zscript(
+        &mut self,
+        program: Option<room_zvm::CompiledProgram>,
+        handlers: impl IntoIterator<Item = String>,
+    ) {
+        self.zscript_program = program;
+        self.zscript_event_handlers = handlers.into_iter().collect();
+    }
+
+    /// True when a ZScript program is queued for map start.
+    #[must_use]
+    pub fn has_zscript(&self) -> bool {
+        self.zscript_program.is_some()
+    }
+
+    /// Install ACS library blobs resolved from `LOADACS`.
     pub fn set_acs_libraries(&mut self, libs: Vec<Vec<u8>>) {
         self.acs_libraries = libs;
     }
@@ -941,6 +961,7 @@ impl Headless {
             .with_flash(hud.flash_patch)
             .with_bob(hud.bob_x, hud.bob_y)
             .with_ammo_max(hud.ammo_max)
+            .with_ammo2(hud.ammo2, hud.ammo2_max)
             .with_inventory(hud.arms, hud.ammo_table)
             .with_palette(hud.palette)
             .with_colormap(hud.colormap)
@@ -1157,6 +1178,76 @@ impl Headless {
         // LOADACS / pre-resolved library blobs (after BEHAVIOR; OPEN already ran).
         for blob in &self.acs_libraries {
             let _ = room_sim::push_acs_library(&mut world, blob);
+        }
+        // ZScript program + MAPINFO event handlers (docs/34 / BD6).
+        if let Some(prog) = self.zscript_program.clone() {
+            let handlers = self.zscript_event_handlers.clone();
+            world.load_zscript_program(prog);
+            world.zscript.set_event_handlers(handlers.iter().cloned());
+            if world.zscript.event_handlers.is_empty() && !handlers.is_empty() {
+                eprintln!(
+                    "room: ZScript: runtime handler list empty after set — reapplying {:?}",
+                    handlers
+                );
+                world.zscript.set_event_handlers(handlers.iter().cloned());
+            }
+            let n_cls = world
+                .zscript
+                .program
+                .as_ref()
+                .map(|p| p.classes.len())
+                .unwrap_or(0);
+            let n_fn = world
+                .zscript
+                .program
+                .as_ref()
+                .map(|p| p.functions.len())
+                .unwrap_or(0);
+            eprintln!(
+                "room: ZScript: program active={} classes={n_cls} functions={n_fn} runtime_handlers=[{}]",
+                world.zscript.is_active(),
+                world.zscript.event_handlers.join(", ")
+            );
+            // GS_LEVEL = 0 in Room's host stub (BD DamageHandler early-out).
+            world.zscript.sync_host(skill.0, 0, 0);
+            match world.zscript.activate_map_handlers() {
+                Ok(()) => {
+                    // Local player seat 0 — BD Script_DamageMult grants on skill ≥ 6.
+                    world.arm_zscript_level();
+                    let n = world.zscript.handler_objs.len();
+                    eprintln!(
+                        "room: ZScript: activated {} handler(s) on {} (objs={n})",
+                        handlers.len(),
+                        self.map_name
+                    );
+                    if n != handlers.len() {
+                        eprintln!(
+                            "room: ZScript: handler object count {n} != requested {} (runtime=[{}])",
+                            handlers.len(),
+                            world.zscript.event_handlers.join(", ")
+                        );
+                    }
+                    if std::env::var_os("ROOM_ZSCRIPT_DEBUG").is_some_and(|v| v != "0") {
+                        for h in &handlers {
+                            let obj = world.zscript.handler_objs.get(h);
+                            eprintln!("room: ZScript handler {h}: obj={obj:?}");
+                        }
+                        for msg in world.zscript.take_printf() {
+                            eprintln!("room: ZScript printf: {msg}");
+                        }
+                        let grants = world.zscript.take_grants();
+                        if !grants.is_empty() {
+                            eprintln!("room: ZScript grants: {grants:?}");
+                        }
+                    }
+                }
+                Err(e) => eprintln!("room: ZScript: activate handlers failed: {e}"),
+            }
+        } else if !self.zscript_event_handlers.is_empty() {
+            eprintln!(
+                "room: ZScript: handlers {:?} set but no compiled program",
+                self.zscript_event_handlers
+            );
         }
         // ENTER on first visit; RETURN when restoring a hub snapshot.
         if hub_returning {
@@ -1531,6 +1622,20 @@ impl Headless {
     /// Console `kill monsters` (or bare `kill` = monsters in M5).
     pub fn cheat_kill_monsters(&mut self) -> u32 {
         self.world_mut().map(World::kill_monsters).unwrap_or(0)
+    }
+
+    /// Console `puke <script> [args]` — start ACS by number (`docs/33` BD5).
+    pub fn cheat_puke(&mut self, script: i32, args: [i32; 3], always: bool) -> i32 {
+        self.world_mut()
+            .map(|w| room_sim::puke_script(w, script, args, always))
+            .unwrap_or(0)
+    }
+
+    /// Console `pukename <name> [always] [args]`.
+    pub fn cheat_puke_named(&mut self, name: &str, args: [i32; 3], always: bool) -> i32 {
+        self.world_mut()
+            .map(|w| room_sim::puke_named(w, name, args, always))
+            .unwrap_or(0)
     }
 
     /// Console `kill` / `kill self` — fatal damage to local player pawn.

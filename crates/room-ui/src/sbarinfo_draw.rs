@@ -127,7 +127,7 @@ fn eval_block(kind: &str, args: &[String], hud: &HudState, deathmatch: bool) -> 
                     .any(|a| a.eq_ignore_ascii_case("cooperative") && !deathmatch)
         }
         "usesammo" => hud.ammo_max > 0 || hud.ammo > 0,
-        "usessecondaryammo" => false,
+        "usessecondaryammo" => hud.ammo2_max > 0 || hud.ammo2 > 0,
         "inventorybarnotvisible" => true,
         "weaponammo" | "ininventory" | "hasweaponpiece" | "isselected" | "playerclass"
         | "aspectratio" | "armortype" => true,
@@ -269,9 +269,10 @@ fn resolve_value(value: &str, hud: &HudState) -> i32 {
         "health" => hud.health,
         "armor" => hud.armor,
         "ammo1" | "ammo" => hud.ammo,
-        "ammo2" => 0,
+        "ammo2" => hud.ammo2,
         "frags" => hud.frags,
         "ammo1capacity" | "ammocapacity" => hud.ammo_max,
+        "ammo2capacity" => hud.ammo2_max,
         other => other.parse().unwrap_or(0),
     }
 }
@@ -339,5 +340,21 @@ mod tests {
                 .any(|c| matches!(c, DrawCmd::Text { text, .. } if text.contains("100"))),
             "expected health number"
         );
+    }
+
+    #[test]
+    fn resolve_ammo1_ammo2_and_usessecondary() {
+        let mut hud = HudState::doom_default();
+        hud.ammo = 12;
+        hud.ammo_max = 20;
+        hud.ammo2 = 50;
+        hud.ammo2_max = 200;
+        assert_eq!(resolve_value("ammo1", &hud), 12);
+        assert_eq!(resolve_value("ammo2", &hud), 50);
+        assert_eq!(resolve_value("ammo2capacity", &hud), 200);
+        assert!(eval_block("usessecondaryammo", &[], &hud, false));
+        hud.ammo2 = 0;
+        hud.ammo2_max = 0;
+        assert!(!eval_block("usessecondaryammo", &[], &hud, false));
     }
 }

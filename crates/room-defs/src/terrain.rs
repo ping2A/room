@@ -104,6 +104,7 @@ pub fn parse_terrain_for(text: &str, game: TerrainGame) -> Result<TerrainInfo, D
             // Non-C: keeps `world/watersplash` as one ident (like SNDINFO).
             c_mode: false,
             semicolon_comments: false,
+            ..Default::default()
         },
     );
     let mut info = TerrainInfo::default();

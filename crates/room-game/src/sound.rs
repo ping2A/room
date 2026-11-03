@@ -4,7 +4,7 @@ use room_audio::{ENGINE_SAMPLE_RATE, SampleBank, SoundEvent, SoundFlags, SoundOr
 use room_core::{DVec3, SoundId};
 use room_defs::{SoundRegistry, parse_sndinfo};
 use room_formats::decode_sound;
-use room_sim::SimSoundEvent;
+use room_sim::{SimSoundAdjust, SimSoundEvent};
 use room_vfs::{Namespace, Vfs};
 use std::collections::BTreeMap;
 
@@ -132,6 +132,31 @@ impl SoundSystem {
     ) -> Vec<SoundEvent> {
         let mut out = Vec::with_capacity(events.len());
         for (i, ev) in events.iter().enumerate() {
+            if ev.adjust == SimSoundAdjust::StopAll {
+                out.push(SoundEvent::StopAll);
+                continue;
+            }
+            if ev.adjust == SimSoundAdjust::Volume || ev.adjust == SimSoundAdjust::Pitch {
+                let origin = if ev.attenuation <= 0.0 {
+                    SoundOrigin::None
+                } else {
+                    SoundOrigin::Point(DVec3::new(ev.x, ev.y, ev.z))
+                };
+                if ev.adjust == SimSoundAdjust::Pitch {
+                    out.push(SoundEvent::SetPitch {
+                        origin,
+                        channel: ev.channel,
+                        pitch: ev.pitch,
+                    });
+                } else {
+                    out.push(SoundEvent::SetVolume {
+                        origin,
+                        channel: ev.channel,
+                        volume: ev.volume,
+                    });
+                }
+                continue;
+            }
             #[allow(clippy::cast_possible_truncation)]
             let idx = random_index.wrapping_mul(31).wrapping_add(i as u32);
             let Some(sound) = self.resolve(vfs, &ev.name, idx) else {
@@ -148,11 +173,11 @@ impl SoundSystem {
             };
             out.push(SoundEvent::Start {
                 origin,
-                channel: 0,
+                channel: ev.channel,
                 sound,
                 volume: ev.volume,
                 attenuation,
-                pitch: 1.0,
+                pitch: ev.pitch,
                 flags,
             });
         }
@@ -216,6 +241,9 @@ mod tests {
             y: 0.0,
             z: 0.0,
             volume: 1.0,
+            pitch: 1.0,
+            channel: 0,
+            adjust: SimSoundAdjust::Start,
             attenuation: 1.0,
             seat: None,
         }];
@@ -278,6 +306,9 @@ mod tests {
             y: 200.0,
             z: 0.0,
             volume: 1.0,
+            pitch: 1.0,
+            channel: 0,
+            adjust: SimSoundAdjust::Start,
             attenuation: 0.0,
             seat: None,
         }];

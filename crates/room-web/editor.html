@@ -10,12 +10,12 @@
   <header id="toolbar">
     <div class="brand">ROOM<span>editor</span></div>
     <div class="group">
-      <label class="btn" title="Replace the base game IWAD (Freedoom → retail Doom). Stays in the browser.">
-        IWAD…<input id="file-iwad" type="file" accept=".wad,.iwad,application/octet-stream" hidden />
+      <label class="btn" title="Replace the base game: Doom / Freedoom IWAD (.wad) or a PK3 / ZIP.">
+        IWAD…<input id="file-iwad" type="file" accept=".wad,.iwad,.pk3,.pk7,.zip,application/octet-stream,application/zip" hidden />
       </label>
       <span id="iwad-label" class="iwad-label" title="Base IWAD">—</span>
-      <label class="btn" title="Add PWADs, PK3s, or ZIPs on top of the IWAD (or drop files anywhere)">
-        Open…<input id="file-open" type="file" accept=".wad,.pk3,.zip,.pwad,application/zip" multiple hidden />
+      <label class="btn" title="Add PWADs, PK3s, PK7s, or ZIPs on top of the base archive (or drop files anywhere)">
+        Open…<input id="file-open" type="file" accept=".wad,.pk3,.pk7,.zip,.pwad,application/zip" multiple hidden />
       </label>
       <select id="map-select" title="Map"></select>
       <button id="btn-new-map" class="btn" title="New map">New map</button>

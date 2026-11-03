@@ -19,12 +19,25 @@ pub struct SourceSpan {
 }
 
 /// Scanner configuration.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ScanOptions {
     /// C-mode punctuation (DECORATE, new MAPINFO, …).
     pub c_mode: bool,
     /// Treat `;` as a line comment (SNDINFO, old MAPINFO, SNDSEQ).
     pub semicolon_comments: bool,
+    /// Process `\\` / `\"` / `\\n` escapes inside `"…"` strings.
+    /// DECORATE sets this `false` so `"\\"` frame tokens close correctly.
+    pub string_escapes: bool,
+}
+
+impl Default for ScanOptions {
+    fn default() -> Self {
+        Self {
+            c_mode: false,
+            semicolon_comments: false,
+            string_escapes: true,
+        }
+    }
 }
 
 /// Multi-character and single punctuation.
@@ -96,6 +109,10 @@ pub enum Punct {
     Shr,
     /// `>>>`
     UShr,
+    /// `#` (DECORATE keep-frame letter)
+    Hash,
+    /// `\` (DECORATE sprite frame letter)
+    Backslash,
     /// `++`
     PlusPlus,
     /// `--`
@@ -169,7 +186,8 @@ pub struct Scanner<'a> {
     line: u32,
     col: u32,
     opts: ScanOptions,
-    pending: Option<(Tok<'a>, SourceSpan)>,
+    /// Pushback stack (front = next to read). Small — DECORATE may unget 2 tokens.
+    pending: Vec<(Tok<'a>, SourceSpan)>,
     last_span: SourceSpan,
 }
 
@@ -184,7 +202,7 @@ impl<'a> Scanner<'a> {
             line: 1,
             col: 1,
             opts,
-            pending: None,
+            pending: Vec::new(),
             last_span: SourceSpan {
                 offset: 0,
                 line: 1,
@@ -213,14 +231,14 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// Push a token back (one level).
+    /// Push a token back (LIFO — last unget is read first).
     pub fn unget(&mut self, tok: Tok<'a>) {
-        self.pending = Some((tok, self.last_span));
+        self.pending.push((tok, self.last_span));
     }
 
     /// Next token.
     pub fn next_token(&mut self) -> Result<Tok<'a>, ScanError> {
-        if let Some((tok, span)) = self.pending.take() {
+        if let Some((tok, span)) = self.pending.pop() {
             self.last_span = span;
             return Ok(tok);
         }
@@ -374,7 +392,8 @@ impl<'a> Scanner<'a> {
         {
             return self.lex_number();
         }
-        if b == b'_' || b.is_ascii_alphabetic() {
+        if b == b'_' || b.is_ascii_alphabetic() || b >= 0x80 {
+            // Non-ASCII: BD/GZDoom labels may contain UTF-8 letters (`Death.Сut`).
             return self.lex_ident_c();
         }
         self.lex_punct()
@@ -440,10 +459,29 @@ impl<'a> Scanner<'a> {
 
     fn lex_ident_c(&mut self) -> Result<Tok<'a>, ScanError> {
         let start = self.pos;
-        self.bump();
+        match self.peek() {
+            Some(c) if c >= 0x80 => {
+                let n = utf8_char_len(c);
+                for _ in 0..n {
+                    if self.bump().is_none() {
+                        break;
+                    }
+                }
+            }
+            _ => {
+                self.bump();
+            }
+        }
         while let Some(c) = self.peek() {
             if c == b'_' || c.is_ascii_alphanumeric() {
                 self.bump();
+            } else if c >= 0x80 {
+                let n = utf8_char_len(c);
+                for _ in 0..n {
+                    if self.bump().is_none() {
+                        break;
+                    }
+                }
             } else {
                 break;
             }
@@ -460,7 +498,7 @@ impl<'a> Scanner<'a> {
             match self.bump() {
                 None => return Err(self.err_at(span, ScanErrorKind::UnterminatedString)),
                 Some(b'"') => break,
-                Some(b'\\') => {
+                Some(b'\\') if self.opts.string_escapes => {
                     simple = false;
                     match self.bump() {
                         Some(b'n') => out.push('\n'),
@@ -479,6 +517,12 @@ impl<'a> Scanner<'a> {
                         Some(b'\n') => {} // line continuation
                         Some(c) => out.push(char::from(c)),
                         None => return Err(self.err_at(span, ScanErrorKind::UnterminatedString)),
+                    }
+                }
+                Some(b'\\') => {
+                    // Literal backslash (DECORATE frame `"\\"`).
+                    if !simple {
+                        out.push('\\');
                     }
                 }
                 Some(c) => {
@@ -547,19 +591,42 @@ impl<'a> Scanner<'a> {
                 self.bump();
             }
         }
+        // Exponent only when clearly numeric (`1e3`, `1e-2`) — not sprite tails
+        // like DECORATE `13EI` (docs/33 BD digit-leading sprites).
         if matches!(self.peek().map(|c| c.to_ascii_lowercase()), Some(b'e')) {
-            is_float = true;
-            self.bump();
-            if matches!(self.peek(), Some(b'+' | b'-')) {
+            let after = self.bytes.get(self.pos + 1).copied();
+            let after2 = self.bytes.get(self.pos + 2).copied();
+            let exp_ok = match after {
+                Some(b'+' | b'-') => after2.is_some_and(|c| c.is_ascii_digit()),
+                Some(c) if c.is_ascii_digit() => true,
+                _ => false,
+            };
+            if exp_ok {
+                is_float = true;
                 self.bump();
-            }
-            while self.peek().is_some_and(|c| c.is_ascii_digit()) {
-                self.bump();
+                if matches!(self.peek(), Some(b'+' | b'-')) {
+                    self.bump();
+                }
+                while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    self.bump();
+                }
             }
         }
+        // `f` suffix only at end of a numeric token (not `13FI` sprite).
         if matches!(self.peek().map(|c| c.to_ascii_lowercase()), Some(b'f')) {
-            is_float = true;
-            self.bump();
+            let after = self.bytes.get(self.pos + 1).copied();
+            let f_ok = after.is_none_or(|c| {
+                c.is_ascii_whitespace()
+                    || matches!(
+                        c,
+                        b'{' | b'}' | b'(' | b')' | b',' | b';' | b'"' | b'+' | b'-' | b'*' | b'/'
+                            | b'=' | b'<' | b'>' | b'!' | b'|' | b'&'
+                    )
+            });
+            if f_ok {
+                is_float = true;
+                self.bump();
+            }
         }
         let s = &self.src[start..self.pos];
         if is_float {
@@ -683,11 +750,23 @@ impl<'a> Scanner<'a> {
             (b'^', _, _) => Punct::Caret,
             (b'?', _, _) => Punct::Question,
             (b'.', _, _) => Punct::Dot,
+            (b'#', _, _) => Punct::Hash,
+            (b'\\', _, _) => Punct::Backslash,
             _ => {
                 return Err(self.err_at(span, ScanErrorKind::UnexpectedChar(char::from(a))));
             }
         };
         Ok(Tok::Punct(punct))
+    }
+}
+
+fn utf8_char_len(lead: u8) -> usize {
+    match lead {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF7 => 4,
+        _ => 1, // continuation / invalid: consume one to make progress
     }
 }
 
@@ -783,7 +862,7 @@ mod tests {
             ScanOptions {
                 c_mode: false,
                 semicolon_comments: true,
-            },
+             ..Default::default() },
         );
         assert_eq!(sc.next_token().unwrap(), Tok::Ident("weapons/pistol"));
         assert_eq!(sc.next_token().unwrap(), Tok::Ident("DSPISTOL"));

@@ -53,4 +53,22 @@ pub enum SoundEvent {
     },
     /// Stop everything.
     StopAll,
+    /// Change the rate of a voice already playing at `origin` on `channel`.
+    SetPitch {
+        /// Origin.
+        origin: SoundOrigin,
+        /// Channel.
+        channel: i32,
+        /// Pitch scale. 1 is nominal.
+        pitch: f32,
+    },
+    /// Change the gain of a voice already playing at `origin` on `channel`.
+    SetVolume {
+        /// Origin.
+        origin: SoundOrigin,
+        /// Channel.
+        channel: i32,
+        /// Volume 0..=1.
+        volume: f32,
+    },
 }

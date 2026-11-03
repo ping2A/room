@@ -1,5 +1,8 @@
 //! CLI tools: wad ls/extract, map dump, nodebuild, demo verify, render-to-png.
 
+mod mod_check;
+mod parity;
+
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use room_vfs::{Namespace, Vfs, VfsBuilder};
@@ -43,6 +46,70 @@ enum Commands {
     Faceswap {
         #[command(subcommand)]
         command: FaceswapCmd,
+    },
+    /// ZScript tools (`docs/34-zscript-vm.md`)
+    Zscript {
+        #[command(subcommand)]
+        command: ZscriptCmd,
+    },
+    /// Mod compatibility harness (`docs/33-brutal-doom.md` BD0)
+    Mod {
+        #[command(subcommand)]
+        command: ModCmd,
+    },
+    /// UZDoom parity report (`docs/36` UZ0)
+    Parity {
+        /// UZDoom checkout (zscript, mapinfo, `src/scripting`, `src/playsim`)
+        #[arg(long)]
+        uzdoom: Option<PathBuf>,
+        /// Write Markdown (default: stdout)
+        #[arg(long)]
+        md: Option<PathBuf>,
+        /// Write JSON summary
+        #[arg(long)]
+        json: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModCmd {
+    /// Report DECORATE / ACS / ZScript gaps for one or more archives
+    Check {
+        /// PWAD / PK3 / directory archives (load order)
+        archives: Vec<PathBuf>,
+        /// Optional IWAD mounted first
+        #[arg(long)]
+        iwad: Option<PathBuf>,
+        /// Write JSON summary to this path
+        #[arg(long)]
+        json: Option<PathBuf>,
+        /// Write Markdown report to this path (default: stdout markdown)
+        #[arg(long)]
+        md: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ZscriptCmd {
+    /// Parse / type-check / compile ZScript sources (files or dirs)
+    Check {
+        /// Paths to `.zs` / `.zc` files or directories (or a PK3/WAD later)
+        paths: Vec<PathBuf>,
+        /// Emit JSON diagnostics
+        #[arg(long)]
+        json: bool,
+    },
+    /// Disassemble a compiled function (`Class.method`)
+    Disasm {
+        /// Source files (same as `check`)
+        paths: Vec<PathBuf>,
+        /// Qualified function name
+        func: String,
+    },
+    /// Report native coverage for names referenced in sources (ZS8)
+    Coverage {
+        /// Paths to ZScript sources
+        paths: Vec<PathBuf>,
     },
 }
 
@@ -254,6 +321,190 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::Zscript { command } => match command {
+            ZscriptCmd::Check { paths, json } => {
+                let sources = load_zscript_sources(&paths)?;
+                if sources.is_empty() {
+                    bail!("no ZScript sources found");
+                }
+                let result = room_zscript::check(&sources);
+                if json {
+                    for d in &result.diagnostics {
+                        println!(
+                            r#"{{"severity":"{:?}","path":"{}","line":{},"col":{},"message":{}}}"#,
+                            d.severity,
+                            d.path,
+                            d.span.line,
+                            d.span.col,
+                            serde_json_escape(&d.message)
+                        );
+                    }
+                } else {
+                    for d in &result.diagnostics {
+                        eprintln!("{}", d.format_line());
+                    }
+                    if let Some(a) = &result.analysis {
+                        println!(
+                            "classes={} methods={} natives={} version={:?}",
+                            a.classes.len(),
+                            a.method_count,
+                            a.native_refs.len(),
+                            a.version
+                        );
+                    }
+                    if let Some(p) = &result.program {
+                        println!(
+                            "bytecode functions={} hash={:#x}",
+                            p.functions.len(),
+                            p.program_hash
+                        );
+                    }
+                }
+                if !result.ok() {
+                    std::process::exit(1);
+                }
+            }
+            ZscriptCmd::Coverage { paths } => {
+                let sources = load_zscript_sources(&paths)?;
+                let result = room_zscript::check(&sources);
+                let mut refs = Vec::new();
+                if let Some(a) = &result.analysis {
+                    refs.extend(a.native_refs.iter().cloned());
+                }
+                // Heuristic scan for common BD natives in source text.
+                for (_, text) in &sources {
+                    for n in [
+                        "Wads.CheckNumForFullName",
+                        "Wads.ReadLump",
+                        "Console.Printf",
+                        "EventHandler.Find",
+                        "GiveInventory",
+                        "String.Mid",
+                        "String.Length",
+                        "Array.Size",
+                    ] {
+                        if text.contains(n) {
+                            let full = if n.contains('.') {
+                                n.to_owned()
+                            } else if n == "GiveInventory" {
+                                "Actor.GiveInventory".into()
+                            } else {
+                                n.to_owned()
+                            };
+                            if !refs.iter().any(|r| r == &full) {
+                                refs.push(full);
+                            }
+                        }
+                    }
+                }
+                refs.sort();
+                refs.dedup();
+                let table = room_zvm::NativeTable::with_builtins();
+                let rows = room_zvm::coverage_report(&table, &refs, &room_zvm::bd_stub_map());
+                for r in &rows {
+                    println!(
+                        "{}\t{:?}\t{}",
+                        r.name,
+                        r.status,
+                        if r.referenced { "ref" } else { "" }
+                    );
+                }
+                let pct = room_zvm::coverage_percent(&rows);
+                println!("coverage={pct:.1}%");
+                if pct < 95.0 {
+                    std::process::exit(1);
+                }
+            }
+            ZscriptCmd::Disasm { paths, func } => {
+                let sources = load_zscript_sources(&paths)?;
+                let result = room_zscript::check(&sources);
+                if !result.ok() {
+                    for d in &result.diagnostics {
+                        eprintln!("{}", d.format_line());
+                    }
+                    bail!("compile failed");
+                }
+                let prog = result.program.context("no program")?;
+                let f = prog
+                    .func(&func)
+                    .with_context(|| format!("unknown function {func}"))?;
+                println!("; {}", f.name);
+                let mut i = 0;
+                while i < f.code.len() {
+                    let word = f.code[i];
+                    let (op, a, b, c) = room_zvm::unpack(word);
+                    print!("{i:04}  op={op} a={a} b={b} c={c}");
+                    i += 1;
+                    // ops that take an extension word
+                    if matches!(
+                        room_zvm::Op::from_u8(op),
+                        Some(
+                            room_zvm::Op::LoadConstI
+                                | room_zvm::Op::LoadConstF
+                                | room_zvm::Op::LoadConstS
+                                | room_zvm::Op::Jmp
+                                | room_zvm::Op::JmpIf
+                                | room_zvm::Op::JmpIfNot
+                                | room_zvm::Op::CallStatic
+                                | room_zvm::Op::CallNative
+                                | room_zvm::Op::NewObj
+                                | room_zvm::Op::LoadFieldI
+                                | room_zvm::Op::StoreFieldI
+                                | room_zvm::Op::LoadFieldA
+                                | room_zvm::Op::StoreFieldA
+                                | room_zvm::Op::LoadFieldS
+                                | room_zvm::Op::StoreFieldS
+                                | room_zvm::Op::Trap
+                        )
+                    ) {
+                        if i < f.code.len() {
+                            print!("  ext={}", f.code[i]);
+                            i += 1;
+                        }
+                    }
+                    println!();
+                }
+            }
+        },
+        Commands::Parity { uzdoom, md, json } => {
+            let report = parity::build_report(uzdoom.as_deref())?;
+            let markdown = report.to_markdown();
+            if let Some(path) = md {
+                std::fs::write(&path, &markdown)
+                    .with_context(|| format!("write {}", path.display()))?;
+                eprintln!("wrote {}", path.display());
+            } else {
+                print!("{markdown}");
+            }
+            if let Some(path) = json {
+                std::fs::write(&path, report.to_json())
+                    .with_context(|| format!("write {}", path.display()))?;
+                eprintln!("wrote {}", path.display());
+            }
+        }
+        Commands::Mod { command } => match command {
+            ModCmd::Check {
+                archives,
+                iwad,
+                json,
+                md,
+            } => {
+                let report = mod_check::run_mod_check(&archives, iwad.as_deref())?;
+                let markdown = report.to_markdown();
+                if let Some(path) = md {
+                    std::fs::write(&path, &markdown)
+                        .with_context(|| format!("write {}", path.display()))?;
+                    eprintln!("wrote {}", path.display());
+                } else {
+                    print!("{markdown}");
+                }
+                if let Some(path) = json {
+                    std::fs::write(&path, report.to_json())
+                        .with_context(|| format!("write {}", path.display()))?;
+                    eprintln!("wrote {}", path.display());
+                }
+            }
+        },
         Commands::Faceswap { command } => match command {
             FaceswapCmd::Bake {
                 iwad,
@@ -1067,6 +1318,86 @@ fn faceswap_anchors_estimate(iwad: PathBuf, prefix: String) -> Result<()> {
         println!();
     }
     Ok(())
+}
+
+fn load_zscript_sources(paths: &[PathBuf]) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for path in paths {
+        if path.is_dir() {
+            for entry in
+                std::fs::read_dir(path).with_context(|| format!("read {}", path.display()))?
+            {
+                let entry = entry?;
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                    e.eq_ignore_ascii_case("zs")
+                        || e.eq_ignore_ascii_case("zc")
+                        || e.eq_ignore_ascii_case("zsc")
+                }) {
+                    let text = std::fs::read_to_string(&p)
+                        .with_context(|| format!("read {}", p.display()))?;
+                    out.push((p.display().to_string(), text));
+                }
+            }
+        } else {
+            let text = std::fs::read_to_string(path)
+                .with_context(|| format!("read {}", path.display()))?;
+            out.push((path.display().to_string(), text));
+            // Also load sibling .zs/.zc so `#include "Foo.zc"` resolves (GZDoom / BD).
+            if let Some(dir) = path.parent() {
+                if let Ok(rd) = std::fs::read_dir(dir) {
+                    for entry in rd.flatten() {
+                        let p = entry.path();
+                        if p == *path {
+                            continue;
+                        }
+                        if p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                            e.eq_ignore_ascii_case("zs")
+                                || e.eq_ignore_ascii_case("zc")
+                                || e.eq_ignore_ascii_case("zsc")
+                        }) {
+                            if let Ok(t) = std::fs::read_to_string(&p) {
+                                out.push((p.display().to_string(), t));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Prefer ZSCRIPT / zscript.zc as the translation-unit entry (GZDoom).
+    out.sort_by(|a, b| {
+        let score = |n: &str| {
+            let base = n.rsplit(['/', '\\']).next().unwrap_or(n);
+            if base.eq_ignore_ascii_case("zscript")
+                || base.eq_ignore_ascii_case("zscript.zc")
+                || base.eq_ignore_ascii_case("zscript.zs")
+            {
+                0
+            } else {
+                1
+            }
+        };
+        score(&a.0).cmp(&score(&b.0)).then_with(|| a.0.cmp(&b.0))
+    });
+    Ok(out)
+}
+
+fn serde_json_escape(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 mod hex {

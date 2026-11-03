@@ -245,6 +245,8 @@ pub struct ClassDef {
     pub translation: String,
     /// Default flags (`SOLID`/`SHOOTABLE` bits).
     pub flags: u64,
+    /// UZDoom flags that do not fit in the legacy `u64` (`docs/36` UZ1).
+    pub extra_flags: crate::flags::ActorFlags,
     /// Initial state duration from first Spawn frame (or `-1`).
     pub spawn_tics: i32,
     /// `Inventory.Amount` default give.
@@ -267,18 +269,26 @@ pub struct ClassDef {
     pub typed_pain_chances: BTreeMap<String, i32>,
     /// `Damage` property (missile/melee base; 0 = none).
     pub damage: i32,
+    /// `Damage (random(20, 20))` when the property is an expression, not an int.
+    pub damage_expr: String,
     /// `ContactDamage` — hurt overlapping shootable actors this much every 8 tics (`0` = none).
     pub contact_damage: i32,
     /// `KillTaunt` logical sounds played when this actor kills a `COUNTKILL`.
     pub kill_taunts: Vec<String>,
     /// `IdleTaunt` logical sounds played after standing still (`pr_idletaunt`).
     pub idle_taunts: Vec<String>,
-    /// `Weapon.AmmoType` class name (empty = no ammo).
+    /// `Weapon.AmmoType` / `AmmoType1` class name (empty = no ammo).
     pub ammo_type: String,
-    /// `Weapon.AmmoUse` per shot.
+    /// `Weapon.AmmoUse` / `AmmoUse1` per primary shot.
     pub ammo_use: i32,
-    /// `Weapon.AmmoGive` granted on first pickup.
+    /// `Weapon.AmmoGive` / `AmmoGive1` granted on first pickup.
     pub ammo_give: i32,
+    /// `Weapon.AmmoType2` — secondary / alt ammo (BD4).
+    pub ammo_type2: String,
+    /// `Weapon.AmmoUse2` per alt shot.
+    pub ammo_use2: i32,
+    /// `Weapon.AmmoGive2` granted on first pickup.
+    pub ammo_give2: i32,
     /// `Weapon.SelectionOrder` — lower preferred for auto-switch (GZDoom).
     pub selection_order: i32,
     /// `Weapon.ReadySound` (idle while Ready, e.g. chainsaw).
@@ -287,6 +297,28 @@ pub struct ClassDef {
     pub up_sound: String,
     /// `Weapon.Kickback` (default 100).
     pub kickback: i32,
+    /// `Weapon.BobSpeed` (default 1.0) — multiplies Ready bob phase.
+    pub bob_speed: f64,
+    /// `Weapon.BobRangeX` (default 1.0).
+    pub bob_range_x: f64,
+    /// `Weapon.BobRangeY` (default 1.0).
+    pub bob_range_y: f64,
+    /// `Weapon.BobStyle` name (`Normal`, `Inverse`, `Alpha`, …).
+    pub bob_style: String,
+    /// `Decal` name (DECALDEF id / blood splatter).
+    pub decal: String,
+    /// `SpawnID` (DoomEd / DeHackEd spawn number; 0 = none).
+    pub spawn_id: i32,
+    /// `MissileType` trail / child missile class.
+    pub missile_type: String,
+    /// `MeleeSound`.
+    pub melee_sound: String,
+    /// `MeleeDamage`.
+    pub melee_damage: i32,
+    /// `ExplosionDamage`.
+    pub explosion_damage: i32,
+    /// `ExplosionRadius`.
+    pub explosion_radius: i32,
     /// `Weapon.SlotNumber` (0 = unset; KEYCONF / `reg_weapon_slot` may override).
     pub slot_number: i32,
     /// `+WEAPON.NOALERT` — firing does not call `P_NoiseAlert`.
@@ -430,6 +462,7 @@ impl ClassRegistry {
             render_style: RenderStyle::Normal,
             translation: String::new(),
             flags: 0,
+            extra_flags: crate::flags::ActorFlags::default(),
             spawn_tics: -1,
             inventory_amount: 1,
             inventory_max_amount: 1,
@@ -441,16 +474,31 @@ impl ClassRegistry {
             pain_threshold: 0,
             typed_pain_chances: BTreeMap::new(),
             damage: 0,
+            damage_expr: String::new(),
             contact_damage: 0,
             kill_taunts: Vec::new(),
             idle_taunts: Vec::new(),
             ammo_type: String::new(),
             ammo_use: 0,
+            ammo_type2: String::new(),
+            ammo_use2: 0,
+            ammo_give2: 0,
             ammo_give: 0,
             selection_order: 9999,
             ready_sound: String::new(),
             up_sound: String::new(),
             kickback: 100,
+            bob_speed: 1.0,
+            bob_range_x: 1.0,
+            bob_range_y: 1.0,
+            bob_style: String::new(),
+            decal: String::new(),
+            spawn_id: 0,
+            missile_type: String::new(),
+            melee_sound: String::new(),
+            melee_damage: 0,
+            explosion_damage: 0,
+            explosion_radius: 0,
             slot_number: 0,
             weapon_noalert: false,
             weapon_noautofire: false,
@@ -655,6 +703,7 @@ impl ClassRegistry {
         let mut render_style = parent.render_style;
         let mut translation = parent.translation.clone();
         let mut flags = parent.flags;
+        let mut extra_flags = parent.extra_flags;
         let mut inventory_amount = parent.inventory_amount;
         let mut inventory_max_amount = parent.inventory_max_amount;
         let mut start_bullets = parent.start_bullets;
@@ -665,6 +714,7 @@ impl ClassRegistry {
         let mut pain_threshold = parent.pain_threshold;
         let mut typed_pain_chances = parent.typed_pain_chances.clone();
         let mut damage = parent.damage;
+        let mut damage_expr = parent.damage_expr.clone();
         let mut contact_damage = parent.contact_damage;
         let mut kill_taunts = parent.kill_taunts.clone();
         let mut own_kill_taunts = false;
@@ -673,6 +723,9 @@ impl ClassRegistry {
         let mut ammo_type = parent.ammo_type.clone();
         let mut ammo_use = parent.ammo_use;
         let mut ammo_give = parent.ammo_give;
+        let mut ammo_type2 = parent.ammo_type2.clone();
+        let mut ammo_use2 = parent.ammo_use2;
+        let mut ammo_give2 = parent.ammo_give2;
         let mut selection_order = parent.selection_order;
         let mut ready_sound = parent.ready_sound.clone();
         let mut up_sound = parent.up_sound.clone();
@@ -691,8 +744,23 @@ impl ClassRegistry {
         let mut bounce_sound = parent.bounce_sound.clone();
         let mut wall_bounce_sound = parent.wall_bounce_sound.clone();
         let mut bounce_factor = parent.bounce_factor;
+        let mut bounce_count_max = parent.bounce_count_max;
+        let mut wall_bounce_factor = parent.wall_bounce_factor;
+        let mut kickback = parent.kickback;
+        let mut bob_speed = parent.bob_speed;
+        let mut bob_range_x = parent.bob_range_x;
+        let mut bob_range_y = parent.bob_range_y;
+        let mut bob_style = parent.bob_style.clone();
+        let mut projectile_kickback = parent.projectile_kickback;
         let mut push_sound = parent.push_sound.clone();
         let mut use_sound = parent.use_sound.clone();
+        let mut decal = parent.decal.clone();
+        let mut spawn_id = parent.spawn_id;
+        let mut missile_type = parent.missile_type.clone();
+        let mut melee_sound = parent.melee_sound.clone();
+        let mut melee_damage = parent.melee_damage;
+        let mut explosion_damage = parent.explosion_damage;
+        let mut explosion_radius = parent.explosion_radius;
         for p in &def.properties {
             match p.name.to_ascii_lowercase().as_str() {
                 "tag" => {
@@ -1011,7 +1079,15 @@ impl ClassRegistry {
                 }
                 "damage" => {
                     if let Some(a) = p.args.first() {
-                        damage = a.parse().unwrap_or(damage);
+                        let expr = a.trim();
+                        if let Ok(n) = expr.parse::<i32>() {
+                            damage = n;
+                            damage_expr.clear();
+                        } else if !expr.is_empty() {
+                            // `Damage (random(20, 20))` — folded when the missile hits.
+                            damage = 0;
+                            damage_expr = expr.to_owned();
+                        }
                     }
                 }
                 "contactdamage" => {
@@ -1043,22 +1119,40 @@ impl ClassRegistry {
                         }
                     }
                 }
-                "weapon.ammotype" => {
+                "weapon.ammotype" | "weapon.ammotype1" => {
                     is_weapon = true;
                     if let Some(a) = p.args.first() {
                         ammo_type = a.trim_matches('"').to_owned();
                     }
                 }
-                "weapon.ammouse" => {
+                "weapon.ammouse" | "weapon.ammouse1" => {
                     is_weapon = true;
                     if let Some(a) = p.args.first() {
                         ammo_use = a.parse().unwrap_or(ammo_use);
                     }
                 }
-                "weapon.ammogive" => {
+                "weapon.ammogive" | "weapon.ammogive1" => {
                     is_weapon = true;
                     if let Some(a) = p.args.first() {
                         ammo_give = a.parse().unwrap_or(ammo_give);
+                    }
+                }
+                "weapon.ammotype2" => {
+                    is_weapon = true;
+                    if let Some(a) = p.args.first() {
+                        ammo_type2 = a.trim_matches('"').to_owned();
+                    }
+                }
+                "weapon.ammouse2" => {
+                    is_weapon = true;
+                    if let Some(a) = p.args.first() {
+                        ammo_use2 = a.parse().unwrap_or(ammo_use2);
+                    }
+                }
+                "weapon.ammogive2" => {
+                    is_weapon = true;
+                    if let Some(a) = p.args.first() {
+                        ammo_give2 = a.parse().unwrap_or(ammo_give2);
                     }
                 }
                 "weapon.selectionorder" => {
@@ -1134,6 +1228,105 @@ impl ClassRegistry {
                         bounce_factor = a.parse::<f64>().unwrap_or(bounce_factor).clamp(0.0, 1.0);
                     }
                 }
+                "bouncecount" => {
+                    if let Some(a) = p.args.first() {
+                        bounce_count_max = a.parse().unwrap_or(bounce_count_max);
+                    }
+                }
+                "wallbouncefactor" => {
+                    if let Some(a) = p.args.first() {
+                        wall_bounce_factor = a
+                            .parse::<f64>()
+                            .unwrap_or(wall_bounce_factor)
+                            .clamp(0.0, 1.0);
+                    }
+                }
+                "bouncetype" => {
+                    // Named bounce presets map onto floor/wall bounce bits via flags;
+                    // accept the property so BD2 mod-check treats it as known.
+                    let _ = p.args.first();
+                }
+                "weapon.kickback" => {
+                    is_weapon = true;
+                    if let Some(a) = p.args.first() {
+                        kickback = a.parse().unwrap_or(kickback);
+                    }
+                }
+                "weapon.bobspeed" => {
+                    is_weapon = true;
+                    if let Some(a) = p.args.first() {
+                        bob_speed = a.parse().unwrap_or(bob_speed);
+                    }
+                }
+                "weapon.bobrangex" => {
+                    is_weapon = true;
+                    if let Some(a) = p.args.first() {
+                        bob_range_x = a.parse().unwrap_or(bob_range_x);
+                    }
+                }
+                "weapon.bobrangey" => {
+                    is_weapon = true;
+                    if let Some(a) = p.args.first() {
+                        bob_range_y = a.parse().unwrap_or(bob_range_y);
+                    }
+                }
+                "weapon.bobstyle" => {
+                    is_weapon = true;
+                    if let Some(a) = p.args.first() {
+                        bob_style = a.trim_matches('"').to_owned();
+                    }
+                }
+                "projectilekickback" => {
+                    if let Some(a) = p.args.first() {
+                        projectile_kickback = a.parse().unwrap_or(projectile_kickback);
+                    }
+                }
+                "decal" => {
+                    if let Some(a) = p.args.first() {
+                        decal = a.trim_matches('"').to_owned();
+                    }
+                }
+                "spawnid" => {
+                    if let Some(a) = p.args.first() {
+                        spawn_id = a.parse().unwrap_or(spawn_id);
+                    }
+                }
+                "missiletype" => {
+                    if let Some(a) = p.args.first() {
+                        missile_type = a.trim_matches('"').to_owned();
+                    }
+                }
+                "meleesound" => {
+                    if let Some(a) = p.args.first() {
+                        melee_sound = a.trim_matches('"').to_owned();
+                    }
+                }
+                "meleedamage" => {
+                    if let Some(a) = p.args.first() {
+                        melee_damage = a.parse().unwrap_or(melee_damage);
+                    }
+                }
+                "explosiondamage" => {
+                    if let Some(a) = p.args.first() {
+                        explosion_damage = a.parse().unwrap_or(explosion_damage);
+                    }
+                }
+                "explosionradius" => {
+                    if let Some(a) = p.args.first() {
+                        explosion_radius = a.parse().unwrap_or(explosion_radius);
+                    }
+                }
+                "clearflags" => {
+                    flags = 0;
+                }
+                "game"
+                | "projectile"
+                | "stencilcolor"
+                | "visibletoplayerclass"
+                | "projectilepassheight" => {
+                    // Accepted BD2 properties (render / filter / pass-height); stored lightly or noop.
+                    let _ = p.args.first();
+                }
                 "pushsound" => {
                     if let Some(a) = p.args.first() {
                         push_sound = a.trim_matches('"').to_owned();
@@ -1183,7 +1376,7 @@ impl ClassRegistry {
             is_weapon = true;
         }
         for f in &def.flags {
-            apply_flag(&mut flags, f);
+            apply_flag(&mut flags, &mut extra_flags, f);
         }
         let spawn_tics = spawn_tics_from_states(def).unwrap_or(parent.spawn_tics);
         // Skip redefining Actor if present in IR.
@@ -1242,6 +1435,7 @@ impl ClassRegistry {
             slot.render_style = render_style;
             slot.translation = translation;
             slot.flags = flags;
+            slot.extra_flags = extra_flags;
             slot.spawn_tics = spawn_tics;
             slot.inventory_amount = inventory_amount;
             slot.inventory_max_amount = inventory_max_amount;
@@ -1259,10 +1453,24 @@ impl ClassRegistry {
             slot.ammo_type = ammo_type;
             slot.ammo_use = ammo_use;
             slot.ammo_give = ammo_give;
+            slot.ammo_type2 = ammo_type2;
+            slot.ammo_use2 = ammo_use2;
+            slot.ammo_give2 = ammo_give2;
             slot.selection_order = selection_order;
             slot.ready_sound = ready_sound;
             slot.up_sound = up_sound;
-            slot.kickback = parent.kickback;
+            slot.kickback = kickback;
+            slot.bob_speed = bob_speed;
+            slot.bob_range_x = bob_range_x;
+            slot.bob_range_y = bob_range_y;
+            slot.bob_style = bob_style;
+            slot.decal = decal;
+            slot.spawn_id = spawn_id;
+            slot.missile_type = missile_type;
+            slot.melee_sound = melee_sound;
+            slot.melee_damage = melee_damage;
+            slot.explosion_damage = explosion_damage;
+            slot.explosion_radius = explosion_radius;
             slot.slot_number = parent.slot_number;
             slot.weapon_noalert = parent.weapon_noalert;
             slot.weapon_noautofire = parent.weapon_noautofire;
@@ -1273,9 +1481,9 @@ impl ClassRegistry {
             slot.is_ammo = parent.is_ammo;
             slot.is_inventory = parent.is_inventory;
             slot.inventory_autoactivate = parent.inventory_autoactivate;
-            slot.projectile_kickback = parent.projectile_kickback;
-            slot.bounce_count_max = parent.bounce_count_max;
-            slot.wall_bounce_factor = parent.wall_bounce_factor;
+            slot.projectile_kickback = projectile_kickback;
+            slot.bounce_count_max = bounce_count_max;
+            slot.wall_bounce_factor = wall_bounce_factor;
             slot.drop_items = drop_items;
             slot.start_items = start_items;
             slot.see_sound = see_sound;
@@ -1352,6 +1560,7 @@ impl ClassRegistry {
             render_style,
             translation,
             flags,
+            extra_flags,
             spawn_tics,
             inventory_amount,
             inventory_max_amount,
@@ -1363,16 +1572,31 @@ impl ClassRegistry {
             pain_threshold,
             typed_pain_chances,
             damage,
+            damage_expr,
             contact_damage,
             kill_taunts,
             idle_taunts,
             ammo_type,
             ammo_use,
             ammo_give,
+            ammo_type2,
+            ammo_use2,
+            ammo_give2,
             selection_order,
             ready_sound,
             up_sound,
-            kickback: parent.kickback,
+            kickback,
+            bob_speed,
+            bob_range_x,
+            bob_range_y,
+            bob_style,
+            decal,
+            spawn_id,
+            missile_type,
+            melee_sound,
+            melee_damage,
+            explosion_damage,
+            explosion_radius,
             slot_number: parent.slot_number,
             weapon_noalert: parent.weapon_noalert,
             weapon_noautofire: parent.weapon_noautofire,
@@ -1383,9 +1607,9 @@ impl ClassRegistry {
             is_ammo: parent.is_ammo,
             is_inventory: parent.is_inventory,
             inventory_autoactivate: parent.inventory_autoactivate,
-            projectile_kickback: parent.projectile_kickback,
-            bounce_count_max: parent.bounce_count_max,
-            wall_bounce_factor: parent.wall_bounce_factor,
+            projectile_kickback,
+            bounce_count_max,
+            wall_bounce_factor,
             drop_items,
             see_sound,
             death_sound,
@@ -1454,6 +1678,183 @@ impl ClassRegistry {
         self.classes.get(id.raw() as usize)
     }
 
+    /// Add ZScript classes whose parent is already a playsim class (ZS3b).
+    ///
+    /// Engine stubs (`Actor`, `Inventory`, `String`, …) are left to DECORATE.
+    /// A class is registered only when its parent is already in this registry,
+    /// so `Inventory` subclasses become givable and summonable. Editor numbers
+    /// are not copied from the parent.
+    pub fn register_zscript_classes(&mut self, layouts: &[(String, String)]) {
+        const SKIP: &[&str] = &[
+            "object",
+            "thinker",
+            "actor",
+            "inventory",
+            "weapon",
+            "ammo",
+            "playerpawn",
+            "eventhandler",
+            "string",
+            "name",
+            "cvar",
+            "wads",
+            "console",
+            "levellocals",
+            "playerinfo",
+            "_globals",
+        ];
+        let mut pending: Vec<(String, String)> = layouts
+            .iter()
+            .filter(|(name, _)| !SKIP.iter().any(|s| name.eq_ignore_ascii_case(s)))
+            .cloned()
+            .collect();
+        for _ in 0..32 {
+            if pending.is_empty() {
+                break;
+            }
+            let batch = std::mem::take(&mut pending);
+            let before = self.classes.len();
+            for (name, parent) in batch {
+                if self.find_name(&name).is_some() {
+                    continue;
+                }
+                let Some(pid) = self.find_name(&parent) else {
+                    pending.push((name, parent));
+                    continue;
+                };
+                let Some(base) = self.get(pid).cloned() else {
+                    continue;
+                };
+                let parent_is_inv =
+                    base.is_inventory || base.name.eq_ignore_ascii_case("Inventory");
+                let mut def = base;
+                def.name = name;
+                def.parent = Some(pid);
+                def.doomednum = None;
+                def.spawn_id = 0;
+                def.tag.clear();
+                if parent_is_inv {
+                    def.is_inventory = true;
+                }
+                let _ = self.push(def);
+            }
+            if self.classes.len() == before {
+                break;
+            }
+        }
+    }
+
+    /// Apply ZScript `Default { … }` property/flag lines onto matching classes (ZS3).
+    pub fn merge_zscript_defaults(&mut self, class_defaults: &BTreeMap<String, String>) {
+        for (name, body) in class_defaults {
+            let Some(cid) = self.find_name(name) else {
+                continue;
+            };
+            let Some(slot) = self.get_mut(cid) else {
+                continue;
+            };
+            // Default bodies are often one reconstructed line (`Health 42 ; + NOGRAVITY`);
+            // split on `;` and newlines so each stmt applies.
+            for stmt in body
+                .split(|c| c == ';' || c == '\n' || c == '{' || c == '}')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let stmt = collapse_dotted(stmt);
+                let stmt = stmt.as_str();
+                if let Some(rest) = stmt.strip_prefix('+') {
+                    let mut flags = slot.flags;
+                    let mut extra = slot.extra_flags;
+                    apply_flag(
+                        &mut flags,
+                        &mut extra,
+                        &FlagOp {
+                            set: true,
+                            name: rest.trim().to_owned(),
+                        },
+                    );
+                    slot.flags = flags;
+                    slot.extra_flags = extra;
+                } else if let Some(rest) = stmt.strip_prefix('-') {
+                    let mut flags = slot.flags;
+                    let mut extra = slot.extra_flags;
+                    apply_flag(
+                        &mut flags,
+                        &mut extra,
+                        &FlagOp {
+                            set: false,
+                            name: rest.trim().to_owned(),
+                        },
+                    );
+                    slot.flags = flags;
+                    slot.extra_flags = extra;
+                } else {
+                    let mut parts = stmt.split_whitespace();
+                    let Some(key) = parts.next() else {
+                        continue;
+                    };
+                    let Some(val) = parts.next() else {
+                        continue;
+                    };
+                    if key.eq_ignore_ascii_case("Health") {
+                        if let Ok(h) = val.parse::<i32>() {
+                            slot.health = h;
+                        }
+                    } else if key.eq_ignore_ascii_case("Inventory.Amount") {
+                        if let Ok(v) = val.parse::<i32>() {
+                            slot.inventory_amount = v;
+                            slot.is_inventory = true;
+                        }
+                    } else if key.eq_ignore_ascii_case("Inventory.MaxAmount") {
+                        if let Ok(v) = val.parse::<i32>() {
+                            slot.inventory_max_amount = v.max(1);
+                            slot.is_inventory = true;
+                        }
+                    } else if key.eq_ignore_ascii_case("Radius") {
+                        if let Ok(r) = val.parse::<f64>() {
+                            slot.radius = r;
+                        }
+                    } else if key.eq_ignore_ascii_case("Height") {
+                        if let Ok(h) = val.parse::<f64>() {
+                            slot.height = h;
+                        }
+                    } else if key.eq_ignore_ascii_case("Speed") {
+                        if let Ok(s) = val.parse::<f64>() {
+                            slot.speed = s;
+                        }
+                    }
+                }
+            }
+        }
+        // Subclasses are copied before `Default` is applied, so they keep the
+        // parent's old speed. Fill a zero speed from the parent.
+        self.inherit_unset_speed();
+    }
+
+    fn inherit_unset_speed(&mut self) {
+        for _ in 0..16 {
+            let rows: Vec<(ClassId, Option<ClassId>, f64)> =
+                self.iter().map(|c| (c.id, c.parent, c.speed)).collect();
+            let mut changed = false;
+            for (id, parent, speed) in rows {
+                if speed > 0.0 {
+                    continue;
+                }
+                let Some(pid) = parent else { continue };
+                let pspeed = self.get(pid).map(|p| p.speed).unwrap_or(0.0);
+                if pspeed > 0.0 {
+                    if let Some(c) = self.get_mut(id) {
+                        c.speed = pspeed;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
     /// Mutable class access (editor value overrides; not used during a tic).
     pub fn get_mut(&mut self, id: ClassId) -> Option<&mut ClassDef> {
         self.classes.get_mut(id.raw() as usize)
@@ -1475,6 +1876,21 @@ impl ClassRegistry {
     pub fn is_empty(&self) -> bool {
         self.classes.is_empty()
     }
+}
+
+fn collapse_dotted(stmt: &str) -> String {
+    let mut out = String::new();
+    for part in stmt.split_whitespace() {
+        if part == "." {
+            out.push('.');
+        } else if out.is_empty() || out.ends_with('.') {
+            out.push_str(part);
+        } else {
+            out.push(' ');
+            out.push_str(part);
+        }
+    }
+    out
 }
 
 fn apply_script_prop_i32(def: &mut ClassDef, prop: u32, value: i32) {
@@ -1734,9 +2150,368 @@ pub const FLAG_BOUNCEONWALLS: u64 = 1 << 37;
 pub const FLAG_USESPECIAL: u64 = 1 << 38;
 /// GZDoom `BUDDHA` — lethal damage floors health at 1 (`docs/28` BE6).
 pub const FLAG_BUDDHA: u64 = 1 << 39;
+/// Pass through other actors (`+THRUACTORS`).
+pub const FLAG_THRUACTORS: u64 = 1 << 40;
+/// No clipping vs world (`+NOCLIP`).
+pub const FLAG_NOCLIP: u64 = 1 << 41;
+/// Not linked to sector lists (`+NOSECTOR`).
+pub const FLAG_NOSECTOR: u64 = 1 << 42;
+/// Skip thinker interaction (`+NOINTERACTION`).
+pub const FLAG_NOINTERACTION: u64 = 1 << 43;
+/// Cannot teleport (`+NOTELEPORT`).
+pub const FLAG_NOTELEPORT: u64 = 1 << 44;
+/// Pass through ghosts (`+THRUGHOST`).
+pub const FLAG_THRUGHOST: u64 = 1 << 45;
+/// Move with sector (`+MOVEWITHSECTOR`).
+pub const FLAG_MOVEWITHSECTOR: u64 = 1 << 46;
+/// Never enter pain state (`+NOPAIN`).
+pub const FLAG_NOPAIN: u64 = 1 << 47;
+/// Damage does not thrust (`+NODAMAGETHRUST`).
+pub const FLAG_NODAMAGETHRUST: u64 = 1 << 48;
+/// Always full radius damage (`+FORCERADIUSDMG`).
+pub const FLAG_FORCERADIUSDMG: u64 = 1 << 49;
+/// More likely to attack (`+MISSILEMORE`).
+pub const FLAG_MISSILEMORE: u64 = 1 << 50;
+/// Even more likely to attack (`+MISSILEEVENMORE`).
+pub const FLAG_MISSILEEVENMORE: u64 = 1 << 51;
+/// Look all around (`+LOOKALLAROUND`).
+pub const FLAG_LOOKALLAROUND: u64 = 1 << 52;
+/// Ghost (half-clip) (`+GHOST`).
+pub const FLAG_GHOST: u64 = 1 << 53;
+/// Randomize tics (`+RANDOMIZE`).
+pub const FLAG_RANDOMIZE: u64 = 1 << 54;
+/// Force XY billboard (`+FORCEXYBILLBOARD`).
+pub const FLAG_FORCEXYBILLBOARD: u64 = 1 << 55;
+/// No splash (`+DONTSPLASH`).
+pub const FLAG_DONTSPLASH: u64 = 1 << 56;
+/// Client-side only (Room: still simulated) (`+CLIENTSIDEONLY`).
+pub const FLAG_CLIENTSIDEONLY: u64 = 1 << 57;
+/// Explode on water (`+EXPLODEONWATER`).
+pub const FLAG_EXPLODEONWATER: u64 = 1 << 58;
+/// Blood splatter on impact (`+BLOODSPLATTER`).
+pub const FLAG_BLOODSPLATTER: u64 = 1 << 59;
+/// No extreme death (`+NOEXTREMEDEATH`).
+pub const FLAG_NOEXTREMEDEATH: u64 = 1 << 60;
+/// Force extreme death (`+EXTREMEDEATH`).
+pub const FLAG_EXTREMEDEATH: u64 = 1 << 61;
+/// Count as monster for scripts (`+ISMONSTER`).
+pub const FLAG_ISMONSTER: u64 = 1 << 62;
+/// Fuzzy shadow draw (`+SHADOW`).
+pub const FLAG_SHADOW: u64 = 1 << 63;
 
-fn apply_flag(flags: &mut u64, op: &FlagOp) {
-    let bit = match op.name.to_ascii_uppercase().as_str() {
+/// True when the DECORATE property name is handled by [`ClassRegistry`] (BD2).
+#[must_use]
+pub fn is_known_property(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    // DECORATE `user_Foo` / `var int Foo` (BD) — accepted as script fields.
+    if lower.starts_with("user_") || lower == "var" {
+        return true;
+    }
+    if lower.starts_with("weapon.")
+        || lower.starts_with("inventory.")
+        || lower.starts_with("ammo.")
+        || lower.starts_with("player.")
+        || lower.starts_with("playerpawn.")
+        || lower.starts_with("powerup.")
+        || lower.starts_with("powermorph.")
+        || lower.starts_with("armor.")
+        || lower.starts_with("health.")
+    {
+        return true;
+    }
+    matches!(
+        lower.as_str(),
+        "activesound"
+            | "alpha"
+            | "attacksound"
+            | "attackzoffset"
+            | "bloodcolor"
+            | "bloodtype"
+            | "bouncecount"
+            | "bouncefactor"
+            | "bouncesound"
+            | "bouncetype"
+            | "burnheight"
+            | "camerafov"
+            | "cameraheight"
+            | "clearflags"
+            | "contactdamage"
+            | "crushpainsound"
+            | "damage"
+            | "damagefactor"
+            | "damagetype"
+            | "deathheight"
+            | "deathsound"
+            | "decal"
+            | "defthreshold"
+            | "designatedteam"
+            | "dropitem"
+            | "explosiondamage"
+            | "explosionradius"
+            | "fastspeed"
+            | "fillcolor"
+            | "floatbobstrength"
+            | "floatspeed"
+            | "friction"
+            | "friendlyseeblocks"
+            | "game"
+            | "gibhealth"
+            | "gravity"
+            | "health"
+            | "height"
+            | "hitobituary"
+            | "howlsound"
+            | "idletaunt"
+            | "infightinggroup"
+            | "jumpz"
+            | "killtaunt"
+            | "mass"
+            | "maxdropoffheight"
+            | "maxstepheight"
+            | "maxtargetrange"
+            | "meleedamage"
+            | "meleerange"
+            | "meleesound"
+            | "meleethreshold"
+            | "minmissilechance"
+            | "missiletype"
+            | "missile"
+            | "monster"
+            | "activation"
+            | "skip_super"
+            | "obituary"
+            | "painchance"
+            | "painsound"
+            | "painthreshold"
+            | "projectile"
+            | "projectilegroup"
+            | "projectilekickback"
+            | "projectilepassheight"
+            | "pushfactor"
+            | "pushsound"
+            | "radius"
+            | "reactiontime"
+            | "renderstyle"
+            | "riplevelmax"
+            | "riplevelmin"
+            | "ripperlevel"
+            | "scale"
+            | "seesound"
+            | "soundclass"
+            | "spawnid"
+            | "species"
+            | "speed"
+            | "splashgroup"
+            | "startbullets"
+            | "stencilcolor"
+            | "tag"
+            | "threshold"
+            | "translation"
+            | "usesound"
+            | "viewheight"
+            | "visibletoplayerclass"
+            | "wallbouncefactor"
+            | "wallbouncesound"
+            | "woundhealth"
+            | "xscale"
+            | "yscale"
+    )
+}
+
+/// True when `apply_flag` recognises this flag name (BD0 / `mod check`).
+#[must_use]
+pub fn is_known_flag(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    if upper.starts_with("INVENTORY.")
+        || upper.starts_with("WEAPON.")
+        || upper.starts_with("PLAYERPAWN.")
+    {
+        return true;
+    }
+    if crate::flags::is_uzdoom_flag(&upper) {
+        return true;
+    }
+    matches!(
+        upper.as_str(),
+        "SOLID"
+            | "SHOOTABLE"
+            | "COUNTKILL"
+            | "CANUSEWALLS"
+            | "COUNTITEM"
+            | "MISSILE"
+            | "NOGRAVITY"
+            | "AMBUSH"
+            | "FLOAT"
+            | "DROPOFF"
+            | "NORADIUSDMG"
+            | "DONTTHRUST"
+            | "NODAMAGE"
+            | "INVULNERABLE"
+            | "DORMANT"
+            | "NOTARGET"
+            | "FRIENDLY"
+            | "NOBLOOD"
+            | "FLOATBOB"
+            | "DONTHARMSPECIES"
+            | "DONTHARMCLASS"
+            | "BOSS"
+            | "SPAWNCEILING"
+            | "NOBLOCKMAP"
+            | "FLOORCLIP"
+            | "DROPPED"
+            | "CORPSE"
+            | "DONTDRAW"
+            | "INVISIBLE"
+            | "FRIGHTENED"
+            | "NOTRIGGER"
+            | "DONTRIP"
+            | "RIPPER"
+            | "WALLSPRITE"
+            | "FLATSPRITE"
+            | "BOUNCEONFLOORS"
+            | "BOUNCEONCEILINGS"
+            | "BOUNCEONWALLS"
+            | "USESPECIAL"
+            | "DOOMBOUNCE"
+            | "HEXENBOUNCE"
+            | "THRUACTORS"
+            | "NOCLIP"
+            | "NOSECTOR"
+            | "NOINTERACTION"
+            | "NOTELEPORT"
+            | "THRUGHOST"
+            | "MOVEWITHSECTOR"
+            | "NOPAIN"
+            | "NODAMAGETHRUST"
+            | "FORCERADIUSDMG"
+            | "MISSILEMORE"
+            | "MISSILEEVENMORE"
+            | "LOOKALLAROUND"
+            | "GHOST"
+            | "RANDOMIZE"
+            | "FORCEXYBILLBOARD"
+            | "FORCEYBILLBOARD"
+            | "DONTSPLASH"
+            | "CLIENTSIDEONLY"
+            | "EXPLODEONWATER"
+            | "BLOODSPLATTER"
+            | "BLOODLESSIMPACT"
+            | "NOEXTREMEDEATH"
+            | "EXTREMEDEATH"
+            | "ISMONSTER"
+            | "SHADOW"
+            | "NOBLOCKMONST"
+            | "ACTIVATEMCROSS"
+            | "ACTIVATEIMPACT"
+            | "CANNOTPUSH"
+            | "SLIDESONWALLS"
+            | "WINDTHRUST"
+            | "FASTER"
+            | "DEHEXPLOSION"
+            | "SKYEXPLODE"
+            | "THRUSPECIES"
+            | "MTHRUSPECIES"
+            | "DONTHURTSPECIES"
+            | "NOTAUTOAIMED"
+            | "USEKILLSCRIPTS"
+            | "NOBLOODDECALS"
+            | "BOUNCEONACTORS"
+            | "INVBAR"
+            | "ACTIVATEPCROSS"
+            | "ALLOWPARTICLES"
+            | "ALWAYSPUFF"
+            | "ALWAYSTELEFRAG"
+            | "AUTOACTIVATE"
+            | "CANBOUNCEWATER"
+            | "CANTSEEK"
+            | "CEILINGHUGGER"
+            | "DONTBLAST"
+            | "DONTFALL"
+            | "DONTGIB"
+            | "DONTMORPH"
+            | "DONTSQUASH"
+            | "NEVERTARGET"
+            | "NOICEDEATH"
+            | "NODECAL"
+            | "DONTREFLECT"
+            | "STEPMISSILE"
+            | "SYNCHRONIZED"
+            | "PUFFGETSOWNER"
+            | "PUFFONACTORS"
+            | "FORCEDECAL"
+            | "NOTRACE"
+            | "SEEINVISIBLE"
+            | "NOINFIGHTING"
+            | "QUICKTORETALIATE"
+            | "NONETID"
+            | "NOTDMATCH"
+            | "NOTELEOTHER"
+            | "NOTIMEFREEZE"
+            | "NOTONAUTOMAP"
+            | "PAINLESS"
+            | "PIERCEARMOR"
+            | "PUSHABLE"
+            | "QUARTERGRAVITY"
+            | "SERVERSIDEONLY"
+            | "TOUCHY"
+            | "VISIBILITYPULSE"
+            | "BRIGHT"
+            // BD commercial leftovers (mod-check known table).
+            | "ACTLIKEBRIDGE"
+            | "BOSSDEATH"
+            | "CANPASS"
+            | "CANPUSHWALLS"
+            | "COUNTSECRET"
+            | "DOHARMSPECIES"
+            | "DONTCORPSE"
+            | "DONTTRANSLATE"
+            | "FIXMAPTHINGPOS"
+            | "FLOORHUGGER"
+            | "FORCEPAIN"
+            | "FULLVOLACTIVE"
+            | "LOWGRAVITY"
+            | "NEVERFAST"
+            | "NODROPOFF"
+            | "NOALERT"
+            | "NOLIFTDROP"
+            | "OLDRADIUSDMG"
+            | "QUIET"
+            | "REFLECTIVE"
+            | "SCREENSEEKER"
+            | "SEEKERMISSILE"
+            | "SPECTRAL"
+            | "STEALTH"
+            | "TELESTOMP"
+            | "USEBOUNCESTATE"
+            | "VULNERABLE"
+            | "AXEBLOOD"
+            | "NEVERRESPAWN"
+            | "NOSKIN"
+            | "PICKUP"
+            | "ROCKETTRAIL"
+            | "*"
+    )
+}
+
+fn apply_flag(flags: &mut u64, extra: &mut crate::flags::ActorFlags, op: &FlagOp) {
+    let upper = op.name.to_ascii_uppercase();
+    // Qualified inventory / weapon / playerpawn flags: recognised, stored later via
+    // ClassDef fields when the loader walks `def.flags` again — bit no-ops here.
+    if upper.starts_with("INVENTORY.")
+        || upper.starts_with("WEAPON.")
+        || upper.starts_with("PLAYERPAWN.")
+    {
+        return;
+    }
+    if upper == "*" && !op.set {
+        *flags = 0;
+        *extra = crate::flags::ActorFlags::default();
+        return;
+    }
+    // Every UZDoom `DEFINE_FLAG` is stored, including names that also have a
+    // legacy `u64` bit. Gameplay for the legacy set still reads `flags`.
+    extra.set_name(&upper, op.set);
+    let bit = match upper.as_str() {
         "SOLID" => FLAG_SOLID,
         "SHOOTABLE" => FLAG_SHOOTABLE,
         "COUNTKILL" => {
@@ -1779,6 +2554,37 @@ fn apply_flag(flags: &mut u64, op: &FlagOp) {
         "BOUNCEONWALLS" => FLAG_BOUNCEONWALLS,
         "USESPECIAL" => FLAG_USESPECIAL,
         "DOOMBOUNCE" | "HEXENBOUNCE" => FLAG_BOUNCEONFLOORS | FLAG_BOUNCEONWALLS,
+        "THRUACTORS" => FLAG_THRUACTORS,
+        "NOCLIP" => FLAG_NOCLIP,
+        "NOSECTOR" => FLAG_NOSECTOR,
+        "NOINTERACTION" => FLAG_NOINTERACTION,
+        "NOTELEPORT" => FLAG_NOTELEPORT,
+        "THRUGHOST" => FLAG_THRUGHOST,
+        "MOVEWITHSECTOR" => FLAG_MOVEWITHSECTOR,
+        "NOPAIN" => FLAG_NOPAIN,
+        "NODAMAGETHRUST" => FLAG_NODAMAGETHRUST,
+        "FORCERADIUSDMG" => FLAG_FORCERADIUSDMG,
+        "MISSILEMORE" => FLAG_MISSILEMORE,
+        "MISSILEEVENMORE" => FLAG_MISSILEEVENMORE,
+        "LOOKALLAROUND" => FLAG_LOOKALLAROUND,
+        "GHOST" => FLAG_GHOST,
+        "RANDOMIZE" => FLAG_RANDOMIZE,
+        "FORCEXYBILLBOARD" | "FORCEYBILLBOARD" => FLAG_FORCEXYBILLBOARD,
+        "DONTSPLASH" => FLAG_DONTSPLASH,
+        "CLIENTSIDEONLY" => FLAG_CLIENTSIDEONLY,
+        "EXPLODEONWATER" => FLAG_EXPLODEONWATER,
+        "BLOODSPLATTER" | "BLOODLESSIMPACT" => FLAG_BLOODSPLATTER,
+        "NOEXTREMEDEATH" => FLAG_NOEXTREMEDEATH,
+        "EXTREMEDEATH" => FLAG_EXTREMEDEATH,
+        "ISMONSTER" => FLAG_ISMONSTER,
+        "SHADOW" => FLAG_SHADOW,
+        // Recognised stand-ins (no dedicated bit yet — accept to silence BD2 unknowns).
+        "NOBLOCKMONST" | "ACTIVATEMCROSS" | "ACTIVATEIMPACT" | "CANNOTPUSH" | "SLIDESONWALLS"
+        | "WINDTHRUST" | "FASTER" | "DEHEXPLOSION" | "SKYEXPLODE" | "THRUSPECIES"
+        | "MTHRUSPECIES" | "DONTHURTSPECIES" | "NOTAUTOAIMED" | "USEKILLSCRIPTS"
+        | "NOBLOODDECALS" | "BOUNCEONACTORS" | "INVBAR" => {
+            return;
+        }
         "*" => {
             if !op.set {
                 *flags = 0;
@@ -1885,6 +2691,77 @@ actor ZombieMan : Actor 3004
     }
 
     #[test]
+    fn uzdoom_flags_parse_into_the_extra_bitset() {
+        assert!(is_known_flag("NOFRICTION"));
+        assert!(is_known_flag("ROLLSPRITE"));
+        assert!(is_known_flag("FOILINVUL"));
+        assert!(is_known_flag("ALWAYSFAST"));
+        let ir = parse_decorate(
+            r#"
+actor FastGhost : Actor 9103
+{
+  +NOFRICTION
+  +ALWAYSFAST
+  +NOFEAR
+  +FOILINVUL
+  -NOFRICTION
+  +NOFRICTION
+}
+"#,
+        )
+        .unwrap();
+        let reg = ClassRegistry::from_decorate(&ir).unwrap();
+        let c = reg.get(reg.find_name("FastGhost").unwrap()).unwrap();
+        assert!(c.extra_flags.get_name("NOFRICTION"));
+        assert!(c.extra_flags.get_name("ALWAYSFAST"));
+        assert!(c.extra_flags.get_name("NOFEAR"));
+        assert!(c.extra_flags.get_name("FOILINVUL"));
+        assert_eq!(c.flags & FLAG_SOLID, 0);
+    }
+
+    #[test]
+    fn canjump_is_required_for_a_monster_impulse() {
+        let ir = parse_decorate(
+            r#"
+actor Hopper : Actor 9104
+{
+  Health 20
+  +SHOOTABLE
+  JumpZ 9
+  States { Spawn: POSS A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = std::sync::Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = std::sync::Arc::new(crate::StateTable::from_decorate(&ir, &classes));
+        let mut map = room_testkit::MapBuilder::new()
+            .room("a", room_testkit::rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        room_nodebuild::apply_nodes(&mut map);
+        let mut w = crate::World::from_map_with_classes(map, classes.clone(), states).unwrap();
+        let hop = classes.find_name("Hopper").unwrap();
+        let id = w
+            .spawn_at(
+                hop,
+                room_core::DVec3::new(64.0, 64.0, 0.0),
+                room_core::Angle::ZERO,
+            )
+            .unwrap();
+        assert!(!w.try_actor_jump(id));
+        assert_eq!(w.actors.get(id).unwrap().vel.z(), 0.0);
+        w.actors
+            .get_mut(id)
+            .unwrap()
+            .extra_flags
+            .set_name("CANJUMP", true);
+        assert!(w.try_actor_jump(id));
+        assert!((w.actors.get(id).unwrap().vel.z() - 9.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn later_doomednum_and_replaces_take_over_spawns() {
         let ir = parse_decorate(
             "actor ZombieMan 3004 { Health 20 }\n\
@@ -1904,6 +2781,45 @@ actor ZombieMan : Actor 3004
         assert_eq!(reg.get(by_name).unwrap().name, "BigImp");
         let z = reg.find_name("ZombieMan").unwrap();
         assert_eq!(reg.replacement(z), z);
+    }
+
+    #[test]
+    fn gzdoom_native_bases_and_bd_flags_register() {
+        let src = include_str!("../../../wadsrc/room/actors/doom.txt");
+        let ir = parse_decorate(src).unwrap();
+        let reg = ClassRegistry::from_decorate(&ir).unwrap();
+        for name in [
+            "Inventory",
+            "Ammo",
+            "CustomInventory",
+            "FastProjectile",
+            "PowerupGiver",
+            "DoomWeapon",
+            "RandomSpawner",
+            "Health",
+        ] {
+            assert!(reg.find_name(name).is_some(), "missing base {name}");
+        }
+        assert!(is_known_flag("THRUACTORS"));
+        assert!(is_known_flag("CLIENTSIDEONLY"));
+        assert!(is_known_flag("INVENTORY.UNDROPPABLE"));
+        assert!(is_known_flag("WEAPON.NOAUTOFIRE"));
+        let child = parse_decorate(
+            r#"
+actor Token : Inventory 9920
+{
+  +INVENTORY.UNDROPPABLE
+  +CLIENTSIDEONLY
+  +THRUACTORS
+}
+"#,
+        )
+        .unwrap();
+        // Prepend Inventory from doom for parent resolution — merge IRs.
+        let mut merged = ir.clone();
+        merged.actors.extend(child.actors);
+        let reg2 = ClassRegistry::from_decorate(&merged).unwrap();
+        assert!(reg2.find_name("Token").is_some());
     }
 
     #[test]
@@ -2326,5 +3242,59 @@ actor ZombieMan : Actor 3004
         let c = reg.get(reg.find_name("ZombieMan").unwrap()).unwrap();
         assert_eq!(c.tag, "Former Human");
         assert_eq!(c.display_name(), "Former Human");
+    }
+
+    #[test]
+    fn bd2_decal_spawnid_missile_and_known_props() {
+        assert!(is_known_property("Decal"));
+        assert!(is_known_property("SpawnID"));
+        assert!(is_known_property("MissileType"));
+        assert!(is_known_property("BounceCount"));
+        assert!(is_known_property("ClearFlags"));
+        assert!(is_known_property("Game"));
+        assert!(is_known_property("Weapon.BobStyle"));
+        assert!(is_known_property("Inventory.ForbiddenTo"));
+        assert!(is_known_property("Powerup.Duration"));
+        assert!(is_known_property("Health.LowMessage"));
+        let ir = parse_decorate(
+            r#"
+actor BdRocket : Actor 9988
+{
+  Decal "Scorch"
+  SpawnID 42
+  MissileType "BdTrail"
+  MeleeDamage 10
+  ExplosionDamage 128
+  ExplosionRadius 128
+  BounceCount 3
+  WallBounceFactor 0.4
+  Weapon.Kickback 50
+  Weapon.BobSpeed 2.5
+  Weapon.BobRangeX 0.3
+  Weapon.BobRangeY 0.7
+  Weapon.BobStyle Smooth
+  ClearFlags
+  +MISSILE
+  States { Spawn: MISL A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let reg = ClassRegistry::from_decorate(&ir).unwrap();
+        let c = reg.get(reg.find_name("BdRocket").unwrap()).unwrap();
+        assert_eq!(c.decal, "Scorch");
+        assert_eq!(c.spawn_id, 42);
+        assert_eq!(c.missile_type, "BdTrail");
+        assert_eq!(c.melee_damage, 10);
+        assert_eq!(c.explosion_damage, 128);
+        assert_eq!(c.explosion_radius, 128);
+        assert_eq!(c.bounce_count_max, 3);
+        assert!((c.wall_bounce_factor - 0.4).abs() < 1e-9);
+        assert_eq!(c.kickback, 50);
+        assert!((c.bob_speed - 2.5).abs() < 1e-9);
+        assert!((c.bob_range_x - 0.3).abs() < 1e-9);
+        assert!((c.bob_range_y - 0.7).abs() < 1e-9);
+        assert_eq!(c.bob_style, "Smooth");
+        assert_ne!(c.flags & FLAG_MISSILE, 0);
     }
 }

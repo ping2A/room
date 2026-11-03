@@ -96,6 +96,7 @@ pub fn parse_animdefs(text: &str) -> Result<AnimDefs, DefsError> {
         ScanOptions {
             c_mode: false,
             semicolon_comments: true,
+            ..Default::default()
         },
     );
     let mut out = AnimDefs::default();

@@ -20,6 +20,18 @@ pub struct Actor {
     pub angle: Angle,
     /// Pitch (look / aim; `A_SetPitch` may change).
     pub pitch: Angle,
+    /// Camera pitch from `A_SetViewPitch`. Absent means the aim pitch.
+    pub view_pitch: Option<Angle>,
+    /// Camera yaw from `A_SetViewAngle`. Absent means the aim angle.
+    pub view_angle: Option<Angle>,
+    /// Camera roll from `A_SetViewRoll`. Absent keeps the view upright.
+    pub view_roll: Option<Angle>,
+    /// Eye offset from `SetViewPos`: `(x, y, z, flags)`. Absent means the normal eye.
+    pub view_pos: Option<(f64, f64, f64, i32)>,
+    /// Sprite shift from `A_SpriteOffset`, in map units. X is to the sprite's right.
+    pub sprite_ofs_x: f64,
+    /// Sprite shift from `A_SpriteOffset`. Positive Y is up.
+    pub sprite_ofs_y: f64,
     /// Roll (ACS `Get/SetActorRoll`; visual later).
     pub roll: Angle,
     /// Hit points.
@@ -108,6 +120,8 @@ pub struct Actor {
     pub frame: u8,
     /// `MF_*` subset (bit 0 = SOLID, bit 1 = SHOOTABLE for now).
     pub flags: u64,
+    /// UZDoom flags outside the legacy `u64` (`docs/36` UZ1).
+    pub extra_flags: crate::flags::ActorFlags,
     /// Countdown before chase/attack (from `ReactionTime`).
     pub reaction_time: i32,
     /// Remaining infighting hold tics (`Threshold`; 0 = may retarget).
@@ -188,6 +202,49 @@ pub struct Actor {
 pub const MOVE_DIR_NONE: i8 = -1;
 
 impl Actor {
+    /// Pitch the camera uses. `A_SetViewPitch` overrides aim pitch without moving shots.
+    #[must_use]
+    pub fn camera_pitch(&self) -> Angle {
+        self.view_pitch.unwrap_or(self.pitch)
+    }
+
+    /// Yaw the camera uses. `A_SetViewAngle` overrides aim yaw without turning the body.
+    #[must_use]
+    pub fn camera_yaw(&self) -> Angle {
+        self.view_angle.unwrap_or(self.angle)
+    }
+
+    /// Roll the camera uses. `A_SetViewRoll` banks the view without rolling the sprite.
+    #[must_use]
+    pub fn camera_roll(&self) -> Angle {
+        self.view_roll.unwrap_or(Angle::ZERO)
+    }
+
+    /// Eye position after `SetViewPos`.
+    ///
+    /// `eye_z` is the unshifted eye height. Flag 2 adds the offset in world axes.
+    /// Flag 4 replaces the eye with the offset. Otherwise X is forward and Y is left.
+    #[must_use]
+    pub fn camera_eye(&self, eye_z: f64) -> (f64, f64, f64) {
+        let Some((x, y, z, flags)) = self.view_pos else {
+            return (self.pos.x(), self.pos.y(), eye_z);
+        };
+        if flags & 4 != 0 {
+            return (x, y, z);
+        }
+        if flags & 2 != 0 {
+            return (self.pos.x() + x, self.pos.y() + y, eye_z + z);
+        }
+        let yaw = self.angle.radians();
+        let fx = room_core::dmath::cos(yaw);
+        let fy = room_core::dmath::sin(yaw);
+        (
+            self.pos.x() + fx * x - fy * y,
+            self.pos.y() + fy * x + fx * y,
+            eye_z + z,
+        )
+    }
+
     /// Advance one tic of state timing. Returns action name to run when tics hit 0
     /// and we advance (caller resolves via [`crate::StateTable`]).
     pub fn tick_state_timer(&mut self) {

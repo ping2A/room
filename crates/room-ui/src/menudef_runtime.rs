@@ -375,4 +375,51 @@ OptionMenu "OptionsMenu"
             menu.items
         );
     }
+
+    #[test]
+    fn bd7_fixture_option_menu_draw_fingerprint() {
+        // docs/33 BD7: fixture MENUDEF builds + stable draw-list stand-in for screenshots.
+        let text = include_str!("../../../testdata/mods/bd_check/MENUDEF.txt");
+        let defs = parse_menudef(text).unwrap();
+        let menu = option_menu_from_def(&defs, "BdCheckOptions", MenuBuildOpts::default()).unwrap();
+        assert!(
+            menu.items
+                .iter()
+                .any(|i| i.action.contains("bd_check_server")),
+            "expected bd_check_server option; got {:?}",
+            menu.items
+        );
+        let mut list = crate::draw::UiDrawList::new();
+        menu.draw(&mut list, 0, None);
+        assert!(!list.cmds.is_empty(), "menu must emit draw cmds");
+        let patches: Vec<String> = list
+            .cmds
+            .iter()
+            .filter_map(|c| match c {
+                crate::draw::DrawCmd::Patch { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        // Soft fonts → STCFN* glyph patches ("Bd Check" / body text).
+        assert!(
+            patches.iter().any(|n| n.starts_with("STCFN")),
+            "expected STCFN glyph patches; got {patches:?}"
+        );
+        assert!(
+            list.cmds.iter().any(|c| matches!(
+                c,
+                crate::draw::DrawCmd::Fill {
+                    rect,
+                    ..
+                } if rect.w >= 320.0 && rect.h >= 200.0
+            )),
+            "expected full-screen menu fill"
+        );
+        // Stable golden: glyph count must stay in a narrow band for this fixture.
+        assert!(
+            (20..=80).contains(&patches.len()),
+            "unexpected glyph count {} for BdCheckOptions",
+            patches.len()
+        );
+    }
 }

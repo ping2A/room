@@ -19,8 +19,8 @@ use room_nodebuild::ensure_nodes;
 use room_render::{
     Camera, Canvas, DynLightInstance, GpuContext, MAX_VOXEL_WALL_VERTS_PER_FRAME, MaterialCatalog,
     OffscreenTarget, SceneLists, SpriteInstance, SpriteOrient, UnlitPass, VoxelActorPose,
-    VoxelCatalog, build_scene, render_offscreen, sprite_lump_candidates_rot, sprite_rotation_digit,
-    voxel_spin_degrees, voxel_view_angles,
+    VoxelCatalog, build_scene, render_offscreen, sprite_lump_candidates_rot, sprite_offset_delta,
+    sprite_rotation_digit, voxel_spin_degrees, voxel_view_angles,
 };
 use room_sim::mod_hud::layer as mod_hud_layer;
 use room_sim::{
@@ -30,8 +30,9 @@ use room_sim::{
 use room_ui::{
     CanvasSink, DoomStatusBar, DrawCmd, DukeStatusBar, HudState, MenuCommand, MenuStack,
     ModHudMapCtx, PatchCache, Rect, Rgba, StatusBar, UiDrawList, blit_draw_list_full,
-    draw_mod_hud_layer, draw_mod_hud_modals, draw_stcfn_string, draw_title, draw_weapon_lit,
-    measure_stcfn_string, parse_titledef, player_map_poses, splash_ms, title_screen_pic,
+    draw_crosshair, draw_mod_hud_layer, draw_mod_hud_modals, draw_stcfn_string, draw_title,
+    draw_weapon_lit, draw_weapon_tinted, measure_stcfn_string, overlay_bob, overlay_layer_bob,
+    parse_titledef, player_map_poses, splash_ms, title_screen_pic,
 };
 use room_vfs::{Namespace, Vfs, VfsBuilder};
 use std::collections::{BTreeMap, BTreeSet};
@@ -85,6 +86,8 @@ pub struct PlaySession {
     pub(crate) alt_attack: bool,
     /// Fractional tic accumulator (seconds).
     pub tic_accum: f32,
+    /// Gun offset from the previous tic (`PSPF_INTERPOLATE`).
+    weapon_bob_prev: (f32, f32),
     /// Timestamp of last frame (ms).
     pub last_ms: f64,
     /// Camera yaw (radians), locked to sim after each tic.
@@ -303,8 +306,10 @@ impl PlaySession {
         let mut tex_anim = room_render::TextureAnimator::default();
         let mut camera_tex_sizes = BTreeMap::new();
         let mut mapinfo = Arc::new(room_defs::MapInfo::default());
+        let mut zscript_handlers: Vec<String> = Vec::new();
         if let Ok(defs) = DefinitionsBuilder::new(&vfs).build() {
             game.set_complevel(defs.complevel);
+            zscript_handlers = defs.zscript_event_handlers();
             mapinfo = Arc::new(defs.mapinfo);
             game.set_mapinfo(Arc::clone(&mapinfo));
             game.set_terrain(&defs.terrain);
@@ -343,6 +348,9 @@ impl PlaySession {
                 game.set_acs_libraries(libs);
             }
         }
+        let zs = room_game::load_zscript_from_vfs(&vfs);
+        room_game::log_zscript_report(&zs, &zscript_handlers);
+        game.set_zscript(zs.program, zscript_handlers);
 
         game.set_defs(data.classes, data.states);
         game.drop_weapons_without_sprites(&vfs);
@@ -426,6 +434,7 @@ impl PlaySession {
             attack: false,
             alt_attack: false,
             tic_accum: 0.0,
+            weapon_bob_prev: (0.0, 0.0),
             last_ms: 0.0,
             yaw: 0.0,
             pitch: 0.0,
@@ -1390,8 +1399,7 @@ impl PlaySession {
                 self.inner.text(x + self.ox, y + self.oy, text, color);
             }
             fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
-                self.inner
-                    .blit_rgba(x + self.ox, y + self.oy, w, h, pixels);
+                self.inner.blit_rgba(x + self.ox, y + self.oy, w, h, pixels);
             }
         }
         blit_draw_list_full(
@@ -1662,14 +1670,39 @@ impl PlaySession {
             hud.armor = h.armor;
             hud.ammo = h.ammo;
             hud.ammo_max = h.ammo_max;
+            hud.ammo2 = h.ammo2;
+            hud.ammo2_max = h.ammo2_max;
             hud.keys = h.keys;
             hud.face = h.face;
             hud.weapon_patch = h.weapon_patch;
             hud.flash_patch = h.flash_patch;
+            hud.overlay_patch = h.overlay_patch;
+            hud.overlay_ofs_x = h.overlay_ofs_x;
+            hud.overlay_ofs_y = h.overlay_ofs_y;
+            hud.overlay_alpha = h.overlay_alpha;
+            hud.overlay_scale_x = h.overlay_scale_x;
+            hud.overlay_scale_y = h.overlay_scale_y;
+            hud.overlay_flip = h.overlay_flip;
+            hud.overlay_mirror = h.overlay_mirror;
+            hud.overlay_angle = h.overlay_angle;
+            hud.overlay_pivot_x = h.overlay_pivot_x;
+            hud.overlay_pivot_y = h.overlay_pivot_y;
+            hud.overlay_tint_r = h.overlay_tint_r;
+            hud.overlay_tint_g = h.overlay_tint_g;
+            hud.overlay_tint_b = h.overlay_tint_b;
+            hud.overlay_fuzz = h.overlay_fuzz;
+            hud.overlay_pivot_percent = h.overlay_pivot_percent;
+            hud.overlay_add_bob = h.overlay_add_bob;
+            hud.overlay_add_weapon = h.overlay_add_weapon;
+            hud.overlay_interpolate = h.overlay_interpolate;
+            hud.bob_ofs_x = h.bob_ofs_x;
+            hud.bob_ofs_y = h.bob_ofs_y;
             hud.weapon_light = h.weapon_light;
             hud.weapon_bright = h.weapon_bright;
             hud.flash_bright = h.flash_bright;
             hud.weapon_fuzz = h.weapon_fuzz;
+            self.weapon_bob_prev = (hud.bob_x, hud.bob_y);
+            hud.weapon_interpolate = h.weapon_interpolate;
             hud.bob_x = h.bob_x;
             hud.bob_y = h.bob_y;
             hud.arms = h.arms;
@@ -1689,19 +1722,84 @@ impl PlaySession {
         if !hud.flash_patch.is_empty() {
             let _ = self.patches.ensure(&self.vfs, &hud.flash_patch);
         }
+        if !hud.overlay_patch.is_empty() {
+            let _ = self.patches.ensure(&self.vfs, &hud.overlay_patch);
+        }
 
         let soft = self.patches.get(&hud.weapon_patch);
-        draw_weapon_lit(
+        let frac = (self.tic_accum * self.game.tic_rate() as f32).clamp(0.0, 1.0);
+        let (bob_x, bob_y) = overlay_bob(
+            self.weapon_bob_prev,
+            (hud.bob_x, hud.bob_y),
+            frac,
+            hud.weapon_interpolate,
+        );
+        let (layer_bob_x, layer_bob_y) = overlay_bob(
+            self.weapon_bob_prev,
+            (hud.bob_x, hud.bob_y),
+            frac,
+            hud.overlay_interpolate,
+        );
+        draw_weapon_tinted(
             ui,
             &hud.weapon_patch,
             hud.fullscreen,
             soft,
-            hud.bob_x,
-            hud.bob_y,
+            bob_x,
+            bob_y,
             hud.weapon_light,
             hud.weapon_bright,
             hud.weapon_fuzz,
+            hud.weapon_alpha,
+            hud.weapon_scale_x,
+            hud.weapon_scale_y,
+            hud.weapon_flip,
+            hud.weapon_pivot_x,
+            hud.weapon_pivot_y,
+            hud.weapon_angle,
+            hud.weapon_tint_r,
+            hud.weapon_tint_g,
+            hud.weapon_tint_b,
+            hud.weapon_mirror,
+            hud.weapon_pivot_percent,
         );
+        if !hud.overlay_patch.is_empty() {
+            if let Some(soft_overlay) = self.patches.get(&hud.overlay_patch) {
+                draw_weapon_tinted(
+                    ui,
+                    &hud.overlay_patch,
+                    hud.fullscreen,
+                    Some(soft_overlay),
+                    overlay_layer_bob(
+                        layer_bob_x,
+                        hud.bob_ofs_x,
+                        hud.overlay_add_bob,
+                        hud.overlay_add_weapon,
+                    ) + hud.overlay_ofs_x,
+                    overlay_layer_bob(
+                        layer_bob_y,
+                        hud.bob_ofs_y,
+                        hud.overlay_add_bob,
+                        hud.overlay_add_weapon,
+                    ) + hud.overlay_ofs_y,
+                    hud.weapon_light,
+                    true,
+                    hud.overlay_fuzz,
+                    hud.overlay_alpha,
+                    hud.overlay_scale_x,
+                    hud.overlay_scale_y,
+                    hud.overlay_flip,
+                    hud.overlay_pivot_x,
+                    hud.overlay_pivot_y,
+                    hud.overlay_angle,
+                    hud.overlay_tint_r,
+                    hud.overlay_tint_g,
+                    hud.overlay_tint_b,
+                    hud.overlay_mirror,
+                    hud.overlay_pivot_percent,
+                );
+            }
+        }
         // A flash frame without a lump draws nothing (GZDoom).
         if let Some(soft_flash) = self.patches.get(&hud.flash_patch) {
             draw_weapon_lit(
@@ -1709,16 +1807,24 @@ impl PlaySession {
                 &hud.flash_patch,
                 hud.fullscreen,
                 Some(soft_flash),
-                hud.bob_x,
-                hud.bob_y,
+                bob_x,
+                bob_y,
                 hud.weapon_light,
                 hud.flash_bright,
                 hud.weapon_fuzz,
+                1.0,
+                1.0,
+                1.0,
+                false,
+                0.5,
+                0.5,
+                0.0,
             );
         }
         if hud.inverse_colormap() {
             ui.invert_since(weapon_cmds);
         }
+        draw_crosshair(ui, hud.crosshair);
         let maptime = self.game.world().map(|w| w.level.maptime).unwrap_or(0);
         if let Some(world) = self.game.world() {
             let poses = player_map_poses(world);
@@ -1881,7 +1987,7 @@ impl PlaySession {
         let world = self.game.world()?;
         let p = world.players.get(usize::from(seat))?.as_ref()?;
         let a = world.actors.get(p.camera.or(p.mo)?)?;
-        Some((a.angle.radians(), a.pitch.radians()))
+        Some((a.camera_yaw().radians(), a.camera_pitch().radians()))
     }
 
     /// Eye position of `seat` as of the last simulated tic.
@@ -1905,7 +2011,9 @@ impl PlaySession {
         } else {
             p.view_z
         };
-        Some(Vec3::new(a.pos.x() as f32, a.pos.y() as f32, z as f32))
+        let (x, y, z) = a.camera_eye(z);
+        #[allow(clippy::cast_possible_truncation)]
+        Some(Vec3::new(x as f32, y as f32, z as f32))
     }
 
     /// Eye + forward for this frame: eye interpolated between the last two
@@ -1955,7 +2063,55 @@ impl PlaySession {
         if let Some((eye, forward)) = self.view_pose() {
             camera.eye = eye;
             camera.forward = forward;
+            let roll = self.sim_roll(self.local_seat);
+            camera.up = if roll.abs() > 1e-4 {
+                Camera::rolled_up(forward, roll as f32)
+            } else {
+                Vec3::Z
+            };
+            camera.fov_y_deg = self.sim_fov(self.local_seat);
         }
+    }
+
+    fn sim_fov(&self, seat: u8) -> f64 {
+        let Some(world) = self.game.world() else {
+            return 58.715;
+        };
+        let Some(p) = world
+            .players
+            .get(usize::from(seat))
+            .and_then(|p| p.as_ref())
+        else {
+            return 58.715;
+        };
+        if let Some(id) = p.camera {
+            if let Some(a) = world.actors.get(id) {
+                if a.camera_fov > 0.0 {
+                    return a.camera_fov;
+                }
+            }
+        }
+        room_sim::Player::zoomed_fov(58.715, p.weapon_zoom)
+    }
+
+    fn sim_roll(&self, seat: u8) -> f64 {
+        let Some(world) = self.game.world() else {
+            return 0.0;
+        };
+        let Some(p) = world
+            .players
+            .get(usize::from(seat))
+            .and_then(|p| p.as_ref())
+        else {
+            return 0.0;
+        };
+        let Some(id) = p.camera.or(p.mo) else {
+            return 0.0;
+        };
+        let Some(a) = world.actors.get(id) else {
+            return 0.0;
+        };
+        a.camera_roll().radians()
     }
 
     fn fill_voxel_poses(&mut self, seat: u8, eye: Vec3) {
@@ -2124,6 +2280,8 @@ impl PlaySession {
                     a.alpha.clamp(0.0, 1.0) as f32,
                     a.sprite.clone(),
                     a.frame,
+                    a.sprite_ofs_x,
+                    a.sprite_ofs_y,
                     flags,
                 ))
             })
@@ -2143,6 +2301,8 @@ impl PlaySession {
             alpha,
             sprite,
             frame,
+            sprite_ofs_x,
+            sprite_ofs_y,
             flags,
         ) in actors
         {
@@ -2195,7 +2355,8 @@ impl PlaySession {
                 SpriteOrient::Billboard
             };
             out.push(SpriteInstance {
-                pos: Vec3::new(x as f32, y as f32, z_bottom as f32),
+                pos: Vec3::new(x as f32, y as f32, z_bottom as f32)
+                    + sprite_offset_delta(camera.forward, sprite_ofs_x as f32, sprite_ofs_y as f32),
                 width: w as f32,
                 height: h as f32,
                 light,
@@ -2389,8 +2550,7 @@ impl PlaySession {
                 self.inner.text(x + self.ox, y + self.oy, text, color);
             }
             fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
-                self.inner
-                    .blit_rgba(x + self.ox, y + self.oy, w, h, pixels);
+                self.inner.blit_rgba(x + self.ox, y + self.oy, w, h, pixels);
             }
         }
         blit_draw_list_full(

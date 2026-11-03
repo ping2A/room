@@ -593,7 +593,8 @@ fn classify(name: &str, path: &str, ns: Namespace) -> &'static str {
     let stem = name.split('.').next().unwrap_or(name);
     if TEXT_LUMPS.contains(&stem)
         || [
-            ".txt", ".dec", ".acs", ".zs", ".cfg", ".ini", ".json", ".ron", ".deh", ".bex",
+            ".txt", ".dec", ".acs", ".zs", ".zc", ".zsc", ".cfg", ".ini", ".json", ".ron", ".deh",
+            ".bex",
         ]
         .iter()
         .any(|e| lower.ends_with(e))
@@ -1724,6 +1725,7 @@ pub fn room_editor_image_put(
                     top_offset: off(top),
                     indices: indices.to_vec(),
                     alpha: if opaque { vec![255; n] } else { alpha.to_vec() },
+                    rgba: None,
                 };
                 let rgba = paletted_rgba(&pal, indices, alpha, opaque);
                 let shown = live_picture(&name, soft, &rgba, ns == "sprites");

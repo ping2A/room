@@ -22,6 +22,12 @@ use std::sync::Arc;
 use thiserror::Error;
 use xxhash_rust::xxh3::xxh3_64;
 
+/// Mutable world view handed to a ZScript call while the runtime is split out.
+pub(crate) struct WorldZHost<'a> {
+    /// World the script may touch (actors, inventory).
+    pub world: &'a mut World,
+}
+
 /// Player 1 start DoomEdNum.
 const THING_PLAYER1_START: i16 = 1;
 /// Player 2–4 starts (MBF `-dogs` spawn sites).
@@ -440,6 +446,8 @@ pub struct World {
     pub side_lights: std::collections::BTreeMap<u32, i16>,
     /// Inventory bags keyed by owner actor.
     pub inventory: InventoryBags,
+    /// While a `CustomInventory` Pickup state runs, give/take inventory on this actor.
+    pub(crate) inventory_beneficiary: Option<ActorId>,
     /// Sound events produced this tic (drained by the game shell).
     pub sound_events: Vec<SimSoundEvent>,
     /// Sound names queued when the last tic started (CON `ifsound` / `ifnosounds`).
@@ -545,6 +553,8 @@ pub struct World {
     pub skill: u8,
     /// Fast monsters (Nightmare or `-fast`); uses `FastSpeed` when set.
     pub fast_monsters: bool,
+    /// `sv_fastweapons`. 0 is normal, 1 halves weapon frames, 2 or more makes them 1 tic.
+    pub fast_weapons: i32,
     /// Respawn `COUNTKILL` corpses (`-respawn` / Nightmare skill).
     pub respawn_monsters: bool,
     /// Respawn picked-up items (Duke `ud.respawn_items`).
@@ -641,6 +651,10 @@ pub struct World {
     pub acs: room_acs::AcsState,
     /// WASM play modules (M11 `room-script`).
     pub scripts: crate::script_host::ScriptHost,
+    /// ZScript play runtime (`docs/34`).
+    pub zscript: crate::zscript::ZscriptRuntime,
+    /// Cached DECORATE→ZVM expression programs (ZS5).
+    pub deco_expr_cache: crate::deco_zvm::DecoExprCache,
 }
 
 /// How a match ended (read by shells for the final screen).
@@ -772,6 +786,19 @@ impl ScreenFade {
     }
 }
 
+/// How a queued sound event should be applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimSoundAdjust {
+    /// Start a sound.
+    Start,
+    /// Change the volume of a sound already playing on this channel.
+    Volume,
+    /// Change the pitch of a sound already playing on this channel.
+    Pitch,
+    /// Stop every playing sound.
+    StopAll,
+}
+
 /// Lightweight sim sound request (mapped to `room-audio::SoundEvent` by the shell).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SimSoundEvent {
@@ -785,6 +812,12 @@ pub struct SimSoundEvent {
     pub z: f64,
     /// Volume 0..=1.
     pub volume: f32,
+    /// Playback rate. 1 is nominal.
+    pub pitch: f32,
+    /// Channel. `A_PlaySound` uses 0.
+    pub channel: i32,
+    /// Start a voice, or change one that is already playing.
+    pub adjust: SimSoundAdjust,
     /// Attenuation scale (`1.0` = normal, `0.0` = full volume / no falloff).
     pub attenuation: f32,
     /// When `Some(seat)`, only that console seat should hear it (Mod HUD UI cue).
@@ -854,10 +887,14 @@ pub struct PlayerHud {
     pub health: i32,
     /// Armor points.
     pub armor: i32,
-    /// Ready ammo count (best-effort from Clip/Shell/RocketAmmo/Cell).
+    /// Ready ammo count (`ammo1` / primary `Weapon.AmmoType`).
     pub ammo: i32,
     /// Max for the ready ammo type (backpack-aware).
     pub ammo_max: i32,
+    /// Secondary ammo (`ammo2` / `Weapon.AmmoType2`); `-1` when unused.
+    pub ammo2: i32,
+    /// Max for secondary ammo type.
+    pub ammo2_max: i32,
     /// Key bits: blue=1, yellow=2, red=4.
     pub keys: u8,
     /// Mugshot lump name.
@@ -866,6 +903,44 @@ pub struct PlayerHud {
     pub weapon_patch: String,
     /// Muzzle flash patch (`PISFA0`, …); empty when inactive.
     pub flash_patch: String,
+    /// Layer-2 sprite from `A_Overlay`. Empty draws nothing.
+    pub overlay_patch: String,
+    /// Layer-2 extra screen X from `A_OverlayOffset`.
+    pub overlay_ofs_x: f32,
+    /// Layer-2 extra screen Y from `A_OverlayOffset`.
+    pub overlay_ofs_y: f32,
+    /// Layer-2 opacity. 1 until `A_OverlayAlpha`.
+    pub overlay_alpha: f32,
+    /// Layer-2 scale. 1 until `A_OverlayScale`.
+    pub overlay_scale_x: f32,
+    /// Layer-2 scale Y.
+    pub overlay_scale_y: f32,
+    /// `PSPF_FLIP` on the layer-2 overlay.
+    pub overlay_flip: bool,
+    /// `PSPF_MIRROR` on the layer-2 overlay.
+    pub overlay_mirror: bool,
+    /// Layer-2 rotation in degrees. 0 until `A_OverlayRotate`.
+    pub overlay_angle: f32,
+    /// Layer-2 scale pivot. 0.5 is the center until `A_OverlayPivot`.
+    pub overlay_pivot_x: f32,
+    /// Layer-2 scale pivot Y.
+    pub overlay_pivot_y: f32,
+    /// Layer-2 tint red. 1 until `A_OverlayTranslation`.
+    pub overlay_tint_r: f32,
+    /// Layer-2 tint green.
+    pub overlay_tint_g: f32,
+    /// Layer-2 tint blue.
+    pub overlay_tint_b: f32,
+    /// Layer-2 fuzz from `STYLE_Fuzzy` / `STYLE_OptFuzzy`.
+    pub overlay_fuzz: bool,
+    /// `PSPF_PIVOTPERCENT` on the layer-2 overlay.
+    pub overlay_pivot_percent: bool,
+    /// `PSPF_ADDBOB` on the layer-2 overlay.
+    pub overlay_add_bob: bool,
+    /// `PSPF_ADDWEAPON` on the layer-2 overlay.
+    pub overlay_add_weapon: bool,
+    /// `PSPF_INTERPOLATE` on the layer-2 overlay.
+    pub overlay_interpolate: bool,
     /// Sector light (0–1) + extralight for the gun (docs/30 W6).
     pub weapon_light: f32,
     /// Ready/fire frame has `Bright` (fullbright psprite).
@@ -874,6 +949,40 @@ pub struct PlayerHud {
     pub flash_bright: bool,
     /// Partial invisibility → fuzz the psprite.
     pub weapon_fuzz: bool,
+    /// Weapon-layer opacity 0–1 (`A_OverlayAlpha`). 1 until a script sets it.
+    pub weapon_alpha: f32,
+    /// Weapon-layer scale (`A_OverlayScale`). 1 until a script sets it.
+    pub weapon_scale_x: f32,
+    /// Weapon-layer scale Y. A Y of 0 in the action copies X.
+    pub weapon_scale_y: f32,
+    /// `PSPF_FLIP` on the weapon layer.
+    pub weapon_flip: bool,
+    /// `PSPF_MIRROR` on the weapon layer.
+    pub weapon_mirror: bool,
+    /// `PSPF_PIVOTPERCENT`. False means the pivot is in sprite pixels.
+    pub weapon_pivot_percent: bool,
+    /// `PSPF_INTERPOLATE`. False snaps the gun offset each tic.
+    pub weapon_interpolate: bool,
+    /// Scale pivot 0–1. 0.5 is the patch center until `A_OverlayPivot`.
+    pub weapon_pivot_x: f32,
+    /// Scale pivot Y.
+    pub weapon_pivot_y: f32,
+    /// Weapon-layer rotation in degrees (`A_OverlayRotate`). 0 is upright.
+    pub weapon_angle: f32,
+    /// Ready weapon class name, for `MODELDEF ViewModelFOV`.
+    pub weapon_class: String,
+    /// `A_SetCrosshair` index. 0 draws no mark.
+    pub crosshair: i32,
+    /// Weapon tint from `A_OverlayTranslation`. 1 is untinted.
+    pub weapon_tint_r: f32,
+    /// Weapon tint green.
+    pub weapon_tint_g: f32,
+    /// Weapon tint blue.
+    pub weapon_tint_b: f32,
+    /// Weapon offset baked into `bob_x` (`A_WeaponOffset` when `PSPF_ADDWEAPON` is on).
+    pub bob_ofs_x: f32,
+    /// Weapon offset baked into `bob_y`.
+    pub bob_ofs_y: f32,
     /// Weapon bob X offset (screen pixels, Doom 320 space).
     pub bob_x: f32,
     /// Weapon bob Y offset.
@@ -928,6 +1037,16 @@ fn weapon_patch_for_class(class_name: &str) -> &'static str {
     }
 }
 
+/// Named weapon tints. Anything else, including empty, stays white.
+fn weapon_translation_tint(name: &str) -> (f32, f32, f32) {
+    match name {
+        "Green" | "green" => (0.25, 1.0, 0.25),
+        "Red" | "red" => (1.0, 0.25, 0.25),
+        "Ice" | "Blue" | "blue" => (0.35, 0.65, 1.0),
+        _ => (1.0, 1.0, 1.0),
+    }
+}
+
 /// Build a Doom sprite lump name from psprite sprite + frame (`PISG`/`B` → `PISGB0`).
 /// `None` when the state names no sprite; `Some("")` for the invisible `TNT1`.
 fn weapon_patch_from_sprite_frame(sprite: &str, frame: u8) -> Option<String> {
@@ -938,7 +1057,13 @@ fn weapon_patch_from_sprite_frame(sprite: &str, frame: u8) -> Option<String> {
     if s == "TNT1" {
         return Some(String::new());
     }
-    let letter = char::from(b'A' + frame.min(25));
+    let letter = match frame {
+        0..=25 => char::from(b'A' + frame),
+        26 => '[',
+        27 => '\\',
+        28 => ']',
+        _ => 'A',
+    };
     Some(format!("{s}{letter}0"))
 }
 
@@ -1011,6 +1136,49 @@ pub mod block_mode {
 impl World {
     /// Cap for [`Self::recent_shots`].
     const MAX_RECENT_SHOTS: usize = 48;
+
+    /// Load a compiled ZScript program and merge any `States` bodies into the
+    /// world's [`StateTable`] (ZS3).
+    pub fn load_zscript_program(&mut self, program: room_zvm::CompiledProgram) {
+        self.load_zscript_program_inner(program, false);
+    }
+
+    /// Like [`load_zscript_program`](Self::load_zscript_program), and stub natives
+    /// the builtin table does not implement. Used for the UZDoom stdlib.
+    pub fn load_zscript_program_stubbed(&mut self, program: room_zvm::CompiledProgram) {
+        self.load_zscript_program_inner(program, true);
+    }
+
+    fn load_zscript_program_inner(
+        &mut self,
+        program: room_zvm::CompiledProgram,
+        stub_missing: bool,
+    ) {
+        let class_states = program.class_states.clone();
+        let class_defaults = program.class_defaults.clone();
+        let layouts: Vec<(String, String)> = program
+            .classes
+            .iter()
+            .map(|c| (c.name.clone(), c.parent.clone()))
+            .collect();
+        if stub_missing {
+            self.zscript.load_program_stubbed(program);
+        } else {
+            self.zscript.load_program(program);
+        }
+        {
+            let classes = std::sync::Arc::make_mut(&mut self.classes);
+            classes.register_zscript_classes(&layouts);
+        }
+        if !class_defaults.is_empty() {
+            let classes = std::sync::Arc::make_mut(&mut self.classes);
+            classes.merge_zscript_defaults(&class_defaults);
+        }
+        if !class_states.is_empty() {
+            let states = std::sync::Arc::make_mut(&mut self.states);
+            states.merge_zscript_states(&self.classes, &class_states);
+        }
+    }
 
     /// Run `f` with `player` temporarily restored into an empty `players` slot.
     ///
@@ -1369,6 +1537,7 @@ impl World {
             line_ids: std::collections::BTreeMap::new(),
             side_lights: std::collections::BTreeMap::new(),
             inventory: InventoryBags::new(),
+            inventory_beneficiary: None,
             sound_events: Vec::new(),
             sound_heard: Vec::new(),
             music_request: None,
@@ -1420,6 +1589,7 @@ impl World {
             player_died_at: [None; MAX_PLAYERS],
             skill: skill.clamp(1, 5),
             fast_monsters: skill >= 5,
+            fast_weapons: 0,
             respawn_monsters: skill >= 5,
             respawn_items: false,
             respawn_inventory: false,
@@ -1467,6 +1637,8 @@ impl World {
             autoaim: true,
             acs: room_acs::AcsState::new(),
             scripts: crate::script_host::ScriptHost::new(),
+            zscript: crate::zscript::ZscriptRuntime::default(),
+            deco_expr_cache: crate::deco_zvm::DecoExprCache::default(),
             vanilla_rng: VanillaRng::new(),
         };
         if math_mode == SimMathMode::VanillaFixed {
@@ -1505,6 +1677,130 @@ impl World {
             .map_err(|e| SimError::Message(e.to_string()))?;
         self.classes = Arc::new(reg);
         Ok(())
+    }
+
+    /// Run `PlayerEntered` and apply `GiveInventory` grants to that player.
+    pub fn fire_player_entered(&mut self, player_number: i32) {
+        if self.zscript.event_handlers.is_empty() || !self.zscript.is_active() {
+            return;
+        }
+        self.zscript.sync_host(self.skill, player_number, 0);
+        let _ = self.zscript.notify_player_entered(player_number);
+        let grants = self.zscript.take_grants();
+        let Some(mo) = self
+            .players
+            .get(player_number as usize)
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        for (_cookie, item, amount) in grants {
+            if let Some(cid) = self.classes.find_name(&item) {
+                let _ = crate::inventory::give_inventory(self, mo, cid, amount);
+            }
+        }
+    }
+
+    /// After ZScript handlers attach, grant items the level-start scripts would
+    /// have given: the player, and monsters already placed on the map.
+    pub fn arm_zscript_level(&mut self) {
+        self.fire_player_entered(0);
+        if self.zscript.event_handlers.is_empty() || !self.zscript.is_active() {
+            return;
+        }
+        let player_mos: Vec<_> = self.players.iter().flatten().filter_map(|p| p.mo).collect();
+        let monsters: Vec<_> = self
+            .thinkers
+            .default
+            .iter()
+            .copied()
+            .filter(|&id| {
+                !player_mos.contains(&id)
+                    && self
+                        .actors
+                        .get(id)
+                        .is_some_and(|a| (a.flags & crate::class::FLAG_COUNTKILL) != 0)
+            })
+            .collect();
+        for id in monsters {
+            self.zscript.sync_host(self.skill, 0, 0);
+            let _ = self.zscript.notify_thing_spawned_monster(true);
+            let grants = self.zscript.take_grants();
+            for (_cookie, item, amount) in grants {
+                if let Some(cid) = self.classes.find_name(&item) {
+                    let _ = crate::inventory::give_inventory(self, id, cid, amount);
+                }
+            }
+        }
+    }
+
+    /// Run a script closure with the runtime split out of `self`, so the host
+    /// can touch world actors while natives run (`docs/34` §14.3.3).
+    pub(crate) fn with_zscript<R>(
+        &mut self,
+        f: impl FnOnce(&mut crate::zscript::ZscriptRuntime, &mut WorldZHost<'_>) -> R,
+    ) -> Option<R> {
+        let mut rt = std::mem::take(&mut self.zscript);
+        if !rt.is_active() {
+            self.zscript = rt;
+            return None;
+        }
+        let r = {
+            let mut host = WorldZHost { world: self };
+            f(&mut rt, &mut host)
+        };
+        self.zscript = rt;
+        Some(r)
+    }
+
+    /// Copy script player TIDs onto the possessed actors.
+    pub fn apply_script_player_tids(&mut self) {
+        let _ = self.with_zscript(|rt, host| {
+            let map = rt.player_tids();
+            for (pn, tid) in map {
+                let Some(mo) = host
+                    .world
+                    .players
+                    .get(pn as usize)
+                    .and_then(|p| p.as_ref())
+                    .and_then(|p| p.mo)
+                else {
+                    continue;
+                };
+                if let Some(actor) = host.world.actors.get_mut(mo) {
+                    actor.tid = tid;
+                }
+            }
+        });
+    }
+
+    /// Apply `GiveInventory` / `TakeInventory` grants and `SoundClass` to a player.
+    pub fn apply_script_player_effects(&mut self, player_number: i32) {
+        let grants = self.zscript.take_grants();
+        let Some(mo) = self
+            .players
+            .get(player_number as usize)
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        for (_cookie, item, amount) in grants {
+            let Some(cid) = self.classes.find_name(&item) else {
+                continue;
+            };
+            if amount < 0 {
+                let _ = crate::inventory::take_inventory(self, mo, cid, -amount);
+            } else {
+                let _ = crate::inventory::give_inventory(self, mo, cid, amount);
+            }
+        }
+        if let Some(class) = self.zscript.take_sound_class(player_number) {
+            if let Some(actor) = self.actors.get_mut(mo) {
+                actor.sound_class = class;
+            }
+        }
     }
 
     fn spawn_map_things(&mut self) -> Result<(), SimError> {
@@ -2191,14 +2487,14 @@ impl World {
             d
         });
         let spawn_state = self.states.find_label(class, "Spawn");
-        let (sprite, frame, tics) = if let Some(sid) = spawn_state {
+        let (sprite, frame) = if let Some(sid) = spawn_state {
             if let Some(st) = self.states.get(sid) {
-                (st.sprite.clone(), st.frame, i32::from(st.tics))
+                (st.sprite.clone(), st.frame)
             } else {
-                (String::new(), 0, def.spawn_tics)
+                (String::new(), 0)
             }
         } else {
-            (String::new(), 0, def.spawn_tics)
+            (String::new(), 0)
         };
         let speed = if self.fast_monsters && def.fast_speed > 0.0 {
             def.fast_speed
@@ -2223,6 +2519,12 @@ impl World {
                 vel: DVec3::ZERO,
                 angle,
                 pitch: Angle::ZERO,
+                view_pitch: None,
+                view_angle: None,
+                view_roll: None,
+                view_pos: None,
+                sprite_ofs_x: 0.0,
+                sprite_ofs_y: 0.0,
                 roll: Angle::ZERO,
                 health: def.health,
                 speed,
@@ -2263,10 +2565,11 @@ impl World {
                 rip_level_min: def.rip_level_min,
                 rip_level_max: def.rip_level_max,
                 state: spawn_state,
-                tics,
+                tics: 0,
                 sprite: sprite.clone(),
                 frame,
                 flags: def.flags,
+                extra_flags: def.extra_flags,
                 reaction_time: def.reaction_time,
                 threshold: def.threshold,
                 pain_threshold: def.pain_threshold,
@@ -2275,7 +2578,8 @@ impl World {
                 tracer: None,
                 goal: None,
                 chase_goal: false,
-                frightened: (def.flags & crate::class::FLAG_FRIGHTENED) != 0,
+                frightened: (def.flags & crate::class::FLAG_FRIGHTENED) != 0
+                    && !def.extra_flags.get_name("NOFEAR"),
                 special: 0,
                 args: [0; 5],
                 tid: 0,
@@ -2333,6 +2637,12 @@ impl World {
             vel: DVec3::ZERO,
             angle,
             pitch: Angle::ZERO,
+            view_pitch: None,
+            view_angle: None,
+            view_roll: None,
+            view_pos: None,
+            sprite_ofs_x: 0.0,
+            sprite_ofs_y: 0.0,
             roll: Angle::ZERO,
             health: def.health,
             speed,
@@ -2372,11 +2682,13 @@ impl World {
             ripper_level: def.ripper_level,
             rip_level_min: def.rip_level_min,
             rip_level_max: def.rip_level_max,
-            state: spawn_state,
-            tics,
+            // State entered via `set_state` below so Spawn actions / 0-tic chains run (ZS3/BD3).
+            state: None,
+            tics: 0,
             sprite,
             frame,
             flags,
+            extra_flags: def.extra_flags,
             // Vanilla `P_SpawnMobj`: Nightmare monsters react immediately.
             reaction_time: if self.fast_monsters {
                 0
@@ -2390,7 +2702,8 @@ impl World {
             tracer: None,
             goal: None,
             chase_goal: false,
-            frightened: (flags & crate::class::FLAG_FRIGHTENED) != 0,
+            frightened: (flags & crate::class::FLAG_FRIGHTENED) != 0
+                && !def.extra_flags.get_name("NOFEAR"),
             special: 0,
             args: [0; 5],
             tid: 0,
@@ -2425,6 +2738,10 @@ impl World {
             .insert(actor)
             .map_err(|e| SimError::Message(e.to_string()))?;
         self.thinkers.link_default(id);
+        if let Some(sid) = spawn_state {
+            // GZDoom `P_SpawnMobj` → `SetState(Spawn)` so 0-tic / anon Spawn actions run.
+            self.set_state(id, Some(sid), true);
+        }
         if (def.flags & crate::class::FLAG_COUNTKILL) != 0 {
             self.level.total_kills = self.level.total_kills.saturating_add(1);
         }
@@ -2432,7 +2749,42 @@ impl World {
             self.level.total_items = self.level.total_items.saturating_add(1);
         }
         self.push_script_event(crate::script_mods::ScriptEvent::ThingSpawned { thing: id });
+        // ZS3/ZS4: PostBeginPlay + WorldThingSpawned for matching script classes / handlers.
+        if self.zscript.is_active() {
+            let class_name = self.classes.get(class).map(|c| c.name.clone());
+            if let Some(name) = class_name {
+                self.zscript.notify_spawned(id.index(), &name);
+            }
+            let is_monster = (def.flags & crate::class::FLAG_COUNTKILL) != 0;
+            if !self.zscript.event_handlers.is_empty() {
+                // GS_LEVEL is 0 in the host stub. Skill comes from the world.
+                self.zscript.sync_host(self.skill, 0, 0);
+                let _ = self.zscript.notify_thing_spawned_monster(is_monster);
+                let grants = self.zscript.take_grants();
+                for (_cookie, item, amount) in grants {
+                    if let Some(cid) = self.classes.find_name(&item) {
+                        let _ = crate::inventory::give_inventory(self, id, cid, amount);
+                    }
+                }
+            }
+        }
         Ok(id)
+    }
+
+    /// Run ZScript `Tick` for an actor whose class name matches a script class (ZS3).
+    fn tick_zscript_actor(&mut self, id: ActorId) {
+        if !self.zscript.is_active() {
+            return;
+        }
+        let Some(class_name) = self
+            .actors
+            .get(id)
+            .and_then(|a| self.classes.get(a.class))
+            .map(|c| c.name.clone())
+        else {
+            return;
+        };
+        self.zscript.tick_actor(id.index(), &class_name);
     }
 
     /// First living actor with Hexen/UDMF `tid` (0 never matches).
@@ -2499,6 +2851,9 @@ impl World {
             y,
             z,
             volume,
+            pitch: 1.0,
+            channel: 0,
+            adjust: SimSoundAdjust::Start,
             attenuation,
             seat: None,
         });
@@ -2512,6 +2867,9 @@ impl World {
             y: 0.0,
             z: 0.0,
             volume,
+            pitch: 1.0,
+            channel: 0,
+            adjust: SimSoundAdjust::Start,
             attenuation: 0.0,
             seat,
         });
@@ -3012,6 +3370,25 @@ impl World {
         }
     }
 
+    /// Vertical jump impulse. Players always may; other actors need `+CANJUMP` (UZ1).
+    pub fn try_actor_jump(&mut self, id: ActorId) -> bool {
+        let Some(actor) = self.actors.get(id) else {
+            return false;
+        };
+        let is_player = self.players.iter().flatten().any(|p| p.mo == Some(id));
+        if !is_player && !actor.extra_flags.get_name("CANJUMP") {
+            return false;
+        }
+        let jump_z = actor.jump_z;
+        if jump_z <= 0.0 {
+            return false;
+        }
+        if let Some(a) = self.actors.get_mut(id) {
+            a.vel = DVec3::new(a.vel.x(), a.vel.y(), jump_z);
+        }
+        true
+    }
+
     /// Start player 0 mid-jump from a Duke save (`jumping_counter`).
     pub fn set_player_jumping(&mut self, on: bool) {
         if !on {
@@ -3025,12 +3402,7 @@ impl World {
         else {
             return;
         };
-        let jump_z = self.actors.get(mo).map(|a| a.jump_z).unwrap_or(8.0);
-        if jump_z > 0.0 {
-            if let Some(a) = self.actors.get_mut(mo) {
-                a.vel = DVec3::new(a.vel.x(), a.vel.y(), jump_z);
-            }
-        }
+        let _ = self.try_actor_jump(mo);
         if let Some(p) = self.players[0].as_mut() {
             p.on_ground = false;
         }
@@ -4286,6 +4658,12 @@ impl World {
             }),
         };
         let [ammo, ammo_max] = ammo_cid.map_or([-1, 0], ammo_of);
+        let ammo2_cid = player
+            .ready_weapon
+            .and_then(|w| self.classes.get(w))
+            .filter(|w| !w.ammo_type2.is_empty())
+            .and_then(|w| self.classes.find_name(&w.ammo_type2));
+        let [ammo2, ammo2_max] = ammo2_cid.map_or([-1, 0], ammo_of);
         let ammo_table =
             AMMO_TYPES.map(|name| self.classes.find_name(name).map_or([0, 0], ammo_of));
         let mut arms = 0u16;
@@ -4345,18 +4723,33 @@ impl World {
         let face = player.mugshot.lump();
         // Keep drawing while the gun lowers on death (docs/30 W13); `pspr_y`
         // already offsets it off-screen at `WEAPONBOTTOM`.
-        let weapon_patch = player
-            .pspr_state
-            .and_then(|sid| self.states.get(sid))
-            .and_then(|st| weapon_patch_from_sprite_frame(&st.sprite, st.frame))
-            .or_else(|| {
-                player
-                    .ready_weapon
-                    .filter(|_| player.player_state == crate::player::PlayerState::Live)
-                    .and_then(|w| self.classes.get(w))
-                    .map(|c| weapon_patch_for_class(&c.name).to_string())
-            })
+        // `####` stays on the sprite recorded while the zero-tic chain ran.
+        let (weapon_tint_r, weapon_tint_g, weapon_tint_b) =
+            weapon_translation_tint(&player.weapon_translation);
+        let (overlay_tint_r, overlay_tint_g, overlay_tint_b) =
+            weapon_translation_tint(&player.overlay2_translation);
+        let weapon_class = player
+            .ready_weapon
+            .and_then(|id| self.classes.get(id))
+            .map(|c| c.name.clone())
             .unwrap_or_default();
+        let weapon_patch = if player.pspr_state.is_some() && !player.pspr_sprite.is_empty() {
+            weapon_patch_from_sprite_frame(&player.pspr_sprite, player.pspr_frame)
+                .unwrap_or_default()
+        } else {
+            player
+                .pspr_state
+                .and_then(|sid| self.states.get(sid))
+                .and_then(|st| weapon_patch_from_sprite_frame(&st.sprite, st.frame))
+                .or_else(|| {
+                    player
+                        .ready_weapon
+                        .filter(|_| player.player_state == crate::player::PlayerState::Live)
+                        .and_then(|w| self.classes.get(w))
+                        .map(|c| weapon_patch_for_class(&c.name).to_string())
+                })
+                .unwrap_or_default()
+        };
         let flash_st = player
             .pspr_flash_state
             .filter(|_| player.player_state == crate::player::PlayerState::Live)
@@ -4377,25 +4770,131 @@ impl World {
         } else {
             psprite_scalelight(sector_light, player.extralight)
         };
-        let weapon_fuzz = player.blur;
+        let style_fuzz = matches!(
+            player.weapon_style,
+            Some(crate::class::RenderStyle::Fuzzy | crate::class::RenderStyle::OptFuzzy)
+        );
+        let layer2_style_fuzz = matches!(
+            player.overlay2_style,
+            Some(crate::class::RenderStyle::Fuzzy | crate::class::RenderStyle::OptFuzzy)
+        );
+        let layer2_fuzz = if player.overlay2_force_style {
+            layer2_style_fuzz
+        } else {
+            player.blur || layer2_style_fuzz
+        };
+        let weapon_fuzz = if player.weapon_force_style {
+            style_fuzz
+        } else {
+            player.blur || style_fuzz
+        };
         // Sway frozen outside `A_WeaponReady` (docs/30 W8.3).
         #[allow(clippy::cast_possible_truncation)]
-        let bob_x = player.pspr_bob_x as f32;
         #[allow(clippy::cast_possible_truncation)]
-        let bob_y = (player.pspr_bob_y + (player.pspr_y - crate::player::WEAPON_TOP)) as f32;
+        let sway_x = if player.weapon_add_bob {
+            player.pspr_bob_x
+        } else {
+            0.0
+        };
+        let sway_y = if player.weapon_add_bob {
+            player.pspr_bob_y
+        } else {
+            0.0
+        };
+        let ofs_x = if player.weapon_add_ofs {
+            player.weapon_ofs_x
+        } else {
+            0.0
+        };
+        let ofs_y = if player.weapon_add_ofs {
+            player.weapon_ofs_y
+        } else {
+            0.0
+        };
+        let bob_x = (sway_x + ofs_x) as f32;
+        #[allow(clippy::cast_possible_truncation)]
+        let bob_y = (sway_y + (player.pspr_y - crate::player::WEAPON_TOP) + ofs_y) as f32;
         Some(PlayerHud {
             health: actor.health,
             armor: player.armor,
             ammo,
             ammo_max,
+            ammo2,
+            ammo2_max,
             keys,
             face,
             weapon_patch,
             flash_patch,
+            overlay_patch: weapon_patch_from_sprite_frame(
+                &player.overlay2_sprite,
+                player.overlay2_frame,
+            )
+            .unwrap_or_default(),
+            overlay_ofs_x: player.overlay2_ofs_x as f32,
+            overlay_ofs_y: player.overlay2_ofs_y as f32,
+            overlay_alpha: {
+                let overlay = player.overlay2_alpha.unwrap_or(1.0);
+                let body = if (0.0..=1.0).contains(&actor.alpha) {
+                    actor.alpha
+                } else {
+                    1.0
+                };
+                let alpha = if player.overlay2_force_alpha {
+                    overlay
+                } else {
+                    overlay * body
+                };
+                alpha as f32
+            },
+            overlay_scale_x: player.overlay2_scale.map(|(x, _)| x as f32).unwrap_or(1.0),
+            overlay_scale_y: player.overlay2_scale.map(|(_, y)| y as f32).unwrap_or(1.0),
+            overlay_flip: player.overlay2_flip,
+            overlay_mirror: player.overlay2_mirror,
+            overlay_angle: player.overlay2_angle as f32,
+            overlay_pivot_x: player.overlay2_pivot.map(|(x, _)| x as f32).unwrap_or(0.5),
+            overlay_pivot_y: player.overlay2_pivot.map(|(_, y)| y as f32).unwrap_or(0.5),
+            overlay_tint_r,
+            overlay_tint_g,
+            overlay_tint_b,
+            overlay_fuzz: layer2_fuzz,
+            overlay_pivot_percent: player.overlay2_pivot_percent,
+            overlay_add_bob: player.overlay2_add_bob,
+            overlay_add_weapon: player.overlay2_add_weapon,
+            overlay_interpolate: player.overlay2_interpolate,
             weapon_light,
             weapon_bright,
             flash_bright,
             weapon_fuzz,
+            weapon_alpha: {
+                let overlay = player.weapon_alpha.unwrap_or(1.0);
+                let body = if (0.0..=1.0).contains(&actor.alpha) {
+                    actor.alpha
+                } else {
+                    1.0
+                };
+                let alpha = if player.weapon_force_alpha {
+                    overlay
+                } else {
+                    overlay * body
+                };
+                alpha as f32
+            },
+            weapon_scale_x: player.weapon_scale.map(|(x, _)| x as f32).unwrap_or(1.0),
+            weapon_scale_y: player.weapon_scale.map(|(_, y)| y as f32).unwrap_or(1.0),
+            weapon_flip: player.weapon_flip,
+            weapon_mirror: player.weapon_mirror,
+            weapon_pivot_percent: player.weapon_pivot_percent,
+            weapon_interpolate: player.weapon_interpolate,
+            weapon_pivot_x: player.weapon_pivot.map(|(x, _)| x as f32).unwrap_or(0.5),
+            weapon_pivot_y: player.weapon_pivot.map(|(_, y)| y as f32).unwrap_or(0.5),
+            weapon_angle: player.weapon_angle as f32,
+            weapon_class,
+            crosshair: player.crosshair,
+            weapon_tint_r,
+            weapon_tint_g,
+            weapon_tint_b,
+            bob_ofs_x: ofs_x as f32,
+            bob_ofs_y: ofs_y as f32,
             bob_x,
             bob_y,
             god: player.god,
@@ -4869,6 +5368,7 @@ impl World {
                 self.players[pi] = Some(p);
             }
             self.advance_actor_state(id);
+            self.tick_zscript_actor(id);
         }
         if !self.level.frozen {
             specials::tick_strobes(self);
@@ -4887,6 +5387,7 @@ impl World {
             crate::physics::xy_movement(self, id);
             crate::physics::z_movement(self, id);
             self.advance_actor_state(id);
+            self.tick_zscript_actor(id);
         }
         if !self.level.frozen {
             specials::tick_doors(self);
@@ -4902,6 +5403,11 @@ impl World {
             specials::tick_demo_cameras(self);
             crate::polyobj::tick_polyobjs(self);
             crate::acs::tick_acs(self);
+            // ACS `GetPlayerInput(-1, INPUT_OLDBUTTONS)` must see the previous
+            // tic. `player_think` already copied this tic into `prev_buttons`.
+            for p in self.players.iter_mut().flatten() {
+                p.acs_prev_buttons = p.cmd.buttons.0;
+            }
             crate::sndseq::tick_sequences(self);
             specials::tick_fades(self);
             specials::tick_scrollers(self);
@@ -4923,64 +5429,129 @@ impl World {
     }
 
     /// Enter a state, optionally running its action (`AActor::SetState`).
+    ///
+    /// Zero-tic chains and action jumps are iterative with a GZDoom-style
+    /// 1000-state guard (BD3) so accidental loops cannot overflow the stack.
     pub fn set_state(&mut self, id: ActorId, state: Option<room_core::StateId>, call_action: bool) {
-        let Some(sid) = state else {
-            if let Some(a) = self.actors.get_mut(id) {
-                a.state = None;
-                a.destroyed = true;
-            }
-            return;
-        };
-        let Some(st) = self.states.get(sid).cloned() else {
-            return;
-        };
-        let action = st.action.clone();
-        let action_args = st.action_args.clone();
-        let callback_id = st.callback_id;
-        let module_index = st.module_index;
-        if let Some(a) = self.actors.get_mut(id) {
-            a.state = Some(sid);
-            let tics = i32::from(st.tics);
-            // `AActor::GetTics`: fast states run in `tics - tics/2` under fast monsters.
-            a.tics = if self.fast_monsters && st.fast && tics > 0 {
-                tics - (tics >> 1)
-            } else {
-                tics
+        const MAX_STATE_CYCLE: u32 = 1000;
+        let mut next = state;
+        let mut call = call_action;
+        let mut cycle = 0u32;
+        loop {
+            let Some(sid) = next else {
+                if let Some(a) = self.actors.get_mut(id) {
+                    a.state = None;
+                    a.destroyed = true;
+                }
+                return;
             };
-            a.sprite = st.sprite;
-            a.frame = st.frame;
-        }
-        if call_action {
+            let Some(st) = self.states.get(sid).cloned() else {
+                return;
+            };
+            let action = st.action.clone();
+            let action_args = st.action_args.clone();
+            let callback_id = st.callback_id;
+            let module_index = st.module_index;
+            let old_sprite = self.actors.get(id).map(|a| a.sprite.clone());
+            let countkill = self.actors.get(id).is_some_and(|a| {
+                let class_flags = self.classes.get(a.class).map(|c| c.flags).unwrap_or(0);
+                (a.flags | class_flags) & crate::class::FLAG_COUNTKILL != 0
+            });
+            if let Some(a) = self.actors.get_mut(id) {
+                a.state = Some(sid);
+                let tics = i32::from(st.tics);
+                // `AActor::GetTics`: fast states run in `tics - tics/2` under fast monsters.
+                let always_fast = a.extra_flags.get_name("ALWAYSFAST");
+                a.tics = if (self.fast_monsters || always_fast) && st.fast && tics > 0 {
+                    tics - (tics >> 1)
+                } else {
+                    tics
+                };
+                // `####` / `#` keep whatever the actor is already showing.
+                // A 0-tic `TNT1` is not a displayed frame (Brutal Doom footstep /
+                // flare gaps). Leave the previous picture up so a chain that
+                // stops on that state does not blank the actor for a tic.
+                let blank = st.sprite.is_empty() || st.sprite.eq_ignore_ascii_case("TNT1");
+                let hold_picture = blank && a.tics == 0;
+                if !hold_picture && !crate::state::sprite_unchanged(&st.sprite) {
+                    a.sprite = st.sprite;
+                }
+                if !hold_picture && st.frame != crate::state::FRAME_NOCHANGE {
+                    a.frame = st.frame;
+                }
+            }
+            // A monster that sat on TNT1 and then picks up a real sprite is the
+            // "popped into the room" case (replacement spawn, or a delayed frame).
+            if countkill && self.level.maptime >= 1 {
+                let was_hidden = match old_sprite.as_deref() {
+                    None | Some("") => true,
+                    Some(s) if s.eq_ignore_ascii_case("TNT1") => true,
+                    Some(_) => false,
+                };
+                let appear = self.actors.get(id).and_then(|a| {
+                    let now_hidden = a.sprite.is_empty() || a.sprite.eq_ignore_ascii_case("TNT1");
+                    if !was_hidden || now_hidden {
+                        return None;
+                    }
+                    Some((
+                        self.classes
+                            .get(a.class)
+                            .map(|c| c.name.clone())
+                            .unwrap_or_else(|| "?".into()),
+                        a.sprite.clone(),
+                        a.pos.x(),
+                        a.pos.y(),
+                        self.level.maptime,
+                    ))
+                });
+                if let Some((name, sprite, x, y, tic)) = appear {
+                    self.push_debug(format!(
+                        "APPEAR {name}#{id:?} sprite={sprite} @({x:.0},{y:.0}) tic={tic}"
+                    ));
+                }
+            }
+            if !call {
+                return;
+            }
+            let mut jump: Option<room_core::StateId> = None;
             // WASM state action wins over native when callback_id ≥ 0 (`docs/31` MA1).
             if callback_id >= 0 {
-                if let Some(jump) = crate::script_mods::dispatch_actor_state_action(
+                if let Some(j) = crate::script_mods::dispatch_actor_state_action(
                     self,
                     module_index,
                     callback_id,
                     id,
                     sid,
                 ) {
-                    if let Some(j) = jump {
-                        self.set_state(id, Some(j), true);
-                        return;
-                    }
+                    jump = j;
                 }
             } else if let Some(name) = action.as_deref() {
                 let evaluated = crate::deco_eval::eval_action_args(self, id, &action_args);
-                match action::call_action_args(self, id, name, &evaluated) {
-                    ActionResult::Continue => {}
-                    ActionResult::Jump(j) => self.set_state(id, Some(j), true),
+                if let ActionResult::Jump(j) = action::call_action_args(self, id, name, &evaluated)
+                {
+                    jump = Some(j);
                 }
             }
-            // Zero-tic chain.
-            if let Some(a) = self.actors.get(id) {
-                if a.tics == 0 {
-                    let next = a
-                        .state
-                        .and_then(|s| self.states.get(s))
-                        .and_then(|s| s.next);
-                    self.set_state(id, next, true);
-                }
+            if let Some(j) = jump {
+                next = Some(j);
+                call = true;
+            } else if self.actors.get(id).is_some_and(|a| a.tics == 0) {
+                next = self
+                    .actors
+                    .get(id)
+                    .and_then(|a| a.state)
+                    .and_then(|s| self.states.get(s))
+                    .and_then(|s| s.next);
+                call = true;
+            } else {
+                return;
+            }
+            cycle += 1;
+            if cycle >= MAX_STATE_CYCLE {
+                self.push_message(format!(
+                    "Warning: state cycle limit ({MAX_STATE_CYCLE}) exceeded for actor {id:?}; aborting chain"
+                ));
+                return;
             }
         }
     }
@@ -5169,6 +5740,10 @@ impl World {
             bytes.push(u8::from(p.camera_revert));
         }
         bytes.extend_from_slice(&self.player_names.checksum_bytes());
+        // ZScript program + reachable script state (ZS6 / docs/34 §5.6).
+        if let Some(h) = self.zscript.checksum_bytes() {
+            bytes.extend_from_slice(&h);
+        }
         xxh3_64(&bytes)
     }
 
@@ -5445,6 +6020,57 @@ mod tests {
     use room_decorate::parse_decorate;
     use room_nodebuild::apply_nodes;
     use room_testkit::{MapBuilder, rect};
+
+    #[test]
+    fn zero_tic_tnt1_keeps_the_picture_already_showing() {
+        let ir = parse_decorate(
+            r#"
+actor Z : Actor 9101
+{
+  States
+  {
+  Spawn:
+    POSS A 1
+    TNT1 A 0
+    POSS B 2
+    Stop
+  Hide:
+    TNT1 A 4
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = std::sync::Arc::new(crate::ClassRegistry::from_decorate(&ir).unwrap());
+        let states = std::sync::Arc::new(StateTable::from_decorate(&ir, &classes));
+        let zid = classes.find_name("Z").unwrap();
+        let mut w = World::from_map_with_classes(empty_room(), classes, states).unwrap();
+        let id = w
+            .spawn_at(
+                zid,
+                room_core::DVec3::new(64.0, 64.0, 0.0),
+                room_core::Angle::ZERO,
+            )
+            .unwrap();
+        let gap = w.states.find_label(zid, "Spawn").unwrap();
+        let gap = w.states.get(gap).unwrap().next.unwrap();
+        assert!(
+            w.states
+                .get(gap)
+                .unwrap()
+                .sprite
+                .eq_ignore_ascii_case("TNT1")
+        );
+        assert_eq!(w.states.get(gap).unwrap().tics, 0);
+        w.set_state(id, Some(gap), false);
+        let a = w.actors.get(id).unwrap();
+        assert_eq!(a.sprite, "POSS");
+        assert_eq!(a.frame, 0, "0-tic TNT1 must not blank the frame");
+        let hide = w.states.find_label(zid, "Hide").unwrap();
+        w.set_state(id, Some(hide), false);
+        assert_eq!(w.actors.get(id).unwrap().sprite, "TNT1");
+    }
 
     #[test]
     fn tnt1_weapon_frames_have_no_patch() {
@@ -6545,6 +7171,9 @@ actor Clip : Actor 2007 { Inventory.Amount 10 Inventory.MaxAmount 200 States { S
         let hud = w.player_hud(0).unwrap();
         assert_eq!(hud.ammo, before + 40);
         assert!(hud.ammo_max >= hud.ammo, "ammo_max={}", hud.ammo_max);
+        // Default pistol has no AmmoType2 → unused secondary.
+        assert_eq!(hud.ammo2, -1);
+        assert_eq!(hud.ammo2_max, 0);
         assert_eq!(hud.armor, 50);
         assert_eq!(hud.keys & 1, 1);
         assert_eq!(hud.keys & 8, 8, "blue skull bit");
@@ -6556,6 +7185,41 @@ actor Clip : Actor 2007 { Inventory.Amount 10 Inventory.MaxAmount 200 States { S
         }
         w.tick();
         assert_eq!(w.player_hud(0).unwrap().face, "STFGOD0");
+    }
+
+    #[test]
+    fn player_hud_ammo2_from_ammotype2() {
+        let mut src = include_str!("../../../testdata/actors/doom_basic.txt").to_owned();
+        src.push_str(
+            r#"
+actor DualAmmoGun : Weapon
+{
+  Weapon.AmmoType "Clip"
+  Weapon.AmmoType2 "Shell"
+  States { Ready: PISG A 1 Loop }
+}
+"#,
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let gun = classes.find_name("DualAmmoGun").unwrap();
+        let shell = classes.find_name("Shell").unwrap();
+        let _ = crate::inventory::give_inventory(&mut w, mo, shell, 8);
+        if let Some(p) = w.players[0].as_mut() {
+            p.ready_weapon = Some(gun);
+        }
+        let hud = w.player_hud(0).unwrap();
+        assert_eq!(hud.ammo2, 8);
+        assert!(hud.ammo2_max >= 8, "ammo2_max={}", hud.ammo2_max);
     }
 
     fn face_world() -> (World, ActorId, Arc<ClassRegistry>) {

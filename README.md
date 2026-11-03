@@ -26,9 +26,12 @@ wait on IWADs. Modern look FX stay **off by default** (faithful Doom look).
 ## Play — desktop
 
 ```bash
-# Doom 1 E1M1
-./scripts/play-doom1.sh
-ROOM_TITLE=1 ./scripts/play-doom1.sh          # title menu
+# Doom 1 E1M1. Brutal Doom pk3s select doom2.wad + MAP01.
+./scripts/play-doom.sh
+./scripts/play-doom.sh --title
+./scripts/play-doom.sh --file ~/Downloads/brutal22test6.pk3
+./scripts/play-doom.sh --game doom2 --map MAP02
+./scripts/play-doom1.sh                       # same as --game doom1
 
 # Duke Nukem 3D (needs testdata/duke/duke3d.grp)
 ./scripts/play-duke3d.sh

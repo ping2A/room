@@ -18,7 +18,10 @@ use glam::Vec3;
 use midi_device::{MidiBackend, load_genmidi, resolve_midi_device};
 use room_console::{Console, HostCommand};
 use room_decorate::parse_decorate;
-use room_defs::{DefinitionsBuilder, DynLightKind, GlDefs, ModelDefs, VoxelDefs};
+use room_defs::{
+    DefinitionsBuilder, DynLightKind, GlDefs, Language, ModelDefs, VoxelDefs, parse_language,
+    view_model_weapon_scale,
+};
 use room_game::{
     DemoPlayer, DemoRecorder, GameOptions, GameRuntime, GameState, Headless, Skill, SoundSystem,
     intermission_music_candidates, keyconf_alias_lines, keyconf_default_binds,
@@ -26,8 +29,8 @@ use room_game::{
     play_music_lump, read_save_info, title_music_candidates,
 };
 use room_input::{
-    AttackLatch, InputSample, Key, ModButtonState, build_ticcmd_with_mods, default_bind_pairs,
-    device_button_is_primary,
+    AttackLatch, InputSample, Key, ModButtonState, WeaponImpulseState,
+    build_ticcmd_with_mods_and_impulses, default_bind_pairs, device_button_is_primary,
 };
 use room_map::{MapGeometry, load_map};
 use room_nodebuild::{apply_nodes, ensure_nodes};
@@ -40,23 +43,24 @@ use room_render::{
     append_decals, append_particles_ex, apply_glow_fullbright, build_scene,
     build_scene_with_sky_ex_sized, build_zone_meshes, clip_scene_to_mirror_line, mirror_clip_plane,
     particle_tint_tex_name, read_rgba, read_texture_rgba, render_offscreen, scroll_sky_u,
-    soft_disc_rgba, sprite_lump_candidates_rot, sprite_rotation_digit, voxel_spin_degrees,
-    voxel_view_angles,
+    soft_disc_rgba, sprite_lump_candidates_rot, sprite_offset_delta, sprite_rotation_digit,
+    voxel_spin_degrees, voxel_view_angles,
 };
 use room_sim::mod_hud::layer as mod_hud_layer;
 use room_sim::{
     ActorId, Buttons, ClassRegistry, FLAG_CORPSE, FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_DROPPED,
     FLAG_FLOAT, FLAG_MISSILE, FLAG_NOGRAVITY, FLAG_SPAWNCEILING, RenderStyle, ShotKind, StateTable,
-    TicCmd, actor_light_level, check_sight,
+    TicCmd, actor_light_level, check_sight, sprite_pose,
 };
 use room_testkit::{MapBuilder, combat_arena, rect};
 use room_ui::{
     AutomapView, CanvasSink, DoomStatusBar, DrawCmd, DukeStatusBar, FontRegistry, HudState,
     IntermissionStats, MenuCommand, MenuSfx, MenuStack, MessageQueue, ModHudMapCtx, PatchCache,
-    Rect, Rgba, StatusBar, UiDrawList, anim_pic, blit_draw_list_full, draw_automap, draw_finale,
-    draw_intermission, draw_mod_hud_layer, draw_mod_hud_modals, draw_mod_zones_automap,
-    draw_outside_zone_tint, draw_stcfn_string, draw_title, draw_weapon_lit, finale_anm_prefix,
-    parse_titledef, player_map_poses, splash_ms, title_screen_pic,
+    StatusBar, UiDrawList, anim_pic, blit_draw_list_full, draw_automap, draw_crosshair,
+    draw_finale, draw_intermission, draw_mod_hud_layer, draw_mod_hud_modals,
+    draw_mod_zones_automap, draw_outside_zone_tint, draw_stcfn_string, draw_title, draw_weapon_lit,
+    draw_weapon_tinted, finale_anm_prefix, overlay_bob, overlay_layer_bob, parse_titledef,
+    player_map_poses, splash_ms, title_screen_pic,
 };
 use room_vfs::{Namespace, Vfs, VfsBuilder};
 use screen_capture::GifRecorder;
@@ -434,6 +438,7 @@ fn main() {
         }
         materials.set_material_maps(pbr);
     }
+    let language = load_language(vfs.as_ref());
     let mut app = ViewerApp {
         map_base: map.clone(),
         map,
@@ -484,6 +489,8 @@ fn main() {
         keys: Keys::default(),
         yaw: 0.0,
         pitch: 0.0,
+        roll: 0.0,
+        weapon_bob_prev: (0.0, 0.0),
         mouse_look: false,
         ignore_warp_motion: false,
         unfocused_since: None,
@@ -504,7 +511,10 @@ fn main() {
         tic_accum: 0.0,
         cam_prev: None,
         cam_curr: None,
+        sprite_prev: std::collections::HashMap::new(),
+        sprite_curr: std::collections::HashMap::new(),
         messages: MessageQueue::new(),
+        language,
         last_player_hp: 100,
         fixed_colormap: 0,
         mouse_yaw_accum: 0,
@@ -567,6 +577,7 @@ fn main() {
         console_line: String::new(),
         keyconf_binds: std::collections::BTreeMap::new(),
         mod_buttons: ModButtonState::default(),
+        weapon_impulses: WeaponImpulseState::default(),
         audio,
     };
     if let Some(audio) = &app.audio {
@@ -742,6 +753,74 @@ fn default_freedoom2() -> Option<PathBuf> {
 }
 
 /// Prefer the requested map; if missing, fall back Doom1 `E1M1` or Doom2 `MAP01`.
+fn load_language(vfs: Option<&Vfs>) -> Language {
+    let Some(vfs) = vfs else {
+        return Language::default();
+    };
+    let mut lang = Language::default();
+    for name in ["LANGUAGE", "language.enu", "LANGUAGE.ENU"] {
+        let Some(id) = vfs.find_any_ns(name) else {
+            continue;
+        };
+        let Ok(bytes) = vfs.read(id) else {
+            continue;
+        };
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
+        let Ok(part) = parse_language(text) else {
+            continue;
+        };
+        for (loc, table) in part.tables {
+            let dest = lang.tables.entry(loc).or_default();
+            for (k, v) in table {
+                dest.insert(k, v);
+            }
+        }
+    }
+    lang
+}
+
+/// `$KEY` → LANGUAGE text. Unresolved keys stay off the HUD (the Doom font
+/// draws them as broken gaps). `\c` color codes and `%o` are flattened.
+fn hud_line(lang: &Language, raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let text = if let Some(key) = raw.strip_prefix('$') {
+        lang.get("enu", &key.to_ascii_uppercase())?.to_owned()
+    } else {
+        raw.to_owned()
+    };
+    let text = text.replace("%o", "You").replace("%k", "a monster");
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && matches!(chars.peek(), Some('c' | 'C')) {
+            chars.next();
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for n in chars.by_ref() {
+                    if n == ']' {
+                        break;
+                    }
+                }
+            } else {
+                chars.next();
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    let out = out.trim();
+    if out.is_empty() {
+        None
+    } else {
+        Some(out.to_owned())
+    }
+}
+
 fn resolve_start_map(vfs: &Vfs, requested: &str) -> String {
     let req = requested.trim();
     let has =
@@ -1051,6 +1130,10 @@ struct ViewerApp {
     keys: Keys,
     yaw: f32,
     pitch: f32,
+    /// Camera bank in radians from `A_SetViewRoll`. 0 keeps the view upright.
+    roll: f32,
+    /// Gun offset from the previous tic (`PSPF_INTERPOLATE`).
+    weapon_bob_prev: (f32, f32),
     mouse_look: bool,
     /// Skip the next `DeviceEvent::MouseMotion` (macOS cursor recenter warp).
     ignore_warp_motion: bool,
@@ -1087,8 +1170,14 @@ struct ViewerApp {
     cam_prev: Option<(f32, f32, f32, f32, f32)>,
     /// Eye / look after the last sim tic.
     cam_curr: Option<(f32, f32, f32, f32, f32)>,
+    /// Sprite XYZ + yaw (degrees) at the previous tic, keyed by actor index.
+    sprite_prev: std::collections::HashMap<u32, (f32, f32, f32, f32)>,
+    /// Sprite XYZ + yaw after the last sim tic.
+    sprite_curr: std::collections::HashMap<u32, (f32, f32, f32, f32)>,
     /// On-screen messages from the sim.
     messages: MessageQueue,
+    /// LANGUAGE strings (`$OB_ZOMBIESOLDIER` and pickup lines).
+    language: Language,
     /// Previous local player health (to announce invisible attackers).
     last_player_hp: i32,
     /// Local player's Doom `fixedcolormap` (32 = invulnerability inverse).
@@ -1107,6 +1196,8 @@ struct ViewerApp {
     keyconf_binds: std::collections::BTreeMap<String, String>,
     /// Held `+mod1` … `+mod4` bits (`docs/28` BE4).
     mod_buttons: ModButtonState,
+    /// KEYCONF `+reload` / `+zoom` / `+user1`–`4` latch (`docs/33` BD4).
+    weapon_impulses: WeaponImpulseState,
     /// Native audio output (mixer + music on the device thread).
     audio: Option<AudioOut>,
 }
@@ -1302,8 +1393,22 @@ fn start_play_session(
     });
     let mut decaldef = None;
     if let Some(vfs) = vfs {
+        let mut zscript_handlers: Vec<String> = Vec::new();
         if let Ok(defs) = DefinitionsBuilder::new(vfs).build() {
+            if !defs.warnings.is_empty() {
+                eprintln!("room: defs: {} warning(s)", defs.warnings.len());
+                let debug = std::env::var_os("ROOM_ZSCRIPT_DEBUG").is_some_and(|v| v != "0");
+                if debug {
+                    for w in defs.warnings.iter().take(24) {
+                        eprintln!("room: defs: {w}");
+                    }
+                    if defs.warnings.len() > 24 {
+                        eprintln!("room: defs: … {} more warning(s)", defs.warnings.len() - 24);
+                    }
+                }
+            }
             game.set_complevel(defs.complevel);
+            zscript_handlers = defs.zscript_event_handlers();
             game.set_mapinfo(Arc::new(defs.mapinfo));
             game.set_terrain(&defs.terrain);
             game.set_sndseq(&defs.sndseq);
@@ -1331,9 +1436,14 @@ fn start_play_session(
                 }
             }
             if !libs.is_empty() {
+                eprintln!("room: LOADACS: {} librar(y/ies)", libs.len());
                 game.set_acs_libraries(libs);
             }
         }
+        // Compile ZScript from mounted archives (docs/34) — was missing from play path.
+        let zs = room_game::load_zscript_from_vfs(vfs);
+        room_game::log_zscript_report(&zs, &zscript_handlers);
+        game.set_zscript(zs.program, zscript_handlers);
         if let Some(path) = decorate {
             let src = match std::fs::read_to_string(path) {
                 Ok(s) => s,
@@ -1357,14 +1467,17 @@ fn start_play_session(
                 }
             };
             let states = Arc::new(StateTable::from_decorate(&ir, &classes));
-            game.set_defs(classes, states);
+            game.set_defs(classes.clone(), states);
+            eprintln!("room: DECORATE: {} classes (file)", classes.len());
         } else if let Some(data) = match room_game::load_embedded_engine_data_with(vfs) {
             Ok(d) => Some(d),
             Err(e) => {
-                eprintln!("room: PWAD DECORATE: {e}");
+                eprintln!("room: PWAD DECORATE failed: {e}");
+                eprintln!("room: mod actors were not loaded — falling back to engine DECORATE");
                 try_load_engine_data()
             }
         } {
+            let n = data.classes.len();
             game.set_defs(data.classes, data.states);
             if let Some(db) = data.compat_db {
                 game.set_compat_db(db);
@@ -1372,7 +1485,7 @@ fn start_play_session(
             if let Some(fixes) = data.level_fixes {
                 game.set_level_fixes(fixes);
             }
-            eprintln!("room: loaded embedded engine data (room.pk3)");
+            eprintln!("room: DECORATE: {n} classes (engine + mounted archives)");
         } else {
             install_basic_decorate(&mut game);
         }
@@ -1897,10 +2010,13 @@ impl ApplicationHandler for ViewerApp {
                         }
                     }
                     _ => {
-                        if down {
-                            if let Some(name) = keycode_keyconf_name(code) {
-                                if let Some(cmd) = self.keyconf_binds.get(name).cloned() {
+                        if let Some(name) = keycode_keyconf_name(code) {
+                            if let Some(cmd) = self.keyconf_binds.get(name).cloned() {
+                                if down {
                                     self.apply_console(&cmd);
+                                } else if let Some(rest) = cmd.trim().strip_prefix('+') {
+                                    // Release: `+reload` → `-reload` (BD4 hold semantics).
+                                    self.apply_console(&format!("-{rest}"));
                                 }
                             }
                         }
@@ -2261,6 +2377,11 @@ impl ViewerApp {
         if self.camera.forward.length_squared() < 1e-6 {
             self.camera.forward = Vec3::X;
         }
+        self.camera.up = if self.roll.abs() > 1e-4 {
+            room_render::Camera::rolled_up(self.camera.forward, self.roll)
+        } else {
+            Vec3::Z
+        };
     }
 
     /// Upload soft tint discs used by blood / muzzle / impact particles.
@@ -2663,20 +2784,96 @@ impl ViewerApp {
                             if !self.hud.flash_patch.is_empty() {
                                 let _ = self.patches.ensure(vfs, &self.hud.flash_patch);
                             }
+                            if !self.hud.overlay_patch.is_empty() {
+                                let _ = self.patches.ensure(vfs, &self.hud.overlay_patch);
+                            }
                         }
                         let weapon_cmds = ui.cmds.len();
                         let soft = self.patches.get(&self.hud.weapon_patch);
-                        draw_weapon_lit(
+                        let vm_scale = self
+                            .modeldefs
+                            .by_actor
+                            .get(&self.hud.weapon_class.to_ascii_lowercase())
+                            .map(|d| {
+                                view_model_weapon_scale(
+                                    self.camera.fov_y_deg as f32,
+                                    d.view_model_fov,
+                                )
+                            })
+                            .unwrap_or(1.0);
+                        let frac = (self.tic_accum / TIC_SEC).clamp(0.0, 1.0);
+                        let (bob_x, bob_y) = overlay_bob(
+                            self.weapon_bob_prev,
+                            (self.hud.bob_x, self.hud.bob_y),
+                            frac,
+                            self.hud.weapon_interpolate,
+                        );
+                        let (layer_bob_x, layer_bob_y) = overlay_bob(
+                            self.weapon_bob_prev,
+                            (self.hud.bob_x, self.hud.bob_y),
+                            frac,
+                            self.hud.overlay_interpolate,
+                        );
+                        draw_weapon_tinted(
                             &mut ui,
                             &self.hud.weapon_patch,
                             self.hud.fullscreen,
                             soft,
-                            self.hud.bob_x,
-                            self.hud.bob_y,
+                            bob_x,
+                            bob_y,
                             self.hud.weapon_light,
                             self.hud.weapon_bright,
                             self.hud.weapon_fuzz,
+                            self.hud.weapon_alpha,
+                            self.hud.weapon_scale_x * vm_scale,
+                            self.hud.weapon_scale_y * vm_scale,
+                            self.hud.weapon_flip,
+                            self.hud.weapon_pivot_x,
+                            self.hud.weapon_pivot_y,
+                            self.hud.weapon_angle,
+                            self.hud.weapon_tint_r,
+                            self.hud.weapon_tint_g,
+                            self.hud.weapon_tint_b,
+                            self.hud.weapon_mirror,
+                            self.hud.weapon_pivot_percent,
                         );
+                        if !self.hud.overlay_patch.is_empty() {
+                            if let Some(soft_overlay) = self.patches.get(&self.hud.overlay_patch) {
+                                draw_weapon_tinted(
+                                    &mut ui,
+                                    &self.hud.overlay_patch,
+                                    self.hud.fullscreen,
+                                    Some(soft_overlay),
+                                    overlay_layer_bob(
+                                        layer_bob_x,
+                                        self.hud.bob_ofs_x,
+                                        self.hud.overlay_add_bob,
+                                        self.hud.overlay_add_weapon,
+                                    ) + self.hud.overlay_ofs_x,
+                                    overlay_layer_bob(
+                                        layer_bob_y,
+                                        self.hud.bob_ofs_y,
+                                        self.hud.overlay_add_bob,
+                                        self.hud.overlay_add_weapon,
+                                    ) + self.hud.overlay_ofs_y,
+                                    self.hud.weapon_light,
+                                    true,
+                                    self.hud.overlay_fuzz,
+                                    self.hud.overlay_alpha,
+                                    self.hud.overlay_scale_x,
+                                    self.hud.overlay_scale_y,
+                                    self.hud.overlay_flip,
+                                    self.hud.overlay_pivot_x,
+                                    self.hud.overlay_pivot_y,
+                                    self.hud.overlay_angle,
+                                    self.hud.overlay_tint_r,
+                                    self.hud.overlay_tint_g,
+                                    self.hud.overlay_tint_b,
+                                    self.hud.overlay_mirror,
+                                    self.hud.overlay_pivot_percent,
+                                );
+                            }
+                        }
                         // A flash frame without a lump draws nothing (GZDoom).
                         if let Some(soft_flash) = self.patches.get(&self.hud.flash_patch) {
                             draw_weapon_lit(
@@ -2684,16 +2881,24 @@ impl ViewerApp {
                                 &self.hud.flash_patch,
                                 self.hud.fullscreen,
                                 Some(soft_flash),
-                                self.hud.bob_x,
-                                self.hud.bob_y,
+                                bob_x,
+                                bob_y,
                                 self.hud.weapon_light,
                                 self.hud.flash_bright,
                                 self.hud.weapon_fuzz,
+                                1.0,
+                                1.0,
+                                1.0,
+                                false,
+                                0.5,
+                                0.5,
+                                0.0,
                             );
                         }
                         if self.hud.inverse_colormap() {
                             ui.invert_since(weapon_cmds);
                         }
+                        draw_crosshair(&mut ui, self.hud.crosshair);
                     }
                     let (mod_hud_seat, mod_hud_tic) = self
                         .play
@@ -2750,9 +2955,9 @@ impl ViewerApp {
                             }
                         }
                     }
-                    if let Some(tint) = room_ui::screen_blend(self.hud.palette) {
-                        ui.fill(Rect::new(0.0, 0.0, 320.0, 200.0), tint);
-                    }
+                    // Pain tint stays off this letterboxed 320×200 layer. A fill
+                    // here is a hard red rectangle on a widescreen view. The
+                    // full-frame mix, when the post chain is on, is enough.
                     self.messages.draw(&mut ui, 8.0, 8.0);
                     if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
                         let poses = player_map_poses(world);
@@ -2804,24 +3009,9 @@ impl ViewerApp {
                             .unwrap_or(self.frames as u32);
                         menu.draw(&mut ui, tic, Some(&self.fonts));
                     }
-                    if let Some(fade) = self
-                        .play
-                        .as_ref()
-                        .and_then(|g| g.world())
-                        .map(|w| w.screen_fade)
-                    {
-                        if fade.a > 0.001 {
-                            ui.fill(
-                                Rect::new(0.0, 0.0, 320.0, 200.0),
-                                Rgba {
-                                    r: fade.r,
-                                    g: fade.g,
-                                    b: fade.b,
-                                    a: fade.a,
-                                },
-                            );
-                        }
-                    }
+                    // Screen fades and the pain tint are drawn in framebuffer
+                    // pixels below. A 320×200 fill here is a hard rectangle on
+                    // a widescreen window.
                 }
             }
             if self.console_open {
@@ -2869,8 +3059,7 @@ impl ViewerApp {
                     self.inner.text(x + self.ox, y + self.oy, text, color);
                 }
                 fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
-                    self.inner
-                        .blit_rgba(x + self.ox, y + self.oy, w, h, pixels);
+                    self.inner.blit_rgba(x + self.ox, y + self.oy, w, h, pixels);
                 }
             }
             blit_draw_list_full(
@@ -2885,6 +3074,25 @@ impl ViewerApp {
                     oy,
                 },
             );
+            // Pain and ACS FadeTo cover the whole window. The post chain
+            // already mixes the palette tint when it is on.
+            if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
+                if !use_post {
+                    if let Some(tint) = room_ui::screen_blend(self.hud.palette) {
+                        hud.fill_rect(0.0, 0.0, fb_w, fb_h, [tint.r, tint.g, tint.b, tint.a]);
+                    }
+                }
+                let fade = world.screen_fade;
+                if fade.a > 0.001 {
+                    hud.fill_rect(
+                        0.0,
+                        0.0,
+                        fb_w,
+                        fb_h,
+                        [fade.r, fade.g, fade.b, fade.a.min(1.0)],
+                    );
+                }
+            }
 
             let Ok(frame) = surface.get_current_texture() else {
                 return;
@@ -3208,7 +3416,11 @@ impl ViewerApp {
         while self.tic_accum >= tic {
             self.tic_accum -= tic;
             let sample = self.sample_input();
-            let bits = build_ticcmd_with_mods(&sample, self.mod_buttons);
+            let bits = build_ticcmd_with_mods_and_impulses(
+                &sample,
+                self.mod_buttons,
+                self.weapon_impulses,
+            );
             let cmd = TicCmd {
                 buttons: Buttons(bits.buttons),
                 pitch: bits.pitch,
@@ -3387,7 +3599,7 @@ impl ViewerApp {
                             {
                                 if let Some(view) = p.camera.or(p.mo) {
                                     if let Some(a) = game.world().and_then(|w| w.actors.get(view)) {
-                                        shared.mixer.set_listener(a.pos, a.angle.radians());
+                                        shared.mixer.set_listener(a.pos, a.camera_yaw().radians());
                                     }
                                 }
                             }
@@ -3824,19 +4036,29 @@ impl ViewerApp {
                                 } else {
                                     p.view_z
                                 };
-                                let fov = if p.camera.is_some() && a.camera_fov > 0.0 {
-                                    Some(a.camera_fov)
+                                let base = if p.camera.is_some() && a.camera_fov > 0.0 {
+                                    a.camera_fov
                                 } else {
-                                    None
+                                    58.715
                                 };
+                                let fov = if p.camera.is_some() {
+                                    base
+                                } else {
+                                    room_sim::Player::zoomed_fov(base, p.weapon_zoom)
+                                };
+                                let (ex, ey, ez) = a.camera_eye(z);
                                 cam = Some((
-                                    a.pos.x(),
-                                    a.pos.y(),
-                                    z,
-                                    a.angle.radians(),
-                                    a.pitch.radians(),
-                                    fov,
+                                    ex,
+                                    ey,
+                                    ez,
+                                    a.camera_yaw().radians(),
+                                    a.camera_pitch().radians(),
+                                    Some(fov),
                                 ));
+                                #[allow(clippy::cast_possible_truncation)]
+                                {
+                                    self.roll = a.camera_roll().radians() as f32;
+                                }
                             }
                         }
                     }
@@ -3934,7 +4156,9 @@ impl ViewerApp {
                 }
             }
             for msg in msgs {
-                self.messages.push(msg, 70);
+                if let Some(text) = hud_line(&self.language, &msg) {
+                    self.messages.push(text, 70);
+                }
             }
             for (name, x, y, z, line) in new_decals {
                 let salt = {
@@ -4117,6 +4341,7 @@ impl ViewerApp {
                     // otherwise W walks left/right of the crosshair.
                     self.yaw = next.3;
                     self.pitch = next.4;
+                    self.note_sprite_poses();
                     if let Some(fov) = fov {
                         self.camera.fov_y_deg = fov.clamp(1.0, 175.0);
                     }
@@ -4132,21 +4357,59 @@ impl ViewerApp {
                     for line in detail {
                         eprintln!("room:   {line}");
                     }
-                    self.messages.push(msg, 70);
                 }
                 self.last_player_hp = h.health;
                 self.hud.health = h.health;
                 self.hud.armor = h.armor;
                 self.hud.ammo = h.ammo;
                 self.hud.ammo_max = h.ammo_max;
+                self.hud.ammo2 = h.ammo2;
+                self.hud.ammo2_max = h.ammo2_max;
                 self.hud.keys = h.keys;
                 self.hud.face = h.face;
                 self.hud.weapon_patch = h.weapon_patch;
                 self.hud.flash_patch = h.flash_patch;
+                self.hud.overlay_patch = h.overlay_patch;
+                self.hud.overlay_ofs_x = h.overlay_ofs_x;
+                self.hud.overlay_ofs_y = h.overlay_ofs_y;
+                self.hud.overlay_alpha = h.overlay_alpha;
+                self.hud.overlay_scale_x = h.overlay_scale_x;
+                self.hud.overlay_scale_y = h.overlay_scale_y;
+                self.hud.overlay_flip = h.overlay_flip;
+                self.hud.overlay_mirror = h.overlay_mirror;
+                self.hud.overlay_angle = h.overlay_angle;
+                self.hud.overlay_pivot_x = h.overlay_pivot_x;
+                self.hud.overlay_pivot_y = h.overlay_pivot_y;
+                self.hud.overlay_tint_r = h.overlay_tint_r;
+                self.hud.overlay_tint_g = h.overlay_tint_g;
+                self.hud.overlay_tint_b = h.overlay_tint_b;
+                self.hud.overlay_fuzz = h.overlay_fuzz;
+                self.hud.overlay_pivot_percent = h.overlay_pivot_percent;
+                self.hud.overlay_add_bob = h.overlay_add_bob;
+                self.hud.overlay_add_weapon = h.overlay_add_weapon;
+                self.hud.overlay_interpolate = h.overlay_interpolate;
+                self.hud.bob_ofs_x = h.bob_ofs_x;
+                self.hud.bob_ofs_y = h.bob_ofs_y;
                 self.hud.weapon_light = h.weapon_light;
                 self.hud.weapon_bright = h.weapon_bright;
                 self.hud.flash_bright = h.flash_bright;
                 self.hud.weapon_fuzz = h.weapon_fuzz;
+                self.hud.weapon_alpha = h.weapon_alpha;
+                self.hud.weapon_scale_x = h.weapon_scale_x;
+                self.hud.weapon_scale_y = h.weapon_scale_y;
+                self.hud.weapon_flip = h.weapon_flip;
+                self.hud.weapon_mirror = h.weapon_mirror;
+                self.hud.weapon_pivot_percent = h.weapon_pivot_percent;
+                self.hud.weapon_pivot_x = h.weapon_pivot_x;
+                self.hud.weapon_pivot_y = h.weapon_pivot_y;
+                self.hud.weapon_angle = h.weapon_angle;
+                self.hud.weapon_class = h.weapon_class.clone();
+                self.hud.crosshair = h.crosshair;
+                self.hud.weapon_tint_r = h.weapon_tint_r;
+                self.hud.weapon_tint_g = h.weapon_tint_g;
+                self.hud.weapon_tint_b = h.weapon_tint_b;
+                self.hud.weapon_interpolate = h.weapon_interpolate;
+                self.weapon_bob_prev = (self.hud.bob_x, self.hud.bob_y);
                 self.hud.bob_x = h.bob_x;
                 self.hud.bob_y = h.bob_y;
                 self.hud.arms = h.arms;
@@ -4741,6 +5004,39 @@ impl ViewerApp {
         ))
     }
 
+    /// Shift sprite samples once per completed tic. `+DONTINTERPOLATE` is applied
+    /// at draw time so a flag change does not need another snapshot.
+    fn note_sprite_poses(&mut self) {
+        let Some(game) = self.play.as_ref() else {
+            return;
+        };
+        let Some(world) = game.world() else {
+            return;
+        };
+        let mut next = std::collections::HashMap::new();
+        for &id in &world.thinkers.default {
+            let Some(a) = world.actors.get(id) else {
+                continue;
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            next.insert(
+                id.index(),
+                (
+                    a.pos.x() as f32,
+                    a.pos.y() as f32,
+                    a.pos.z() as f32,
+                    a.angle.degrees() as f32,
+                ),
+            );
+        }
+        self.sprite_prev = if self.sprite_curr.is_empty() {
+            next.clone()
+        } else {
+            std::mem::take(&mut self.sprite_curr)
+        };
+        self.sprite_curr = next;
+    }
+
     /// Live actor billboards for play mode (`None` in free-fly viewer).
     fn collect_live_sprites(&mut self) -> Option<Vec<SpriteInstance>> {
         self.fill_voxel_poses();
@@ -4753,6 +5049,8 @@ impl ViewerApp {
             .and_then(|p| p.mo);
         let view_x = f64::from(self.camera.eye.x);
         let view_y = f64::from(self.camera.eye.y);
+        let tic = 1.0 / self.play.as_ref().map(GameRuntime::tic_rate).unwrap_or(35) as f32;
+        let frac = f64::from((self.tic_accum / tic).clamp(0.0, 1.0));
         let mut out = Vec::new();
         let actors: Vec<_> = world
             .thinkers
@@ -4797,12 +5095,31 @@ impl ViewerApp {
                 let fuzz = matches!(a.render_style, RenderStyle::Fuzzy | RenderStyle::OptFuzzy);
                 #[allow(clippy::cast_possible_truncation)]
                 let alpha = alpha as f32;
-                Some((
-                    id,
+                let prev = self.sprite_prev.get(&id.index()).copied().unwrap_or((
+                    a.pos.x() as f32,
+                    a.pos.y() as f32,
+                    a.pos.z() as f32,
+                    a.angle.degrees() as f32,
+                ));
+                let pose = sprite_pose(
                     a.pos.x(),
                     a.pos.y(),
                     a.pos.z(),
                     a.angle.degrees(),
+                    f64::from(prev.0),
+                    f64::from(prev.1),
+                    f64::from(prev.2),
+                    f64::from(prev.3),
+                    frac,
+                    a.extra_flags.get_name("DONTINTERPOLATE"),
+                    a.extra_flags.get_name("INTERPOLATEANGLES"),
+                );
+                Some((
+                    id,
+                    pose.x,
+                    pose.y,
+                    pose.z,
+                    pose.angle_deg,
                     a.radius,
                     a.height,
                     a.scale_x,
@@ -4812,6 +5129,8 @@ impl ViewerApp {
                     fuzz,
                     a.sprite.clone(),
                     a.frame,
+                    a.sprite_ofs_x,
+                    a.sprite_ofs_y,
                     flags,
                 ))
             })
@@ -4831,6 +5150,8 @@ impl ViewerApp {
             fuzz,
             sprite,
             frame,
+            sprite_ofs_x,
+            sprite_ofs_y,
             flags,
         ) in actors
         {
@@ -4892,7 +5213,12 @@ impl ViewerApp {
                 SpriteOrient::Billboard
             };
             out.push(SpriteInstance {
-                pos: Vec3::new(x as f32, y as f32, z_bottom as f32),
+                pos: Vec3::new(x as f32, y as f32, z_bottom as f32)
+                    + sprite_offset_delta(
+                        self.camera.forward,
+                        sprite_ofs_x as f32,
+                        sprite_ofs_y as f32,
+                    ),
                 width: w as f32,
                 height: h as f32,
                 light,
@@ -5611,6 +5937,9 @@ impl ViewerApp {
         if self.mod_buttons.apply_cmd(trimmed) {
             return;
         }
+        if self.weapon_impulses.apply_cmd(trimmed) {
+            return;
+        }
         let head = trimmed
             .split_whitespace()
             .next()
@@ -5707,6 +6036,32 @@ impl ViewerApp {
                     } else if let Some(t) = kind {
                         self.messages
                             .push(format!("kill: unknown target '{t}'"), 70);
+                    }
+                }
+                HostCommand::Puke { script, args } => {
+                    if let Some(game) = self.play.as_mut() {
+                        let ok = game.cheat_puke(script, args, false);
+                        self.messages.push(
+                            if ok != 0 {
+                                format!("Puked script {script}")
+                            } else {
+                                format!("Puke {script}: not started")
+                            },
+                            70,
+                        );
+                    }
+                }
+                HostCommand::PukeName { name, always, args } => {
+                    if let Some(game) = self.play.as_mut() {
+                        let ok = game.cheat_puke_named(&name, args, always);
+                        self.messages.push(
+                            if ok != 0 {
+                                format!("Puked {name}")
+                            } else {
+                                format!("PukeName {name}: not started")
+                            },
+                            70,
+                        );
                     }
                 }
             }

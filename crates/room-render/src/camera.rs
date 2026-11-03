@@ -50,6 +50,25 @@ impl Camera {
         proj * view
     }
 
+    /// Camera up after a view roll. Positive degrees are a right-hand turn around `forward`.
+    /// A quarter turn looking along +X points up toward -Y.
+    #[must_use]
+    pub fn rolled_up(forward: Vec3, roll_rad: f32) -> Vec3 {
+        let f = if forward.length_squared() < 1e-8 {
+            Vec3::X
+        } else {
+            forward.normalize()
+        };
+        let mut side = f.cross(Vec3::Z);
+        if side.length_squared() < 1e-8 {
+            side = f.cross(Vec3::Y);
+        }
+        let side = side.normalize();
+        let up = side.cross(f);
+        let (s, c) = roll_rad.sin_cos();
+        (up * c + f.cross(up) * s).normalize_or_zero()
+    }
+
     /// XY map position used by the BSP clipper.
     #[must_use]
     pub fn map_xy(&self) -> (f64, f64) {
@@ -186,6 +205,15 @@ mod tests {
     fn from_actor_view_yaw() {
         let c = Camera::from_actor_view(0.0, 0.0, 41.0, 0.0, 90.0, 1.0);
         assert!(c.forward.x > 0.9);
+    }
+
+    #[test]
+    fn quarter_roll_looking_along_x_points_up_toward_negative_y() {
+        let up = Camera::rolled_up(Vec3::X, std::f32::consts::FRAC_PI_2);
+        assert!(up.y < -0.9, "up={up:?}");
+        assert!(up.z.abs() < 0.1, "up={up:?}");
+        let level = Camera::rolled_up(Vec3::X, 0.0);
+        assert!(level.z > 0.9, "level={level:?}");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Movement / collision (`P_CheckPosition` / `P_TryMove` subset).
 
 use crate::actor::{Actor, ActorId};
-use crate::class::{FLAG_MISSILE, FLAG_NOBLOCKMAP};
+use crate::class::{FLAG_MISSILE, FLAG_NOBLOCKMAP, FLAG_NOINTERACTION};
 use crate::world::World;
 use room_core::{DVec2, DVec3, LineId};
 use room_map::{Blockmap, Line, MapGeometry};
@@ -426,8 +426,14 @@ pub fn check_position(
             // doorway); the disc may overlap that wall until the centre crosses.
             // A balcony whose floor is above the actor is the same kind of
             // overlap: its wall is not a barrier on the floor they are walking.
+            // Only skip when the *actor* is already on the back — a front-side
+            // origin whose probe centre crossed into void must still block
+            // (Doom one-siders after MapBuilder uses right-hand fronts).
             if line.back_sector.is_none() && on_back_side(xy, v1.pos, v2.pos) {
-                continue;
+                let origin = DVec2::new(actor.pos.x(), actor.pos.y());
+                if on_back_side(origin, v1.pos, v2.pos) {
+                    continue;
+                }
             }
             if line.back_sector.is_none()
                 && line.front_sector.is_some_and(|sid| {
@@ -453,6 +459,8 @@ pub fn check_position(
         if other.destroyed
             || (other.flags & FLAG_SOLID) == 0
             || (other.flags & FLAG_NOBLOCKMAP) != 0
+            || (other.flags & FLAG_NOINTERACTION) != 0
+            || (actor.flags & FLAG_NOINTERACTION) != 0
         {
             continue;
         }
@@ -957,6 +965,11 @@ const GRAVITY: f64 = 1.0;
 /// Below this speed (units per tic) a bounce settles instead of rebounding.
 const BOUNCE_REST_SPEED: f64 = 1.0;
 
+/// `+MBFBOUNCER` uses the same floor and wall reflect as the bounce flags (UZ1).
+fn mbf_bouncer(actor: &Actor) -> bool {
+    actor.extra_flags.get_name("MBFBOUNCER")
+}
+
 fn bounce_factor(world: &World, actor: &Actor) -> f64 {
     world
         .classes
@@ -1182,19 +1195,24 @@ pub fn hexen_falling_damage(momz: f64, health: i32, mass: i32) -> i32 {
 
 /// Apply Hexen falling damage if the level enables it and the floor allows it.
 pub(crate) fn try_falling_damage(world: &mut World, actor_id: ActorId, impact_vel_z: f64) {
-    if !world.level.falling_damage || impact_vel_z >= -23.0 {
+    if impact_vel_z >= -23.0 {
         return;
     }
     let Some(actor) = world.actors.get(actor_id) else {
         return;
     };
-    // Players only for now (Hexen also damages monsters; M8 can widen).
+    // Level switch, or the actor's own `+FALLDAMAGE` (UZ1).
+    let flagged = actor.extra_flags.get_name("FALLDAMAGE");
+    if !world.level.falling_damage && !flagged {
+        return;
+    }
+    // Players only, unless the actor flag opts a monster in.
     let is_player = world
         .players
         .iter()
         .flatten()
         .any(|p| p.mo == Some(actor_id));
-    if !is_player {
+    if !is_player && !flagged {
         return;
     }
     let sid =
@@ -1241,7 +1259,8 @@ pub fn z_movement(world: &mut World, actor_id: ActorId) {
     let ceiling_z = planes.ceiling_z;
     let mut vel_z = actor.vel.z();
     let water = actor_waterlevel(world, &actor);
-    let no_gravity = (actor.flags & crate::class::FLAG_NOGRAVITY) != 0;
+    let no_gravity =
+        (actor.flags & crate::class::FLAG_NOGRAVITY) != 0 || actor.extra_flags.get_name("SKULLFLY");
     if !no_gravity {
         let actor_g = if actor.gravity > 0.0 {
             actor.gravity
@@ -1300,7 +1319,7 @@ pub fn z_movement(world: &mut World, actor_id: ActorId) {
     let mut hit_ceiling = false;
     let impact_vel_z = vel_z;
     let is_missile = (actor.flags & FLAG_MISSILE) != 0;
-    if (actor.flags & crate::class::FLAG_BOUNCEONFLOORS) != 0 {
+    if (actor.flags & crate::class::FLAG_BOUNCEONFLOORS) != 0 || mbf_bouncer(&actor) {
         let hit_floor = z <= floor_z && vel_z < 0.0;
         let hit_ceiling = z + actor.height > ceiling_z && vel_z > 0.0;
         if hit_floor || hit_ceiling {
@@ -1358,7 +1377,10 @@ pub fn z_movement(world: &mut World, actor_id: ActorId) {
             .map(|a| a.pos)
             .unwrap_or(actor.pos);
         let (kind, normal) = if hit_ceiling {
-            (room_script_abi::hit_kind::CEILING, DVec3::new(0.0, 0.0, -1.0))
+            (
+                room_script_abi::hit_kind::CEILING,
+                DVec3::new(0.0, 0.0, -1.0),
+            )
         } else {
             (room_script_abi::hit_kind::FLOOR, DVec3::new(0.0, 0.0, 1.0))
         };
@@ -1551,7 +1573,7 @@ pub fn xy_movement(world: &mut World, actor_id: ActorId) {
             x = nx;
             y = ny;
         } else {
-            if (actor.flags & crate::class::FLAG_BOUNCEONWALLS) != 0
+            if ((actor.flags & crate::class::FLAG_BOUNCEONWALLS) != 0 || mbf_bouncer(&actor))
                 && mv.blocking_actor.is_none()
                 && bounce_off_wall(world, actor_id, DVec3::new(nx, ny, z))
             {
@@ -1634,7 +1656,11 @@ pub fn xy_movement(world: &mut World, actor_id: ActorId) {
             .and_then(|sid| world.sectors.get(sid.raw() as usize))
             .map(|s| s.friction)
             .unwrap_or(ORIG_FRICTION);
-        let factor = (sector_fric * class_fric).clamp(0.0, 1.0);
+        let mut factor = (sector_fric * class_fric).clamp(0.0, 1.0);
+        // `+NOFRICTION`: keep XY velocity (UZ1). Missiles already skip this block.
+        if actor.extra_flags.get_name("NOFRICTION") {
+            factor = 1.0;
+        }
         if let Some(a) = world.actors.get_mut(actor_id) {
             let (mut vx, mut vy) = if world.math_mode == crate::vanilla::SimMathMode::VanillaFixed {
                 use room_core::math::Fixed;
@@ -1689,11 +1715,23 @@ pub(crate) fn apply_missile_damage(world: &mut World, missile_id: ActorId, victi
     let base = if missile.damage > 0 {
         missile.damage
     } else {
-        world
+        let expr = world
             .classes
             .get(missile.class)
-            .map(|c| c.damage)
-            .unwrap_or(0)
+            .map(|c| c.damage_expr.clone())
+            .unwrap_or_default();
+        if expr.is_empty() {
+            world
+                .classes
+                .get(missile.class)
+                .map(|c| c.damage)
+                .unwrap_or(0)
+        } else {
+            crate::deco_eval::eval_action_arg(world, missile_id, &expr)
+                .parse::<i32>()
+                .unwrap_or(0)
+                .max(0)
+        }
     };
     if base <= 0 {
         return;
@@ -1991,6 +2029,78 @@ actor PackShot : Actor 9921
             hp_after < hp_before,
             "expected damage: {hp_before} -> {hp_after}"
         );
+    }
+
+    #[test]
+    fn missile_damage_expression_random_hurts() {
+        use crate::{ClassRegistry, StateTable};
+        use room_decorate::parse_decorate;
+        use std::sync::Arc;
+
+        let mut src = include_str!("../../../testdata/actors/doom_basic.txt").to_owned();
+        src.push_str(
+            r#"
+actor ExprBall : Actor
+{
+  Health 1000
+  Radius 6
+  Height 8
+  Speed 10
+  Damage (random(4, 4))
+  Projectile
+  States
+  {
+  Spawn:
+    BAL1 A 4
+    Loop
+  Death:
+    BAL1 B 6
+    Stop
+  }
+}
+"#,
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let ball = classes.find_name("ExprBall").unwrap();
+        assert!(
+            classes
+                .get(ball)
+                .unwrap()
+                .damage_expr
+                .to_ascii_lowercase()
+                .contains("random"),
+            "expr stored"
+        );
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(400.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        let zombie = w.classes.find_name("ZombieMan").unwrap();
+        let victim = w
+            .spawn_at(zombie, DVec3::new(200.0, 64.0, 0.0), room_core::Angle::ZERO)
+            .unwrap();
+        let hp_before = w.actors.get(victim).unwrap().health;
+        let missile = w
+            .spawn_at(ball, DVec3::new(160.0, 64.0, 32.0), room_core::Angle::ZERO)
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(missile) {
+            a.flags |= FLAG_MISSILE;
+            a.flags &= !FLAG_SOLID;
+            a.vel = DVec3::new(30.0, 0.0, 0.0);
+        }
+        for _ in 0..4 {
+            xy_movement(&mut w, missile);
+        }
+        let hp_after = w.actors.get(victim).unwrap().health;
+        assert!(
+            hp_after <= hp_before - 4,
+            "expression damage: {hp_before} -> {hp_after}"
+        );
         let death = w.states.find_label(ball, "Death").unwrap();
         assert_eq!(w.actors.get(missile).unwrap().state, Some(death));
         // Doom `PIT_CheckThing`: missiles damage + explode; blood is hitscan-only.
@@ -2153,6 +2263,18 @@ actor PackShot : Actor 9921
         let a = w.actors.get(id).unwrap();
         assert_eq!(a.pos.z(), 0.0);
         assert_eq!(a.vel.z(), 5.0, "(9 + 1 gravity) * 0.5 back up");
+
+        let id = w
+            .spawn_at(bomb, DVec3::new(128.0, 200.0, 4.0), room_core::Angle::ZERO)
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(id) {
+            a.flags &= !crate::class::FLAG_BOUNCEONFLOORS;
+            a.extra_flags.set_name("MBFBOUNCER", true);
+            a.vel = DVec3::new(0.0, 0.0, -9.0);
+        }
+        z_movement(&mut w, id);
+        let a = w.actors.get(id).unwrap();
+        assert_eq!(a.vel.z(), 5.0, "MBFBOUNCER rebounds off the floor");
 
         let id = w
             .spawn_at(bomb, DVec3::new(10.0, 128.0, 0.0), room_core::Angle::ZERO)
@@ -2538,6 +2660,28 @@ actor ShortLegs : Actor 9910
     }
 
     #[test]
+    fn falldamage_flag_hurts_without_the_level_switch() {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        assert!(!w.level.falling_damage);
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        {
+            let a = w.actors.get_mut(mo).unwrap();
+            a.flags |= crate::class::FLAG_SHOOTABLE;
+            a.health = 100;
+            a.mass = 100;
+            a.extra_flags.set_name("FALLDAMAGE", true);
+        }
+        try_falling_damage(&mut w, mo, -40.0);
+        assert!(w.actors.get(mo).unwrap().health < 100);
+    }
+
+    #[test]
     fn z_movement_hard_land_plays_oof() {
         let mut map = MapBuilder::new()
             .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
@@ -2768,6 +2912,221 @@ actor Walker : Actor 9311
             .unwrap();
         assert!(try_move(&mut w, walker, DVec3::new(200.0, 64.0, 0.0),));
         assert!((w.actors.get(walker).unwrap().pos.x() - 200.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn nointeraction_solid_does_not_block_move() {
+        use crate::{ClassRegistry, StateTable};
+        use room_decorate::parse_decorate;
+        use std::sync::Arc;
+
+        let ir = parse_decorate(
+            r#"
+actor GoreTrail : Actor 9312
+{
+  Radius 20
+  Height 56
+  +SOLID
+  +NOINTERACTION
+  States { Spawn: BLUD C -1 Stop }
+}
+actor Walker2 : Actor 9313
+{
+  Radius 16
+  Height 56
+  +SOLID
+  States { Spawn: PLAY A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        assert_eq!(
+            classes
+                .get(classes.find_name("GoreTrail").unwrap())
+                .unwrap()
+                .flags
+                & FLAG_NOINTERACTION,
+            FLAG_NOINTERACTION
+        );
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let _gore = w
+            .spawn_at(
+                classes.find_name("GoreTrail").unwrap(),
+                DVec3::new(200.0, 64.0, 0.0),
+                room_core::Angle::ZERO,
+            )
+            .unwrap();
+        let walker = w
+            .spawn_at(
+                classes.find_name("Walker2").unwrap(),
+                DVec3::new(160.0, 64.0, 0.0),
+                room_core::Angle::ZERO,
+            )
+            .unwrap();
+        assert!(try_move(&mut w, walker, DVec3::new(200.0, 64.0, 0.0),));
+        assert!((w.actors.get(walker).unwrap().pos.x() - 200.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn bd8_nointeraction_gore_cloud_ticks_deterministically() {
+        use crate::{ClassRegistry, StateTable};
+        use room_decorate::parse_decorate;
+        use std::sync::Arc;
+
+        let ir = parse_decorate(
+            r#"
+actor GoreBit : Actor 9320
+{
+  Radius 4
+  Height 4
+  +NOINTERACTION
+  +NOBLOCKMAP
+  +NOGRAVITY
+  States { Spawn: BLUD C -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let gore = classes.find_name("GoreBit").unwrap();
+        let mk = |classes: &Arc<ClassRegistry>, states: &Arc<StateTable>| {
+            let mut map = MapBuilder::new()
+                .room("a", rect(0.0, 0.0, 1024.0, 1024.0), 0.0, 128.0)
+                .player_start(32.0, 32.0, 0)
+                .build_udmf("MAP01")
+                .unwrap();
+            apply_nodes(&mut map);
+            let mut w =
+                World::from_map_with_classes(map, Arc::clone(classes), Arc::clone(states)).unwrap();
+            for i in 0..512 {
+                let x = 64.0 + f64::from(i % 32) * 8.0;
+                let y = 64.0 + f64::from(i / 32) * 8.0;
+                let _ = w.spawn_at(gore, DVec3::new(x, y, 16.0), room_core::Angle::ZERO);
+            }
+            for _ in 0..8 {
+                w.tick();
+            }
+            w.checksum()
+        };
+        let a = mk(&classes, &states);
+        let b = mk(&classes, &states);
+        assert_eq!(
+            a, b,
+            "512 NOINTERACTION gore actors × 8 tics must be deterministic"
+        );
+    }
+
+    #[test]
+    fn bd8_three_k_gore_soft_budget() {
+        // docs/33 BD8: 3,000 gore ≤ 4 ms/tic desktop — CI uses a loose smoke ceiling.
+        use crate::{ClassRegistry, StateTable};
+        use room_decorate::parse_decorate;
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let ir = parse_decorate(
+            r#"
+actor GoreBit3k : Actor 9321
+{
+  Radius 4
+  Height 4
+  +NOINTERACTION
+  +NOBLOCKMAP
+  +NOGRAVITY
+  States { Spawn: BLUD C -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let gore = classes.find_name("GoreBit3k").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 2048.0, 2048.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        for i in 0..3000 {
+            let x = 64.0 + f64::from(i % 64) * 8.0;
+            let y = 64.0 + f64::from(i / 64) * 8.0;
+            let _ = w.spawn_at(gore, DVec3::new(x, y, 16.0), room_core::Angle::ZERO);
+        }
+        let start = Instant::now();
+        const TICS: u32 = 8;
+        for _ in 0..TICS {
+            w.tick();
+        }
+        let ms = start.elapsed().as_millis();
+        let per = ms / u128::from(TICS);
+        // Smoke: 500 ms/tic ceiling (CI); criterion / local machines target ≤ 4 ms.
+        assert!(
+            per < 500,
+            "3000 NOINTERACTION gore avg {per} ms/tic (soft smoke 500; BD8 desktop ≤4)"
+        );
+    }
+
+    #[test]
+    fn bd8_corpse_queue_evicts_oldest() {
+        use crate::class::FLAG_CORPSE;
+        use crate::{ClassRegistry, StateTable};
+        use room_decorate::parse_decorate;
+        use std::sync::Arc;
+
+        let ir = parse_decorate(
+            r#"
+actor CorpseBit : Actor 9322
+{
+  Radius 16
+  Height 16
+  States { Spawn: POSS A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let cid = classes.find_name("CorpseBit").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        w.corpse_queue_size = 2;
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let id = w
+                .spawn_at(
+                    cid,
+                    DVec3::new(64.0 + f64::from(i) * 40.0, 64.0, 0.0),
+                    room_core::Angle::ZERO,
+                )
+                .unwrap();
+            if let Some(a) = w.actors.get_mut(id) {
+                a.flags |= FLAG_CORPSE;
+            }
+            w.queue_corpse(id);
+            ids.push(id);
+        }
+        assert_eq!(w.corpse_queue.len(), 2);
+        assert!(
+            w.actors.get(ids[0]).is_some_and(|a| a.destroyed),
+            "oldest corpse must be destroyed"
+        );
+        assert!(w.actors.get(ids[1]).is_some_and(|a| !a.destroyed));
+        assert!(w.actors.get(ids[2]).is_some_and(|a| !a.destroyed));
     }
 
     #[test]

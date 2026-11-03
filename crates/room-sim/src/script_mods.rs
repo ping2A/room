@@ -1212,9 +1212,7 @@ pub fn dispatch_state_action(
     BORROWED_WORLD.with(|c| c.set(world as *mut World));
     world.script_mod_index = module_index as u16;
     let result = (|| {
-        m.instance
-            .write_memory(m.scratch as usize, &bytes)
-            .ok()?;
+        m.instance.write_memory(m.scratch as usize, &bytes).ok()?;
         let mut budget = Budget::from_config(&m.cfg);
         m.instance
             .dispatch(

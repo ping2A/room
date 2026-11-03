@@ -959,7 +959,7 @@ impl RegistrationSession {
 
     /// `reg_weapon_slot` → 0 ok, −1 error (`docs/31` MA4).
     pub fn weapon_slot(&mut self, slot: i32, class_name: &[u8], priority: i32) -> i32 {
-        if !matches!(slot, 0 | 1..=10) {
+        if !matches!(slot, 0..=10) {
             return -1;
         }
         let Ok(raw) = std::str::from_utf8(class_name) else {

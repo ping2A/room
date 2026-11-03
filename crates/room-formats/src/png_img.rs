@@ -1,7 +1,7 @@
 //! PNG decoder with ZDoom `grAb` / `alPh` ancillary chunks.
 
 use crate::error::FormatError;
-use crate::image::{Image, ImagePixels, PalettedImage, RgbaImage};
+use crate::image::{Image, ImagePixels, RgbaImage};
 use std::io::Cursor;
 
 const PNG_SIG: &[u8] = &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
@@ -81,19 +81,41 @@ pub fn parse_png(data: &[u8]) -> Result<Image, FormatError> {
 
     match color {
         png::ColorType::Indexed => {
-            let indices = buf[..frame.buffer_size()].to_vec();
-            // Index 0 is transparent unless a tRNS says otherwise; keep empty
-            // alpha and let the renderer treat 0 as masked unless alPh.
-            let has_translucency = indices.contains(&0) || meta.alph;
+            // Expand with the PNG palette. Mapping the indices through PLAYPAL
+            // turns Brutal Doom sprites into the wrong colours.
+            let indices = &buf[..frame.buffer_size()];
+            let pal = info.palette.as_deref().unwrap_or(&[]);
+            let trns = info.trns.as_deref().unwrap_or(&[]);
+            let mut pixels = Vec::with_capacity(indices.len() * 4);
+            let mut has_translucency = meta.alph;
+            for &idx in indices {
+                let i = usize::from(idx);
+                let (r, g, b) = if i * 3 + 2 < pal.len() {
+                    (pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2])
+                } else {
+                    (0, 0, 0)
+                };
+                // Honour tRNS. With no tRNS, index 0 stays a hole (ZDoom sprites).
+                let a = if !trns.is_empty() {
+                    trns.get(i).copied().unwrap_or(255)
+                } else if idx == 0 {
+                    0
+                } else {
+                    255
+                };
+                if a != 255 {
+                    has_translucency = true;
+                }
+                pixels.extend_from_slice(&[r, g, b, a]);
+            }
             Ok(Image {
                 left_offset,
                 top_offset,
                 has_translucency,
-                pixels: ImagePixels::Paletted(PalettedImage {
+                pixels: ImagePixels::Rgba8(RgbaImage {
                     width,
                     height,
-                    indices,
-                    alpha: Vec::new(),
+                    pixels,
                 }),
             })
         }

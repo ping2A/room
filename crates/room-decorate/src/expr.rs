@@ -16,6 +16,26 @@ pub enum BinOp {
     Div,
     /// `%`
     Mod,
+    /// `==`
+    Eq,
+    /// `!=`
+    Ne,
+    /// `<`
+    Lt,
+    /// `<=`
+    Le,
+    /// `>`
+    Gt,
+    /// `>=`
+    Ge,
+    /// `&&`
+    And,
+    /// `||`
+    Or,
+    /// `|` (bitwise / flag combo)
+    BitOr,
+    /// `&`
+    BitAnd,
 }
 
 /// Tiny typed expression tree for action / property args.
@@ -31,6 +51,8 @@ pub enum DecoExpr {
     Ident(String),
     /// Unary minus.
     Neg(Box<DecoExpr>),
+    /// Logical not (`!`).
+    Not(Box<DecoExpr>),
     /// Binary op.
     Bin {
         /// Operator.
@@ -63,14 +85,137 @@ pub fn parse_deco_expr(text: &str) -> Result<DecoExpr, DecorateError> {
         ScanOptions {
             c_mode: true,
             semicolon_comments: false,
+            ..Default::default()
         },
     );
-    let expr = parse_add(&mut sc)?;
+    let expr = parse_or(&mut sc)?;
     match sc.next_token()? {
         Tok::Eof => Ok(expr),
         other => Err(DecorateError::Message(format!(
             "trailing tokens in expression: {other:?}"
         ))),
+    }
+}
+
+fn parse_or(sc: &mut Scanner<'_>) -> Result<DecoExpr, DecorateError> {
+    let mut lhs = parse_and(sc)?;
+    loop {
+        match sc.next_token()? {
+            Tok::Punct(Punct::OrOr) => {
+                let rhs = parse_and(sc)?;
+                lhs = DecoExpr::Bin {
+                    op: BinOp::Or,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                };
+            }
+            other => {
+                sc.unget(other);
+                return Ok(lhs);
+            }
+        }
+    }
+}
+
+fn parse_and(sc: &mut Scanner<'_>) -> Result<DecoExpr, DecorateError> {
+    let mut lhs = parse_bitor(sc)?;
+    loop {
+        match sc.next_token()? {
+            Tok::Punct(Punct::AndAnd) => {
+                let rhs = parse_bitor(sc)?;
+                lhs = DecoExpr::Bin {
+                    op: BinOp::And,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                };
+            }
+            other => {
+                sc.unget(other);
+                return Ok(lhs);
+            }
+        }
+    }
+}
+
+fn parse_bitor(sc: &mut Scanner<'_>) -> Result<DecoExpr, DecorateError> {
+    let mut lhs = parse_bitand(sc)?;
+    loop {
+        match sc.next_token()? {
+            Tok::Punct(Punct::Pipe) => {
+                let rhs = parse_bitand(sc)?;
+                lhs = DecoExpr::Bin {
+                    op: BinOp::BitOr,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                };
+            }
+            other => {
+                sc.unget(other);
+                return Ok(lhs);
+            }
+        }
+    }
+}
+
+fn parse_bitand(sc: &mut Scanner<'_>) -> Result<DecoExpr, DecorateError> {
+    let mut lhs = parse_eq(sc)?;
+    loop {
+        match sc.next_token()? {
+            Tok::Punct(Punct::Amp) => {
+                let rhs = parse_eq(sc)?;
+                lhs = DecoExpr::Bin {
+                    op: BinOp::BitAnd,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                };
+            }
+            other => {
+                sc.unget(other);
+                return Ok(lhs);
+            }
+        }
+    }
+}
+
+fn parse_eq(sc: &mut Scanner<'_>) -> Result<DecoExpr, DecorateError> {
+    let mut lhs = parse_rel(sc)?;
+    loop {
+        let op = match sc.next_token()? {
+            Tok::Punct(Punct::EqEq) => BinOp::Eq,
+            Tok::Punct(Punct::NotEq) => BinOp::Ne,
+            other => {
+                sc.unget(other);
+                return Ok(lhs);
+            }
+        };
+        let rhs = parse_rel(sc)?;
+        lhs = DecoExpr::Bin {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        };
+    }
+}
+
+fn parse_rel(sc: &mut Scanner<'_>) -> Result<DecoExpr, DecorateError> {
+    let mut lhs = parse_add(sc)?;
+    loop {
+        let op = match sc.next_token()? {
+            Tok::Punct(Punct::Lt) => BinOp::Lt,
+            Tok::Punct(Punct::LtEq) => BinOp::Le,
+            Tok::Punct(Punct::Gt) => BinOp::Gt,
+            Tok::Punct(Punct::GtEq) => BinOp::Ge,
+            other => {
+                sc.unget(other);
+                return Ok(lhs);
+            }
+        };
+        let rhs = parse_add(sc)?;
+        lhs = DecoExpr::Bin {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        };
     }
 }
 
@@ -142,6 +287,7 @@ fn parse_unary(sc: &mut Scanner<'_>) -> Result<DecoExpr, DecorateError> {
     match sc.next_token()? {
         Tok::Punct(Punct::Minus) => Ok(DecoExpr::Neg(Box::new(parse_unary(sc)?))),
         Tok::Punct(Punct::Plus) => parse_unary(sc),
+        Tok::Punct(Punct::Bang) => Ok(DecoExpr::Not(Box::new(parse_unary(sc)?))),
         other => {
             sc.unget(other);
             parse_postfix(sc)
@@ -154,7 +300,7 @@ fn parse_postfix(sc: &mut Scanner<'_>) -> Result<DecoExpr, DecorateError> {
     loop {
         match sc.next_token()? {
             Tok::Punct(Punct::LBracket) => {
-                let index = parse_add(sc)?;
+                let index = parse_or(sc)?;
                 match sc.next_token()? {
                     Tok::Punct(Punct::RBracket) => {}
                     _ => {
@@ -185,7 +331,7 @@ fn parse_primary(sc: &mut Scanner<'_>) -> Result<DecoExpr, DecorateError> {
                 let mut args = Vec::new();
                 if !sc.check_punct(Punct::RParen)? {
                     loop {
-                        args.push(parse_add(sc)?);
+                        args.push(parse_or(sc)?);
                         match sc.next_token()? {
                             Tok::Punct(Punct::Comma) => continue,
                             Tok::Punct(Punct::RParen) => break,
@@ -203,7 +349,7 @@ fn parse_primary(sc: &mut Scanner<'_>) -> Result<DecoExpr, DecorateError> {
             }
         }
         Tok::Punct(Punct::LParen) => {
-            let inner = parse_add(sc)?;
+            let inner = parse_or(sc)?;
             match sc.next_token()? {
                 Tok::Punct(Punct::RParen) => Ok(inner),
                 _ => Err(DecorateError::Message(
@@ -248,5 +394,13 @@ mod tests {
         }
         let u = parse_deco_expr("user_count + 2").unwrap();
         assert!(matches!(u, DecoExpr::Bin { op: BinOp::Add, .. }));
+    }
+
+    #[test]
+    fn parses_equality_and_logic() {
+        let e = parse_deco_expr("momz == 0").unwrap();
+        assert!(matches!(e, DecoExpr::Bin { op: BinOp::Eq, .. }));
+        let n = parse_deco_expr("health != 0 && !playercrouch").unwrap();
+        assert!(matches!(n, DecoExpr::Bin { op: BinOp::And, .. }));
     }
 }

@@ -15,7 +15,9 @@ room-formats = { path = "../room-formats" }
 room-map = { path = "../room-map" }
 room-sim = { path = "../room-sim" }
 room-vfs = { path = "../room-vfs" }
+room-zvm = { path = "../room-zvm" }
 
 [dev-dependencies]
+png.workspace = true
 room-nodebuild = { path = "../room-nodebuild" }
 room-testkit = { path = "../room-testkit" }

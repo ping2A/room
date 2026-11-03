@@ -10,7 +10,10 @@ mod pcd;
 mod vm;
 
 pub use error::AcsError;
-pub use load::{AcsFormat, AcsModule, ScriptDef, ScriptType, load_behavior};
+pub use load::{
+    AcsFormat, AcsFunction, AcsMapArray, AcsModule, SCRIPTF_CLIENTSIDE, SCRIPTF_NET, ScriptDef,
+    ScriptType, load_behavior,
+};
 pub use pcd::{acsf, aprop, levelinfo, secpart};
 pub use vm::{
     AcsHost, AcsState, RunningScript, ScriptRunState, start_death_scripts, start_enter_scripts,

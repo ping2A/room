@@ -257,10 +257,17 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
         if !already && !give_inventory(world, toucher, class, amount) {
             return false;
         }
-        let (ammo_name, ammo_give) = world
+        let (ammo_name, ammo_give, ammo_name2, ammo_give2) = world
             .classes
             .get(class)
-            .map(|c| (c.ammo_type.clone(), c.ammo_give))
+            .map(|c| {
+                (
+                    c.ammo_type.clone(),
+                    c.ammo_give,
+                    c.ammo_type2.clone(),
+                    c.ammo_give2,
+                )
+            })
             .unwrap_or_default();
         let mut gave_ammo = false;
         if ammo_give > 0 && !ammo_name.is_empty() {
@@ -289,6 +296,21 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
                 }
             }
         }
+        if ammo_give2 > 0 && !ammo_name2.is_empty() {
+            if let Some(ammo) = world.classes.find_name(&ammo_name2) {
+                let give = skill_ammo(
+                    world,
+                    if dropped {
+                        (ammo_give2 / 2).max(1)
+                    } else {
+                        ammo_give2
+                    },
+                );
+                if give_inventory(world, toucher, ammo, give) {
+                    gave_ammo = true;
+                }
+            }
+        }
         if already && !gave_ammo {
             return false;
         }
@@ -312,6 +334,14 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
                 }
             }
             // Return false so callers treat this like "not consumed".
+            return false;
+        }
+    } else if is_custom_inventory(world, class)
+        && world.states.find_label(class, "Pickup").is_some()
+    {
+        // Brutal Doom map guns are `CustomInventory` spawners. The Pickup
+        // state gives the real weapon; stocking the spawner itself does not.
+        if !run_custom_pickup(world, toucher, item) {
             return false;
         }
     } else if let Some(ammo_name) = ammo_box_grants(&class_name) {
@@ -567,6 +597,34 @@ fn default_pickup_message(class_name: &str) -> Option<&'static str> {
     })
 }
 
+fn is_custom_inventory(world: &World, class: room_core::ClassId) -> bool {
+    let mut cur = Some(class);
+    for _ in 0..32 {
+        let Some(def) = cur.and_then(|c| world.classes.get(c)) else {
+            return false;
+        };
+        if def.name.eq_ignore_ascii_case("CustomInventory") {
+            return true;
+        }
+        cur = def.parent;
+    }
+    false
+}
+
+/// Run the `Pickup` state. Inventory actions apply to `toucher`, not the item.
+fn run_custom_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
+    let Some(class) = world.actors.get(item).map(|a| a.class) else {
+        return false;
+    };
+    let Some(start) = world.states.find_label(class, "Pickup") else {
+        return false;
+    };
+    world.inventory_beneficiary = Some(toucher);
+    world.set_state(item, Some(start), true);
+    world.inventory_beneficiary = None;
+    true
+}
+
 /// Touch all overlapping inventory-ish actors near `toucher` (radius sum).
 ///
 /// `player` is the in-hand slot from [`crate::think_player::player_think`] (the
@@ -619,7 +677,10 @@ fn touch_specials_inner(world: &mut World, toucher: ActorId) {
             kind.as_str(),
             "bluecard" | "yellowcard" | "redcard" | "blueskull" | "yellowskull" | "redskull"
         );
-        if !def.is_weapon
+        let custom_pickup = is_custom_inventory(world, other.class)
+            && world.states.find_label(other.class, "Pickup").is_some();
+        if !custom_pickup
+            && !def.is_weapon
             && !is_armor
             && !is_health
             && !is_key
@@ -1451,6 +1512,70 @@ GOTARMOR = BEX remapped armor pickup.
         let _ = w.inventory.take(p0, shotgun, 99);
         assert!(try_pickup(&mut w, p0, dropped));
         assert!(w.actors.get(dropped).unwrap().destroyed);
+    }
+
+    #[test]
+    fn custom_inventory_pickup_grants_the_weapon() {
+        let mut src = include_str!("../../../testdata/actors/doom_basic.txt").to_owned();
+        src.push_str(
+            r#"
+actor CustomInventory : Actor
+{
+}
+actor CrateGun : Weapon
+{
+  States
+  {
+  Ready:
+    PISG A 1 A_WeaponReady
+    Loop
+  Select:
+    PISG A 1
+    Goto Ready
+  }
+}
+actor Crate : CustomInventory
+{
+  Radius 20
+  Height 16
+  States
+  {
+  Spawn:
+    BON1 A -1
+    Stop
+  Pickup:
+    TNT1 A 0 A_GiveInventory("CrateGun", 1)
+    Stop
+  }
+}
+"#,
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        let gun = w.classes.find_name("CrateGun").unwrap();
+        let crate_id = w.classes.find_name("Crate").unwrap();
+        let p0 = w.players[0].as_ref().unwrap().mo.unwrap();
+        let item = w
+            .spawn_at(crate_id, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO)
+            .unwrap();
+        assert!(try_pickup(&mut w, p0, item));
+        assert!(w.actors.get(item).unwrap().destroyed);
+        assert!(w.inventory.count(p0, gun) > 0);
+        let player = w.players[0].as_ref().unwrap();
+        assert!(
+            player.ready_weapon == Some(gun) || player.pending_weapon == Some(gun),
+            "ready {:?} pending {:?}",
+            player.ready_weapon,
+            player.pending_weapon
+        );
     }
 
     #[test]

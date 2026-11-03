@@ -49,15 +49,41 @@ function watClass(m) {
   return /^(?:i32|i64|f32|f64|v128|funcref|externref|anyfunc)$/.test(m[6]) ? "t" : null;
 }
 
-/** Source → HTML with `<span class="hl-*">` tokens (AssemblyScript or WAT). */
+const ZS_KEYWORDS = words("abstract action break case class clearscope const continue default deprecated do else enum extend fail false final for goto if in include internal let loop meta mixin native null out override play private property protected public readonly return states static stop struct super switch this transient true ui version virtual void wait while");
+const ZS_TYPES = words("int int8 int16 uint uint8 uint16 uint32 double float bool string Name color Vector2 Vector3 State StateLabel Sound TextureID TranslationID Class Actor Thinker void");
+const ZS_TOKENS = /(#[A-Za-z_]\w*)|(\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$))|("(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?)|(\b(?:0[xX][0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)|([A-Za-z_][\w]*)/g;
+
+function zsClass(m, src, end) {
+  if (m[1]) return "d";
+  if (m[2]) return "c";
+  if (m[3]) return "s";
+  if (m[4]) return "n";
+  const w = m[5];
+  if (!w) return null;
+  const folded = w.toLowerCase();
+  const allCaps = w === w.toUpperCase() && /[A-Z]/.test(w);
+  if (ZS_KEYWORDS.has(w) || (!allCaps && ZS_KEYWORDS.has(folded))) return "k";
+  if (ZS_TYPES.has(w) || ZS_TYPES.has(folded)) return "t";
+  if (/^A_/.test(w)) return "f";
+  CALL_AHEAD.lastIndex = end;
+  if (CALL_AHEAD.test(src)) return "f";
+  const colon = /\s*:/y;
+  colon.lastIndex = end;
+  const lineStart = src.lastIndexOf("\n", m.index) + 1;
+  const prefix = src.slice(lineStart, m.index);
+  if (colon.test(src) && !/\b(?:class|extend|mixin)\b/i.test(prefix)) return "f";
+  return /^[A-Z]/.test(w) ? "t" : null;
+}
+
+/** Source → HTML with `<span class="hl-*">` tokens (AssemblyScript, WAT, or ZScript). */
 export function highlight(src, lang) {
-  const re = lang === "wat" ? WAT_TOKENS : AS_TOKENS;
+  const re = lang === "wat" ? WAT_TOKENS : lang === "zs" ? ZS_TOKENS : AS_TOKENS;
   re.lastIndex = 0;
   let out = "";
   let last = 0;
   for (let m; (m = re.exec(src)); ) {
     const end = re.lastIndex;
-    const cls = lang === "wat" ? watClass(m) : asClass(m, src, end);
+    const cls = lang === "wat" ? watClass(m) : lang === "zs" ? zsClass(m, src, end) : asClass(m, src, end);
     if (!cls) continue;
     out += escapeHtml(src.slice(last, m.index)) + `<span class="hl-${cls}">${escapeHtml(m[0])}</span>`;
     last = end;

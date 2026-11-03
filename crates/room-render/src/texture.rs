@@ -343,6 +343,13 @@ mod tests {
         let levels = mip_chain(2, 2, base);
         assert_eq!(levels.len(), 2);
         assert_eq!(levels[1].2, vec![255, 0, 0, 255]);
+        // One opaque texel in the 2×2 must survive, or the sprite pops out.
+        let lone = mip_chain(
+            2,
+            2,
+            vec![255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        );
+        assert_eq!(lone[1].2[3], 255);
         // 3×1 → 1×1 (odd sizes clamp), one hole of four samples stays opaque.
         let levels = mip_chain(3, 1, vec![0, 0, 0, 255, 200, 200, 200, 255, 9, 9, 9, 0]);
         assert_eq!((levels[1].0, levels[1].1), (1, 1));
@@ -371,8 +378,8 @@ mod tests {
 }
 
 /// Box-filtered mip levels down to 1×1, level 0 first. Colour averages the
-/// visible texels. Masked textures (alpha only 0 / 255) stay binary, opaque
-/// when at least half the sources are, so alpha-test cut-outs survive.
+/// visible texels. Masked textures (alpha only 0 / 255) stay binary and stay
+/// opaque when any source texel is, so a sprite does not vanish at distance.
 fn mip_chain(w: u32, h: u32, base: Vec<u8>) -> Vec<(u32, u32, Vec<u8>)> {
     let binary = base.chunks_exact(4).all(|p| p[3] == 0 || p[3] == 255);
     let mut levels = vec![(w, h, base)];
@@ -407,7 +414,10 @@ fn mip_chain(w: u32, h: u32, base: Vec<u8>) -> Vec<(u32, u32, Vec<u8>)> {
                 #[allow(clippy::cast_possible_truncation)]
                 {
                     next[o + 3] = if binary {
-                        if opaque >= 2 { 255 } else { 0 }
+                        // Any opaque source keeps the texel. A half-coverage
+                        // cutoff erased sprite silhouettes once the mip was
+                        // coarser than the character.
+                        if opaque >= 1 { 255 } else { 0 }
                     } else {
                         ((alpha + 2) / 4) as u8
                     };

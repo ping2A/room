@@ -86,6 +86,7 @@ pub fn parse_voxeldef(text: &str) -> Result<VoxelDefs, DefsError> {
         ScanOptions {
             c_mode: true,
             semicolon_comments: false,
+            ..Default::default()
         },
     );
     let mut out = VoxelDefs::default();

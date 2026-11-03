@@ -134,7 +134,7 @@ pub use skinning::{
 pub use sky::{CubemapFaces, cubemap_sky, cylinder_sky, scroll_sky_u};
 pub use sprites::{
     SpriteInstance, SpriteOrient, emit_sprite_quad, mirror_rotation, sprite_lump_candidates,
-    sprite_lump_candidates_rot, sprite_rotation_digit,
+    sprite_lump_candidates_rot, sprite_offset_delta, sprite_rotation_digit,
 };
 pub use ssao::{
     SsaoPass, SsaoUniforms, depth_only_view, ssao_bilateral_weight, ssao_edge_occlusion,

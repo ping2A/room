@@ -145,7 +145,9 @@ impl WeaponSlots {
         if list.iter().any(|w| w.eq_ignore_ascii_case(weapon)) {
             return;
         }
-        let idx = usize::try_from(priority.max(0)).unwrap_or(0).min(list.len());
+        let idx = usize::try_from(priority.max(0))
+            .unwrap_or(0)
+            .min(list.len());
         list.insert(idx, weapon.to_owned());
     }
 
@@ -212,5 +214,15 @@ mod tests {
         s.add_slot(3, "SuperShotgun");
         s.add_slot(3, "Shotgun"); // dup ignored
         assert_eq!(s.weapons_for(3).len(), 2);
+    }
+
+    #[test]
+    fn ten_slots_including_eight_and_nine() {
+        let mut s = WeaponSlots::with_doom_defaults();
+        s.set_slot(8, &["DualPistols".into()]);
+        s.set_slot(9, &["GrenadeLauncher".into()]);
+        assert_eq!(s.weapons_for(8), vec!["DualPistols".to_owned()]);
+        assert_eq!(s.weapons_for(9), vec!["GrenadeLauncher".to_owned()]);
+        assert!(s.contains("dualpistols"));
     }
 }

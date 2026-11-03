@@ -9,16 +9,17 @@ Build an engine that:
    DECORATE/ACS/MAPINFO mods, GZDoom graphical extensions).
 2. Is written in idiomatic, safe, pure Rust, as a set of independently usable crates.
 3. Uses a modern renderer (wgpu) with a faithful "classic" look available.
-4. Replaces ZScript with sandboxed **WebAssembly** modules, so modders can use
+4. Adds sandboxed **WebAssembly** modules (and runs existing ZScript through its
+   own VM, `34-zscript-vm.md`), so modders can use
    Rust, Zig, C (via clang → wasm), AssemblyScript, Go (TinyGo), or any other
    wasm-targeting language — with a first-class Rust SDK.
 5. Ships natively (Windows, macOS, Linux) and in the browser from the same code.
 
 ## 2. Non-goals
 
-- **Running ZScript source.** ZScript mods will not run. See
-  `11-legacy-mod-formats.md §ZScript policy` for the migration story
-  (a separate, optional ZScript→WASM transpiler is listed as a stretch milestone).
+- ~~Running ZScript source~~ — **no longer a non-goal**: ZScript is compiled
+  and executed by Room's own VM (`34-zscript-vm.md`, ADR 0005). WASM modules
+  stay the recommended way to write new mods.
 - Bit-exact reproduction of GZDoom's hardware renderer output. Visual parity
   is the goal; pixel parity is not.
 - Supporting OpenGL directly, the Direct3D 9 path, or GZDoom's legacy

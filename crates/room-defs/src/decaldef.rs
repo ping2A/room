@@ -350,6 +350,7 @@ pub fn parse_decaldef(text: &str) -> Result<DecalInfo, DefsError> {
         ScanOptions {
             c_mode: true,
             semicolon_comments: false,
+            ..Default::default()
         },
     );
     let mut info = DecalInfo::default();

@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+room-acs = { path = "../room-acs" }
 room-build = { path = "../room-build" }
 room-build-engine = { path = "../room-build-engine" }
 room-decorate = { path = "../room-decorate" }
@@ -28,4 +29,6 @@ room-map = { path = "../room-map" }
 room-nodebuild = { path = "../room-nodebuild" }
 room-sim = { path = "../room-sim" }
 room-vfs = { path = "../room-vfs" }
+room-zscript = { path = "../room-zscript" }
+room-zvm = { path = "../room-zvm" }
 png.workspace = true

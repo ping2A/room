@@ -17,10 +17,13 @@ room-map = { path = "../room-map" }
 room-nodebuild = { path = "../room-nodebuild" }
 room-script = { path = "../room-script" }
 room-script-abi = { path = "../room-script-abi" }
+room-zvm = { path = "../room-zvm" }
+room-zscript = { path = "../room-zscript" }
 thiserror.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
+room-defs = { path = "../room-defs" }
 room-dehacked = { path = "../room-dehacked" }
 room-testkit = { path = "../room-testkit" }
 wat = { workspace = true }

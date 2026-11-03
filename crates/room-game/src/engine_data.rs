@@ -106,10 +106,17 @@ pub fn load_embedded_engine_data_with(vfs: &Vfs) -> Result<EngineData, GameError
         decorate.push('\n');
         decorate.push_str(&text);
     }
-    let ir = parse_decorate_with_includes(&decorate, |path| {
+    let mut ir = parse_decorate_with_includes(&decorate, |path| {
         resolve_include(&engine, path).or_else(|_| resolve_include(vfs, path))
     })
     .map_err(|e| GameError::Message(format!("DECORATE: {e}")))?;
+    // GZDoom: a later lump/include redefining the same class replaces the earlier
+    // body (BD redefines engine actors such as `RealGibs2`). Keep first-seen
+    // order so parents still precede children.
+    let replaced = dedupe_actors_last_wins(&mut ir);
+    if replaced > 0 {
+        eprintln!("room: DECORATE: {replaced} duplicate class name(s) — later definition wins");
+    }
     let classes =
         Arc::new(ClassRegistry::from_decorate(&ir).map_err(|e| GameError::Message(e.to_string()))?);
     base.states = Arc::new(StateTable::from_decorate(&ir, &classes));
@@ -140,8 +147,12 @@ pub fn load_engine_data(vfs: &Vfs) -> Result<EngineData, GameError> {
 }
 
 fn load_engine_data_from(vfs: &Vfs, decorate: &str) -> Result<EngineData, GameError> {
-    let ir = parse_decorate_with_includes(decorate, |path| resolve_include(vfs, path))
+    let mut ir = parse_decorate_with_includes(decorate, |path| resolve_include(vfs, path))
         .map_err(|e| GameError::Message(format!("DECORATE: {e}")))?;
+    let replaced = dedupe_actors_last_wins(&mut ir);
+    if replaced > 0 {
+        eprintln!("room: DECORATE: {replaced} duplicate class name(s) — later definition wins");
+    }
     let classes =
         Arc::new(ClassRegistry::from_decorate(&ir).map_err(|e| GameError::Message(e.to_string()))?);
     let states = Arc::new(StateTable::from_decorate(&ir, &classes));
@@ -192,6 +203,26 @@ pub fn load_layered_engine_data(vfs: &Vfs) -> Result<EngineData, GameError> {
         decorate.push('\n');
     }
     load_engine_data_from(vfs, &decorate)
+}
+
+/// Later `actor` bodies replace earlier ones with the same name. Position of the
+/// first definition is kept so parent classes still appear first.
+fn dedupe_actors_last_wins(ir: &mut room_decorate::ClassDefIr) -> usize {
+    let mut order: Vec<room_decorate::ActorDef> = Vec::new();
+    let mut index = std::collections::BTreeMap::<String, usize>::new();
+    let mut replaced = 0usize;
+    for actor in ir.actors.drain(..) {
+        let key = actor.name.to_ascii_lowercase();
+        if let Some(&i) = index.get(&key) {
+            order[i] = actor;
+            replaced += 1;
+        } else {
+            index.insert(key, order.len());
+            order.push(actor);
+        }
+    }
+    ir.actors = order;
+    replaced
 }
 
 fn resolve_include(vfs: &Vfs, path: &str) -> Result<String, DecorateError> {
@@ -384,5 +415,17 @@ mod tests {
             !defs.gldefs.object_lights.is_empty(),
             "expected object→light binds from lights fixture"
         );
+    }
+
+    #[test]
+    fn duplicate_decorate_class_keeps_later_body() {
+        use room_sim::ClassRegistry;
+
+        let src = "actor Foo : Actor { Health 1 }\nactor Foo : Actor { Health 9 }\n";
+        let mut ir = room_decorate::parse_decorate(src).unwrap();
+        assert_eq!(dedupe_actors_last_wins(&mut ir), 1);
+        let classes = ClassRegistry::from_decorate(&ir).unwrap();
+        let id = classes.find_name("Foo").unwrap();
+        assert_eq!(classes.get(id).unwrap().health, 9);
     }
 }

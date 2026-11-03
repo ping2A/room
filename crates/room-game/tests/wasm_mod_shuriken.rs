@@ -14,11 +14,13 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn shuriken_wasm() -> Vec<u8> {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../mods/doom1-shuriken/Cargo.toml");
+    let manifest =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../mods/doom1-shuriken/Cargo.toml");
     let crate_dir = manifest.parent().unwrap();
-    let built = crate_dir
-        .join("target/wasm32-unknown-unknown/release/room_mod_doom1_shuriken.wasm");
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/mods/wasm32-unknown-unknown/release/room_mod_doom1_shuriken.wasm");
+    let built =
+        crate_dir.join("target/wasm32-unknown-unknown/release/room_mod_doom1_shuriken.wasm");
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/mods/wasm32-unknown-unknown/release/room_mod_doom1_shuriken.wasm");
     for p in [&built, &workspace] {
         if p.is_file() {
             return std::fs::read(p).unwrap();

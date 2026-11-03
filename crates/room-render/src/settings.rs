@@ -924,10 +924,7 @@ mod tests {
             "r_menublur",
             "vid_scalefactor",
         ] {
-            assert!(
-                s.sync_cvar(name, Some(true), Some(1), Some(0.5)),
-                "{name}"
-            );
+            assert!(s.sync_cvar(name, Some(true), Some(1), Some(0.5)), "{name}");
             assert!(
                 !s.needs_post(),
                 "{name} must not flip needs_post (docs/29 R7)"

@@ -48,8 +48,24 @@ pub use language::{Language, parse_language};
 pub use loadacs::{LoadAcs, parse_loadacs};
 pub use lockdefs::{LockDef, LockDefs, LockKeyReq, parse_lockdefs};
 pub use mapinfo::{ClusterDef, EpisodeDef, MapDef, MapInfo, SkillDef, parse_mapinfo};
+
+impl Definitions {
+    /// ZScript event handler class names from MAPINFO `gameinfo` + GAMEINFO lump.
+    #[must_use]
+    pub fn zscript_event_handlers(&self) -> Vec<String> {
+        let mut out = self.mapinfo.event_handlers.clone();
+        if let Some(gi) = &self.gameinfo {
+            for n in &gi.event_handlers {
+                if !out.iter().any(|e| e.eq_ignore_ascii_case(n)) {
+                    out.push(n.clone());
+                }
+            }
+        }
+        out
+    }
+}
 pub use menudef::{MenuBlock, MenuBlockKind, MenuCmd, MenuDef, parse_menudef};
-pub use modeldef::{ModelDef, ModelDefs, ModelFrameBind, parse_modeldef};
+pub use modeldef::{ModelDef, ModelDefs, ModelFrameBind, parse_modeldef, view_model_weapon_scale};
 pub use sbarinfo::{MugshotDef, SbarCmd, SbarInfo, StatusBarDef, parse_sbarinfo};
 pub use sndinfo::{SoundDef, SoundRegistry, parse_sndinfo};
 pub use sndseq::{SeqCommand, SoundSeqRegistry, SoundSequence, parse_sndseq};

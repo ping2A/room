@@ -199,6 +199,29 @@ impl Mixer {
                         .retain(|v| !(v.channel == channel && origins_eq(v.origin, origin)));
                 }
                 SoundEvent::StopAll => self.voices.clear(),
+                SoundEvent::SetPitch {
+                    origin,
+                    channel,
+                    pitch,
+                } => {
+                    let pitch = pitch.max(0.01);
+                    for voice in &mut self.voices {
+                        if voice.channel == channel && origins_eq(voice.origin, origin) {
+                            voice.pitch = pitch;
+                        }
+                    }
+                }
+                SoundEvent::SetVolume {
+                    origin,
+                    channel,
+                    volume,
+                } => {
+                    for voice in &mut self.voices {
+                        if voice.channel == channel && origins_eq(voice.origin, origin) {
+                            voice.volume = volume;
+                        }
+                    }
+                }
             }
         }
     }
@@ -361,6 +384,108 @@ mod tests {
         assert!(out.len() >= 7 && out.len() <= 9, "len={}", out.len());
         assert!((out[0] - 0.0).abs() < 1e-4);
         assert!((out[out.len() - 1] - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn stop_all_clears_every_voice() {
+        let mut mix = Mixer::new();
+        let pcm: Arc<[f32]> = Arc::from(vec![0.5f32; 32]);
+        mix.bank.insert(SoundId::from_raw(1), pcm);
+        mix.apply(&[
+            SoundEvent::Start {
+                origin: SoundOrigin::None,
+                channel: 1,
+                sound: SoundId::from_raw(1),
+                volume: 1.0,
+                attenuation: 0.0,
+                pitch: 1.0,
+                flags: SoundFlags::default(),
+            },
+            SoundEvent::Start {
+                origin: SoundOrigin::None,
+                channel: 2,
+                sound: SoundId::from_raw(1),
+                volume: 1.0,
+                attenuation: 0.0,
+                pitch: 1.0,
+                flags: SoundFlags::default(),
+            },
+        ]);
+        assert_eq!(mix.voices.len(), 2);
+        mix.apply(&[SoundEvent::StopAll]);
+        assert!(mix.voices.is_empty());
+    }
+
+    #[test]
+    fn set_pitch_changes_one_channel() {
+        let mut mix = Mixer::new();
+        let pcm: Arc<[f32]> = Arc::from(vec![0.5f32; 32]);
+        mix.bank.insert(SoundId::from_raw(1), pcm);
+        mix.apply(&[
+            SoundEvent::Start {
+                origin: SoundOrigin::None,
+                channel: 1,
+                sound: SoundId::from_raw(1),
+                volume: 1.0,
+                attenuation: 0.0,
+                pitch: 1.0,
+                flags: SoundFlags::default(),
+            },
+            SoundEvent::Start {
+                origin: SoundOrigin::None,
+                channel: 2,
+                sound: SoundId::from_raw(1),
+                volume: 1.0,
+                attenuation: 0.0,
+                pitch: 1.0,
+                flags: SoundFlags::default(),
+            },
+            SoundEvent::SetPitch {
+                origin: SoundOrigin::None,
+                channel: 1,
+                pitch: 2.0,
+            },
+        ]);
+        let v1 = mix.voices.iter().find(|v| v.channel == 1).unwrap();
+        let v2 = mix.voices.iter().find(|v| v.channel == 2).unwrap();
+        assert!((v1.pitch - 2.0).abs() < 1e-6);
+        assert!((v2.pitch - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_volume_changes_one_channel() {
+        let mut mix = Mixer::new();
+        let pcm: Arc<[f32]> = Arc::from(vec![0.5f32; 32]);
+        mix.bank.insert(SoundId::from_raw(1), pcm);
+        mix.apply(&[
+            SoundEvent::Start {
+                origin: SoundOrigin::None,
+                channel: 1,
+                sound: SoundId::from_raw(1),
+                volume: 1.0,
+                attenuation: 0.0,
+                pitch: 1.0,
+                flags: SoundFlags::default(),
+            },
+            SoundEvent::Start {
+                origin: SoundOrigin::None,
+                channel: 2,
+                sound: SoundId::from_raw(1),
+                volume: 1.0,
+                attenuation: 0.0,
+                pitch: 1.0,
+                flags: SoundFlags::default(),
+            },
+            SoundEvent::SetVolume {
+                origin: SoundOrigin::None,
+                channel: 1,
+                volume: 0.25,
+            },
+        ]);
+        let v1 = mix.voices.iter().find(|v| v.channel == 1).unwrap();
+        let v2 = mix.voices.iter().find(|v| v.channel == 2).unwrap();
+        assert!((v1.volume - 0.25).abs() < 1e-6);
+        assert!((v2.volume - 1.0).abs() < 1e-6);
     }
 
     #[test]

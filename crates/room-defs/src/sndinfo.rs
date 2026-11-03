@@ -78,6 +78,7 @@ pub fn parse_sndinfo(text: &str) -> Result<SoundRegistry, DefsError> {
         ScanOptions {
             c_mode: false,
             semicolon_comments: true,
+            ..Default::default()
         },
     );
     let mut reg = SoundRegistry::default();

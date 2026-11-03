@@ -51,13 +51,16 @@ fn doom_basic_defs() -> (Arc<ClassRegistry>, Arc<StateTable>) {
 const EXIT_NORMAL: i16 = 243;
 
 fn activate_exit_to_intermission(game: &mut Headless) {
-    let line_idx = game
-        .world()
-        .unwrap()
-        .map
-        .lines
-        .iter()
-        .position(|l| l.special == EXIT_NORMAL);
+    // Prefer a player-use exit. Some maps list a walk-triggered `Exit_Normal`
+    // first; Use on that line is rejected.
+    let line_idx = {
+        let world = game.world().unwrap();
+        (0..world.map.lines.len()).find(|&i| {
+            let lid = LineId::from_raw(i as u32);
+            world.line_special(lid) == EXIT_NORMAL
+                && room_map::spac::allows_use(world.line_activation(lid))
+        })
+    };
     if line_idx.is_none() {
         // Boss / scripted maps (e.g. MAP30) have no linedef exit — request level end.
         game.world_mut().unwrap().level.exiting = true;

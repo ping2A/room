@@ -16,42 +16,255 @@ pub fn parse_decorate_with_includes(
     parse_decorate(&expanded)
 }
 
-/// Parse a DECORATE source string into ClassDef IR.
+/// Result of a lenient whole-file parse (BD1).
+#[derive(Clone, Debug, Default)]
+pub struct LenientParse {
+    /// Actors that parsed successfully.
+    pub ir: ClassDefIr,
+    /// Per-actor (and top-level) errors with locations when available.
+    pub errors: Vec<DecorateError>,
+}
+
+/// Parse a DECORATE source string into ClassDef IR (strict: first error aborts).
 pub fn parse_decorate(src: &str) -> Result<ClassDefIr, DecorateError> {
+    parse_decorate_with_map(src, None)
+}
+
+/// Lenient parse: skip broken actors, collect all errors (BD1 `decorate_policy=lenient`).
+#[must_use]
+pub fn parse_decorate_lenient(src: &str) -> LenientParse {
+    parse_decorate_lenient_with_map(src, None)
+}
+
+/// Strict parse with optional include source map for diagnostics.
+pub fn parse_decorate_with_map(
+    src: &str,
+    map: Option<&crate::sourcemap::SourceMap>,
+) -> Result<ClassDefIr, DecorateError> {
     let mut sc = Scanner::from_str(
         src,
         ScanOptions {
             c_mode: true,
+            string_escapes: false,
             ..Default::default()
         },
     );
     let mut ir = ClassDefIr::default();
     loop {
-        let tok = sc.next_token()?;
+        let tok = sc.next_token().map_err(|e| locate_scan(e, map))?;
         match tok {
             Tok::Eof => break,
             Tok::Ident(kw) if Scanner::compare(kw, "actor") => {
-                ir.actors.push(parse_actor(&mut sc)?);
+                ir.actors
+                    .push(parse_actor(&mut sc).map_err(|e| locate_err(e, &sc, map))?);
             }
             Tok::Ident(kw) if Scanner::compare(kw, "const") || Scanner::compare(kw, "enum") => {
-                // Skip until `;` for bootstrap.
-                skip_until_semi(&mut sc)?;
+                skip_until_semi(&mut sc).map_err(|e| locate_err(e, &sc, map))?;
             }
             other => {
-                return Err(DecorateError::Message(format!(
-                    "unexpected top-level token {other:?}"
-                )));
+                return Err(locate_err(
+                    DecorateError::Message(format!("unexpected top-level token {other:?}")),
+                    &sc,
+                    map,
+                ));
             }
         }
     }
     Ok(ir)
 }
 
+/// Lenient parse with optional include source map.
+#[must_use]
+pub fn parse_decorate_lenient_with_map(
+    src: &str,
+    map: Option<&crate::sourcemap::SourceMap>,
+) -> LenientParse {
+    let mut out = LenientParse::default();
+    for chunk in split_actors(src) {
+        match parse_decorate_with_map(&chunk, map) {
+            Ok(ir) => {
+                out.ir.actors.extend(ir.actors);
+            }
+            Err(e) => out.errors.push(e),
+        }
+    }
+    out
+}
+
+fn locate_scan(
+    err: room_sc::ScanError,
+    map: Option<&crate::sourcemap::SourceMap>,
+) -> DecorateError {
+    let loc = match map {
+        Some(m) => m.format_loc(err.span.line, err.span.col),
+        None => format!("<expanded>:{}:{}", err.span.line, err.span.col),
+    };
+    DecorateError::at_location(loc, err.kind.to_string())
+}
+
+fn locate_err(
+    err: DecorateError,
+    sc: &Scanner<'_>,
+    map: Option<&crate::sourcemap::SourceMap>,
+) -> DecorateError {
+    match err {
+        DecorateError::Located { .. } => err,
+        DecorateError::Scan(e) => locate_scan(e, map),
+        DecorateError::Message(msg) => {
+            let sp = sc.span();
+            let loc = match map {
+                Some(m) => m.format_loc(sp.line, sp.col),
+                None => format!("<expanded>:{}:{}", sp.line, sp.col),
+            };
+            DecorateError::at_location(loc, msg)
+        }
+    }
+}
+
+/// Split expanded DECORATE into per-actor source chunks (brace-balanced).
+///
+/// Skips `//` / `/* */` comments and `"…"` strings so words like `actor` inside
+/// comments (e.g. doom.txt header) are not treated as actor starts — BD1 D8.
+#[must_use]
+pub fn split_actors(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Line comment.
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Block comment.
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        // String literal (DECORATE: no escapes — `"\"` is backslash frame).
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < bytes.len() && bytes[i] != b'"' {
+                i += 1;
+            }
+            if i < bytes.len() {
+                i += 1;
+            }
+            continue;
+        }
+        if actor_at(bytes, i) {
+            let start = i;
+            let mut j = i;
+            while j < bytes.len() && bytes[j] != b'{' {
+                // Stay out of comments/strings while seeking the opening brace.
+                if bytes[j] == b'/' && j + 1 < bytes.len() && bytes[j + 1] == b'/' {
+                    while j < bytes.len() && bytes[j] != b'\n' {
+                        j += 1;
+                    }
+                    continue;
+                }
+                if bytes[j] == b'/' && j + 1 < bytes.len() && bytes[j + 1] == b'*' {
+                    j += 2;
+                    while j + 1 < bytes.len() && !(bytes[j] == b'*' && bytes[j + 1] == b'/') {
+                        j += 1;
+                    }
+                    j = (j + 2).min(bytes.len());
+                    continue;
+                }
+                if bytes[j] == b'"' {
+                    j += 1;
+                    while j < bytes.len() && bytes[j] != b'"' {
+                        j += 1;
+                    }
+                    if j < bytes.len() {
+                        j += 1;
+                    }
+                    continue;
+                }
+                j += 1;
+            }
+            if j >= bytes.len() {
+                break;
+            }
+            let mut depth = 0i32;
+            while j < bytes.len() {
+                match bytes[j] {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            j += 1;
+                            break;
+                        }
+                    }
+                    b'"' => {
+                        j += 1;
+                        while j < bytes.len() && bytes[j] != b'"' {
+                            j += 1;
+                        }
+                    }
+                    b'/' if j + 1 < bytes.len() && bytes[j + 1] == b'/' => {
+                        while j < bytes.len() && bytes[j] != b'\n' {
+                            j += 1;
+                        }
+                    }
+                    b'/' if j + 1 < bytes.len() && bytes[j + 1] == b'*' => {
+                        j += 2;
+                        while j + 1 < bytes.len() && !(bytes[j] == b'*' && bytes[j + 1] == b'/') {
+                            j += 1;
+                        }
+                        j += 1; // land on `/`; loop +1 advances past it
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            let end = j.min(src.len());
+            out.push(src[start..end].to_owned());
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+fn actor_at(bytes: &[u8], i: usize) -> bool {
+    const ACTOR: &[u8] = b"actor";
+    if i + ACTOR.len() > bytes.len() {
+        return false;
+    }
+    if i > 0 {
+        let prev = bytes[i - 1];
+        if prev.is_ascii_alphanumeric() || prev == b'_' {
+            return false;
+        }
+    }
+    if !bytes[i..i + ACTOR.len()].eq_ignore_ascii_case(ACTOR) {
+        return false;
+    }
+    let after = i + ACTOR.len();
+    if after < bytes.len() {
+        let c = bytes[after];
+        if c.is_ascii_alphanumeric() || c == b'_' {
+            return false;
+        }
+    }
+    true
+}
+
 fn parse_actor(sc: &mut Scanner<'_>) -> Result<ActorDef, DecorateError> {
-    let name = sc.must_get_ident()?.to_owned();
+    let name = read_decorate_name(sc)?;
     let mut parent = None;
     if sc.check_punct(Punct::Colon)? {
-        parent = Some(sc.must_get_ident()?.to_owned());
+        parent = Some(read_decorate_name(sc)?);
     }
     let mut replaces = None;
     let peek = sc.next_token()?;
@@ -68,6 +281,13 @@ fn parse_actor(sc: &mut Scanner<'_>) -> Result<ActorDef, DecorateError> {
             #[allow(clippy::cast_possible_truncation)]
             {
                 doomednum = Some(n as i32);
+            }
+        }
+        // BD1 D8 / DualFlameCannon-style: float DoomEd numbers truncate like GZDoom.
+        Tok::Float(f) => {
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                doomednum = Some(f as i32);
             }
         }
         other => sc.unget(other),
@@ -108,7 +328,10 @@ fn parse_actor(sc: &mut Scanner<'_>) -> Result<ActorDef, DecorateError> {
             }
             Tok::Ident(name) => {
                 // Property or keyword shortcut.
-                if Scanner::compare(name, "monster") || Scanner::compare(name, "projectile") {
+                if Scanner::compare(name, "monster")
+                    || Scanner::compare(name, "projectile")
+                    || Scanner::compare(name, "skip_super")
+                {
                     properties.push(PropertyStmt {
                         name: name.to_owned(),
                         args: Vec::new(),
@@ -152,19 +375,35 @@ fn parse_states(sc: &mut Scanner<'_>) -> Result<StatesBlock, DecorateError> {
         if sc.check_punct(Punct::RBrace)? {
             break;
         }
+        // ZScript state flow ends with `;` (`Loop;`, `Goto See;`).
+        if sc.check_punct(Punct::Semi)? {
+            continue;
+        }
         let tok = sc.next_token()?;
         match tok {
-            Tok::Ident(kw) if Scanner::compare(kw, "loop") => {
-                items.push(StateItem::Flow(StateFlow::Loop));
-            }
-            Tok::Ident(kw) if Scanner::compare(kw, "stop") => {
-                items.push(StateItem::Flow(StateFlow::Stop));
-            }
-            Tok::Ident(kw) if Scanner::compare(kw, "wait") => {
-                items.push(StateItem::Flow(StateFlow::Wait));
-            }
-            Tok::Ident(kw) if Scanner::compare(kw, "fail") => {
-                items.push(StateItem::Flow(StateFlow::Fail));
+            Tok::Ident(kw)
+                if Scanner::compare(kw, "loop")
+                    || Scanner::compare(kw, "stop")
+                    || Scanner::compare(kw, "wait")
+                    || Scanner::compare(kw, "fail") =>
+            {
+                // BD1 D8: `Fail:` (and peers) may be state *labels* in
+                // CustomInventory Use/Pickup sequences — only treat as flow
+                // when not followed by `:`.
+                if sc.check_punct(Punct::Colon)? {
+                    items.push(StateItem::Label(kw.to_owned()));
+                } else {
+                    let flow = if Scanner::compare(kw, "loop") {
+                        StateFlow::Loop
+                    } else if Scanner::compare(kw, "stop") {
+                        StateFlow::Stop
+                    } else if Scanner::compare(kw, "wait") {
+                        StateFlow::Wait
+                    } else {
+                        StateFlow::Fail
+                    };
+                    items.push(StateItem::Flow(flow));
+                }
             }
             Tok::Ident(kw) if Scanner::compare(kw, "goto") => {
                 let label = read_goto_label(sc)?;
@@ -173,6 +412,39 @@ fn parse_states(sc: &mut Scanner<'_>) -> Result<StatesBlock, DecorateError> {
                     offset = sc.must_get_number()? as i32;
                 }
                 items.push(StateItem::Flow(StateFlow::Goto { label, offset }));
+            }
+            Tok::String(s) => {
+                // Quoted sprite (`"####"` keep-current — BD1 D3).
+                let sprite = s.into_owned();
+                parse_state_line_body(sc, &mut items, sprite)?;
+            }
+            Tok::Int(n) => {
+                // Digit-leading sprites (`2IFG`, `13EI`), pure-digit sprites
+                // (`8876 A -1`), or digit-leading labels (`2048Unleashed:`).
+                let mut sprite = n.to_string();
+                match sc.next_token()? {
+                    Tok::Ident(rest) => {
+                        if sc.check_punct(Punct::Colon)? {
+                            let mut label = sprite;
+                            label.push_str(rest);
+                            while sc.check_punct(Punct::Dot)? {
+                                label.push('.');
+                                label.push_str(sc.must_get_ident()?);
+                            }
+                            items.push(StateItem::Label(label));
+                        } else if sprite.len() < 4 {
+                            sprite.push_str(rest);
+                            parse_state_line_body(sc, &mut items, sprite)?;
+                        } else {
+                            sc.unget(Tok::Ident(rest));
+                            parse_state_line_body(sc, &mut items, sprite)?;
+                        }
+                    }
+                    other => {
+                        sc.unget(other);
+                        parse_state_line_body(sc, &mut items, sprite)?;
+                    }
+                }
             }
             Tok::Ident(name) => {
                 // Label `Name:` / `Death.Fire:` or state line starting with sprite.
@@ -191,102 +463,7 @@ fn parse_states(sc: &mut Scanner<'_>) -> Result<StatesBlock, DecorateError> {
                             "expected ':' after label {label}"
                         )));
                     }
-                    let sprite = label;
-                    let frames = match sc.next_token()? {
-                        Tok::Ident(f) => f.to_owned(),
-                        Tok::String(s) => s.into_owned(),
-                        other => {
-                            return Err(DecorateError::Message(format!(
-                                "expected frames, got {other:?}"
-                            )));
-                        }
-                    };
-                    let (duration, random_range) = read_duration(sc)?;
-                    let mut modifiers = Vec::new();
-                    if let Some((lo, hi)) = random_range {
-                        modifiers.push(format!("random({lo},{hi})"));
-                    }
-                    let mut action = None;
-                    let mut action_args = Vec::new();
-                    let mut extra_actions: Vec<(String, Vec<String>)> = Vec::new();
-                    loop {
-                        let t = sc.next_token()?;
-                        match t {
-                            Tok::Punct(Punct::Semi) => break,
-                            Tok::Punct(Punct::LBrace) => {
-                                let mut stmts = read_anon_actions(sc)?;
-                                if action.is_none() {
-                                    if let Some((name, args)) = stmts.first() {
-                                        action = Some(name.clone());
-                                        action_args = args.clone();
-                                    }
-                                    if stmts.len() > 1 {
-                                        extra_actions.extend(stmts.drain(1..));
-                                    }
-                                } else {
-                                    extra_actions.extend(stmts);
-                                }
-                            }
-                            Tok::Ident(m)
-                                if Scanner::compare(m, "bright")
-                                    || Scanner::compare(m, "fast")
-                                    || Scanner::compare(m, "slow")
-                                    || Scanner::compare(m, "nodelay")
-                                    || Scanner::compare(m, "canraise") =>
-                            {
-                                modifiers.push(m.to_owned());
-                            }
-                            Tok::Ident(a)
-                                if Scanner::compare(a, "loop")
-                                    || Scanner::compare(a, "stop")
-                                    || Scanner::compare(a, "wait")
-                                    || Scanner::compare(a, "fail")
-                                    || Scanner::compare(a, "goto") =>
-                            {
-                                sc.unget(Tok::Ident(a));
-                                break;
-                            }
-                            Tok::Ident(a)
-                                if a.starts_with("A_")
-                                    || a.starts_with("a_")
-                                    || Scanner::compare(a, "ACS_Execute") =>
-                            {
-                                action = Some(a.to_owned());
-                                if sc.check_punct(Punct::LParen)? {
-                                    action_args = read_action_args(sc)?;
-                                }
-                            }
-                            Tok::Ident(a) => {
-                                // Likely the next sprite name — end this line.
-                                sc.unget(Tok::Ident(a));
-                                break;
-                            }
-                            Tok::Eof => break,
-                            other => {
-                                sc.unget(other);
-                                break;
-                            }
-                        }
-                    }
-                    items.push(StateItem::Line(StateLine {
-                        sprite: sprite.clone(),
-                        frames: frames.clone(),
-                        duration,
-                        modifiers,
-                        action,
-                        action_args,
-                    }));
-                    let extra_frame = frames.chars().next().unwrap_or('A').to_string();
-                    for (name, args) in extra_actions {
-                        items.push(StateItem::Line(StateLine {
-                            sprite: sprite.clone(),
-                            frames: extra_frame.clone(),
-                            duration: 0,
-                            modifiers: Vec::new(),
-                            action: Some(name),
-                            action_args: args,
-                        }));
-                    }
+                    parse_state_line_body(sc, &mut items, label)?;
                 }
             }
             Tok::Eof => {
@@ -320,8 +497,66 @@ fn read_dotted_suffix(sc: &mut Scanner<'_>, first: &str) -> Result<String, Decor
     Ok(name)
 }
 
+/// State action: `A_*` / `a_*`, Hexen specials (`ACS_*`, `Thing_*`), or
+/// camelCase specials used as actions (`ThrustThingZ`, `SpawnItemEx`, …).
+fn is_state_action_ident(a: &str) -> bool {
+    if a.starts_with("A_") || a.starts_with("a_") {
+        return true;
+    }
+    // Specials are `Word_Word` (underscore) or camelCase longer than a sprite
+    // (sprites are 4-char codes). Leading letter required.
+    if !a.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    if a.contains('_') {
+        return true;
+    }
+    // CamelCase special without underscore (`ThrustThingZ`) — must have an
+    // *internal* uppercase so single-word labels (`Death`, `Ready`) stay labels.
+    a.len() > 4
+        && a.chars().skip(1).any(|c| c.is_ascii_uppercase())
+        && a.chars().any(|c| c.is_ascii_lowercase())
+}
+
+/// Actor / parent / replaces names may start with a digit (`50CaseSpawn`, BD1 D5).
+fn read_decorate_name(sc: &mut Scanner<'_>) -> Result<String, DecorateError> {
+    let mut name = match sc.next_token()? {
+        Tok::Ident(s) => s.to_owned(),
+        Tok::Int(n) => {
+            let mut name = n.to_string();
+            match sc.next_token()? {
+                Tok::Ident(rest) => {
+                    name.push_str(rest);
+                }
+                other => {
+                    sc.unget(other);
+                }
+            }
+            name
+        }
+        other => {
+            return Err(DecorateError::Message(format!(
+                "expected actor name, got {other:?}"
+            )));
+        }
+    };
+    // BD tokens like `Axe/Hit` — slash-separated name pieces.
+    while sc.check_punct(Punct::Slash)? {
+        name.push('/');
+        match sc.next_token()? {
+            Tok::Ident(rest) => name.push_str(rest),
+            Tok::Int(n) => name.push_str(&n.to_string()),
+            other => {
+                sc.unget(other);
+                break;
+            }
+        }
+    }
+    Ok(name)
+}
+
 fn read_prop_args(sc: &mut Scanner<'_>) -> Result<Vec<String>, DecorateError> {
-    let mut args = Vec::new();
+    let mut args: Vec<String> = Vec::new();
     // `true` at start and after each comma — next value token is an arg.
     let mut need_value = true;
     loop {
@@ -335,11 +570,96 @@ fn read_prop_args(sc: &mut Scanner<'_>) -> Result<Vec<String>, DecorateError> {
             Tok::Punct(Punct::Comma) => {
                 need_value = true;
             }
+            Tok::Punct(Punct::Pipe) => {
+                // D7: `THINGSPEC_A | THINGSPEC_B` → join into one arg.
+                if args.is_empty() {
+                    sc.unget(Tok::Punct(Punct::Pipe));
+                    break;
+                }
+                need_value = true;
+                if let Some(last) = args.last_mut() {
+                    last.push('|');
+                }
+            }
+            Tok::Punct(Punct::LParen) => {
+                // D2: parenthesised property value `Damage (random(30,40))`.
+                if !need_value && !args.is_empty() {
+                    sc.unget(Tok::Punct(Punct::LParen));
+                    break;
+                }
+                let mut depth = 1i32;
+                let mut buf = String::from('(');
+                loop {
+                    match sc.next_token()? {
+                        Tok::Punct(Punct::LParen) => {
+                            depth += 1;
+                            buf.push('(');
+                        }
+                        Tok::Punct(Punct::RParen) => {
+                            depth -= 1;
+                            buf.push(')');
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        Tok::Ident(s) => buf.push_str(s),
+                        Tok::String(s) => {
+                            buf.push('"');
+                            buf.push_str(&s);
+                            buf.push('"');
+                        }
+                        Tok::Int(n) => buf.push_str(&n.to_string()),
+                        Tok::Float(f) => buf.push_str(&f.to_string()),
+                        Tok::Punct(Punct::Comma) => buf.push(','),
+                        Tok::Punct(Punct::Minus) => buf.push('-'),
+                        Tok::Punct(Punct::Plus) => buf.push('+'),
+                        Tok::Punct(Punct::Star) => buf.push('*'),
+                        Tok::Punct(Punct::Slash) => buf.push('/'),
+                        Tok::Punct(Punct::Percent) => buf.push('%'),
+                        Tok::Punct(Punct::Pipe) => buf.push('|'),
+                        Tok::Punct(Punct::Dot) => buf.push('.'),
+                        Tok::Eof => {
+                            return Err(DecorateError::Message(
+                                "unclosed '(' in property value".into(),
+                            ));
+                        }
+                        other => {
+                            return Err(DecorateError::Message(format!(
+                                "unexpected in property expr: {other:?}"
+                            )));
+                        }
+                    }
+                    if depth > 0
+                        && !buf.ends_with('(')
+                        && !buf.ends_with(',')
+                        && !buf.ends_with('|')
+                    {
+                        // Insert space between tokens for readability (`random (30, 40)`).
+                        // Only when the next token isn't punctuation we already appended.
+                    }
+                }
+                if let Some(last) = args.last_mut() {
+                    if last.ends_with('|') {
+                        last.push_str(&buf);
+                        need_value = false;
+                        continue;
+                    }
+                }
+                args.push(buf);
+                need_value = false;
+            }
             Tok::Ident(s) => {
                 // Bare idents are args only when a value is expected
                 // (`Game Doom`, `DropItem Clip, 256`). Otherwise the ident is
                 // the next property (`Health 20` then `Radius 20`).
                 if !need_value {
+                    if let Some(last) = args.last_mut() {
+                        if last.ends_with('|') {
+                            last.push_str(s);
+                            need_value = false;
+                            continue;
+                        }
+                    }
                     sc.unget(Tok::Ident(s));
                     break;
                 }
@@ -355,17 +675,28 @@ fn read_prop_args(sc: &mut Scanner<'_>) -> Result<Vec<String>, DecorateError> {
                 need_value = false;
             }
             Tok::Int(n) => {
+                // D6: `DropItem "X" 128` — trailing numbers stay args.
                 if !need_value {
-                    sc.unget(Tok::Int(n));
-                    break;
+                    if let Some(last) = args.last_mut() {
+                        if last.ends_with('|') {
+                            last.push_str(&n.to_string());
+                            need_value = false;
+                            continue;
+                        }
+                    }
+                    // Still accept as another arg (DropItem probability/amount).
+                    args.push(n.to_string());
+                    need_value = false;
+                    continue;
                 }
                 args.push(n.to_string());
                 need_value = false;
             }
             Tok::Float(f) => {
                 if !need_value {
-                    sc.unget(Tok::Float(f));
-                    break;
+                    args.push(f.to_string());
+                    need_value = false;
+                    continue;
                 }
                 args.push(f.to_string());
                 need_value = false;
@@ -407,8 +738,11 @@ fn read_prop_args(sc: &mut Scanner<'_>) -> Result<Vec<String>, DecorateError> {
 
 fn read_goto_label(sc: &mut Scanner<'_>) -> Result<String, DecorateError> {
     let mut label = sc.must_get_ident()?.to_owned();
-    if sc.check_punct(Punct::Colon)? {
-        // Super::Label — we already ate one colon; expect another for ::
+    // `Super::Spawn` — scanner may emit `ColonColon` or `Colon`×2.
+    if sc.check_punct(Punct::ColonColon)? {
+        label.push_str("::");
+        label.push_str(sc.must_get_ident()?);
+    } else if sc.check_punct(Punct::Colon)? {
         if sc.check_punct(Punct::Colon)? {
             label.push_str("::");
             label.push_str(sc.must_get_ident()?);
@@ -427,6 +761,162 @@ fn read_i32(sc: &mut Scanner<'_>) -> Result<i32, DecorateError> {
     #[allow(clippy::cast_possible_truncation)]
     let v = n as i32;
     Ok(if neg { -v } else { v })
+}
+
+/// Shared body after the sprite token: frames, duration, modifiers, action.
+fn parse_state_line_body(
+    sc: &mut Scanner<'_>,
+    items: &mut Vec<StateItem>,
+    sprite: String,
+) -> Result<(), DecorateError> {
+    let frames = match sc.next_token()? {
+        Tok::Ident(f) => f.to_owned(),
+        Tok::String(s) => s.into_owned(),
+        // GZDoom keep-frame: `"####" # 1` (Hash punct).
+        Tok::Punct(Punct::Hash) => "#".into(),
+        // Doom sprite frame letters `[`, `]`, `\` (also `"[]"` / `"\"` as strings).
+        Tok::Punct(Punct::LBracket) => {
+            if sc.check_punct(Punct::RBracket)? {
+                "[]".into()
+            } else {
+                "[".into()
+            }
+        }
+        Tok::Punct(Punct::RBracket) => "]".into(),
+        Tok::Punct(Punct::Backslash) => "\\".into(),
+        // Doom also allows `-` and digit frame letters (`----`, `2`).
+        Tok::Punct(Punct::Minus) => {
+            let mut s = String::from("-");
+            while sc.check_punct(Punct::Minus)? {
+                s.push('-');
+            }
+            s
+        }
+        Tok::Int(n) if (0..=9).contains(&n) => n.to_string(),
+        Tok::Int(n) => n.to_string(), // multi-digit keep-frame runs like `500`
+        other => {
+            return Err(DecorateError::Message(format!(
+                "expected frames, got {other:?}"
+            )));
+        }
+    };
+    let (duration, random_range) = read_duration(sc)?;
+    let mut modifiers = Vec::new();
+    if let Some((lo, hi)) = random_range {
+        modifiers.push(format!("random({lo},{hi})"));
+    }
+    let mut action = None;
+    let mut action_args = Vec::new();
+    let mut extra_actions: Vec<(String, Vec<String>)> = Vec::new();
+    loop {
+        let t = sc.next_token()?;
+        match t {
+            Tok::Punct(Punct::Semi) => break,
+            Tok::Punct(Punct::LBrace) => {
+                let mut stmts = read_anon_actions(sc)?;
+                if action.is_none() {
+                    if let Some((name, args)) = stmts.first() {
+                        action = Some(name.clone());
+                        action_args = args.clone();
+                    }
+                    if stmts.len() > 1 {
+                        extra_actions.extend(stmts.drain(1..));
+                    }
+                } else {
+                    extra_actions.extend(stmts);
+                }
+            }
+            Tok::Ident(m)
+                if Scanner::compare(m, "bright")
+                    || Scanner::compare(m, "fast")
+                    || Scanner::compare(m, "slow")
+                    || Scanner::compare(m, "nodelay")
+                    || Scanner::compare(m, "canraise") =>
+            {
+                modifiers.push(m.to_owned());
+            }
+            Tok::Ident(m) if Scanner::compare(m, "light") => {
+                // BD1 D1: `Light("NAME"[, "NAME"…])`
+                if sc.check_punct(Punct::LParen)? {
+                    let args = read_action_args(sc)?;
+                    modifiers.push(format!("Light({})", args.join(",")));
+                } else {
+                    modifiers.push("Light".into());
+                }
+            }
+            Tok::Ident(m) if Scanner::compare(m, "offset") => {
+                // BD1 D1: `Offset(x, y)`
+                if sc.check_punct(Punct::LParen)? {
+                    let args = read_action_args(sc)?;
+                    modifiers.push(format!("Offset({})", args.join(",")));
+                } else {
+                    modifiers.push("Offset".into());
+                }
+            }
+            Tok::Ident(a)
+                if Scanner::compare(a, "loop")
+                    || Scanner::compare(a, "stop")
+                    || Scanner::compare(a, "wait")
+                    || Scanner::compare(a, "fail")
+                    || Scanner::compare(a, "goto") =>
+            {
+                sc.unget(Tok::Ident(a));
+                break;
+            }
+            Tok::Ident(a) if is_state_action_ident(a) => {
+                // BD3: `A_*` / underscore specials always; camelCase specials
+                // (`ThrustThingZ`) only when followed by `(` so labels like
+                // `NoRandom:` are not eaten as actions.
+                let needs_paren = !(a.starts_with("A_") || a.starts_with("a_") || a.contains('_'));
+                if needs_paren && !sc.check_punct(Punct::LParen)? {
+                    sc.unget(Tok::Ident(a));
+                    break;
+                }
+                action = Some(a.to_owned());
+                if !needs_paren {
+                    if sc.check_punct(Punct::LParen)? {
+                        action_args = read_action_args(sc)?;
+                    }
+                } else {
+                    action_args = read_action_args(sc)?;
+                }
+            }
+            Tok::Ident(a) => {
+                // Likely the next sprite name — end this line.
+                sc.unget(Tok::Ident(a));
+                break;
+            }
+            Tok::String(s) => {
+                sc.unget(Tok::String(s));
+                break;
+            }
+            Tok::Eof => break,
+            other => {
+                sc.unget(other);
+                break;
+            }
+        }
+    }
+    items.push(StateItem::Line(StateLine {
+        sprite: sprite.clone(),
+        frames: frames.clone(),
+        duration,
+        modifiers,
+        action,
+        action_args,
+    }));
+    let extra_frame = frames.chars().next().unwrap_or('A').to_string();
+    for (name, args) in extra_actions {
+        items.push(StateItem::Line(StateLine {
+            sprite: sprite.clone(),
+            frames: extra_frame.clone(),
+            duration: 0,
+            modifiers: Vec::new(),
+            action: Some(name),
+            action_args: args,
+        }));
+    }
+    Ok(())
 }
 
 fn read_duration(sc: &mut Scanner<'_>) -> Result<(i32, Option<(i32, i32)>), DecorateError> {
@@ -1572,6 +2062,12 @@ fn read_action_args(sc: &mut Scanner<'_>) -> Result<Vec<String>, DecorateError> 
                 Tok::Punct(Punct::Lt) => tok.push('<'),
                 Tok::Punct(Punct::Gt) => tok.push('>'),
                 Tok::Punct(Punct::Eq) => tok.push('='),
+                Tok::Punct(Punct::EqEq) => tok.push_str("=="),
+                Tok::Punct(Punct::NotEq) => tok.push_str("!="),
+                Tok::Punct(Punct::LtEq) => tok.push_str("<="),
+                Tok::Punct(Punct::GtEq) => tok.push_str(">="),
+                Tok::Punct(Punct::AndAnd) => tok.push_str("&&"),
+                Tok::Punct(Punct::OrOr) => tok.push_str("||"),
                 Tok::Punct(Punct::Bang) => tok.push('!'),
                 Tok::Punct(Punct::Tilde) => tok.push('~'),
                 Tok::Punct(Punct::Amp) => tok.push('&'),
@@ -1604,6 +2100,14 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn thrustthingz_is_state_action() {
+        assert!(is_state_action_ident("ThrustThingZ"));
+        assert!(is_state_action_ident("A_SpawnItem"));
+        let src = "actor T { States { Spawn: BPDL A 5 ThrustThingZ(0, 20, 0, 1) Stop } }";
+        parse_decorate(src).unwrap();
+    }
 
     #[test]
     fn parses_zombieman() {
@@ -1661,6 +2165,255 @@ actor ZombieMan : Actor 3004
         assert!(ir.actors.iter().any(|a| a.name == "ZombieMan"));
         assert!(ir.actors.iter().any(|a| a.name == "Clip"));
         assert!(ir.actors.iter().any(|a| a.name == "DoomPlayer"));
+    }
+
+    #[test]
+    fn parses_damage_expr_dropitem_pipe_and_digit_names() {
+        let src = r#"
+actor 50CaseSpawn : Actor 9910
+{
+  Damage (random(30, 40))
+  DropItem "Clip" 128 3
+  Activation THINGSPEC_Activate | THINGSPEC_NODEATHSPECIAL
+  States
+  {
+  Spawn:
+    2IFG A 1
+    Stop
+  }
+}
+"#;
+        let ir = parse_decorate(src).unwrap();
+        let a = &ir.actors[0];
+        assert_eq!(a.name, "50CaseSpawn");
+        let damage = a
+            .properties
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case("Damage"))
+            .unwrap();
+        assert!(
+            damage.args.iter().any(|s| s.contains("random")),
+            "args={:?}",
+            damage.args
+        );
+        let drop = a
+            .properties
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case("DropItem"))
+            .unwrap();
+        assert_eq!(drop.args.len(), 3, "args={:?}", drop.args);
+        let act = a
+            .properties
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case("Activation"))
+            .unwrap();
+        assert!(
+            act.args.iter().any(|s| s.contains('|')),
+            "args={:?}",
+            act.args
+        );
+        let st = a.states.as_ref().unwrap();
+        let line = st.items.iter().find_map(|i| match i {
+            StateItem::Line(l) => Some(l),
+            _ => None,
+        });
+        assert_eq!(line.unwrap().sprite, "2IFG");
+    }
+
+    #[test]
+    fn parses_fail_as_label_and_flow() {
+        let src = r#"
+actor Tok : CustomInventory
+{
+  States
+  {
+  Pickup:
+    TNT1 A 0 A_JumpIfInventory("Foo", 1, "Fail")
+    TNT1 A 0
+    Stop
+  Fail:
+    TNT1 A 0
+    Stop
+  Use:
+    TNT1 A 0
+    Fail
+  }
+}
+"#;
+        let ir = parse_decorate(src).unwrap();
+        let st = ir.actors[0].states.as_ref().unwrap();
+        let mut saw_label = false;
+        let mut saw_flow = false;
+        for item in &st.items {
+            match item {
+                StateItem::Label(l) if l.eq_ignore_ascii_case("Fail") => saw_label = true,
+                StateItem::Flow(StateFlow::Fail) => saw_flow = true,
+                _ => {}
+            }
+        }
+        assert!(saw_label, "Fail: should be a label");
+        assert!(saw_flow, "bare Fail should remain a flow");
+    }
+
+    #[test]
+    fn split_actors_skips_actor_word_in_comments() {
+        // Mirrors wadsrc/room/actors/doom.txt header — BD1 D8 false positive.
+        let src = r#"
+// Minimal Doom actor set for M5 bootstrap.
+/* also mentions actor here */
+actor RealOne : Actor 1
+{
+  Health 1
+  States { Spawn: TNT1 A -1 Stop }
+}
+"#;
+        let chunks = split_actors(src);
+        assert_eq!(chunks.len(), 1, "chunks={chunks:?}");
+        assert!(chunks[0].trim_start().starts_with("actor RealOne"));
+        let ir = parse_decorate(&chunks[0]).unwrap();
+        assert_eq!(ir.actors[0].name, "RealOne");
+    }
+
+    #[test]
+    fn parses_float_doomednum_dual_flame_style() {
+        // BD1 D8 DualFlameCannon: float DoomEd numbers are accepted (truncated).
+        let src = r#"
+actor DualFlameCannon : Weapon 25010.0
+{
+  Weapon.BobSpeed 1.0
+  Weapon.BobStyle Alpha
+  Radius 20.000000
+  States
+  {
+  Ready:
+    PISG A 1 A_WeaponReady
+    Loop
+  }
+}
+"#;
+        let ir = parse_decorate(src).unwrap();
+        assert_eq!(ir.actors[0].name, "DualFlameCannon");
+        assert_eq!(ir.actors[0].doomednum, Some(25010));
+    }
+
+    #[test]
+    fn lenient_parse_skips_broken_actor() {
+        // Keep braces balanced so `split_actors` can isolate the bad chunk.
+        let src = r#"
+actor Good : Actor { Health 1 States { Spawn: POSS A -1 Stop } }
+actor Broken : Actor { Health 1 States { Spawn: POSS A -1 ??? Stop } }
+actor AlsoGood : Actor { Health 2 States { Spawn: POSS A -1 Stop } }
+"#;
+        let res = parse_decorate_lenient(src);
+        let names: Vec<_> = res.ir.actors.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"Good"), "{names:?}");
+        assert!(names.contains(&"AlsoGood"), "{names:?}");
+        assert!(!names.iter().any(|n| *n == "Broken"));
+        assert!(!res.errors.is_empty());
+    }
+
+    #[test]
+    fn parses_special_as_state_action() {
+        let src = r#"
+actor SpecGuy
+{
+  States
+  {
+  Spawn:
+    POSS A 0 ACS_NamedExecuteAlways("Boom", 0)
+    POSS B 1 ACS_Execute(1, 0)
+    Stop
+  }
+}
+"#;
+        let ir = parse_decorate(src).unwrap();
+        let st = ir.actors[0].states.as_ref().unwrap();
+        let lines: Vec<&StateLine> = st
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                StateItem::Line(l) => Some(l),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines[0].action.as_deref(), Some("ACS_NamedExecuteAlways"));
+        assert_eq!(lines[0].action_args[0].trim_matches('"'), "Boom");
+        assert_eq!(lines[1].action.as_deref(), Some("ACS_Execute"));
+    }
+
+    #[test]
+    fn parses_light_offset_and_quoted_keep_sprite() {
+        let keep = "\"####\" \"#\"";
+        let src = format!(
+            r#"
+actor FlashGuy
+{{
+  States
+  {{
+  Spawn:
+    TNT1 A 1 Bright Light("FlashlightLight1") Offset(1, 2)
+    {keep} 0 A_Jump(128, 2)
+    Stop
+  }}
+}}
+"#
+        );
+        let ir = parse_decorate(&src).unwrap();
+        let st = ir.actors[0].states.as_ref().unwrap();
+        let lines: Vec<&StateLine> = st
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                StateItem::Line(l) => Some(l),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            lines[0]
+                .modifiers
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case("bright"))
+        );
+        assert!(
+            lines[0]
+                .modifiers
+                .iter()
+                .any(|m| m.starts_with("Light(") && m.contains("FlashlightLight1"))
+        );
+        assert!(
+            lines[0]
+                .modifiers
+                .iter()
+                .any(|m| m.starts_with("Offset(") && m.contains("1") && m.contains("2"))
+        );
+        assert_eq!(lines[1].sprite, "####");
+        assert_eq!(lines[1].frames, "#");
+        assert_eq!(lines[1].action.as_deref(), Some("A_Jump"));
+    }
+
+    #[test]
+    fn parses_backslash_and_bracket_frame_letters() {
+        // BD Melee / Archangel: `"\"` frames; unquoted `[` `\` `]`.
+        let src = "actor FrameGuy {\n  States {\n  Spawn:\n    \"####\" \"\\\" 12\n    BBRN [ 8\n    BBRN \\ 8\n    BBRN ] 8\n    \"####\" \"[]\" 1\n    Stop\n  }\n}\n";
+        let ir = parse_decorate(src).unwrap();
+        let st = ir.actors[0].states.as_ref().unwrap();
+        let lines: Vec<&StateLine> = st
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                StateItem::Line(l) => Some(l),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines[0].frames, "\\");
+        assert_eq!(lines[1].frames, "[");
+        assert_eq!(lines[2].frames, "\\");
+        assert_eq!(lines[3].frames, "]");
+        assert_eq!(lines[4].frames, "[]");
+        let split = split_actors(
+            "actor A { States { Spawn: \"####\" \"\\\" 1 Stop } }\nactor B { States { Spawn: TNT1 A -1 Stop } }\n",
+        );
+        assert_eq!(split.len(), 2, "split must not swallow on backslash frames");
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! Fixed-point `P_CheckPosition` / `P_TryMove` / `P_XYMovement` bootstrap (`docs/19` §4).
 
 use crate::actor::{Actor, ActorId};
-use crate::class::{FLAG_CORPSE, FLAG_MISSILE, FLAG_NOBLOCKMAP, FLAG_SHOOTABLE};
+use crate::class::{
+    FLAG_CORPSE, FLAG_MISSILE, FLAG_NOBLOCKMAP, FLAG_NOINTERACTION, FLAG_SHOOTABLE,
+};
 use crate::physics::{CheckResult, TryMoveResult, lines_near, path_traverse_blocks};
 use crate::world::World;
 use room_core::{DVec2, DVec3, FRACBITS, FRACUNIT, Fixed, LineId};
@@ -216,7 +218,10 @@ pub fn check_position_fixed(
         let Some(other) = world.actors.get(*id) else {
             continue;
         };
-        if other.destroyed || (other.flags & FLAG_NOBLOCKMAP) != 0 {
+        if other.destroyed
+            || (other.flags & FLAG_NOBLOCKMAP) != 0
+            || (other.flags & FLAG_NOINTERACTION) != 0
+        {
             continue;
         }
         // Doom `PIT_CheckThing`: only `SOLID|SPECIAL|SHOOTABLE` (we omit SPECIAL pickups).
@@ -1032,9 +1037,15 @@ pub fn z_movement_fixed(world: &mut World, actor_id: ActorId) {
             .map(|a| a.pos)
             .unwrap_or(actor.pos);
         let (kind, normal) = if hit_ceiling {
-            (room_script_abi::hit_kind::CEILING, room_core::DVec3::new(0.0, 0.0, -1.0))
+            (
+                room_script_abi::hit_kind::CEILING,
+                room_core::DVec3::new(0.0, 0.0, -1.0),
+            )
         } else {
-            (room_script_abi::hit_kind::FLOOR, room_core::DVec3::new(0.0, 0.0, 1.0))
+            (
+                room_script_abi::hit_kind::FLOOR,
+                room_core::DVec3::new(0.0, 0.0, 1.0),
+            )
         };
         crate::physics::set_missile_hit(world, actor_id, kind, None, pos, normal);
         crate::physics::explode_missile(world, actor_id);
