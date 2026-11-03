@@ -1,0 +1,861 @@
+//! ZScript play-scope integration (`docs/34` ZS3–ZS6).
+
+use room_zvm::{CompiledProgram, HeapImage, ObjHandle, ObjKind, Zvm};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+/// Serialized ZScript save blob (stable order).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ZscriptSaveBlob {
+    /// Compiled program hash (must match on load unless overridden).
+    pub program_hash: u64,
+    /// Actor index → script field integers.
+    pub actor_i: BTreeMap<u32, Vec<i64>>,
+    /// Flattened heap object payloads (index, generation, class, fields_i).
+    pub objects: Vec<SavedObject>,
+    /// Whole heap, when present. Load restores these slots in place.
+    pub heap: Option<HeapImage>,
+    /// Handler class → object handle `(index, generation)`.
+    pub handlers: Vec<(String, u32, u32)>,
+    /// Actor id → script-object handle `(index, generation)`.
+    pub actor_handles: Vec<(u32, u32, u32)>,
+}
+
+/// One heap object in a save.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedObject {
+    /// Slot index.
+    pub index: u32,
+    /// Generation.
+    pub generation: u32,
+    /// Class id.
+    pub class_id: u32,
+    /// Integer fields.
+    pub fields_i: Vec<i64>,
+}
+
+/// Per-world ZScript runtime state.
+#[derive(Default)]
+pub struct ZscriptRuntime {
+    /// Linked program (shared).
+    pub program: Option<Arc<CompiledProgram>>,
+    /// VM instance (heap + natives).
+    pub vm: Option<Zvm>,
+    /// Actor id → script field object handle.
+    pub actor_fields: BTreeMap<u32, ObjHandle>,
+    /// Actors that already received `PostBeginPlay` this life.
+    pub begun_play: BTreeMap<u32, ()>,
+    /// Registered event handler class names (from MAPINFO / load).
+    pub event_handlers: Vec<String>,
+    /// Persistent handler instances (class name → object), for `OnRegister` state.
+    pub handler_objs: BTreeMap<String, ObjHandle>,
+    /// One script object per class that overrides `ModifyDamage`.
+    modify_objs: BTreeMap<String, ObjHandle>,
+    /// Reused shooter / projectile proxies (`bISMONSTER` in integer field 1).
+    actor_proxies: Vec<ObjHandle>,
+    /// Non-null object stored in ZScript `target` when the playsim actor has one.
+    target_sentinel: ObjHandle,
+    /// True after [`Self::activate_map_handlers`] ran `OnRegister`/`WorldLoaded`.
+    pub map_handlers_active: bool,
+}
+
+impl ZscriptRuntime {
+    /// Install a compiled program and reset the VM.
+    pub fn load_program(&mut self, program: CompiledProgram) {
+        self.load_program_inner(program, false);
+    }
+
+    /// Install a program and no-op-stub every native the builtin table lacks.
+    ///
+    /// The UZDoom stdlib reads engine globals before `LineAttack`. Those calls
+    /// must return 0 instead of trapping.
+    pub fn load_program_stubbed(&mut self, program: CompiledProgram) {
+        self.load_program_inner(program, true);
+    }
+
+    fn load_program_inner(&mut self, program: CompiledProgram, stub_missing: bool) {
+        let program = Arc::new(program);
+        let mut vm = if stub_missing {
+            Zvm::new_with_stubs((*program).clone())
+        } else {
+            Zvm::new((*program).clone())
+        };
+        vm.host = 0;
+        self.vm = Some(vm);
+        self.program = Some(program);
+        self.actor_fields.clear();
+        self.begun_play.clear();
+        self.handler_objs.clear();
+        self.modify_objs.clear();
+        self.actor_proxies.clear();
+        self.map_handlers_active = false;
+    }
+
+    /// True when `Class.Method` exists on that class (case-insensitive).
+    ///
+    /// Does not walk parents. [`resolve_method`](Self::resolve_method) does.
+    #[must_use]
+    pub fn has_method(&self, class: &str, method: &str) -> bool {
+        let qname = format!("{class}.{method}");
+        self.vm.as_ref().is_some_and(|vm| {
+            vm.program
+                .func_by_name
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case(&qname))
+        })
+    }
+
+    /// `Class.Method`, walking parents so `MarinePistol.A_M_FirePistol` finds
+    /// the body declared on `ScriptedMarine`.
+    #[must_use]
+    pub fn resolve_method(&self, class: &str, method: &str) -> Option<String> {
+        let vm = self.vm.as_ref()?;
+        let mut cur = class.to_owned();
+        for _ in 0..64 {
+            let qname = format!("{cur}.{method}");
+            if let Some(found) = vm
+                .program
+                .func_by_name
+                .keys()
+                .find(|k| k.eq_ignore_ascii_case(&qname))
+            {
+                return Some(found.clone());
+            }
+            let parent = vm
+                .program
+                .classes
+                .iter()
+                .find(|c| c.name.eq_ignore_ascii_case(&cur))?
+                .parent
+                .clone();
+            if parent.is_empty() || parent.eq_ignore_ascii_case(&cur) {
+                return None;
+            }
+            cur = parent;
+        }
+        None
+    }
+
+    /// Remember whether the playsim actor has a chase target.
+    ///
+    /// Writes the `target` object field from the class layout. A non-null
+    /// sentinel makes `target == null` false inside `A_M_FirePistol`.
+    pub fn mark_actor_target(&mut self, actor_id: u32, class: &str, has_target: bool) {
+        if self.ensure_actor_object(actor_id, class).is_none() {
+            return;
+        }
+        let slot = self.target_field_slot(class).unwrap_or(7);
+        let sentinel = if has_target {
+            if self.target_sentinel.is_null() {
+                if let Some(vm) = self.vm.as_mut() {
+                    self.target_sentinel = vm.heap.new_object(0, 1, 1, 1);
+                }
+            }
+            self.target_sentinel
+        } else {
+            ObjHandle::NULL
+        };
+        let Some(h) = self.actor_fields.get(&actor_id).copied() else {
+            return;
+        };
+        let Some(vm) = self.vm.as_mut() else {
+            return;
+        };
+        if let Some(ObjKind::Object { fields_a, .. }) = vm.heap.get_mut(h) {
+            if fields_a.len() <= slot {
+                fields_a.resize(slot + 1, ObjHandle::NULL);
+            }
+            fields_a[slot] = sentinel;
+        }
+    }
+
+    /// Object-bank index of `target`, walking the class parent chain.
+    fn target_field_slot(&self, class: &str) -> Option<usize> {
+        let vm = self.vm.as_ref()?;
+        let mut cur = class.to_owned();
+        for _ in 0..64 {
+            let layout = vm
+                .program
+                .classes
+                .iter()
+                .find(|c| c.name.eq_ignore_ascii_case(&cur))?;
+            if let Some((bank, slot)) = layout.fields.get("target").copied() {
+                // ClassLayout bank 1 is the object-reference bank.
+                if bank == 1 {
+                    return Some(slot as usize);
+                }
+            }
+            if layout.parent.is_empty() || layout.parent.eq_ignore_ascii_case(&cur) {
+                return None;
+            }
+            cur = layout.parent.clone();
+        }
+        None
+    }
+
+    /// Actor natives queued by the last call (`A_Look`, `LineAttack`, …).
+    pub fn take_actor_ops(&mut self) -> Vec<room_zvm::ZsActorOp> {
+        self.vm
+            .as_mut()
+            .map(|vm| std::mem::take(&mut vm.play.actor_ops))
+            .unwrap_or_default()
+    }
+
+    /// Call `PostBeginPlay` once per actor when the class defines it (ZS3).
+    pub fn notify_spawned(&mut self, actor_id: u32, class: &str) {
+        if !self.is_active() || !self.has_method(class, "PostBeginPlay") {
+            return;
+        }
+        if self.begun_play.contains_key(&actor_id) {
+            return;
+        }
+        let _ = self.call_actor_virtual(actor_id, class, "PostBeginPlay");
+        self.begun_play.insert(actor_id, ());
+    }
+
+    /// Call `Tick` when the actor's ZScript class overrides it (ZS3).
+    pub fn tick_actor(&mut self, actor_id: u32, class: &str) {
+        if !self.is_active() || !self.has_method(class, "Tick") {
+            return;
+        }
+        // Ensure PostBeginPlay has run before the first Tick (spawn mid-tic, etc.).
+        self.notify_spawned(actor_id, class);
+        let _ = self.call_actor_virtual(actor_id, class, "Tick");
+    }
+
+    /// Register MAPINFO `AddEventHandlers` class names (order preserved).
+    pub fn set_event_handlers(&mut self, names: impl IntoIterator<Item = String>) {
+        self.event_handlers = names.into_iter().collect();
+    }
+
+    /// Publish play-scope values read by ZVM natives for the next call.
+    pub fn sync_host(&mut self, skill: u8, consoleplayer: i32, gamestate: i32) {
+        let Some(play) = self.play_mut() else {
+            return;
+        };
+        play.skill = i32::from(skill);
+        play.consoleplayer = consoleplayer;
+        play.gamestate = gamestate;
+    }
+
+    /// Install in-memory wad lumps for `Wads.*` (tests / BD_Hash).
+    pub fn set_wad_lumps(&mut self, lumps: BTreeMap<String, String>) {
+        if let Some(play) = self.play_mut() {
+            play.wads = lumps;
+        }
+    }
+
+    /// Install integer CVars for `CVar.GetCVar` / `GetInt` (ZS4 / BD CVARINFO).
+    pub fn set_cvars(&mut self, cvars: BTreeMap<String, i32>) {
+        if let Some(play) = self.play_mut() {
+            play.cvars = cvars;
+        }
+    }
+
+    /// Drain `Console.Printf` messages captured by the host (tests).
+    pub fn take_printf(&mut self) -> Vec<String> {
+        self.play_mut()
+            .map(|play| std::mem::take(&mut play.printf))
+            .unwrap_or_default()
+    }
+
+    /// Allocate MAPINFO handlers, then run `OnRegister` / `WorldLoaded` (ZS4).
+    ///
+    /// Handlers that only override later events (`PlayerEntered`,
+    /// `WorldThingSpawned`, …) are still instantiated so `EventHandler.Find`
+    /// and ACS `ScriptCall` into static helpers on those classes work.
+    pub fn activate_map_handlers(&mut self) -> Result<(), room_zvm::Trap> {
+        if self.map_handlers_active || !self.is_active() {
+            return Ok(());
+        }
+        let handlers = self.event_handlers.clone();
+        for class in &handlers {
+            let _ = self.handler_instance(class)?;
+        }
+        self.dispatch_handlers("OnRegister")?;
+        self.dispatch_handlers("WorldLoaded")?;
+        self.map_handlers_active = true;
+        Ok(())
+    }
+
+    /// `PlayerEntered` for a joining player number (0-based).
+    pub fn notify_player_entered(&mut self, player_number: i32) -> Result<(), room_zvm::Trap> {
+        self.dispatch_player_entered(player_number)
+    }
+
+    /// Drain `Actor.GiveInventory` grants recorded by the host (actor_cookie, item, amount).
+    pub fn take_grants(&mut self) -> Vec<(i64, String, i32)> {
+        self.play_mut()
+            .map(|play| std::mem::take(&mut play.grants))
+            .unwrap_or_default()
+    }
+
+    fn play_mut(&mut self) -> Option<&mut room_zvm::ZvmPlayHost> {
+        self.vm.as_mut().map(|vm| &mut vm.play)
+    }
+
+    /// Drop pending grants (tests that start from a known host).
+    pub fn clear_grants(&mut self) {
+        if let Some(play) = self.play_mut() {
+            play.grants.clear();
+        }
+    }
+
+    /// Drain `Actor.ChangeTID` recordings.
+    pub fn take_tid_changes(&mut self) -> Vec<(i64, i32)> {
+        self.play_mut()
+            .map(|play| std::mem::take(&mut play.tid_changes))
+            .unwrap_or_default()
+    }
+
+    /// Override `PlayerInGame` answers.
+    pub fn set_players_in_game(&mut self, map: BTreeMap<i32, bool>) {
+        if let Some(play) = self.play_mut() {
+            play.players_in_game = map;
+        }
+    }
+
+    /// Seed `GetPlayerTID` / `SetPlayerTID`.
+    pub fn set_player_tids(&mut self, map: BTreeMap<i32, i32>) {
+        if let Some(play) = self.play_mut() {
+            play.player_tids = map;
+        }
+    }
+
+    /// Snapshot of the player TID map.
+    #[must_use]
+    pub fn player_tids(&self) -> BTreeMap<i32, i32> {
+        self.vm
+            .as_ref()
+            .map(|vm| vm.play.player_tids.clone())
+            .unwrap_or_default()
+    }
+
+    /// Take one player's `SoundClass`, if the script wrote it.
+    pub fn take_sound_class(&mut self, player_number: i32) -> Option<String> {
+        self.play_mut()
+            .and_then(|play| play.sound_class.remove(&player_number))
+    }
+
+    fn publish_handler_objs(&mut self) {
+        let handlers = self.handler_objs.clone();
+        if let Some(play) = self.play_mut() {
+            play.handlers = handlers;
+        }
+    }
+
+    /// True when a ZScript program is loaded.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.program.is_some()
+    }
+
+    /// Call a static / qualified function (ACS `ScriptCall` bridge).
+    pub fn script_call(&mut self, name: &str) -> Result<i64, room_zvm::Trap> {
+        self.script_call_with(name, &[], &[])
+    }
+
+    /// ScriptCall with int / string args.
+    pub fn script_call_with(
+        &mut self,
+        name: &str,
+        i_args: &[i64],
+        s_args: &[&str],
+    ) -> Result<i64, room_zvm::Trap> {
+        let vm = self
+            .vm
+            .as_mut()
+            .ok_or_else(|| room_zvm::Trap::Native("no ZScript program".into()))?;
+        // Accept `Class.Func` or already-qualified names; also try `Class.Func` from pieces.
+        if vm.program.func_by_name.contains_key(name) {
+            return vm.call_with(name, i_args, s_args);
+        }
+        // Case-insensitive fallback.
+        let key = vm
+            .program
+            .func_by_name
+            .keys()
+            .find(|k| k.eq_ignore_ascii_case(name))
+            .cloned();
+        if let Some(k) = key {
+            return vm.call_with(&k, i_args, s_args);
+        }
+        Err(room_zvm::Trap::Native(format!("unknown function {name}")))
+    }
+
+    /// Dispatch `Class.Method` for each registered event handler that defines it.
+    pub fn dispatch_handlers(&mut self, method: &str) -> Result<(), room_zvm::Trap> {
+        let handlers = self.event_handlers.clone();
+        // Synthetic `dispatch_handlers("WorldThingSpawned")` defaults to monster
+        // so BD skill≥6 grant probes keep working without a live actor.
+        let monster = method.eq_ignore_ascii_case("WorldThingSpawned");
+        for class in handlers {
+            self.dispatch_one_handler(&class, method, None, monster)?;
+        }
+        Ok(())
+    }
+
+    fn handler_instance(&mut self, class: &str) -> Result<ObjHandle, room_zvm::Trap> {
+        if let Some(&h) = self.handler_objs.get(class) {
+            return Ok(h);
+        }
+        let vm = self
+            .vm
+            .as_mut()
+            .ok_or_else(|| room_zvm::Trap::Native("no ZScript program".into()))?;
+        let cid = vm
+            .program
+            .class_by_name
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(class))
+            .map(|(_, &i)| i);
+        let Some(cid) = cid else {
+            return Err(room_zvm::Trap::Native(format!(
+                "handler class '{class}' is not in the compiled program"
+            )));
+        };
+        let layout = vm
+            .program
+            .classes
+            .get(cid as usize)
+            .cloned()
+            .unwrap_or_default();
+        let h = vm.heap.new_object(cid, layout.n_i, layout.n_a, layout.n_s);
+        self.handler_objs.insert(class.to_owned(), h);
+        self.publish_handler_objs();
+        Ok(h)
+    }
+
+    fn resolve_func_name(&self, class: &str, method: &str) -> Option<String> {
+        let qname = format!("{class}.{method}");
+        self.vm.as_ref().and_then(|vm| {
+            vm.program
+                .func_by_name
+                .keys()
+                .find(|k| k.eq_ignore_ascii_case(&qname))
+                .cloned()
+        })
+    }
+
+    fn dispatch_one_handler(
+        &mut self,
+        class: &str,
+        method: &str,
+        player_number: Option<i32>,
+        thing_is_monster: bool,
+    ) -> Result<(), room_zvm::Trap> {
+        let Some(resolved) = self.resolve_func_name(class, method) else {
+            return Ok(());
+        };
+        let handler = self.handler_instance(class)?;
+        let vm = self.vm.as_mut().unwrap();
+        if method.eq_ignore_ascii_case("WorldThingSpawned") {
+            let thing = vm.heap.new_object(0, 2, 0, 0);
+            if let Some(ObjKind::Object { fields_i, .. }) = vm.heap.get_mut(thing) {
+                let flag_idx = if fields_i.len() > 1 { 1 } else { 0 };
+                if let Some(slot) = fields_i.get_mut(flag_idx) {
+                    *slot = i64::from(thing_is_monster);
+                }
+            }
+            let event = vm.heap.new_object(0, 0, 1, 0);
+            if let Some(ObjKind::Object { fields_a, .. }) = vm.heap.get_mut(event) {
+                if !fields_a.is_empty() {
+                    fields_a[0] = thing;
+                }
+            }
+            let _ = call_handler_with_event(vm, &resolved, handler, event)?;
+        } else if method.eq_ignore_ascii_case("PlayerEntered") {
+            let event = vm.heap.new_object(0, 1, 0, 0);
+            if let Some(ObjKind::Object { fields_i, .. }) = vm.heap.get_mut(event) {
+                if let Some(slot) = fields_i.first_mut() {
+                    *slot = i64::from(player_number.unwrap_or(0));
+                }
+            }
+            let _ = call_handler_with_event(vm, &resolved, handler, event)?;
+        } else if method.eq_ignore_ascii_case("WorldLoaded") {
+            let event = vm.heap.new_object(0, 0, 1, 0);
+            let _ = call_handler_with_event(vm, &resolved, handler, event)?;
+        } else if method.eq_ignore_ascii_case("OnRegister") {
+            let _ = vm.call_method_self(&resolved, handler)?;
+        } else {
+            let _ = vm.call_method_self(&resolved, handler)?;
+        }
+        Ok(())
+    }
+
+    fn dispatch_player_entered(&mut self, player_number: i32) -> Result<(), room_zvm::Trap> {
+        let handlers = self.event_handlers.clone();
+        for class in handlers {
+            self.dispatch_one_handler(&class, "PlayerEntered", Some(player_number), false)?;
+        }
+        Ok(())
+    }
+
+    /// Fire `WorldThingSpawned` with `bISMONSTER` from the flag (ZS4 / BD6).
+    pub fn notify_thing_spawned_monster(&mut self, is_monster: bool) -> Result<(), room_zvm::Trap> {
+        let handlers = self.event_handlers.clone();
+        for class in handlers {
+            self.dispatch_one_handler(&class, "WorldThingSpawned", None, is_monster)?;
+        }
+        Ok(())
+    }
+
+    /// Run `Class.Tick` (or `PostBeginPlay`) on a script object bound to `actor_id`.
+    pub fn call_actor_virtual(
+        &mut self,
+        actor_id: u32,
+        class: &str,
+        method: &str,
+    ) -> Result<i64, room_zvm::Trap> {
+        let resolved = self
+            .resolve_method(class, method)
+            .ok_or_else(|| room_zvm::Trap::Native(format!("unknown function {class}.{method}")))?;
+        let h = self
+            .ensure_actor_object(actor_id, class)
+            .ok_or_else(|| room_zvm::Trap::Native("no ZScript program".into()))?;
+        let vm = self
+            .vm
+            .as_mut()
+            .ok_or_else(|| room_zvm::Trap::Native("no ZScript program".into()))?;
+        vm.call_method_self(&resolved, h)
+    }
+
+    fn ensure_actor_object(&mut self, actor_id: u32, class: &str) -> Option<ObjHandle> {
+        let vm = self.vm.as_mut()?;
+        let h = *self.actor_fields.entry(actor_id).or_insert_with(|| {
+            let cid = vm
+                .program
+                .class_by_name
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(class))
+                .map(|(_, &id)| id)
+                .unwrap_or(0);
+            let layout = vm
+                .program
+                .classes
+                .get(cid as usize)
+                .cloned()
+                .unwrap_or_default();
+            vm.heap.new_object(cid, layout.n_i, layout.n_a, layout.n_s)
+        });
+        Some(h)
+    }
+
+    /// Run `Class.ModifyDamage` for an inventory item (ZS4b).
+    ///
+    /// Integer parameters are `damage`, `newDamage` (starts equal to `damage`),
+    /// `passive`, `flags`. The damage type name is `s[0]`. `inflictor` then
+    /// `source` are object arguments; a monster source has `bISMONSTER` set.
+    /// The value written to `newDamage` is returned.
+    pub fn modify_damage(
+        &mut self,
+        class: &str,
+        damage: i32,
+        dtype: &str,
+        passive: bool,
+        has_source: bool,
+        source_monster: bool,
+        source_class: &str,
+        has_inflictor: bool,
+        inflictor_class: &str,
+    ) -> i32 {
+        if !self.is_active() || !self.has_method(class, "ModifyDamage") {
+            return damage;
+        }
+        let qname = format!("{class}.ModifyDamage");
+        let Some(h) = self.modify_object(class) else {
+            return damage;
+        };
+        let inf = if has_inflictor {
+            self.actor_proxy(0, false, inflictor_class)
+        } else {
+            ObjHandle::NULL
+        };
+        let src = if has_source {
+            self.actor_proxy(1, source_monster, source_class)
+        } else {
+            ObjHandle::NULL
+        };
+        let Some(vm) = self.vm.as_mut() else {
+            return damage;
+        };
+        let i_args = [i64::from(damage), i64::from(damage), i64::from(passive), 0];
+        if vm
+            .call_method_full(&qname, h, &i_args, &[dtype], &[inf, src])
+            .is_err()
+        {
+            return damage;
+        }
+        vm.last_i[1].clamp(0, i64::from(i32::MAX)) as i32
+    }
+
+    fn actor_proxy(&mut self, slot: usize, monster: bool, class_name: &str) -> ObjHandle {
+        while self.actor_proxies.len() <= slot {
+            let h = self
+                .vm
+                .as_mut()
+                .map(|vm| vm.heap.new_object(0, 4, 1, 1))
+                .unwrap_or(ObjHandle::NULL);
+            self.actor_proxies.push(h);
+        }
+        let h = self.actor_proxies[slot];
+        if let Some(vm) = self.vm.as_mut() {
+            let name = vm.heap.intern_string(class_name);
+            if let Some(ObjKind::Object {
+                fields_i, fields_s, ..
+            }) = vm.heap.get_mut(h)
+            {
+                if fields_i.len() < 2 {
+                    fields_i.resize(2, 0);
+                }
+                fields_i[1] = i64::from(monster);
+                if fields_s.is_empty() {
+                    fields_s.push(name);
+                } else {
+                    fields_s[0] = name;
+                }
+            }
+        }
+        h
+    }
+
+    fn modify_object(&mut self, class: &str) -> Option<ObjHandle> {
+        let key = class.to_ascii_lowercase();
+        if let Some(h) = self.modify_objs.get(&key).copied() {
+            return Some(h);
+        }
+        let vm = self.vm.as_mut()?;
+        let cid = vm
+            .program
+            .class_by_name
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(class))
+            .map(|(_, id)| *id)
+            .unwrap_or(0);
+        let layout = vm
+            .program
+            .classes
+            .get(cid as usize)
+            .cloned()
+            .unwrap_or_default();
+        let h = vm.heap.new_object(cid, layout.n_i, layout.n_a, layout.n_s);
+        self.modify_objs.insert(key, h);
+        Some(h)
+    }
+
+    /// Bytes mixed into [`crate::world::World::checksum`] (ZS6 / demos / netplay).
+    ///
+    /// Stable digest of program hash + sorted actor field integers.
+    #[must_use]
+    pub fn checksum_bytes(&self) -> Option<[u8; 32]> {
+        let prog = self.program.as_ref()?;
+        let vm = self.vm.as_ref()?;
+        let mut bytes = Vec::with_capacity(64);
+        bytes.extend_from_slice(&prog.program_hash.to_le_bytes());
+        for (&actor, &h) in &self.actor_fields {
+            bytes.extend_from_slice(&actor.to_le_bytes());
+            if let Some(ObjKind::Object { fields_i, .. }) = vm.heap.get(h) {
+                bytes.extend_from_slice(&(fields_i.len() as u32).to_le_bytes());
+                for v in fields_i {
+                    bytes.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
+        bytes.extend_from_slice(&vm.heap.stable_digest().to_le_bytes());
+        let mut out = [0u8; 32];
+        out[..8].copy_from_slice(&prog.program_hash.to_le_bytes());
+        let mut acc = [0u64; 3];
+        for (i, chunk) in bytes.chunks(8).enumerate() {
+            let mut tmp = [0u8; 8];
+            tmp[..chunk.len()].copy_from_slice(chunk);
+            acc[i % 3] ^= u64::from_le_bytes(tmp);
+        }
+        out[8..16].copy_from_slice(&acc[0].to_le_bytes());
+        out[16..24].copy_from_slice(&acc[1].to_le_bytes());
+        out[24..32].copy_from_slice(&acc[2].to_le_bytes());
+        Some(out)
+    }
+
+    /// Snapshot script state for saves (ZS6).
+    #[must_use]
+    pub fn save_blob(&self) -> Option<ZscriptSaveBlob> {
+        let prog = self.program.as_ref()?;
+        let vm = self.vm.as_ref()?;
+        let mut blob = ZscriptSaveBlob {
+            program_hash: prog.program_hash,
+            actor_i: BTreeMap::new(),
+            objects: Vec::new(),
+            heap: Some(vm.heap.image()),
+            handlers: self
+                .handler_objs
+                .iter()
+                .map(|(name, h)| (name.clone(), h.index, h.generation))
+                .collect(),
+            actor_handles: self
+                .actor_fields
+                .iter()
+                .map(|(&actor, h)| (actor, h.index, h.generation))
+                .collect(),
+        };
+        for (&actor, &h) in &self.actor_fields {
+            if let Some(ObjKind::Object { fields_i, .. }) = vm.heap.get(h) {
+                blob.actor_i.insert(actor, fields_i.clone());
+            }
+        }
+        for &h in self.actor_fields.values() {
+            if h.is_null() {
+                continue;
+            }
+            if let Some(ObjKind::Object {
+                class_id, fields_i, ..
+            }) = vm.heap.get(h)
+            {
+                blob.objects.push(SavedObject {
+                    index: h.index,
+                    generation: h.generation,
+                    class_id: *class_id,
+                    fields_i: fields_i.clone(),
+                });
+            }
+        }
+        blob.objects.sort_by_key(|o| o.index);
+        Some(blob)
+    }
+
+    /// Restore script fields from a save blob (ZS6).
+    pub fn load_blob(
+        &mut self,
+        blob: &ZscriptSaveBlob,
+        allow_mismatch: bool,
+    ) -> Result<(), String> {
+        let prog = self
+            .program
+            .as_ref()
+            .ok_or_else(|| "no ZScript program loaded".to_owned())?;
+        if prog.program_hash != blob.program_hash && !allow_mismatch {
+            return Err(format!(
+                "ZScript program hash mismatch: save {:#x} != loaded {:#x}",
+                blob.program_hash, prog.program_hash
+            ));
+        }
+        let vm = self.vm.as_mut().ok_or_else(|| "no ZScript VM".to_owned())?;
+        if let Some(image) = &blob.heap {
+            vm.heap.restore(image);
+            self.actor_fields.clear();
+            for &(actor, index, generation) in &blob.actor_handles {
+                self.actor_fields
+                    .insert(actor, ObjHandle { index, generation });
+            }
+            self.handler_objs.clear();
+            for (name, index, generation) in &blob.handlers {
+                self.handler_objs.insert(
+                    name.clone(),
+                    ObjHandle {
+                        index: *index,
+                        generation: *generation,
+                    },
+                );
+            }
+            self.publish_handler_objs();
+            return Ok(());
+        }
+        self.actor_fields.clear();
+        for (&actor, fields) in &blob.actor_i {
+            let layout_n = fields.len() as u16;
+            let h = vm.heap.new_object(0, layout_n, 0, 0);
+            if let Some(ObjKind::Object { fields_i, .. }) = vm.heap.get_mut(h) {
+                *fields_i = fields.clone();
+            }
+            self.actor_fields.insert(actor, h);
+        }
+        Ok(())
+    }
+}
+
+fn call_handler_with_event(
+    vm: &mut Zvm,
+    name: &str,
+    self_h: ObjHandle,
+    event: ObjHandle,
+) -> Result<i64, room_zvm::Trap> {
+    vm.call_method_self_args(name, self_h, &[event])
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use room_zvm::{CompiledFunction, Op};
+
+    #[test]
+    fn save_load_roundtrip() {
+        let mut f = CompiledFunction {
+            name: "nop".into(),
+            n_i: 1,
+            ..Default::default()
+        };
+        f.emit(Op::Return, 0, 0, 0);
+        let mut p = CompiledProgram {
+            functions: vec![f],
+            ..Default::default()
+        };
+        p.finalize();
+        let mut rt = ZscriptRuntime::default();
+        rt.load_program(p);
+        let vm = rt.vm.as_mut().unwrap();
+        let h = vm.heap.new_object(0, 2, 0, 0);
+        if let Some(ObjKind::Object { fields_i, .. }) = vm.heap.get_mut(h) {
+            fields_i[0] = 42;
+            fields_i[1] = 7;
+        }
+        rt.actor_fields.insert(3, h);
+        let blob = rt.save_blob().unwrap();
+        assert_eq!(blob.actor_i[&3], vec![42, 7]);
+
+        let mut rt2 = ZscriptRuntime::default();
+        let mut p2 = CompiledProgram::default();
+        p2.program_hash = blob.program_hash;
+        rt2.program = Some(Arc::new(p2));
+        rt2.vm = Some(Zvm::new(CompiledProgram::default()));
+        rt2.load_blob(&blob, true).unwrap();
+        let h2 = rt2.actor_fields[&3];
+        let fields = match rt2.vm.as_ref().unwrap().heap.get(h2) {
+            Some(ObjKind::Object { fields_i, .. }) => fields_i.clone(),
+            _ => panic!("missing"),
+        };
+        assert_eq!(fields, vec![42, 7]);
+    }
+
+    #[test]
+    fn checksum_tracks_field_mutations() {
+        let mut f = CompiledFunction {
+            name: "nop".into(),
+            n_i: 1,
+            ..Default::default()
+        };
+        f.emit(Op::Return, 0, 0, 0);
+        let mut p = CompiledProgram {
+            functions: vec![f],
+            ..Default::default()
+        };
+        p.finalize();
+        let mut rt = ZscriptRuntime::default();
+        rt.load_program(p);
+        let h = {
+            let vm = rt.vm.as_mut().unwrap();
+            let h = vm.heap.new_object(0, 1, 0, 0);
+            if let Some(ObjKind::Object { fields_i, .. }) = vm.heap.get_mut(h) {
+                fields_i[0] = 1;
+            }
+            h
+        };
+        rt.actor_fields.insert(1, h);
+        let a = rt.checksum_bytes().unwrap();
+        if let Some(ObjKind::Object { fields_i, .. }) = rt.vm.as_mut().unwrap().heap.get_mut(h) {
+            fields_i[0] = 2;
+        }
+        let b = rt.checksum_bytes().unwrap();
+        assert_ne!(a, b, "checksum must change when script fields mutate");
+    }
+}

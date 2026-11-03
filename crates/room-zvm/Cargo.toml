@@ -1,0 +1,27 @@
+[package]
+name = "room-zvm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "ZScript register VM: interpreter, heap, GC, native table (docs/34)."
+
+[lints]
+workspace = true
+
+[features]
+default = []
+## Desktop Cranelift JIT (ZS9). Enables conformance + peephole Tier-1 path;
+## full Cranelift codegen is feature-gated for later wiring.
+zvm-jit = []
+
+[dependencies]
+room-core = { path = "../room-core" }
+thiserror.workspace = true
+
+[[bench]]
+name = "tick_override"
+harness = false
+
+[dev-dependencies]
+criterion = "0.5"
