@@ -21,6 +21,10 @@ mod editor_pick;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod feed;
 
+#[cfg(feature = "browser")]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod pk3_edit;
+
 #[cfg(all(feature = "browser", target_arch = "wasm32"))]
 mod netplay;
 

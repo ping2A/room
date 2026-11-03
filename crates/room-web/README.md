@@ -93,6 +93,19 @@ uses. Click a frame to edit it in the same tab.
   (+ `S_*` source) lumps in the exported PWAD. Guide and API: docs/12 §16. The AssemblyScript
   compiler is vendored by `scripts/fetch-assemblyscript.sh` (run automatically by
   `play-web.sh` when npm exists; otherwise loaded from jsDelivr).
+- **PK3 packs** (`src/pk3_edit.rs`): the Lumps tab shows PK3 / PK7 / folder
+  packs as a folder tree. Text files are edited by full path (saved to
+  `editor-overrides.pk3`, mounted last); **+ New file in pack…** adds one.
+  `maps/*.wad` inside a pack opens like any map. **Export PK3** rebuilds the
+  opened pack (or a new one) with every edit: files, lumps, maps as
+  `maps/<name>.wad`, and actor edits as `decorate.room-edits`. **Export WAD**
+  still writes a PWAD.
+- **Text editor**: syntax colors for ZScript, DECORATE, ACS and MAPINFO
+  (`highlight` / `textLang` in `editor-scripts.js`), covering States frames,
+  Default flags and properties, and labels. Use the `#include` buttons or
+  Ctrl/⌘+click an `#include` line to open the file. **Check ZScript**
+  (`roomEditorCheckZscript`, also run on save) lists errors; click one to jump to
+  its line. Tests: `node --test crates/room-web/tests/editor_highlight.test.mjs`.
 - **🔊 / 🔇** in the toolbar mutes game sound and music (remembered).
 - `window.roomEditor` — console hook (`state.doc`, `commit()`, `undo()`, …).
 

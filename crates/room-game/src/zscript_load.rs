@@ -22,7 +22,26 @@ pub struct ZscriptLoadReport {
 /// return a report. Empty VFS → `ok` with no program.
 #[must_use]
 pub fn load_zscript_from_vfs(vfs: &Vfs) -> ZscriptLoadReport {
+    let (sources, skipped) = zscript_sources_from_vfs(vfs);
+    compile_report(sources, skipped)
+}
+
+/// ZScript sources of `vfs` as `(path, text)`, entry file (`zscript` /
+/// `zscript.zc`) first, plus the paths that were skipped.
+///
+/// A file whose path an archive loaded later also has is replaced by the
+/// later one (GZDoom full-path lookup). WAD lumps (path = short name, e.g.
+/// two PWADs each with `ZSCRIPT`) are all kept, except that a container named
+/// `editor-overrides.*` (the web editor's edits) replaces the latest earlier
+/// source with the same path.
+#[must_use]
+pub fn zscript_sources_from_vfs(vfs: &Vfs) -> (Vec<(String, String)>, Vec<String>) {
     let (mut sources, skipped) = collect_zscript_sources(vfs);
+    sort_entry_first(&mut sources);
+    (sources, skipped)
+}
+
+fn sort_entry_first(sources: &mut [(String, String)]) {
     sources.sort_by(|a, b| {
         let score = |n: &str| {
             let base = n.rsplit(['/', '\\']).next().unwrap_or(n);
@@ -34,6 +53,9 @@ pub fn load_zscript_from_vfs(vfs: &Vfs) -> ZscriptLoadReport {
         };
         score(&a.0).cmp(&score(&b.0)).then_with(|| a.0.cmp(&b.0))
     });
+}
+
+fn compile_report(sources: Vec<(String, String)>, skipped: Vec<String>) -> ZscriptLoadReport {
     let files: Vec<String> = sources.iter().map(|(p, _)| p.clone()).collect();
     if sources.is_empty() {
         return ZscriptLoadReport {
@@ -86,8 +108,10 @@ pub fn load_zscript_from_vfs(vfs: &Vfs) -> ZscriptLoadReport {
 }
 
 fn collect_zscript_sources(vfs: &Vfs) -> (Vec<(String, String)>, Vec<String>) {
-    let mut sources = Vec::new();
+    let mut sources: Vec<(String, String)> = Vec::new();
     let mut skipped = Vec::new();
+    // Lowercase path → index in `sources` (archive files and editor overrides).
+    let mut by_path: std::collections::BTreeMap<String, usize> = Default::default();
     for (id, info) in vfs.iter() {
         let path = if !info.full_path.is_empty() {
             info.full_path.clone()
@@ -126,6 +150,23 @@ fn collect_zscript_sources(vfs: &Vfs) -> (Vec<(String, String)>, Vec<String>) {
             skipped.push(format!("{path}: empty"));
             continue;
         }
+        let container = vfs.container(info.container);
+        let archive = container.is_some_and(|c| {
+            !matches!(
+                c.kind,
+                room_vfs::ContainerKind::Wad | room_vfs::ContainerKind::LooseFile
+            )
+        });
+        let editor = container.is_some_and(|c| c.name.starts_with("editor-overrides."));
+        let key = path.to_ascii_lowercase();
+        if (archive || editor)
+            && let Some(&i) = by_path.get(&key)
+            && let Some(slot) = sources.get_mut(i)
+        {
+            *slot = (path, text);
+            continue;
+        }
+        by_path.insert(key, sources.len());
         sources.push((path, text));
     }
     (sources, skipped)
@@ -183,5 +224,71 @@ pub fn log_zscript_report(report: &ZscriptLoadReport, handlers: &[String]) {
             }
             eprintln!("room: ZScript: set ROOM_ZSCRIPT_DEBUG=1 for full diagnostics");
         }
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use room_vfs::{VfsBuilder, WadWriter, zip_from_files};
+
+    #[test]
+    fn later_archive_replaces_same_path() {
+        let base = zip_from_files(&[
+            ("zscript.zs", b"#include \"zscript/a.zs\"".as_slice()),
+            ("zscript/a.zs", b"class A {}".as_slice()),
+        ])
+        .unwrap();
+        let edits = zip_from_files(&[
+            ("zscript/a.zs", b"class A2 {}".as_slice()),
+            ("room-editor.txt", b"".as_slice()),
+        ])
+        .unwrap();
+        let vfs = VfsBuilder::new()
+            .mount_memory("mod.pk3", base)
+            .unwrap()
+            .mount_memory("editor-overrides.pk3", edits)
+            .unwrap()
+            .build()
+            .unwrap();
+        let (sources, _) = zscript_sources_from_vfs(&vfs);
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].0, "zscript.zs");
+        let a: Vec<_> = sources
+            .iter()
+            .filter(|(p, _)| p == "zscript/a.zs")
+            .collect();
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].1, "class A2 {}");
+    }
+
+    #[test]
+    fn wad_zscript_lumps_are_kept_unless_editor_override() {
+        let wad = |t: &str| {
+            WadWriter::pwad()
+                .add("ZSCRIPT", t.as_bytes().to_vec())
+                .finish()
+                .unwrap()
+        };
+        let vfs = VfsBuilder::new()
+            .mount_memory("a.wad", wad("class A {}"))
+            .unwrap()
+            .mount_memory("b.wad", wad("class B {}"))
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(zscript_sources_from_vfs(&vfs).0.len(), 2);
+        let vfs = VfsBuilder::new()
+            .mount_memory("a.wad", wad("class A {}"))
+            .unwrap()
+            .mount_memory("editor-overrides.wad", wad("class A2 {}"))
+            .unwrap()
+            .build()
+            .unwrap();
+        let (sources, _) = zscript_sources_from_vfs(&vfs);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].1, "class A2 {}");
     }
 }

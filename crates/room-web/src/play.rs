@@ -258,7 +258,7 @@ impl PlaySession {
                 .mount_memory(name, Bytes::copy_from_slice(bytes))
                 .map_err(|e| format!("{name}: {e}"))?;
         }
-        let mut vfs = builder.build().map_err(|e| e.to_string())?;
+        let vfs = builder.build().map_err(|e| e.to_string())?;
 
         let mut opts = opts;
         let requested = opts.map_name.as_deref().unwrap_or("").trim().to_owned();
@@ -283,7 +283,7 @@ impl PlaySession {
 
     /// Start `map` (nodes already built) on an already-mounted `vfs`.
     pub fn from_parts(
-        vfs: Vfs,
+        mut vfs: Vfs,
         map: MapGeometry,
         opts: PlayStartOpts,
         data: EngineData,

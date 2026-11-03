@@ -31,6 +31,7 @@ room-script = { path = "../room-script", optional = true }
 room-sim = { path = "../room-sim", optional = true }
 room-ui = { path = "../room-ui", optional = true }
 room-vfs = { path = "../room-vfs", optional = true }
+room-zscript = { path = "../room-zscript", optional = true }
 glam = { workspace = true, optional = true }
 wat = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
@@ -114,6 +115,7 @@ browser = [
     "dep:room-sim",
     "dep:room-ui",
     "dep:room-vfs",
+    "dep:room-zscript",
     "dep:glam",
     "dep:wgpu",
     "dep:libm",

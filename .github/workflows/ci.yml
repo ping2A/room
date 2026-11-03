@@ -95,8 +95,8 @@ jobs:
           tar -xzf geckodriver.tgz
           chmod +x geckodriver
           echo "$PWD" >> "$GITHUB_PATH"
-      - name: face-swap JS no-network
-        run: node --test crates/room-web/tests/face_no_network.test.mjs
+      - name: face-swap JS no-network + editor highlighting
+        run: node --test crates/room-web/tests/face_no_network.test.mjs crates/room-web/tests/editor_highlight.test.mjs
       - name: wasm-bindgen-test (Firefox)
         env:
           WASM_BINDGEN_TEST_TIMEOUT: "120"

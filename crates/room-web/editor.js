@@ -4,7 +4,7 @@
 
 import { install as installTools, HEXEN_LINE_SPECIALS } from "./editor-tools.js";
 import { install as installPaint, paintNs } from "./editor-paint.js";
-import { install as installScripts, highlight } from "./editor-scripts.js";
+import { install as installScripts, highlight, textLang, includesOf } from "./editor-scripts.js";
 
 /** Flip to `true` to re-expose Duke Nukem 3D GRP / .MAP UI (code paths kept). */
 const ROOM_UI_SHOW_DUKE = false;
@@ -124,6 +124,7 @@ const S = {
   tab: "maps",
   docTab: "map",
   lumpTabs: new Map(),
+  openDirs: new Set(), // expanded folders in the Lumps tab ("src:dir/")
   actors: null,
   actorSel: null,
   /** Doom Builder–style immersive 3D edit (M). */
@@ -2075,19 +2076,112 @@ function renderBrowser() {
     body.append(el("div", { class: "actions", style: "padding:6px 10px;margin:0" },
       el("button", { class: "btn small", onclick: newLump }, "+ New text lump"),
       el("button", { class: "btn small", onclick: newLumpFromFile }, "+ Import file as lump")));
-    const over = new Set(sm.overrides.map((o) => `${o.ns}/${o.name}`));
-    let lastSrc = null;
-    let shown = 0;
+    body.lastChild.append(el("button", { class: "btn small", title: "Add a file by path (zscript/…, actors/…, maps/…) — saved in Export PK3", onclick: newPackFile }, "+ New file in pack…"));
+    const row = (l, label) => el("div", { class: "list-item", onclick: () => openLump(l), title: l.path },
+      el("span", { class: `kind ${l.kind}` }, l.kind), el("span", { class: "name" }, label),
+      isOverride(l) ? el("span", { class: "kind map" }, "override") : null,
+      el("span", { class: "meta" }, l.ns === "global" ? fmtSize(l.size) : `${l.ns} · ${fmtSize(l.size)}`));
+    // Group by container (load order); PK3 / PK7 / folders show as a tree.
+    const groups = [];
     for (const l of sm.lumps) {
       if (q && !l.name.includes(q) && !l.path.toUpperCase().includes(q) && !l.kind.toUpperCase().includes(q)) continue;
-      if (l.src !== lastSrc) { body.append(el("div", { class: "section-head" }, l.src)); lastSrc = l.src; }
-      if (++shown > 4000) { body.append(el("p", { class: "muted", style: "padding:8px" }, "…filter to see more")); break; }
-      body.append(el("div", { class: "list-item", onclick: () => openLump(l), title: l.path },
-        el("span", { class: `kind ${l.kind}` }, l.kind), el("span", { class: "name" }, l.name),
-        over.has(`${l.ns === "global" ? "global" : l.ns}/${l.name}`) && l.src === "editor-overrides.wad" ? el("span", { class: "kind map" }, "override") : null,
-        el("span", { class: "meta" }, l.ns === "global" ? fmtSize(l.size) : `${l.ns} · ${fmtSize(l.size)}`)));
+      if (!groups.length || groups.at(-1).src !== l.src) groups.push({ src: l.src, items: [] });
+      groups.at(-1).items.push(l);
+    }
+    let shown = 0;
+    for (const g of groups) {
+      body.append(el("div", { class: "section-head" }, g.src));
+      if (!q && g.items.some((l) => l.arch)) { body.append(lumpTree(g.src, g.items, row)); continue; }
+      for (const l of g.items) {
+        if (++shown > 4000) break;
+        body.append(row(l, l.name));
+      }
+      if (shown > 4000) { body.append(el("p", { class: "muted", style: "padding:8px" }, "…filter to see more")); break; }
     }
   }
+}
+
+/** Folder tree of one archive's files; folders render their rows when opened. */
+function lumpTree(src, items, row) {
+  const root = { dirs: new Map(), files: [] };
+  for (const l of items) {
+    const parts = (l.path || l.name).split("/");
+    let node = root;
+    for (const d of parts.slice(0, -1)) {
+      if (!node.dirs.has(d)) node.dirs.set(d, { dirs: new Map(), files: [] });
+      node = node.dirs.get(d);
+    }
+    node.files.push(l);
+  }
+  const count = (n) => n.files.length + [...n.dirs.values()].reduce((a, d) => a + count(d), 0);
+  const render = (node, prefix, into) => {
+    for (const [name, d] of [...node.dirs].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const key = `${src}:${prefix}${name}/`;
+      const det = el("details", { class: "tree-dir" }, el("summary", {}, `${name}/`, el("span", { class: "meta" }, String(count(d)))));
+      const box = el("div", { class: "tree-kids" });
+      det.append(box);
+      const fill = () => { if (!box.childElementCount) render(d, `${prefix}${name}/`, box); };
+      if (S.openDirs.has(key)) { det.open = true; fill(); }
+      det.addEventListener("toggle", () => {
+        if (det.open) { S.openDirs.add(key); fill(); } else S.openDirs.delete(key);
+      });
+      into.append(det);
+    }
+    for (const l of node.files) into.append(row(l, (l.path || l.name).split("/").pop()));
+  };
+  const wrap = el("div", { class: "tree" });
+  render(root, "", wrap);
+  return wrap;
+}
+
+const ZS_FILE_TEMPLATE = `// New ZScript file. Include it from your ZSCRIPT lump:
+//   #include "PATH"
+
+class MyActor : Actor
+{
+  Default
+  {
+    Health 100;
+    Radius 20;
+    Height 56;
+    Speed 8;
+    Monster;
+    +FLOORCLIP
+  }
+  States
+  {
+  Spawn:
+    TROO AB 10 A_Look;
+    Loop;
+  See:
+    TROO AABBCCDD 3 A_Chase;
+    Loop;
+  Death:
+    TROO I 8 A_Scream;
+    TROO J 8 A_NoBlocking;
+    TROO K -1;
+    Stop;
+  }
+}
+`;
+
+/** Ask for a path and open an empty editor for a new file in the edited PK3. */
+function newPackFile() {
+  if (!S.summary) return;
+  const path = prompt("New file path in the pack (e.g. zscript/monsters.zs, zscript.txt, actors/imp.dec, mapinfo.txt):", "zscript/myactor.zs");
+  if (!path) return;
+  const p = path.trim().replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+  const base = p.split("/").pop();
+  const name = base.replace(/\.[^.]*$/, "").toUpperCase().slice(0, 8);
+  const lang = textLang(name, p);
+  const text = lang === "zs" ? (name === "ZSCRIPT" ? 'version "4.10"\n\n#include "zscript/myactor.zs"\n' : ZS_FILE_TEMPLATE.replace("PATH", p))
+    : lang === "decorate" ? "// actor FastImp : DoomImp replaces DoomImp { Speed 16 Health 90 }\n" : "";
+  const fake = { id: null, name, ns: "global", size: 0, src: PATH_OVERRIDES, path: p, kind: "text", arch: true };
+  const view = el("div", {}, el("div", { class: "doc-head" }, el("h2", {}, p), el("span", { class: "kind text" }, "new")),
+    textEditor(fake, new TextEncoder().encode(text)));
+  const id = `newpath:${p}`;
+  S.lumpTabs.set(id, { title: base, view });
+  selectDocTab(id);
 }
 
 function applyPaint(flats, name, ceiling) {
@@ -2272,8 +2366,17 @@ function pickFile(accept) {
 const overrideNs = (l) => (["flats", "sprites", "patches", "textures"].includes(l.ns) ? l.ns : "global");
 const IMAGE_KINDS = ["flat", "patch", "sprite", "graphic", "texture"];
 
+const PATH_OVERRIDES = "editor-overrides.pk3";
+const isOverride = (l) => l.src === "editor-overrides.wad" || l.src === PATH_OVERRIDES;
+
+/** Replace a lump (`bytes`) or drop its override (`null`): files inside a PK3 by full path, WAD lumps by name. */
+function setLumpData(l, bytes) {
+  if (l.arch && l.path) S.mod.roomEditorSetPath(l.path, bytes);
+  else S.mod.roomEditorSetLump(overrideNs(l), l.name, bytes);
+}
+
 function overrideLump(l, bytes) {
-  S.mod.roomEditorSetLump(overrideNs(l), l.name, bytes);
+  setLumpData(l, bytes);
   const json = S.mod.roomEditorApplyLumps();
   thumbs.clear();
   setSummary(json);
@@ -2282,9 +2385,20 @@ function overrideLump(l, bytes) {
 }
 
 function openLump(l) {
+  // A PK3 file edited in this session: open the edited copy.
+  if (l.arch && l.path && !isOverride(l)) {
+    const p = l.path.toLowerCase();
+    const edited = S.summary?.lumps.find((x) => x.src === PATH_OVERRIDES && x.path.toLowerCase() === p);
+    if (edited) l = edited;
+  }
   const id = `lump:${l.src}:${l.name}:${l.id}`;
   if (S.lumpTabs.has(id)) { selectDocTab(id); return; }
   if (l.kind === "map") { loadMap(l.name); return; }
+  if (l.kind === "mapwad") {
+    // maps/*.wad inside a PK3 is mounted as "<pk3>:<path>"; open its map.
+    const m = S.summary.lumps.find((x) => x.kind === "map" && x.src === `${l.src}:${l.path}`);
+    if (m) { loadMap(m.name); return; }
+  }
   const view = el("div", {});
   const head = el("div", { class: "doc-head" }, el("h2", {}, l.name),
     el("span", { class: `kind ${l.kind}` }, l.kind), el("span", { class: "muted" }, `${l.ns} · ${fmtSize(l.size)} · ${l.src}${l.path && l.path !== l.name ? ` · ${l.path}` : ""}`));
@@ -2296,7 +2410,7 @@ function openLump(l) {
       try { const err = overrideLump(l, b); toast(err ? `Replaced — DECORATE: ${err}` : `${l.name} replaced and reloaded`, !!err); } catch (e) { toast(errText(e), true); }
     } }, "Replace…"),
     el("button", { class: "btn small", onclick: () => {
-      try { S.mod.roomEditorSetLump(overrideNs(l), l.name, null); setSummary(S.mod.roomEditorApplyLumps()); thumbs.clear(); toast(`${l.name} override removed`); } catch (e) { toast(errText(e), true); }
+      try { setLumpData(l, null); setSummary(S.mod.roomEditorApplyLumps()); thumbs.clear(); toast(`${l.name} override removed`); } catch (e) { toast(errText(e), true); }
     } }, "Revert override"));
   view.append(head, actions);
   const bytes = lumpBytes(l);
@@ -2324,31 +2438,103 @@ function looksText(b) {
   return bad / n < 0.02;
 }
 
-function isZscriptLump(l) {
-  const name = String(l.name || "");
-  const path = String(l.path || name).toLowerCase();
-  const stem = name.split(".").pop().toLowerCase();
-  if (name.toUpperCase() === "ZSCRIPT") return true;
-  if (path.endsWith(".zs") || path.endsWith(".zc") || path.endsWith(".zsc")) return true;
-  if (stem === "zs" || stem === "zc" || stem === "zsc") return true;
-  return path.includes("zscript");
+const DOOM_LANG_LABEL = { zs: "ZScript", decorate: "DECORATE", acs: "ACS", mapinfo: "MAPINFO", text: "text" };
+const escHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/** Lump for an `#include "path"`: same full path (last in load order wins, like the engine), else the 8-char stem. */
+function findInclude(path, from) {
+  const lumps = S.summary?.lumps || [];
+  const norm = (p) => p.replace(/\\/g, "/").replace(/^\.?\//, "").toLowerCase();
+  const p = norm(path);
+  const dir = (from?.path || "").includes("/") ? from.path.slice(0, from.path.lastIndexOf("/") + 1).toLowerCase() : "";
+  let hit = null;
+  for (const l of lumps) if (l.kind !== "map" && norm(l.path || l.name) === p) hit = l;
+  if (!hit && dir) for (const l of lumps) if (l.kind !== "map" && norm(l.path || l.name) === dir + p) hit = l;
+  if (!hit) {
+    const stem = p.split("/").pop().replace(/\.[^.]*$/, "").toUpperCase().slice(0, 8);
+    for (const l of lumps) if (l.kind !== "map" && l.name === stem) hit = l;
+  }
+  return hit;
 }
 
 function textEditor(l, bytes) {
   const wrap = el("div", {});
-  const zscript = isZscriptLump(l);
-  const ta = el("textarea", { class: zscript ? "code hl-input" : "code", spellcheck: "false" });
-  ta.value = new TextDecoder("utf-8").decode(bytes);
+  const text0 = new TextDecoder("utf-8").decode(bytes);
+  const lang = textLang(l.name, l.path || l.name, text0);
+  const zscript = lang === "zs";
+  const ta = el("textarea", { class: "code hl-input", spellcheck: "false" });
+  ta.value = text0;
   const gutter = el("div", { class: "gutter" });
-  const hl = zscript ? el("pre", { class: "code-hl", "aria-hidden": "true" }) : null;
-  const lines = () => {
+  const hl = el("pre", { class: "code-hl", "aria-hidden": "true" });
+  const incBar = el("div", { class: "inc-bar", hidden: true });
+  const errBox = el("div", { class: "err-box", hidden: true });
+  let marks = new Map(); // line → message (exact diagnostics of this file)
+  const renderGutter = () => {
     const n = ta.value.split("\n").length;
-    gutter.textContent = Array.from({ length: n }, (_, i) => i + 1).join("\n");
-    if (hl) hl.innerHTML = highlight(ta.value, "zs");
+    const rows = [];
+    for (let i = 1; i <= n; i++) {
+      const m = marks.get(i);
+      rows.push(m ? `<span class="gl-err" title="${escHtml(m)}">${i}</span>` : String(i));
+    }
+    gutter.innerHTML = rows.join("\n");
   };
-  const syncScroll = () => {
-    gutter.scrollTop = ta.scrollTop;
-    if (hl) { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; }
+  const openInclude = (path) => {
+    const hit = findInclude(path, l);
+    if (hit) openLump(hit); else toast(`#include "${path}" not found in the loaded files`, true);
+  };
+  let incKey = "";
+  const renderIncludes = () => {
+    if (lang === "mapinfo" || lang === "text") return;
+    const inc = includesOf(ta.value);
+    const key = inc.map((x) => x.path).join("\n");
+    if (key === incKey) return;
+    incKey = key;
+    incBar.replaceChildren();
+    incBar.hidden = !inc.length;
+    if (!inc.length) return;
+    incBar.append(el("span", { class: "muted" }, "#include:"));
+    for (const x of inc) {
+      const found = !!findInclude(x.path, l);
+      incBar.append(el("button", { class: `btn small${found ? "" : " missing"}`, title: found ? `Open ${x.path} (or Ctrl/⌘+click the line)` : "Not found in the loaded files", onclick: () => openInclude(x.path) }, x.path));
+    }
+  };
+  const syncScroll = () => { gutter.scrollTop = ta.scrollTop; hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; };
+  const lines = () => { renderGutter(); hl.innerHTML = highlight(ta.value, lang); renderIncludes(); syncScroll(); };
+  const goToLine = (n, col = 1) => {
+    const rows = ta.value.split("\n");
+    const k = Math.max(1, Math.min(n, rows.length));
+    let start = 0;
+    for (let i = 0; i < k - 1; i++) start += rows[i].length + 1;
+    ta.focus();
+    ta.setSelectionRange(start + Math.max(0, col - 1), start + rows[k - 1].length);
+    ta.scrollTop = Math.max(0, (k - 6) * 18);
+    syncScroll();
+  };
+  const showDiags = (r, decorateErr) => {
+    errBox.replaceChildren();
+    marks = new Map();
+    const me = (l.path || l.name || "").toLowerCase();
+    if (decorateErr) errBox.append(el("div", {}, `DECORATE error (engine definitions kept): ${decorateErr}`));
+    if (r) {
+      const errs = r.diagnostics.filter((d) => d.severity === "error").length;
+      const where = r.scope === "file" ? "this file" : `${r.files} ZScript file(s)`;
+      errBox.append(el("div", { class: r.ok ? "diag-ok" : "" }, r.ok ? `ZScript OK — ${where} compiled${r.diagnostics.length ? `, ${r.diagnostics.length} warning(s)` : ""}` : `ZScript: ${errs} error(s) in ${where}`));
+      for (const d of r.diagnostics) {
+        const exact = d.exact && (!d.path || d.path.toLowerCase() === me || r.scope === "file");
+        if (exact && d.severity === "error" && !marks.has(d.line)) marks.set(d.line, d.message);
+        errBox.append(el("div", { class: `diag ${d.severity}${exact ? " jump" : ""}`, title: exact ? "Go to line" : "",
+          onclick: exact ? () => goToLine(d.line, d.col) : null }, exact ? `${d.line}:${d.col}  ${d.severity}: ${d.message}` : d.text));
+      }
+    }
+    errBox.hidden = !errBox.childElementCount;
+    renderGutter();
+  };
+  const check = () => {
+    try {
+      const r = JSON.parse(S.mod.roomEditorCheckZscript(l.path || l.name, ta.value));
+      showDiags(r, null);
+      return r;
+    } catch (e) { errBox.hidden = false; errBox.textContent = errText(e); return null; }
   };
   lines();
   ta.addEventListener("input", lines);
@@ -2357,24 +2543,30 @@ function textEditor(l, bytes) {
     if (e.key === "Tab") { e.preventDefault(); const s = ta.selectionStart; ta.setRangeText("    ", s, ta.selectionEnd, "end"); lines(); }
     if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(); }
   });
-  const errBox = el("div", { class: "err-box", hidden: true });
+  // Ctrl/⌘+click on an #include line opens the included file.
+  ta.addEventListener("click", (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const line = ta.value.slice(0, ta.selectionStart).split("\n").length;
+    const inc = includesOf(ta.value).find((x) => x.line === line);
+    if (inc) { e.preventDefault(); openInclude(inc.path); }
+  });
   const save = () => {
     try {
       const err = overrideLump(l, new TextEncoder().encode(ta.value));
-      errBox.hidden = !err;
-      errBox.textContent = err ? `DECORATE error (engine definitions kept): ${err}` : "";
-      toast(err ? "Applied with errors" : `${l.name} applied — level reloaded`, !!err);
+      const r = zscript ? check() : null;
+      showDiags(r, err);
+      const bad = !!err || (r && !r.ok);
+      toast(bad ? "Applied with errors" : `${l.name} applied — level reloaded`, bad);
     } catch (e) { errBox.hidden = false; errBox.textContent = errText(e); }
   };
+  const where = l.arch && l.path ? ` Saved by path into the PK3 (${l.path}); Export PK3 writes it back.` : "";
   const note = zscript
-    ? "ZScript (.zs / .zc / ZSCRIPT). Syntax colors update as you type. Ctrl+S reloads the level."
-    : "Text lumps (DECORATE, MAPINFO, SNDINFO, TEXTURES, GLDEFS…) reload the level with your changes.";
-  wrap.append(el("div", { class: "actions" }, el("button", { class: "btn primary", onclick: save }, "Apply & reload (Ctrl+S)"),
-    el("span", { class: "muted" }, note)));
-  const editor = zscript
-    ? el("div", { class: "code-wrap" }, gutter, el("div", { class: "code-area" }, hl, ta))
-    : el("div", { class: "code-wrap" }, gutter, ta);
-  wrap.append(editor, errBox);
+    ? `ZScript — syntax colors as you type, Check finds errors (click one to jump), Ctrl/⌘+click an #include to open it.${where}`
+    : `${DOOM_LANG_LABEL[lang]} — the level reloads with your changes.${where}`;
+  const actions = el("div", { class: "actions" }, el("button", { class: "btn primary", onclick: save }, "Apply & reload (Ctrl+S)"));
+  if (zscript) actions.append(el("button", { class: "btn", title: "Parse this file, then compile the whole ZScript program with it", onclick: check }, "Check ZScript"));
+  actions.append(el("span", { class: `kind text` }, DOOM_LANG_LABEL[lang]), el("span", { class: "muted" }, note));
+  wrap.append(actions, incBar, el("div", { class: "code-wrap" }, gutter, el("div", { class: "code-area" }, hl, ta)), errBox);
   return wrap;
 }
 
@@ -2501,8 +2693,29 @@ function exportWad() {
     const bytes = S.mod.roomEditorExport(JSON.stringify(S.docs));
     const base = (S.summary.pwads.at(-1) || S.summary.iwad).replace(/\.(wad|pk3|zip)$/i, "");
     download(bytes, `${base}-room-edit.wad`);
-    toast(`Exported ${Object.keys(S.docs).length} map(s) + ${S.summary.overrides.length} lump(s)`);
+    const paths = S.summary.overrides.filter((o) => o.ns === "path").length;
+    toast(`Exported ${Object.keys(S.docs).length} map(s) + ${S.summary.overrides.length - paths} lump(s)${paths ? ` — ${paths} PK3 file edit(s) need Export PK3` : ""}`, paths > 0);
   } catch (e) { toast(`Export: ${errText(e)}`, true); }
+}
+
+/** Export a PK3: the opened PK3 (or a new one) with every edit applied. */
+function exportPk3() {
+  if (!S.summary) return;
+  if (S.doc) S.docs[S.doc.name] = S.doc;
+  const archives = new Set((S.summary.containers || []).filter((c) => ["pk3", "pk7", "dir"].includes(c.kind)).map((c) => c.name));
+  const opened = [S.summary.iwad, ...S.summary.pwads].filter((n) => archives.has(n));
+  let target = opened.at(-1) || "";
+  if (opened.length > 1) {
+    const pick = prompt(`Rebuild which pack? (${opened.join(", ")})\nLeave empty for a new PK3 with only your changes.`, target);
+    if (pick === null) return;
+    target = pick.trim();
+  }
+  try {
+    const bytes = S.mod.roomEditorExportPk3(JSON.stringify(S.docs), target);
+    const base = (target || S.summary.pwads.at(-1) || S.summary.iwad).replace(/^.*[\/]/, "").replace(/\.(wad|pk3|pk7|zip|ipk3)$/i, "");
+    download(bytes, `${base}-room-edit.pk3`);
+    toast(`Exported ${target ? `${target} + ` : ""}${Object.keys(S.docs).length} map(s) + ${S.summary.overrides.length} edit(s) as PK3`);
+  } catch (e) { toast(`Export PK3: ${errText(e)}`, true); }
 }
 
 function newMap() {
@@ -2571,6 +2784,7 @@ $("#file-open").addEventListener("change", (e) => { openFiles([...e.target.files
 $("#map-select").addEventListener("change", (e) => loadMapOrDoc(e.target.value));
 $("#btn-new-map").addEventListener("click", newMap);
 $("#btn-export").addEventListener("click", exportWad);
+$("#btn-export-pk3").addEventListener("click", exportPk3);
 $("#btn-undo").addEventListener("click", undo);
 $("#btn-redo").addEventListener("click", redo);
 $("#btn-play").addEventListener("click", () => setPlaying(true, "start"));

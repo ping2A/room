@@ -5184,6 +5184,7 @@ dependencies = [
  "room-testkit",
  "room-ui",
  "room-vfs",
+ "room-zscript",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",

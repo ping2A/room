@@ -38,4 +38,6 @@ pub use runtime::{GameCmd, GameRuntime};
 pub use save::{SaveError, SaveInfo, load_world, read_save_info, save_world, validate_world_bin};
 pub use sound::SoundSystem;
 pub use vanilla_lmp::VanillaLmp;
-pub use zscript_load::{ZscriptLoadReport, load_zscript_from_vfs, log_zscript_report};
+pub use zscript_load::{
+    ZscriptLoadReport, load_zscript_from_vfs, log_zscript_report, zscript_sources_from_vfs,
+};

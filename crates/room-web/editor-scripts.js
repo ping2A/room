@@ -49,41 +49,208 @@ function watClass(m) {
   return /^(?:i32|i64|f32|f64|v128|funcref|externref|anyfunc)$/.test(m[6]) ? "t" : null;
 }
 
-const ZS_KEYWORDS = words("abstract action break case class clearscope const continue default deprecated do else enum extend fail false final for goto if in include internal let loop meta mixin native null out override play private property protected public readonly return states static stop struct super switch this transient true ui version virtual void wait while");
-const ZS_TYPES = words("int int8 int16 uint uint8 uint16 uint32 double float bool string Name color Vector2 Vector3 State StateLabel Sound TextureID TranslationID Class Actor Thinker void");
-const ZS_TOKENS = /(#[A-Za-z_]\w*)|(\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$))|("(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?)|(\b(?:0[xX][0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)|([A-Za-z_][\w]*)/g;
+// ---- Doom text languages: ZScript, DECORATE, ACS, MAPINFO, other text lumps.
+// A small scanner (not one regex) because the colors depend on context:
+// `States { … }` frame lines (sprite, frames, duration, action), `+FLAG`
+// lines and properties in `Default { … }` / DECORATE actor bodies, labels.
 
-function zsClass(m, src, end) {
-  if (m[1]) return "d";
-  if (m[2]) return "c";
-  if (m[3]) return "s";
-  if (m[4]) return "n";
-  const w = m[5];
-  if (!w) return null;
-  const folded = w.toLowerCase();
-  const allCaps = w === w.toUpperCase() && /[A-Z]/.test(w);
-  if (ZS_KEYWORDS.has(w) || (!allCaps && ZS_KEYWORDS.has(folded))) return "k";
-  if (ZS_TYPES.has(w) || ZS_TYPES.has(folded)) return "t";
-  if (/^A_/.test(w)) return "f";
-  CALL_AHEAD.lastIndex = end;
-  if (CALL_AHEAD.test(src)) return "f";
-  const colon = /\s*:/y;
-  colon.lastIndex = end;
-  const lineStart = src.lastIndexOf("\n", m.index) + 1;
-  const prefix = src.slice(lineStart, m.index);
-  if (colon.test(src) && !/\b(?:class|extend|mixin)\b/i.test(prefix)) return "f";
-  return /^[A-Z]/.test(w) ? "t" : null;
+const ZS_KEYWORDS = words("abstract action break case class clearscope const continue default deprecated do else enum extend fail false final for foreach goto if in include internal latent let loop meta mixin native null out override play private property protected public readonly replaces return states static stop struct super switch this transient true ui until varg version virtual virtualscope void wait while");
+const ZS_TYPES = words("int int8 int16 int32 uint uint8 uint16 uint32 sbyte byte short ushort double float float64 float32 bool string name color vector2 vector3 vector4 quat fvector2 fvector3 state statelabel sound textureid translationid spriteid class actor thinker object array map mapiterator readonly let voidptr");
+const DEC_KEYWORDS = words("actor class const enum native replaces states goto stop loop wait fail var action return if else while for do break continue true false include");
+const DEC_TYPES = words("int float bool string state sound name color");
+const ACS_KEYWORDS = words("script function return if else while until do for switch case default break continue restart suspend terminate open enter respawn death disconnect lightning unloading return kill reopen pickup bluereturn redreturn whitereturn event net clientside world global static special const true false");
+const ACS_TYPES = words("int str bool void fixed");
+const MAPINFO_KEYWORDS = words("map defaultmap adddefaultmap gamedefaults episode cluster gameinfo skill clearskills clearepisodes include intermission conversationids doomednums spawnnums automap automap_overlay damagetype lookup editornums");
+// Frame flags / keywords valid after a duration in a States block.
+const STATE_WORDS = words("bright fast slow nodelay canraise offset light goto stop loop wait fail");
+const FRAME = /([A-Za-z0-9_#-]{4}|"[^"\n]{4}")([ \t]+)([A-Za-z[\]\\#^]+|"[^"\n]+")(?=[ \t]+(?:-?\d|random\s*\(|\())/y;
+const LABEL = /([A-Za-z_][\w.]*)([ \t]*):(?!:)/y;
+const GOTO_TARGET = /([ \t]+)((?:[A-Za-z_]\w*::)?[A-Za-z_][\w.]*)/y;
+const NUMBER = /(?:0[xX][0-9a-fA-F]+|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)[fFuUlL]*/y;
+const IDENT = /[A-Za-z_][\w]*/y;
+const DOTTED = /[A-Za-z_][\w.]*/y;
+const FLAG = /[+-][A-Za-z_][\w.]*(?=[\s;]|$)/y;
+
+const LANG_WORDS = {
+  zs: [ZS_KEYWORDS, ZS_TYPES],
+  decorate: [DEC_KEYWORDS, DEC_TYPES],
+  acs: [ACS_KEYWORDS, ACS_TYPES],
+  mapinfo: [MAPINFO_KEYWORDS, new Set()],
+  text: [new Set(), new Set()],
+};
+
+const sticky = (re, src, i) => { re.lastIndex = i; return re.exec(src); };
+
+function highlightDoom(src, lang) {
+  const [kw, types] = LANG_WORDS[lang] || LANG_WORDS.text;
+  let out = "";
+  let i = 0;
+  const n = src.length;
+  // Block stack: "class" (ZScript class / DECORATE actor body), "default",
+  // "states", "other". `pending` is the kind of the next `{`.
+  const stack = [];
+  let pending = null;
+  let lineStart = true; // only whitespace so far on this line
+  let afterLabel = false; // previous token was a state label on this line
+  let firstWord = true; // no identifier yet on this line
+  let prevWord = "";
+  const top = () => stack[stack.length - 1];
+  const emit = (cls, text) => { out += cls ? `<span class="hl-${cls}">${escapeHtml(text)}</span>` : escapeHtml(text); };
+  const take = (cls, text) => { emit(cls, text); i += text.length; lineStart = false; afterLabel = false; };
+  while (i < n) {
+    const c = src[i];
+    if (c === "\n") { out += "\n"; i++; lineStart = true; afterLabel = false; firstWord = true; continue; }
+    if (c === " " || c === "\t" || c === "\r") { out += c; i++; continue; }
+    // Comments.
+    if (c === "/" && src[i + 1] === "/") { const e = src.indexOf("\n", i); take("c", src.slice(i, e < 0 ? n : e)); continue; }
+    if (lang === "mapinfo" && c === ";" ) { const e = src.indexOf("\n", i); take("c", src.slice(i, e < 0 ? n : e)); continue; }
+    if (c === "/" && src[i + 1] === "*") {
+      const e = src.indexOf("*/", i + 2);
+      const text = src.slice(i, e < 0 ? n : e + 2);
+      // Keep line state across a multi-line comment.
+      emit("c", text); i += text.length;
+      if (text.includes("\n")) { lineStart = false; firstWord = true; }
+      continue;
+    }
+    const st = top() === "states";
+    // State labels and frame lines.
+    if (st && (lineStart || afterLabel)) {
+      const lab = lineStart && sticky(LABEL, src, i);
+      if (lab && !STATE_WORDS.has(lab[1].toLowerCase())) {
+        emit("l", lab[1]); emit(null, lab[2]); emit(null, ":");
+        i += lab[0].length; lineStart = false; afterLabel = true; firstWord = false;
+        continue;
+      }
+      const fr = sticky(FRAME, src, i);
+      if (fr && !STATE_WORDS.has(fr[1].toLowerCase())) {
+        emit("sp", fr[1]); emit(null, fr[2]); emit("fr", fr[3]);
+        i += fr[0].length; lineStart = false; afterLabel = false; firstWord = false;
+        continue;
+      }
+    }
+    // Preprocessor directives (#include, #library, #define…).
+    if (c === "#" && lineStart) {
+      const m = sticky(/#[A-Za-z_]\w*/y, src, i);
+      if (m) { take("d", m[0]); firstWord = false; continue; }
+    }
+    // +FLAG / -FLAG in Default blocks and DECORATE actor bodies.
+    if ((c === "+" || c === "-") && (top() === "default" || (lang === "decorate" && top() === "class"))) {
+      const prev = src[i - 1];
+      const m = (i === 0 || /\s/.test(prev)) && sticky(FLAG, src, i);
+      if (m) { take("fl", m[0]); firstWord = false; continue; }
+    }
+    // Strings and names.
+    if (c === '"' || (c === "'" && lang !== "mapinfo" && lang !== "text")) {
+      let j = i + 1;
+      while (j < n && src[j] !== c && src[j] !== "\n") j += src[j] === "\\" ? 2 : 1;
+      take("s", src.slice(i, Math.min(n, j + 1)));
+      firstWord = false;
+      continue;
+    }
+    if (/[0-9]/.test(c) || (c === "." && /[0-9]/.test(src[i + 1] || ""))) {
+      const m = sticky(NUMBER, src, i);
+      if (m) { take("n", m[0]); continue; }
+    }
+    if (/[A-Za-z_]/.test(c)) {
+      // Properties: first (dotted) word of a line in Default / actor bodies,
+      // `key =` in MAPINFO.
+      const inProps = top() === "default" || (lang === "decorate" && top() === "class");
+      if (inProps && firstWord) {
+        const m = sticky(DOTTED, src, i);
+        const word = m[0].toLowerCase();
+        if (!kw.has(word) && !(lang === "zs" && word === "states")) { take("p", m[0]); firstWord = false; prevWord = word; continue; }
+      }
+      const m = sticky(IDENT, src, i);
+      const w = m[0];
+      const folded = w.toLowerCase();
+      const end = i + w.length;
+      let cls = null;
+      if (lang === "mapinfo") {
+        const eq = sticky(/[ \t]*=/y, src, end);
+        if (eq) cls = "p";
+        else if (kw.has(folded) && firstWord) cls = "k";
+      } else if (lang === "text") {
+        cls = null;
+      } else if (st && STATE_WORDS.has(folded)) {
+        cls = "k";
+      } else if (kw.has(folded)) {
+        cls = "k";
+      } else if (types.has(folded)) {
+        cls = "t";
+      } else if (/^A_/.test(w)) {
+        cls = "f";
+      } else {
+        CALL_AHEAD.lastIndex = end;
+        if (CALL_AHEAD.test(src)) cls = "f";
+        else if (/^(?:class|actor|extend|struct|mixin|replaces)$/.test(prevWord) || (prevWord === ":" && stack.length === 0 && lang !== "acs")) cls = "t";
+        else if (lang === "zs" && /^[A-Z]/.test(w) && !/^[A-Z0-9_]+$/.test(w)) cls = "t";
+        else if (/^[A-Z][A-Z0-9_]+$/.test(w) && lang !== "decorate") cls = "n";
+      }
+      // ZScript top-level `version "4.10"`.
+      if (lang === "zs" && folded === "version" && stack.length === 0 && firstWord) cls = "d";
+      take(cls, w);
+      firstWord = false;
+      // Block openers.
+      if (folded === "states" && lang !== "acs" && lang !== "mapinfo") pending = "states";
+      else if (folded === "default" && lang === "zs" && top() === "class") pending = "default";
+      else if ((folded === "class" || folded === "struct" || folded === "extend" || folded === "mixin") && lang === "zs") pending = "class";
+      else if (folded === "actor" && lang === "decorate" && stack.length === 0) pending = "class";
+      if (folded === "goto" && (st || lang !== "acs")) {
+        const g = sticky(GOTO_TARGET, src, i);
+        if (g) { emit(null, g[1]); emit("l", g[2]); i += g[0].length; }
+      }
+      prevWord = folded;
+      continue;
+    }
+    if (c === "{") { stack.push(pending || "other"); pending = null; }
+    else if (c === "}") stack.pop();
+    else if (c === ";" && stack.length === 0) pending = null;
+    if (c === ":" && src[i + 1] !== ":") prevWord = ":";
+    else if (!/[\s,]/.test(c)) prevWord = c;
+    take(null, c);
+  }
+  return out;
 }
 
-/** Source → HTML with `<span class="hl-*">` tokens (AssemblyScript, WAT, or ZScript). */
+/**
+ * Language of a text lump for highlighting: `zs`, `decorate`, `acs`,
+ * `mapinfo` or `text`. `name` is the lump name, `path` its full path in a
+ * PK3 (or the name), `text` an optional sample of its content.
+ */
+export function textLang(name, path, text = "") {
+  const p = String(path || name || "").toLowerCase();
+  const base = p.split("/").pop();
+  const stem = base.replace(/\.[^.]*$/, "");
+  const ext = base.includes(".") ? base.split(".").pop() : "";
+  if (["zs", "zc", "zsc"].includes(ext) || stem === "zscript" || p.startsWith("zscript/")) return "zs";
+  if (["acs", "bcs"].includes(ext) || stem === "scripts" && ext !== "o" || p.startsWith("acs_source/")) return "acs";
+  if (["mapinfo", "zmapinfo", "umapinfo", "emapinfo", "gameinfo"].includes(stem)) return "mapinfo";
+  if (stem === "decorate" || ext === "dec" || ext === "decorate" || p.startsWith("actors/") || p.startsWith("decorate/")) return "decorate";
+  if (/^\s*(?:\/\/[^\n]*\n\s*)*actor\s+[\w.]+/i.test(text.slice(0, 4096))) return "decorate";
+  return "text";
+}
+
+/** `#include "path"` lines in a ZScript / DECORATE / ACS source: [{line, path}] (1-based lines). */
+export function includesOf(src) {
+  const out = [];
+  const lines = src.split("\n");
+  lines.forEach((t, k) => {
+    const m = /^\s*#\s*(?:include|import)\s+"([^"]+)"/i.exec(t);
+    if (m) out.push({ line: k + 1, path: m[1] });
+  });
+  return out;
+}
+
+/** Source → HTML with `<span class="hl-*">` tokens (AssemblyScript, WAT, ZScript, DECORATE, ACS, MAPINFO, text). */
 export function highlight(src, lang) {
-  const re = lang === "wat" ? WAT_TOKENS : lang === "zs" ? ZS_TOKENS : AS_TOKENS;
+  if (lang in LANG_WORDS) return highlightDoom(src, lang) + "\n ";
+  const re = lang === "wat" ? WAT_TOKENS : AS_TOKENS;
   re.lastIndex = 0;
   let out = "";
   let last = 0;
   for (let m; (m = re.exec(src)); ) {
     const end = re.lastIndex;
-    const cls = lang === "wat" ? watClass(m) : lang === "zs" ? zsClass(m, src, end) : asClass(m, src, end);
+    const cls = lang === "wat" ? watClass(m) : asClass(m, src, end);
     if (!cls) continue;
     out += escapeHtml(src.slice(last, m.index)) + `<span class="hl-${cls}">${escapeHtml(m[0])}</span>`;
     last = end;

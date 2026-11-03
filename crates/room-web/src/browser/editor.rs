@@ -7,6 +7,7 @@
 
 use super::{APP, Mode, enter_play_mode, set_status};
 use crate::editor_pick::{Pick, WallPart, pick};
+use crate::pk3_edit::{self, NestedWad, PATH_OVERRIDES};
 use crate::play::{EditCam, PlaySession, PlayStartOpts};
 use bytes::Bytes;
 use glam::{DVec3, Vec3};
@@ -143,6 +144,9 @@ struct Editor {
     pwads: Vec<(String, Bytes)>,
     /// Edited lumps: namespace (`global` / `flats` / `sprites` / `patches`) → name → bytes.
     overrides: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
+    /// Edited archive files by full path (`zscript/foo.zs` → bytes), mounted
+    /// last as `editor-overrides.pk3`.
+    paths: BTreeMap<String, Vec<u8>>,
     vfs: Vfs,
     materials: MaterialCatalog,
     /// Layered DECORATE (engine + WADs + overrides), before actor value edits.
@@ -180,25 +184,55 @@ fn err(e: impl ToString) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
 
+/// Mount engine + base + PWADs/PK3s + editor overrides. A `maps/*.wad` inside
+/// an archive is mounted as its own WAD right after that archive, so its map
+/// shows in the map list and loads like any other.
 fn mount(
     iwad: &(String, Bytes),
     pwads: &[(String, Bytes)],
     overrides: &BTreeMap<String, BTreeMap<String, Vec<u8>>>,
+    paths: &BTreeMap<String, Vec<u8>>,
 ) -> Result<Vfs, String> {
-    let mut b = mount_embedded_engine(VfsBuilder::new())
-        .map_err(|e| e.to_string())?
-        .mount_memory(iwad.0.clone(), iwad.1.clone())
-        .map_err(|e| e.to_string())?;
-    for (name, data) in pwads {
-        b = b
-            .mount_memory(name.clone(), data.clone())
+    let vfs = mount_with(iwad, pwads, overrides, paths, &[])?;
+    let nested = pk3_edit::map_wads(&vfs);
+    if nested.is_empty() {
+        return Ok(vfs);
+    }
+    mount_with(iwad, pwads, overrides, paths, &nested)
+}
+
+fn mount_with(
+    iwad: &(String, Bytes),
+    pwads: &[(String, Bytes)],
+    overrides: &BTreeMap<String, BTreeMap<String, Vec<u8>>>,
+    paths: &BTreeMap<String, Vec<u8>>,
+    nested: &[NestedWad],
+) -> Result<Vfs, String> {
+    let add = |b: VfsBuilder, name: &str, data: Bytes| -> Result<VfsBuilder, String> {
+        let mut b = b
+            .mount_memory(name.to_owned(), data)
             .map_err(|e| e.to_string())?;
+        for n in nested.iter().filter(|n| n.owner == name) {
+            b = b
+                .mount_memory(n.name.clone(), n.data.clone())
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(b)
+    };
+    let mut b = mount_embedded_engine(VfsBuilder::new()).map_err(|e| e.to_string())?;
+    b = add(b, &iwad.0, iwad.1.clone())?;
+    for (name, data) in pwads {
+        b = add(b, name, data.clone())?;
     }
     if overrides.values().any(|m| !m.is_empty()) {
         let wad = overrides_wad(overrides, None)?;
         b = b
             .mount_memory("editor-overrides.wad", Bytes::from(wad))
             .map_err(|e| e.to_string())?;
+    }
+    if !paths.is_empty() {
+        let pk3 = pk3_edit::overrides_pk3(paths)?;
+        b = add(b, PATH_OVERRIDES, Bytes::from(pk3))?;
     }
     b.build().map_err(|e| e.to_string())
 }
@@ -269,7 +303,7 @@ impl Editor {
             (iwad, None)
         };
         let overrides = BTreeMap::new();
-        let vfs = mount(&iwad, &[], &overrides)?;
+        let vfs = mount(&iwad, &[], &overrides, &BTreeMap::new())?;
         let materials = catalog(&vfs);
         let data = load_layered_engine_data(&vfs).map_err(|e| e.to_string())?;
         Ok(Self {
@@ -277,6 +311,7 @@ impl Editor {
             duke,
             pwads: Vec::new(),
             overrides,
+            paths: BTreeMap::new(),
             vfs,
             materials,
             data,
@@ -291,7 +326,7 @@ impl Editor {
     }
 
     fn rebuild(&mut self) -> Result<(), String> {
-        self.vfs = mount(&self.iwad, &self.pwads, &self.overrides)?;
+        self.vfs = mount(&self.iwad, &self.pwads, &self.overrides, &self.paths)?;
         self.materials = catalog(&self.vfs);
         match load_layered_engine_data(&self.vfs) {
             Ok(d) => {
@@ -424,13 +459,19 @@ impl Editor {
                 n.container == info.container
                     && matches!(n.short_name.as_str(), "THINGS" | "TEXTMAP")
             });
-            let src = self
-                .vfs
-                .container(info.container)
-                .map_or("", |c| c.name.as_str());
+            let container = self.vfs.container(info.container);
+            let src = container.map_or("", |c| c.name.as_str());
+            // File inside a PK3 / PK7 / directory: edits go by full path.
+            let arch = container
+                .is_some_and(|c| !matches!(c.kind, ContainerKind::Wad | ContainerKind::LooseFile));
             let kind = if next_is_map {
                 maps.push(name.to_owned());
                 "map"
+            } else if arch
+                && info.namespace == Namespace::Maps
+                && info.full_path.to_ascii_lowercase().ends_with(".wad")
+            {
+                "mapwad"
             } else {
                 classify(name, &info.full_path, info.namespace)
             };
@@ -451,6 +492,7 @@ impl Editor {
                 "src": src,
                 "path": info.full_path,
                 "kind": kind,
+                "arch": arch,
             }));
         }
         let mut seen = BTreeSet::new();
@@ -494,6 +536,7 @@ impl Editor {
             .overrides
             .iter()
             .flat_map(|(ns, m)| m.keys().map(move |n| json!({"ns": ns, "name": n})))
+            .chain(self.paths.keys().map(|p| json!({"ns": "path", "name": p})))
             .collect();
         let duke = self.duke.as_ref().map(|(grp, _, user)| {
             let user: Vec<String> = user
@@ -838,7 +881,7 @@ fn start_session(ed: &Editor, geom: MapGeometry, cam: Option<EditCam>) -> Result
     let state = APP
         .with(|a| a.borrow().clone())
         .ok_or_else(|| "renderer not ready".to_owned())?;
-    let vfs = mount(&ed.iwad, &ed.pwads, &ed.overrides)?;
+    let vfs = mount(&ed.iwad, &ed.pwads, &ed.overrides, &ed.paths)?;
     let mut play = PlaySession::from_parts(
         vfs,
         geom,
@@ -1367,6 +1410,33 @@ pub fn room_editor_set_lump(ns: &str, name: &str, data: Option<Vec<u8>>) -> Resu
     })
 }
 
+/// Override (or with `null`, revert) a file of a PK3 by its full path
+/// (`zscript/foo.zs`). Returns the normalised path. Call
+/// [`room_editor_apply_lumps`] after.
+#[wasm_bindgen(js_name = roomEditorSetPath)]
+pub fn room_editor_set_path(path: &str, data: Option<Vec<u8>>) -> Result<String, JsValue> {
+    with_editor(|ed| {
+        let p = pk3_edit::normalize_path(path)?;
+        match data {
+            Some(d) => {
+                ed.paths.insert(p.clone(), d);
+            }
+            None => {
+                ed.paths.remove(&p);
+            }
+        }
+        Ok(p)
+    })
+}
+
+/// Check ZScript source (the file at `path`, unsaved `text`) against the
+/// mounted program. JSON `{scope, ok, files, diagnostics: [{severity,
+/// message, path, line, col, exact, text}]}`.
+#[wasm_bindgen(js_name = roomEditorCheckZscript)]
+pub fn room_editor_check_zscript(path: &str, text: &str) -> Result<String, JsValue> {
+    with_editor(|ed| Ok(pk3_edit::check_zscript(&ed.vfs, path, text).to_string()))
+}
+
 /// Override namespace (`textures` = `TX_START`, …); anything else is `global`.
 fn image_ns(ns: &str) -> &'static str {
     match ns {
@@ -1842,6 +1912,40 @@ pub fn room_editor_export(maps_json: &str) -> Result<Vec<u8>, JsValue> {
             global.insert("DECORATE".into(), text.into_bytes());
         }
         overrides_wad(&overrides, Some(&extra))
+    })
+}
+
+/// Build a PK3: the archive `target` (a mounted PK3 / PK7 / directory name;
+/// empty = a new PK3) with every edit applied: archive path overrides, lump
+/// overrides (`flats/`, `sprites/`, `patches/`, `textures/`, root), edited
+/// maps as `maps/<name>.wad`, actor value edits as `decorate.room-edits`.
+#[wasm_bindgen(js_name = roomEditorExportPk3)]
+pub fn room_editor_export_pk3(maps_json: &str, target: &str) -> Result<Vec<u8>, JsValue> {
+    let maps: BTreeMap<String, RawMap> = serde_json::from_str(maps_json).map_err(err)?;
+    with_editor(|ed| {
+        let mut ex = pk3_edit::Pk3Export::default();
+        if !target.is_empty() {
+            ex.base = pk3_edit::archive_entries(&ed.vfs, target);
+            if ex.base.is_empty() {
+                return Err(format!("not an open archive: {target}"));
+            }
+        }
+        for doc in maps.values() {
+            let mut doc = doc.clone();
+            ed.attach_blobs(&mut doc);
+            let mut w = WadWriter::pwad();
+            for (n, d) in doc.to_lumps().map_err(|e| e.to_string())? {
+                w.add(&n, d);
+            }
+            ex.maps
+                .push((doc.name.clone(), w.finish().map_err(|e| e.to_string())?));
+        }
+        ex.lumps = ed.overrides.clone();
+        ex.paths = ed.paths.clone();
+        if !ed.actor_edits.is_empty() {
+            ex.actor_decorate = Some(actor_edits_decorate(&ed.actor_edits));
+        }
+        pk3_edit::build_pk3(&ex)
     })
 }
 

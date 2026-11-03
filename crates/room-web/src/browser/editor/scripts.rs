@@ -92,6 +92,7 @@ impl Editor {
             version: m.version.clone(),
             abi: room_script::ABI_VERSION,
             max_players: None,
+            options: Default::default(),
             modules: m
                 .modules
                 .iter()
@@ -100,6 +101,7 @@ impl Editor {
                     scope: ModuleScope::Play,
                     name: s.name.clone(),
                     source: s.source.as_ref().map(|_| source_lump(&s.lump)),
+                    language: Default::default(),
                 })
                 .collect(),
         };

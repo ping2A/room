@@ -179,6 +179,22 @@ aside { background: var(--panel); min-height: 0; display: flex; flex-direction: 
 .hl-f { color: #82aaff; }
 .hl-d { color: #ffcb6b; }
 .hl-v { color: #f07178; }
+.hl-l { color: #ffcb6b; font-weight: 600; }
+.hl-sp { color: #f78c6c; }
+.hl-fr { color: #c3e88d; font-weight: 600; }
+.hl-fl { color: #89ddff; }
+.hl-p { color: #80cbc4; }
+.gutter .gl-err { color: #fff; background: #a33; border-radius: 2px; padding: 0 2px; }
+.inc-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 6px; }
+.inc-bar[hidden] { display: none; }
+.inc-bar .btn.missing { opacity: .55; text-decoration: line-through; }
+.err-box .diag { padding: 1px 0; }
+.err-box .diag.warning { color: #ffcb6b; }
+.err-box .diag.jump { cursor: pointer; text-decoration: underline dotted; }
+.err-box .diag-ok { color: #a8d58a; }
+.tree-dir > summary { cursor: pointer; padding: 3px 10px; font: 12px var(--mono); color: #c9ced6; display: flex; gap: 8px; }
+.tree-dir > summary .meta { margin-left: auto; color: #6b7685; }
+.tree-kids { padding-left: 12px; border-left: 1px solid var(--line); margin-left: 12px; }
 .err-box { margin-top: 8px; padding: 8px 10px; background: #3a1d1d; border: 1px solid #6b2d2d; border-radius: 4px; font: 12px var(--mono); white-space: pre-wrap; }
 .hex { font: 12px/17px var(--mono); white-space: pre; color: #b8bec6; }
 .preview-canvas { image-rendering: pixelated; border: 1px solid var(--line); background: repeating-conic-gradient(#1b1e22 0 25%, #15171a 0 50%) 0 0 / 16px 16px; }
