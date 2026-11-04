@@ -268,6 +268,8 @@ pub const VECTORANGLE: u32 = 222;
 pub const CHECKWEAPON: u32 = 223;
 /// `PCD_SETWEAPON`
 pub const SETWEAPON: u32 = 224;
+/// `PCD_TAGSTRING` — move a library string constant into the global pool.
+pub const TAGSTRING: u32 = 225;
 /// `PCD_PLAYERNUMBER`
 pub const PLAYERNUMBER: u32 = 247;
 /// `PCD_GETSCREENWIDTH`

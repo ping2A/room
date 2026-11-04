@@ -52,6 +52,7 @@ async fn require_tickets_rejects_bare_room_id() {
             game: None,
             fill_bots: false,
             quick_play: false,
+            preset: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -101,6 +102,7 @@ async fn seat_hijack_without_resume_token_rejected() {
             game: None,
             fill_bots: false,
             quick_play: false,
+            preset: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -206,6 +208,7 @@ async fn message_flood_disconnects() {
             game: None,
             fill_bots: false,
             quick_play: false,
+            preset: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();

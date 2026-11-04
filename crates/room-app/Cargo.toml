@@ -34,6 +34,7 @@ room-net = { path = "../room-net", features = ["noise"] }
 room-nodebuild = { path = "../room-nodebuild" }
 room-render = { path = "../room-render" }
 room-sim = { path = "../room-sim" }
+room-core = { path = "../room-core" }
 room-testkit = { path = "../room-testkit" }
 room-ui = { path = "../room-ui" }
 room-vfs = { path = "../room-vfs" }

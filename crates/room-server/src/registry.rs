@@ -46,6 +46,12 @@ pub enum RegistryError {
     /// Requested content pack is not supported (see `room_proto::KNOWN_PACKS`).
     #[error("unknown pack")]
     UnknownPack,
+    /// Preset problem (unknown preset, map not offered, …).
+    #[error("{0}")]
+    Preset(String),
+    /// The node only allows rooms created from a preset.
+    #[error("this server only hosts rooms from its presets; pick one")]
+    PresetRequired,
     /// RNG failure.
     #[error("rng failed")]
     Rng,
@@ -320,7 +326,25 @@ impl RoomRegistry {
                 .find(|known| known.eq_ignore_ascii_case(g))
                 .ok_or(RegistryError::UnknownGame)?,
         };
-        let game_mod = match req.game_mod.as_deref().map(str::trim) {
+        let preset = match req.preset.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(_) if game != GAMES[0] => return Err(RegistryError::ModNotAllowed),
+            Some(id) => Some(
+                self.cfg
+                    .content
+                    .resolve(id, &req.map)
+                    .map_err(RegistryError::Preset)?,
+            ),
+            None if self.cfg.content.require_preset() && game == GAMES[0] => {
+                return Err(RegistryError::PresetRequired);
+            }
+            None => None,
+        };
+        // A preset's gameplay mod wins over the request's.
+        let mod_name = preset
+            .as_ref()
+            .and_then(|p| p.game_mod.clone())
+            .or_else(|| req.game_mod.clone());
+        let game_mod = match mod_name.as_deref().map(str::trim) {
             None | Some("") => None,
             Some(_) if game != GAMES[0] => return Err(RegistryError::ModNotAllowed),
             Some(name) => {
@@ -350,7 +374,12 @@ impl RoomRegistry {
             }
             out
         };
-        let want_verifier = req.enable_verifier && self.cfg.enable_verifier;
+        // The verifier mounts the IWAD + mod only; preset content rooms skip it.
+        let want_verifier = req.enable_verifier
+            && self.cfg.enable_verifier
+            && preset
+                .as_ref()
+                .is_none_or(|p| p.content.is_empty() && p.iwad.is_none());
         if want_verifier {
             let cur = self.verified_rooms.load(Ordering::Relaxed);
             if cur >= self.cfg.max_verified_rooms {
@@ -362,8 +391,15 @@ impl RoomRegistry {
             "private" => "private".into(),
             _ => "public".into(),
         };
+        let (map, preset_title, content, iwad) = match preset {
+            Some(p) => (p.map, p.title, p.content, p.iwad),
+            None => (req.map, String::new(), Vec::new(), None),
+        };
         let settings = RoomSettings {
-            map: req.map,
+            map,
+            content,
+            iwad,
+            preset: preset_title,
             skill: req.skill.clamp(1, 5),
             max_players,
             visibility,

@@ -114,6 +114,8 @@ pub struct ServerConfig {
     pub iwad_path: String,
     /// Gameplay mods rooms can be created with (`--mods-dir`).
     pub mods: Arc<crate::mods::ModCatalog>,
+    /// Content library (PK3 / WAD files) + admin presets (`--content-dir`).
+    pub content: Arc<crate::content::ContentStore>,
     /// Seconds to wait for the first client frame (hello) before close.
     pub handshake_timeout_secs: u64,
     /// Seconds without any frame before idle close (clients should ping).
@@ -176,6 +178,7 @@ impl Default for ServerConfig {
             drain_grace_secs: 60,
             iwad_path: String::new(),
             mods: Arc::default(),
+            content: Arc::default(),
             room_time_limit_mins: 20,
             match_end_grace_secs: 20,
             quick_play_timeout_secs: 60,

@@ -348,6 +348,27 @@ fn main() {
                 "room: entered {label} (skill {}, coop={coop_players}, seat={local_seat})",
                 skill.0
             );
+            // Debug: `ROOM_START_POS="x,y[,angle]"` moves seat 0 (screenshot repros).
+            if let Ok(spec) = std::env::var("ROOM_START_POS") {
+                let v: Vec<f64> = spec
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+                if let (Some(&x), Some(&y), Some(w)) = (v.first(), v.get(1), game.world_mut()) {
+                    if let Some(mo) = w.players[0].as_ref().and_then(|p| p.mo) {
+                        let z = room_sim::sector_at_xy(w, x, y)
+                            .and_then(|i| w.sectors.get(i))
+                            .map_or(0.0, |s| s.floor_z);
+                        if let Some(a) = w.actors.get_mut(mo) {
+                            a.pos = room_core::DVec3::new(x, y, z);
+                            if let Some(&ang) = v.get(2) {
+                                a.angle = room_core::Angle::from_degrees(ang);
+                            }
+                        }
+                        eprintln!("room: ROOM_START_POS → ({x}, {y}, {z})");
+                    }
+                }
+            }
             if args.give_all {
                 for seat in 0..coop_players {
                     let n = game.cheat_give(seat as usize, "all");
@@ -514,6 +535,7 @@ fn main() {
         sprite_prev: std::collections::HashMap::new(),
         sprite_curr: std::collections::HashMap::new(),
         messages: MessageQueue::new(),
+        hud_message_log: std::collections::HashMap::new(),
         language,
         last_player_hp: 100,
         fixed_colormap: 0,
@@ -758,10 +780,14 @@ fn load_language(vfs: Option<&Vfs>) -> Language {
         return Language::default();
     };
     let mut lang = Language::default();
-    for name in ["LANGUAGE", "language.enu", "LANGUAGE.ENU"] {
-        let Some(id) = vfs.find_any_ns(name) else {
-            continue;
-        };
+    // GZDoom `FStringTable::LoadStrings`: every lump named LANGUAGE (any
+    // extension: language.enu, LANGUAGE.RUS, …), in load order.
+    let ids: Vec<_> = vfs
+        .iter()
+        .filter(|(_, info)| info.short_name.as_str().eq_ignore_ascii_case("LANGUAGE"))
+        .map(|(id, _)| id)
+        .collect();
+    for id in ids {
         let Ok(bytes) = vfs.read(id) else {
             continue;
         };
@@ -783,6 +809,36 @@ fn load_language(vfs: Option<&Vfs>) -> Language {
 
 /// `$KEY` → LANGUAGE text. Unresolved keys stay off the HUD (the Doom font
 /// draws them as broken gaps). `\c` color codes and `%o` are flattened.
+/// Replace `$KEY` tokens found in LANGUAGE (GZDoom `GetTag` / `$` strings).
+fn localize_tokens(lang: &Language, text: &str) -> String {
+    if !text.contains('$') {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find('$') {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i + 1..];
+        let n = tail
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(tail.len());
+        let key = &tail[..n];
+        match (n > 0)
+            .then(|| lang.get("enu", &key.to_ascii_uppercase()))
+            .flatten()
+        {
+            Some(v) => out.push_str(v),
+            None => {
+                out.push('$');
+                out.push_str(key);
+            }
+        }
+        rest = &tail[n..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn hud_line(lang: &Language, raw: &str) -> Option<String> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -1176,6 +1232,8 @@ struct ViewerApp {
     sprite_curr: std::collections::HashMap<u32, (f32, f32, f32, f32)>,
     /// On-screen messages from the sim.
     messages: MessageQueue,
+    /// Last logged text per ACS HudMessage id (console log dedupe).
+    hud_message_log: std::collections::HashMap<i32, String>,
     /// LANGUAGE strings (`$OB_ZOMBIESOLDIER` and pickup lines).
     language: Language,
     /// Previous local player health (to announce invisible attackers).
@@ -1439,6 +1497,11 @@ fn start_play_session(
                 eprintln!("room: LOADACS: {} librar(y/ies)", libs.len());
                 game.set_acs_libraries(libs);
             }
+            // Full pool too: `LOAD` chunks name more libraries (GZDoom `LoadModule`).
+            game.set_acs_library_pool(
+                room_game::acs_library_pool(vfs),
+                defs.loadacs.libraries.clone(),
+            );
         }
         // Compile ZScript from mounted archives (docs/34) — was missing from play path.
         let zs = room_game::load_zscript_from_vfs(vfs);
@@ -2960,6 +3023,34 @@ impl ViewerApp {
                     // full-frame mix, when the post chain is on, is enough.
                     self.messages.draw(&mut ui, 8.0, 8.0);
                     if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
+                        // ACS `HudMessage`s, `$KEY` tokens localized (GZDoom `GetTag`).
+                        if !world.hud_messages.is_empty() {
+                            let shown: Vec<room_sim::AcsHudMessage> = world
+                                .hud_messages
+                                .iter()
+                                .map(|m| {
+                                    let mut m = m.clone();
+                                    m.text = localize_tokens(&self.language, &m.text);
+                                    m
+                                })
+                                .collect();
+                            room_ui::draw_acs_hud_messages(
+                                &mut ui,
+                                &shown,
+                                usize::from(self.local_seat),
+                                !self.hud.fullscreen,
+                                self.config.as_ref().map_or(16.0 / 9.0, |c| {
+                                    c.width as f32 / c.height.max(1) as f32
+                                }),
+                                &|name| {
+                                    self.patches
+                                        .get(name)
+                                        .map(|p| (f32::from(p.width), f32::from(p.height)))
+                                },
+                            );
+                        }
+                    }
+                    if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
                         let poses = player_map_poses(world);
                         let allmap = world
                             .players
@@ -4157,7 +4248,25 @@ impl ViewerApp {
             }
             for msg in msgs {
                 if let Some(text) = hud_line(&self.language, &msg) {
+                    eprintln!("room: message: {text}");
                     self.messages.push(text, 70);
+                }
+            }
+            // Log new / changed ACS HudMessages once (scripts redraw them every tic).
+            if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
+                for m in &world.hud_messages {
+                    if m.tics > 0 {
+                        continue;
+                    }
+                    let text =
+                        room_ui::strip_color_codes(&localize_tokens(&self.language, &m.text));
+                    let text = text.trim().replace('\n', " | ");
+                    if text.is_empty() || self.hud_message_log.get(&m.id) == Some(&text) {
+                        continue;
+                    }
+                    eprintln!("room: hudmessage {}: {text}", m.id);
+                    self.console.print(format!("hudmessage {}: {text}", m.id));
+                    self.hud_message_log.insert(m.id, text);
                 }
             }
             for (name, x, y, z, line) in new_decals {
@@ -5098,6 +5207,11 @@ impl ViewerApp {
                 }
                 let alpha = a.alpha.clamp(0.0, 1.0);
                 let fuzz = matches!(a.render_style, RenderStyle::Fuzzy | RenderStyle::OptFuzzy);
+                // GZDoom STYLE_Add family: colour × alpha added to the scene.
+                let additive = matches!(
+                    a.render_style,
+                    RenderStyle::Add | RenderStyle::AddStencil | RenderStyle::AddShaded
+                );
                 #[allow(clippy::cast_possible_truncation)]
                 let alpha = alpha as f32;
                 let prev = self.sprite_prev.get(&id.index()).copied().unwrap_or((
@@ -5137,6 +5251,7 @@ impl ViewerApp {
                     a.sprite_ofs_x,
                     a.sprite_ofs_y,
                     flags,
+                    additive,
                 ))
             })
             .collect();
@@ -5158,6 +5273,7 @@ impl ViewerApp {
             sprite_ofs_x,
             sprite_ofs_y,
             flags,
+            additive,
         ) in actors
         {
             if self.actor_draws_voxel(id) {
@@ -5211,6 +5327,10 @@ impl ViewerApp {
             if texture.is_empty() {
                 continue;
             }
+            // GZDoom never draws sprite `TNT1`, even when a mod ships a TNT1A0 lump.
+            if sprite.eq_ignore_ascii_case("TNT1") {
+                continue;
+            }
             #[allow(clippy::cast_possible_truncation)]
             let yaw = angle_deg.to_radians() as f32;
             let orient = if flags & room_sim::FLAG_FLATSPRITE != 0 {
@@ -5237,6 +5357,7 @@ impl ViewerApp {
                 flip_u,
                 anchor_u,
                 orient,
+                additive,
             });
             if self.render_settings.actor_sprite_shadow && (flags & FLAG_COUNTKILL) != 0 && !fuzz {
                 let shadow_tex = particle_tint_tex_name([16, 16, 16]);
@@ -5253,6 +5374,7 @@ impl ViewerApp {
                     orient: SpriteOrient::Flat {
                         yaw: angle_deg.to_radians() as f32,
                     },
+                    additive: false,
                 });
             }
         }

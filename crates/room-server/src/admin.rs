@@ -59,6 +59,18 @@ pub fn admin_routes() -> Router<AppState> {
         .route("/admin/api/v1/bans/{id}", delete(delete_ban))
         .route("/admin/api/v1/mods", get(list_mods))
         .route("/admin/api/v1/mods/{name}", post(set_mod_allowed))
+        .route("/admin/api/v1/content", get(list_content))
+        .route("/admin/api/v1/content/rescan", post(rescan_content))
+        .route(
+            "/admin/api/v1/content/{file}",
+            post(upload_content)
+                .delete(delete_content)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/admin/api/v1/presets",
+            get(get_presets).put(put_presets),
+        )
         .route("/admin/api/v1/maintenance", post(maintenance))
         .route("/admin/api/v1/locations", get(list_locations))
 }
@@ -176,6 +188,137 @@ async fn set_mod_allowed(
     };
     state.admin.audit(&actor.actor, action, &name, "");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /admin/api/v1/content` body.
+#[derive(Serialize)]
+struct ContentListing {
+    /// Library enabled (`--content-dir` / `--data-dir`).
+    enabled: bool,
+    /// Upload cap (bytes).
+    max_bytes: u64,
+    files: Vec<crate::content::ContentEntry>,
+}
+
+async fn list_content(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ContentListing>, StatusCode> {
+    let _actor = authorize(&state, &headers)?;
+    let c = &state.registry.config().content;
+    Ok(Json(ContentListing {
+        enabled: c.dir().is_some(),
+        max_bytes: c.max_bytes(),
+        files: c.list(),
+    }))
+}
+
+async fn rescan_content(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, StatusCode> {
+    let actor = authorize_mut(&state, &headers)?;
+    state.registry.config().content.rescan();
+    state.admin.audit(&actor.actor, "rescan_content", "", "");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /admin/api/v1/content/{file}` — raw file body (streamed to disk,
+/// capped by `--content-max-mb`), checked (WAD / PK3 / PK7) and added to the
+/// library. Replaces an existing file of that name.
+async fn upload_content(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(file): Path<String>,
+    body: axum::body::Body,
+) -> Result<Json<crate::content::ContentEntry>, (StatusCode, String)> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let actor = authorize_mut(&state, &headers).map_err(|c| (c, String::new()))?;
+    let store = state.registry.config().content.clone();
+    let temp = store
+        .upload_temp(&file)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let io = |e: std::io::Error| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    let mut out = tokio::fs::File::create(&temp).await.map_err(io)?;
+    let mut stream = body.into_data_stream();
+    let mut total: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&temp).await;
+                return Err((StatusCode::BAD_REQUEST, format!("upload interrupted: {e}")));
+            }
+        };
+        total += chunk.len() as u64;
+        if total > store.max_bytes() {
+            drop(out);
+            let _ = tokio::fs::remove_file(&temp).await;
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("file exceeds {} MiB (--content-max-mb)", store.max_bytes() >> 20),
+            ));
+        }
+        out.write_all(&chunk).await.map_err(io)?;
+    }
+    out.flush().await.map_err(io)?;
+    drop(out);
+    // Fingerprint + map scan read the whole file: keep it off the async workers.
+    let f2 = file.clone();
+    let entry = tokio::task::spawn_blocking(move || store.commit_upload(&temp, &f2))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    state.admin.audit(
+        &actor.actor,
+        "upload_content",
+        &file,
+        &format!("{} bytes {}", entry.size, entry.fingerprint),
+    );
+    Ok(Json(entry))
+}
+
+async fn delete_content(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(file): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let actor = authorize_mut(&state, &headers).map_err(|c| (c, String::new()))?;
+    state
+        .registry
+        .config()
+        .content
+        .delete(&file)
+        .map_err(|e| (StatusCode::CONFLICT, e))?;
+    state.admin.audit(&actor.actor, "delete_content", &file, "");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_presets(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<crate::content::PresetConfig>, StatusCode> {
+    let _actor = authorize(&state, &headers)?;
+    Ok(Json(state.registry.config().content.presets()))
+}
+
+async fn put_presets(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(cfg): Json<crate::content::PresetConfig>,
+) -> Result<Json<crate::content::PresetConfig>, (StatusCode, String)> {
+    let actor = authorize_mut(&state, &headers).map_err(|c| (c, String::new()))?;
+    let c = state.registry.config();
+    let mods = &c.mods;
+    let n = cfg.presets.len();
+    c.content
+        .set_presets(cfg, &|m| mods.get(m).is_some() && mods.is_allowed(m))
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    state
+        .admin
+        .audit(&actor.actor, "set_presets", "", &format!("{n} preset(s)"));
+    Ok(Json(c.content.presets()))
 }
 
 async fn list_locations(

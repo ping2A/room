@@ -194,9 +194,13 @@ pub const DEMO1_TIC0_EXTRA_KRANDS: u32 = 11;
 pub const DEMO1_PRE_TIC0_SEED: i32 = -1_017_433_662;
 
 /// Adopt Chocolate DEMO1 post-prelevel RNG (derived from tic 0 trace).
+///
+/// Also turns on [`DukeSession::trace_fixups`]: this is the legacy
+/// "copy the reference" path the per-tic DEMO1 tests use.
 pub fn align_rng_pre_tic0(session: &mut DukeSession, _choc: &TraceFile) {
     session.randomseed = DEMO1_PRE_TIC0_SEED;
     session.global_random = 0;
+    session.trace_fixups = true;
 }
 
 pub fn demo1_frontier(
@@ -211,6 +215,29 @@ pub fn demo1_frontier(
     let mut choc = load_trace(ref_trace_path)?;
     align_rng_pre_tic0(&mut session, &choc);
     session.rng_pad_per_tic = DEMO1_TIC0_EXTRA_KRANDS;
+    let room = play_demo_trace(&mut session, &demo, limit);
+    if choc.tics.len() > room.tics.len() {
+        choc.tics.truncate(room.tics.len());
+    }
+    Ok(diff_traces(&choc, &room))
+}
+
+/// Honest DEMO1 sync check: the native simulation only — no reference
+/// seed adoption, no krand pads, no `// TEMP` snaps. Returns the first tic
+/// where Room's trace differs from the Chocolate one (`None` = in sync for
+/// `limit` tics). This is the D5/D6 acceptance number.
+pub fn demo1_frontier_real(
+    grp_path: &Path,
+    demo_path: &Path,
+    ref_trace_path: &Path,
+    limit: usize,
+) -> Result<Option<TraceDiff>, String> {
+    let grp = std::fs::read(grp_path).map_err(|e| e.to_string())?;
+    let dmo = std::fs::read(demo_path).map_err(|e| e.to_string())?;
+    let (mut session, demo) = session_from_grp_demo(&grp, &dmo)?;
+    session.trace_fixups = false;
+    session.rng_pad_per_tic = 0;
+    let mut choc = load_trace(ref_trace_path)?;
     let room = play_demo_trace(&mut session, &demo, limit);
     if choc.tics.len() > room.tics.len() {
         choc.tics.truncate(room.tics.len());
@@ -7168,7 +7195,8 @@ mod tests {
             }
             let _ = std::fs::write(&out, s);
         }
-        let diff = demo1_frontier(&grp, &demo, &trace, 300).expect("harness");
+        // Honest frontier (no `trace_fixups`): the native sim alone.
+        let diff = demo1_frontier_real(&grp, &demo, &trace, 300).expect("harness");
         match &diff {
             None => eprintln!("DEMO1: first 300 tics match Chocolate (unexpected this early)"),
             Some(d) => {
@@ -7186,6 +7214,24 @@ mod tests {
             diff.is_some(),
             "expected early divergence until sim catches up"
         );
+    }
+
+    /// Honest D5 check: with no trace fix-ups, entering E3L11 must leave the
+    /// Build seed where Chocolate's `prelevel` leaves it (13 `spawn` rolls:
+    /// cans, barrel, eggs, blood splat). This used to be adopted from the
+    /// trace (`align_rng_pre_tic0`); now the simulation computes it.
+    #[test]
+    fn demo1_load_seed_matches_chocolate_without_fixups() {
+        let root = duke_root();
+        let grp = root.join("duke3d.grp");
+        if !grp.is_file() {
+            return;
+        }
+        let grp_b = std::fs::read(&grp).unwrap();
+        let dmo_b = std::fs::read(root.join("demos/DEMO1.DMO")).unwrap();
+        let (session, _) = session_from_grp_demo(&grp_b, &dmo_b).unwrap();
+        assert!(!session.trace_fixups);
+        assert_eq!(session.randomseed, DEMO1_PRE_TIC0_SEED);
     }
 
     #[test]

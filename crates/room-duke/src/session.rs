@@ -2282,6 +2282,13 @@ pub struct DukeSession {
     pub tile_meta: Vec<TileZMeta>,
     /// Duke skill 0..=4 (DEMO1 odd-frame actor `move` skip when `< 2`).
     pub skill: u8,
+    /// DEMO1 trace fix-ups (`// TEMP` blocks: per-tic sprite snaps, RNG
+    /// rewinds and the `DEMO1_PAD_PRE*` krand pads) copied from the Chocolate
+    /// dump. **Off by default**: they hard-code DEMO1 tic numbers and would
+    /// corrupt any other game. Only the legacy per-tic DEMO1 tests turn them
+    /// on; the honest sync frontier is measured with them off
+    /// (`demo_sync::demo1_frontier_real`).
+    pub trace_fixups: bool,
 }
 
 impl Default for DukeSession {
@@ -2308,6 +2315,7 @@ impl DukeSession {
             world: None,
             tile_meta: Vec::new(),
             skill: 2,
+            trace_fixups: false,
         }
     }
 
@@ -2339,6 +2347,19 @@ impl DukeSession {
         self.global_random = 0;
         self.skill = skill;
         prelevel_sprites(&mut world.lists, world.sprites.as_mut(), skill);
+        // Chocolate `prelevel` → `spawn(-1, i)` TRAND rolls (index order).
+        {
+            let stat = world.lists.sprite_stat.clone();
+            let alive = |i: usize| stat.get(i).is_some_and(|&s| s != room_build_engine::world::MAXSTATUS as i16);
+            crate::spawn::spawn_load_rolls(
+                world.sprites.as_mut(),
+                &alive,
+                &mut self.actor_temps,
+                &mut self.randomseed,
+                skill,
+                false,
+            );
+        }
         let (actorscrptr, actortype): (&[i32], &[u8]) = self
             .script
             .as_ref()
@@ -2476,6 +2497,7 @@ impl DukeSession {
 
     /// Advance one game tic.
     pub fn tick(&mut self, input: DukeInput) {
+        crate::fixups::set(self.trace_fixups);
         self.tic = self.tic.wrapping_add(1);
         // Chocolate `domovethings` order (subset): global_random → processinput →
         // movefta → moveexplosions → moveactors. Bloodsplat TRAND must follow
@@ -2592,6 +2614,9 @@ impl DukeSession {
             {
                 let emit_tic = self.tic.saturating_sub(1);
                 let n = self.pad_pre_explode_override.take().unwrap_or_else(|| {
+                    if !self.trace_fixups {
+                        return 0;
+                    }
                     DEMO1_PAD_PRE_EXPLODE
                         .get(emit_tic as usize)
                         .copied()
@@ -2637,13 +2662,13 @@ impl DukeSession {
             // TEMP: DEMO1 tic231 — moveactors burns 2 extra TRANDs vs Chocolate
             // (`furthestcanseepoint` probe count; sprite_hash already matches).
             // Rewind until face-sprite hitscan / cansee parity lands.
-            if self.tic.saturating_sub(1) == 231 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 231 {
                 krand_unstep(&mut self.randomseed);
                 krand_unstep(&mut self.randomseed);
             }
             // TEMP: DEMO1 tic266 — OCTA #65/#402 take a skill=`g_t[0]&3==0`
             // movesprite step Chocolate skips (ang still updates). Snap XY/Z.
-            if self.tic.saturating_sub(1) == 266 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 266 {
                 if world.sprites.len() > 402 {
                     let s = &mut world.sprites[65];
                     s.x = 12069;
@@ -2657,7 +2682,7 @@ impl DukeSession {
             }
             // TEMP: DEMO1 tic269 — Choc applies the deferred #65/#402 step;
             // Room still on the post-266 snap (g_t&3 skips until 270). Snap.
-            if self.tic.saturating_sub(1) == 269 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 269 {
                 if world.sprites.len() > 402 {
                     let s = &mut world.sprites[65];
                     s.x = 11895;
@@ -2672,7 +2697,7 @@ impl DukeSession {
             // TEMP: DEMO1 tic270 — Room takes skill movesprite; Choc holds XY
             // (Z settles). Snap until g_t&3 polarity matches. Tracer bubble XY
             // also drifts a few units (hitscan/start parity) — snap.
-            if self.tic.saturating_sub(1) == 270 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 270 {
                 if world.sprites.len() > 402 {
                     let s = &mut world.sprites[65];
                     s.x = 11895;
@@ -2701,7 +2726,7 @@ impl DukeSession {
             }
             // TEMP: DEMO1 tic271 — WATERBUBBLE #75/#196/… XY drift continues
             // (BUBMOVE / tracer start parity). Snap to Chocolate DEMO1 dump.
-            if self.tic.saturating_sub(1) == 271 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 271 {
                 for (i, x, y) in [
                     (75_usize, -1897, 24591),
                     (196, -1679, 24103),
@@ -2719,7 +2744,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic272 — WATERBUBBLE XY snap (Chocolate DEMO1 dump).
-            if self.tic.saturating_sub(1) == 272 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 272 {
                 for (i, x, y) in [
                     (75_usize, -1906, 24589),
                     (196, -1671, 24099),
@@ -2737,7 +2762,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic273 — OCTA skill step + WATERBUBBLE / #516 snap.
-            if self.tic.saturating_sub(1) == 273 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 273 {
                 if world.sprites.len() > 402 {
                     let s = &mut world.sprites[65];
                     s.x = 11721;
@@ -2772,7 +2797,7 @@ impl DukeSession {
             }
             // TEMP: DEMO1 tic274 — Choc holds OCTA XY (Z settles); Room stepped.
             // #516 spark pose also drifts. Snap to Chocolate dump.
-            if self.tic.saturating_sub(1) == 274 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 274 {
                 if world.sprites.len() > 402 {
                     let s = &mut world.sprites[65];
                     s.x = 11721;
@@ -2791,7 +2816,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic275–276 / 279 — #516 spark stuck on Room pose; snap.
-            if matches!(self.tic.saturating_sub(1), 275 | 276 | 279) {
+            if self.trace_fixups && matches!(self.tic.saturating_sub(1), 275 | 276 | 279) {
                 if world.sprites.len() > 516 {
                     let s = &mut world.sprites[516];
                     s.x = -1779;
@@ -2800,7 +2825,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic277 — Choc OCTA skill step; Room held. #516 snap.
-            if self.tic.saturating_sub(1) == 277 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 277 {
                 if world.sprites.len() > 402 {
                     let s = &mut world.sprites[65];
                     s.x = 11547;
@@ -2819,7 +2844,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic278 — Room OCTA stepped; Choc holds XY (Z settles).
-            if self.tic.saturating_sub(1) == 278 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 278 {
                 if world.sprites.len() > 402 {
                     let s = &mut world.sprites[65];
                     s.x = 11547;
@@ -2839,7 +2864,7 @@ impl DukeSession {
             }
             // TEMP: DEMO1 tic280 — extra WATERBUBBLE #519 (Room-only spawn);
             // #64 XY drift + #516 stuck. Delete + snap to Chocolate dump.
-            if self.tic.saturating_sub(1) == 280 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 280 {
                 let _ = self.lists.deletesprite(519);
                 if world.sprites.len() > 64 && world.sprites[64].picnum == 661 {
                     world.sprites[64].x = -2264;
@@ -2854,7 +2879,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic281 — OCTA skill step + #64/#516 snaps.
-            if self.tic.saturating_sub(1) == 281 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 281 {
                 if world.sprites.len() > 402 {
                     let s = &mut world.sprites[65];
                     s.x = 11373;
@@ -2877,7 +2902,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic282 — Room OCTA stepped; Choc holds. #64/#516 snaps.
-            if self.tic.saturating_sub(1) == 282 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 282 {
                 if world.sprites.len() > 402 {
                     let s = &mut world.sprites[65];
                     s.x = 11373;
@@ -2900,7 +2925,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic283 — #64/#516 snaps.
-            if self.tic.saturating_sub(1) == 283 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 283 {
                 if world.sprites.len() > 64 && world.sprites[64].picnum == 661 {
                     world.sprites[64].x = -2285;
                     world.sprites[64].y = 25557;
@@ -2913,7 +2938,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic284 — #516 still stuck.
-            if self.tic.saturating_sub(1) == 284 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 284 {
                 if world.sprites.len() > 516 {
                     let s = &mut world.sprites[516];
                     s.x = -1779;
@@ -2922,7 +2947,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic285 — OCTA skill step + #516 snap.
-            if self.tic.saturating_sub(1) == 285 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 285 {
                 if world.sprites.len() > 402 {
                     let s = &mut world.sprites[65];
                     s.x = 11189;
@@ -2941,7 +2966,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic286 — Room OCTA stepped; Choc holds. #516 snap.
-            if self.tic.saturating_sub(1) == 286 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 286 {
                 if world.sprites.len() > 402 {
                     let s = &mut world.sprites[65];
                     s.x = 11189;
@@ -2960,7 +2985,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic287–288 — #516 still stuck.
-            if matches!(self.tic.saturating_sub(1), 287 | 288) {
+            if self.trace_fixups && matches!(self.tic.saturating_sub(1), 287 | 288) {
                 if world.sprites.len() > 516 {
                     let s = &mut world.sprites[516];
                     s.x = -1779;
@@ -2969,7 +2994,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic289 — OCTA skill step + #516 snap.
-            if self.tic.saturating_sub(1) == 289 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 289 {
                 if world.sprites.len() > 402 {
                     let s = &mut world.sprites[65];
                     s.x = 11005;
@@ -2990,7 +3015,7 @@ impl DukeSession {
             // TEMP: DEMO1 tic290 — Choc spawned projectiles #519/#525 (pic 1360);
             // Room missing them. Force-insert those slots + OCTA hold + snaps.
             // Seed is *behind* (pad forward ×4) — see krand_step below.
-            if self.tic.saturating_sub(1) == 290 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 290 {
                 if world.sprites.len() > 402 {
                     let s = &mut world.sprites[65];
                     s.x = 11005;
@@ -3055,7 +3080,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic291 — projectile/bubble snaps (nspr match; seed ahead×6).
-            if self.tic.saturating_sub(1) == 291 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 291 {
                 for (i, x, y, z) in [
                     (513_usize, -553, 21096, 49724),
                     (516, -1779, 24993, 58910),
@@ -3072,7 +3097,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic292 — OCTA #403 + projectile/bubble snaps (seed ahead×6).
-            if self.tic.saturating_sub(1) == 292 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 292 {
                 for (i, x, y, z) in [
                     (403_usize, 12406, 21536, 65280),
                     (513, -48672, 21095, 47944),
@@ -3090,7 +3115,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic293 — OCTA #403 + projectile/bubble snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 293 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 293 {
                 for (i, x, y, z) in [
                     (403_usize, 12273, 21664, 65318),
                     (513, -48663, 21094, 47361),
@@ -3108,7 +3133,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic294 — OCTA #65/#402/#403 + projectile snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 294 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 294 {
                 for (i, x, y, z) in [
                     (65_usize, 11005, 21296, 65280),
                     (402, 11599, 21621, 65280),
@@ -3126,7 +3151,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic295 — projectile snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 295 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 295 {
                 for (i, x, y, z) in [
                     (516_usize, -1779, 24993, 58910),
                     (519, 10170, 21198, 56820),
@@ -3141,7 +3166,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic296 — OCTA + #400 Z + projectile snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 296 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 296 {
                 for (i, x, y, z) in [
                     (65_usize, 10835, 21368, 65318),
                     (400, -1703, 23925, 69444),
@@ -3160,7 +3185,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic297 — OCTA #403 + projectile snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 297 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 297 {
                 for (i, x, y, z) in [
                     (403_usize, 12140, 21792, 65318),
                     (516, -1779, 24993, 58910),
@@ -3176,7 +3201,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic298 — OCTA/projectile + jib/fire Z±1 snaps (seed ahead×6).
-            if self.tic.saturating_sub(1) == 298 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 298 {
                 for (i, x, y, z) in [
                     (33_usize, -1672, 23925, 59972),
                     (65, 10835, 21368, 65280),
@@ -3215,7 +3240,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic299 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 299 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 299 {
                 for (i, x, y, z) in [
                     (516_usize, -1779, 24993, 58910),
                     (519, 9474, 21218, 56900),
@@ -3230,7 +3255,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic300 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 300 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 300 {
                 for (i, x, y, z) in [
                     (65_usize, 10665, 21440, 65318),
                     (402, 11257, 21757, 65318),
@@ -3248,7 +3273,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic301 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 301 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 301 {
                 for (i, x, y, z) in [
                     (403_usize, 12007, 21920, 65318),
                     (516, -1779, 24993, 58910),
@@ -3264,7 +3289,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic302 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 302 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 302 {
                 for (i, x, y, z) in [
                     (65_usize, 10665, 21440, 65280),
                     (402, 11257, 21757, 65280),
@@ -3282,7 +3307,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic303 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 303 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 303 {
                 for (i, x, y, z) in [
                     (516_usize, -1779, 24993, 58910),
                     (519, 8778, 21238, 56980),
@@ -3298,7 +3323,7 @@ impl DukeSession {
             }
             // TEMP: DEMO1 tic304 — Choc deleted projectile #516; OCTA/bubble/proj snaps
             // (seed ahead×4).
-            if self.tic.saturating_sub(1) == 304 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 304 {
                 let _ = self.lists.deletesprite(516);
                 for (i, x, y, z) in [
                     (64_usize, -50481, 25660, 39180),
@@ -3319,7 +3344,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic305 — bubble/OCTA/projectile snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 305 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 305 {
                 for (i, x, y, z) in [
                     (64_usize, -50477, 25651, 38603),
                     (403, 11874, 22048, 65318),
@@ -3336,7 +3361,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic306 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 306 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 306 {
                 for (i, x, y, z) in [
                     (64_usize, -50473, 25642, 38026),
                     (65, 10495, 21512, 65280),
@@ -3355,7 +3380,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic307 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 307 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 307 {
                 for (i, x, y, z) in [
                     (64_usize, -50469, 25633, 37449),
                     (504, -51341, 26397, 38121),
@@ -3371,7 +3396,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic308 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 308 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 308 {
                 for (i, x, y, z) in [
                     (65_usize, 10325, 21584, 65318),
                     (402, 10915, 21893, 65318),
@@ -3388,7 +3413,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic309 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 309 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 309 {
                 for (i, x, y, z) in [
                     (403_usize, 11690, 22036, 65318),
                     (519, 7734, 21268, 57100),
@@ -3403,7 +3428,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic310 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 310 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 310 {
                 for (i, x, y, z) in [
                     (65_usize, 10325, 21584, 65280),
                     (402, 10915, 21893, 65280),
@@ -3420,7 +3445,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic311 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 311 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 311 {
                 for (i, x, y, z) in [(519_usize, 7386, 21278, 57140), (525, 10654, 21456, 57119)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -3431,7 +3456,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic312 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 312 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 312 {
                 for (i, x, y, z) in [
                     (65_usize, 10141, 21573, 65318),
                     (402, 10731, 21877, 65318),
@@ -3448,7 +3473,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic313 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 313 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 313 {
                 for (i, x, y, z) in [
                     (403_usize, 11506, 22024, 65318),
                     (519, 7038, 21288, 57180),
@@ -3463,7 +3488,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic314 — force-insert projectile #538 + OCTA/proj snaps (seed ok).
-            if self.tic.saturating_sub(1) == 314 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 314 {
                 let sect = world.sprites.get(525).map(|s| s.sectnum).unwrap_or(0);
                 let mut stash = Vec::new();
                 let mut got = false;
@@ -3513,7 +3538,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic315 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 315 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 315 {
                 for (i, x, y, z) in [
                     (519_usize, 6690, 21298, 57220),
                     (525, 10470, 21448, 57195),
@@ -3528,7 +3553,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic316 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 316 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 316 {
                 for (i, x, y, z) in [
                     (65_usize, 9957, 21562, 65318),
                     (402, 10547, 21861, 65318),
@@ -3547,7 +3572,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic317 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 317 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 317 {
                 for (i, x, y, z) in [
                     (519_usize, 6342, 21308, 57260),
                     (525, 10296, 21444, 57233),
@@ -3562,7 +3587,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic318 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 318 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 318 {
                 for (i, x, y, z) in [
                     (65_usize, 9957, 21562, 65280),
                     (402, 10547, 21861, 65280),
@@ -3579,7 +3604,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic319 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 319 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 319 {
                 for (i, x, y, z) in [
                     (519_usize, 5994, 21318, 57300),
                     (525, 10286, 21440, 57271),
@@ -3594,7 +3619,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic320 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 320 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 320 {
                 for (i, x, y, z) in [
                     (65_usize, 9773, 21550, 65318),
                     (402, 10363, 21845, 65318),
@@ -3614,7 +3639,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic321 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 321 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 321 {
                 for (i, x, y, z) in [
                     (519_usize, 5646, 21328, 57340),
                     (525, 10112, 21436, 57309),
@@ -3631,7 +3656,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic322 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 322 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 322 {
                 for (i, x, y, z) in [
                     (65_usize, 9773, 21550, 65280),
                     (402, 10363, 21845, 65280),
@@ -3650,7 +3675,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic323 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 323 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 323 {
                 for (i, x, y, z) in [
                     (519_usize, 5298, 21338, 57380),
                     (525, 10102, 21432, 57347),
@@ -3667,7 +3692,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic324 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 324 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 324 {
                 for (i, x, y, z) in [
                     (65_usize, 9607, 21468, 65318),
                     (402, 10199, 21760, 65318),
@@ -3685,7 +3710,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic325 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 325 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 325 {
                 for (i, x, y, z) in [
                     (519_usize, 4950, 21348, 57420),
                     (525, 9936, 21428, 57385),
@@ -3700,7 +3725,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic326 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 326 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 326 {
                 for (i, x, y, z) in [
                     (65_usize, 9607, 21468, 65280),
                     (402, 10199, 21760, 65280),
@@ -3717,7 +3742,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic327 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 327 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 327 {
                 for (i, x, y, z) in [
                     (519_usize, 4602, 21358, 57460),
                     (525, 9936, 21424, 57423),
@@ -3732,7 +3757,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic328 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 328 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 328 {
                 for (i, x, y, z) in [
                     (65_usize, 9485, 21329, 65318),
                     (402, 10015, 21744, 65318),
@@ -3750,7 +3775,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic329 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 329 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 329 {
                 for (i, x, y, z) in [
                     (519_usize, 4254, 21368, 57500),
                     (525, 9814, 21420, 57461),
@@ -3765,7 +3790,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic330 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 330 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 330 {
                 let _ = self.lists.deletesprite(519);
                 for (i, x, y, z) in [
                     (65_usize, 9485, 21329, 65280),
@@ -3783,7 +3808,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic331 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 331 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 331 {
                 for (i, x, y, z) in [(525_usize, 9814, 21416, 57499), (538, 10344, 21717, 57060)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -3794,7 +3819,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic332 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 332 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 332 {
                 for (i, x, y, z) in [
                     (65_usize, 9363, 21190, 65318),
                     (402, 9831, 21728, 65318),
@@ -3811,7 +3836,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic333 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 333 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 333 {
                 for (i, x, y, z) in [(525_usize, 9692, 21412, 57537), (538, 10170, 21695, 57100)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -3822,7 +3847,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic334 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 334 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 334 {
                 for (i, x, y, z) in [
                     (65_usize, 9363, 21190, 65280),
                     (402, 9831, 21728, 65280),
@@ -3838,7 +3863,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic335 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 335 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 335 {
                 for (i, x, y, z) in [(525_usize, 9692, 21408, 57575), (538, 10160, 21673, 57140)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -3849,7 +3874,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic336 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 336 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 336 {
                 for (i, x, y, z) in [
                     (65_usize, 9241, 21051, 65318),
                     (402, 9647, 21712, 65318),
@@ -3865,7 +3890,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic337 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 337 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 337 {
                 for (i, x, y, z) in [(525_usize, 9518, 21404, 57613), (538, 9986, 21651, 57180)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -3876,7 +3901,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic338 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 338 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 338 {
                 for (i, x, y, z) in [
                     (65_usize, 9241, 21051, 65280),
                     (402, 9647, 21712, 65280),
@@ -3892,7 +3917,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic339 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 339 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 339 {
                 for (i, x, y, z) in [(525_usize, 9170, 21400, 57651), (538, 9976, 21629, 57220)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -3903,7 +3928,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic340 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 340 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 340 {
                 for (i, x, y, z) in [
                     (65_usize, 9119, 20929, 65318),
                     (402, 9463, 21696, 65318),
@@ -3920,7 +3945,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic341 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 341 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 341 {
                 for (i, x, y, z) in [(525_usize, 8822, 21396, 57689), (538, 9802, 21607, 57260)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -3931,7 +3956,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic342 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 342 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 342 {
                 for (i, x, y, z) in [
                     (65_usize, 9119, 20929, 65280),
                     (402, 9463, 21696, 65280),
@@ -3947,7 +3972,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic343 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 343 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 343 {
                 for (i, x, y, z) in [(525_usize, 8474, 21392, 57727), (538, 9792, 21585, 57300)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -3958,7 +3983,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic344 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 344 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 344 {
                 for (i, x, y, z) in [
                     (65_usize, 9148, 21110, 65318),
                     (402, 9279, 21677, 65318),
@@ -3975,7 +4000,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic345 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 345 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 345 {
                 for (i, x, y, z) in [(525_usize, 8126, 21388, 57765), (538, 9618, 21563, 57340)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -3986,7 +4011,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic346 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 346 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 346 {
                 for (i, x, y, z) in [
                     (65_usize, 9148, 21110, 65280),
                     (402, 9279, 21677, 65280),
@@ -4002,7 +4027,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic347 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 347 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 347 {
                 for (i, x, y, z) in [(525_usize, 7778, 21384, 57803), (538, 9608, 21541, 57380)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4013,7 +4038,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic348 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 348 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 348 {
                 for (i, x, y, z) in [
                     (65_usize, 8964, 21104, 65318),
                     (402, 9096, 21657, 65318),
@@ -4030,7 +4055,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic349 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 349 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 349 {
                 for (i, x, y, z) in [(525_usize, 7430, 21380, 57841), (538, 9434, 21519, 57420)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4041,7 +4066,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic350 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 350 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 350 {
                 for (i, x, y, z) in [
                     (65_usize, 8964, 21104, 65280),
                     (402, 9096, 21657, 65280),
@@ -4057,7 +4082,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic351 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 351 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 351 {
                 for (i, x, y, z) in [(525_usize, 7082, 21376, 57879), (538, 9425, 21497, 57460)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4068,7 +4093,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic352 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 352 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 352 {
                 for (i, x, y, z) in [
                     (65_usize, 8780, 21098, 65318),
                     (402, 8913, 21637, 65318),
@@ -4085,7 +4110,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic353 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 353 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 353 {
                 for (i, x, y, z) in [(525_usize, 6734, 21372, 57917), (538, 9251, 21475, 57500)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4096,7 +4121,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic354 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 354 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 354 {
                 for (i, x, y, z) in [
                     (65_usize, 8780, 21098, 65280),
                     (402, 8913, 21637, 65280),
@@ -4112,7 +4137,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic355 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 355 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 355 {
                 for (i, x, y, z) in [(525_usize, 6386, 21368, 57955), (538, 9242, 21453, 57540)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4123,7 +4148,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic356 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 356 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 356 {
                 for (i, x, y, z) in [
                     (65_usize, 8608, 21124, 65318),
                     (402, 8751, 21637, 65318),
@@ -4140,7 +4165,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic357 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 357 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 357 {
                 for (i, x, y, z) in [(525_usize, 6038, 21364, 57993), (538, 9080, 21431, 57580)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4151,7 +4176,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic358 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 358 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 358 {
                 for (i, x, y, z) in [
                     (65_usize, 8608, 21124, 65280),
                     (402, 8751, 21637, 65280),
@@ -4167,7 +4192,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic359 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 359 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 359 {
                 for (i, x, y, z) in [(525_usize, 5690, 21360, 58031), (538, 9080, 21409, 57620)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4178,7 +4203,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic360 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 360 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 360 {
                 for (i, x, y, z) in [
                     (65_usize, 8474, 21124, 65318),
                     (402, 8568, 21637, 65318),
@@ -4195,7 +4220,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic361 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 361 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 361 {
                 for (i, x, y, z) in [(525_usize, 5342, 21356, 58069), (538, 8906, 21387, 57660)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4206,7 +4231,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic362 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 362 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 362 {
                 for (i, x, y, z) in [
                     (65_usize, 8474, 21124, 65280),
                     (402, 8568, 21637, 65280),
@@ -4222,7 +4247,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic363 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 363 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 363 {
                 for (i, x, y, z) in [(525_usize, 4994, 21352, 58107), (538, 8897, 21365, 57700)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4233,7 +4258,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic364 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 364 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 364 {
                 for (i, x, y, z) in [
                     (65_usize, 8340, 21124, 65318),
                     (402, 8385, 21637, 65318),
@@ -4250,7 +4275,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic365 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 365 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 365 {
                 for (i, x, y, z) in [(525_usize, 4646, 21348, 58145), (538, 8723, 21343, 57740)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4261,7 +4286,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic366 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 366 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 366 {
                 for (i, x, y, z) in [
                     (65_usize, 8340, 21124, 65280),
                     (402, 8385, 21637, 65280),
@@ -4277,7 +4302,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic367 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 367 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 367 {
                 for (i, x, y, z) in [(525_usize, 4298, 21344, 58183), (538, 8714, 21321, 57780)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4288,7 +4313,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic368 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 368 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 368 {
                 for (i, x, y, z) in [
                     (65_usize, 8206, 21124, 65318),
                     (402, 8202, 21637, 65318),
@@ -4304,7 +4329,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic369 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 369 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 369 {
                 for (i, x, y, z) in [(525_usize, 3950, 21340, 58221), (538, 8540, 21299, 57820)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4315,7 +4340,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic370 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 370 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 370 {
                 for (i, x, y, z) in [
                     (65_usize, 8206, 21124, 65280),
                     (402, 8202, 21637, 65280),
@@ -4331,7 +4356,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic371 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 371 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 371 {
                 for (i, x, y, z) in [(525_usize, 3602, 21336, 58259), (538, 8535, 21277, 57860)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4342,7 +4367,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic372 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 372 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 372 {
                 let _ = self.lists.deletesprite(525);
                 for (i, x, y, z) in [
                     (65_usize, 8211, 20940, 65318),
@@ -4360,7 +4385,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic373 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 373 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 373 {
                 for (i, x, y, z) in [(538_usize, 8361, 21255, 57900)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4371,7 +4396,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic374 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 374 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 374 {
                 for (i, x, y, z) in [
                     (65_usize, 8211, 20940, 65280),
                     (402, 8345, 21521, 65280),
@@ -4386,7 +4411,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic375 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 375 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 375 {
                 for (i, x, y, z) in [(402_usize, 8345, 21521, 65280), (538, 8013, 21233, 57940)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4397,7 +4422,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic376 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 376 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 376 {
                 for (i, x, y, z) in [
                     (65_usize, 8027, 20941, 65318),
                     (402, 8345, 21521, 65318),
@@ -4413,7 +4438,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic377 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 377 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 377 {
                 for (i, x, y, z) in [(402_usize, 8345, 21521, 65280), (538, 7665, 21211, 57980)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4424,7 +4449,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic378 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 378 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 378 {
                 for (i, x, y, z) in [(65_usize, 8027, 20941, 65280), (538, 7491, 21200, 58000)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4435,7 +4460,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic379 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 379 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 379 {
                 for (i, x, y, z) in [(402_usize, 8345, 21521, 65280), (538, 7317, 21189, 58020)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4446,7 +4471,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic380 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 380 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 380 {
                 for (i, x, y, z) in [
                     (65_usize, 7844, 20965, 65318),
                     (402, 8233, 21511, 65318),
@@ -4462,7 +4487,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic381 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 381 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 381 {
                 for (i, x, y, z) in [(402_usize, 8233, 21511, 65280), (538, 6969, 21167, 58060)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4473,7 +4498,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic382 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 382 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 382 {
                 for (i, x, y, z) in [(65_usize, 7844, 20965, 65280), (538, 6795, 21156, 58080)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4484,7 +4509,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic383 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 383 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 383 {
                 for (i, x, y, z) in [(402_usize, 8233, 21511, 65280), (538, 6621, 21145, 58100)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4495,7 +4520,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic384 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 384 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 384 {
                 for (i, x, y, z) in [
                     (65_usize, 7662, 20997, 65318),
                     (402, 8175, 21503, 65318),
@@ -4511,7 +4536,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic385 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 385 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 385 {
                 for (i, x, y, z) in [(402_usize, 8175, 21503, 65280), (538, 6273, 21123, 58140)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4522,7 +4547,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic386 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 386 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 386 {
                 for (i, x, y, z) in [(65_usize, 7662, 20997, 65280), (538, 6099, 21112, 58160)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4533,7 +4558,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic387 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 387 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 387 {
                 for (i, x, y, z) in [(402_usize, 8175, 21503, 65280), (538, 5925, 21101, 58180)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4544,7 +4569,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic388 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 388 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 388 {
                 for (i, x, y, z) in [
                     (65_usize, 7507, 21096, 65318),
                     (402, 8020, 21428, 65318),
@@ -4560,7 +4585,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic389 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 389 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 389 {
                 for (i, x, y, z) in [(402_usize, 8020, 21428, 65280), (538, 5577, 21079, 58220)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4571,7 +4596,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic390 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 390 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 390 {
                 for (i, x, y, z) in [(65_usize, 7507, 21096, 65280), (538, 5403, 21068, 58240)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4582,7 +4607,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic391 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 391 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 391 {
                 for (i, x, y, z) in [(402_usize, 8020, 21428, 65280), (538, 5229, 21057, 58260)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4593,7 +4618,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic392 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 392 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 392 {
                 for (i, x, y, z) in [
                     (65_usize, 7401, 21247, 65318),
                     (402, 7914, 21419, 65318),
@@ -4609,7 +4634,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic393 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 393 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 393 {
                 for (i, x, y, z) in [(402_usize, 7914, 21419, 65280), (538, 4881, 21035, 58300)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4620,7 +4645,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic394 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 394 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 394 {
                 let _ = self.lists.deletesprite(266);
                 for (i, x, y, z) in [
                     (65_usize, 7401, 21247, 65280),
@@ -4637,7 +4662,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic395 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 395 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 395 {
                 for (i, x, y, z) in [
                     (402_usize, 7914, 21419, 65280),
                     (525, 5597, 21932, 57633),
@@ -4652,7 +4677,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic396 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 396 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 396 {
                 for (i, x, y, z) in [
                     (65_usize, 7295, 21398, 65318),
                     (402, 7808, 21410, 65318),
@@ -4669,7 +4694,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic397 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 397 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 397 {
                 for (i, x, y, z) in [(525_usize, 5577, 21938, 56481), (538, 4185, 20991, 58380)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -4680,12 +4705,12 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic398 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 398 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 398 {
                 let _ = self.lists.deletesprite(538);
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic399 — force-insert #538 as STAT_MISC (pic1380); seed behind×3.
-            if self.tic.saturating_sub(1) == 399 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 399 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -4727,7 +4752,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic400 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 400 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 400 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -4835,7 +4860,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic401 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 401 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 401 {
                 for (i, x, y, z) in [
                     (63_usize, -31239, 23004, 39851),
                     (67, -29988, 21509, 39857),
@@ -4858,7 +4883,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic402 — snaps (seed behind×1); #522 pic/stat→Choc.
-            if self.tic.saturating_sub(1) == 402 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 402 {
                 for (i, x, y, z) in [
                     (63_usize, -31248, 22974, 39893),
                     (67, -30019, 21511, 40326),
@@ -4891,7 +4916,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic403 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 403 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 403 {
                 for (i, x, y, z) in [
                     (63_usize, -31263, 22939, 39914),
                     (67, -30056, 21518, 40816),
@@ -4914,7 +4939,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic404 — snaps (seed ok). #121 pic held after standables.
-            if self.tic.saturating_sub(1) == 404 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 404 {
                 for (i, x, y, z) in [
                     (63_usize, -31283, 22901, 39925),
                     (65, 7215, 21756, 66048),
@@ -4937,7 +4962,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic405 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 405 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 405 {
                 for (i, x, y, z) in [
                     (63_usize, -31309, 22862, 39930),
                     (67, -30144, 21530, 41823),
@@ -4957,7 +4982,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic406 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 406 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 406 {
                 for (i, x, y, z) in [
                     (63_usize, -31341, 22823, 39933),
                     (67, -30194, 21534, 41981),
@@ -4976,7 +5001,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic407 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 407 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 407 {
                 for (i, x, y, z) in [
                     (63_usize, -31378, 22786, 39934),
                     (67, -30246, 21544, 41982),
@@ -4995,7 +5020,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic408 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 408 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 408 {
                 for (i, x, y, z) in [
                     (63_usize, -31420, 22751, 39935),
                     (65, 7175, 21935, 66048),
@@ -5018,7 +5043,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic409 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 409 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 409 {
                 for (i, x, y, z) in [
                     (63_usize, -31467, 22719, 40446),
                     (67, -30355, 21559, 41983),
@@ -5038,7 +5063,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic410 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 410 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 410 {
                 for (i, x, y, z) in [
                     (63_usize, -31518, 22691, 40957),
                     (67, -30413, 21564, 41983),
@@ -5054,7 +5079,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic411 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 411 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 411 {
                 for (i, x, y, z) in [
                     (63_usize, -31573, 22668, 41468),
                     (67, -30471, 21575, 41983),
@@ -5070,7 +5095,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic412 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 412 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 412 {
                 for (i, x, y, z) in [
                     (63_usize, -31630, 22650, 41979),
                     (65, 7135, 22078, 66048),
@@ -5088,7 +5113,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic413 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 413 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 413 {
                 let _ = self.lists.deletesprite(538);
                 for (i, x, y, z) in [
                     (63_usize, -31689, 22638, 41983),
@@ -5105,7 +5130,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic414 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 414 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 414 {
                 let _ = self.lists.deletesprite(80);
                 let sect = world
                     .sprites
@@ -5167,7 +5192,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic415 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 415 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 415 {
                 for (i, x, y, z) in [
                     (63_usize, -31811, 22632, 41983),
                     (67, -30711, 21607, 41983),
@@ -5183,7 +5208,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic416 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 416 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 416 {
                 for (i, x, y, z) in [
                     (63_usize, -31873, 22638, 41983),
                     (65, 6967, 22078, 66048),
@@ -5203,7 +5228,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic417 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 417 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 417 {
                 for (i, x, y, z) in [
                     (63_usize, -31935, 22638, 41983),
                     (67, -30834, 21625, 41983),
@@ -5220,7 +5245,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic418 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 418 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 418 {
                 for (i, x, y, z) in [
                     (63_usize, -31997, 22644, 41983),
                     (67, -30896, 21631, 41983),
@@ -5236,7 +5261,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic419 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 419 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 419 {
                 for (i, x, y, z) in [
                     (63_usize, -32059, 22644, 41983),
                     (67, -30957, 21643, 41983),
@@ -5252,7 +5277,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic420 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 420 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 420 {
                 for (i, x, y, z) in [
                     (63_usize, -32121, 22650, 41983),
                     (65, 6804, 22078, 66048),
@@ -5270,7 +5295,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic421 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 421 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 421 {
                 let _ = self.lists.deletesprite(77);
                 for (i, x, y, z) in [
                     (63_usize, -32183, 22650, 41983),
@@ -5287,7 +5312,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic422 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 422 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 422 {
                 for (i, x, y, z) in [
                     (63_usize, -32245, 22656, 41983),
                     (67, -31142, 21667, 41983),
@@ -5303,7 +5328,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic423 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 423 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 423 {
                 for (i, x, y, z) in [
                     (63_usize, -32307, 22656, 41983),
                     (67, -31203, 21679, 41983),
@@ -5319,7 +5344,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic424 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 424 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 424 {
                 for (i, x, y, z) in [
                     (63_usize, -32369, 22662, 41983),
                     (65, 6648, 22078, 66048),
@@ -5338,7 +5363,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic425 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 425 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 425 {
                 for (i, x, y, z) in [
                     (63_usize, -32431, 22662, 41983),
                     (67, -31326, 21697, 41983),
@@ -5354,7 +5379,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic426 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 426 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 426 {
                 for (i, x, y, z) in [
                     (63_usize, -32493, 22668, 41983),
                     (67, -31388, 21703, 41983),
@@ -5370,7 +5395,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic427 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 427 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 427 {
                 for (i, x, y, z) in [
                     (63_usize, -32555, 22668, 41983),
                     (67, -31449, 21715, 41983),
@@ -5387,7 +5412,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic428 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 428 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 428 {
                 for (i, x, y, z) in [
                     (63_usize, -32617, 22674, 41983),
                     (65, 6687, 21898, 66048),
@@ -5406,7 +5431,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic429 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 429 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 429 {
                 for (i, x, y, z) in [
                     (63_usize, -32679, 22674, 41983),
                     (67, -31573, 21727, 41983),
@@ -5422,7 +5447,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic430 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 430 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 430 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -5483,7 +5508,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic431 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 431 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 431 {
                 for (i, x, y, z) in [
                     (63_usize, -32803, 22680, 41983),
                     (67, -31697, 21733, 41983),
@@ -5500,7 +5525,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic432 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 432 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 432 {
                 for (i, x, y, z) in [
                     (63_usize, -32903, 22680, 41983),
                     (65, 6726, 21718, 66048),
@@ -5518,7 +5543,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic433 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 433 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 433 {
                 for (i, x, y, z) in [
                     (63_usize, -33019, 22680, 41983),
                     (67, -31912, 21753, 41983),
@@ -5533,7 +5558,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic434 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 434 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 434 {
                 for (i, x, y, z) in [
                     (63_usize, -33141, 22680, 41983),
                     (67, -32033, 21764, 41983),
@@ -5548,7 +5573,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic435 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 435 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 435 {
                 for (i, x, y, z) in [
                     (63_usize, -33265, 22680, 41983),
                     (67, -32157, 21776, 41983),
@@ -5564,7 +5589,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic436 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 436 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 436 {
                 for (i, x, y, z) in [
                     (63_usize, -33390, 22680, 41983),
                     (65, 6765, 21538, 66048),
@@ -5582,7 +5607,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic437 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 437 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 437 {
                 for (i, x, y, z) in [
                     (63_usize, -33516, 22680, 41983),
                     (67, -32407, 21800, 41983),
@@ -5597,7 +5622,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic438 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 438 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 438 {
                 for (i, x, y, z) in [
                     (63_usize, -33642, 22680, 41983),
                     (67, -32532, 21812, 41983),
@@ -5612,7 +5637,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic439 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 439 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 439 {
                 for (i, x, y, z) in [
                     (63_usize, -33768, 22680, 41983),
                     (67, -32657, 21824, 41983),
@@ -5628,7 +5653,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic440 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 440 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 440 {
                 for (i, x, y, z) in [
                     (63_usize, -33894, 22680, 41983),
                     (65, 6804, 21358, 66048),
@@ -5646,7 +5671,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic441 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 441 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 441 {
                 for (i, x, y, z) in [
                     (63_usize, -34020, 22680, 41983),
                     (67, -32907, 21848, 41983),
@@ -5661,7 +5686,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic442 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 442 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 442 {
                 for (i, x, y, z) in [
                     (63_usize, -34146, 22680, 41983),
                     (67, -33032, 21860, 41983),
@@ -5677,7 +5702,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic443 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 443 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 443 {
                 for (i, x, y, z) in [
                     (63_usize, -34272, 22680, 41983),
                     (67, -33157, 21872, 41983),
@@ -5693,7 +5718,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic444 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 444 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 444 {
                 for (i, x, y, z) in [
                     (63_usize, -34398, 22680, 41983),
                     (65, 6823, 21178, 66048),
@@ -5711,7 +5736,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic445 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 445 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 445 {
                 for (i, x, y, z) in [
                     (63_usize, -34524, 22680, 41983),
                     (67, -33407, 21896, 41983),
@@ -5727,7 +5752,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic446 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 446 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 446 {
                 for (i, x, y, z) in [
                     (63_usize, -34650, 22680, 41983),
                     (67, -33532, 21908, 41983),
@@ -5743,7 +5768,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic447 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 447 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 447 {
                 for (i, x, y, z) in [
                     (63_usize, -34776, 22680, 41983),
                     (67, -33657, 21920, 41983),
@@ -5760,7 +5785,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic448 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 448 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 448 {
                 for (i, x, y, z) in [
                     (63_usize, -34902, 22680, 41983),
                     (65, 6823, 20998, 66048),
@@ -5778,7 +5803,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic449 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 449 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 449 {
                 for (i, x, y, z) in [
                     (63_usize, -35028, 22680, 41983),
                     (67, -33907, 21944, 41983),
@@ -5795,7 +5820,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic450 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 450 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 450 {
                 for (i, x, y, z) in [
                     (63_usize, -35154, 22680, 41983),
                     (67, -34032, 21956, 41983),
@@ -5812,7 +5837,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic451 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 451 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 451 {
                 for (i, x, y, z) in [
                     (63_usize, -35280, 22680, 41983),
                     (67, -34157, 21968, 41983),
@@ -5829,7 +5854,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic452 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 452 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 452 {
                 for (i, x, y, z) in [
                     (63_usize, -35406, 22680, 41983),
                     (65, 6861, 20929, 66048),
@@ -5847,7 +5872,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic453 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 453 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 453 {
                 for (i, x, y, z) in [
                     (63_usize, -35532, 22680, 41983),
                     (67, -34407, 21992, 41983),
@@ -5864,7 +5889,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic454 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 454 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 454 {
                 for (i, x, y, z) in [
                     (63_usize, -35658, 22680, 41983),
                     (67, -34532, 22004, 41983),
@@ -5881,7 +5906,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic455 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 455 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 455 {
                 for (i, x, y, z) in [
                     (63_usize, -35784, 22680, 41983),
                     (67, -34657, 22016, 41983),
@@ -5898,7 +5923,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic456 — snaps (seed ahead×7).
-            if self.tic.saturating_sub(1) == 456 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 456 {
                 for (i, x, y, z) in [
                     (63_usize, -35910, 22680, 41983),
                     (65, 6703, 21023, 66048),
@@ -5918,7 +5943,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic457 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 457 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 457 {
                 for (i, x, y, z) in [
                     (63_usize, -36036, 22680, 41983),
                     (67, -34907, 22040, 41983),
@@ -5958,7 +5983,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic458 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 458 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 458 {
                 for (i, x, y, z) in [
                     (63_usize, -36162, 22680, 41983),
                     (65, 6703, 21023, 66048),
@@ -5978,7 +6003,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic459 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 459 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 459 {
                 for (i, x, y, z) in [
                     (63_usize, -36288, 22680, 41983),
                     (65, 6703, 21023, 66048),
@@ -5998,7 +6023,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic460 — snaps (seed ahead×7).
-            if self.tic.saturating_sub(1) == 460 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 460 {
                 let _ = self.lists.deletesprite(530);
                 for (i, x, y, z) in [
                     (63_usize, -36414, 22680, 41983),
@@ -6020,7 +6045,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic461 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 461 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 461 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -6085,7 +6110,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic462 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 462 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 462 {
                 for (i, x, y, z) in [
                     (63_usize, -36666, 22680, 41983),
                     (65, 6644, 21058, 66048),
@@ -6106,7 +6131,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic463 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 463 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 463 {
                 let _ = self.lists.deletesprite(557);
                 for (i, x, y, z) in [
                     (63_usize, -36792, 22680, 41983),
@@ -6128,7 +6153,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic464 — snaps (seed ahead×17).
-            if self.tic.saturating_sub(1) == 464 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 464 {
                 for (i, x, y, z) in [
                     (63_usize, -36918, 22680, 41983),
                     (67, -35782, 22124, 41983),
@@ -6152,7 +6177,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic465 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 465 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 465 {
                 for (i, x, y, z) in [
                     (63_usize, -37044, 22680, 41983),
                     (65, 6644, 21058, 65280),
@@ -6177,7 +6202,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic466 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 466 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 466 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -6247,7 +6272,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic467 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 467 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 467 {
                 let _ = self.lists.deletesprite(526);
                 for (i, x, y, z) in [
                     (63_usize, -37296, 22680, 41983),
@@ -6275,7 +6300,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic468 — snaps (seed ahead×20).
-            if self.tic.saturating_sub(1) == 468 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 468 {
                 let _ = self.lists.deletesprite(75);
                 let _ = self.lists.deletesprite(525);
                 let _ = self.lists.deletesprite(548);
@@ -6300,7 +6325,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic469 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 469 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 469 {
                 for (i, x, y, z) in [
                     (63_usize, -37548, 22680, 41983),
                     (65, 6546, 21190, 65280),
@@ -6322,7 +6347,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic470 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 470 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 470 {
                 for (i, x, y, z) in [
                     (63_usize, -37674, 22680, 41983),
                     (67, -36532, 22196, 41983),
@@ -6342,7 +6367,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic471 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 471 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 471 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -6408,7 +6433,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic472 — snaps (seed ahead×11).
-            if self.tic.saturating_sub(1) == 472 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 472 {
                 let _ = self.lists.deletesprite(548);
                 let sect = world
                     .sprites
@@ -6477,7 +6502,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic473 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 473 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 473 {
                 let _ = self.lists.deletesprite(79);
                 for (i, x, y, z) in [
                     (63_usize, -38052, 22680, 41983),
@@ -6502,7 +6527,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic474 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 474 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 474 {
                 for (i, x, y, z) in [
                     (63_usize, -38178, 22680, 41983),
                     (67, -37032, 22244, 41983),
@@ -6524,7 +6549,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic475 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 475 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 475 {
                 let _ = self.lists.deletesprite(196);
                 let _ = self.lists.deletesprite(535);
                 for (i, x, y, z) in [
@@ -6556,7 +6581,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic476 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 476 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 476 {
                 let _ = self.lists.deletesprite(535);
                 let sect = world
                     .sprites
@@ -6629,7 +6654,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic477 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 477 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 477 {
                 for (i, x, y, z) in [
                     (63_usize, -38556, 22680, 41983),
                     (64, 6655, 21069, 49363),
@@ -6657,7 +6682,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic478 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 478 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 478 {
                 for (i, x, y, z) in [
                     (63_usize, -38682, 22680, 41983),
                     (64, -41475, 21078, 48000),
@@ -6684,7 +6709,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic479 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 479 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 479 {
                 for (i, x, y, z) in [
                     (63_usize, -38808, 22680, 41983),
                     (65, 6220, 21629, 65318),
@@ -6706,7 +6731,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic480 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 480 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 480 {
                 for (i, x, y, z) in [
                     (63_usize, -38934, 22680, 41983),
                     (67, -37782, 22316, 41983),
@@ -6727,7 +6752,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic481 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 481 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 481 {
                 for (i, x, y, z) in [
                     (63_usize, -39060, 22680, 41983),
                     (65, 6220, 21629, 65280),
@@ -6749,7 +6774,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic482 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 482 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 482 {
                 for (i, x, y, z) in [
                     (63_usize, -39186, 22680, 41983),
                     (67, -38032, 22340, 41983),
@@ -6769,7 +6794,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic483 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 483 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 483 {
                 for (i, x, y, z) in [
                     (63_usize, -39312, 22680, 41983),
                     (65, 6041, 21585, 65318),
@@ -6790,7 +6815,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic484 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 484 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 484 {
                 for (i, x, y, z) in [
                     (63_usize, -39438, 22680, 41983),
                     (67, -38282, 22364, 41983),
@@ -6810,7 +6835,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic485 — snaps (seed behind×8).
-            if self.tic.saturating_sub(1) == 485 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 485 {
                 for (i, x, y, z) in [
                     (63_usize, -39564, 22680, 41983),
                     (67, -38407, 22376, 41983),
@@ -6851,7 +6876,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic486 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 486 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 486 {
                 let _ = self.lists.deletesprite(525);
                 for (i, x, y, z) in [
                     (63_usize, -39690, 22680, 41983),
@@ -6873,7 +6898,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic487 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 487 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 487 {
                 for (i, x, y, z) in [
                     (63_usize, -39816, 22680, 41983),
                     (67, -38657, 22400, 41983),
@@ -6893,7 +6918,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic488 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 488 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 488 {
                 for (i, x, y, z) in [
                     (63_usize, -39942, 22680, 41983),
                     (65, 6085, 21596, 66048),
@@ -6913,7 +6938,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic489 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 489 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 489 {
                 for (i, x, y, z) in [
                     (63_usize, -40068, 22680, 41983),
                     (67, -38907, 22424, 41983),
@@ -6932,7 +6957,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic490 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 490 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 490 {
                 let _ = self.lists.deletesprite(196);
                 for (i, x, y, z) in [
                     (63_usize, -40194, 22680, 41983),
@@ -6952,7 +6977,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic491 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 491 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 491 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -7022,7 +7047,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic492 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 492 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 492 {
                 for (i, x, y, z) in [
                     (63_usize, -40446, 22680, 41983),
                     (64, -41479, 21132, 39936),
@@ -7049,7 +7074,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic493 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 493 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 493 {
                 for (i, x, y, z) in [
                     (63_usize, -40572, 22680, 41983),
                     (64, -41481, 21141, 39360),
@@ -7075,7 +7100,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic494 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 494 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 494 {
                 for (i, x, y, z) in [
                     (63_usize, -40698, 22680, 41983),
                     (64, -41483, 21150, 38784),
@@ -7101,7 +7126,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic495 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 495 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 495 {
                 for (i, x, y, z) in [
                     (63_usize, -40824, 22680, 41983),
                     (64, -41489, 21141, 38208),
@@ -7134,7 +7159,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic496 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 496 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 496 {
                 for (i, x, y, z) in [
                     (63_usize, -40950, 22680, 41983),
                     (64, -41495, 21132, 37632),
@@ -7169,7 +7194,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic497 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 497 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 497 {
                 for (i, x, y, z) in [
                     (63_usize, -41076, 22680, 41983),
                     (64, -41501, 21123, 37056),
@@ -7203,7 +7228,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic498 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 498 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 498 {
                 for (i, x, y, z) in [
                     (63_usize, -41202, 22680, 41983),
                     (64, -41507, 21114, 36480),
@@ -7237,7 +7262,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic499 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 499 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 499 {
                 for (i, x, y, z) in [
                     (63_usize, -41328, 22680, 41983),
                     (64, -41501, 21121, 35751),
@@ -7271,7 +7296,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic500 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 500 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 500 {
                 for (i, x, y, z) in [
                     (63_usize, -41454, 22680, 41983),
                     (64, -41495, 21128, 34960),
@@ -7306,7 +7331,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic501 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 501 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 501 {
                 let _ = self.lists.deletesprite(523);
                 for (i, x, y, z) in [
                     (63_usize, -41580, 22680, 41983),
@@ -7360,7 +7385,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic502 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 502 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 502 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -7438,7 +7463,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic503 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 503 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 503 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -7517,7 +7542,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic504 — snaps (seed ahead×7).
-            if self.tic.saturating_sub(1) == 504 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 504 {
                 for (i, x, y, z) in [
                     (63_usize, -41958, 22680, 41983),
                     (64, -41471, 21156, 31659),
@@ -7551,7 +7576,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic505 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 505 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 505 {
                 for (i, x, y, z) in [
                     (63_usize, -42084, 22680, 41983),
                     (64, -41465, 21163, 30827),
@@ -7584,7 +7609,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic506 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 506 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 506 {
                 for (i, x, y, z) in [
                     (63_usize, -42210, 22680, 41983),
                     (64, -41459, 21170, 29995),
@@ -7617,7 +7642,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic507 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 507 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 507 {
                 for (i, x, y, z) in [
                     (63_usize, -42336, 22680, 41983),
                     (64, -41453, 21177, 29163),
@@ -7649,7 +7674,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic508 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 508 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 508 {
                 for (i, x, y, z) in [
                     (63_usize, -42462, 22680, 41983),
                     (64, -41447, 21184, 28331),
@@ -7682,7 +7707,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic509 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 509 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 509 {
                 for (i, x, y, z) in [
                     (63_usize, -42588, 22680, 41983),
                     (67, -39571, 21665, 41983),
@@ -7707,7 +7732,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic510 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 510 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 510 {
                 for (i, x, y, z) in [
                     (63_usize, -42714, 22680, 41983),
                     (67, -39492, 21567, 41983),
@@ -7732,7 +7757,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic511 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 511 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 511 {
                 for (i, x, y, z) in [
                     (63_usize, -42840, 22680, 41983),
                     (67, -39413, 21469, 41983),
@@ -7757,7 +7782,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic512 — snaps (seed ahead×7).
-            if self.tic.saturating_sub(1) == 512 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 512 {
                 for (i, x, y, z) in [
                     (63_usize, -42966, 22680, 42071),
                     (65, 6117, 21603, 66048),
@@ -7783,7 +7808,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic513 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 513 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 513 {
                 for (i, x, y, z) in [
                     (63_usize, -43092, 22680, 42071),
                     (67, -39255, 21273, 41983),
@@ -7808,7 +7833,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic514 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 514 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 514 {
                 for (i, x, y, z) in [
                     (63_usize, -43218, 22680, 42071),
                     (67, -39176, 21175, 41983),
@@ -7833,7 +7858,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic515 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 515 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 515 {
                 let _ = self.lists.deletesprite(545);
                 for (i, x, y, z) in [
                     (63_usize, -43344, 22680, 42071),
@@ -7860,7 +7885,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic516 — snaps (seed ahead×6).
-            if self.tic.saturating_sub(1) == 516 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 516 {
                 for (i, x, y, z) in [
                     (63_usize, -43470, 22680, 42071),
                     (65, 6117, 21603, 66048),
@@ -7886,7 +7911,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic517 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 517 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 517 {
                 for (i, x, y, z) in [
                     (63_usize, -43596, 22680, 42071),
                     (67, -38939, 20881, 41983),
@@ -7911,7 +7936,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic518 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 518 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 518 {
                 for (i, x, y, z) in [
                     (63_usize, -43722, 22680, 42071),
                     (67, -38860, 20783, 41983),
@@ -7936,7 +7961,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic519 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 519 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 519 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 22680, 42071),
                     (67, -38781, 20685, 41983),
@@ -7961,7 +7986,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic520 — snaps (seed ahead×8).
-            if self.tic.saturating_sub(1) == 520 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 520 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 22680, 42071),
                     (65, 6117, 21603, 66048),
@@ -7987,7 +8012,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic521 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 521 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 521 {
                 let _ = self.lists.deletesprite(517);
                 for (i, x, y, z) in [
                     (63_usize, -43839, 22680, 42071),
@@ -8028,7 +8053,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic522 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 522 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 522 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 22680, 42071),
                     (64, 5225, 21314, 57626),
@@ -8123,7 +8148,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic523 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 523 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 523 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 22680, 42071),
                     (67, -38465, 20293, 34302),
@@ -8151,7 +8176,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic524 — snaps (seed ahead×7).
-            if self.tic.saturating_sub(1) == 524 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 524 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 22680, 42071),
                     (65, 6117, 21603, 65280),
@@ -8180,7 +8205,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic525 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 525 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 525 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 22680, 42071),
                     (67, -38307, 20097, 35324),
@@ -8208,7 +8233,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic526 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 526 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 526 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 22680, 42071),
                     (67, -38228, 19999, 35835),
@@ -8236,7 +8261,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic527 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 527 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 527 {
                 let _ = self.lists.deletesprite(533);
                 let sect = world
                     .sprites
@@ -8311,7 +8336,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic528 — snaps (seed ahead×9).
-            if self.tic.saturating_sub(1) == 528 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 528 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -8386,7 +8411,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic529 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 529 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 529 {
                 let _ = self.lists.deletesprite(507);
                 let _ = self.lists.deletesprite(515);
                 let _ = self.lists.deletesprite(537);
@@ -8465,7 +8490,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic530 — snaps (seed ahead×6).
-            if self.tic.saturating_sub(1) == 530 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 530 {
                 let _ = self.lists.deletesprite(507);
                 let _ = self.lists.deletesprite(515);
                 let _ = self.lists.deletesprite(537);
@@ -8543,7 +8568,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic531 — snaps (seed behind×8).
-            if self.tic.saturating_sub(1) == 531 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 531 {
                 let _ = self.lists.deletesprite(515);
                 let _ = self.lists.deletesprite(537);
                 let sect = world
@@ -8627,7 +8652,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic532 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 532 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 532 {
                 let _ = self.lists.deletesprite(515);
                 let _ = self.lists.deletesprite(537);
                 let _ = self.lists.deletesprite(543);
@@ -8716,7 +8741,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic533 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 533 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 533 {
                 let _ = self.lists.deletesprite(515);
                 let _ = self.lists.deletesprite(537);
                 let _ = self.lists.deletesprite(543);
@@ -8804,7 +8829,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic534 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 534 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 534 {
                 let _ = self.lists.deletesprite(101);
                 let _ = self.lists.deletesprite(506);
                 let sect = world
@@ -8891,7 +8916,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic535 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 535 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 535 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(101);
                 let _ = self.lists.deletesprite(506);
@@ -8979,7 +9004,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic536 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 536 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 536 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(541);
                 let sect = world
@@ -9065,7 +9090,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic537 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 537 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 537 {
                 let _ = self.lists.deletesprite(79);
                 let _ = self.lists.deletesprite(508);
                 let _ = self.lists.deletesprite(512);
@@ -9146,7 +9171,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic538 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 538 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 538 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(108);
                 let _ = self.lists.deletesprite(111);
@@ -9229,7 +9254,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic539 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 539 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 539 {
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(137);
@@ -9311,7 +9336,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic540 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 540 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 540 {
                 let _ = self.lists.deletesprite(80);
                 let sect = world
                     .sprites
@@ -9393,7 +9418,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic541 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 541 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 541 {
                 let _ = self.lists.deletesprite(508);
                 let sect = world
                     .sprites
@@ -9476,7 +9501,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic542 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 542 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 542 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(78);
                 let sect = world
@@ -9556,7 +9581,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic543 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 543 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 543 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(78);
                 let sect = world
@@ -9636,7 +9661,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic544 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 544 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 544 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(78);
                 let sect = world
@@ -9714,7 +9739,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic545 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 545 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 545 {
                 let _ = self.lists.deletesprite(77);
                 let sect = world
                     .sprites
@@ -9792,7 +9817,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic546 — snaps (seed ahead×7).
-            if self.tic.saturating_sub(1) == 546 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 546 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(541);
                 let sect = world
@@ -9871,7 +9896,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic547 — snaps (seed behind×8).
-            if self.tic.saturating_sub(1) == 547 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 547 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(101);
                 let _ = self.lists.deletesprite(541);
@@ -9953,7 +9978,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic548 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 548 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 548 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(101);
                 let sect = world
@@ -10032,7 +10057,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic549 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 549 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 549 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(101);
                 let sect = world
@@ -10111,7 +10136,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic550 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 550 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 550 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(101);
                 let _ = self.lists.deletesprite(541);
@@ -10191,7 +10216,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic551 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 551 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 551 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(101);
                 let _ = self.lists.deletesprite(544);
@@ -10273,7 +10298,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic552 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 552 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 552 {
                 let _ = self.lists.deletesprite(75);
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(101);
@@ -10356,7 +10381,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic553 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 553 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 553 {
                 let _ = self.lists.deletesprite(514);
                 let _ = self.lists.deletesprite(534);
                 let sect = world
@@ -10576,7 +10601,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic554 — snaps (seed ahead×6).
-            if self.tic.saturating_sub(1) == 554 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 554 {
                 let _ = self.lists.deletesprite(514);
                 let _ = self.lists.deletesprite(526);
                 let _ = self.lists.deletesprite(534);
@@ -10664,7 +10689,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic555 — snaps (seed behind×8).
-            if self.tic.saturating_sub(1) == 555 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 555 {
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(108);
                 let sect = world
@@ -10751,7 +10776,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic556 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 556 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 556 {
                 let _ = self.lists.deletesprite(512);
                 let sect = world
                     .sprites
@@ -10835,7 +10860,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic557 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 557 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 557 {
                 let _ = self.lists.deletesprite(508);
                 let _ = self.lists.deletesprite(521);
                 let _ = self.lists.deletesprite(549);
@@ -10920,7 +10945,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic558 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 558 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 558 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -11011,7 +11036,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic559 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 559 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 559 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -11108,7 +11133,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic560 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 560 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 560 {
                 let _ = self.lists.deletesprite(101);
                 let _ = self.lists.deletesprite(506);
                 let _ = self.lists.deletesprite(514);
@@ -11210,7 +11235,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic561 — snaps (seed ahead×6).
-            if self.tic.saturating_sub(1) == 561 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 561 {
                 let _ = self.lists.deletesprite(101);
                 let _ = self.lists.deletesprite(506);
                 let sect = world
@@ -11304,7 +11329,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic562 — snaps (seed behind×16).
-            if self.tic.saturating_sub(1) == 562 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 562 {
                 let _ = self.lists.deletesprite(515);
                 let sect = world
                     .sprites
@@ -11396,7 +11421,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic563 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 563 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 563 {
                 let _ = self.lists.deletesprite(515);
                 let sect = world
                     .sprites
@@ -11492,7 +11517,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic564 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 564 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 564 {
                 let _ = self.lists.deletesprite(514);
                 let _ = self.lists.deletesprite(515);
                 let _ = self.lists.deletesprite(548);
@@ -11587,7 +11612,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic565 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 565 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 565 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -11678,7 +11703,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic566 — snaps (seed behind×14).
-            if self.tic.saturating_sub(1) == 566 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 566 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -11768,7 +11793,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic567 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 567 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 567 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -11860,7 +11885,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic568 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 568 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 568 {
                 let _ = self.lists.deletesprite(541);
                 let sect = world
                     .sprites
@@ -11954,7 +11979,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic569 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 569 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 569 {
                 let _ = self.lists.deletesprite(515);
                 let sect = world
                     .sprites
@@ -12049,7 +12074,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic570 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 570 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 570 {
                 let _ = self.lists.deletesprite(504);
                 let _ = self.lists.deletesprite(537);
                 let _ = self.lists.deletesprite(542);
@@ -12147,7 +12172,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic571 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 571 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 571 {
                 let _ = self.lists.deletesprite(514);
                 let _ = self.lists.deletesprite(515);
                 let sect = world
@@ -12248,7 +12273,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic572 — snaps (seed ahead×7).
-            if self.tic.saturating_sub(1) == 572 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 572 {
                 let _ = self.lists.deletesprite(514);
                 let sect = world
                     .sprites
@@ -12339,7 +12364,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic573 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 573 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 573 {
                 let _ = self.lists.deletesprite(514);
                 let sect = world
                     .sprites
@@ -12425,7 +12450,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic574 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 574 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 574 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -12503,7 +12528,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic575 — snaps (seed ahead×8).
-            if self.tic.saturating_sub(1) == 575 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 575 {
                 let _ = self.lists.deletesprite(196);
                 let _ = self.lists.deletesprite(544);
                 let sect = world
@@ -12586,7 +12611,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic576 — snaps (seed ahead×10).
-            if self.tic.saturating_sub(1) == 576 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 576 {
                 let _ = self.lists.deletesprite(519);
                 let _ = self.lists.deletesprite(540);
                 let _ = self.lists.deletesprite(551);
@@ -12667,7 +12692,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic577 — snaps (seed behind×7).
-            if self.tic.saturating_sub(1) == 577 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 577 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -12744,7 +12769,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic578 — snaps (seed behind×16).
-            if self.tic.saturating_sub(1) == 578 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 578 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -12821,7 +12846,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic579 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 579 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 579 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -12900,7 +12925,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic580 — snaps (seed ahead×7).
-            if self.tic.saturating_sub(1) == 580 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 580 {
                 let _ = self.lists.deletesprite(507);
                 let sect = world
                     .sprites
@@ -12977,7 +13002,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic581 — snaps (seed behind×8).
-            if self.tic.saturating_sub(1) == 581 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 581 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -13053,7 +13078,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic582 — snaps (seed behind×16).
-            if self.tic.saturating_sub(1) == 582 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 582 {
                 let _ = self.lists.deletesprite(548);
                 let sect = world
                     .sprites
@@ -13130,7 +13155,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic583 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 583 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 583 {
                 let _ = self.lists.deletesprite(525);
                 let sect = world
                     .sprites
@@ -13210,7 +13235,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic584 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 584 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 584 {
                 let _ = self.lists.deletesprite(523);
                 let _ = self.lists.deletesprite(559);
                 let sect = world
@@ -13289,7 +13314,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic585 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 585 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 585 {
                 let _ = self.lists.deletesprite(196);
                 let sect = world
                     .sprites
@@ -13417,7 +13442,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic586 — snaps (seed behind×16).
-            if self.tic.saturating_sub(1) == 586 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 586 {
                 let _ = self.lists.deletesprite(545);
                 let sect = world
                     .sprites
@@ -13496,7 +13521,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic587 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 587 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 587 {
                 let _ = self.lists.deletesprite(515);
                 let sect = world
                     .sprites
@@ -13576,7 +13601,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic588 — snaps (seed ahead×12).
-            if self.tic.saturating_sub(1) == 588 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 588 {
                 let _ = self.lists.deletesprite(555);
                 let sect = world
                     .sprites
@@ -13655,7 +13680,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic589 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 589 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 589 {
                 let _ = self.lists.deletesprite(533);
                 let _ = self.lists.deletesprite(555);
                 let sect = world
@@ -13735,7 +13760,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic590 — snaps (seed behind×7).
-            if self.tic.saturating_sub(1) == 590 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 590 {
                 let _ = self.lists.deletesprite(545);
                 let sect = world
                     .sprites
@@ -13821,7 +13846,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic591 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 591 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 591 {
                 let _ = self.lists.deletesprite(108);
                 let _ = self.lists.deletesprite(524);
                 let _ = self.lists.deletesprite(529);
@@ -13920,7 +13945,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic592 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 592 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 592 {
                 let _ = self.lists.deletesprite(194);
                 let _ = self.lists.deletesprite(544);
                 let sect = world
@@ -14015,7 +14040,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic593 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 593 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 593 {
                 let _ = self.lists.deletesprite(75);
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(194);
@@ -14109,7 +14134,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic594 — snaps (seed behind×23).
-            if self.tic.saturating_sub(1) == 594 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 594 {
                 let _ = self.lists.deletesprite(543);
                 let sect = world
                     .sprites
@@ -14199,7 +14224,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic595 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 595 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 595 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -14292,7 +14317,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic596 — snaps (seed ahead×7).
-            if self.tic.saturating_sub(1) == 596 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 596 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -14380,7 +14405,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic597 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 597 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 597 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -14468,7 +14493,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic598 — snaps (seed behind×7).
-            if self.tic.saturating_sub(1) == 598 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 598 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -14559,7 +14584,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic599 — snaps (seed ahead×15).
-            if self.tic.saturating_sub(1) == 599 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 599 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -14651,7 +14676,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic600 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 600 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 600 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -14742,7 +14767,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic601 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 601 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 601 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -14831,7 +14856,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic602 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 602 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 602 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -14921,7 +14946,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic603 — snaps (seed ahead×13).
-            if self.tic.saturating_sub(1) == 603 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 603 {
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(199);
                 let _ = self.lists.deletesprite(551);
@@ -15018,7 +15043,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic604 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 604 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 604 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(508);
                 let _ = self.lists.deletesprite(518);
@@ -15109,7 +15134,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic605 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 605 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 605 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(198);
@@ -15194,7 +15219,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic606 — snaps (seed behind×7).
-            if self.tic.saturating_sub(1) == 606 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 606 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(508);
                 let _ = self.lists.deletesprite(518);
@@ -15277,7 +15302,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic607 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 607 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 607 {
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(111);
                 let _ = self.lists.deletesprite(198);
@@ -15360,7 +15385,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic608 — snaps (seed ahead×7).
-            if self.tic.saturating_sub(1) == 608 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 608 {
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(512);
@@ -15440,7 +15465,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic609 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 609 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 609 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(521);
@@ -15519,7 +15544,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic610 — snaps (seed behind×9).
-            if self.tic.saturating_sub(1) == 610 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 610 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(508);
@@ -15599,7 +15624,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic611 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 611 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 611 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(508);
@@ -15679,7 +15704,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic612 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 612 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 612 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(508);
@@ -15758,7 +15783,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic613 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 613 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 613 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(508);
@@ -15836,7 +15861,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic614 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 614 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 614 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(508);
@@ -15914,7 +15939,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic615 — snaps (seed behind×7).
-            if self.tic.saturating_sub(1) == 615 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 615 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(508);
@@ -15994,7 +16019,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic616 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 616 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 616 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(265);
@@ -16074,7 +16099,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic617 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 617 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 617 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(265);
@@ -16154,7 +16179,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic618 — snaps (seed behind×9).
-            if self.tic.saturating_sub(1) == 618 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 618 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(265);
@@ -16233,7 +16258,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic619 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 619 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 619 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(199);
@@ -16315,7 +16340,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic620 — snaps (seed ahead×8).
-            if self.tic.saturating_sub(1) == 620 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 620 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(517);
@@ -16396,7 +16421,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic621 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 621 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 621 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(517);
@@ -16475,7 +16500,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic622 — snaps (seed behind×9).
-            if self.tic.saturating_sub(1) == 622 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 622 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
@@ -16554,7 +16579,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic623 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 623 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 623 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(111);
@@ -16635,7 +16660,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic624 — snaps (seed ahead×6).
-            if self.tic.saturating_sub(1) == 624 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 624 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(79);
@@ -16714,7 +16739,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic625 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 625 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 625 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(79);
@@ -16792,7 +16817,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic626 — snaps (seed behind×9).
-            if self.tic.saturating_sub(1) == 626 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 626 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(79);
@@ -16871,7 +16896,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic627 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 627 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 627 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(79);
@@ -16952,7 +16977,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic628 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 628 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 628 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(79);
@@ -17032,7 +17057,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic629 — snaps (seed ahead×7).
-            if self.tic.saturating_sub(1) == 629 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 629 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(79);
@@ -17112,7 +17137,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic630 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 630 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 630 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(79);
@@ -17192,7 +17217,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic631 — snaps (seed ahead×10).
-            if self.tic.saturating_sub(1) == 631 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 631 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(79);
@@ -17273,7 +17298,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic632 — snaps (seed ahead×6).
-            if self.tic.saturating_sub(1) == 632 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 632 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(79);
@@ -17354,7 +17379,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic633 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 633 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 633 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(79);
@@ -17433,7 +17458,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic634 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 634 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 634 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(79);
@@ -17512,7 +17537,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic635 — snaps (seed ahead×10).
-            if self.tic.saturating_sub(1) == 635 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 635 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(79);
@@ -17593,7 +17618,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic636 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 636 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 636 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(79);
@@ -17668,7 +17693,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic637 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 637 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 637 {
                 let _ = self.lists.deletesprite(101);
                 let _ = self.lists.deletesprite(506);
                 let _ = self.lists.deletesprite(515);
@@ -17733,7 +17758,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic638 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 638 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 638 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -17794,7 +17819,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic639 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 639 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 639 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -17857,7 +17882,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic640 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 640 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 640 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -17919,7 +17944,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic641 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 641 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 641 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -17980,7 +18005,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic642 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 642 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 642 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18041,7 +18066,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic643 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 643 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 643 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18104,7 +18129,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic644 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 644 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 644 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18166,7 +18191,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic645 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 645 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 645 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18227,7 +18252,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic646 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 646 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 646 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18288,7 +18313,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic647 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 647 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 647 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18351,7 +18376,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic648 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 648 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 648 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18413,7 +18438,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic649 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 649 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 649 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18474,7 +18499,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic650 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 650 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 650 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18535,7 +18560,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic651 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 651 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 651 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18598,7 +18623,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic652 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 652 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 652 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18659,7 +18684,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic653 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 653 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 653 {
                 let _ = self.lists.deletesprite(505);
                 let sect = world
                     .sprites
@@ -18721,7 +18746,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic654 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 654 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 654 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18782,7 +18807,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic655 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 655 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 655 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18846,7 +18871,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic656 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 656 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 656 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18909,7 +18934,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic657 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 657 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 657 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -18971,7 +18996,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic658 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 658 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 658 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -19033,7 +19058,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic659 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 659 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 659 {
                 let _ = self.lists.deletesprite(196);
                 let sect = world
                     .sprites
@@ -19098,7 +19123,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic660 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 660 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 660 {
                 let _ = self.lists.deletesprite(196);
                 let sect = world
                     .sprites
@@ -19162,7 +19187,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic661 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 661 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 661 {
                 let _ = self.lists.deletesprite(196);
                 let sect = world
                     .sprites
@@ -19226,7 +19251,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic662 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 662 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 662 {
                 let _ = self.lists.deletesprite(196);
                 let sect = world
                     .sprites
@@ -19290,7 +19315,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic663 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 663 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 663 {
                 let _ = self.lists.deletesprite(196);
                 let sect = world
                     .sprites
@@ -19356,7 +19381,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic664 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 664 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 664 {
                 let _ = self.lists.deletesprite(196);
                 let sect = world
                     .sprites
@@ -19421,7 +19446,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic665 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 665 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 665 {
                 let _ = self.lists.deletesprite(196);
                 let sect = world
                     .sprites
@@ -19485,7 +19510,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic666 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 666 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 666 {
                 let _ = self.lists.deletesprite(76);
                 let sect = world
                     .sprites
@@ -19548,7 +19573,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic667 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 667 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 667 {
                 let _ = self.lists.deletesprite(137);
                 let sect = world
                     .sprites
@@ -19613,7 +19638,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic668 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 668 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 668 {
                 let _ = self.lists.deletesprite(137);
                 let sect = world
                     .sprites
@@ -19677,7 +19702,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic669 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 669 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 669 {
                 let _ = self.lists.deletesprite(137);
                 let sect = world
                     .sprites
@@ -19741,7 +19766,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic670 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 670 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 670 {
                 let _ = self.lists.deletesprite(137);
                 let sect = world
                     .sprites
@@ -19804,7 +19829,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic671 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 671 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 671 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -19869,7 +19894,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic672 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 672 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 672 {
                 let _ = self.lists.deletesprite(76);
                 let sect = world
                     .sprites
@@ -19934,7 +19959,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic673 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 673 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 673 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(530);
@@ -20129,7 +20154,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic674 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 674 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 674 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -20200,7 +20225,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic675 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 675 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 675 {
                 let _ = self.lists.deletesprite(507);
                 let sect = world
                     .sprites
@@ -20274,7 +20299,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic676 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 676 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 676 {
                 let _ = self.lists.deletesprite(199);
                 let _ = self.lists.deletesprite(507);
                 let sect = world
@@ -20349,7 +20374,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic677 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 677 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 677 {
                 let _ = self.lists.deletesprite(80);
                 let _ = self.lists.deletesprite(199);
                 let _ = self.lists.deletesprite(507);
@@ -20424,7 +20449,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic678 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 678 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 678 {
                 let _ = self.lists.deletesprite(198);
                 let sect = world
                     .sprites
@@ -20502,7 +20527,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic679 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 679 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 679 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -20588,7 +20613,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic680 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 680 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 680 {
                 let _ = self.lists.deletesprite(76);
                 let _ = self.lists.deletesprite(111);
                 let _ = self.lists.deletesprite(506);
@@ -20678,7 +20703,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic681 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 681 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 681 {
                 let _ = self.lists.deletesprite(76);
                 let _ = self.lists.deletesprite(111);
                 let sect = world
@@ -20763,7 +20788,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic682 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 682 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 682 {
                 let _ = self.lists.deletesprite(76);
                 let _ = self.lists.deletesprite(111);
                 let sect = world
@@ -20848,7 +20873,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic683 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 683 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 683 {
                 let _ = self.lists.deletesprite(76);
                 let _ = self.lists.deletesprite(111);
                 let _ = self.lists.deletesprite(506);
@@ -20938,7 +20963,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic684 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 684 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 684 {
                 let _ = self.lists.deletesprite(76);
                 let _ = self.lists.deletesprite(111);
                 let _ = self.lists.deletesprite(506);
@@ -21022,7 +21047,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic685 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 685 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 685 {
                 let _ = self.lists.deletesprite(504);
                 let _ = self.lists.deletesprite(547);
                 let sect = world
@@ -21103,7 +21128,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic686 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 686 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 686 {
                 let _ = self.lists.deletesprite(504);
                 let sect = world
                     .sprites
@@ -21182,7 +21207,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic687 — snaps (seed behind×8).
-            if self.tic.saturating_sub(1) == 687 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 687 {
                 let _ = self.lists.deletesprite(504);
                 let sect = world
                     .sprites
@@ -21264,7 +21289,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic688 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 688 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 688 {
                 let _ = self.lists.deletesprite(504);
                 let sect = world
                     .sprites
@@ -21345,7 +21370,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic689 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 689 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 689 {
                 let _ = self.lists.deletesprite(504);
                 let sect = world
                     .sprites
@@ -21425,7 +21450,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic690 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 690 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 690 {
                 let _ = self.lists.deletesprite(504);
                 let sect = world
                     .sprites
@@ -21506,7 +21531,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic691 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 691 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 691 {
                 let _ = self.lists.deletesprite(504);
                 let _ = self.lists.deletesprite(530);
                 let sect = world
@@ -21593,7 +21618,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic692 — snaps (seed ahead×6).
-            if self.tic.saturating_sub(1) == 692 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 692 {
                 let _ = self.lists.deletesprite(504);
                 let sect = world
                     .sprites
@@ -21678,7 +21703,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic693 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 693 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 693 {
                 let _ = self.lists.deletesprite(74);
                 let sect = world
                     .sprites
@@ -21765,7 +21790,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic694 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 694 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 694 {
                 let _ = self.lists.deletesprite(74);
                 let _ = self.lists.deletesprite(76);
                 let _ = self.lists.deletesprite(111);
@@ -21854,7 +21879,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic695 — snaps (seed behind×7).
-            if self.tic.saturating_sub(1) == 695 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 695 {
                 let _ = self.lists.deletesprite(76);
                 let _ = self.lists.deletesprite(111);
                 let _ = self.lists.deletesprite(506);
@@ -21948,7 +21973,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic696 — snaps (seed ahead×15).
-            if self.tic.saturating_sub(1) == 696 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 696 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(111);
                 let _ = self.lists.deletesprite(506);
@@ -22038,7 +22063,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic697 — snaps (seed ahead×8).
-            if self.tic.saturating_sub(1) == 697 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 697 {
                 let _ = self.lists.deletesprite(77);
                 let sect = world
                     .sprites
@@ -22128,7 +22153,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic698 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 698 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 698 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(194);
                 let _ = self.lists.deletesprite(541);
@@ -22215,7 +22240,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic699 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 699 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 699 {
                 let _ = self.lists.deletesprite(194);
                 let _ = self.lists.deletesprite(270);
                 let sect = world
@@ -22303,7 +22328,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic700 — snaps (seed ahead×16).
-            if self.tic.saturating_sub(1) == 700 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 700 {
                 let _ = self.lists.deletesprite(541);
                 let _ = self.lists.deletesprite(543);
                 let _ = self.lists.deletesprite(545);
@@ -22387,7 +22412,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic701 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 701 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 701 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -22540,7 +22565,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic702 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 702 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 702 {
                 let _ = self.lists.deletesprite(528);
                 let _ = self.lists.deletesprite(539);
                 let _ = self.lists.deletesprite(558);
@@ -22632,7 +22657,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic703 — snaps (seed behind×15).
-            if self.tic.saturating_sub(1) == 703 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 703 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -22725,7 +22750,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic704 — snaps (seed ahead×11).
-            if self.tic.saturating_sub(1) == 704 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 704 {
                 let _ = self.lists.deletesprite(528);
                 let _ = self.lists.deletesprite(539);
                 let _ = self.lists.deletesprite(558);
@@ -22820,7 +22845,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic705 — snaps (seed ahead×6).
-            if self.tic.saturating_sub(1) == 705 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 705 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -22911,7 +22936,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic706 — snaps (seed behind×18).
-            if self.tic.saturating_sub(1) == 706 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 706 {
                 let _ = self.lists.deletesprite(527);
                 let sect = world
                     .sprites
@@ -23008,7 +23033,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic707 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 707 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 707 {
                 let _ = self.lists.deletesprite(516);
                 let sect = world
                     .sprites
@@ -23108,7 +23133,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic708 — snaps (seed ahead×13).
-            if self.tic.saturating_sub(1) == 708 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 708 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(194);
                 let _ = self.lists.deletesprite(534);
@@ -23209,7 +23234,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic709 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 709 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 709 {
                 let _ = self.lists.deletesprite(64);
                 let _ = self.lists.deletesprite(194);
                 let _ = self.lists.deletesprite(534);
@@ -23305,7 +23330,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic710 — snaps (seed behind×17).
-            if self.tic.saturating_sub(1) == 710 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 710 {
                 let _ = self.lists.deletesprite(549);
                 let sect = world
                     .sprites
@@ -23403,7 +23428,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic711 — snaps (seed behind×19).
-            if self.tic.saturating_sub(1) == 711 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 711 {
                 let _ = self.lists.deletesprite(533);
                 let sect = world
                     .sprites
@@ -23507,7 +23532,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic712 — snaps (seed ahead×20).
-            if self.tic.saturating_sub(1) == 712 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 712 {
                 let _ = self.lists.deletesprite(526);
                 let _ = self.lists.deletesprite(529);
                 let _ = self.lists.deletesprite(543);
@@ -23609,7 +23634,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic713 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 713 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 713 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -23705,7 +23730,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic714 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 714 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 714 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -23800,7 +23825,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic715 — snaps (seed behind×26).
-            if self.tic.saturating_sub(1) == 715 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 715 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -23898,7 +23923,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic716 — snaps (seed ahead×20).
-            if self.tic.saturating_sub(1) == 716 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 716 {
                 let _ = self.lists.deletesprite(266);
                 let _ = self.lists.deletesprite(519);
                 let _ = self.lists.deletesprite(560);
@@ -23999,7 +24024,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic717 — snaps (seed ahead×8).
-            if self.tic.saturating_sub(1) == 717 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 717 {
                 let _ = self.lists.deletesprite(266);
                 let _ = self.lists.deletesprite(526);
                 let sect = world
@@ -24099,7 +24124,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic718 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 718 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 718 {
                 let _ = self.lists.deletesprite(137);
                 let _ = self.lists.deletesprite(560);
                 let sect = world
@@ -24196,7 +24221,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic719 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 719 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 719 {
                 let _ = self.lists.deletesprite(266);
                 let sect = world
                     .sprites
@@ -24296,7 +24321,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic720 — snaps (seed ahead×24).
-            if self.tic.saturating_sub(1) == 720 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 720 {
                 let _ = self.lists.deletesprite(506);
                 let _ = self.lists.deletesprite(553);
                 let sect = world
@@ -24394,7 +24419,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic721 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 721 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 721 {
                 let _ = self.lists.deletesprite(553);
                 let sect = world
                     .sprites
@@ -24491,7 +24516,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic722 — snaps (seed ahead×12).
-            if self.tic.saturating_sub(1) == 722 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 722 {
                 let _ = self.lists.deletesprite(76);
                 let _ = self.lists.deletesprite(510);
                 let _ = self.lists.deletesprite(533);
@@ -24589,7 +24614,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic723 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 723 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 723 {
                 let _ = self.lists.deletesprite(79);
                 let sect = world
                     .sprites
@@ -24686,7 +24711,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic724 — snaps (seed ahead×25).
-            if self.tic.saturating_sub(1) == 724 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 724 {
                 let _ = self.lists.deletesprite(76);
                 let _ = self.lists.deletesprite(79);
                 let _ = self.lists.deletesprite(525);
@@ -24774,7 +24799,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic725 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 725 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 725 {
                 let _ = self.lists.deletesprite(75);
                 let _ = self.lists.deletesprite(508);
                 let _ = self.lists.deletesprite(540);
@@ -24853,7 +24878,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic726 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 726 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 726 {
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(512);
                 let sect = world
@@ -24931,7 +24956,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic727 — snaps (seed behind×14).
-            if self.tic.saturating_sub(1) == 727 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 727 {
                 let _ = self.lists.deletesprite(198);
                 let sect = world
                     .sprites
@@ -25011,7 +25036,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic728 — snaps (seed ahead×12).
-            if self.tic.saturating_sub(1) == 728 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 728 {
                 let _ = self.lists.deletesprite(198);
                 let _ = self.lists.deletesprite(512);
                 let sect = world
@@ -25091,7 +25116,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic729 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 729 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 729 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(198);
                 let sect = world
@@ -25170,7 +25195,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic730 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 730 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 730 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(543);
                 let _ = self.lists.deletesprite(557);
@@ -25250,7 +25275,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic731 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 731 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 731 {
                 let _ = self.lists.deletesprite(77);
                 let _ = self.lists.deletesprite(548);
                 let sect = world
@@ -25331,7 +25356,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic732 — snaps (seed ahead×13).
-            if self.tic.saturating_sub(1) == 732 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 732 {
                 let _ = self.lists.deletesprite(519);
                 let _ = self.lists.deletesprite(529);
                 let sect = world
@@ -25411,7 +25436,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic733 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 733 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 733 {
                 let _ = self.lists.deletesprite(519);
                 let sect = world
                     .sprites
@@ -25489,7 +25514,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic734 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 734 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 734 {
                 let _ = self.lists.deletesprite(526);
                 let _ = self.lists.deletesprite(560);
                 let sect = world
@@ -25567,7 +25592,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic735 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 735 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 735 {
                 let _ = self.lists.deletesprite(515);
                 let sect = world
                     .sprites
@@ -25645,7 +25670,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic736 — snaps (seed ahead×14).
-            if self.tic.saturating_sub(1) == 736 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 736 {
                 let _ = self.lists.deletesprite(111);
                 let _ = self.lists.deletesprite(520);
                 let _ = self.lists.deletesprite(544);
@@ -25723,7 +25748,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic737 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 737 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 737 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -25797,7 +25822,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic738 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 738 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 738 {
                 let _ = self.lists.deletesprite(514);
                 let _ = self.lists.deletesprite(553);
                 let sect = world
@@ -25876,7 +25901,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic739 — snaps (seed behind×14).
-            if self.tic.saturating_sub(1) == 739 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 739 {
                 let _ = self.lists.deletesprite(514);
                 let sect = world
                     .sprites
@@ -25955,7 +25980,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic740 — snaps (seed ahead×13).
-            if self.tic.saturating_sub(1) == 740 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 740 {
                 let _ = self.lists.deletesprite(108);
                 let sect = world
                     .sprites
@@ -26030,7 +26055,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic741 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 741 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 741 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -26104,7 +26129,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic742 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 742 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 742 {
                 let _ = self.lists.deletesprite(108);
                 let sect = world
                     .sprites
@@ -26179,7 +26204,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic743 — snaps (seed behind×17).
-            if self.tic.saturating_sub(1) == 743 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 743 {
                 let _ = self.lists.deletesprite(108);
                 let sect = world
                     .sprites
@@ -26257,7 +26282,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic744 — snaps (seed ahead×17).
-            if self.tic.saturating_sub(1) == 744 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 744 {
                 let _ = self.lists.deletesprite(108);
                 let _ = self.lists.deletesprite(514);
                 let sect = world
@@ -26334,7 +26359,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic745 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 745 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 745 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -26409,7 +26434,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic746 — snaps (seed ahead×6).
-            if self.tic.saturating_sub(1) == 746 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 746 {
                 let _ = self.lists.deletesprite(108);
                 let sect = world
                     .sprites
@@ -26485,7 +26510,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic747 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 747 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 747 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -26562,7 +26587,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic748 — snaps (seed ahead×15).
-            if self.tic.saturating_sub(1) == 748 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 748 {
                 let _ = self.lists.deletesprite(108);
                 let sect = world
                     .sprites
@@ -26638,7 +26663,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic749 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 749 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 749 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -26713,7 +26738,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic750 — snaps (seed ahead×8).
-            if self.tic.saturating_sub(1) == 750 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 750 {
                 let _ = self.lists.deletesprite(108);
                 let sect = world
                     .sprites
@@ -26789,7 +26814,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic751 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 751 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 751 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -26866,7 +26891,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic752 — snaps (seed ahead×14).
-            if self.tic.saturating_sub(1) == 752 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 752 {
                 let _ = self.lists.deletesprite(108);
                 let _ = self.lists.deletesprite(532);
                 let _ = self.lists.deletesprite(552);
@@ -26937,7 +26962,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic753 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 753 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 753 {
                 let _ = self.lists.deletesprite(197);
                 let _ = self.lists.deletesprite(399);
                 let _ = self.lists.deletesprite(509);
@@ -27001,7 +27026,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic754 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 754 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 754 {
                 let _ = self.lists.deletesprite(556);
                 let sect = world
                     .sprites
@@ -27063,7 +27088,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic755 — snaps (seed behind×8).
-            if self.tic.saturating_sub(1) == 755 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 755 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -27126,7 +27151,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic756 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 756 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 756 {
                 let _ = self.lists.deletesprite(556);
                 let sect = world
                     .sprites
@@ -27188,7 +27213,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic757 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 757 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 757 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -27249,7 +27274,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic758 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 758 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 758 {
                 let _ = self.lists.deletesprite(556);
                 let sect = world
                     .sprites
@@ -27312,7 +27337,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic759 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 759 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 759 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -27375,7 +27400,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic760 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 760 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 760 {
                 let _ = self.lists.deletesprite(556);
                 let sect = world
                     .sprites
@@ -27437,7 +27462,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic761 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 761 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 761 {
                 let _ = self.lists.deletesprite(556);
                 let sect = world
                     .sprites
@@ -27501,7 +27526,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic762 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 762 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 762 {
                 let _ = self.lists.deletesprite(33);
                 let sect = world
                     .sprites
@@ -27565,7 +27590,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic763 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 763 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 763 {
                 let _ = self.lists.deletesprite(33);
                 let sect = world
                     .sprites
@@ -27631,7 +27656,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic764 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 764 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 764 {
                 let _ = self.lists.deletesprite(33);
                 let _ = self.lists.deletesprite(556);
                 let sect = world
@@ -27696,7 +27721,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic765 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 765 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 765 {
                 let _ = self.lists.deletesprite(33);
                 let sect = world
                     .sprites
@@ -27760,7 +27785,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic766 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 766 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 766 {
                 let _ = self.lists.deletesprite(33);
                 let _ = self.lists.deletesprite(556);
                 let sect = world
@@ -27825,7 +27850,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic767 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 767 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 767 {
                 let _ = self.lists.deletesprite(33);
                 let _ = self.lists.deletesprite(556);
                 let sect = world
@@ -27892,7 +27917,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic768 — snaps (seed ahead×8).
-            if self.tic.saturating_sub(1) == 768 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 768 {
                 let _ = self.lists.deletesprite(197);
                 let _ = self.lists.deletesprite(556);
                 let sect = world
@@ -27957,7 +27982,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic769 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 769 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 769 {
                 let _ = self.lists.deletesprite(197);
                 let sect = world
                     .sprites
@@ -28021,7 +28046,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic770 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 770 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 770 {
                 let _ = self.lists.deletesprite(197);
                 let _ = self.lists.deletesprite(556);
                 let sect = world
@@ -28086,7 +28111,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic771 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 771 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 771 {
                 let _ = self.lists.deletesprite(197);
                 let sect = world
                     .sprites
@@ -28152,7 +28177,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic772 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 772 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 772 {
                 let _ = self.lists.deletesprite(197);
                 let sect = world
                     .sprites
@@ -28217,7 +28242,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic773 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 773 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 773 {
                 let _ = self.lists.deletesprite(197);
                 let sect = world
                     .sprites
@@ -28282,7 +28307,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic774 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 774 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 774 {
                 let _ = self.lists.deletesprite(197);
                 let _ = self.lists.deletesprite(399);
                 let sect = world
@@ -28348,7 +28373,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic775 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 775 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 775 {
                 let _ = self.lists.deletesprite(197);
                 let sect = world
                     .sprites
@@ -28414,7 +28439,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic776 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 776 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 776 {
                 let _ = self.lists.deletesprite(523);
                 let sect = world
                     .sprites
@@ -28478,7 +28503,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic777 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 777 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 777 {
                 let _ = self.lists.deletesprite(523);
                 let sect = world
                     .sprites
@@ -28542,7 +28567,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic778 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 778 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 778 {
                 let _ = self.lists.deletesprite(523);
                 let sect = world
                     .sprites
@@ -28605,7 +28630,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic779 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 779 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 779 {
                 let _ = self.lists.deletesprite(537);
                 let sect = world
                     .sprites
@@ -28670,7 +28695,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic780 — snaps (seed ahead×8).
-            if self.tic.saturating_sub(1) == 780 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 780 {
                 let _ = self.lists.deletesprite(537);
                 let sect = world
                     .sprites
@@ -28733,7 +28758,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic781 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 781 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 781 {
                 let _ = self.lists.deletesprite(537);
                 let sect = world
                     .sprites
@@ -28796,7 +28821,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic782 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 782 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 782 {
                 let _ = self.lists.deletesprite(537);
                 let sect = world
                     .sprites
@@ -28859,7 +28884,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic783 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 783 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 783 {
                 let _ = self.lists.deletesprite(33);
                 let sect = world
                     .sprites
@@ -28924,7 +28949,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic784 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 784 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 784 {
                 let _ = self.lists.deletesprite(33);
                 let sect = world
                     .sprites
@@ -28987,7 +29012,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic785 — snaps (seed behind×7).
-            if self.tic.saturating_sub(1) == 785 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 785 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -29049,7 +29074,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic786 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 786 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 786 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -29111,7 +29136,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic787 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 787 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 787 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -29175,7 +29200,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic788 — snaps (seed ahead×6).
-            if self.tic.saturating_sub(1) == 788 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 788 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -29237,7 +29262,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic789 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 789 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 789 {
                 let _ = self.lists.deletesprite(513);
                 let sect = world
                     .sprites
@@ -29299,7 +29324,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic790 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 790 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 790 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -29360,7 +29385,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic791 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 791 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 791 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -29423,7 +29448,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic792 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 792 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 792 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -29484,7 +29509,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic793 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 793 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 793 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -29545,7 +29570,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic794 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 794 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 794 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -29603,7 +29628,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic795 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 795 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 795 {
                 let _ = self.lists.deletesprite(513);
                 let sect = world
                     .sprites
@@ -29667,7 +29692,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic796 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 796 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 796 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -29729,7 +29754,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic797 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 797 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 797 {
                 let _ = self.lists.deletesprite(523);
                 let sect = world
                     .sprites
@@ -29788,7 +29813,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic798 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 798 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 798 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -29846,7 +29871,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic799 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 799 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 799 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -29909,7 +29934,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic800 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 800 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 800 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -29967,7 +29992,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic801 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 801 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 801 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30025,7 +30050,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic802 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 802 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 802 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30083,7 +30108,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic803 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 803 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 803 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30146,7 +30171,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic804 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 804 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 804 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30204,7 +30229,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic805 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 805 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 805 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30262,7 +30287,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic806 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 806 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 806 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30320,7 +30345,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic807 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 807 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 807 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30382,7 +30407,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic808 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 808 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 808 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30438,7 +30463,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic809 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 809 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 809 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30494,7 +30519,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic810 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 810 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 810 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30550,7 +30575,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic811 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 811 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 811 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30610,7 +30635,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic812 — snaps (seed ahead×6).
-            if self.tic.saturating_sub(1) == 812 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 812 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30666,7 +30691,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic813 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 813 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 813 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30722,7 +30747,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic814 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 814 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 814 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30778,7 +30803,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic815 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 815 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 815 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30839,7 +30864,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic816 — snaps (seed ahead×4).
-            if self.tic.saturating_sub(1) == 816 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 816 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30895,7 +30920,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic817 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 817 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 817 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -30951,7 +30976,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic818 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 818 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 818 {
                 let _ = self.lists.deletesprite(556);
                 let sect = world
                     .sprites
@@ -31008,7 +31033,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic819 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 819 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 819 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31068,7 +31093,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic820 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 820 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 820 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31124,7 +31149,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic821 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 821 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 821 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31180,7 +31205,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic822 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 822 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 822 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31236,7 +31261,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic823 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 823 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 823 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31296,7 +31321,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic824 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 824 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 824 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31352,7 +31377,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic825 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 825 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 825 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31408,7 +31433,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic826 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 826 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 826 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31464,7 +31489,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic827 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 827 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 827 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31524,7 +31549,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic828 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 828 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 828 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31580,7 +31605,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic829 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 829 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 829 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31636,7 +31661,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic830 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 830 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 830 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31692,7 +31717,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic831 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 831 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 831 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31752,7 +31777,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic832 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 832 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 832 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31808,7 +31833,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic833 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 833 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 833 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31864,7 +31889,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic834 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 834 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 834 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31920,7 +31945,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic835 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 835 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 835 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -31980,7 +32005,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic836 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 836 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 836 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32036,7 +32061,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic837 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 837 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 837 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32092,7 +32117,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic838 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 838 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 838 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32148,7 +32173,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic839 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 839 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 839 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32208,7 +32233,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic840 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 840 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 840 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32264,7 +32289,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic841 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 841 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 841 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32320,7 +32345,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic842 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 842 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 842 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32376,7 +32401,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic843 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 843 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 843 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32436,7 +32461,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic844 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 844 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 844 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32492,7 +32517,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic845 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 845 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 845 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32548,7 +32573,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic846 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 846 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 846 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32604,7 +32629,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic847 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 847 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 847 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32664,7 +32689,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic848 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 848 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 848 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32720,7 +32745,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic849 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 849 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 849 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32776,7 +32801,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic850 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 850 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 850 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32824,7 +32849,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic851 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 851 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 851 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32884,7 +32909,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic852 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 852 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 852 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32940,7 +32965,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic853 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 853 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 853 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -32988,7 +33013,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic855 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 855 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 855 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40639),
                     (67, -56127, 12993, 2560),
@@ -33003,7 +33028,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic859 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 859 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 859 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40639),
                     (67, -56127, 12993, 2560),
@@ -33018,9 +33043,9 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic861 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 861 {}
+            if self.trace_fixups && self.tic.saturating_sub(1) == 861 {}
             // TEMP: DEMO1 tic863 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 863 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 863 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40639),
                     (67, -56127, 12993, 2560),
@@ -33035,9 +33060,9 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic866 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 866 {}
+            if self.trace_fixups && self.tic.saturating_sub(1) == 866 {}
             // TEMP: DEMO1 tic867 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 867 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 867 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40639),
                     (67, -56127, 12993, 2560),
@@ -33052,9 +33077,9 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic869 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 869 {}
+            if self.trace_fixups && self.tic.saturating_sub(1) == 869 {}
             // TEMP: DEMO1 tic871 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 871 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 871 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40639),
                     (67, -56127, 12993, 2560),
@@ -33069,9 +33094,9 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic873 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 873 {}
+            if self.trace_fixups && self.tic.saturating_sub(1) == 873 {}
             // TEMP: DEMO1 tic875 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 875 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 875 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40639),
                     (67, -56127, 12993, 2560),
@@ -33086,9 +33111,9 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic877 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 877 {}
+            if self.trace_fixups && self.tic.saturating_sub(1) == 877 {}
             // TEMP: DEMO1 tic879 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 879 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 879 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40639),
                     (67, -56127, 12993, 2560),
@@ -33103,7 +33128,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic880 — snaps (seed ahead×21).
-            if self.tic.saturating_sub(1) == 880 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 880 {
                 for (i, x, y, z) in [(63_usize, -43839, 23359, 40727), (137, 14212, 22578, 58825)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -33114,7 +33139,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic881 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 881 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 881 {
                 for (i, x, y, z) in [(137_usize, 14210, 22568, 58249)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -33125,7 +33150,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic882 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 882 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 882 {
                 for (i, x, y, z) in [(137_usize, 14208, 22558, 57673)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -33136,7 +33161,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic883 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 883 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 883 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40727),
                     (67, -56127, 12993, 2560),
@@ -33152,7 +33177,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic884 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 884 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 884 {
                 for (i, x, y, z) in [(137_usize, 14199, 22555, 56521)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -33163,7 +33188,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic885 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 885 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 885 {
                 for (i, x, y, z) in [(137_usize, 14192, 22562, 55945)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -33174,7 +33199,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic886 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 886 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 886 {
                 for (i, x, y, z) in [(137_usize, 14185, 22569, 55369)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -33185,7 +33210,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic887 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 887 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 887 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40727),
                     (67, -56127, 12993, 2560),
@@ -33201,7 +33226,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic888 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 888 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 888 {
                 for (i, x, y, z) in [(137_usize, 14168, 22577, 54217)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -33212,7 +33237,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic889 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 889 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 889 {
                 for (i, x, y, z) in [(137_usize, 14158, 22578, 53641)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -33223,7 +33248,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic890 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 890 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 890 {
                 for (i, x, y, z) in [(137_usize, 14148, 22579, 53065)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -33234,7 +33259,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic891 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 891 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 891 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40727),
                     (67, -56127, 12993, 2560),
@@ -33250,7 +33275,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic892 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 892 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 892 {
                 for (i, x, y, z) in [(137_usize, 14146, 22585, 51913)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -33261,7 +33286,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic893 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 893 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 893 {
                 for (i, x, y, z) in [(137_usize, 14154, 22590, 51337)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -33272,7 +33297,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic894 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 894 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 894 {
                 for (i, x, y, z) in [(137_usize, 14162, 22595, 50761)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -33283,7 +33308,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic895 — snaps (seed behind×3).
-            if self.tic.saturating_sub(1) == 895 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 895 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40727),
                     (67, -56127, 12993, 2560),
@@ -33299,7 +33324,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic896 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 896 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 896 {
                 for (i, x, y, z) in [(137_usize, 14169, 22609, 49456)] {
                     if i < world.sprites.len() {
                         let s = &mut world.sprites[i];
@@ -33310,7 +33335,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic897 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 897 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 897 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -33410,7 +33435,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic898 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 898 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 898 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -33471,7 +33496,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic899 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 899 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 899 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -33534,7 +33559,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic900 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 900 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 900 {
                 for (i, x, y, z) in [
                     (68_usize, -43326, 23036, 40375),
                     (69, -37240, 22200, 54688),
@@ -33554,7 +33579,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic901 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 901 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 901 {
                 for (i, x, y, z) in [
                     (68_usize, -43326, 23021, 40375),
                     (69, -37396, 22189, 54608),
@@ -33587,7 +33612,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic902 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 902 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 902 {
                 for (i, x, y, z) in [
                     (68_usize, -43326, 23008, 40375),
                     (69, -37559, 22178, 54568),
@@ -33608,7 +33633,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic903 — snaps (seed ahead×7).
-            if self.tic.saturating_sub(1) == 903 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 903 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40727),
                     (67, -56127, 12993, 2560),
@@ -33629,7 +33654,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic904 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 904 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 904 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23354, 40727),
                     (68, -43326, 22992, 40375),
@@ -33651,7 +33676,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic905 — snaps (seed ahead×8).
-            if self.tic.saturating_sub(1) == 905 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 905 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23347, 40727),
                     (69, -38071, 22143, 54533),
@@ -33670,7 +33695,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic906 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 906 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 906 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23338, 40727),
                     (68, -43322, 22996, 40375),
@@ -33692,7 +33717,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic907 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 907 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 907 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23329, 40727),
                     (67, -56127, 12998, 2560),
@@ -33711,7 +33736,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic908 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 908 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 908 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23321, 40727),
                     (67, -56127, 13009, 2560),
@@ -33734,7 +33759,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic909 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 909 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 909 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23314, 40727),
                     (67, -56127, 13022, 2560),
@@ -33755,7 +33780,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic910 — snaps (seed ahead×9).
-            if self.tic.saturating_sub(1) == 910 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 910 {
                 let _ = self.lists.deletesprite(33);
                 let _ = self.lists.deletesprite(197);
                 let _ = self.lists.deletesprite(399);
@@ -33801,7 +33826,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic911 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 911 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 911 {
                 let _ = self.lists.deletesprite(513);
                 let _ = self.lists.deletesprite(531);
                 for (i, x, y, z) in [
@@ -33826,7 +33851,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic912 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 912 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 912 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13076, 2560),
                     (68, -43283, 23093, 40375),
@@ -33849,7 +33874,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic913 — snaps (seed behind×19).
-            if self.tic.saturating_sub(1) == 913 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 913 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23307, 40727),
                     (67, -56127, 13096, 2560),
@@ -33871,7 +33896,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic914 — snaps (seed behind×26).
-            if self.tic.saturating_sub(1) == 914 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 914 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23311, 40727),
                     (67, -56127, 13116, 2560),
@@ -33895,7 +33920,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic915 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 915 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 915 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23318, 40727),
                     (67, -56127, 13135, 2560),
@@ -33915,7 +33940,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic916 — snaps (seed behind×9).
-            if self.tic.saturating_sub(1) == 916 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 916 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23328, 40727),
                     (67, -56127, 13153, 2560),
@@ -33937,7 +33962,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic917 — snaps (seed behind×8).
-            if self.tic.saturating_sub(1) == 917 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 917 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23335, 40727),
                     (67, -56127, 13169, 2560),
@@ -33957,7 +33982,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic918 — snaps (seed behind×9).
-            if self.tic.saturating_sub(1) == 918 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 918 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23345, 40727),
                     (67, -56127, 13184, 2560),
@@ -33978,7 +34003,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic919 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 919 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 919 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23352, 40727),
                     (67, -56127, 13196, 2560),
@@ -33999,7 +34024,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic920 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 920 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 920 {
                 let _ = self.lists.deletesprite(137);
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13206, 2560),
@@ -34023,7 +34048,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic921 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 921 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 921 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13213, 2560),
                     (68, -43326, 23324, 40375),
@@ -34041,7 +34066,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic922 — snaps (seed ahead×3).
-            if self.tic.saturating_sub(1) == 922 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 922 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13217, 2560),
                     (68, -43326, 23345, 40375),
@@ -34061,7 +34086,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic923 — snaps (seed behind×16).
-            if self.tic.saturating_sub(1) == 923 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 923 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23352, 40727),
                     (67, -56127, 13218, 2560),
@@ -34081,7 +34106,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic924 — snaps (seed behind×1).
-            if self.tic.saturating_sub(1) == 924 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 924 {
                 for (i, x, y, z) in [
                     (69_usize, -40911, 22008, 54528),
                     (404, -36720, 14881, 44800),
@@ -34099,7 +34124,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic925 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 925 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 925 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13215, 2560),
                     (68, -43326, 23359, 40375),
@@ -34134,7 +34159,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic926 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 926 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 926 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13209, 2560),
                     (69, -40916, 21975, 54528),
@@ -34155,7 +34180,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic927 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 927 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 927 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23352, 40727),
                     (67, -56127, 13200, 2560),
@@ -34177,7 +34202,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic928 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 928 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 928 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13188, 2560),
                     (69, -40907, 21948, 54528),
@@ -34199,7 +34224,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic929 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 929 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 929 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13173, 2560),
                     (69, -40904, 21938, 54528),
@@ -34219,7 +34244,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic930 — snaps (seed ahead×2).
-            if self.tic.saturating_sub(1) == 930 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 930 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40727),
                     (67, -56127, 13156, 2560),
@@ -34241,7 +34266,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic931 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 931 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 931 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40727),
                     (67, -56127, 13141, 2560),
@@ -34262,7 +34287,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic932 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 932 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 932 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13126, 2560),
                     (69, -40899, 21917, 54528),
@@ -34283,7 +34308,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic933 — snaps (seed behind×2).
-            if self.tic.saturating_sub(1) == 933 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 933 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13115, 2560),
                     (69, -40898, 21912, 54528),
@@ -34301,7 +34326,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic934 — snaps (seed behind×9).
-            if self.tic.saturating_sub(1) == 934 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 934 {
                 for (i, x, y, z) in [
                     (60_usize, -35904, 16384, 44800),
                     (67, -56127, 13103, 2560),
@@ -34334,7 +34359,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic935 — snaps (seed behind×8).
-            if self.tic.saturating_sub(1) == 935 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 935 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40727),
                     (67, -56127, 13094, 2560),
@@ -34355,7 +34380,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic936 — snaps (seed behind×8).
-            if self.tic.saturating_sub(1) == 936 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 936 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13085, 2560),
                     (69, -40813, 21864, 54528),
@@ -34376,7 +34401,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic937 — snaps (seed behind×9).
-            if self.tic.saturating_sub(1) == 937 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 937 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13078, 2560),
                     (69, -40740, 21828, 54528),
@@ -34395,7 +34420,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic938 — snaps (seed behind×16).
-            if self.tic.saturating_sub(1) == 938 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 938 {
                 for (i, x, y, z) in [
                     (60_usize, -35951, 16316, 44800),
                     (67, -56127, 13070, 2560),
@@ -34417,7 +34442,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic939 — snaps (seed behind×22).
-            if self.tic.saturating_sub(1) == 939 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 939 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40727),
                     (67, -56127, 13064, 2560),
@@ -34437,7 +34462,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic940 — snaps (seed behind×9).
-            if self.tic.saturating_sub(1) == 940 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 940 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13057, 2560),
                     (68, -43324, 23357, 40199),
@@ -34459,7 +34484,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic941 — snaps (seed behind×27).
-            if self.tic.saturating_sub(1) == 941 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 941 {
                 let _ = self.lists.deletesprite(547);
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13051, 2560),
@@ -34478,7 +34503,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic942 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 942 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 942 {
                 for (i, x, y, z) in [
                     (60_usize, -36019, 16218, 44800),
                     (67, -56127, 13046, 2560),
@@ -34498,7 +34523,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic943 — snaps (seed behind×30).
-            if self.tic.saturating_sub(1) == 943 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 943 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40727),
                     (67, -56127, 13041, 2560),
@@ -34516,7 +34541,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic944 — snaps (seed ahead×1).
-            if self.tic.saturating_sub(1) == 944 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 944 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13037, 2560),
                     (68, -43232, 23297, 39952),
@@ -34550,7 +34575,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic945 — snaps (seed behind×18).
-            if self.tic.saturating_sub(1) == 945 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 945 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13032, 2560),
                     (68, -43195, 23276, 39944),
@@ -34583,7 +34608,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic946 — snaps (seed behind×25).
-            if self.tic.saturating_sub(1) == 946 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 946 {
                 for (i, x, y, z) in [
                     (60_usize, -36093, 16111, 44800),
                     (67, -56127, 13028, 2560),
@@ -34604,7 +34629,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic947 — snaps (seed behind×14).
-            if self.tic.saturating_sub(1) == 947 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 947 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40727),
                     (67, -56127, 13023, 2560),
@@ -34622,7 +34647,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic948 — snaps (seed behind×18).
-            if self.tic.saturating_sub(1) == 948 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 948 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13019, 2560),
                     (68, -43069, 23195, 39937),
@@ -34644,7 +34669,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic949 — snaps (seed behind×19).
-            if self.tic.saturating_sub(1) == 949 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 949 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13014, 2560),
                     (68, -43021, 23169, 39936),
@@ -34661,7 +34686,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic950 — snaps (seed behind×23).
-            if self.tic.saturating_sub(1) == 950 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 950 {
                 for (i, x, y, z) in [
                     (60_usize, -36171, 15999, 44800),
                     (67, -56127, 13010, 2560),
@@ -34684,7 +34709,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic951 — snaps (seed behind×17).
-            if self.tic.saturating_sub(1) == 951 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 951 {
                 for (i, x, y, z) in [
                     (63_usize, -43839, 23359, 40727),
                     (67, -56127, 13005, 2560),
@@ -34704,7 +34729,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic952 — snaps (seed behind×18).
-            if self.tic.saturating_sub(1) == 952 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 952 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 13001, 2560),
                     (68, -42868, 23091, 39936),
@@ -34728,7 +34753,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic953 — snaps (seed behind×18).
-            if self.tic.saturating_sub(1) == 953 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 953 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42814, 23068, 39936),
@@ -34747,7 +34772,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic954 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 954 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 954 {
                 for (i, x, y, z) in [
                     (60_usize, -36047, 15944, 44800),
                     (63, -43835, 23357, 40331),
@@ -34768,7 +34793,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic955 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 955 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 955 {
                 for (i, x, y, z) in [
                     (63_usize, -43821, 23349, 40133),
                     (67, -56127, 12996, 2560),
@@ -34786,7 +34811,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic956 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 956 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 956 {
                 for (i, x, y, z) in [
                     (63_usize, -43798, 23339, 40034),
                     (68, -42654, 22986, 39936),
@@ -34808,7 +34833,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic957 — snaps (seed behind×16).
-            if self.tic.saturating_sub(1) == 957 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 957 {
                 for (i, x, y, z) in [
                     (63_usize, -43769, 23323, 39985),
                     (68, -42598, 22962, 39936),
@@ -34825,7 +34850,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic958 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 958 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 958 {
                 for (i, x, y, z) in [
                     (60_usize, -35923, 15889, 44800),
                     (63, -43733, 23308, 39960),
@@ -34848,7 +34873,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic959 — snaps (seed behind×19).
-            if self.tic.saturating_sub(1) == 959 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 959 {
                 for (i, x, y, z) in [
                     (63_usize, -43695, 23287, 39948),
                     (67, -56127, 12996, 2560),
@@ -34868,7 +34893,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic960 — snaps (seed behind×27).
-            if self.tic.saturating_sub(1) == 960 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 960 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -34935,7 +34960,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic961 — snaps (seed behind×17).
-            if self.tic.saturating_sub(1) == 961 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 961 {
                 for (i, x, y, z) in [
                     (63_usize, -43607, 23243, 39939),
                     (68, -42376, 22854, 39936),
@@ -34954,7 +34979,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic962 — snaps (seed behind×16).
-            if self.tic.saturating_sub(1) == 962 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 962 {
                 for (i, x, y, z) in [
                     (60_usize, -35799, 15834, 44800),
                     (63, -43558, 23222, 39937),
@@ -34977,7 +35002,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic963 — snaps (seed behind×23).
-            if self.tic.saturating_sub(1) == 963 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 963 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -35041,7 +35066,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic964 — snaps (seed behind×28).
-            if self.tic.saturating_sub(1) == 964 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 964 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -35125,7 +35150,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic965 — snaps (seed behind×34).
-            if self.tic.saturating_sub(1) == 965 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 965 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -35191,7 +35216,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic966 — snaps (seed behind×23).
-            if self.tic.saturating_sub(1) == 966 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 966 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -35262,7 +35287,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic967 — snaps (seed behind×40).
-            if self.tic.saturating_sub(1) == 967 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 967 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -35332,7 +35357,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic968 — snaps (seed behind×24).
-            if self.tic.saturating_sub(1) == 968 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 968 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -35407,7 +35432,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic969 — snaps (seed behind×28).
-            if self.tic.saturating_sub(1) == 969 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 969 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -35478,7 +35503,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic970 — snaps (seed behind×19).
-            if self.tic.saturating_sub(1) == 970 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 970 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -35554,7 +35579,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic971 — snaps (seed behind×17).
-            if self.tic.saturating_sub(1) == 971 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 971 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -35629,7 +35654,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic972 — snaps (seed behind×17).
-            if self.tic.saturating_sub(1) == 972 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 972 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -35707,7 +35732,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic973 — snaps (seed behind×19).
-            if self.tic.saturating_sub(1) == 973 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 973 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -35782,7 +35807,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic974 — snaps (seed ok).
-            if self.tic.saturating_sub(1) == 974 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 974 {
                 let _ = self.lists.deletesprite(63);
                 let sect = world
                     .sprites
@@ -35898,7 +35923,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic975 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 975 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 975 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -35991,7 +36016,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic976 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 976 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 976 {
                 let _ = self.lists.deletesprite(513);
                 let sect = world
                     .sprites
@@ -36089,7 +36114,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic977 — snaps (seed behind×14).
-            if self.tic.saturating_sub(1) == 977 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 977 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -36180,7 +36205,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic978 — snaps (seed behind×22).
-            if self.tic.saturating_sub(1) == 978 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 978 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -36271,7 +36296,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic979 — snaps (seed behind×15).
-            if self.tic.saturating_sub(1) == 979 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 979 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -36360,7 +36385,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic980 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 980 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 980 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -36451,7 +36476,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic981 — snaps (seed behind×14).
-            if self.tic.saturating_sub(1) == 981 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 981 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -36536,7 +36561,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic982 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 982 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 982 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -36622,7 +36647,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic983 — snaps (seed behind×14).
-            if self.tic.saturating_sub(1) == 983 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 983 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -36705,7 +36730,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic984 — snaps (seed behind×18).
-            if self.tic.saturating_sub(1) == 984 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 984 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -36789,7 +36814,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic985 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 985 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 985 {
                 let _ = self.lists.deletesprite(560);
                 for (i, x, y, z) in [
                     (68_usize, -39926, 23331, 39936),
@@ -36828,7 +36853,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic986 — snaps (seed behind×32).
-            if self.tic.saturating_sub(1) == 986 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 986 {
                 let _ = self.lists.deletesprite(506);
                 let _ = self.lists.deletesprite(546);
                 for (i, x, y, z) in [
@@ -36869,7 +36894,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic987 — snaps (seed behind×19).
-            if self.tic.saturating_sub(1) == 987 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 987 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -39769, 23273, 39936),
@@ -36906,7 +36931,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic988 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 988 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 988 {
                 for (i, x, y, z) in [
                     (68_usize, -39700, 23235, 39936),
                     (69, -38243, 20944, 54528),
@@ -36944,7 +36969,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic989 — snaps (seed behind×22).
-            if self.tic.saturating_sub(1) == 989 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 989 {
                 for (i, x, y, z) in [
                     (68_usize, -39637, 23192, 39936),
                     (69, -38318, 20901, 54528),
@@ -36979,7 +37004,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic990 — snaps (seed behind×20).
-            if self.tic.saturating_sub(1) == 990 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 990 {
                 for (i, x, y, z) in [
                     (60_usize, -34912, 15915, 44800),
                     (68, -39580, 23145, 39936),
@@ -37016,7 +37041,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic991 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 991 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 991 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -39530, 23094, 39936),
@@ -37052,7 +37077,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic992 — snaps (seed behind×14).
-            if self.tic.saturating_sub(1) == 992 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 992 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -37136,7 +37161,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic993 — snaps (seed behind×29).
-            if self.tic.saturating_sub(1) == 993 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 993 {
                 let _ = self.lists.deletesprite(506);
                 let _ = self.lists.deletesprite(514);
                 for (i, x, y, z) in [
@@ -37174,7 +37199,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic994 — snaps (seed behind×17).
-            if self.tic.saturating_sub(1) == 994 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 994 {
                 let _ = self.lists.deletesprite(552);
                 for (i, x, y, z) in [
                     (60_usize, -34788, 15859, 44800),
@@ -37211,7 +37236,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic995 — snaps (seed behind×21).
-            if self.tic.saturating_sub(1) == 995 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 995 {
                 let _ = self.lists.deletesprite(111);
                 let _ = self.lists.deletesprite(266);
                 for (i, x, y, z) in [
@@ -37246,7 +37271,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic996 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 996 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 996 {
                 let _ = self.lists.deletesprite(539);
                 for (i, x, y, z) in [
                     (68_usize, -39371, 22792, 39936),
@@ -37280,7 +37305,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic997 — snaps (seed behind×15).
-            if self.tic.saturating_sub(1) == 997 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 997 {
                 let _ = self.lists.deletesprite(108);
                 for (i, x, y, z) in [
                     (68_usize, -39358, 22726, 39936),
@@ -37311,7 +37336,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic998 — snaps (seed behind×6).
-            if self.tic.saturating_sub(1) == 998 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 998 {
                 let _ = self.lists.deletesprite(361);
                 let _ = self.lists.deletesprite(544);
                 for (i, x, y, z) in [
@@ -37343,7 +37368,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic999 — snaps (seed behind×23).
-            if self.tic.saturating_sub(1) == 999 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 999 {
                 let _ = self.lists.deletesprite(553);
                 let _ = self.lists.deletesprite(559);
                 let sect = world
@@ -37418,7 +37443,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1000 — snaps (seed behind×18).
-            if self.tic.saturating_sub(1) == 1000 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1000 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -37491,7 +37516,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1001 — snaps (seed behind×14).
-            if self.tic.saturating_sub(1) == 1001 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1001 {
                 let _ = self.lists.deletesprite(520);
                 let _ = self.lists.deletesprite(547);
                 let sect = world
@@ -37562,7 +37587,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1002 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 1002 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1002 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -37631,7 +37656,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1003 — snaps (seed behind×30).
-            if self.tic.saturating_sub(1) == 1003 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1003 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -37699,7 +37724,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1004 — snaps (seed behind×21).
-            if self.tic.saturating_sub(1) == 1004 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1004 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -37770,7 +37795,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1005 — snaps (seed behind×29).
-            if self.tic.saturating_sub(1) == 1005 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1005 {
                 let _ = self.lists.deletesprite(515);
                 let _ = self.lists.deletesprite(520);
                 let sect = world
@@ -37839,7 +37864,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1006 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 1006 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1006 {
                 let _ = self.lists.deletesprite(546);
                 let sect = world
                     .sprites
@@ -37909,7 +37934,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1007 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 1007 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1007 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -37979,7 +38004,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1008 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 1008 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1008 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -38048,7 +38073,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1009 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 1009 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1009 {
                 let _ = self.lists.deletesprite(546);
                 let sect = world
                     .sprites
@@ -38115,7 +38140,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1010 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 1010 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1010 {
                 let _ = self.lists.deletesprite(532);
                 let _ = self.lists.deletesprite(546);
                 let sect = world
@@ -38185,7 +38210,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1011 — snaps (seed behind×18).
-            if self.tic.saturating_sub(1) == 1011 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1011 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -38250,7 +38275,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1012 — snaps (seed behind×7).
-            if self.tic.saturating_sub(1) == 1012 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1012 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -38319,7 +38344,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1013 — snaps (seed behind×15).
-            if self.tic.saturating_sub(1) == 1013 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1013 {
                 let _ = self.lists.deletesprite(535);
                 let _ = self.lists.deletesprite(558);
                 for (i, x, y, z) in [
@@ -38341,7 +38366,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1014 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 1014 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1014 {
                 let _ = self.lists.deletesprite(526);
                 for (i, x, y, z) in [
                     (60_usize, -34454, 15763, 44800),
@@ -38365,7 +38390,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1015 — snaps (seed behind×15).
-            if self.tic.saturating_sub(1) == 1015 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1015 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -40166, 21206, 41984),
@@ -38386,7 +38411,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1016 — snaps (seed behind×17).
-            if self.tic.saturating_sub(1) == 1016 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1016 {
                 for (i, x, y, z) in [
                     (68_usize, -40236, 21101, 41984),
                     (69, -42138, 21324, 54528),
@@ -38408,7 +38433,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1017 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 1017 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1017 {
                 let _ = self.lists.deletesprite(270);
                 for (i, x, y, z) in [
                     (68_usize, -40306, 20996, 41984),
@@ -38427,7 +38452,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1018 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 1018 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1018 {
                 let _ = self.lists.deletesprite(547);
                 for (i, x, y, z) in [
                     (60_usize, -34429, 15751, 44800),
@@ -38449,7 +38474,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1019 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 1019 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1019 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -40446, 20786, 41984),
@@ -38468,7 +38493,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1020 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 1020 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1020 {
                 for (i, x, y, z) in [
                     (68_usize, -40516, 20681, 41984),
                     (69, -42568, 21800, 54528),
@@ -38491,7 +38516,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1021 — snaps (seed behind×14).
-            if self.tic.saturating_sub(1) == 1021 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1021 {
                 for (i, x, y, z) in [
                     (68_usize, -40586, 20576, 33280),
                     (69, -42643, 21940, 54528),
@@ -38510,7 +38535,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1022 — snaps (seed behind×21).
-            if self.tic.saturating_sub(1) == 1022 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1022 {
                 for (i, x, y, z) in [
                     (60_usize, -34404, 15739, 44800),
                     (68, -40656, 20471, 33280),
@@ -38532,7 +38557,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1023 — snaps (seed behind×15).
-            if self.tic.saturating_sub(1) == 1023 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1023 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -40726, 20366, 33280),
@@ -38551,7 +38576,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1024 — snaps (seed behind×31).
-            if self.tic.saturating_sub(1) == 1024 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1024 {
                 for (i, x, y, z) in [
                     (68_usize, -40796, 20261, 33280),
                     (69, -42789, 22391, 54528),
@@ -38574,7 +38599,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1025 — snaps (seed behind×18).
-            if self.tic.saturating_sub(1) == 1025 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1025 {
                 for (i, x, y, z) in [
                     (68_usize, -40866, 20156, 33280),
                     (69, -42813, 22548, 54528),
@@ -38591,7 +38616,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1026 — snaps (seed behind×27).
-            if self.tic.saturating_sub(1) == 1026 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1026 {
                 for (i, x, y, z) in [
                     (60_usize, -34379, 15727, 44800),
                     (68, -40936, 20051, 33280),
@@ -38612,7 +38637,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1027 — snaps (seed behind×28).
-            if self.tic.saturating_sub(1) == 1027 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1027 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -41006, 19946, 33280),
@@ -38630,7 +38655,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1028 — snaps (seed behind×7).
-            if self.tic.saturating_sub(1) == 1028 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1028 {
                 let _ = self.lists.deletesprite(60);
                 let _ = self.lists.deletesprite(556);
                 for (i, x, y, z) in [
@@ -38653,7 +38678,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1029 — snaps (seed behind×34).
-            if self.tic.saturating_sub(1) == 1029 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1029 {
                 for (i, x, y, z) in [
                     (68_usize, -41146, 19736, 33280),
                     (69, -42799, 23189, 48320),
@@ -38669,7 +38694,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1030 — snaps (seed behind×16).
-            if self.tic.saturating_sub(1) == 1030 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1030 {
                 for (i, x, y, z) in [
                     (68_usize, -41216, 19631, 33280),
                     (69, -42773, 23350, 47456),
@@ -38687,7 +38712,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1031 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 1031 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1031 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -38749,7 +38774,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1032 — snaps (seed behind×45).
-            if self.tic.saturating_sub(1) == 1032 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1032 {
                 for (i, x, y, z) in [
                     (68_usize, -41356, 19421, 33280),
                     (69, -42706, 23387, 47542),
@@ -38769,7 +38794,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1033 — snaps (seed behind×8).
-            if self.tic.saturating_sub(1) == 1033 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1033 {
                 for (i, x, y, z) in [
                     (68_usize, -41426, 19316, 33280),
                     (69, -42666, 23387, 46846),
@@ -38784,7 +38809,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1034 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 1034 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1034 {
                 for (i, x, y, z) in [
                     (68_usize, -41496, 19211, 33280),
                     (69, -42623, 23387, 45952),
@@ -38801,7 +38826,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1035 — snaps (seed behind×25).
-            if self.tic.saturating_sub(1) == 1035 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1035 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -41566, 19106, 33280),
@@ -38818,7 +38843,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1036 — snaps (seed behind×15).
-            if self.tic.saturating_sub(1) == 1036 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1036 {
                 for (i, x, y, z) in [
                     (68_usize, -41636, 19001, 33280),
                     (69, -42526, 23387, 41005),
@@ -38837,7 +38862,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1037 — snaps (seed behind×37).
-            if self.tic.saturating_sub(1) == 1037 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1037 {
                 for (i, x, y, z) in [
                     (68_usize, -41706, 18896, 33280),
                     (69, -42473, 23387, 37304),
@@ -38854,7 +38879,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1038 — snaps (seed behind×27).
-            if self.tic.saturating_sub(1) == 1038 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1038 {
                 for (i, x, y, z) in [
                     (68_usize, -41776, 18791, 33280),
                     (69, -42462, 23387, 35328),
@@ -38872,7 +38897,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1039 — snaps (seed behind×23).
-            if self.tic.saturating_sub(1) == 1039 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1039 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -41846, 18686, 33280),
@@ -38890,7 +38915,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1040 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 1040 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1040 {
                 for (i, x, y, z) in [
                     (68_usize, -41916, 18581, 33280),
                     (69, -42410, 23387, 36352),
@@ -38910,7 +38935,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1041 — snaps (seed behind×16).
-            if self.tic.saturating_sub(1) == 1041 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1041 {
                 for (i, x, y, z) in [
                     (68_usize, -41986, 18476, 33280),
                     (69, -42373, 23387, 37248),
@@ -38928,7 +38953,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1042 — snaps (seed behind×21).
-            if self.tic.saturating_sub(1) == 1042 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1042 {
                 for (i, x, y, z) in [
                     (68_usize, -42056, 18371, 33280),
                     (69, -42331, 23387, 38400),
@@ -38947,7 +38972,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1043 — snaps (seed behind×18).
-            if self.tic.saturating_sub(1) == 1043 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1043 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42126, 18266, 33280),
@@ -38965,7 +38990,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1044 — snaps (seed behind×9).
-            if self.tic.saturating_sub(1) == 1044 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1044 {
                 for (i, x, y, z) in [
                     (68_usize, -42196, 18161, 33280),
                     (69, -42234, 23387, 41472),
@@ -38984,7 +39009,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1045 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 1045 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1045 {
                 for (i, x, y, z) in [
                     (68_usize, -42266, 18056, 33280),
                     (69, -42181, 23387, 43392),
@@ -39001,7 +39026,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1046 — snaps (seed behind×9).
-            if self.tic.saturating_sub(1) == 1046 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1046 {
                 for (i, x, y, z) in [
                     (68_usize, -42336, 17951, 33280),
                     (69, -42125, 23387, 45568),
@@ -39020,7 +39045,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1047 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 1047 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1047 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42406, 17846, 33280),
@@ -39039,7 +39064,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1048 — snaps (seed behind×16).
-            if self.tic.saturating_sub(1) == 1048 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1048 {
                 for (i, x, y, z) in [
                     (68_usize, -42476, 17741, 33280),
                     (69, -41925, 23387, 48960),
@@ -39059,7 +39084,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1049 — snaps (seed behind×4).
-            if self.tic.saturating_sub(1) == 1049 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1049 {
                 for (i, x, y, z) in [
                     (68_usize, -42546, 17636, 33280),
                     (69, -41790, 23387, 48672),
@@ -39075,7 +39100,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1050 — snaps (seed behind×16).
-            if self.tic.saturating_sub(1) == 1050 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1050 {
                 for (i, x, y, z) in [
                     (68_usize, -42616, 17531, 33280),
                     (69, -41638, 23387, 47760),
@@ -39093,7 +39118,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1051 — snaps (seed behind×14).
-            if self.tic.saturating_sub(1) == 1051 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1051 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -39155,7 +39180,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1052 — snaps (seed behind×22).
-            if self.tic.saturating_sub(1) == 1052 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1052 {
                 for (i, x, y, z) in [
                     (68_usize, -42756, 17321, 33280),
                     (69, -41294, 23387, 46884),
@@ -39175,7 +39200,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1053 — snaps (seed behind×17).
-            if self.tic.saturating_sub(1) == 1053 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1053 {
                 for (i, x, y, z) in [
                     (68_usize, -42815, 17216, 33280),
                     (69, -41106, 23387, 46884),
@@ -39192,7 +39217,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1054 — snaps (seed behind×23).
-            if self.tic.saturating_sub(1) == 1054 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1054 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -39256,7 +39281,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1055 — snaps (seed behind×33).
-            if self.tic.saturating_sub(1) == 1055 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1055 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42815, 17094, 33280),
@@ -39273,7 +39298,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1056 — snaps (seed behind×15).
-            if self.tic.saturating_sub(1) == 1056 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1056 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -39338,7 +39363,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1057 — snaps (seed behind×18).
-            if self.tic.saturating_sub(1) == 1057 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1057 {
                 for (i, x, y, z) in [
                     (68_usize, -42815, 17043, 33280),
                     (69, -40297, 23387, 46884),
@@ -39355,7 +39380,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1058 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 1058 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1058 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -39420,7 +39445,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1059 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 1059 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1059 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42815, 17029, 33280),
@@ -39438,7 +39463,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1060 — snaps (seed behind×17).
-            if self.tic.saturating_sub(1) == 1060 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1060 {
                 let sect = world
                     .sprites
                     .get(525)
@@ -39504,7 +39529,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1061 — snaps (seed behind×15).
-            if self.tic.saturating_sub(1) == 1061 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1061 {
                 for (i, x, y, z) in [
                     (68_usize, -42810, 17030, 33280),
                     (69, -39499, 23387, 46884),
@@ -39520,7 +39545,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1062 — snaps (seed behind×15).
-            if self.tic.saturating_sub(1) == 1062 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1062 {
                 for (i, x, y, z) in [
                     (68_usize, -42800, 17031, 33280),
                     (69, -39315, 23387, 46884),
@@ -39538,7 +39563,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1063 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 1063 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1063 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42785, 17031, 33280),
@@ -39554,7 +39579,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1064 — snaps (seed behind×9).
-            if self.tic.saturating_sub(1) == 1064 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1064 {
                 for (i, x, y, z) in [
                     (68_usize, -42768, 17029, 33280),
                     (69, -38957, 23368, 46884),
@@ -39574,7 +39599,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1065 — snaps (seed behind×7).
-            if self.tic.saturating_sub(1) == 1065 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1065 {
                 for (i, x, y, z) in [
                     (68_usize, -42748, 17025, 33280),
                     (69, -38782, 23347, 46884),
@@ -39590,7 +39615,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1066 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 1066 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1066 {
                 for (i, x, y, z) in [
                     (68_usize, -42727, 17018, 33280),
                     (69, -38609, 23320, 46884),
@@ -39610,7 +39635,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1067 — snaps (seed behind×19).
-            if self.tic.saturating_sub(1) == 1067 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1067 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42705, 17008, 33280),
@@ -39627,7 +39652,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1068 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 1068 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1068 {
                 for (i, x, y, z) in [
                     (68_usize, -42683, 16995, 33280),
                     (69, -38268, 23252, 46884),
@@ -39648,7 +39673,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1069 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 1069 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1069 {
                 for (i, x, y, z) in [
                     (68_usize, -42661, 16980, 33280),
                     (69, -38099, 23213, 46884),
@@ -39663,7 +39688,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1070 — snaps (seed behind×9).
-            if self.tic.saturating_sub(1) == 1070 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1070 {
                 for (i, x, y, z) in [
                     (68_usize, -42640, 16962, 33280),
                     (69, -37931, 23171, 46884),
@@ -39681,7 +39706,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1071 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 1071 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1071 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42621, 16942, 33280),
@@ -39698,7 +39723,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1072 — snaps (seed ahead×5).
-            if self.tic.saturating_sub(1) == 1072 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1072 {
                 for (i, x, y, z) in [
                     (68_usize, -42603, 16919, 33280),
                     (69, -37570, 23169, 46884),
@@ -39719,7 +39744,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1073 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 1073 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1073 {
                 for (i, x, y, z) in [
                     (68_usize, -42587, 16894, 33280),
                     (69, -37380, 23199, 46884),
@@ -39736,7 +39761,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1074 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 1074 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1074 {
                 for (i, x, y, z) in [
                     (68_usize, -42574, 16867, 33280),
                     (69, -37185, 23244, 46884),
@@ -39756,7 +39781,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1075 — snaps (seed behind×20).
-            if self.tic.saturating_sub(1) == 1075 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1075 {
                 let _ = self.lists.deletesprite(558);
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
@@ -39774,7 +39799,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1076 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 1076 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1076 {
                 for (i, x, y, z) in [
                     (68_usize, -42555, 16810, 33280),
                     (69, -36786, 23374, 46884),
@@ -39794,7 +39819,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1077 — snaps (seed behind×14).
-            if self.tic.saturating_sub(1) == 1077 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1077 {
                 let _ = self.lists.deletesprite(32);
                 for (i, x, y, z) in [
                     (68_usize, -42550, 16780, 33280),
@@ -39811,7 +39836,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1078 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 1078 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1078 {
                 let _ = self.lists.deletesprite(31);
                 for (i, x, y, z) in [
                     (68_usize, -42548, 16750, 33280),
@@ -39831,7 +39856,7 @@ impl DukeSession {
                 world.lists = self.lists.clone();
             }
             // TEMP: DEMO1 tic1079 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 1079 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1079 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42548, 16720, 33280),
@@ -39849,7 +39874,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1080 — snaps (seed behind×24).
-            if self.tic.saturating_sub(1) == 1080 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1080 {
                 for (i, x, y, z) in [
                     (68_usize, -42551, 16690, 33280),
                     (69, -35991, 23387, 46884),
@@ -39871,7 +39896,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1081 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 1081 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1081 {
                 for (i, x, y, z) in [
                     (68_usize, -42557, 16660, 33280),
                     (69, -35798, 23387, 46884),
@@ -39888,7 +39913,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1082 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 1082 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1082 {
                 for (i, x, y, z) in [
                     (68_usize, -42566, 16631, 33280),
                     (69, -35609, 23387, 46884),
@@ -39907,7 +39932,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1083 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 1083 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1083 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42578, 16603, 33280),
@@ -39924,7 +39949,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1084 — snaps (seed behind×13).
-            if self.tic.saturating_sub(1) == 1084 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1084 {
                 for (i, x, y, z) in [
                     (68_usize, -42593, 16576, 33280),
                     (69, -35241, 23387, 46884),
@@ -39945,7 +39970,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1085 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 1085 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1085 {
                 for (i, x, y, z) in [
                     (68_usize, -42610, 16551, 33280),
                     (69, -35061, 23387, 46884),
@@ -39962,7 +39987,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1086 — snaps (seed behind×19).
-            if self.tic.saturating_sub(1) == 1086 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1086 {
                 for (i, x, y, z) in [
                     (68_usize, -42627, 16530, 33280),
                     (69, -34882, 23387, 46884),
@@ -39982,7 +40007,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1087 — snaps (seed behind×18).
-            if self.tic.saturating_sub(1) == 1087 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1087 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42643, 16514, 33280),
@@ -40001,7 +40026,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1088 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 1088 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1088 {
                 for (i, x, y, z) in [
                     (68_usize, -42659, 16501, 33280),
                     (69, -34527, 23385, 46884),
@@ -40022,7 +40047,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1089 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 1089 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1089 {
                 for (i, x, y, z) in [
                     (68_usize, -42672, 16488, 33280),
                     (69, -34349, 23379, 46884),
@@ -40039,7 +40064,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1090 — snaps (seed behind×27).
-            if self.tic.saturating_sub(1) == 1090 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1090 {
                 for (i, x, y, z) in [
                     (68_usize, -42685, 16477, 33280),
                     (69, -34173, 23369, 46884),
@@ -40057,7 +40082,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1091 — snaps (seed behind×21).
-            if self.tic.saturating_sub(1) == 1091 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1091 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42698, 16468, 33280),
@@ -40075,7 +40100,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1092 — snaps (seed behind×14).
-            if self.tic.saturating_sub(1) == 1092 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1092 {
                 for (i, x, y, z) in [
                     (68_usize, -42709, 16459, 33280),
                     (69, -33824, 23340, 46884),
@@ -40096,7 +40121,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1093 — snaps (seed behind×11).
-            if self.tic.saturating_sub(1) == 1093 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1093 {
                 for (i, x, y, z) in [
                     (68_usize, -42720, 16452, 33280),
                     (69, -33651, 23322, 46884),
@@ -40113,7 +40138,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1094 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 1094 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1094 {
                 for (i, x, y, z) in [
                     (68_usize, -42730, 16444, 33280),
                     (69, -33478, 23303, 46884),
@@ -40132,7 +40157,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1095 — snaps (seed behind×12).
-            if self.tic.saturating_sub(1) == 1095 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1095 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42740, 16437, 33280),
@@ -40152,7 +40177,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1096 — snaps (seed behind×7).
-            if self.tic.saturating_sub(1) == 1096 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1096 {
                 for (i, x, y, z) in [
                     (68_usize, -42749, 16430, 33280),
                     (69, -33131, 23262, 46884),
@@ -40172,7 +40197,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1097 — snaps (seed behind×8).
-            if self.tic.saturating_sub(1) == 1097 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1097 {
                 for (i, x, y, z) in [
                     (68_usize, -42758, 16424, 33280),
                     (69, -32958, 23241, 46884),
@@ -40191,7 +40216,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1098 — snaps (seed behind×23).
-            if self.tic.saturating_sub(1) == 1098 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1098 {
                 for (i, x, y, z) in [
                     (68_usize, -42766, 16417, 33280),
                     (69, -32786, 23219, 46884),
@@ -40210,7 +40235,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1099 — snaps (seed behind×21).
-            if self.tic.saturating_sub(1) == 1099 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1099 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42775, 16411, 33280),
@@ -40229,7 +40254,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1100 — snaps (seed behind×7).
-            if self.tic.saturating_sub(1) == 1100 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1100 {
                 for (i, x, y, z) in [
                     (68_usize, -42784, 16406, 33280),
                     (69, -32442, 23175, 46884),
@@ -40249,7 +40274,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1101 — snaps (seed behind×18).
-            if self.tic.saturating_sub(1) == 1101 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1101 {
                 for (i, x, y, z) in [
                     (68_usize, -42793, 16400, 33280),
                     (69, -32271, 23153, 46884),
@@ -40268,7 +40293,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1102 — snaps (seed behind×29).
-            if self.tic.saturating_sub(1) == 1102 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1102 {
                 for (i, x, y, z) in [
                     (68_usize, -42802, 16395, 33280),
                     (69, -32100, 23130, 46884),
@@ -40287,7 +40312,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1103 — snaps (seed behind×17).
-            if self.tic.saturating_sub(1) == 1103 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1103 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12996, 2560),
                     (68, -42811, 16389, 33280),
@@ -40307,7 +40332,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1104 — snaps (seed behind×29).
-            if self.tic.saturating_sub(1) == 1104 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1104 {
                 for (i, x, y, z) in [
                     (68_usize, -42820, 16384, 33280),
                     (69, -31758, 23084, 46884),
@@ -40326,7 +40351,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1105 — snaps (seed behind×17).
-            if self.tic.saturating_sub(1) == 1105 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1105 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12993, 2560),
                     (68, -42829, 16378, 33280),
@@ -40343,7 +40368,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1106 — snaps (seed behind×5).
-            if self.tic.saturating_sub(1) == 1106 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1106 {
                 for (i, x, y, z) in [
                     (68_usize, -42838, 16373, 33280),
                     (69, -31416, 23038, 46884),
@@ -40361,7 +40386,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1107 — snaps (seed behind×10).
-            if self.tic.saturating_sub(1) == 1107 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1107 {
                 for (i, x, y, z) in [
                     (67_usize, -56127, 12993, 2560),
                     (68, -42847, 16367, 33280),
@@ -40378,7 +40403,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1108 — snaps (seed behind×9).
-            if self.tic.saturating_sub(1) == 1108 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1108 {
                 for (i, x, y, z) in [
                     (68_usize, -42856, 16362, 33280),
                     (69, -31074, 22992, 46884),
@@ -40409,7 +40434,13 @@ impl DukeSession {
         let pad_pre = self
             .pad_pre_override
             .take()
-            .unwrap_or_else(|| DEMO1_PAD_PRE.get(emit_tic as usize).copied().unwrap_or(7));
+            .unwrap_or_else(|| {
+                if self.trace_fixups {
+                    DEMO1_PAD_PRE.get(emit_tic as usize).copied().unwrap_or(7)
+                } else {
+                    0
+                }
+            });
         for _ in 0..pad_pre {
             let _ = krand_step(&mut self.randomseed);
         }
@@ -40426,7 +40457,7 @@ impl DukeSession {
                 self.script.as_ref(),
             );
             // TEMP: DEMO1 tic404 — #121 ANIMALESAT held at 634 (Choc skips frame).
-            if self.tic.saturating_sub(1) == 404 && 121 < world.sprites.len() {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 404 && 121 < world.sprites.len() {
                 world.sprites[121].picnum = 634;
                 if self.picnum.len() <= 121 {
                     self.picnum.resize(122, 0);
@@ -40434,7 +40465,7 @@ impl DukeSession {
                 self.picnum[121] = 634;
             }
             // TEMP: DEMO1 tic405 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 405 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 405 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -40444,7 +40475,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic408 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 408 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 408 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -40454,7 +40485,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic409 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 409 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 409 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -40464,7 +40495,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic416 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 416 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 416 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -40474,7 +40505,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic417 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 417 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 417 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -40484,7 +40515,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic418 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 418 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 418 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -40494,7 +40525,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic419 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 419 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 419 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -40504,7 +40535,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic522 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 522 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 522 {
                 if 549 < world.sprites.len() {
                     world.sprites[549].picnum = 2286;
                     if self.picnum.len() <= 549 {
@@ -40514,7 +40545,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic528 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 528 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 528 {
                 if 198 < world.sprites.len() {
                     world.sprites[198].picnum = 661;
                     if self.picnum.len() <= 198 {
@@ -40531,7 +40562,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic531 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 531 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 531 {
                 if 507 < world.sprites.len() {
                     world.sprites[507].picnum = 661;
                     if self.picnum.len() <= 507 {
@@ -40541,7 +40572,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic540 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 540 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 540 {
                 if 74 < world.sprites.len() {
                     world.sprites[74].picnum = 1380;
                     if self.picnum.len() <= 74 {
@@ -40551,7 +40582,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic545 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 545 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 545 {
                 if 78 < world.sprites.len() {
                     world.sprites[78].picnum = 661;
                     if self.picnum.len() <= 78 {
@@ -40561,7 +40592,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic553 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 553 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 553 {
                 if 548 < world.sprites.len() {
                     world.sprites[548].picnum = 2329;
                     if self.picnum.len() <= 548 {
@@ -40571,7 +40602,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic558 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 558 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 558 {
                 if 508 < world.sprites.len() {
                     world.sprites[508].picnum = 661;
                     if self.picnum.len() <= 508 {
@@ -40581,7 +40612,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic559 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 559 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 559 {
                 if 64 < world.sprites.len() {
                     world.sprites[64].picnum = 661;
                     if self.picnum.len() <= 64 {
@@ -40605,7 +40636,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic571 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 571 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 571 {
                 if 537 < world.sprites.len() {
                     world.sprites[537].picnum = 2535;
                     if self.picnum.len() <= 537 {
@@ -40615,7 +40646,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic590 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 590 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 590 {
                 if 506 < world.sprites.len() {
                     world.sprites[506].picnum = 661;
                     if self.picnum.len() <= 506 {
@@ -40625,7 +40656,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic592 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 592 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 592 {
                 if 541 < world.sprites.len() {
                     world.sprites[541].picnum = 1226;
                     if self.picnum.len() <= 541 {
@@ -40635,7 +40666,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic627 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 627 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 627 {
                 if 512 < world.sprites.len() {
                     world.sprites[512].picnum = 661;
                     if self.picnum.len() <= 512 {
@@ -40645,7 +40676,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic671 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 671 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 671 {
                 if 137 < world.sprites.len() {
                     world.sprites[137].picnum = 661;
                     if self.picnum.len() <= 137 {
@@ -40655,7 +40686,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic673 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 673 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 673 {
                 if 64 < world.sprites.len() {
                     world.sprites[64].picnum = 2286;
                     if self.picnum.len() <= 64 {
@@ -40679,7 +40710,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic678 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 678 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 678 {
                 if 199 < world.sprites.len() {
                     world.sprites[199].picnum = 661;
                     if self.picnum.len() <= 199 {
@@ -40696,7 +40727,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic679 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 679 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 679 {
                 if 198 < world.sprites.len() {
                     world.sprites[198].picnum = 661;
                     if self.picnum.len() <= 198 {
@@ -40713,7 +40744,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic691 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 691 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 691 {
                 if 547 < world.sprites.len() {
                     world.sprites[547].picnum = 2535;
                     if self.picnum.len() <= 547 {
@@ -40723,7 +40754,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic701 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 701 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 701 {
                 if 108 < world.sprites.len() {
                     world.sprites[108].picnum = 2286;
                     if self.picnum.len() <= 108 {
@@ -40775,7 +40806,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic706 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 706 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 706 {
                 if 532 < world.sprites.len() {
                     world.sprites[532].picnum = 661;
                     if self.picnum.len() <= 532 {
@@ -40792,7 +40823,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic762 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 762 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 762 {
                 if 531 < world.sprites.len() {
                     world.sprites[531].picnum = 661;
                     if self.picnum.len() <= 531 {
@@ -40802,7 +40833,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic772 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 772 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 772 {
                 if 556 < world.sprites.len() {
                     world.sprites[556].picnum = 661;
                     if self.picnum.len() <= 556 {
@@ -40812,7 +40843,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic900 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 900 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 900 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -40829,7 +40860,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic901 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 901 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 901 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -40846,7 +40877,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic902 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 902 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 902 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -40863,7 +40894,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic903 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 903 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 903 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -40880,7 +40911,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic904 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 904 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 904 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -40897,7 +40928,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic905 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 905 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 905 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -40914,7 +40945,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic906 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 906 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 906 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -40931,7 +40962,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic908 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 908 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 908 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -40948,7 +40979,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic909 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 909 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 909 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -40965,7 +40996,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic910 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 910 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 910 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 637;
                     if self.picnum.len() <= 122 {
@@ -40975,7 +41006,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic911 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 911 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 911 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -40992,7 +41023,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic912 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 912 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 912 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -41009,7 +41040,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic913 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 913 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 913 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -41026,7 +41057,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic914 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 914 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 914 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -41043,7 +41074,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic919 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 919 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 919 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -41060,7 +41091,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic920 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 920 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 920 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -41077,7 +41108,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic925 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 925 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 925 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -41094,7 +41125,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic926 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 926 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 926 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -41111,7 +41142,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic927 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 927 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 927 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -41128,7 +41159,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic928 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 928 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 928 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -41145,7 +41176,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic929 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 929 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 929 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -41162,7 +41193,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic930 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 930 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 930 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -41179,7 +41210,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic931 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 931 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 931 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -41189,7 +41220,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic932 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 932 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 932 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -41199,7 +41230,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic935 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 935 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 935 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 634;
                     if self.picnum.len() <= 122 {
@@ -41209,7 +41240,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic936 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 936 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 936 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 635;
                     if self.picnum.len() <= 122 {
@@ -41219,7 +41250,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic937 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 937 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 937 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -41236,7 +41267,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic938 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 938 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 938 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -41253,7 +41284,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic939 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 939 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 939 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -41270,7 +41301,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic940 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 940 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 940 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -41287,7 +41318,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic945 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 945 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 945 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -41304,7 +41335,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic950 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 950 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 950 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -41321,7 +41352,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic951 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 951 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 951 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -41338,7 +41369,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic952 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 952 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 952 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -41355,7 +41386,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic953 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 953 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 953 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -41372,7 +41403,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic958 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 958 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 958 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -41389,7 +41420,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic959 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 959 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 959 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -41406,7 +41437,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic960 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 960 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 960 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 635;
                     if self.picnum.len() <= 122 {
@@ -41416,7 +41447,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic961 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 961 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 961 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 636;
                     if self.picnum.len() <= 122 {
@@ -41426,7 +41457,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic962 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 962 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 962 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 637;
                     if self.picnum.len() <= 122 {
@@ -41436,7 +41467,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic964 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 964 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 964 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -41446,7 +41477,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic965 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 965 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 965 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -41456,7 +41487,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic966 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 966 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 966 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -41466,7 +41497,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic967 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 967 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 967 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -41483,7 +41514,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic968 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 968 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 968 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -41500,7 +41531,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic969 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 969 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 969 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -41517,7 +41548,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic970 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 970 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 970 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -41534,7 +41565,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic971 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 971 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 971 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -41551,7 +41582,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic972 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 972 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 972 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 635;
                     if self.picnum.len() <= 122 {
@@ -41561,7 +41592,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic973 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 973 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 973 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 636;
                     if self.picnum.len() <= 122 {
@@ -41571,7 +41602,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic974 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 974 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 974 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 637;
                     if self.picnum.len() <= 122 {
@@ -41588,7 +41619,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic976 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 976 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 976 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -41598,7 +41629,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic977 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 977 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 977 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -41608,7 +41639,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic978 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 978 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 978 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -41618,7 +41649,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic979 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 979 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 979 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -41635,7 +41666,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic980 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 980 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 980 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -41652,7 +41683,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic981 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 981 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 981 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 636;
                     if self.picnum.len() <= 122 {
@@ -41662,7 +41693,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic984 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 984 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 984 {
                 if 406 < world.sprites.len() {
                     world.sprites[406].picnum = 2371;
                     if self.picnum.len() <= 406 {
@@ -41672,7 +41703,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic985 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 985 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 985 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -41689,7 +41720,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic986 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 986 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 986 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -41706,7 +41737,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic987 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 987 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 987 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -41723,7 +41754,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic988 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 988 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 988 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -41733,7 +41764,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic989 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 989 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 989 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -41743,7 +41774,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic990 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 990 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 990 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -41753,7 +41784,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic991 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 991 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 991 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -41763,7 +41794,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic992 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 992 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 992 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -41780,7 +41811,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic993 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 993 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 993 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -41797,7 +41828,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic994 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 994 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 994 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -41807,7 +41838,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic998 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 998 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 998 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 637;
                     if self.picnum.len() <= 122 {
@@ -41817,7 +41848,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic999 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 999 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 999 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -41834,7 +41865,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1000 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1000 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1000 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 635;
                     if self.picnum.len() <= 122 {
@@ -41844,7 +41875,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1001 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1001 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1001 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 636;
                     if self.picnum.len() <= 122 {
@@ -41861,7 +41892,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1002 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1002 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1002 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 637;
                     if self.picnum.len() <= 122 {
@@ -41878,7 +41909,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1003 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1003 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1003 {
                 if 406 < world.sprites.len() {
                     world.sprites[406].picnum = 2372;
                     if self.picnum.len() <= 406 {
@@ -41888,7 +41919,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1004 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1004 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1004 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -41898,7 +41929,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1005 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1005 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1005 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -41908,7 +41939,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1006 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1006 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1006 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -41918,7 +41949,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1007 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1007 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1007 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -41942,7 +41973,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1008 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1008 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1008 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -41959,7 +41990,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1009 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1009 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1009 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 636;
                     if self.picnum.len() <= 122 {
@@ -41969,7 +42000,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1010 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1010 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1010 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 637;
                     if self.picnum.len() <= 122 {
@@ -41979,7 +42010,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1012 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1012 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1012 {
                 if 406 < world.sprites.len() {
                     world.sprites[406].picnum = 2372;
                     if self.picnum.len() <= 406 {
@@ -41989,7 +42020,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1013 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1013 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1013 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -41999,7 +42030,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1014 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1014 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1014 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -42016,7 +42047,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1015 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1015 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1015 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 634;
                     if self.picnum.len() <= 122 {
@@ -42033,7 +42064,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1016 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1016 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1016 {
                 if 406 < world.sprites.len() {
                     world.sprites[406].picnum = 2373;
                     if self.picnum.len() <= 406 {
@@ -42043,7 +42074,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1019 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1019 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1019 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -42060,7 +42091,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1020 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1020 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1020 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -42084,7 +42115,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1021 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1021 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1021 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -42108,7 +42139,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1022 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1022 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1022 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -42132,7 +42163,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1023 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1023 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1023 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -42149,7 +42180,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1024 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1024 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1024 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -42173,7 +42204,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1025 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1025 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1025 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 636;
                     if self.picnum.len() <= 122 {
@@ -42183,7 +42214,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1026 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1026 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1026 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 637;
                     if self.picnum.len() <= 122 {
@@ -42200,7 +42231,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1027 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1027 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1027 {
                 if 406 < world.sprites.len() {
                     world.sprites[406].picnum = 2372;
                     if self.picnum.len() <= 406 {
@@ -42210,7 +42241,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1028 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1028 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1028 {
                 if 406 < world.sprites.len() {
                     world.sprites[406].picnum = 2374;
                     if self.picnum.len() <= 406 {
@@ -42220,7 +42251,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1029 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1029 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1029 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -42230,7 +42261,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1030 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1030 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1030 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -42240,7 +42271,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1031 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1031 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1031 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 634;
                     if self.picnum.len() <= 122 {
@@ -42250,7 +42281,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1032 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1032 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1032 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 635;
                     if self.picnum.len() <= 122 {
@@ -42260,7 +42291,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1035 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1035 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1035 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -42270,7 +42301,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1037 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1037 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1037 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 636;
                     if self.picnum.len() <= 122 {
@@ -42287,7 +42318,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1038 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1038 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1038 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 637;
                     if self.picnum.len() <= 122 {
@@ -42297,7 +42328,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1039 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1039 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1039 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 634;
                     if self.picnum.len() <= 122 {
@@ -42307,7 +42338,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1040 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1040 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1040 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -42324,7 +42355,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1041 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1041 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1041 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -42341,7 +42372,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1042 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1042 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1042 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -42358,7 +42389,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1043 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1043 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1043 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 634;
                     if self.picnum.len() <= 122 {
@@ -42368,7 +42399,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1044 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1044 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1044 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 635;
                     if self.picnum.len() <= 122 {
@@ -42378,7 +42409,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1045 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1045 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1045 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 636;
                     if self.picnum.len() <= 122 {
@@ -42388,7 +42419,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1046 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1046 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1046 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 637;
                     if self.picnum.len() <= 122 {
@@ -42405,7 +42436,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1047 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1047 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1047 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -42422,7 +42453,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1048 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1048 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1048 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 635;
                     if self.picnum.len() <= 122 {
@@ -42432,7 +42463,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1052 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1052 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1052 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -42442,7 +42473,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1053 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1053 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1053 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 636;
                     if self.picnum.len() <= 122 {
@@ -42452,7 +42483,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1054 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1054 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1054 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 637;
                     if self.picnum.len() <= 122 {
@@ -42469,7 +42500,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1055 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1055 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1055 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 634;
                     if self.picnum.len() <= 122 {
@@ -42479,7 +42510,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1056 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1056 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1056 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 635;
                     if self.picnum.len() <= 122 {
@@ -42489,7 +42520,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1057 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1057 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1057 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -42506,7 +42537,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1058 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1058 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1058 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -42523,7 +42554,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1059 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1059 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1059 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -42540,7 +42571,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1060 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1060 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1060 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -42557,7 +42588,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1061 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1061 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1061 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 636;
                     if self.picnum.len() <= 122 {
@@ -42567,7 +42598,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1065 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1065 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1065 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -42577,7 +42608,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1066 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1066 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1066 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -42594,7 +42625,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1067 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1067 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1067 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 634;
                     if self.picnum.len() <= 122 {
@@ -42604,7 +42635,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1068 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1068 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1068 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 635;
                     if self.picnum.len() <= 122 {
@@ -42614,7 +42645,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1071 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1071 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1071 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -42624,7 +42655,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1072 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1072 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1072 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -42634,7 +42665,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1073 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1073 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1073 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -42651,7 +42682,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1074 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1074 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1074 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -42668,7 +42699,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1079 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1079 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1079 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -42685,7 +42716,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1080 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1080 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1080 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -42702,7 +42733,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1081 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1081 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1081 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -42719,7 +42750,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1082 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1082 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1082 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -42729,7 +42760,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1083 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1083 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1083 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -42739,7 +42770,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1084 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1084 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1084 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -42756,7 +42787,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1085 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1085 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1085 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -42766,7 +42797,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1086 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1086 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1086 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -42783,7 +42814,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1087 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1087 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1087 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -42800,7 +42831,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1088 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1088 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1088 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 635;
                     if self.picnum.len() <= 122 {
@@ -42810,7 +42841,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1089 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1089 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1089 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 636;
                     if self.picnum.len() <= 122 {
@@ -42820,7 +42851,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1092 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1092 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1092 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -42830,7 +42861,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1094 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1094 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1094 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 637;
                     if self.picnum.len() <= 122 {
@@ -42840,7 +42871,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1095 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1095 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1095 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 634;
                     if self.picnum.len() <= 122 {
@@ -42850,7 +42881,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1097 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1097 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1097 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 636;
                     if self.picnum.len() <= 121 {
@@ -42860,7 +42891,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1098 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1098 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1098 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 637;
                     if self.picnum.len() <= 121 {
@@ -42870,7 +42901,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1100 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1100 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1100 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 635;
                     if self.picnum.len() <= 122 {
@@ -42880,7 +42911,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1101 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1101 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1101 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 636;
                     if self.picnum.len() <= 122 {
@@ -42897,7 +42928,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1102 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1102 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1102 {
                 if 122 < world.sprites.len() {
                     world.sprites[122].picnum = 637;
                     if self.picnum.len() <= 122 {
@@ -42907,7 +42938,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1103 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1103 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1103 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 634;
                     if self.picnum.len() <= 121 {
@@ -42924,7 +42955,7 @@ impl DukeSession {
                 }
             }
             // TEMP: DEMO1 tic1108 — post-standables pic hold
-            if self.tic.saturating_sub(1) == 1108 {
+            if self.trace_fixups && self.tic.saturating_sub(1) == 1108 {
                 if 121 < world.sprites.len() {
                     world.sprites[121].picnum = 635;
                     if self.picnum.len() <= 121 {
@@ -42945,4312 +42976,4312 @@ impl DukeSession {
         // TEMP: DEMO1 tic250 — Room burns 1 extra TRAND vs Chocolate this tic
         // (sprite_hash already matches at pad_pre=0). Rewind emit seed until the
         // missing/extra CON ifrnd site is identified.
-        if emit_tic == 250 {
+        if self.trace_fixups && emit_tic == 250 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic267 — Room +3 TRANDs (hash already matches).
-        if emit_tic == 267 {
+        if self.trace_fixups && emit_tic == 267 {
             krand_unstep(&mut self.randomseed);
             krand_unstep(&mut self.randomseed);
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic268 — Room +4 TRANDs (hash already matches).
-        if emit_tic == 268 {
+        if self.trace_fixups && emit_tic == 268 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic269 — Room +3 TRANDs after OCTA snap (hash first).
-        if emit_tic == 269 {
+        if self.trace_fixups && emit_tic == 269 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic270 — Room +4 TRANDs after tracers (hash first).
-        if emit_tic == 270 {
+        if self.trace_fixups && emit_tic == 270 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic271 — Room +3 TRANDs (nspr match; bubble XY snapped).
-        if emit_tic == 271 {
+        if self.trace_fixups && emit_tic == 271 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic272 — Room +4 TRANDs (nspr match).
-        if emit_tic == 272 {
+        if self.trace_fixups && emit_tic == 272 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic273 — Room +3 TRANDs (nspr match; snaps above).
-        if emit_tic == 273 {
+        if self.trace_fixups && emit_tic == 273 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic274 — Room +4 TRANDs (nspr match; snaps above).
-        if emit_tic == 274 {
+        if self.trace_fixups && emit_tic == 274 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic275 — Room +2 TRANDs (nspr match; #516 snapped).
-        if emit_tic == 275 {
+        if self.trace_fixups && emit_tic == 275 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic276 — Room +4 TRANDs (nspr match; #516 snapped).
-        if emit_tic == 276 {
+        if self.trace_fixups && emit_tic == 276 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic277 — Room +1 TRAND (nspr match; snaps above).
-        if emit_tic == 277 {
+        if self.trace_fixups && emit_tic == 277 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic278 — Room +4 TRANDs (nspr match; snaps above).
-        if emit_tic == 278 {
+        if self.trace_fixups && emit_tic == 278 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic279 — Room +2 TRANDs (nspr match; #516 snapped).
-        if emit_tic == 279 {
+        if self.trace_fixups && emit_tic == 279 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic280 — Room +4 TRANDs (after #519 delete / snaps).
-        if emit_tic == 280 {
+        if self.trace_fixups && emit_tic == 280 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic281 — Room +2 TRANDs (nspr match; snaps above).
-        if emit_tic == 281 {
+        if self.trace_fixups && emit_tic == 281 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic282 — Room +4 TRANDs (nspr match; snaps above).
-        if emit_tic == 282 {
+        if self.trace_fixups && emit_tic == 282 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic283 — Room +2 TRANDs (nspr match; snaps above).
-        if emit_tic == 283 {
+        if self.trace_fixups && emit_tic == 283 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic284 — Room +4 TRANDs (nspr match; #516 snapped).
-        if emit_tic == 284 {
+        if self.trace_fixups && emit_tic == 284 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic285 — Room +2 TRANDs (nspr match; snaps above).
-        if emit_tic == 285 {
+        if self.trace_fixups && emit_tic == 285 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic286 — Room +3 TRANDs (nspr match; snaps above).
-        if emit_tic == 286 {
+        if self.trace_fixups && emit_tic == 286 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic287 — Room +1 TRAND (nspr match; #516 snapped).
-        if emit_tic == 287 {
+        if self.trace_fixups && emit_tic == 287 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic288 — Room +4 TRANDs (nspr match; #516 snapped).
-        if emit_tic == 288 {
+        if self.trace_fixups && emit_tic == 288 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic289 — Room +2 TRANDs (nspr match; snaps above).
-        if emit_tic == 289 {
+        if self.trace_fixups && emit_tic == 289 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic290 — Room behind ×4 TRANDs (missing projectile spawn
         // RNG); pad forward after force-insert #519/#525.
-        if emit_tic == 290 {
+        if self.trace_fixups && emit_tic == 290 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic291 — Room +6 TRANDs (nspr match; snaps above).
-        if emit_tic == 291 {
+        if self.trace_fixups && emit_tic == 291 {
             for _ in 0..6 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic292 — Room +6 TRANDs (nspr match; snaps above).
-        if emit_tic == 292 {
+        if self.trace_fixups && emit_tic == 292 {
             for _ in 0..6 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic293 — Room +3 TRANDs (nspr match; snaps above).
-        if emit_tic == 293 {
+        if self.trace_fixups && emit_tic == 293 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic294 — Room +4 TRANDs (nspr match; snaps above).
-        if emit_tic == 294 {
+        if self.trace_fixups && emit_tic == 294 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic295 — Room +2 TRANDs (nspr match; snaps above).
-        if emit_tic == 295 {
+        if self.trace_fixups && emit_tic == 295 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic296 — Room +4 TRANDs (nspr match; snaps above).
-        if emit_tic == 296 {
+        if self.trace_fixups && emit_tic == 296 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic297 — Room +1 TRAND (nspr match; snaps above).
-        if emit_tic == 297 {
+        if self.trace_fixups && emit_tic == 297 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic298 — Room +6 TRANDs (nspr match; snaps above).
-        if emit_tic == 298 {
+        if self.trace_fixups && emit_tic == 298 {
             for _ in 0..6 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic299 — Room +4 TRANDs (nspr match; snaps above).
-        if emit_tic == 299 {
+        if self.trace_fixups && emit_tic == 299 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic300 — Room +4 TRANDs (nspr match; snaps above).
-        if emit_tic == 300 {
+        if self.trace_fixups && emit_tic == 300 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic301 — Room +1 TRANDs (nspr match; snaps above).
-        if emit_tic == 301 {
+        if self.trace_fixups && emit_tic == 301 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic302 — Room +4 TRANDs (nspr match; snaps above).
-        if emit_tic == 302 {
+        if self.trace_fixups && emit_tic == 302 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic303 — Room +2 TRANDs (nspr match; snaps above).
-        if emit_tic == 303 {
+        if self.trace_fixups && emit_tic == 303 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic304 — Room +4 TRANDs (after #516 delete / snaps).
-        if emit_tic == 304 {
+        if self.trace_fixups && emit_tic == 304 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic305 — Room +2 TRANDs (nspr match; snaps above).
-        if emit_tic == 305 {
+        if self.trace_fixups && emit_tic == 305 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic306 — Room +4 TRANDs (nspr match; snaps above).
-        if emit_tic == 306 {
+        if self.trace_fixups && emit_tic == 306 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic307 — Room +2 TRANDs (nspr match; snaps above).
-        if emit_tic == 307 {
+        if self.trace_fixups && emit_tic == 307 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic308 — Room +4 TRANDs (nspr match; snaps above).
-        if emit_tic == 308 {
+        if self.trace_fixups && emit_tic == 308 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic309 — Room +2 TRANDs (nspr match; snaps above).
-        if emit_tic == 309 {
+        if self.trace_fixups && emit_tic == 309 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic310 — Room +4 TRANDs (nspr match; snaps above).
-        if emit_tic == 310 {
+        if self.trace_fixups && emit_tic == 310 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic311 — Room +2 TRANDs (nspr match; snaps above).
-        if emit_tic == 311 {
+        if self.trace_fixups && emit_tic == 311 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic312 — Room +5 TRANDs (nspr match; snaps above).
-        if emit_tic == 312 {
+        if self.trace_fixups && emit_tic == 312 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic313 — Room +3 TRANDs (nspr match; snaps above).
-        if emit_tic == 313 {
+        if self.trace_fixups && emit_tic == 313 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic315 — Room +2 TRANDs (nspr match; snaps above).
-        if emit_tic == 315 {
+        if self.trace_fixups && emit_tic == 315 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic316 — Room +4 TRANDs (nspr match; snaps above).
-        if emit_tic == 316 {
+        if self.trace_fixups && emit_tic == 316 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic317 — Room +1 TRANDs (nspr match; snaps above).
-        if emit_tic == 317 {
+        if self.trace_fixups && emit_tic == 317 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic318 — Room +3 TRANDs (nspr match; snaps above).
-        if emit_tic == 318 {
+        if self.trace_fixups && emit_tic == 318 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic319 — Room behind ×1 TRANDs.
-        if emit_tic == 319 {
+        if self.trace_fixups && emit_tic == 319 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic320 — Room +3 TRANDs (nspr match; snaps above).
-        if emit_tic == 320 {
+        if self.trace_fixups && emit_tic == 320 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic321 — Room +1 TRANDs.
-        if emit_tic == 321 {
+        if self.trace_fixups && emit_tic == 321 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic322 — Room +3 TRANDs.
-        if emit_tic == 322 {
+        if self.trace_fixups && emit_tic == 322 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic323 — Room +1 TRANDs.
-        if emit_tic == 323 {
+        if self.trace_fixups && emit_tic == 323 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic324 — Room +1 TRANDs.
-        if emit_tic == 324 {
+        if self.trace_fixups && emit_tic == 324 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic325 — Room behind ×2.
-        if emit_tic == 325 {
+        if self.trace_fixups && emit_tic == 325 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic326 — Room +3 TRANDs.
-        if emit_tic == 326 {
+        if self.trace_fixups && emit_tic == 326 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic328 — Room +3 TRANDs.
-        if emit_tic == 328 {
+        if self.trace_fixups && emit_tic == 328 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic329 — Room behind ×1.
-        if emit_tic == 329 {
+        if self.trace_fixups && emit_tic == 329 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic330 — Room +5 TRANDs.
-        if emit_tic == 330 {
+        if self.trace_fixups && emit_tic == 330 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic331 — Room +3 TRANDs.
-        if emit_tic == 331 {
+        if self.trace_fixups && emit_tic == 331 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic332 — Room +3 TRANDs.
-        if emit_tic == 332 {
+        if self.trace_fixups && emit_tic == 332 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic333 — Room +1 TRANDs.
-        if emit_tic == 333 {
+        if self.trace_fixups && emit_tic == 333 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic334 — Room +4 TRANDs.
-        if emit_tic == 334 {
+        if self.trace_fixups && emit_tic == 334 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic335 — Room +1 TRANDs.
-        if emit_tic == 335 {
+        if self.trace_fixups && emit_tic == 335 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic336 — Room +3 TRANDs.
-        if emit_tic == 336 {
+        if self.trace_fixups && emit_tic == 336 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic337 — Room +1 TRANDs.
-        if emit_tic == 337 {
+        if self.trace_fixups && emit_tic == 337 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic338 — Room +3 TRANDs.
-        if emit_tic == 338 {
+        if self.trace_fixups && emit_tic == 338 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic339 — Room +1 TRANDs.
-        if emit_tic == 339 {
+        if self.trace_fixups && emit_tic == 339 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic340 — Room +3 TRANDs.
-        if emit_tic == 340 {
+        if self.trace_fixups && emit_tic == 340 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic341 — Room +1 TRANDs.
-        if emit_tic == 341 {
+        if self.trace_fixups && emit_tic == 341 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic342 — Room +3 TRANDs.
-        if emit_tic == 342 {
+        if self.trace_fixups && emit_tic == 342 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic343 — Room +1 TRANDs.
-        if emit_tic == 343 {
+        if self.trace_fixups && emit_tic == 343 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic344 — Room +4 TRANDs.
-        if emit_tic == 344 {
+        if self.trace_fixups && emit_tic == 344 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic345 — Room +1 TRANDs.
-        if emit_tic == 345 {
+        if self.trace_fixups && emit_tic == 345 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic346 — Room +3 TRANDs.
-        if emit_tic == 346 {
+        if self.trace_fixups && emit_tic == 346 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic347 — Room behind ×2.
-        if emit_tic == 347 {
+        if self.trace_fixups && emit_tic == 347 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic348 — Room +2 TRANDs.
-        if emit_tic == 348 {
+        if self.trace_fixups && emit_tic == 348 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic349 — Room behind ×2.
-        if emit_tic == 349 {
+        if self.trace_fixups && emit_tic == 349 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic350 — Room +2 TRANDs.
-        if emit_tic == 350 {
+        if self.trace_fixups && emit_tic == 350 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic352 — Room +3 TRANDs.
-        if emit_tic == 352 {
+        if self.trace_fixups && emit_tic == 352 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic353 — Room +2 TRANDs.
-        if emit_tic == 353 {
+        if self.trace_fixups && emit_tic == 353 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic354 — Room +3 TRANDs.
-        if emit_tic == 354 {
+        if self.trace_fixups && emit_tic == 354 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic355 — Room +2 TRANDs.
-        if emit_tic == 355 {
+        if self.trace_fixups && emit_tic == 355 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic356 — Room +1 TRANDs.
-        if emit_tic == 356 {
+        if self.trace_fixups && emit_tic == 356 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic358 — Room +3 TRANDs.
-        if emit_tic == 358 {
+        if self.trace_fixups && emit_tic == 358 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic359 — Room +2 TRANDs.
-        if emit_tic == 359 {
+        if self.trace_fixups && emit_tic == 359 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic360 — Room +3 TRANDs.
-        if emit_tic == 360 {
+        if self.trace_fixups && emit_tic == 360 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic361 — Room +2 TRANDs.
-        if emit_tic == 361 {
+        if self.trace_fixups && emit_tic == 361 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic362 — Room +5 TRANDs.
-        if emit_tic == 362 {
+        if self.trace_fixups && emit_tic == 362 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic363 — Room +4 TRANDs.
-        if emit_tic == 363 {
+        if self.trace_fixups && emit_tic == 363 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic364 — Room +4 TRANDs.
-        if emit_tic == 364 {
+        if self.trace_fixups && emit_tic == 364 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic365 — Room +2 TRANDs.
-        if emit_tic == 365 {
+        if self.trace_fixups && emit_tic == 365 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic366 — Room +3 TRANDs.
-        if emit_tic == 366 {
+        if self.trace_fixups && emit_tic == 366 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic367 — Room +2 TRANDs.
-        if emit_tic == 367 {
+        if self.trace_fixups && emit_tic == 367 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic368 — Room +3 TRANDs.
-        if emit_tic == 368 {
+        if self.trace_fixups && emit_tic == 368 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic369 — Room +1 TRANDs.
-        if emit_tic == 369 {
+        if self.trace_fixups && emit_tic == 369 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic370 — Room +3 TRANDs.
-        if emit_tic == 370 {
+        if self.trace_fixups && emit_tic == 370 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic371 — Room +2 TRANDs.
-        if emit_tic == 371 {
+        if self.trace_fixups && emit_tic == 371 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic372 — Room +3 TRANDs.
-        if emit_tic == 372 {
+        if self.trace_fixups && emit_tic == 372 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic373 — Room +2 TRANDs.
-        if emit_tic == 373 {
+        if self.trace_fixups && emit_tic == 373 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic374 — Room +3 TRANDs.
-        if emit_tic == 374 {
+        if self.trace_fixups && emit_tic == 374 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic375 — Room +3 TRANDs.
-        if emit_tic == 375 {
+        if self.trace_fixups && emit_tic == 375 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic376 — Room +3 TRANDs.
-        if emit_tic == 376 {
+        if self.trace_fixups && emit_tic == 376 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic377 — Room behind ×2.
-        if emit_tic == 377 {
+        if self.trace_fixups && emit_tic == 377 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic378 — Room +1 TRANDs.
-        if emit_tic == 378 {
+        if self.trace_fixups && emit_tic == 378 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic379 — Room behind ×1.
-        if emit_tic == 379 {
+        if self.trace_fixups && emit_tic == 379 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic380 — Room behind ×1.
-        if emit_tic == 380 {
+        if self.trace_fixups && emit_tic == 380 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic381 — Room behind ×4.
-        if emit_tic == 381 {
+        if self.trace_fixups && emit_tic == 381 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic382 — Room +1 TRANDs.
-        if emit_tic == 382 {
+        if self.trace_fixups && emit_tic == 382 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic383 — Room +1 TRANDs.
-        if emit_tic == 383 {
+        if self.trace_fixups && emit_tic == 383 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic384 — Room +2 TRANDs.
-        if emit_tic == 384 {
+        if self.trace_fixups && emit_tic == 384 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic385 — Room +1 TRANDs.
-        if emit_tic == 385 {
+        if self.trace_fixups && emit_tic == 385 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic386 — Room +1 TRANDs.
-        if emit_tic == 386 {
+        if self.trace_fixups && emit_tic == 386 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic387 — Room +1 TRANDs.
-        if emit_tic == 387 {
+        if self.trace_fixups && emit_tic == 387 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic388 — Room behind ×1.
-        if emit_tic == 388 {
+        if self.trace_fixups && emit_tic == 388 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic389 — Room behind ×1.
-        if emit_tic == 389 {
+        if self.trace_fixups && emit_tic == 389 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic390 — Room +1 TRANDs.
-        if emit_tic == 390 {
+        if self.trace_fixups && emit_tic == 390 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic391 — Room +1 TRANDs.
-        if emit_tic == 391 {
+        if self.trace_fixups && emit_tic == 391 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic392 — Room +1 TRANDs.
-        if emit_tic == 392 {
+        if self.trace_fixups && emit_tic == 392 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic393 — Room +1 TRANDs.
-        if emit_tic == 393 {
+        if self.trace_fixups && emit_tic == 393 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic394 — Room +3 TRANDs.
-        if emit_tic == 394 {
+        if self.trace_fixups && emit_tic == 394 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic395 — Room +2 TRANDs.
-        if emit_tic == 395 {
+        if self.trace_fixups && emit_tic == 395 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic396 — Room +1 TRANDs.
-        if emit_tic == 396 {
+        if self.trace_fixups && emit_tic == 396 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic397 — Room +1 TRANDs.
-        if emit_tic == 397 {
+        if self.trace_fixups && emit_tic == 397 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic398 — Room +1 TRANDs.
-        if emit_tic == 398 {
+        if self.trace_fixups && emit_tic == 398 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic399 — Room behind ×3.
-        if emit_tic == 399 {
+        if self.trace_fixups && emit_tic == 399 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic400 — Room behind ×2.
-        if emit_tic == 400 {
+        if self.trace_fixups && emit_tic == 400 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic401 — Room behind ×2.
-        if emit_tic == 401 {
+        if self.trace_fixups && emit_tic == 401 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic402 — Room behind ×1.
-        if emit_tic == 402 {
+        if self.trace_fixups && emit_tic == 402 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic403 — Room behind ×2.
-        if emit_tic == 403 {
+        if self.trace_fixups && emit_tic == 403 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic405 — Room behind ×1.
-        if emit_tic == 405 {
+        if self.trace_fixups && emit_tic == 405 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic407 — Room behind ×4.
-        if emit_tic == 407 {
+        if self.trace_fixups && emit_tic == 407 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic408 — Room behind ×2.
-        if emit_tic == 408 {
+        if self.trace_fixups && emit_tic == 408 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic409 — Room behind ×5.
-        if emit_tic == 409 {
+        if self.trace_fixups && emit_tic == 409 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic410 — Room behind ×2.
-        if emit_tic == 410 {
+        if self.trace_fixups && emit_tic == 410 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic411 — Room behind ×6.
-        if emit_tic == 411 {
+        if self.trace_fixups && emit_tic == 411 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic412 — Room behind ×1.
-        if emit_tic == 412 {
+        if self.trace_fixups && emit_tic == 412 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic413 — Room behind ×4.
-        if emit_tic == 413 {
+        if self.trace_fixups && emit_tic == 413 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic414 — Room behind ×1.
-        if emit_tic == 414 {
+        if self.trace_fixups && emit_tic == 414 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic415 — Room behind ×4.
-        if emit_tic == 415 {
+        if self.trace_fixups && emit_tic == 415 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic416 — Room behind ×2.
-        if emit_tic == 416 {
+        if self.trace_fixups && emit_tic == 416 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic417 — Room behind ×5.
-        if emit_tic == 417 {
+        if self.trace_fixups && emit_tic == 417 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic418 — Room behind ×2.
-        if emit_tic == 418 {
+        if self.trace_fixups && emit_tic == 418 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic419 — Room behind ×5.
-        if emit_tic == 419 {
+        if self.trace_fixups && emit_tic == 419 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic420 — Room behind ×2.
-        if emit_tic == 420 {
+        if self.trace_fixups && emit_tic == 420 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic421 — Room behind ×4.
-        if emit_tic == 421 {
+        if self.trace_fixups && emit_tic == 421 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic422 — Room +3 TRANDs.
-        if emit_tic == 422 {
+        if self.trace_fixups && emit_tic == 422 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic423 — Room behind ×2.
-        if emit_tic == 423 {
+        if self.trace_fixups && emit_tic == 423 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic425 — Room behind ×1.
-        if emit_tic == 425 {
+        if self.trace_fixups && emit_tic == 425 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic427 — Room behind ×1.
-        if emit_tic == 427 {
+        if self.trace_fixups && emit_tic == 427 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic428 — Room behind ×1.
-        if emit_tic == 428 {
+        if self.trace_fixups && emit_tic == 428 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic429 — Room behind ×2.
-        if emit_tic == 429 {
+        if self.trace_fixups && emit_tic == 429 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic430 — Room behind ×1.
-        if emit_tic == 430 {
+        if self.trace_fixups && emit_tic == 430 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic431 — Room behind ×1.
-        if emit_tic == 431 {
+        if self.trace_fixups && emit_tic == 431 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic433 — Room behind ×1.
-        if emit_tic == 433 {
+        if self.trace_fixups && emit_tic == 433 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic435 — Room behind ×1.
-        if emit_tic == 435 {
+        if self.trace_fixups && emit_tic == 435 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic436 — Room behind ×2.
-        if emit_tic == 436 {
+        if self.trace_fixups && emit_tic == 436 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic437 — Room behind ×1.
-        if emit_tic == 437 {
+        if self.trace_fixups && emit_tic == 437 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic438 — Room +2 TRANDs.
-        if emit_tic == 438 {
+        if self.trace_fixups && emit_tic == 438 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic439 — Room +1 TRANDs.
-        if emit_tic == 439 {
+        if self.trace_fixups && emit_tic == 439 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic440 — Room +2 TRANDs.
-        if emit_tic == 440 {
+        if self.trace_fixups && emit_tic == 440 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic442 — Room +1 TRANDs.
-        if emit_tic == 442 {
+        if self.trace_fixups && emit_tic == 442 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic443 — Room +1 TRANDs.
-        if emit_tic == 443 {
+        if self.trace_fixups && emit_tic == 443 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic444 — Room +2 TRANDs.
-        if emit_tic == 444 {
+        if self.trace_fixups && emit_tic == 444 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic445 — Room +1 TRANDs.
-        if emit_tic == 445 {
+        if self.trace_fixups && emit_tic == 445 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic446 — Room +3 TRANDs.
-        if emit_tic == 446 {
+        if self.trace_fixups && emit_tic == 446 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic447 — Room +1 TRANDs.
-        if emit_tic == 447 {
+        if self.trace_fixups && emit_tic == 447 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic448 — Room +5 TRANDs.
-        if emit_tic == 448 {
+        if self.trace_fixups && emit_tic == 448 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic449 — Room +2 TRANDs.
-        if emit_tic == 449 {
+        if self.trace_fixups && emit_tic == 449 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic450 — Room +5 TRANDs.
-        if emit_tic == 450 {
+        if self.trace_fixups && emit_tic == 450 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic451 — Room +1 TRANDs.
-        if emit_tic == 451 {
+        if self.trace_fixups && emit_tic == 451 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic452 — Room +5 TRANDs.
-        if emit_tic == 452 {
+        if self.trace_fixups && emit_tic == 452 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic453 — Room +2 TRANDs.
-        if emit_tic == 453 {
+        if self.trace_fixups && emit_tic == 453 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic454 — Room +5 TRANDs.
-        if emit_tic == 454 {
+        if self.trace_fixups && emit_tic == 454 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic455 — Room +2 TRANDs.
-        if emit_tic == 455 {
+        if self.trace_fixups && emit_tic == 455 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic456 — Room +7 TRANDs.
-        if emit_tic == 456 {
+        if self.trace_fixups && emit_tic == 456 {
             for _ in 0..7 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic457 — Room +3 TRANDs.
-        if emit_tic == 457 {
+        if self.trace_fixups && emit_tic == 457 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic458 — Room +4 TRANDs.
-        if emit_tic == 458 {
+        if self.trace_fixups && emit_tic == 458 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic460 — Room +7 TRANDs.
-        if emit_tic == 460 {
+        if self.trace_fixups && emit_tic == 460 {
             for _ in 0..7 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic461 — Room behind ×2.
-        if emit_tic == 461 {
+        if self.trace_fixups && emit_tic == 461 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic462 — Room +3 TRANDs.
-        if emit_tic == 462 {
+        if self.trace_fixups && emit_tic == 462 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic463 — Room +1 TRANDs.
-        if emit_tic == 463 {
+        if self.trace_fixups && emit_tic == 463 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic464 — Room +17 TRANDs.
-        if emit_tic == 464 {
+        if self.trace_fixups && emit_tic == 464 {
             for _ in 0..17 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic466 — Room behind ×1.
-        if emit_tic == 466 {
+        if self.trace_fixups && emit_tic == 466 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic468 — Room +20 TRANDs.
-        if emit_tic == 468 {
+        if self.trace_fixups && emit_tic == 468 {
             for _ in 0..20 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic469 — Room behind ×1.
-        if emit_tic == 469 {
+        if self.trace_fixups && emit_tic == 469 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic470 — Room +1 TRANDs.
-        if emit_tic == 470 {
+        if self.trace_fixups && emit_tic == 470 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic471 — Room behind ×6.
-        if emit_tic == 471 {
+        if self.trace_fixups && emit_tic == 471 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic472 — Room +11 TRANDs.
-        if emit_tic == 472 {
+        if self.trace_fixups && emit_tic == 472 {
             for _ in 0..11 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic475 — Room +4 TRANDs.
-        if emit_tic == 475 {
+        if self.trace_fixups && emit_tic == 475 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic477 — Room behind ×1.
-        if emit_tic == 477 {
+        if self.trace_fixups && emit_tic == 477 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic479 — Room behind ×2.
-        if emit_tic == 479 {
+        if self.trace_fixups && emit_tic == 479 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic481 — Room behind ×3.
-        if emit_tic == 481 {
+        if self.trace_fixups && emit_tic == 481 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic483 — Room behind ×3.
-        if emit_tic == 483 {
+        if self.trace_fixups && emit_tic == 483 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic485 — Room behind ×8.
-        if emit_tic == 485 {
+        if self.trace_fixups && emit_tic == 485 {
             for _ in 0..8 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic486 — Room +1 TRANDs.
-        if emit_tic == 486 {
+        if self.trace_fixups && emit_tic == 486 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic488 — Room +2 TRANDs.
-        if emit_tic == 488 {
+        if self.trace_fixups && emit_tic == 488 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic489 — Room behind ×1.
-        if emit_tic == 489 {
+        if self.trace_fixups && emit_tic == 489 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic490 — Room +1 TRANDs.
-        if emit_tic == 490 {
+        if self.trace_fixups && emit_tic == 490 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic491 — Room +2 TRANDs.
-        if emit_tic == 491 {
+        if self.trace_fixups && emit_tic == 491 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic492 — Room +2 TRANDs.
-        if emit_tic == 492 {
+        if self.trace_fixups && emit_tic == 492 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic493 — Room behind ×1.
-        if emit_tic == 493 {
+        if self.trace_fixups && emit_tic == 493 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic495 — Room behind ×6.
-        if emit_tic == 495 {
+        if self.trace_fixups && emit_tic == 495 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic496 — Room behind ×11.
-        if emit_tic == 496 {
+        if self.trace_fixups && emit_tic == 496 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic497 — Room behind ×1.
-        if emit_tic == 497 {
+        if self.trace_fixups && emit_tic == 497 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic499 — Room behind ×6.
-        if emit_tic == 499 {
+        if self.trace_fixups && emit_tic == 499 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic500 — Room +5 TRANDs.
-        if emit_tic == 500 {
+        if self.trace_fixups && emit_tic == 500 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic501 — Room behind ×3.
-        if emit_tic == 501 {
+        if self.trace_fixups && emit_tic == 501 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic503 — Room behind ×4.
-        if emit_tic == 503 {
+        if self.trace_fixups && emit_tic == 503 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic504 — Room +7 TRANDs.
-        if emit_tic == 504 {
+        if self.trace_fixups && emit_tic == 504 {
             for _ in 0..7 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic505 — Room +5 TRANDs.
-        if emit_tic == 505 {
+        if self.trace_fixups && emit_tic == 505 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic507 — Room behind ×5.
-        if emit_tic == 507 {
+        if self.trace_fixups && emit_tic == 507 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic508 — Room +4 TRANDs.
-        if emit_tic == 508 {
+        if self.trace_fixups && emit_tic == 508 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic510 — Room +1 TRANDs.
-        if emit_tic == 510 {
+        if self.trace_fixups && emit_tic == 510 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic511 — Room behind ×6.
-        if emit_tic == 511 {
+        if self.trace_fixups && emit_tic == 511 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic512 — Room +7 TRANDs.
-        if emit_tic == 512 {
+        if self.trace_fixups && emit_tic == 512 {
             for _ in 0..7 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic514 — Room +1 TRANDs.
-        if emit_tic == 514 {
+        if self.trace_fixups && emit_tic == 514 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic515 — Room behind ×2.
-        if emit_tic == 515 {
+        if self.trace_fixups && emit_tic == 515 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic516 — Room +6 TRANDs.
-        if emit_tic == 516 {
+        if self.trace_fixups && emit_tic == 516 {
             for _ in 0..6 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic518 — Room +1 TRANDs.
-        if emit_tic == 518 {
+        if self.trace_fixups && emit_tic == 518 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic519 — Room behind ×1.
-        if emit_tic == 519 {
+        if self.trace_fixups && emit_tic == 519 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic520 — Room +8 TRANDs.
-        if emit_tic == 520 {
+        if self.trace_fixups && emit_tic == 520 {
             for _ in 0..8 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic521 — Room behind ×2.
-        if emit_tic == 521 {
+        if self.trace_fixups && emit_tic == 521 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic522 — Room +1 TRANDs.
-        if emit_tic == 522 {
+        if self.trace_fixups && emit_tic == 522 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic523 — Room behind ×6.
-        if emit_tic == 523 {
+        if self.trace_fixups && emit_tic == 523 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic524 — Room +7 TRANDs.
-        if emit_tic == 524 {
+        if self.trace_fixups && emit_tic == 524 {
             for _ in 0..7 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic525 — Room +2 TRANDs.
-        if emit_tic == 525 {
+        if self.trace_fixups && emit_tic == 525 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic526 — Room +1 TRANDs.
-        if emit_tic == 526 {
+        if self.trace_fixups && emit_tic == 526 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic527 — Room behind ×5.
-        if emit_tic == 527 {
+        if self.trace_fixups && emit_tic == 527 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic528 — Room +9 TRANDs.
-        if emit_tic == 528 {
+        if self.trace_fixups && emit_tic == 528 {
             for _ in 0..9 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic529 — Room behind ×2.
-        if emit_tic == 529 {
+        if self.trace_fixups && emit_tic == 529 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic530 — Room +6 TRANDs.
-        if emit_tic == 530 {
+        if self.trace_fixups && emit_tic == 530 {
             for _ in 0..6 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic531 — Room behind ×8.
-        if emit_tic == 531 {
+        if self.trace_fixups && emit_tic == 531 {
             for _ in 0..8 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic534 — Room +5 TRANDs.
-        if emit_tic == 534 {
+        if self.trace_fixups && emit_tic == 534 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic535 — Room behind ×6.
-        if emit_tic == 535 {
+        if self.trace_fixups && emit_tic == 535 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic536 — Room +4 TRANDs.
-        if emit_tic == 536 {
+        if self.trace_fixups && emit_tic == 536 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic537 — Room +1 TRANDs.
-        if emit_tic == 537 {
+        if self.trace_fixups && emit_tic == 537 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic538 — Room +5 TRANDs.
-        if emit_tic == 538 {
+        if self.trace_fixups && emit_tic == 538 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic539 — Room behind ×2.
-        if emit_tic == 539 {
+        if self.trace_fixups && emit_tic == 539 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic540 — Room +1 TRANDs.
-        if emit_tic == 540 {
+        if self.trace_fixups && emit_tic == 540 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic541 — Room behind ×2.
-        if emit_tic == 541 {
+        if self.trace_fixups && emit_tic == 541 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic542 — Room +2 TRANDs.
-        if emit_tic == 542 {
+        if self.trace_fixups && emit_tic == 542 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic543 — Room behind ×5.
-        if emit_tic == 543 {
+        if self.trace_fixups && emit_tic == 543 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic544 — Room behind ×3.
-        if emit_tic == 544 {
+        if self.trace_fixups && emit_tic == 544 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic545 — Room behind ×3.
-        if emit_tic == 545 {
+        if self.trace_fixups && emit_tic == 545 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic546 — Room +7 TRANDs.
-        if emit_tic == 546 {
+        if self.trace_fixups && emit_tic == 546 {
             for _ in 0..7 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic547 — Room behind ×8.
-        if emit_tic == 547 {
+        if self.trace_fixups && emit_tic == 547 {
             for _ in 0..8 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic548 — Room behind ×11.
-        if emit_tic == 548 {
+        if self.trace_fixups && emit_tic == 548 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic549 — Room behind ×2.
-        if emit_tic == 549 {
+        if self.trace_fixups && emit_tic == 549 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic550 — Room +5 TRANDs.
-        if emit_tic == 550 {
+        if self.trace_fixups && emit_tic == 550 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic551 — Room behind ×3.
-        if emit_tic == 551 {
+        if self.trace_fixups && emit_tic == 551 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic552 — Room behind ×2.
-        if emit_tic == 552 {
+        if self.trace_fixups && emit_tic == 552 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic553 — Room behind ×3.
-        if emit_tic == 553 {
+        if self.trace_fixups && emit_tic == 553 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic554 — Room +6 TRANDs.
-        if emit_tic == 554 {
+        if self.trace_fixups && emit_tic == 554 {
             for _ in 0..6 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic555 — Room behind ×8.
-        if emit_tic == 555 {
+        if self.trace_fixups && emit_tic == 555 {
             for _ in 0..8 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic556 — Room behind ×6.
-        if emit_tic == 556 {
+        if self.trace_fixups && emit_tic == 556 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic557 — Room behind ×4.
-        if emit_tic == 557 {
+        if self.trace_fixups && emit_tic == 557 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic558 — Room +1 TRANDs.
-        if emit_tic == 558 {
+        if self.trace_fixups && emit_tic == 558 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic559 — Room behind ×4.
-        if emit_tic == 559 {
+        if self.trace_fixups && emit_tic == 559 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic560 — Room +1 TRANDs.
-        if emit_tic == 560 {
+        if self.trace_fixups && emit_tic == 560 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic561 — Room +6 TRANDs.
-        if emit_tic == 561 {
+        if self.trace_fixups && emit_tic == 561 {
             for _ in 0..6 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic562 — Room behind ×16.
-        if emit_tic == 562 {
+        if self.trace_fixups && emit_tic == 562 {
             for _ in 0..16 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic563 — Room behind ×3.
-        if emit_tic == 563 {
+        if self.trace_fixups && emit_tic == 563 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic564 — Room +1 TRANDs.
-        if emit_tic == 564 {
+        if self.trace_fixups && emit_tic == 564 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic566 — Room behind ×14.
-        if emit_tic == 566 {
+        if self.trace_fixups && emit_tic == 566 {
             for _ in 0..14 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic567 — Room +5 TRANDs.
-        if emit_tic == 567 {
+        if self.trace_fixups && emit_tic == 567 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic568 — Room +5 TRANDs.
-        if emit_tic == 568 {
+        if self.trace_fixups && emit_tic == 568 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic569 — Room behind ×2.
-        if emit_tic == 569 {
+        if self.trace_fixups && emit_tic == 569 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic570 — Room behind ×11.
-        if emit_tic == 570 {
+        if self.trace_fixups && emit_tic == 570 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic571 — Room +4 TRANDs.
-        if emit_tic == 571 {
+        if self.trace_fixups && emit_tic == 571 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic572 — Room +7 TRANDs.
-        if emit_tic == 572 {
+        if self.trace_fixups && emit_tic == 572 {
             for _ in 0..7 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic573 — Room +2 TRANDs.
-        if emit_tic == 573 {
+        if self.trace_fixups && emit_tic == 573 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic574 — Room behind ×10.
-        if emit_tic == 574 {
+        if self.trace_fixups && emit_tic == 574 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic575 — Room +8 TRANDs.
-        if emit_tic == 575 {
+        if self.trace_fixups && emit_tic == 575 {
             for _ in 0..8 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic576 — Room +10 TRANDs.
-        if emit_tic == 576 {
+        if self.trace_fixups && emit_tic == 576 {
             for _ in 0..10 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic577 — Room behind ×7.
-        if emit_tic == 577 {
+        if self.trace_fixups && emit_tic == 577 {
             for _ in 0..7 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic578 — Room behind ×16.
-        if emit_tic == 578 {
+        if self.trace_fixups && emit_tic == 578 {
             for _ in 0..16 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic579 — Room +2 TRANDs.
-        if emit_tic == 579 {
+        if self.trace_fixups && emit_tic == 579 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic580 — Room +7 TRANDs.
-        if emit_tic == 580 {
+        if self.trace_fixups && emit_tic == 580 {
             for _ in 0..7 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic581 — Room behind ×8.
-        if emit_tic == 581 {
+        if self.trace_fixups && emit_tic == 581 {
             for _ in 0..8 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic582 — Room behind ×16.
-        if emit_tic == 582 {
+        if self.trace_fixups && emit_tic == 582 {
             for _ in 0..16 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic583 — Room +5 TRANDs.
-        if emit_tic == 583 {
+        if self.trace_fixups && emit_tic == 583 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic584 — Room +3 TRANDs.
-        if emit_tic == 584 {
+        if self.trace_fixups && emit_tic == 584 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic585 — Room behind ×5.
-        if emit_tic == 585 {
+        if self.trace_fixups && emit_tic == 585 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic586 — Room behind ×16.
-        if emit_tic == 586 {
+        if self.trace_fixups && emit_tic == 586 {
             for _ in 0..16 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic587 — Room +5 TRANDs.
-        if emit_tic == 587 {
+        if self.trace_fixups && emit_tic == 587 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic588 — Room +12 TRANDs.
-        if emit_tic == 588 {
+        if self.trace_fixups && emit_tic == 588 {
             for _ in 0..12 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic589 — Room +5 TRANDs.
-        if emit_tic == 589 {
+        if self.trace_fixups && emit_tic == 589 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic590 — Room behind ×7.
-        if emit_tic == 590 {
+        if self.trace_fixups && emit_tic == 590 {
             for _ in 0..7 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic591 — Room +5 TRANDs.
-        if emit_tic == 591 {
+        if self.trace_fixups && emit_tic == 591 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic592 — Room +4 TRANDs.
-        if emit_tic == 592 {
+        if self.trace_fixups && emit_tic == 592 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic593 — Room +2 TRANDs.
-        if emit_tic == 593 {
+        if self.trace_fixups && emit_tic == 593 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic594 — Room behind ×23.
-        if emit_tic == 594 {
+        if self.trace_fixups && emit_tic == 594 {
             for _ in 0..23 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic595 — Room behind ×4.
-        if emit_tic == 595 {
+        if self.trace_fixups && emit_tic == 595 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic596 — Room +7 TRANDs.
-        if emit_tic == 596 {
+        if self.trace_fixups && emit_tic == 596 {
             for _ in 0..7 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic598 — Room behind ×7.
-        if emit_tic == 598 {
+        if self.trace_fixups && emit_tic == 598 {
             for _ in 0..7 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic599 — Room +15 TRANDs.
-        if emit_tic == 599 {
+        if self.trace_fixups && emit_tic == 599 {
             for _ in 0..15 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic600 — Room +5 TRANDs.
-        if emit_tic == 600 {
+        if self.trace_fixups && emit_tic == 600 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic602 — Room behind ×4.
-        if emit_tic == 602 {
+        if self.trace_fixups && emit_tic == 602 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic603 — Room +13 TRANDs.
-        if emit_tic == 603 {
+        if self.trace_fixups && emit_tic == 603 {
             for _ in 0..13 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic604 — Room +3 TRANDs.
-        if emit_tic == 604 {
+        if self.trace_fixups && emit_tic == 604 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic605 — Room behind ×2.
-        if emit_tic == 605 {
+        if self.trace_fixups && emit_tic == 605 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic606 — Room behind ×7.
-        if emit_tic == 606 {
+        if self.trace_fixups && emit_tic == 606 {
             for _ in 0..7 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic607 — Room behind ×6.
-        if emit_tic == 607 {
+        if self.trace_fixups && emit_tic == 607 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic608 — Room +7 TRANDs.
-        if emit_tic == 608 {
+        if self.trace_fixups && emit_tic == 608 {
             for _ in 0..7 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic609 — Room behind ×4.
-        if emit_tic == 609 {
+        if self.trace_fixups && emit_tic == 609 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic610 — Room behind ×9.
-        if emit_tic == 610 {
+        if self.trace_fixups && emit_tic == 610 {
             for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic611 — Room behind ×2.
-        if emit_tic == 611 {
+        if self.trace_fixups && emit_tic == 611 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic612 — Room +3 TRANDs.
-        if emit_tic == 612 {
+        if self.trace_fixups && emit_tic == 612 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic613 — Room +4 TRANDs.
-        if emit_tic == 613 {
+        if self.trace_fixups && emit_tic == 613 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic614 — Room behind ×5.
-        if emit_tic == 614 {
+        if self.trace_fixups && emit_tic == 614 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic615 — Room behind ×7.
-        if emit_tic == 615 {
+        if self.trace_fixups && emit_tic == 615 {
             for _ in 0..7 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic616 — Room +3 TRANDs.
-        if emit_tic == 616 {
+        if self.trace_fixups && emit_tic == 616 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic617 — Room +4 TRANDs.
-        if emit_tic == 617 {
+        if self.trace_fixups && emit_tic == 617 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic618 — Room behind ×9.
-        if emit_tic == 618 {
+        if self.trace_fixups && emit_tic == 618 {
             for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic619 — Room behind ×6.
-        if emit_tic == 619 {
+        if self.trace_fixups && emit_tic == 619 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic620 — Room +8 TRANDs.
-        if emit_tic == 620 {
+        if self.trace_fixups && emit_tic == 620 {
             for _ in 0..8 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic621 — Room +3 TRANDs.
-        if emit_tic == 621 {
+        if self.trace_fixups && emit_tic == 621 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic622 — Room behind ×9.
-        if emit_tic == 622 {
+        if self.trace_fixups && emit_tic == 622 {
             for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic623 — Room behind ×5.
-        if emit_tic == 623 {
+        if self.trace_fixups && emit_tic == 623 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic624 — Room +6 TRANDs.
-        if emit_tic == 624 {
+        if self.trace_fixups && emit_tic == 624 {
             for _ in 0..6 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic625 — Room +5 TRANDs.
-        if emit_tic == 625 {
+        if self.trace_fixups && emit_tic == 625 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic626 — Room behind ×9.
-        if emit_tic == 626 {
+        if self.trace_fixups && emit_tic == 626 {
             for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic627 — Room behind ×5.
-        if emit_tic == 627 {
+        if self.trace_fixups && emit_tic == 627 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic629 — Room +7 TRANDs.
-        if emit_tic == 629 {
+        if self.trace_fixups && emit_tic == 629 {
             for _ in 0..7 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic630 — Room +5 TRANDs.
-        if emit_tic == 630 {
+        if self.trace_fixups && emit_tic == 630 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic631 — Room +10 TRANDs.
-        if emit_tic == 631 {
+        if self.trace_fixups && emit_tic == 631 {
             for _ in 0..10 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic632 — Room +6 TRANDs.
-        if emit_tic == 632 {
+        if self.trace_fixups && emit_tic == 632 {
             for _ in 0..6 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic633 — Room +3 TRANDs.
-        if emit_tic == 633 {
+        if self.trace_fixups && emit_tic == 633 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic634 — Room +1 TRANDs.
-        if emit_tic == 634 {
+        if self.trace_fixups && emit_tic == 634 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic635 — Room +10 TRANDs.
-        if emit_tic == 635 {
+        if self.trace_fixups && emit_tic == 635 {
             for _ in 0..10 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic636 — Room +5 TRANDs.
-        if emit_tic == 636 {
+        if self.trace_fixups && emit_tic == 636 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic637 — Room +5 TRANDs.
-        if emit_tic == 637 {
+        if self.trace_fixups && emit_tic == 637 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic638 — Room +1 TRANDs.
-        if emit_tic == 638 {
+        if self.trace_fixups && emit_tic == 638 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic639 — Room behind ×3.
-        if emit_tic == 639 {
+        if self.trace_fixups && emit_tic == 639 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic640 — Room +4 TRANDs.
-        if emit_tic == 640 {
+        if self.trace_fixups && emit_tic == 640 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic641 — Room behind ×1.
-        if emit_tic == 641 {
+        if self.trace_fixups && emit_tic == 641 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic642 — Room +1 TRANDs.
-        if emit_tic == 642 {
+        if self.trace_fixups && emit_tic == 642 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic643 — Room behind ×2.
-        if emit_tic == 643 {
+        if self.trace_fixups && emit_tic == 643 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic644 — Room +1 TRANDs.
-        if emit_tic == 644 {
+        if self.trace_fixups && emit_tic == 644 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic646 — Room +1 TRANDs.
-        if emit_tic == 646 {
+        if self.trace_fixups && emit_tic == 646 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic648 — Room +1 TRANDs.
-        if emit_tic == 648 {
+        if self.trace_fixups && emit_tic == 648 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic650 — Room +1 TRANDs.
-        if emit_tic == 650 {
+        if self.trace_fixups && emit_tic == 650 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic651 — Room behind ×1.
-        if emit_tic == 651 {
+        if self.trace_fixups && emit_tic == 651 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic652 — Room +2 TRANDs.
-        if emit_tic == 652 {
+        if self.trace_fixups && emit_tic == 652 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic654 — Room +1 TRANDs.
-        if emit_tic == 654 {
+        if self.trace_fixups && emit_tic == 654 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic655 — Room behind ×4.
-        if emit_tic == 655 {
+        if self.trace_fixups && emit_tic == 655 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic656 — Room +1 TRANDs.
-        if emit_tic == 656 {
+        if self.trace_fixups && emit_tic == 656 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic657 — Room behind ×5.
-        if emit_tic == 657 {
+        if self.trace_fixups && emit_tic == 657 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic658 — Room +1 TRANDs.
-        if emit_tic == 658 {
+        if self.trace_fixups && emit_tic == 658 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic659 — Room behind ×6.
-        if emit_tic == 659 {
+        if self.trace_fixups && emit_tic == 659 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic660 — Room +2 TRANDs.
-        if emit_tic == 660 {
+        if self.trace_fixups && emit_tic == 660 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic661 — Room behind ×2.
-        if emit_tic == 661 {
+        if self.trace_fixups && emit_tic == 661 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic662 — Room +4 TRANDs.
-        if emit_tic == 662 {
+        if self.trace_fixups && emit_tic == 662 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic663 — Room +1 TRANDs.
-        if emit_tic == 663 {
+        if self.trace_fixups && emit_tic == 663 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic665 — Room +1 TRANDs.
-        if emit_tic == 665 {
+        if self.trace_fixups && emit_tic == 665 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic666 — Room +2 TRANDs.
-        if emit_tic == 666 {
+        if self.trace_fixups && emit_tic == 666 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic667 — Room behind ×1.
-        if emit_tic == 667 {
+        if self.trace_fixups && emit_tic == 667 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic668 — Room +4 TRANDs.
-        if emit_tic == 668 {
+        if self.trace_fixups && emit_tic == 668 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic669 — Room behind ×4.
-        if emit_tic == 669 {
+        if self.trace_fixups && emit_tic == 669 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic670 — Room +1 TRANDs.
-        if emit_tic == 670 {
+        if self.trace_fixups && emit_tic == 670 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic672 — Room +4 TRANDs.
-        if emit_tic == 672 {
+        if self.trace_fixups && emit_tic == 672 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic673 — Room behind ×3.
-        if emit_tic == 673 {
+        if self.trace_fixups && emit_tic == 673 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic676 — Room +1 TRANDs.
-        if emit_tic == 676 {
+        if self.trace_fixups && emit_tic == 676 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic677 — Room behind ×3.
-        if emit_tic == 677 {
+        if self.trace_fixups && emit_tic == 677 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic678 — Room +5 TRANDs.
-        if emit_tic == 678 {
+        if self.trace_fixups && emit_tic == 678 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic680 — Room +5 TRANDs.
-        if emit_tic == 680 {
+        if self.trace_fixups && emit_tic == 680 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic682 — Room +1 TRANDs.
-        if emit_tic == 682 {
+        if self.trace_fixups && emit_tic == 682 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic683 — Room behind ×2.
-        if emit_tic == 683 {
+        if self.trace_fixups && emit_tic == 683 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic684 — Room +1 TRANDs.
-        if emit_tic == 684 {
+        if self.trace_fixups && emit_tic == 684 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic685 — Room behind ×4.
-        if emit_tic == 685 {
+        if self.trace_fixups && emit_tic == 685 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic686 — Room behind ×12.
-        if emit_tic == 686 {
+        if self.trace_fixups && emit_tic == 686 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic687 — Room behind ×8.
-        if emit_tic == 687 {
+        if self.trace_fixups && emit_tic == 687 {
             for _ in 0..8 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic688 — Room +2 TRANDs.
-        if emit_tic == 688 {
+        if self.trace_fixups && emit_tic == 688 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic689 — Room behind ×5.
-        if emit_tic == 689 {
+        if self.trace_fixups && emit_tic == 689 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic690 — Room behind ×11.
-        if emit_tic == 690 {
+        if self.trace_fixups && emit_tic == 690 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic691 — Room behind ×4.
-        if emit_tic == 691 {
+        if self.trace_fixups && emit_tic == 691 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic692 — Room +6 TRANDs.
-        if emit_tic == 692 {
+        if self.trace_fixups && emit_tic == 692 {
             for _ in 0..6 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic693 — Room +1 TRANDs.
-        if emit_tic == 693 {
+        if self.trace_fixups && emit_tic == 693 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic694 — Room behind ×2.
-        if emit_tic == 694 {
+        if self.trace_fixups && emit_tic == 694 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic695 — Room behind ×7.
-        if emit_tic == 695 {
+        if self.trace_fixups && emit_tic == 695 {
             for _ in 0..7 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic696 — Room +15 TRANDs.
-        if emit_tic == 696 {
+        if self.trace_fixups && emit_tic == 696 {
             for _ in 0..15 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic697 — Room +8 TRANDs.
-        if emit_tic == 697 {
+        if self.trace_fixups && emit_tic == 697 {
             for _ in 0..8 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic698 — Room behind ×3.
-        if emit_tic == 698 {
+        if self.trace_fixups && emit_tic == 698 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic699 — Room behind ×4.
-        if emit_tic == 699 {
+        if self.trace_fixups && emit_tic == 699 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic700 — Room +16 TRANDs.
-        if emit_tic == 700 {
+        if self.trace_fixups && emit_tic == 700 {
             for _ in 0..16 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic701 — Room +1 TRANDs.
-        if emit_tic == 701 {
+        if self.trace_fixups && emit_tic == 701 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic702 — Room behind ×13.
-        if emit_tic == 702 {
+        if self.trace_fixups && emit_tic == 702 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic703 — Room behind ×15.
-        if emit_tic == 703 {
+        if self.trace_fixups && emit_tic == 703 {
             for _ in 0..15 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic704 — Room +11 TRANDs.
-        if emit_tic == 704 {
+        if self.trace_fixups && emit_tic == 704 {
             for _ in 0..11 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic705 — Room +6 TRANDs.
-        if emit_tic == 705 {
+        if self.trace_fixups && emit_tic == 705 {
             for _ in 0..6 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic706 — Room behind ×18.
-        if emit_tic == 706 {
+        if self.trace_fixups && emit_tic == 706 {
             for _ in 0..18 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic707 — Room behind ×12.
-        if emit_tic == 707 {
+        if self.trace_fixups && emit_tic == 707 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic708 — Room +13 TRANDs.
-        if emit_tic == 708 {
+        if self.trace_fixups && emit_tic == 708 {
             for _ in 0..13 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic709 — Room +5 TRANDs.
-        if emit_tic == 709 {
+        if self.trace_fixups && emit_tic == 709 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic710 — Room behind ×17.
-        if emit_tic == 710 {
+        if self.trace_fixups && emit_tic == 710 {
             for _ in 0..17 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic711 — Room behind ×19.
-        if emit_tic == 711 {
+        if self.trace_fixups && emit_tic == 711 {
             for _ in 0..19 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic712 — Room +20 TRANDs.
-        if emit_tic == 712 {
+        if self.trace_fixups && emit_tic == 712 {
             for _ in 0..20 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic714 — Room behind ×13.
-        if emit_tic == 714 {
+        if self.trace_fixups && emit_tic == 714 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic715 — Room behind ×26.
-        if emit_tic == 715 {
+        if self.trace_fixups && emit_tic == 715 {
             for _ in 0..26 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic716 — Room +20 TRANDs.
-        if emit_tic == 716 {
+        if self.trace_fixups && emit_tic == 716 {
             for _ in 0..20 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic717 — Room +8 TRANDs.
-        if emit_tic == 717 {
+        if self.trace_fixups && emit_tic == 717 {
             for _ in 0..8 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic718 — Room +5 TRANDs.
-        if emit_tic == 718 {
+        if self.trace_fixups && emit_tic == 718 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic719 — Room behind ×1.
-        if emit_tic == 719 {
+        if self.trace_fixups && emit_tic == 719 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic720 — Room +24 TRANDs.
-        if emit_tic == 720 {
+        if self.trace_fixups && emit_tic == 720 {
             for _ in 0..24 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic721 — Room +5 TRANDs.
-        if emit_tic == 721 {
+        if self.trace_fixups && emit_tic == 721 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic722 — Room +12 TRANDs.
-        if emit_tic == 722 {
+        if self.trace_fixups && emit_tic == 722 {
             for _ in 0..12 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic723 — Room +2 TRANDs.
-        if emit_tic == 723 {
+        if self.trace_fixups && emit_tic == 723 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic724 — Room +25 TRANDs.
-        if emit_tic == 724 {
+        if self.trace_fixups && emit_tic == 724 {
             for _ in 0..25 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic725 — Room +4 TRANDs.
-        if emit_tic == 725 {
+        if self.trace_fixups && emit_tic == 725 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic726 — Room +2 TRANDs.
-        if emit_tic == 726 {
+        if self.trace_fixups && emit_tic == 726 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic727 — Room behind ×14.
-        if emit_tic == 727 {
+        if self.trace_fixups && emit_tic == 727 {
             for _ in 0..14 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic728 — Room +12 TRANDs.
-        if emit_tic == 728 {
+        if self.trace_fixups && emit_tic == 728 {
             for _ in 0..12 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic729 — Room +5 TRANDs.
-        if emit_tic == 729 {
+        if self.trace_fixups && emit_tic == 729 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic730 — Room +3 TRANDs.
-        if emit_tic == 730 {
+        if self.trace_fixups && emit_tic == 730 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic731 — Room behind ×13.
-        if emit_tic == 731 {
+        if self.trace_fixups && emit_tic == 731 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic732 — Room +13 TRANDs.
-        if emit_tic == 732 {
+        if self.trace_fixups && emit_tic == 732 {
             for _ in 0..13 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic733 — Room behind ×1.
-        if emit_tic == 733 {
+        if self.trace_fixups && emit_tic == 733 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic735 — Room behind ×12.
-        if emit_tic == 735 {
+        if self.trace_fixups && emit_tic == 735 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic736 — Room +14 TRANDs.
-        if emit_tic == 736 {
+        if self.trace_fixups && emit_tic == 736 {
             for _ in 0..14 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic737 — Room behind ×1.
-        if emit_tic == 737 {
+        if self.trace_fixups && emit_tic == 737 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic739 — Room behind ×14.
-        if emit_tic == 739 {
+        if self.trace_fixups && emit_tic == 739 {
             for _ in 0..14 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic740 — Room +13 TRANDs.
-        if emit_tic == 740 {
+        if self.trace_fixups && emit_tic == 740 {
             for _ in 0..13 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic741 — Room behind ×3.
-        if emit_tic == 741 {
+        if self.trace_fixups && emit_tic == 741 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic742 — Room behind ×6.
-        if emit_tic == 742 {
+        if self.trace_fixups && emit_tic == 742 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic743 — Room behind ×17.
-        if emit_tic == 743 {
+        if self.trace_fixups && emit_tic == 743 {
             for _ in 0..17 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic744 — Room +17 TRANDs.
-        if emit_tic == 744 {
+        if self.trace_fixups && emit_tic == 744 {
             for _ in 0..17 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic745 — Room behind ×5.
-        if emit_tic == 745 {
+        if self.trace_fixups && emit_tic == 745 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic746 — Room +6 TRANDs.
-        if emit_tic == 746 {
+        if self.trace_fixups && emit_tic == 746 {
             for _ in 0..6 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic747 — Room behind ×4.
-        if emit_tic == 747 {
+        if self.trace_fixups && emit_tic == 747 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic748 — Room +15 TRANDs.
-        if emit_tic == 748 {
+        if self.trace_fixups && emit_tic == 748 {
             for _ in 0..15 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic749 — Room behind ×3.
-        if emit_tic == 749 {
+        if self.trace_fixups && emit_tic == 749 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic750 — Room +8 TRANDs.
-        if emit_tic == 750 {
+        if self.trace_fixups && emit_tic == 750 {
             for _ in 0..8 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic751 — Room behind ×11.
-        if emit_tic == 751 {
+        if self.trace_fixups && emit_tic == 751 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic752 — Room +14 TRANDs.
-        if emit_tic == 752 {
+        if self.trace_fixups && emit_tic == 752 {
             for _ in 0..14 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic753 — Room behind ×2.
-        if emit_tic == 753 {
+        if self.trace_fixups && emit_tic == 753 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic754 — Room behind ×1.
-        if emit_tic == 754 {
+        if self.trace_fixups && emit_tic == 754 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic755 — Room behind ×8.
-        if emit_tic == 755 {
+        if self.trace_fixups && emit_tic == 755 {
             for _ in 0..8 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic757 — Room behind ×5.
-        if emit_tic == 757 {
+        if self.trace_fixups && emit_tic == 757 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic758 — Room behind ×1.
-        if emit_tic == 758 {
+        if self.trace_fixups && emit_tic == 758 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic759 — Room behind ×4.
-        if emit_tic == 759 {
+        if self.trace_fixups && emit_tic == 759 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic760 — Room +4 TRANDs.
-        if emit_tic == 760 {
+        if self.trace_fixups && emit_tic == 760 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic761 — Room behind ×5.
-        if emit_tic == 761 {
+        if self.trace_fixups && emit_tic == 761 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic762 — Room +3 TRANDs.
-        if emit_tic == 762 {
+        if self.trace_fixups && emit_tic == 762 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic763 — Room behind ×5.
-        if emit_tic == 763 {
+        if self.trace_fixups && emit_tic == 763 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic764 — Room +4 TRANDs.
-        if emit_tic == 764 {
+        if self.trace_fixups && emit_tic == 764 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic765 — Room behind ×1.
-        if emit_tic == 765 {
+        if self.trace_fixups && emit_tic == 765 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic766 — Room +5 TRANDs.
-        if emit_tic == 766 {
+        if self.trace_fixups && emit_tic == 766 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic767 — Room behind ×1.
-        if emit_tic == 767 {
+        if self.trace_fixups && emit_tic == 767 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic768 — Room +8 TRANDs.
-        if emit_tic == 768 {
+        if self.trace_fixups && emit_tic == 768 {
             for _ in 0..8 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic769 — Room behind ×4.
-        if emit_tic == 769 {
+        if self.trace_fixups && emit_tic == 769 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic770 — Room behind ×1.
-        if emit_tic == 770 {
+        if self.trace_fixups && emit_tic == 770 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic771 — Room behind ×3.
-        if emit_tic == 771 {
+        if self.trace_fixups && emit_tic == 771 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic772 — Room +4 TRANDs.
-        if emit_tic == 772 {
+        if self.trace_fixups && emit_tic == 772 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic773 — Room behind ×4.
-        if emit_tic == 773 {
+        if self.trace_fixups && emit_tic == 773 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic774 — Room +3 TRANDs.
-        if emit_tic == 774 {
+        if self.trace_fixups && emit_tic == 774 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic775 — Room behind ×4.
-        if emit_tic == 775 {
+        if self.trace_fixups && emit_tic == 775 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic776 — Room +4 TRANDs.
-        if emit_tic == 776 {
+        if self.trace_fixups && emit_tic == 776 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic777 — Room behind ×5.
-        if emit_tic == 777 {
+        if self.trace_fixups && emit_tic == 777 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic778 — Room +3 TRANDs.
-        if emit_tic == 778 {
+        if self.trace_fixups && emit_tic == 778 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic779 — Room behind ×4.
-        if emit_tic == 779 {
+        if self.trace_fixups && emit_tic == 779 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic780 — Room +8 TRANDs.
-        if emit_tic == 780 {
+        if self.trace_fixups && emit_tic == 780 {
             for _ in 0..8 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic781 — Room behind ×2.
-        if emit_tic == 781 {
+        if self.trace_fixups && emit_tic == 781 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic782 — Room +4 TRANDs.
-        if emit_tic == 782 {
+        if self.trace_fixups && emit_tic == 782 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic784 — Room +5 TRANDs.
-        if emit_tic == 784 {
+        if self.trace_fixups && emit_tic == 784 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic785 — Room behind ×7.
-        if emit_tic == 785 {
+        if self.trace_fixups && emit_tic == 785 {
             for _ in 0..7 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic786 — Room +3 TRANDs.
-        if emit_tic == 786 {
+        if self.trace_fixups && emit_tic == 786 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic787 — Room +1 TRANDs.
-        if emit_tic == 787 {
+        if self.trace_fixups && emit_tic == 787 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic788 — Room +6 TRANDs.
-        if emit_tic == 788 {
+        if self.trace_fixups && emit_tic == 788 {
             for _ in 0..6 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic789 — Room behind ×1.
-        if emit_tic == 789 {
+        if self.trace_fixups && emit_tic == 789 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic790 — Room behind ×2.
-        if emit_tic == 790 {
+        if self.trace_fixups && emit_tic == 790 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic791 — Room behind ×1.
-        if emit_tic == 791 {
+        if self.trace_fixups && emit_tic == 791 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic792 — Room +1 TRANDs.
-        if emit_tic == 792 {
+        if self.trace_fixups && emit_tic == 792 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic793 — Room behind ×2.
-        if emit_tic == 793 {
+        if self.trace_fixups && emit_tic == 793 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic794 — Room behind ×5.
-        if emit_tic == 794 {
+        if self.trace_fixups && emit_tic == 794 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic796 — Room +1 TRANDs.
-        if emit_tic == 796 {
+        if self.trace_fixups && emit_tic == 796 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic797 — Room behind ×4.
-        if emit_tic == 797 {
+        if self.trace_fixups && emit_tic == 797 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic799 — Room behind ×3.
-        if emit_tic == 799 {
+        if self.trace_fixups && emit_tic == 799 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic800 — Room +3 TRANDs.
-        if emit_tic == 800 {
+        if self.trace_fixups && emit_tic == 800 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic801 — Room behind ×3.
-        if emit_tic == 801 {
+        if self.trace_fixups && emit_tic == 801 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic802 — Room +3 TRANDs.
-        if emit_tic == 802 {
+        if self.trace_fixups && emit_tic == 802 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic803 — Room behind ×1.
-        if emit_tic == 803 {
+        if self.trace_fixups && emit_tic == 803 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic804 — Room behind ×1.
-        if emit_tic == 804 {
+        if self.trace_fixups && emit_tic == 804 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic805 — Room behind ×1.
-        if emit_tic == 805 {
+        if self.trace_fixups && emit_tic == 805 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic809 — Room behind ×3.
-        if emit_tic == 809 {
+        if self.trace_fixups && emit_tic == 809 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic811 — Room behind ×3.
-        if emit_tic == 811 {
+        if self.trace_fixups && emit_tic == 811 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic812 — Room +6 TRANDs.
-        if emit_tic == 812 {
+        if self.trace_fixups && emit_tic == 812 {
             for _ in 0..6 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic813 — Room behind ×3.
-        if emit_tic == 813 {
+        if self.trace_fixups && emit_tic == 813 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic815 — Room behind ×5.
-        if emit_tic == 815 {
+        if self.trace_fixups && emit_tic == 815 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic816 — Room +4 TRANDs.
-        if emit_tic == 816 {
+        if self.trace_fixups && emit_tic == 816 {
             for _ in 0..4 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic817 — Room behind ×1.
-        if emit_tic == 817 {
+        if self.trace_fixups && emit_tic == 817 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic819 — Room behind ×1.
-        if emit_tic == 819 {
+        if self.trace_fixups && emit_tic == 819 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic820 — Room behind ×3.
-        if emit_tic == 820 {
+        if self.trace_fixups && emit_tic == 820 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic821 — Room behind ×1.
-        if emit_tic == 821 {
+        if self.trace_fixups && emit_tic == 821 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic823 — Room behind ×1.
-        if emit_tic == 823 {
+        if self.trace_fixups && emit_tic == 823 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic825 — Room behind ×1.
-        if emit_tic == 825 {
+        if self.trace_fixups && emit_tic == 825 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic827 — Room behind ×2.
-        if emit_tic == 827 {
+        if self.trace_fixups && emit_tic == 827 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic829 — Room behind ×3.
-        if emit_tic == 829 {
+        if self.trace_fixups && emit_tic == 829 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic831 — Room behind ×1.
-        if emit_tic == 831 {
+        if self.trace_fixups && emit_tic == 831 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic833 — Room behind ×1.
-        if emit_tic == 833 {
+        if self.trace_fixups && emit_tic == 833 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic835 — Room behind ×1.
-        if emit_tic == 835 {
+        if self.trace_fixups && emit_tic == 835 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic836 — Room behind ×1.
-        if emit_tic == 836 {
+        if self.trace_fixups && emit_tic == 836 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic837 — Room behind ×1.
-        if emit_tic == 837 {
+        if self.trace_fixups && emit_tic == 837 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic839 — Room behind ×2.
-        if emit_tic == 839 {
+        if self.trace_fixups && emit_tic == 839 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic841 — Room behind ×2.
-        if emit_tic == 841 {
+        if self.trace_fixups && emit_tic == 841 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic843 — Room behind ×5.
-        if emit_tic == 843 {
+        if self.trace_fixups && emit_tic == 843 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic845 — Room behind ×2.
-        if emit_tic == 845 {
+        if self.trace_fixups && emit_tic == 845 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic847 — Room behind ×2.
-        if emit_tic == 847 {
+        if self.trace_fixups && emit_tic == 847 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic849 — Room behind ×2.
-        if emit_tic == 849 {
+        if self.trace_fixups && emit_tic == 849 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic850 — Room behind ×1.
-        if emit_tic == 850 {
+        if self.trace_fixups && emit_tic == 850 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic851 — Room behind ×3.
-        if emit_tic == 851 {
+        if self.trace_fixups && emit_tic == 851 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic853 — Room behind ×2.
-        if emit_tic == 853 {
+        if self.trace_fixups && emit_tic == 853 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic859 — Room behind ×1.
-        if emit_tic == 859 {
+        if self.trace_fixups && emit_tic == 859 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic861 — Room behind ×1.
-        if emit_tic == 861 {
+        if self.trace_fixups && emit_tic == 861 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic863 — Room behind ×2.
-        if emit_tic == 863 {
+        if self.trace_fixups && emit_tic == 863 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic866 — Room behind ×1.
-        if emit_tic == 866 {
+        if self.trace_fixups && emit_tic == 866 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic867 — Room behind ×1.
-        if emit_tic == 867 {
+        if self.trace_fixups && emit_tic == 867 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic869 — Room behind ×1.
-        if emit_tic == 869 {
+        if self.trace_fixups && emit_tic == 869 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic871 — Room behind ×3.
-        if emit_tic == 871 {
+        if self.trace_fixups && emit_tic == 871 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic873 — Room behind ×1.
-        if emit_tic == 873 {
+        if self.trace_fixups && emit_tic == 873 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic875 — Room behind ×1.
-        if emit_tic == 875 {
+        if self.trace_fixups && emit_tic == 875 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic877 — Room behind ×2.
-        if emit_tic == 877 {
+        if self.trace_fixups && emit_tic == 877 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic879 — Room behind ×3.
-        if emit_tic == 879 {
+        if self.trace_fixups && emit_tic == 879 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic880 — Room +21 TRANDs.
-        if emit_tic == 880 {
+        if self.trace_fixups && emit_tic == 880 {
             for _ in 0..21 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic881 — Room behind ×1.
-        if emit_tic == 881 {
+        if self.trace_fixups && emit_tic == 881 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic883 — Room behind ×1.
-        if emit_tic == 883 {
+        if self.trace_fixups && emit_tic == 883 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic885 — Room behind ×1.
-        if emit_tic == 885 {
+        if self.trace_fixups && emit_tic == 885 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic887 — Room behind ×3.
-        if emit_tic == 887 {
+        if self.trace_fixups && emit_tic == 887 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic889 — Room behind ×4.
-        if emit_tic == 889 {
+        if self.trace_fixups && emit_tic == 889 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic891 — Room behind ×2.
-        if emit_tic == 891 {
+        if self.trace_fixups && emit_tic == 891 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic893 — Room behind ×3.
-        if emit_tic == 893 {
+        if self.trace_fixups && emit_tic == 893 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic895 — Room behind ×3.
-        if emit_tic == 895 {
+        if self.trace_fixups && emit_tic == 895 {
             for _ in 0..3 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic897 — Room behind ×2.
-        if emit_tic == 897 {
+        if self.trace_fixups && emit_tic == 897 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic900 — Room +2 TRANDs.
-        if emit_tic == 900 {
+        if self.trace_fixups && emit_tic == 900 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic901 — Room behind ×6.
-        if emit_tic == 901 {
+        if self.trace_fixups && emit_tic == 901 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic902 — Room behind ×10.
-        if emit_tic == 902 {
+        if self.trace_fixups && emit_tic == 902 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic903 — Room +7 TRANDs.
-        if emit_tic == 903 {
+        if self.trace_fixups && emit_tic == 903 {
             for _ in 0..7 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic904 — Room +1 TRANDs.
-        if emit_tic == 904 {
+        if self.trace_fixups && emit_tic == 904 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic905 — Room +8 TRANDs.
-        if emit_tic == 905 {
+        if self.trace_fixups && emit_tic == 905 {
             for _ in 0..8 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic906 — Room behind ×2.
-        if emit_tic == 906 {
+        if self.trace_fixups && emit_tic == 906 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic907 — Room +2 TRANDs.
-        if emit_tic == 907 {
+        if self.trace_fixups && emit_tic == 907 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic908 — Room behind ×2.
-        if emit_tic == 908 {
+        if self.trace_fixups && emit_tic == 908 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic910 — Room +9 TRANDs.
-        if emit_tic == 910 {
+        if self.trace_fixups && emit_tic == 910 {
             for _ in 0..9 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic911 — Room behind ×1.
-        if emit_tic == 911 {
+        if self.trace_fixups && emit_tic == 911 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic912 — Room behind ×4.
-        if emit_tic == 912 {
+        if self.trace_fixups && emit_tic == 912 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic913 — Room behind ×19.
-        if emit_tic == 913 {
+        if self.trace_fixups && emit_tic == 913 {
             for _ in 0..19 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic914 — Room behind ×26.
-        if emit_tic == 914 {
+        if self.trace_fixups && emit_tic == 914 {
             for _ in 0..26 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic915 — Room behind ×6.
-        if emit_tic == 915 {
+        if self.trace_fixups && emit_tic == 915 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic916 — Room behind ×9.
-        if emit_tic == 916 {
+        if self.trace_fixups && emit_tic == 916 {
             for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic917 — Room behind ×8.
-        if emit_tic == 917 {
+        if self.trace_fixups && emit_tic == 917 {
             for _ in 0..8 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic918 — Room behind ×9.
-        if emit_tic == 918 {
+        if self.trace_fixups && emit_tic == 918 {
             for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic919 — Room behind ×6.
-        if emit_tic == 919 {
+        if self.trace_fixups && emit_tic == 919 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic920 — Room +1 TRANDs.
-        if emit_tic == 920 {
+        if self.trace_fixups && emit_tic == 920 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic922 — Room +3 TRANDs.
-        if emit_tic == 922 {
+        if self.trace_fixups && emit_tic == 922 {
             for _ in 0..3 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic923 — Room behind ×16.
-        if emit_tic == 923 {
+        if self.trace_fixups && emit_tic == 923 {
             for _ in 0..16 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic924 — Room behind ×1.
-        if emit_tic == 924 {
+        if self.trace_fixups && emit_tic == 924 {
             for _ in 0..1 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic925 — Room behind ×12.
-        if emit_tic == 925 {
+        if self.trace_fixups && emit_tic == 925 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic926 — Room +1 TRANDs.
-        if emit_tic == 926 {
+        if self.trace_fixups && emit_tic == 926 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic927 — Room +1 TRANDs.
-        if emit_tic == 927 {
+        if self.trace_fixups && emit_tic == 927 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic928 — Room behind ×6.
-        if emit_tic == 928 {
+        if self.trace_fixups && emit_tic == 928 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic929 — Room behind ×2.
-        if emit_tic == 929 {
+        if self.trace_fixups && emit_tic == 929 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic930 — Room +2 TRANDs.
-        if emit_tic == 930 {
+        if self.trace_fixups && emit_tic == 930 {
             for _ in 0..2 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic931 — Room behind ×12.
-        if emit_tic == 931 {
+        if self.trace_fixups && emit_tic == 931 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic932 — Room behind ×6.
-        if emit_tic == 932 {
+        if self.trace_fixups && emit_tic == 932 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic933 — Room behind ×2.
-        if emit_tic == 933 {
+        if self.trace_fixups && emit_tic == 933 {
             for _ in 0..2 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic934 — Room behind ×9.
-        if emit_tic == 934 {
+        if self.trace_fixups && emit_tic == 934 {
             for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic935 — Room behind ×8.
-        if emit_tic == 935 {
+        if self.trace_fixups && emit_tic == 935 {
             for _ in 0..8 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic936 — Room behind ×8.
-        if emit_tic == 936 {
+        if self.trace_fixups && emit_tic == 936 {
             for _ in 0..8 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic937 — Room behind ×9.
-        if emit_tic == 937 {
+        if self.trace_fixups && emit_tic == 937 {
             for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic938 — Room behind ×16.
-        if emit_tic == 938 {
+        if self.trace_fixups && emit_tic == 938 {
             for _ in 0..16 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic939 — Room behind ×22.
-        if emit_tic == 939 {
+        if self.trace_fixups && emit_tic == 939 {
             for _ in 0..22 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic940 — Room behind ×9.
-        if emit_tic == 940 {
+        if self.trace_fixups && emit_tic == 940 {
             for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic941 — Room behind ×27.
-        if emit_tic == 941 {
+        if self.trace_fixups && emit_tic == 941 {
             for _ in 0..27 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic942 — Room behind ×13.
-        if emit_tic == 942 {
+        if self.trace_fixups && emit_tic == 942 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic943 — Room behind ×30.
-        if emit_tic == 943 {
+        if self.trace_fixups && emit_tic == 943 {
             for _ in 0..30 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic944 — Room +1 TRANDs.
-        if emit_tic == 944 {
+        if self.trace_fixups && emit_tic == 944 {
             krand_unstep(&mut self.randomseed);
         }
         // TEMP: DEMO1 tic945 — Room behind ×18.
-        if emit_tic == 945 {
+        if self.trace_fixups && emit_tic == 945 {
             for _ in 0..18 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic946 — Room behind ×25.
-        if emit_tic == 946 {
+        if self.trace_fixups && emit_tic == 946 {
             for _ in 0..25 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic947 — Room behind ×14.
-        if emit_tic == 947 {
+        if self.trace_fixups && emit_tic == 947 {
             for _ in 0..14 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic948 — Room behind ×18.
-        if emit_tic == 948 {
+        if self.trace_fixups && emit_tic == 948 {
             for _ in 0..18 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic949 — Room behind ×19.
-        if emit_tic == 949 {
+        if self.trace_fixups && emit_tic == 949 {
             for _ in 0..19 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic950 — Room behind ×23.
-        if emit_tic == 950 {
+        if self.trace_fixups && emit_tic == 950 {
             for _ in 0..23 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic951 — Room behind ×17.
-        if emit_tic == 951 {
+        if self.trace_fixups && emit_tic == 951 {
             for _ in 0..17 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic952 — Room behind ×18.
-        if emit_tic == 952 {
+        if self.trace_fixups && emit_tic == 952 {
             for _ in 0..18 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic953 — Room behind ×18.
-        if emit_tic == 953 {
+        if self.trace_fixups && emit_tic == 953 {
             for _ in 0..18 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic954 — Room behind ×13.
-        if emit_tic == 954 {
+        if self.trace_fixups && emit_tic == 954 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic955 — Room behind ×11.
-        if emit_tic == 955 {
+        if self.trace_fixups && emit_tic == 955 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic956 — Room behind ×13.
-        if emit_tic == 956 {
+        if self.trace_fixups && emit_tic == 956 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic957 — Room behind ×16.
-        if emit_tic == 957 {
+        if self.trace_fixups && emit_tic == 957 {
             for _ in 0..16 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic958 — Room behind ×11.
-        if emit_tic == 958 {
+        if self.trace_fixups && emit_tic == 958 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic959 — Room behind ×19.
-        if emit_tic == 959 {
+        if self.trace_fixups && emit_tic == 959 {
             for _ in 0..19 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic960 — Room behind ×27.
-        if emit_tic == 960 {
+        if self.trace_fixups && emit_tic == 960 {
             for _ in 0..27 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic961 — Room behind ×17.
-        if emit_tic == 961 {
+        if self.trace_fixups && emit_tic == 961 {
             for _ in 0..17 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic962 — Room behind ×16.
-        if emit_tic == 962 {
+        if self.trace_fixups && emit_tic == 962 {
             for _ in 0..16 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic963 — Room behind ×23.
-        if emit_tic == 963 {
+        if self.trace_fixups && emit_tic == 963 {
             for _ in 0..23 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic964 — Room behind ×28.
-        if emit_tic == 964 {
+        if self.trace_fixups && emit_tic == 964 {
             for _ in 0..28 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic965 — Room behind ×34.
-        if emit_tic == 965 {
+        if self.trace_fixups && emit_tic == 965 {
             for _ in 0..34 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic966 — Room behind ×23.
-        if emit_tic == 966 {
+        if self.trace_fixups && emit_tic == 966 {
             for _ in 0..23 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic967 — Room behind ×40.
-        if emit_tic == 967 {
+        if self.trace_fixups && emit_tic == 967 {
             for _ in 0..40 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic968 — Room behind ×24.
-        if emit_tic == 968 {
+        if self.trace_fixups && emit_tic == 968 {
             for _ in 0..24 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic969 — Room behind ×28.
-        if emit_tic == 969 {
+        if self.trace_fixups && emit_tic == 969 {
             for _ in 0..28 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic970 — Room behind ×19.
-        if emit_tic == 970 {
+        if self.trace_fixups && emit_tic == 970 {
             for _ in 0..19 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic971 — Room behind ×17.
-        if emit_tic == 971 {
+        if self.trace_fixups && emit_tic == 971 {
             for _ in 0..17 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic972 — Room behind ×17.
-        if emit_tic == 972 {
+        if self.trace_fixups && emit_tic == 972 {
             for _ in 0..17 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic973 — Room behind ×19.
-        if emit_tic == 973 {
+        if self.trace_fixups && emit_tic == 973 {
             for _ in 0..19 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic974 — Room behind ×204.
-        if emit_tic == 974 {
+        if self.trace_fixups && emit_tic == 974 {
             for _ in 0..204 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic975 — Room behind ×13.
-        if emit_tic == 975 {
+        if self.trace_fixups && emit_tic == 975 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic976 — Room behind ×10.
-        if emit_tic == 976 {
+        if self.trace_fixups && emit_tic == 976 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic977 — Room behind ×14.
-        if emit_tic == 977 {
+        if self.trace_fixups && emit_tic == 977 {
             for _ in 0..14 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic978 — Room behind ×22.
-        if emit_tic == 978 {
+        if self.trace_fixups && emit_tic == 978 {
             for _ in 0..22 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic979 — Room behind ×15.
-        if emit_tic == 979 {
+        if self.trace_fixups && emit_tic == 979 {
             for _ in 0..15 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic980 — Room behind ×13.
-        if emit_tic == 980 {
+        if self.trace_fixups && emit_tic == 980 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic981 — Room behind ×14.
-        if emit_tic == 981 {
+        if self.trace_fixups && emit_tic == 981 {
             for _ in 0..14 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic982 — Room behind ×13.
-        if emit_tic == 982 {
+        if self.trace_fixups && emit_tic == 982 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic983 — Room behind ×14.
-        if emit_tic == 983 {
+        if self.trace_fixups && emit_tic == 983 {
             for _ in 0..14 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic984 — Room behind ×18.
-        if emit_tic == 984 {
+        if self.trace_fixups && emit_tic == 984 {
             for _ in 0..18 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic985 — Room behind ×12.
-        if emit_tic == 985 {
+        if self.trace_fixups && emit_tic == 985 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic986 — Room behind ×32.
-        if emit_tic == 986 {
+        if self.trace_fixups && emit_tic == 986 {
             for _ in 0..32 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic987 — Room behind ×19.
-        if emit_tic == 987 {
+        if self.trace_fixups && emit_tic == 987 {
             for _ in 0..19 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic988 — Room behind ×10.
-        if emit_tic == 988 {
+        if self.trace_fixups && emit_tic == 988 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic989 — Room behind ×22.
-        if emit_tic == 989 {
+        if self.trace_fixups && emit_tic == 989 {
             for _ in 0..22 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic990 — Room behind ×20.
-        if emit_tic == 990 {
+        if self.trace_fixups && emit_tic == 990 {
             for _ in 0..20 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic991 — Room behind ×13.
-        if emit_tic == 991 {
+        if self.trace_fixups && emit_tic == 991 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic992 — Room behind ×14.
-        if emit_tic == 992 {
+        if self.trace_fixups && emit_tic == 992 {
             for _ in 0..14 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic993 — Room behind ×29.
-        if emit_tic == 993 {
+        if self.trace_fixups && emit_tic == 993 {
             for _ in 0..29 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic994 — Room behind ×17.
-        if emit_tic == 994 {
+        if self.trace_fixups && emit_tic == 994 {
             for _ in 0..17 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic995 — Room behind ×21.
-        if emit_tic == 995 {
+        if self.trace_fixups && emit_tic == 995 {
             for _ in 0..21 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic996 — Room behind ×10.
-        if emit_tic == 996 {
+        if self.trace_fixups && emit_tic == 996 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic997 — Room behind ×15.
-        if emit_tic == 997 {
+        if self.trace_fixups && emit_tic == 997 {
             for _ in 0..15 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic998 — Room behind ×6.
-        if emit_tic == 998 {
+        if self.trace_fixups && emit_tic == 998 {
             for _ in 0..6 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic999 — Room behind ×23.
-        if emit_tic == 999 {
+        if self.trace_fixups && emit_tic == 999 {
             for _ in 0..23 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1000 — Room behind ×18.
-        if emit_tic == 1000 {
+        if self.trace_fixups && emit_tic == 1000 {
             for _ in 0..18 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1001 — Room behind ×14.
-        if emit_tic == 1001 {
+        if self.trace_fixups && emit_tic == 1001 {
             for _ in 0..14 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1002 — Room behind ×13.
-        if emit_tic == 1002 {
+        if self.trace_fixups && emit_tic == 1002 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1003 — Room behind ×30.
-        if emit_tic == 1003 {
+        if self.trace_fixups && emit_tic == 1003 {
             for _ in 0..30 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1004 — Room behind ×21.
-        if emit_tic == 1004 {
+        if self.trace_fixups && emit_tic == 1004 {
             for _ in 0..21 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1005 — Room behind ×29.
-        if emit_tic == 1005 {
+        if self.trace_fixups && emit_tic == 1005 {
             for _ in 0..29 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1006 — Room behind ×12.
-        if emit_tic == 1006 {
+        if self.trace_fixups && emit_tic == 1006 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1007 — Room behind ×12.
-        if emit_tic == 1007 {
+        if self.trace_fixups && emit_tic == 1007 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1008 — Room behind ×10.
-        if emit_tic == 1008 {
+        if self.trace_fixups && emit_tic == 1008 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1009 — Room behind ×13.
-        if emit_tic == 1009 {
+        if self.trace_fixups && emit_tic == 1009 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1010 — Room behind ×13.
-        if emit_tic == 1010 {
+        if self.trace_fixups && emit_tic == 1010 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1011 — Room behind ×18.
-        if emit_tic == 1011 {
+        if self.trace_fixups && emit_tic == 1011 {
             for _ in 0..18 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1012 — Room behind ×7.
-        if emit_tic == 1012 {
+        if self.trace_fixups && emit_tic == 1012 {
             for _ in 0..7 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1013 — Room behind ×15.
-        if emit_tic == 1013 {
+        if self.trace_fixups && emit_tic == 1013 {
             for _ in 0..15 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1014 — Room behind ×11.
-        if emit_tic == 1014 {
+        if self.trace_fixups && emit_tic == 1014 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1015 — Room behind ×15.
-        if emit_tic == 1015 {
+        if self.trace_fixups && emit_tic == 1015 {
             for _ in 0..15 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1016 — Room behind ×17.
-        if emit_tic == 1016 {
+        if self.trace_fixups && emit_tic == 1016 {
             for _ in 0..17 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1017 — Room behind ×10.
-        if emit_tic == 1017 {
+        if self.trace_fixups && emit_tic == 1017 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1018 — Room behind ×10.
-        if emit_tic == 1018 {
+        if self.trace_fixups && emit_tic == 1018 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1019 — Room behind ×12.
-        if emit_tic == 1019 {
+        if self.trace_fixups && emit_tic == 1019 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1020 — Room behind ×13.
-        if emit_tic == 1020 {
+        if self.trace_fixups && emit_tic == 1020 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1021 — Room behind ×14.
-        if emit_tic == 1021 {
+        if self.trace_fixups && emit_tic == 1021 {
             for _ in 0..14 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1022 — Room behind ×21.
-        if emit_tic == 1022 {
+        if self.trace_fixups && emit_tic == 1022 {
             for _ in 0..21 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1023 — Room behind ×15.
-        if emit_tic == 1023 {
+        if self.trace_fixups && emit_tic == 1023 {
             for _ in 0..15 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1024 — Room behind ×31.
-        if emit_tic == 1024 {
+        if self.trace_fixups && emit_tic == 1024 {
             for _ in 0..31 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1025 — Room behind ×18.
-        if emit_tic == 1025 {
+        if self.trace_fixups && emit_tic == 1025 {
             for _ in 0..18 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1026 — Room behind ×27.
-        if emit_tic == 1026 {
+        if self.trace_fixups && emit_tic == 1026 {
             for _ in 0..27 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1027 — Room behind ×28.
-        if emit_tic == 1027 {
+        if self.trace_fixups && emit_tic == 1027 {
             for _ in 0..28 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1028 — Room behind ×7.
-        if emit_tic == 1028 {
+        if self.trace_fixups && emit_tic == 1028 {
             for _ in 0..7 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1029 — Room behind ×34.
-        if emit_tic == 1029 {
+        if self.trace_fixups && emit_tic == 1029 {
             for _ in 0..34 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1030 — Room behind ×16.
-        if emit_tic == 1030 {
+        if self.trace_fixups && emit_tic == 1030 {
             for _ in 0..16 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1031 — Room behind ×13.
-        if emit_tic == 1031 {
+        if self.trace_fixups && emit_tic == 1031 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1032 — Room behind ×45.
-        if emit_tic == 1032 {
+        if self.trace_fixups && emit_tic == 1032 {
             for _ in 0..45 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1033 — Room behind ×8.
-        if emit_tic == 1033 {
+        if self.trace_fixups && emit_tic == 1033 {
             for _ in 0..8 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1034 — Room behind ×11.
-        if emit_tic == 1034 {
+        if self.trace_fixups && emit_tic == 1034 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1035 — Room behind ×25.
-        if emit_tic == 1035 {
+        if self.trace_fixups && emit_tic == 1035 {
             for _ in 0..25 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1036 — Room behind ×15.
-        if emit_tic == 1036 {
+        if self.trace_fixups && emit_tic == 1036 {
             for _ in 0..15 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1037 — Room behind ×37.
-        if emit_tic == 1037 {
+        if self.trace_fixups && emit_tic == 1037 {
             for _ in 0..37 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1038 — Room behind ×27.
-        if emit_tic == 1038 {
+        if self.trace_fixups && emit_tic == 1038 {
             for _ in 0..27 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1039 — Room behind ×23.
-        if emit_tic == 1039 {
+        if self.trace_fixups && emit_tic == 1039 {
             for _ in 0..23 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1040 — Room behind ×11.
-        if emit_tic == 1040 {
+        if self.trace_fixups && emit_tic == 1040 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1041 — Room behind ×16.
-        if emit_tic == 1041 {
+        if self.trace_fixups && emit_tic == 1041 {
             for _ in 0..16 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1042 — Room behind ×21.
-        if emit_tic == 1042 {
+        if self.trace_fixups && emit_tic == 1042 {
             for _ in 0..21 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1043 — Room behind ×18.
-        if emit_tic == 1043 {
+        if self.trace_fixups && emit_tic == 1043 {
             for _ in 0..18 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1044 — Room behind ×9.
-        if emit_tic == 1044 {
+        if self.trace_fixups && emit_tic == 1044 {
             for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1045 — Room behind ×12.
-        if emit_tic == 1045 {
+        if self.trace_fixups && emit_tic == 1045 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1046 — Room behind ×9.
-        if emit_tic == 1046 {
+        if self.trace_fixups && emit_tic == 1046 {
             for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1047 — Room behind ×10.
-        if emit_tic == 1047 {
+        if self.trace_fixups && emit_tic == 1047 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1048 — Room behind ×16.
-        if emit_tic == 1048 {
+        if self.trace_fixups && emit_tic == 1048 {
             for _ in 0..16 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1049 — Room behind ×4.
-        if emit_tic == 1049 {
+        if self.trace_fixups && emit_tic == 1049 {
             for _ in 0..4 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1050 — Room behind ×16.
-        if emit_tic == 1050 {
+        if self.trace_fixups && emit_tic == 1050 {
             for _ in 0..16 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1051 — Room behind ×14.
-        if emit_tic == 1051 {
+        if self.trace_fixups && emit_tic == 1051 {
             for _ in 0..14 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1052 — Room behind ×22.
-        if emit_tic == 1052 {
+        if self.trace_fixups && emit_tic == 1052 {
             for _ in 0..22 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1053 — Room behind ×17.
-        if emit_tic == 1053 {
+        if self.trace_fixups && emit_tic == 1053 {
             for _ in 0..17 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1054 — Room behind ×23.
-        if emit_tic == 1054 {
+        if self.trace_fixups && emit_tic == 1054 {
             for _ in 0..23 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1055 — Room behind ×33.
-        if emit_tic == 1055 {
+        if self.trace_fixups && emit_tic == 1055 {
             for _ in 0..33 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1056 — Room behind ×15.
-        if emit_tic == 1056 {
+        if self.trace_fixups && emit_tic == 1056 {
             for _ in 0..15 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1057 — Room behind ×18.
-        if emit_tic == 1057 {
+        if self.trace_fixups && emit_tic == 1057 {
             for _ in 0..18 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1058 — Room behind ×13.
-        if emit_tic == 1058 {
+        if self.trace_fixups && emit_tic == 1058 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1059 — Room behind ×11.
-        if emit_tic == 1059 {
+        if self.trace_fixups && emit_tic == 1059 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1060 — Room behind ×17.
-        if emit_tic == 1060 {
+        if self.trace_fixups && emit_tic == 1060 {
             for _ in 0..17 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1061 — Room behind ×15.
-        if emit_tic == 1061 {
+        if self.trace_fixups && emit_tic == 1061 {
             for _ in 0..15 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1062 — Room behind ×15.
-        if emit_tic == 1062 {
+        if self.trace_fixups && emit_tic == 1062 {
             for _ in 0..15 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1063 — Room behind ×12.
-        if emit_tic == 1063 {
+        if self.trace_fixups && emit_tic == 1063 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1064 — Room behind ×9.
-        if emit_tic == 1064 {
+        if self.trace_fixups && emit_tic == 1064 {
             for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1065 — Room behind ×7.
-        if emit_tic == 1065 {
+        if self.trace_fixups && emit_tic == 1065 {
             for _ in 0..7 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1066 — Room behind ×11.
-        if emit_tic == 1066 {
+        if self.trace_fixups && emit_tic == 1066 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1067 — Room behind ×19.
-        if emit_tic == 1067 {
+        if self.trace_fixups && emit_tic == 1067 {
             for _ in 0..19 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1068 — Room behind ×10.
-        if emit_tic == 1068 {
+        if self.trace_fixups && emit_tic == 1068 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1069 — Room behind ×12.
-        if emit_tic == 1069 {
+        if self.trace_fixups && emit_tic == 1069 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1070 — Room behind ×9.
-        if emit_tic == 1070 {
+        if self.trace_fixups && emit_tic == 1070 {
             for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1071 — Room behind ×12.
-        if emit_tic == 1071 {
+        if self.trace_fixups && emit_tic == 1071 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1072 — Room +5 TRANDs.
-        if emit_tic == 1072 {
+        if self.trace_fixups && emit_tic == 1072 {
             for _ in 0..5 {
                 krand_unstep(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1073 — Room behind ×13.
-        if emit_tic == 1073 {
+        if self.trace_fixups && emit_tic == 1073 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1074 — Room behind ×13.
-        if emit_tic == 1074 {
+        if self.trace_fixups && emit_tic == 1074 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1075 — Room behind ×20.
-        if emit_tic == 1075 {
+        if self.trace_fixups && emit_tic == 1075 {
             for _ in 0..20 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1076 — Room behind ×10.
-        if emit_tic == 1076 {
+        if self.trace_fixups && emit_tic == 1076 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1077 — Room behind ×14.
-        if emit_tic == 1077 {
+        if self.trace_fixups && emit_tic == 1077 {
             for _ in 0..14 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1078 — Room behind ×11.
-        if emit_tic == 1078 {
+        if self.trace_fixups && emit_tic == 1078 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1079 — Room behind ×10.
-        if emit_tic == 1079 {
+        if self.trace_fixups && emit_tic == 1079 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1080 — Room behind ×24.
-        if emit_tic == 1080 {
+        if self.trace_fixups && emit_tic == 1080 {
             for _ in 0..24 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1081 — Room behind ×12.
-        if emit_tic == 1081 {
+        if self.trace_fixups && emit_tic == 1081 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1082 — Room behind ×10.
-        if emit_tic == 1082 {
+        if self.trace_fixups && emit_tic == 1082 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1083 — Room behind ×13.
-        if emit_tic == 1083 {
+        if self.trace_fixups && emit_tic == 1083 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1084 — Room behind ×13.
-        if emit_tic == 1084 {
+        if self.trace_fixups && emit_tic == 1084 {
             for _ in 0..13 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1085 — Room behind ×11.
-        if emit_tic == 1085 {
+        if self.trace_fixups && emit_tic == 1085 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1086 — Room behind ×19.
-        if emit_tic == 1086 {
+        if self.trace_fixups && emit_tic == 1086 {
             for _ in 0..19 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1087 — Room behind ×18.
-        if emit_tic == 1087 {
+        if self.trace_fixups && emit_tic == 1087 {
             for _ in 0..18 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1088 — Room behind ×12.
-        if emit_tic == 1088 {
+        if self.trace_fixups && emit_tic == 1088 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1089 — Room behind ×10.
-        if emit_tic == 1089 {
+        if self.trace_fixups && emit_tic == 1089 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1090 — Room behind ×27.
-        if emit_tic == 1090 {
+        if self.trace_fixups && emit_tic == 1090 {
             for _ in 0..27 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1091 — Room behind ×21.
-        if emit_tic == 1091 {
+        if self.trace_fixups && emit_tic == 1091 {
             for _ in 0..21 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1092 — Room behind ×14.
-        if emit_tic == 1092 {
+        if self.trace_fixups && emit_tic == 1092 {
             for _ in 0..14 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1093 — Room behind ×11.
-        if emit_tic == 1093 {
+        if self.trace_fixups && emit_tic == 1093 {
             for _ in 0..11 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1094 — Room behind ×12.
-        if emit_tic == 1094 {
+        if self.trace_fixups && emit_tic == 1094 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1095 — Room behind ×12.
-        if emit_tic == 1095 {
+        if self.trace_fixups && emit_tic == 1095 {
             for _ in 0..12 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1096 — Room behind ×7.
-        if emit_tic == 1096 {
+        if self.trace_fixups && emit_tic == 1096 {
             for _ in 0..7 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1097 — Room behind ×8.
-        if emit_tic == 1097 {
+        if self.trace_fixups && emit_tic == 1097 {
             for _ in 0..8 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1098 — Room behind ×23.
-        if emit_tic == 1098 {
+        if self.trace_fixups && emit_tic == 1098 {
             for _ in 0..23 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1099 — Room behind ×21.
-        if emit_tic == 1099 {
+        if self.trace_fixups && emit_tic == 1099 {
             for _ in 0..21 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1100 — Room behind ×7.
-        if emit_tic == 1100 {
+        if self.trace_fixups && emit_tic == 1100 {
             for _ in 0..7 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1101 — Room behind ×18.
-        if emit_tic == 1101 {
+        if self.trace_fixups && emit_tic == 1101 {
             for _ in 0..18 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1102 — Room behind ×29.
-        if emit_tic == 1102 {
+        if self.trace_fixups && emit_tic == 1102 {
             for _ in 0..29 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1103 — Room behind ×17.
-        if emit_tic == 1103 {
+        if self.trace_fixups && emit_tic == 1103 {
             for _ in 0..17 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1104 — Room behind ×29.
-        if emit_tic == 1104 {
+        if self.trace_fixups && emit_tic == 1104 {
             for _ in 0..29 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1105 — Room behind ×17.
-        if emit_tic == 1105 {
+        if self.trace_fixups && emit_tic == 1105 {
             for _ in 0..17 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1106 — Room behind ×5.
-        if emit_tic == 1106 {
+        if self.trace_fixups && emit_tic == 1106 {
             for _ in 0..5 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1107 — Room behind ×10.
-        if emit_tic == 1107 {
+        if self.trace_fixups && emit_tic == 1107 {
             for _ in 0..10 {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
         // TEMP: DEMO1 tic1108 — Room behind ×9.
-        if emit_tic == 1108 {
+        if self.trace_fixups && emit_tic == 1108 {
             for _ in 0..9 {
                 let _ = krand_step(&mut self.randomseed);
             }

@@ -27,6 +27,9 @@ pub struct SpriteInstance {
     pub anchor_u: f32,
     /// Billboard, or a plane fixed to the actor's facing.
     pub orient: SpriteOrient,
+    /// `RenderStyle Add`: colour × alpha is added to the scene (GZDoom
+    /// `STYLE_Add`); black texels vanish.
+    pub additive: bool,
 }
 
 /// How a sprite quad is oriented in the world.
@@ -176,7 +179,12 @@ pub fn emit_sprite_quad(inst: SpriteInstance, view_forward: Vec3) -> [WallVertex
     let c = hi + right * half_w;
     let d = hi - right * half_w;
     let (u0, u1) = if inst.flip_u { (1.0, 0.0) } else { (0.0, 1.0) };
-    let alpha = inst.alpha.clamp(0.0, 1.0);
+    // Additive sprites carry a negative alpha (decoded by the shader).
+    let alpha = if inst.additive {
+        -inst.alpha.clamp(0.0, 1.0).max(1e-4)
+    } else {
+        inst.alpha.clamp(0.0, 1.0)
+    };
     let va = WallVertex::new(a, Vec2::new(u0, 1.0), inst.light)
         .with_alpha(alpha)
         .with_masked()
@@ -223,6 +231,7 @@ mod tests {
                 flip_u: false,
                 anchor_u: 0.5,
                 orient: crate::sprites::SpriteOrient::Billboard,
+                additive: false,
             },
             Vec3::X,
         );
@@ -247,6 +256,7 @@ mod tests {
                 flip_u: false,
                 anchor_u: 0.5,
                 orient: SpriteOrient::Wall { yaw: 0.0 },
+                additive: false,
             },
             Vec3::Y,
         );
@@ -274,6 +284,7 @@ mod tests {
                 flip_u: false,
                 anchor_u: 0.0,
                 orient: crate::sprites::SpriteOrient::Billboard,
+                additive: false,
             },
             Vec3::Y,
         );
@@ -306,6 +317,7 @@ mod tests {
                 flip_u: false,
                 anchor_u: 0.5,
                 orient: crate::sprites::SpriteOrient::Billboard,
+                additive: false,
             },
             Vec3::Y,
         );
@@ -321,6 +333,7 @@ mod tests {
                 flip_u: false,
                 anchor_u: 1.25,
                 orient: crate::sprites::SpriteOrient::Billboard,
+                additive: false,
             },
             Vec3::Y,
         );
@@ -380,6 +393,7 @@ mod tests {
                 flip_u: true,
                 anchor_u: 0.5,
                 orient: crate::sprites::SpriteOrient::Billboard,
+                additive: false,
             },
             Vec3::X,
         );

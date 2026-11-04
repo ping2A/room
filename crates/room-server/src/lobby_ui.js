@@ -204,7 +204,11 @@
       },
     });
     if (!res.ok) {
-      const err = new Error(res.status + " " + path);
+      let detail = "";
+      try {
+        detail = (await res.text()).trim();
+      } catch (_) {}
+      const err = new Error(detail && detail.length < 300 ? detail : res.status + " " + path);
       err.code = res.status;
       throw err;
     }
@@ -566,39 +570,125 @@
     return room.mod ? room.mod.title || room.mod.name : "";
   }
 
+  /** Admin presets (`GET /api/presets`): IWAD + PK3/WAD files + allowed maps. */
+  function loadPresets() {
+    return api("/api/presets").catch(() => ({ require_preset: false, presets: [] }));
+  }
+
+  function fmtBytes(n) {
+    if (!n) return "";
+    if (n >= 1 << 30) return (n / (1 << 30)).toFixed(1) + " GB";
+    if (n >= 1 << 20) return (n / (1 << 20)).toFixed(1) + " MB";
+    return Math.max(1, Math.round(n / 1024)) + " KB";
+  }
+
+  /** Preset `<select>` + map picker that follows it; hides the free fields for presets. */
+  function presetPickerHtml(pp) {
+    const presets = pp.presets || [];
+    if (!presets.length) return { html: "", wire() {} };
+    const opts =
+      (pp.require_preset ? "" : '<option value="">Custom (type a map)</option>') +
+      presets
+        .map((p) => '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.title) + "</option>")
+        .join("");
+    const html =
+      '<label class="field"><span>Preset</span><select name="preset">' + opts + "</select></label>" +
+      '<div class="mod-blurb" data-preset-blurb hidden></div>' +
+      '<label class="field" data-preset-map style="display:none"><span>Map</span><select name="preset_map"></select></label>';
+    function wire(body) {
+      const sel = body.querySelector('select[name="preset"]');
+      const blurb = body.querySelector("[data-preset-blurb]");
+      const mapRow = body.querySelector("[data-preset-map]");
+      const mapSel = body.querySelector('select[name="preset_map"]');
+      const custom = body.querySelectorAll("[data-custom]");
+      const skill = body.querySelector('input[name="skill"]');
+      const refresh = () => {
+        const p = presets.find((x) => x.id === sel.value);
+        // `.field` sets display, which beats the `hidden` attribute: use style.
+        const show = (el, on) => {
+          el.hidden = !on;
+          el.style.display = on ? "" : "none";
+        };
+        for (const el of custom) show(el, !p);
+        const free = body.querySelector('input[name="map"]');
+        if (free) free.required = !p;
+        if (!p) {
+          blurb.hidden = true;
+          show(mapRow, false);
+          return;
+        }
+        const files = [p.iwad && p.iwad.file, ...(p.content || []).map((c) => c.file)].filter(Boolean);
+        blurb.hidden = false;
+        blurb.innerHTML =
+          '<strong class="mod-blurb-title">' + escapeHtml(p.title) + "</strong>" +
+          (p.description ? '<p class="mod-blurb-text">' + escapeHtml(p.description) + "</p>" : "") +
+          '<p class="mod-blurb-text muted">' + escapeHtml(files.join(" + ") || "default game") +
+          (p.download_bytes ? " · download " + escapeHtml(fmtBytes(p.download_bytes)) : "") +
+          (p.mod ? " · mod " + escapeHtml(p.mod) : "") + "</p>";
+        show(mapRow, true);
+        if (p.maps && p.maps.length) {
+          mapSel.innerHTML = p.maps
+            .map((m) => '<option value="' + escapeHtml(m) + '"' + (m === p.default_map ? " selected" : "") + ">" + escapeHtml(m) + "</option>")
+            .join("");
+          mapSel.disabled = false;
+        } else {
+          mapSel.innerHTML = '<option value="">' + escapeHtml(p.default_map || "default") + "</option>";
+          mapSel.disabled = false;
+          show(mapRow, false);
+          for (const el of body.querySelectorAll("[data-free-map]")) show(el, true);
+          if (free) {
+            free.required = true;
+            if (p.default_map) free.value = p.default_map;
+          }
+        }
+        if (skill && p.skill) skill.value = String(p.skill);
+      };
+      sel.addEventListener("change", refresh);
+      refresh();
+    }
+    return { html, wire };
+  }
+
   async function createRoom() {
     if (!requireCallsign()) return;
-    const mods = await loadMods();
+    const [mods, pp] = await Promise.all([loadMods(), loadPresets()]);
     const picker = modPickerHtml(mods, { voxelPack: true });
+    const presetPicker = presetPickerHtml(pp);
     const data = await openModal({
       title: "Open a pit",
       confirmLabel: "Spill blood",
       bodyHtml:
-        '<label class="field"><span>Game</span><select name="game"><option value="doom">Doom</option><option value="duke3d">Duke Nukem 3D (no mods)</option></select></label>' +
-        '<label class="field"><span>Map</span><input name="map" value="E1M1" required/></label>' +
+        presetPicker.html +
+        '<label class="field" data-custom><span>Game</span><select name="game"><option value="doom">Doom</option><option value="duke3d">Duke Nukem 3D (no mods)</option></select></label>' +
+        '<label class="field" data-custom data-free-map><span>Map</span><input name="map" value="E1M1"/></label>' +
         '<label class="field"><span>Skill</span><input name="skill" type="number" min="1" max="5" value="3"/></label>' +
         '<label class="field"><span>Max players</span><input name="max_players" type="number" min="2" max="8" value="2"/></label>' +
         '<label class="field"><span>Time limit (minutes)</span><input name="time_limit" type="number" min="1" max="180" value="' +
         escapeHtml(state.config.room_time_limit_mins || 20) +
         '"/></label>' +
         '<label class="field"><span>Visibility</span><select name="visibility"><option value="public">public</option><option value="private">private</option></select></label>' +
-        picker.html,
-      onReady: picker.wire,
+        '<div data-custom>' + picker.html + "</div>",
+      onReady: (body) => {
+        picker.wire(body);
+        presetPicker.wire(body);
+      },
     });
     if (!data) return;
     try {
-      const doom = data.game !== "duke3d";
+      const preset = data.preset || "";
+      const doom = preset || data.game !== "duke3d";
       const created = await api("/api/rooms", {
         method: "POST",
         body: JSON.stringify({
-          map: data.map || "E1M1",
+          preset: preset || undefined,
+          map: preset ? data.preset_map || data.map || "" : data.map || "E1M1",
           skill: Number(data.skill) || 3,
           max_players: Number(data.max_players) || 2,
           visibility: data.visibility || "public",
           time_limit: Number(data.time_limit) || undefined,
-          game: data.game || "doom",
-          mod: doom ? data.mod || undefined : undefined,
-          packs: doom && data.voxel ? ["voxel"] : [],
+          game: preset ? "doom" : data.game || "doom",
+          mod: doom && !preset ? data.mod || undefined : undefined,
+          packs: doom && !preset && data.voxel ? ["voxel"] : [],
         }),
       });
       flash("Created " + shortId(created.id));
@@ -612,6 +702,7 @@
         packs: created.settings.packs || [],
         game: created.settings.game,
         time_limit: created.settings.time_limit,
+        preset: created.settings.preset || "",
         occupied: 0,
         started: false,
         ws_v2: created.ws_v2,
@@ -732,6 +823,10 @@
         (room.mod ? '<span class="badge mod">' + escapeHtml(modLabel(room)) + "</span>" : "") +
         (room.packs && room.packs.length
           ? '<span class="badge mod">' + escapeHtml(room.packs.join("+")) + "</span>"
+          : "") +
+        (room.preset
+          ? '<span class="badge mod" title="Download ' + escapeHtml(fmtBytes(room.download_bytes)) + '">' +
+            escapeHtml(room.preset) + "</span>"
           : "") +
         "</div></div>";
       const actions = document.createElement("div");

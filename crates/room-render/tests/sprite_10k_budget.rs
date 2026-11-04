@@ -27,6 +27,7 @@ fn append_10k_sprites_under_budget() {
                 flip_u: false,
                 anchor_u: 0.5,
                 orient: room_render::SpriteOrient::Billboard,
+                additive: false,
             }
         })
         .collect();

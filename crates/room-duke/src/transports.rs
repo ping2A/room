@@ -379,7 +379,7 @@ pub fn movetransports(
                 1 | 2 => {
                     let old_sect = sprites[ju].sectnum;
                     if pic == WATERBUBBLE
-                        && emit_tic >= 70
+                        && (!crate::fixups::on() || emit_tic >= 70)
                         && old_sect >= 0
                         && (old_sect as usize) < sectors.len()
                     {

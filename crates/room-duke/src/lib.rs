@@ -8,6 +8,26 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
+/// DEMO1 trace fix-ups for code outside [`session::DukeSession`] (free
+/// functions with `// TEMP` hacks keyed on DEMO1 tic or sprite numbers).
+/// Set from [`session::DukeSession::trace_fixups`] at the start of each tick;
+/// off by default.
+pub mod fixups {
+    use std::cell::Cell;
+    thread_local! {
+        static ON: Cell<bool> = const { Cell::new(false) };
+    }
+    /// True while a session with `trace_fixups` is ticking on this thread.
+    #[must_use]
+    pub fn on() -> bool {
+        ON.with(Cell::get)
+    }
+    /// Set by the session each tick.
+    pub fn set(on: bool) {
+        ON.with(|c| c.set(on));
+    }
+}
+
 pub mod actors;
 pub mod badguy;
 pub mod con;

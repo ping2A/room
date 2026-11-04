@@ -333,6 +333,14 @@ Operators get a private web console to watch every room live and to kick, mute, 
 
 Admin commands reach a room as `RoomCmd::Admin(...)` through the registry; on a multi-node cluster the API node forwards to the owning node over an internal mTLS HTTP call. Every handler: authorize role → validate body → execute → write `audit_log` → return the new state.
 
+### 7.x Content library and room presets (2026-11-03)
+
+- **Library.** `--content-dir` (default `<data-dir>/content`) holds PK3 / PK7 / ZIP / WAD / IWAD files. Admins upload them in Settings → *Content library* (`POST /admin/api/v1/content/{file}`, raw body streamed to disk, `--content-max-mb`, default 2048). They can also rescan or delete files (deleting is refused while a preset uses the file). Each file is fingerprinted (`room_proto::content_fingerprint`) and scanned for maps: WAD markers, and `maps/NAME.wad` entries in archives. Clients fetch files from `GET /api/content/{file}`, streamed from disk with Range and ETag = fingerprint.
+- **Presets.** Settings → *Room presets* (`GET/PUT /admin/api/v1/presets`, stored in `<data-dir>/presets.json`). Each preset has an optional library IWAD, an ordered list of content files, the maps players may pick (empty = any), a default map, an optional gameplay mod and a default skill. *Rooms must use a preset* makes `POST /api/rooms` without `preset` fail with 400.
+- **Lobby.** "Open a pit" lists presets from `GET /api/presets` (title, blurb, files, download size) with a map picker. Room cards show the preset.
+- **Protocol.** `welcome.room` gains `content: [RoomContentRef]`, `iwad: RoomContentRef?` and `preset`, all omitted when empty, so old clients keep working on rooms without a preset. room-web downloads and fingerprint-checks the files and mounts them after the IWAD, before the gameplay mod and packs. A preset IWAD replaces the local base game for that room.
+- The headless verifier is skipped for preset rooms with content: it only mounts the node IWAD and the mod.
+
 ## 8. Audio and video
 
 Replace the raw-PCM WebSocket voice with WebRTC through a Selective Forwarding Unit (SFU): Opus audio and VP8 video, encrypted with DTLS-SRTP, forwarded (never decoded) by the server, with moderation enforced server-side.

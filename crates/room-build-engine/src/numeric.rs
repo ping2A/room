@@ -130,9 +130,67 @@ pub fn nsqrtasm(mut param: u32) -> i32 {
 ///
 /// Draft from `docs/build-engine-primitives/00-numeric.md` — verify vs DEMO traces.
 #[inline]
+#[track_caller]
 pub fn krand_step(randomseed: &mut i32) -> i32 {
+    krand_log::record(*randomseed);
     *randomseed = randomseed.wrapping_mul(2_758_4621).wrapping_add(1);
     ((*randomseed as u32) >> 16) as i32
+}
+
+/// Opt-in per-call `krand` log for sync debugging: the seed *before* each
+/// call and the Rust call site (`#[track_caller]`). Compare with a reference
+/// engine that logs the seed before each `krand()` (`docs/duke-trace-howto.md`).
+pub mod krand_log {
+    use std::cell::RefCell;
+    use std::panic::Location;
+
+    type Entry = (i32, &'static Location<'static>);
+    thread_local! {
+        static LOG: RefCell<Option<Vec<Entry>>> = const { RefCell::new(None) };
+    }
+
+    /// Start recording on this thread (clears an earlier log).
+    pub fn start() {
+        LOG.with(|l| *l.borrow_mut() = Some(Vec::new()));
+    }
+
+    /// Stop recording and return the calls since [`start`].
+    #[must_use]
+    pub fn take() -> Vec<(i32, String)> {
+        LOG.with(|l| {
+            l.borrow_mut()
+                .take()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(s, loc)| (s, format!("{}:{}", loc.file(), loc.line())))
+                .collect()
+        })
+    }
+
+    /// Calls recorded so far (keeps recording).
+    #[must_use]
+    pub fn drain() -> Vec<(i32, String)> {
+        LOG.with(|l| {
+            l.borrow_mut()
+                .as_mut()
+                .map(|v| {
+                    v.drain(..)
+                        .map(|(s, loc)| (s, format!("{}:{}", loc.file(), loc.line())))
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+    }
+
+    #[track_caller]
+    pub(super) fn record(seed: i32) {
+        let at = Location::caller();
+        LOG.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push((seed, at));
+            }
+        });
+    }
 }
 
 /// Inverse of [`krand_step`]'s seed update (`seed = seed*27584621+1`).

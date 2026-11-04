@@ -467,6 +467,8 @@ pub struct World {
     pub screen_fade: ScreenFade,
     /// ACS `SetFont` current font name (HUD / print bootstrap).
     pub acs_font: String,
+    /// Live ACS `HudMessage`s (GZDoom status-bar message list).
+    pub hud_messages: Vec<crate::hud_msg::AcsHudMessage>,
     /// Decal events produced this tic (drained by the renderer / shell).
     pub decal_events: Vec<SimDecalEvent>,
     /// ACS `SpawnParticle` events this tic (drained by the shell / renderer).
@@ -1552,6 +1554,7 @@ impl World {
             music_volume: 1.0,
             screen_fade: ScreenFade::default(),
             acs_font: String::new(),
+            hud_messages: Vec::new(),
             decal_events: Vec::new(),
             particle_events: Vec::new(),
             fx_events: Vec::new(),
@@ -5305,6 +5308,7 @@ impl World {
             self.messages.drain(..excess);
         }
         self.screen_fade.tick();
+        self.tick_hud_messages();
         let now = self.level.maptime;
         self.mod_hud.tick_tweens(now);
         {
@@ -5476,7 +5480,12 @@ impl World {
         self.psprite_state = saved.1;
     }
 
-    fn set_state_chain(&mut self, id: ActorId, state: Option<room_core::StateId>, call_action: bool) {
+    fn set_state_chain(
+        &mut self,
+        id: ActorId,
+        state: Option<room_core::StateId>,
+        call_action: bool,
+    ) {
         const MAX_STATE_CYCLE: u32 = 1000;
         let mut next = state;
         let mut call = call_action;

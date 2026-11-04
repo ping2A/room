@@ -120,6 +120,21 @@ pub struct AcsModule {
     pub map_arrays: Vec<AcsMapArray>,
     /// `MEXP` exported map-variable / array names (for library linking).
     pub map_exports: Vec<String>,
+    /// Module name (library lump name, or the map name for `BEHAVIOR`).
+    pub name: String,
+    /// Offset added to this module's `SNAM` script numbers so named scripts stay
+    /// unique across modules (GZDoom numbers them by global name).
+    pub named_base: i32,
+    /// `MIMP` imported map variables: (local var number, exported name).
+    pub map_imports: Vec<(u32, String)>,
+    /// `AIMP` imported map arrays: (local var number, expected size, exported name).
+    pub array_imports: Vec<(u32, u32, String)>,
+    /// `MSTR` map variables initialised with strings.
+    pub mstr_vars: Vec<u32>,
+    /// `ASTR` map variables whose arrays hold strings.
+    pub astr_vars: Vec<u32>,
+    /// `ATAG` per-element tags (var number, tags: 0 int, 1 string, 2 function).
+    pub atags: Vec<(u32, Vec<u8>)>,
 }
 
 impl AcsModule {
@@ -135,7 +150,23 @@ impl AcsModule {
         self.script_names
             .iter()
             .position(|n| n.eq_ignore_ascii_case(name))
-            .map(|i| -(i as i32 + 1))
+            .map(|i| -(self.named_base + i as i32 + 1))
+    }
+
+    /// Index of exported map variable `name` (`MEXP`; GZDoom `FindMapVarName`).
+    #[must_use]
+    pub fn find_map_var_name(&self, name: &str) -> Option<usize> {
+        self.map_exports
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(name))
+    }
+
+    /// Index of function `name` (`FNAM`; GZDoom `FindFunctionName`).
+    #[must_use]
+    pub fn find_function_name(&self, name: &str) -> Option<usize> {
+        self.function_names
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(name))
     }
 
     /// Read a little-endian `u32` at `pc`, or `None` if OOB.
@@ -247,6 +278,89 @@ impl AcsModule {
     }
 }
 
+/// GZDoom `UnescapeStringTable`: run `strbin` on every string in place (strings
+/// only shrink). ACC keeps `\\n`, `\\c` (text colour) etc. as written.
+fn unescape_strings(data: &mut [u8], offsets: &[u32]) {
+    for &off in offsets {
+        let start = off as usize;
+        if start < data.len() {
+            strbin(&mut data[start..]);
+        }
+    }
+}
+
+/// GZDoom `strbin`: decode C-style escapes of the NUL-terminated string at the
+/// start of `buf`, writing the result (and its NUL) back over it.
+pub(crate) fn strbin(buf: &mut [u8]) {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let mut w = 0;
+    let mut r = 0;
+    while r < end {
+        let c = buf[r];
+        r += 1;
+        if c != b'\\' {
+            buf[w] = c;
+            w += 1;
+            continue;
+        }
+        if r >= end {
+            break;
+        }
+        let e = buf[r];
+        let out = match e {
+            b'a' => Some(7),
+            b'b' => Some(8),
+            b'c' => Some(0x1c), // TEXTCOLOR_ESCAPE
+            b'f' => Some(12),
+            b'n' => Some(b'\n'),
+            b't' => Some(b'\t'),
+            b'r' => Some(b'\r'),
+            b'v' => Some(11),
+            b'?' => Some(b'?'),
+            b'\n' => None,
+            b'x' | b'X' => {
+                let mut v: u8 = 0;
+                for _ in 0..2 {
+                    let Some(&d) = buf.get(r + 1).filter(|_| r + 1 < end) else {
+                        break;
+                    };
+                    let dv = match d {
+                        b'0'..=b'9' => d - b'0',
+                        b'a'..=b'f' => 10 + d - b'a',
+                        b'A'..=b'F' => 10 + d - b'A',
+                        _ => break,
+                    };
+                    v = v.wrapping_shl(4).wrapping_add(dv);
+                    r += 1;
+                }
+                Some(v)
+            }
+            b'0'..=b'7' => {
+                let mut v = e - b'0';
+                for _ in 0..2 {
+                    match buf.get(r + 1).filter(|_| r + 1 < end) {
+                        Some(&d @ b'0'..=b'7') => {
+                            v = v.wrapping_shl(3).wrapping_add(d - b'0');
+                            r += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                Some(v)
+            }
+            other => Some(other),
+        };
+        if let Some(b) = out {
+            buf[w] = b;
+            w += 1;
+        }
+        r += 1;
+    }
+    if w < buf.len() {
+        buf[w] = 0;
+    }
+}
+
 /// Parse a `BEHAVIOR` lump (ACS0, ACSE, ACSe, or hybrid ACS0+chunks).
 pub fn load_behavior(bytes: &[u8]) -> Result<AcsModule, AcsError> {
     if bytes.len() < 32 {
@@ -309,6 +423,7 @@ fn parse_chunks(
     let mut scripts = parse_sptr(&data, chunks_off, data_end, hybrid_sptr)?;
     apply_sflg_svct(&mut scripts, &data, chunks_off, data_end);
     let string_offsets = parse_strl(&data, chunks_off, data_end)?;
+    unescape_strings(&mut data, &string_offsets);
     let libraries = parse_load_chunk(&data, chunks_off, data_end);
     let script_names = parse_snam_chunk(&data, chunks_off, data_end);
     let mut functions = parse_func_chunk(&data, chunks_off, data_end);
@@ -324,6 +439,11 @@ fn parse_chunks(
         &map_var_defaults,
     );
     let map_exports = parse_mexp_chunk(&data, chunks_off, data_end);
+    let map_imports = parse_mimp_chunk(&data, chunks_off, data_end);
+    let array_imports = parse_aimp_chunk(&data, chunks_off, data_end);
+    let mstr_vars = parse_u32_list_chunk(&data, chunks_off, data_end, b"MSTR");
+    let astr_vars = parse_u32_list_chunk(&data, chunks_off, data_end, b"ASTR");
+    let atags = parse_atag_chunks(&data, chunks_off, data_end);
     Ok(AcsModule {
         data,
         format,
@@ -336,6 +456,13 @@ fn parse_chunks(
         map_var_defaults,
         map_arrays,
         map_exports,
+        name: String::new(),
+        named_base: 0,
+        map_imports,
+        array_imports,
+        mstr_vars,
+        astr_vars,
+        atags,
     })
 }
 
@@ -575,8 +702,10 @@ fn parse_acs0(bytes: &[u8], dir_off: usize) -> Result<AcsModule, AcsError> {
         string_offsets.push(read_u32(bytes, cursor)?);
         cursor += 4;
     }
+    let mut data = bytes.to_vec();
+    unescape_strings(&mut data, &string_offsets);
     Ok(AcsModule {
-        data: bytes.to_vec(),
+        data,
         format: AcsFormat::Acs0,
         scripts,
         string_offsets,
@@ -587,6 +716,13 @@ fn parse_acs0(bytes: &[u8], dir_off: usize) -> Result<AcsModule, AcsError> {
         map_var_defaults: [0; 128],
         map_arrays: Vec::new(),
         map_exports: Vec::new(),
+        name: String::new(),
+        named_base: 0,
+        map_imports: Vec::new(),
+        array_imports: Vec::new(),
+        mstr_vars: Vec::new(),
+        astr_vars: Vec::new(),
+        atags: Vec::new(),
     })
 }
 
@@ -841,7 +977,8 @@ fn apply_astr_atag(
     }
 }
 
-/// `MEXP` — exported map variable names (same packed layout as `SNAM`/`FNAM`).
+/// `MEXP` — exported map variable names, indexed by map variable number
+/// (count + offsets like `FNAM`; GZDoom `FindStringInChunk`).
 fn parse_mexp_chunk(data: &[u8], chunks_off: usize, data_end: usize) -> Vec<String> {
     let Some(off) = find_chunk(data, chunks_off, data_end, b"MEXP") else {
         return Vec::new();
@@ -850,7 +987,124 @@ fn parse_mexp_chunk(data: &[u8], chunks_off: usize, data_end: usize) -> Vec<Stri
         u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]) as usize;
     let start = off + 8;
     let end = start.saturating_add(size).min(data_end);
-    parse_nul_strings(&data[start..end])
+    parse_count_offset_names(&data[start..end]).unwrap_or_default()
+}
+
+/// `count` + `count` offsets (from payload start) to NUL-terminated names.
+/// Empty names keep their slot: the index is the variable / function number.
+fn parse_count_offset_names(payload: &[u8]) -> Option<Vec<String>> {
+    let count = u32::from_le_bytes(payload.get(0..4)?.try_into().ok()?) as usize;
+    if count > 65_536 || payload.len() < 4 + count * 4 {
+        return None;
+    }
+    let mut names = Vec::with_capacity(count);
+    for i in 0..count {
+        let base = 4 + i * 4;
+        let ofs = u32::from_le_bytes(payload[base..base + 4].try_into().ok()?) as usize;
+        let rest = payload.get(ofs..).unwrap_or(&[]);
+        let len = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+        names.push(String::from_utf8_lossy(&rest[..len]).into_owned());
+    }
+    Some(names)
+}
+
+/// Payload of chunk `id`, if present.
+fn chunk_payload<'a>(
+    data: &'a [u8],
+    chunks_off: usize,
+    data_end: usize,
+    id: &[u8; 4],
+) -> Option<&'a [u8]> {
+    let off = find_chunk(data, chunks_off, data_end, id)?;
+    let size =
+        u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]) as usize;
+    let start = off + 8;
+    data.get(start..start.saturating_add(size).min(data_end))
+}
+
+/// NUL-terminated string at the start of `bytes`, and the bytes consumed (incl. NUL).
+fn take_cstr(bytes: &[u8]) -> (String, usize) {
+    let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    (
+        String::from_utf8_lossy(&bytes[..len]).into_owned(),
+        (len + 1).min(bytes.len()),
+    )
+}
+
+/// `MIMP` — `[u32 var][name\0]…` imported map variables.
+fn parse_mimp_chunk(data: &[u8], chunks_off: usize, data_end: usize) -> Vec<(u32, String)> {
+    let Some(p) = chunk_payload(data, chunks_off, data_end, b"MIMP") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 4 <= p.len() {
+        let var = u32::from_le_bytes([p[i], p[i + 1], p[i + 2], p[i + 3]]);
+        i += 4;
+        let (name, used) = take_cstr(&p[i..]);
+        i += used.max(1);
+        out.push((var, name));
+    }
+    out
+}
+
+/// `AIMP` — `u32 count` then `[u32 var][u32 size][name\0]…` imported arrays.
+fn parse_aimp_chunk(data: &[u8], chunks_off: usize, data_end: usize) -> Vec<(u32, u32, String)> {
+    let Some(p) = chunk_payload(data, chunks_off, data_end, b"AIMP") else {
+        return Vec::new();
+    };
+    let Some(count) = p
+        .get(0..4)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut i = 4;
+    for _ in 0..count.min(4096) {
+        if i + 8 > p.len() {
+            break;
+        }
+        let var = u32::from_le_bytes([p[i], p[i + 1], p[i + 2], p[i + 3]]);
+        let size = u32::from_le_bytes([p[i + 4], p[i + 5], p[i + 6], p[i + 7]]);
+        i += 8;
+        let (name, used) = take_cstr(&p[i..]);
+        i += used.max(1);
+        out.push((var, size, name));
+    }
+    out
+}
+
+/// `MSTR` / `ASTR` — a plain list of `u32` map-variable numbers.
+fn parse_u32_list_chunk(data: &[u8], chunks_off: usize, data_end: usize, id: &[u8; 4]) -> Vec<u32> {
+    chunk_payload(data, chunks_off, data_end, id)
+        .map(|p| {
+            p.chunks_exact(4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Every `ATAG` chunk: version byte (0), `u32` map var, then one tag byte per element.
+fn parse_atag_chunks(data: &[u8], chunks_off: usize, data_end: usize) -> Vec<(u32, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut off = chunks_off;
+    while off + 8 <= data_end {
+        let size = u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]])
+            as usize;
+        let payload_end = off.saturating_add(8).saturating_add(size);
+        if payload_end > data_end {
+            break;
+        }
+        if &data[off..off + 4] == b"ATAG" && size >= 5 && data[off + 8] == 0 {
+            let p = &data[off + 8..payload_end];
+            let var = u32::from_le_bytes([p[1], p[2], p[3], p[4]]);
+            out.push((var, p[5..].to_vec()));
+        }
+        off = payload_end;
+    }
+    out
 }
 
 /// `SNAM` chunk: NUL-terminated script names (index 0 → script −1).
@@ -937,6 +1191,17 @@ fn read_u32(bytes: &[u8], off: usize) -> Result<u32, AcsError> {
 
 fn read_i32(bytes: &[u8], off: usize) -> Result<i32, AcsError> {
     Ok(read_u32(bytes, off)? as i32)
+}
+
+#[cfg(test)]
+mod strbin_tests {
+    #[test]
+    fn strbin_decodes_acc_escapes() {
+        let mut b = b"\\n\\n-Friendly-\\cDok\\x41\\101\\\\\0tail".to_vec();
+        super::strbin(&mut b);
+        let end = b.iter().position(|&c| c == 0).unwrap();
+        assert_eq!(&b[..end], b"\n\n-Friendly-\x1cDokAA\\");
+    }
 }
 
 #[cfg(test)]

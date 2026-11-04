@@ -120,14 +120,9 @@ pub fn parse_png(data: &[u8]) -> Result<Image, FormatError> {
                 } else {
                     (0, 0, 0)
                 };
-                // Honour tRNS. With no tRNS, index 0 stays a hole (ZDoom sprites).
-                let a = if !trns.is_empty() {
-                    trns.get(i).copied().unwrap_or(255)
-                } else if idx == 0 {
-                    0
-                } else {
-                    255
-                };
+                // Honour tRNS. GZDoom `FPNGTexture`: without tRNS a paletted
+                // PNG is fully opaque (index 0 is an ordinary colour).
+                let a = trns.get(i).copied().unwrap_or(255);
                 if a != 255 {
                     has_translucency = true;
                 }
@@ -167,15 +162,24 @@ pub fn parse_png(data: &[u8]) -> Result<Image, FormatError> {
             })
         }
         png::ColorType::Grayscale => {
+            // tRNS on greyscale: one grey level is transparent.
+            let key = info.trns.as_deref().and_then(|t| match t.len() {
+                1 => Some(u16::from(t[0])),
+                n if n >= 2 => Some(u16::from_be_bytes([t[0], t[1]])),
+                _ => None,
+            });
             let gray = buf;
             let mut pixels = Vec::with_capacity(gray.len() * 4);
+            let mut keyed = false;
             for &g in gray {
-                pixels.extend_from_slice(&[g, g, g, 255]);
+                let hole = key == Some(u16::from(g));
+                keyed |= hole;
+                pixels.extend_from_slice(&[g, g, g, if hole { 0 } else { 255 }]);
             }
             Ok(Image {
                 left_offset,
                 top_offset,
-                has_translucency: false,
+                has_translucency: keyed,
                 pixels: ImagePixels::Rgba8(RgbaImage {
                     width,
                     height,
@@ -207,15 +211,37 @@ pub fn parse_png(data: &[u8]) -> Result<Image, FormatError> {
             })
         }
         png::ColorType::Rgb => {
+            // GZDoom `FPNGTexture`: an RGB tRNS is a colour key (`NonPaletteTrans`).
+            // The png crate keeps 16-bit samples as BE pairs and narrows an
+            // 8-bit image's key to one byte per channel.
+            let key = info.trns.as_deref().and_then(|t| match t.len() {
+                3 => Some([u16::from(t[0]), u16::from(t[1]), u16::from(t[2])]),
+                n if n >= 6 => Some([
+                    u16::from_be_bytes([t[0], t[1]]),
+                    u16::from_be_bytes([t[2], t[3]]),
+                    u16::from_be_bytes([t[4], t[5]]),
+                ]),
+                _ => None,
+            });
             let src = buf;
             let mut pixels = Vec::with_capacity(src.len() / 3 * 4);
+            let mut keyed = false;
             for chunk in src.chunks_exact(3) {
-                pixels.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+                let hole = key.is_some_and(|k| {
+                    k == [
+                        u16::from(chunk[0]),
+                        u16::from(chunk[1]),
+                        u16::from(chunk[2]),
+                    ]
+                });
+                keyed |= hole;
+                let a = if hole { 0 } else { 255 };
+                pixels.extend_from_slice(&[chunk[0], chunk[1], chunk[2], a]);
             }
             Ok(Image {
                 left_offset,
                 top_offset,
-                has_translucency: false,
+                has_translucency: keyed,
                 pixels: ImagePixels::Rgba8(RgbaImage {
                     width,
                     height,
@@ -361,6 +387,44 @@ mod tests {
         assert_eq!(&px[4..8], &[0, 255, 0, 255]);
         assert_eq!(px[11], 0, "index 0 is transparent via tRNS");
         assert_eq!(&px[12..16], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn rgb_trns_is_a_colour_key() {
+        // Brutal Doom's flares (LENBA0): RGB with tRNS = black; black is a hole.
+        let png = encode(
+            2,
+            1,
+            png::ColorType::Rgb,
+            png::BitDepth::Eight,
+            None,
+            Some(vec![0, 0, 0, 0, 0, 0]),
+            &[0, 0, 0, 10, 100, 200],
+        );
+        let img = parse_png(&png).unwrap();
+        let px = rgba(&img);
+        assert_eq!(px[3], 0);
+        assert_eq!(&px[4..8], &[10, 100, 200, 255]);
+        assert!(img.has_translucency);
+    }
+
+    #[test]
+    fn indexed_png_without_trns_is_opaque() {
+        // GZDoom: no tRNS → no transparency, index 0 included (Brutal Doom's
+        // all-black BLASCR fade screen is index 0 everywhere).
+        let png = encode(
+            2,
+            1,
+            png::ColorType::Indexed,
+            png::BitDepth::Eight,
+            Some(vec![0, 0, 0, 255, 255, 255]),
+            None,
+            &[0, 1],
+        );
+        let img = parse_png(&png).unwrap();
+        let px = rgba(&img);
+        assert_eq!(&px[0..4], &[0, 0, 0, 255]);
+        assert_eq!(&px[4..8], &[255, 255, 255, 255]);
     }
 
     #[test]

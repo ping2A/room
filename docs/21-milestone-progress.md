@@ -46,8 +46,8 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 | **D2** | Duke engine primitives | `done` | 100% | XOR inside + Chocolate clipmove (23 wall-only; `initspritelists`) |
 | **D3** | Duke world + static view | `done` | 100% | Soft path + CLI FreeFly; interactive desktop/web shell deferred |
 | **D4** | Duke CON compiler | `done` | 100% | Atomic script SHA = Chocolate; runtime opcode corpus → D5 VM |
-| **D5** | Duke core sim loop | `in_progress` | 99% | DEMO1 0–134 movement; weapons at 135+ (→D6) |
-| **D6** | Duke weapons + damage | `in_progress` | 99% | DEMO1 0–1050; frontier **tic1051** |
+| **D5** | Duke core sim loop | `in_progress` | 15% | **Real** frontier: DEMO1 **tic 0**. Map load now matches the vanilla seed (13 `spawn` rolls). Next: faithful CON VM (`parse()` with world access). The old 0–1050 relied on `// TEMP` fix-ups (now off) |
+| **D6** | Duke weapons + damage | `in_progress` | 5% | Blocked on D5. Legacy fix-up path stops at tic 788 (`players[0].horiz`) |
 | **D7** | Duke sectors + effectors | `not_started` | 0% | — |
 | **D8** | Duke audio + front end | `not_started` | 0% | — |
 | **D9** | Duke saves + demos | `not_started` | 0% | — |
@@ -166,7 +166,7 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 **Priority override (2026-10-12):** M7 + M10–M13 done. Active **M14** (1.0 hardening).
 **M8** when Heretic/Hexen IWADs available; M9 remains deferred.
 **Server track:** `docs/22-room-server.md` S1–S5 (parallel to M14).
-**Duke track:** **D1–D4** done. **D5** movement ceiling 0–134. **D6** DEMO1 through **1050** (frontier **tic1051**). Spec: `docs/25`. 5m Duke loop armed.
+**Duke track:** **D1–D4** done. **D5/D6 reset to honest numbers (2026-11-03).** The native sim alone diverges at DEMO1 **tic 0**. The earlier "bit-exact to 1050" came from 1,750 `// TEMP` per-tic snaps / RNG pads, now behind `DukeSession::trace_fixups` (off by default). Work from per-call krand diffs (`docs/duke-trace-howto.md` § krand log). Spec: `docs/25`.
 **Face-swap track:** **F0–F7** done (`docs/26`).
 **Survival Director track:** **SV0**–**SV9** + **MH0**–**MH4** done (`docs/27`). **MH5** optional / deferred.
 **Battle Royale track:** **BR0**–**BR9** + **BE1**–**BE12** + **S-BR1** / **S-BR2** (MVP) / **S-BR4** done (`docs/28` §8–§10). Deferrals: **S-BR2** OpenSkill + weekly reset.
@@ -179,6 +179,17 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 
 ### Log
 
+- `2026-11-03` — **room-server: content library + room presets; PK3 `maps/*.wad` load by name**.
+  - **Server.** New `content.rs`: admin-uploaded PK3 / WAD / IWAD library and presets (IWAD + ordered content + allowed maps + mod + skill, optional "must use a preset"). Admin Settings panels, `GET /api/presets`, `GET /api/content/{file}` (streamed, Range). `welcome.room.{content, iwad, preset}`. The lobby "Open a pit" has a preset + map picker. Tested end to end with a local server: Brutal Doom pk3 (152 MB) + doom2.wad uploaded, preset saved, rooms on BIKERACE created, MAP02 refused, "preset required" enforced. Details in `docs/22` §7.x.
+  - **Client.** room-web downloads and fingerprint-checks the preset files, mounts them before the mod and packs, and swaps in the preset IWAD. This is type-checked only: the wasm build needs `play-web.sh` on the Mac.
+  - **`play-doom.sh --file brutal22test6.pk3 --map BIKERACE` failed.** BD keeps its maps as `maps/bikerace.wad` inside the PK3, and only the web editor mounted those. `VfsBuilder` now mounts every `maps/NAME.wad` of an archive right after it, under the file's name as GZDoom does (`nested_map_wads`, on by default). The editor turns it off because it mounts them itself. Test `pk3_map_wads_mount_under_the_file_name`; BIKERACE loads headless with doom2 + BD.
+- `2026-11-03` — **Duke D5/D6: trace fix-ups off by default; honest frontier; per-call krand diffing**.
+  - **Finding.** `room-duke/src/session.rs` (47k lines) held **1,750** `// TEMP` blocks. They hard-code DEMO1 tic numbers to overwrite sprite x/y/z/picnum and rewind or pad the RNG (`DEMO1_PAD_PRE` = 7 extra krands every tic by default), so the reference matched. They weren't limited to DEMO1: any Duke game was corrupted at those tics. A few more lived in free functions (`moveplayers`, `transports`, `explosions`, `shoot`, `con/vm`).
+  - **Gated.** All of them now sit behind `DukeSession::trace_fixups` / `room_duke::fixups::on()`, **off by default**. Only the legacy per-tic DEMO1 tests turn them on (`align_rng_pre_tic0`). The legacy path stops at tic 788 (`players[0].horiz`), not 1051.
+  - **Honest measure.** `demo_sync::demo1_frontier_real` + `examples/duke_frontier.rs` (`real` / `legacy` / `krand` / `sprites` / `seed` / `pics`). Real frontier: **tic 0**.
+  - **Per-call RNG diff.** `room_build_engine::numeric::krand_log` (`#[track_caller]`) vs a Chocolate `krand()` log (`third_party/chocolate-duke3d-trace/apply_krand_log.py`, native i386 build `build_i386_native.sh`, no Docker; reproduces `DEMO1.trace` byte for byte). `duke_frontier krand DEMO1 <log>` prints the first call whose seed differs, with both call sites.
+  - **First real fixes.** (1) `spawn::spawn_load_rolls`: the 13 `spawn(-1,i)` TRANDs at map load (cans/barrels/eggs `cstat = 257|(TRAND&4)`, blood splat repeats, money/trash/drip/rat/bullethole/splash rules). The load seed now equals Chocolate's without adopting it (test `demo1_load_seed_matches_chocolate_without_fixups`). (2) `spawn` header `owner = i` for every map sprite. (3) FIRE/FIRE2 run their CON again (no C case in Chocolate `moveactors`). Tic 0 now has the right number of FIRE rolls in the right place. It still differs because the VM skips unknown opcodes one word at a time (`cstator`, `sleeptime`, `ifspawnedby` context …).
+  - **Next (D5 proper).** Port `gamedef.c` `parse()` faithfully, with mutable world access instead of the snapshot + `pending_*` env. Then step tic by tic with the krand diff. Delete the TEMP blocks once the real frontier passes them.
 - `2026-11-03` — **Rust guest mods: `export_mod!` unresolved `room_script_abi`**. The 2026-11-01 `room_dispatch` arm named `room_script_abi::ActionPayload`, but the macro expands in the guest crate, which only depends on `room-script-sdk` (`mods/doom1-survival` broke). `room-script-sdk` now re-exports `ActionPayload`, and the macro uses `$crate::ActionPayload`. The survival mod builds, and the sdk tests pass.
 - `2026-11-03` — **AssemblyScript compiler crash (`./room start`)**. The 2026-11-01 `as/room.ts` additions declared a second `export namespace Prop` (class-property ids). It clashed with the existing actor `Prop` (`HEALTH` 0 vs 1, `DAMAGE` 8 vs 39). asc 0.28.20 crashes on that ("Whoops… no stack trace") instead of reporting it, for every mod. The new ids went into `ClassProp` and the new flags into `ClassFlag` (the values agree wherever the names overlap), and the duplicate `Prop` / `Flag` were removed. `mods/doom1-bounty` compiles again, byte-identical to the committed `bounty.wasm`.
 - `2026-11-03` — **Editor: ZScript from uploaded mods**.

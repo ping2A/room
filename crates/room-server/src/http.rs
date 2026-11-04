@@ -208,6 +208,8 @@ pub fn public_router(state: AppState) -> Router {
                 .route("/api/rooms/{room_id}/join", post(join_room))
                 .route("/api/mods", get(list_mods))
                 .route("/api/mods/{file}", get(get_mod_file))
+                .route("/api/presets", get(list_presets))
+                .route("/api/content/{file}", get(get_content_file))
                 .route("/ws/{room_id}", get(ws_legacy))
                 .route("/v2/rooms/{room_id}/ws", get(ws_v2))
                 .merge(lobby_routes()),
@@ -242,6 +244,8 @@ pub fn router(state: AppState) -> Router {
                 .route("/api/rooms/{room_id}/join", post(join_room))
                 .route("/api/mods", get(list_mods))
                 .route("/api/mods/{file}", get(get_mod_file))
+                .route("/api/presets", get(list_presets))
+                .route("/api/content/{file}", get(get_content_file))
                 .route("/ws/{room_id}", get(ws_legacy))
                 .route("/v2/rooms/{room_id}/ws", get(ws_v2))
                 .merge(lobby_routes())
@@ -359,21 +363,61 @@ fn warn_insecure_defaults(cfg: &crate::config::ServerConfig, auth: &AuthStore) {
 async fn create_room(
     State(state): State<AppState>,
     Json(req): Json<CreateRoomRequest>,
-) -> Result<Json<CreateRoomResponse>, StatusCode> {
-    state
-        .registry
-        .create_room(req)
-        .map(Json)
-        .map_err(|e| match e {
+) -> Result<Json<CreateRoomResponse>, (StatusCode, String)> {
+    state.registry.create_room(req).map(Json).map_err(|e| {
+        let code = match e {
             RegistryError::Full | RegistryError::Draining | RegistryError::VerifierFull => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
-            RegistryError::UnknownMod | RegistryError::UnknownGame | RegistryError::UnknownPack => {
-                StatusCode::BAD_REQUEST
-            }
+            RegistryError::UnknownMod
+            | RegistryError::UnknownGame
+            | RegistryError::UnknownPack
+            | RegistryError::Preset(_)
+            | RegistryError::PresetRequired => StatusCode::BAD_REQUEST,
             RegistryError::ModNotAllowed => StatusCode::FORBIDDEN,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
-        })
+        };
+        (code, e.to_string())
+    })
+}
+
+/// `GET /api/presets` — admin-defined room presets (IWAD + content + maps).
+async fn list_presets(State(state): State<AppState>) -> impl IntoResponse {
+    (
+        [(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
+        Json(state.registry.config().content.public()),
+    )
+}
+
+/// `GET /api/content/{file}` — a library file, streamed from disk (Range,
+/// conditional requests). Public and CORS-open like mod files.
+async fn get_content_file(
+    State(state): State<AppState>,
+    Path(file): Path<String>,
+    req: axum::extract::Request,
+) -> Result<axum::response::Response, StatusCode> {
+    let content = &state.registry.config().content;
+    let entry = content.get(&file).ok_or(StatusCode::NOT_FOUND)?;
+    let path = content.path_of(&file).ok_or(StatusCode::NOT_FOUND)?;
+    let mut res = ServeFile::new(path)
+        .try_call(req)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map(axum::body::Body::new);
+    let h = res.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/octet-stream"),
+    );
+    h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, header::HeaderValue::from_static("*"));
+    h.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("public, max-age=86400"),
+    );
+    if let Ok(v) = header::HeaderValue::from_str(&format!("\"{}\"", entry.fingerprint)) {
+        h.insert(header::ETAG, v);
+    }
+    Ok(res)
 }
 
 /// `GET /api/mods` — mods rooms can be created with.

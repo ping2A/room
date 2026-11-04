@@ -398,6 +398,12 @@ impl AcsHost for WorldAcsHost<'_> {
         }
         self.world.level.next_map_override = Some(map.to_ascii_uppercase());
         self.world.level.exiting = true;
+        if !cfg!(test) {
+            eprintln!(
+                "room: level exit: ACS ChangeLevel (tic {})",
+                self.world.level.time
+            );
+        }
         self.world.level.secret_exit = false;
     }
 
@@ -1108,6 +1114,29 @@ impl AcsHost for WorldAcsHost<'_> {
         if !text.is_empty() {
             self.world.push_message(text);
         }
+    }
+
+    fn hud_message_ex(&mut self, msg: room_acs::HudMessageArgs) {
+        // GZDoom: a missile activator shows the message to its shooter; a
+        // non-bold message with a player activator is only for that player.
+        let seat = if msg.bold {
+            None
+        } else {
+            unpack_actor(msg.activator).and_then(|id| {
+                let a = self.world.actors.get(id)?;
+                let screen = if (a.flags & crate::class::FLAG_MISSILE) != 0 {
+                    a.target.unwrap_or(id)
+                } else {
+                    id
+                };
+                self.world
+                    .players
+                    .iter()
+                    .position(|p| p.as_ref().is_some_and(|p| p.mo == Some(screen)))
+            })
+        };
+        let hud = crate::hud_msg::AcsHudMessage::from_args(&msg, seat);
+        self.world.attach_hud_message(hud);
     }
 
     fn clear_line_special(&mut self, line: i32) {
@@ -3831,9 +3860,15 @@ pub(crate) fn init_acs(world: &mut World) {
     let Some(bytes) = world.map.behavior.clone() else {
         return;
     };
+    // GZDoom ignores a BEHAVIOR lump too small to hold an ACS header: Hexen-format
+    // maps whose scripts come from LOADACS libraries ship it empty.
+    if bytes.len() < 32 {
+        return;
+    }
     match room_acs::load_behavior(&bytes) {
         Ok(module) => {
-            world.acs.push_module(module);
+            let name = world.map.name.clone();
+            world.acs.push_module_named(module, &name);
             resolve_actor_arg0_str(world);
             resolve_line_arg0_str(world);
             start_open_on(world);
@@ -3891,6 +3926,47 @@ fn resolve_line_arg0_str(world: &mut World) {
         args[0] = n;
         world.line_args.insert(i as u32, args);
     }
+}
+
+/// Attach library `name` from `pool` and, depth-first, the libraries its `LOAD`
+/// chunk names (GZDoom `FBehaviorContainer::LoadModule`). Already-attached
+/// modules are skipped. Returns false if `name` is not in `pool`.
+pub fn push_acs_library_tree(world: &mut World, name: &str, pool: &[(String, Vec<u8>)]) -> bool {
+    if world
+        .acs
+        .modules
+        .iter()
+        .any(|m| m.name.eq_ignore_ascii_case(name))
+    {
+        return true;
+    }
+    let Some((_, bytes)) = pool.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) else {
+        world.push_message(format!("Could not find ACS library {name}."));
+        return false;
+    };
+    let module = match room_acs::load_behavior(bytes) {
+        Ok(m) => m,
+        Err(e) => {
+            world.push_message(format!("ACS library {name} load failed: {e}"));
+            return false;
+        }
+    };
+    let deps = module.libraries.clone();
+    world.acs.push_module_named(module, name);
+    for dep in deps {
+        let _ = push_acs_library_tree(world, &dep, pool);
+    }
+    true
+}
+
+/// Start OPEN scripts of modules attached after the first `from` (libraries).
+pub fn start_library_open_scripts(world: &mut World, from: usize) {
+    let mut acs = std::mem::take(&mut world.acs);
+    {
+        let mut host = WorldAcsHost { world };
+        room_acs::start_open_scripts_from(&mut acs, &mut host, from);
+    }
+    world.acs = acs;
 }
 
 /// Append an ACS library module (LOADACS / `LOAD` chunk). Does not re-run OPEN.
@@ -4609,6 +4685,13 @@ actor Marker : Actor 3004
             map_var_defaults: [0; 128],
             map_arrays: Vec::new(),
             map_exports: Vec::new(),
+            name: String::new(),
+            named_base: 0,
+            map_imports: Vec::new(),
+            array_imports: Vec::new(),
+            mstr_vars: Vec::new(),
+            astr_vars: Vec::new(),
+            atags: Vec::new(),
         });
         resolve_actor_arg0_str(&mut w);
         let a = w.actors.get(w.find_by_tid(22).unwrap()).unwrap();

@@ -156,10 +156,21 @@ pub struct PublicRoom {
     pub time_limit: u16,
     /// `doom` or `duke3d`.
     pub game: String,
+    /// Preset title (empty = custom room).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub preset: String,
+    /// Total size of the preset files a joiner downloads (bytes).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub download_bytes: u64,
     /// Relative v2 WebSocket path.
     pub ws_v2: String,
     /// Relative legacy WebSocket path.
     pub ws_legacy: String,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
 }
 
 /// `GET /api/rooms` — list public rooms (no auth).
@@ -188,6 +199,14 @@ pub async fn list_public_rooms(
             packs: h.settings.packs.clone(),
             time_limit: h.settings.time_limit,
             game: h.settings.game.clone(),
+            preset: h.settings.preset.clone(),
+            download_bytes: h
+                .settings
+                .iwad
+                .iter()
+                .chain(&h.settings.content)
+                .map(|c| c.size)
+                .sum(),
             ws_v2: format!("/v2/rooms/{id}/ws"),
             ws_legacy: format!("/ws/{id}"),
         });

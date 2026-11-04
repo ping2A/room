@@ -210,7 +210,10 @@ fn mount_with(
 ) -> Result<Vfs, String> {
     let add =
         |b: VfsBuilder, name: &str, data: Bytes| pk3_edit::mount_with_nested(b, name, data, nested);
-    let mut b = mount_embedded_engine(VfsBuilder::new()).map_err(|e| e.to_string())?;
+    // The editor mounts `maps/*.wad` itself (`pk3_edit::map_wads`) so it can
+    // name and edit them; keep the VFS from mounting them a second time.
+    let mut b = mount_embedded_engine(VfsBuilder::new().nested_map_wads(false))
+        .map_err(|e| e.to_string())?;
     b = add(b, &iwad.0, iwad.1.clone())?;
     for (name, data) in pwads {
         b = add(b, name, data.clone())?;

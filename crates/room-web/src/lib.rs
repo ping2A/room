@@ -151,6 +151,7 @@ mod browser {
         static NET_MOD: RefCell<NetModState> = const { RefCell::new(NetModState::Idle) };
         /// Content packs (`welcome.room.packs`), keyed by joined names.
         static NET_PACKS: RefCell<NetPacksState> = const { RefCell::new(NetPacksState::Idle) };
+        static NET_CONTENT: RefCell<NetContentState> = const { RefCell::new(NetContentState::Idle) };
         /// Soft cap on the longest canvas edge (Settings → Resolution). 0 = device max.
         static RENDER_CAP: Cell<u32> = const { Cell::new(0) };
         /// CSS playfield scale vs fitted viewport (Settings → Window size). 1.0 = full.
@@ -162,6 +163,15 @@ mod browser {
         Fetching,
         /// Catalog name + verified bytes.
         Ready(String, Vec<u8>),
+        Failed(String),
+    }
+
+    /// Preset library files (`welcome.room.content` + `iwad`) for a coop room.
+    enum NetContentState {
+        Idle,
+        Fetching(String),
+        /// Key, preset IWAD bytes (if any), files in mount order.
+        Ready(String, Option<Vec<u8>>, Vec<(String, Vec<u8>)>),
         Failed(String),
     }
 
@@ -416,11 +426,14 @@ mod browser {
             spectate,
             game_mod: None,
             packs: Vec::new(),
+            content: Vec::new(),
+            iwad: None,
             time_limit: 0,
             fill_bots: false,
             bot_first_seat: 0,
         };
         NET_MOD.with(|n| *n.borrow_mut() = NetModState::Idle);
+        NET_CONTENT.with(|n| *n.borrow_mut() = NetContentState::Idle);
         let lobby = NetLobby::begin(cfg).map_err(|e| JsValue::from_str(&e))?;
         set_status(&lobby.status());
         hide_boot_overlay();
@@ -726,7 +739,7 @@ mod browser {
     /// PWADs for the room's mod + packs: `Some` once ready (empty = vanilla),
     /// `None` while a download runs.
     fn coop_mod_pwads(state: &Shared) -> Result<Option<NamedPwads>, JsValue> {
-        let (game_mod, packs, ws_url) = {
+        let (game_mod, packs, ws_url, content, preset_iwad) = {
             let s = state.borrow();
             let Mode::Lobby { lobby, .. } = &s.mode else {
                 return Ok(Some(Vec::new()));
@@ -735,8 +748,48 @@ mod browser {
                 lobby.game_mod().cloned(),
                 lobby.packs().to_vec(),
                 lobby.ws_url().to_owned(),
+                lobby.content().to_vec(),
+                lobby.preset_iwad().cloned(),
             )
         };
+        if let Err(e) = kick_coop_content_download(&content, preset_iwad.as_ref(), &ws_url) {
+            set_status(&format!("Download failed: {e}"));
+            set_lobby_html(&format!(
+                "<h2>Download failed</h2><p class=\"err\">{}</p>",
+                html_escape(&e)
+            ));
+            return Err(JsValue::from_str(&e));
+        }
+        let content_key = content_key(&content, preset_iwad.as_ref());
+        let content_ready: Option<(Option<Vec<u8>>, NamedPwads)> = if content_key.is_empty() {
+            Some((None, Vec::new()))
+        } else {
+            NET_CONTENT.with(|n| match &*n.borrow() {
+                NetContentState::Ready(k, iwad, files) if *k == content_key => {
+                    Some((iwad.clone(), files.clone()))
+                }
+                _ => None,
+            })
+        };
+        if let Some(e) = NET_CONTENT.with(|n| match &*n.borrow() {
+            NetContentState::Failed(e) => Some(e.clone()),
+            _ => None,
+        }) {
+            set_status(&format!("Download failed: {e}"));
+            return Err(JsValue::from_str(&e));
+        }
+        let Some((content_iwad, content_pwads)) = content_ready else {
+            return Ok(None);
+        };
+        // The preset's base game replaces the local IWAD for this room.
+        if let Some(bytes) = content_iwad {
+            let mut s = state.borrow_mut();
+            if let Mode::Lobby { iwad, .. } = &mut s.mode {
+                if *iwad != bytes {
+                    *iwad = bytes;
+                }
+            }
+        }
         if let Err(e) = kick_coop_mod_download(game_mod.as_ref(), &ws_url) {
             set_status(&format!("Mod download failed: {e}"));
             set_lobby_html(&format!(
@@ -776,9 +829,12 @@ mod browser {
             })
         };
         match (mod_pwads, pack_pwads) {
-            (Some(mut m), Some(p)) => {
-                m.extend(p);
-                Ok(Some(m))
+            (Some(m), Some(p)) => {
+                // Preset content first (resource mods), then gameplay mod, then packs.
+                let mut all = content_pwads;
+                all.extend(m);
+                all.extend(p);
+                Ok(Some(all))
             }
             _ => {
                 // Surface a failed mod/pack that already finished.
@@ -852,6 +908,110 @@ mod browser {
         Ok(())
     }
 
+    fn content_key(
+        content: &[room_proto::RoomContentRef],
+        iwad: Option<&room_proto::RoomContentRef>,
+    ) -> String {
+        iwad.map(|i| format!("iwad:{}@{}", i.file, i.fingerprint))
+            .into_iter()
+            .chain(content.iter().map(|c| format!("{}@{}", c.file, c.fingerprint)))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// `ws[s]://host/…` → `http[s]://host/api/content/{file}`.
+    fn content_download_url(ws_url: &str, file: &str) -> String {
+        let (scheme, rest) = if let Some(r) = ws_url.strip_prefix("wss://") {
+            ("https", r)
+        } else if let Some(r) = ws_url.strip_prefix("ws://") {
+            ("http", r)
+        } else {
+            return format!("/api/content/{file}");
+        };
+        let host = rest.split('/').next().unwrap_or(rest);
+        format!("{scheme}://{host}/api/content/{file}")
+    }
+
+    /// Download the room preset's IWAD + library files (fingerprint-checked).
+    fn kick_coop_content_download(
+        content: &[room_proto::RoomContentRef],
+        iwad: Option<&room_proto::RoomContentRef>,
+        ws_url: &str,
+    ) -> Result<(), String> {
+        let key = content_key(content, iwad);
+        if key.is_empty() {
+            return Ok(());
+        }
+        let start = NET_CONTENT.with(|n| {
+            let mut n = n.borrow_mut();
+            match &*n {
+                NetContentState::Ready(k, ..) if *k == key => Ok(false),
+                NetContentState::Fetching(k) if *k == key => Ok(false),
+                NetContentState::Failed(e) => Err(e.clone()),
+                _ => {
+                    *n = NetContentState::Fetching(key.clone());
+                    Ok(true)
+                }
+            }
+        })?;
+        if !start {
+            return Ok(());
+        }
+        let total: u64 = iwad.iter().map(|i| i.size).chain(content.iter().map(|c| c.size)).sum();
+        set_lobby_html(&format!(
+            "<h2>Downloading room content…</h2><p class=\"muted\">{} file(s), {:.1} MB</p>",
+            content.len() + usize::from(iwad.is_some()),
+            total as f64 / (1024.0 * 1024.0)
+        ));
+        let content = content.to_vec();
+        let iwad = iwad.cloned();
+        let ws = ws_url.to_owned();
+        wasm_bindgen_futures::spawn_local(async move {
+            let fetch = |r: room_proto::RoomContentRef| {
+                let url = content_download_url(&ws, &r.file);
+                async move {
+                    set_status(&format!(
+                        "Downloading {} ({:.1} MB)…",
+                        r.file,
+                        r.size as f64 / (1024.0 * 1024.0)
+                    ));
+                    let bytes = fetch_bytes(&url).await?;
+                    let fp = format!("{:016x}", room_proto::content_fingerprint(&bytes));
+                    if fp == r.fingerprint {
+                        Ok((r.file.clone(), bytes))
+                    } else {
+                        Err(format!(
+                            "{} has fingerprint {fp}, the room expects {}",
+                            r.file, r.fingerprint
+                        ))
+                    }
+                }
+            };
+            let mut iwad_bytes = None;
+            if let Some(r) = iwad {
+                match fetch(r).await {
+                    Ok((_, b)) => iwad_bytes = Some(b),
+                    Err(e) => {
+                        NET_CONTENT.with(|n| *n.borrow_mut() = NetContentState::Failed(e));
+                        return;
+                    }
+                }
+            }
+            let mut files = Vec::new();
+            for r in content {
+                match fetch(r).await {
+                    Ok(f) => files.push(f),
+                    Err(e) => {
+                        NET_CONTENT.with(|n| *n.borrow_mut() = NetContentState::Failed(e));
+                        return;
+                    }
+                }
+            }
+            NET_CONTENT.with(|n| *n.borrow_mut() = NetContentState::Ready(key, iwad_bytes, files));
+        });
+        Ok(())
+    }
+
     fn packs_key(packs: &[String]) -> String {
         let mut v = packs.to_vec();
         v.sort();
@@ -901,12 +1061,16 @@ mod browser {
         Ok(())
     }
 
-    /// The downloaded coop mod + packs, if any.
+    /// The downloaded preset content + coop mod + packs, if any.
     fn ready_mod_pwads() -> Vec<(String, Vec<u8>)> {
-        let mut out = NET_MOD.with(|n| match &*n.borrow() {
-            NetModState::Ready(name, bytes) => vec![(format!("{name}.wad"), bytes.clone())],
+        let mut out = NET_CONTENT.with(|n| match &*n.borrow() {
+            NetContentState::Ready(_, _, files) => files.clone(),
             _ => Vec::new(),
         });
+        out.extend(NET_MOD.with(|n| match &*n.borrow() {
+            NetModState::Ready(name, bytes) => vec![(format!("{name}.wad"), bytes.clone())],
+            _ => Vec::new(),
+        }));
         NET_PACKS.with(|n| {
             if let NetPacksState::Ready(_, files) = &*n.borrow() {
                 out.extend(files.iter().map(|(f, b)| (f.clone(), b.clone())));

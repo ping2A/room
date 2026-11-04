@@ -496,7 +496,13 @@ mod tests {
     fn mount_editor(name: &str, data: Vec<u8>, paths: &BTreeMap<String, Vec<u8>>) -> Vfs {
         let data = Bytes::from(data);
         let build = |nested: &[NestedWad]| {
-            let mut b = mount_with_nested(VfsBuilder::new(), name, data.clone(), nested).unwrap();
+            let mut b = mount_with_nested(
+                VfsBuilder::new().nested_map_wads(false),
+                name,
+                data.clone(),
+                nested,
+            )
+            .unwrap();
             if !paths.is_empty() {
                 b = mount_with_nested(
                     b,

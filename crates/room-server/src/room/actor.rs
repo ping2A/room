@@ -260,6 +260,15 @@ pub struct RoomSettings {
     /// Quick-play queue: start after timeout with bots for empty seats.
     #[serde(default)]
     pub quick_play: bool,
+    /// Library files every seat mounts after the IWAD (from the preset).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content: Vec<room_proto::RoomContentRef>,
+    /// Library IWAD replacing the seats' base game (from the preset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iwad: Option<room_proto::RoomContentRef>,
+    /// Preset title the room was created from (empty = none).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub preset: String,
 }
 
 impl Default for RoomSettings {
@@ -276,6 +285,9 @@ impl Default for RoomSettings {
             game: default_game(),
             fill_bots: false,
             quick_play: false,
+            content: Vec::new(),
+            iwad: None,
+            preset: String::new(),
         }
     }
 }
@@ -327,6 +339,10 @@ pub struct CreateRoomRequest {
     /// Quick-play queue room (`S-BR4`): start after timeout, not only when full.
     #[serde(default)]
     pub quick_play: bool,
+    /// Admin preset id (`GET /api/presets`): its IWAD, content files and map
+    /// list. Required when the node sets `require_preset`.
+    #[serde(default)]
+    pub preset: Option<String>,
 }
 
 impl Default for CreateRoomRequest {
@@ -343,6 +359,7 @@ impl Default for CreateRoomRequest {
             game: None,
             fill_bots: false,
             quick_play: false,
+            preset: None,
         }
     }
 }
@@ -1137,6 +1154,9 @@ fn welcome_room(state: &RoomState) -> WelcomeRoom {
         packs: state.settings.packs.clone(),
         time_limit: u32::from(state.settings.time_limit) * 60,
         fill_bots: state.settings.fill_bots,
+        content: state.settings.content.clone(),
+        iwad: state.settings.iwad.clone(),
+        preset: state.settings.preset.clone(),
     }
 }
 

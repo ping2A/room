@@ -4697,6 +4697,7 @@ dependencies = [
  "room-audio",
  "room-build",
  "room-console",
+ "room-core",
  "room-decorate",
  "room-defs",
  "room-faceswap",
@@ -5074,6 +5075,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
@@ -5131,6 +5133,7 @@ name = "room-ui"
 version = "0.1.0"
 dependencies = [
  "png 0.17.16",
+ "room-acs",
  "room-defs",
  "room-formats",
  "room-map",

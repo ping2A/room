@@ -197,6 +197,7 @@
     if (name === "settings") {
       refreshSecurity().catch(() => {});
       refreshMods().catch(() => {});
+      refreshContent().catch(() => {});
     }
   }
 
@@ -1180,6 +1181,199 @@
       })
     );
   }
+
+
+  // ---------------------------------------------------------------- content + presets
+  const content = { files: [], presets: { require_preset: false, presets: [] }, mods: [], enabled: false };
+
+  function fmtBytes(n) {
+    if (n >= 1 << 30) return (n / (1 << 30)).toFixed(1) + " GB";
+    if (n >= 1 << 20) return (n / (1 << 20)).toFixed(1) + " MB";
+    return Math.max(1, Math.round(n / 1024)) + " KB";
+  }
+
+  async function refreshContent() {
+    let lib;
+    try {
+      lib = await api("/admin/api/v1/content");
+      content.presets = await api("/admin/api/v1/presets");
+      content.mods = await api("/admin/api/v1/mods").catch(() => []);
+    } catch (_) {
+      $("content-status").textContent = "—";
+      return;
+    }
+    content.files = lib.files || [];
+    content.enabled = !!lib.enabled;
+    $("content-status").textContent = !lib.enabled
+      ? "Library disabled: start the server with --data-dir (or --content-dir)"
+      : content.files.length + " file(s) · max upload " + fmtBytes(lib.max_bytes);
+    $("content-file").disabled = !lib.enabled;
+    $("content-list").replaceChildren(
+      ...content.files.map((f) => {
+        const li = document.createElement("li");
+        const maps = f.maps && f.maps.length ? f.maps.length + " map(s): " + f.maps.slice(0, 8).join(" ") + (f.maps.length > 8 ? " …" : "") : "no maps";
+        li.innerHTML =
+          "<span><strong>" + escapeHtml(f.file) + '</strong> <span class="muted">' +
+          escapeHtml(f.kind) + " · " + fmtBytes(f.size) + " · " + escapeHtml(String(f.fingerprint).slice(0, 8)) +
+          " · " + escapeHtml(maps) + "</span></span>";
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "btn";
+        del.textContent = "Delete";
+        del.addEventListener("click", async () => {
+          if (!confirm("Delete " + f.file + "?")) return;
+          try {
+            await api("/admin/api/v1/content/" + encodeURIComponent(f.file), { method: "DELETE" });
+            flash("Deleted " + f.file);
+          } catch (e) {
+            flash("Delete failed: " + e.message, "error");
+          }
+          await refreshContent();
+        });
+        li.appendChild(del);
+        return li;
+      })
+    );
+    $("preset-require").checked = !!content.presets.require_preset;
+    const ps = content.presets.presets || [];
+    $("presets-status").textContent = ps.length
+      ? ps.length + " preset(s)" + (content.presets.require_preset ? " · players must pick one" : " · custom rooms allowed too")
+      : "No presets: players type a map and play the server's default game";
+    $("presets-list").replaceChildren(
+      ...ps.map((p, idx) => {
+        const li = document.createElement("li");
+        const files = [p.iwad, ...(p.content || [])].filter(Boolean).join(" + ") || "default game";
+        const maps = p.maps && p.maps.length ? p.maps.join(" ") : "any map";
+        li.innerHTML =
+          "<span><strong>" + escapeHtml(p.title) + '</strong> <span class="muted">' + escapeHtml(p.id) + " · " +
+          escapeHtml(files) + " · " + escapeHtml(maps) + (p.mod ? " · mod " + escapeHtml(p.mod) : "") + "</span></span>";
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "btn";
+        edit.textContent = "Edit";
+        edit.addEventListener("click", () => editPreset(idx));
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "btn";
+        del.textContent = "Delete";
+        del.addEventListener("click", async () => {
+          if (!confirm("Delete preset " + p.title + "?")) return;
+          const next = { ...content.presets, presets: ps.filter((_, i) => i !== idx) };
+          await savePresets(next);
+        });
+        li.append(edit, del);
+        return li;
+      })
+    );
+  }
+
+  async function savePresets(cfg) {
+    try {
+      content.presets = await api("/admin/api/v1/presets", { method: "PUT", body: JSON.stringify(cfg) });
+      flash("Presets saved");
+    } catch (e) {
+      flash("Presets not saved: " + e.message, "error");
+    }
+    await refreshContent();
+  }
+
+  async function editPreset(idx) {
+    const ps = content.presets.presets || [];
+    const p = idx >= 0 ? ps[idx] : { id: "", title: "", description: "", iwad: null, content: [], maps: [], default_map: "", mod: null, skill: 0 };
+    const iwads = content.files.filter((f) => f.kind === "iwad");
+    const others = content.files.filter((f) => f.kind !== "iwad");
+    const opt = (v, label, sel) => '<option value="' + escapeHtml(v) + '"' + (sel ? " selected" : "") + ">" + escapeHtml(label) + "</option>";
+    const fileRows = others
+      .map((f) => {
+        const pos = (p.content || []).indexOf(f.file);
+        return '<label class="field check"><span><input type="checkbox" name="content:' + escapeHtml(f.file) + '"' +
+          (pos >= 0 ? " checked" : "") + "/> " + escapeHtml(f.file) + ' <span class="muted">(' + fmtBytes(f.size) + ")</span></span>" +
+          '<input name="order:' + escapeHtml(f.file) + '" type="number" min="1" max="99" value="' + (pos >= 0 ? pos + 1 : 50) +
+          '" title="Load order (lower first)" style="width:5em"/></label>';
+      })
+      .join("");
+    const allMaps = [];
+    for (const f of content.files) for (const m of f.maps || []) if (!allMaps.includes(m)) allMaps.push(m);
+    const mapRows = allMaps
+      .map((m) => '<label class="check" style="display:inline-block;margin:2px 10px 2px 0"><input type="checkbox" name="map:' + escapeHtml(m) + '"' +
+        ((p.maps || []).includes(m) ? " checked" : "") + "/> " + escapeHtml(m) + "</label>")
+      .join("");
+    const extra = (p.maps || []).filter((m) => !allMaps.includes(m)).join(" ");
+    const data = await openModal({
+      title: idx >= 0 ? "Edit preset" : "New preset",
+      confirmLabel: "Save",
+      bodyHtml:
+        '<label class="field"><span>Id (a-z 0-9 _ -)</span><input name="id" required maxlength="32" value="' + escapeHtml(p.id) + '"/></label>' +
+        '<label class="field"><span>Title</span><input name="title" maxlength="80" value="' + escapeHtml(p.title) + '"/></label>' +
+        '<label class="field"><span>Description</span><input name="description" maxlength="300" value="' + escapeHtml(p.description || "") + '"/></label>' +
+        '<label class="field"><span>Base game (IWAD)</span><select name="iwad">' + opt("", "Player default (doom1.wad)", !p.iwad) +
+        iwads.map((f) => opt(f.file, f.file, p.iwad === f.file)).join("") + "</select></label>" +
+        '<div class="field"><span>Content files (checked ones load in order, lowest number first)</span>' +
+        (fileRows || '<p class="muted">Upload PK3 / WAD files to the library first.</p>') + "</div>" +
+        '<div class="field"><span>Maps players may pick (none checked = any map)</span><div>' + (mapRows || '<span class="muted">No maps found in the library files</span>') + "</div></div>" +
+        '<label class="field"><span>Other maps (space separated, e.g. E1M1 MAP07)</span><input name="extra_maps" value="' + escapeHtml(extra) + '"/></label>' +
+        '<label class="field"><span>Default map</span><input name="default_map" value="' + escapeHtml(p.default_map || "") + '" placeholder="first allowed map"/></label>' +
+        '<label class="field"><span>Gameplay mod</span><select name="mod">' + opt("", "None", !p.mod) +
+        content.mods.filter((m) => m.allowed).map((m) => opt(m.name, m.title || m.name, p.mod === m.name)).join("") + "</select></label>" +
+        '<label class="field"><span>Default skill (0 = lobby default)</span><input name="skill" type="number" min="0" max="5" value="' + (p.skill || 0) + '"/></label>',
+    });
+    if (!data) return;
+    const picked = [];
+    const maps = [];
+    for (const [k, v] of Object.entries(data)) {
+      if (k.startsWith("content:") && v) picked.push({ file: k.slice(8), order: Number(data["order:" + k.slice(8)]) || 50 });
+      if (k.startsWith("map:") && v) maps.push(k.slice(4));
+    }
+    picked.sort((a, b) => a.order - b.order);
+    for (const m of String(data.extra_maps || "").split(/[\s,]+/)) if (m) maps.push(m.toUpperCase());
+    const next = {
+      id: data.id,
+      title: data.title,
+      description: data.description,
+      iwad: data.iwad || null,
+      content: picked.map((x) => x.file),
+      maps,
+      default_map: data.default_map,
+      mod: data.mod || null,
+      skill: Number(data.skill) || 0,
+    };
+    const list = ps.slice();
+    if (idx >= 0) list[idx] = next;
+    else list.push(next);
+    await savePresets({ ...content.presets, presets: list });
+  }
+
+  $("preset-add").addEventListener("click", () => editPreset(-1));
+  $("preset-require").addEventListener("change", (ev) =>
+    savePresets({ ...content.presets, require_preset: ev.target.checked })
+  );
+  $("content-rescan").addEventListener("click", async () => {
+    try {
+      await api("/admin/api/v1/content/rescan", { method: "POST" });
+    } catch (e) {
+      flash("Rescan failed: " + e.message, "error");
+    }
+    await refreshContent();
+  });
+  $("content-file").addEventListener("change", async (ev) => {
+    const files = [...ev.target.files];
+    ev.target.value = "";
+    for (const f of files) {
+      const name = f.name.replace(/[^A-Za-z0-9._-]/g, "_");
+      $("content-status").textContent = "Uploading " + name + " (" + fmtBytes(f.size) + ")…";
+      try {
+        const e = await api("/admin/api/v1/content/" + encodeURIComponent(name), {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: f,
+        });
+        flash("Uploaded " + e.file + (e.maps && e.maps.length ? " · " + e.maps.length + " map(s)" : ""));
+      } catch (err) {
+        flash("Upload of " + name + " failed: " + err.message, "error");
+      }
+    }
+    await refreshContent();
+  });
 
   // Boot
   routeGate()

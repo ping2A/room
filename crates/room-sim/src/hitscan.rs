@@ -637,7 +637,17 @@ pub fn line_attack_with_slope(
             );
         }
         if !wall_hit_is_sky(world, lid.raw(), wpos.z()) {
-            spawn_puff(world, wpos);
+            // Vanilla `PTR_ShootTraverse` / GZDoom `P_LineAttack`: the puff sits
+            // 4 units back along the shot, so it stays in the shooter's sector
+            // instead of landing on the far side's floor (a raised or sloped
+            // sector behind a lower wall put puffs on top of the wall).
+            let back = (wd - 4.0).max(0.0);
+            let ppos = DVec3::new(
+                origin.x() + dir_x * back,
+                origin.y() + dir_y * back,
+                origin.z() + aim_slope * back,
+            );
+            spawn_puff(world, ppos);
             spawn_wall_bullet_decal(world, source, wpos, Some(lid.raw()));
             let _ = crate::specials::damage_linedef(world, lid, Some(source), damage);
         }
@@ -1885,6 +1895,20 @@ actor Dummy : Actor 9930
             .filter(|&&id| w.actors.get(id).is_some_and(|a| a.class == puff))
             .count();
         assert_eq!(after, before + 1);
+        // Vanilla: the puff is 4 units short of the wall, inside the room.
+        let px = w
+            .thinkers
+            .default
+            .iter()
+            .filter_map(|&id| w.actors.get(id).filter(|a| a.class == puff))
+            .map(|a| a.pos.x())
+            .next()
+            .unwrap();
+        assert!(
+            (px - (hit.pos.x() - 4.0)).abs() < 0.01,
+            "puff x={px} wall={}",
+            hit.pos.x()
+        );
     }
 
     #[test]

@@ -350,6 +350,9 @@ pub fn player_in_special_sector(world: &mut World, mo: ActorId) {
                 if let Some(a) = world.actors.get(mo) {
                     if a.health <= 10 {
                         world.level.exiting = true;
+                        if !cfg!(test) {
+                            eprintln!("room: level exit: exit sector (tic {})", world.level.time);
+                        }
                     }
                 }
             }

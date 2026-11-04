@@ -6,6 +6,7 @@ mod admin_auth;
 mod bans;
 mod br_stats;
 mod config;
+mod content;
 mod http;
 mod leaderboard;
 mod limits;
@@ -32,6 +33,14 @@ pub use bans::{
 };
 pub use br_stats::{BrMatchRow, BrPlayerStats, BrStats, MODE_BR};
 pub use config::{ServerConfig, TurnAuth};
+/// Default `--content-max-mb`.
+#[must_use]
+pub const fn content_default_max_mb() -> u64 {
+    content::DEFAULT_MAX_CONTENT_MB
+}
+pub use content::{
+    ContentEntry, ContentKind, ContentStore, Preset, PresetConfig, PublicPreset, PublicPresets,
+};
 pub use http::{
     JoinRoomRequest, JoinRoomResponse, admin_router, bind_ephemeral, public_router, router, serve,
 };

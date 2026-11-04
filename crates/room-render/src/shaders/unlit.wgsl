@@ -339,7 +339,9 @@ fn shade(v: VsOut) -> vec4<f32> {
         }
     }
     color = color + albedo * dyn_add;
-    var out_a = v.alpha * texel_a;
+    // Negative vertex alpha = additive (`RenderStyle Add`).
+    let additive = v.alpha < 0.0;
+    var out_a = abs(v.alpha) * texel_a;
     if (v.fuzz > 0.5) {
         let kind = i32(view.light_params.w + 0.5);
         if (kind > 0) {
@@ -375,12 +377,18 @@ fn shade(v: VsOut) -> vec4<f32> {
         // Soft toe: keep FLOOR4_8 / dark sectors readable on laptop panels.
         color = color * (0.65 + 0.35 / (color + vec3<f32>(0.35)));
     }
+    // Straight alpha; additive is flagged by a negative alpha for the
+    // premultiplied entry point (`fs_main_mrt_pm`).
+    if (additive) {
+        return vec4<f32>(color, -out_a);
+    }
     return vec4<f32>(color, out_a);
 }
 
 @fragment
 fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
-    return shade(v);
+    let c = shade(v);
+    return vec4<f32>(c.rgb, abs(c.a));
 }
 
 /// Pack a unit normal into octahedral RG in [0,1] (docs/29 U16 bootstrap).
@@ -409,7 +417,27 @@ fn fs_main_mrt(v: VsOut) -> FsOutMrt {
     if (v.fuzz >= 0.45) {
         flags = flags + 2.0 / 255.0;
     }
-    return FsOutMrt(shade(v), vec4<f32>(oct.x, oct.y, flags, 1.0));
+    let c = shade(v);
+    return FsOutMrt(vec4<f32>(c.rgb, abs(c.a)), vec4<f32>(oct.x, oct.y, flags, 1.0));
+}
+
+/// Sprite / translucent pass with premultiplied blending (One, OneMinusSrcAlpha).
+/// `RenderStyle Add` writes alpha 0: the scene is kept and the colour adds.
+@fragment
+fn fs_main_mrt_pm(v: VsOut) -> FsOutMrt {
+    let c = shade(v);
+    let a = abs(c.a);
+    let out_a = select(a, 0.0, c.a < 0.0);
+    var flags = 0.0;
+    if (v.light >= 0.999) {
+        flags = flags + 1.0 / 255.0;
+    }
+    if (v.fuzz >= 0.45) {
+        flags = flags + 2.0 / 255.0;
+    }
+    let n = normalize(select(v.normal, vec3<f32>(0.0, 0.0, 1.0), dot(v.normal, v.normal) < 1e-6));
+    let oct = encode_oct_normal(n);
+    return FsOutMrt(vec4<f32>(c.rgb * a, out_a), vec4<f32>(oct.x, oct.y, flags, 1.0));
 }
 
 /// Stencil mask: no RGB on slot 0; write dummy slot 1 so Metal updates stencil.

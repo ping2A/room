@@ -109,6 +109,13 @@ struct Args {
     /// for all. Afterwards admins allow / disallow them in Settings → Mods.
     #[arg(long, env = "ROOM_ALLOW_MODS", value_delimiter = ',')]
     allow_mods: Vec<String>,
+    /// Content library (PK3 / WAD files admins upload for presets). Empty =
+    /// `<data-dir>/content` when a data dir is set, else disabled.
+    #[arg(long, env = "ROOM_CONTENT_DIR", default_value = "")]
+    content_dir: String,
+    /// Largest content upload, in MiB.
+    #[arg(long, env = "ROOM_CONTENT_MAX_MB", default_value_t = room_server::content_default_max_mb())]
+    content_max_mb: u64,
     /// Seconds to wait for the first hello frame.
     #[arg(long, env = "ROOM_HANDSHAKE_TIMEOUT_SECS", default_value_t = 5)]
     handshake_timeout_secs: u64,
@@ -199,6 +206,15 @@ async fn main() {
     };
     let mut mods = room_server::ModCatalog::load_dir(&args.mods_dir);
     mods.load_policy(&args.data_dir, &args.allow_mods);
+    let content_dir = if !args.content_dir.is_empty() {
+        Some(std::path::PathBuf::from(&args.content_dir))
+    } else if !args.data_dir.is_empty() {
+        Some(std::path::Path::new(&args.data_dir).join("content"))
+    } else {
+        None
+    };
+    let content =
+        room_server::ContentStore::open(content_dir, &args.data_dir, args.content_max_mb);
     let cfg = ServerConfig {
         bind: args.bind,
         admin_bind: args.admin_bind,
@@ -232,6 +248,7 @@ async fn main() {
         drain_grace_secs: args.drain_grace_secs,
         iwad_path: args.iwad,
         mods: Arc::new(mods),
+        content: Arc::new(content),
         handshake_timeout_secs: args.handshake_timeout_secs,
         idle_timeout_secs: args.idle_timeout_secs,
         room_time_limit_mins: args.room_time_limit_mins.clamp(1, 180),

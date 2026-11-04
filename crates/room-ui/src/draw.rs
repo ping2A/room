@@ -146,6 +146,11 @@ pub enum DrawCmd {
         pivot_y: f32,
         /// RGB tint 0–1. White is untinted.
         tint: [f32; 3],
+        /// Opacity 0–1 (ACS `HudMessage` fades / `HUDMSG_ALPHA`).
+        alpha: f32,
+        /// Font colour translation: glyph luminance mapped onto a dark → bright
+        /// ramp (GZDoom `EColorRange`); `None` keeps the patch colours.
+        recolor: Option<[[f32; 3]; 2]>,
     },
     /// Coloured line segment (automap).
     Line {
@@ -226,6 +231,8 @@ impl UiDrawList {
             pivot_x: 0.5,
             pivot_y: 0.5,
             tint: [1.0, 1.0, 1.0],
+            alpha: 1.0,
+            recolor: None,
         });
     }
 
@@ -258,6 +265,8 @@ impl UiDrawList {
             pivot_x,
             pivot_y,
             tint,
+            alpha: 1.0,
+            recolor: None,
         });
     }
 
@@ -267,6 +276,21 @@ impl UiDrawList {
         for cmd in self.cmds.iter_mut().skip(start) {
             if let DrawCmd::Patch { inverse, .. } = cmd {
                 *inverse = true;
+            }
+        }
+    }
+
+    /// Set opacity and colour translation on the patches pushed since `start`.
+    pub fn style_since(&mut self, start: usize, alpha: f32, recolor: Option<[[f32; 3]; 2]>) {
+        for cmd in self.cmds.iter_mut().skip(start) {
+            if let DrawCmd::Patch {
+                alpha: a,
+                recolor: r,
+                ..
+            } = cmd
+            {
+                *a = alpha.clamp(0.0, 1.0);
+                *r = recolor;
             }
         }
     }
@@ -287,6 +311,8 @@ impl UiDrawList {
             pivot_x: 0.5,
             pivot_y: 0.5,
             tint: [1.0, 1.0, 1.0],
+            alpha: 1.0,
+            recolor: None,
         });
     }
 }

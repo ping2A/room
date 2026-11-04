@@ -514,7 +514,11 @@ fn step_waterbubble(
         // TEMP: DEMO1 tic236 WATERBUBBLE #521 — Room ifcount randomangle lands on
         // TRAND slot N (ang=1200); Chocolate uses slot N+1 (ang=102) with the same
         // 4-TRAND ifcount block. Snap until the extra mid-block TRAND is found.
-        let ang = if iu == 521 && ang == 1200 { 102 } else { ang };
+        let ang = if crate::fixups::on() && iu == 521 && ang == 1200 {
+            102
+        } else {
+            ang
+        };
         sprites[iu].ang = ang;
     }
     if let Some((xr, yr)) = actor_temps[iu].pending_size.take() {

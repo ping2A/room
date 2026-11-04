@@ -191,6 +191,10 @@ pub struct NetJoinConfig {
     pub game_mod: Option<room_proto::RoomModRef>,
     /// Content packs from `welcome.room.packs` (e.g. `voxel`).
     pub packs: Vec<String>,
+    /// Server library files from the room's preset (`welcome.room.content`).
+    pub content: Vec<room_proto::RoomContentRef>,
+    /// Preset IWAD replacing the local base game (`welcome.room.iwad`).
+    pub iwad: Option<room_proto::RoomContentRef>,
     /// Match time limit in seconds from `welcome` (0 = none).
     pub time_limit: u32,
     /// Bot fill for empty seats (BE8).
@@ -328,6 +332,18 @@ impl NetLobby {
     #[must_use]
     pub fn packs(&self) -> &[String] {
         &self.cfg.packs
+    }
+
+    /// Preset library files from `welcome`, in mount order.
+    #[must_use]
+    pub fn content(&self) -> &[room_proto::RoomContentRef] {
+        &self.cfg.content
+    }
+
+    /// Preset IWAD from `welcome`, if the room replaces the base game.
+    #[must_use]
+    pub fn preset_iwad(&self) -> Option<&room_proto::RoomContentRef> {
+        self.cfg.iwad.as_ref()
     }
 
     /// Match time limit in seconds (known after `welcome`; 0 = none).
@@ -505,6 +521,8 @@ impl NetLobby {
                 self.cfg.players = w.room.max_players;
                 self.cfg.game_mod = w.room.game_mod.clone();
                 self.cfg.packs = w.room.packs.clone();
+                self.cfg.content = w.room.content.clone();
+                self.cfg.iwad = w.room.iwad.clone();
                 self.cfg.time_limit = w.room.time_limit;
                 self.cfg.fill_bots = w.room.fill_bots;
                 transport.set_peer_count(w.room.max_players);
@@ -549,6 +567,8 @@ impl NetLobby {
                     self.cfg.players = room.max_players;
                     self.cfg.game_mod = room.game_mod.clone();
                     self.cfg.packs = room.packs.clone();
+                    self.cfg.content = room.content.clone();
+                    self.cfg.iwad = room.iwad.clone();
                     self.cfg.time_limit = room.time_limit;
                     t.set_peer_count(room.max_players);
                     for seat in roster {

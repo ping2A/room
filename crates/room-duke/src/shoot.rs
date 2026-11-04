@@ -705,7 +705,9 @@ fn checkhitsprite_shotgun(
             }
             // TEMP: one extra TRAND per face hit — matches DEMO1 smoke scatter;
             // not spawn(SMALLSMOKE) cstat (already burned). Real site TBD.
-            let _ = krand_step(randomseed);
+            if crate::fixups::on() {
+                let _ = krand_step(randomseed);
+            }
         }
     }
     // Chocolate knockback + pushmove (can nudge XY between shotgun pellets).
@@ -976,7 +978,8 @@ pub fn shoot_shotgun_player(
     // TEMP: DEMO1 tic270 — aim unlocked (j=-1) but face hitscan still clips
     // OCTA #401; Chocolate floor-misses → SHOTSPARK WATERBUBBLE. Gate ammo==16
     // so the earlier underwater shot (ammo 17) keeps sprite hits.
-    if hit.hitsprite == 401
+    if crate::fixups::on()
+        && hit.hitsprite == 401
         && player
             .ammo
             .get(SHOTGUN_WEAPON as usize)

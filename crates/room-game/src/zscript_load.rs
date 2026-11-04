@@ -126,7 +126,12 @@ fn include_paths(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn read_text(vfs: &Vfs, id: room_vfs::LumpId, path: &str, skipped: &mut Vec<String>) -> Option<String> {
+fn read_text(
+    vfs: &Vfs,
+    id: room_vfs::LumpId,
+    path: &str,
+    skipped: &mut Vec<String>,
+) -> Option<String> {
     let bytes = match vfs.read(id) {
         Ok(b) => b,
         Err(e) => {
@@ -341,8 +346,14 @@ mod source_tests {
     #[test]
     fn includes_with_any_extension_and_txt_roots_are_loaded() {
         let pk3 = zip_from_files(&[
-            ("zscript.txt", b"version \"4.10\"\n#include \"src/handlers.txt\"\n".as_slice()),
-            ("src/handlers.txt", b"#include \"actors/imp.txt\"\nclass H : EventHandler {}\n".as_slice()),
+            (
+                "zscript.txt",
+                b"version \"4.10\"\n#include \"src/handlers.txt\"\n".as_slice(),
+            ),
+            (
+                "src/handlers.txt",
+                b"#include \"actors/imp.txt\"\nclass H : EventHandler {}\n".as_slice(),
+            ),
             ("actors/imp.txt", b"class FastImp : Actor {}\n".as_slice()),
             ("src/unused.txt", b"not zscript".as_slice()),
         ])
@@ -359,6 +370,32 @@ mod source_tests {
         assert!(names.contains(&"actors/imp.txt"), "{names:?}");
         assert!(!names.contains(&"src/unused.txt"));
         let res = room_zscript::check(&sources);
-        assert!(res.ok(), "{:?}", res.diagnostics.iter().map(|d| d.format_line()).collect::<Vec<_>>());
+        assert!(
+            res.ok(),
+            "{:?}",
+            res.diagnostics
+                .iter()
+                .map(|d| d.format_line())
+                .collect::<Vec<_>>()
+        );
     }
+}
+
+/// Every ACS library lump (`acs/` namespace) by short name, last mount winning,
+/// for [`crate::Headless::set_acs_library_pool`] (GZDoom `ns_acslibrary`).
+#[must_use]
+pub fn acs_library_pool(vfs: &Vfs) -> Vec<(String, Vec<u8>)> {
+    let mut pool: Vec<(String, Vec<u8>)> = Vec::new();
+    for (id, info) in vfs.iter() {
+        if info.namespace != room_vfs::Namespace::Acs || info.short_name.is_empty() {
+            continue;
+        }
+        let name = info.short_name.as_str().to_ascii_uppercase();
+        let Ok(bytes) = vfs.read(id) else {
+            continue;
+        };
+        pool.retain(|(n, _)| *n != name);
+        pool.push((name, bytes.to_vec()));
+    }
+    pool
 }

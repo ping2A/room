@@ -608,6 +608,12 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
         }
         GameFn::LevelExit => {
             world.level.exiting = true;
+            if !cfg!(test) {
+                eprintln!(
+                    "room: level exit: script mod LevelExit (tic {})",
+                    world.level.time
+                );
+            }
             world.level.secret_exit = ai(a, 0) != 0;
             None
         }

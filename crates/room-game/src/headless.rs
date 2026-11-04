@@ -191,6 +191,10 @@ pub struct Headless {
     menudef: Option<room_defs::MenuDef>,
     /// Preloaded ACS library blobs (`LOADACS` / resolved `LOAD` chunk).
     acs_libraries: Vec<Vec<u8>>,
+    /// Every ACS-namespace lump by name, for `LOADACS` / `LOAD` resolution.
+    acs_pool: Vec<(String, Vec<u8>)>,
+    /// `LOADACS` library names, in load order.
+    acs_loadacs: Vec<String>,
     /// Compiled ZScript program (loaded into each new [`World`]).
     zscript_program: Option<room_zvm::CompiledProgram>,
     /// MAPINFO / GAMEINFO `AddEventHandlers` class names.
@@ -519,6 +523,8 @@ impl Headless {
             keyconf: None,
             menudef: None,
             acs_libraries: Vec::new(),
+            acs_pool: Vec::new(),
+            acs_loadacs: Vec::new(),
             zscript_program: None,
             zscript_event_handlers: Vec::new(),
             compat_db: None,
@@ -902,6 +908,14 @@ impl Headless {
         self.acs_libraries = libs;
     }
 
+    /// Install the ACS library pool (every `acs/` lump by name) and the `LOADACS`
+    /// names. Each map start attaches the map's `LOAD` libraries, then the
+    /// `LOADACS` ones, each followed by the libraries it loads (GZDoom order).
+    pub fn set_acs_library_pool(&mut self, pool: Vec<(String, Vec<u8>)>, loadacs: Vec<String>) {
+        self.acs_pool = pool;
+        self.acs_loadacs = loadacs;
+    }
+
     /// Append one ACS library blob for subsequent map starts.
     pub fn push_acs_library_bytes(&mut self, bytes: Vec<u8>) {
         self.acs_libraries.push(bytes);
@@ -1176,9 +1190,24 @@ impl Headless {
             ));
         }
         // LOADACS / pre-resolved library blobs (after BEHAVIOR; OPEN already ran).
-        for blob in &self.acs_libraries {
-            let _ = room_sim::push_acs_library(&mut world, blob);
+        let first_lib = world.acs.modules.len();
+        if self.acs_pool.is_empty() {
+            for blob in &self.acs_libraries {
+                let _ = room_sim::push_acs_library(&mut world, blob);
+            }
+        } else {
+            let map_libs = world
+                .acs
+                .modules
+                .first()
+                .map(|m| m.libraries.clone())
+                .unwrap_or_default();
+            for name in map_libs.iter().chain(self.acs_loadacs.iter()) {
+                let _ = room_sim::push_acs_library_tree(&mut world, name, &self.acs_pool);
+            }
         }
+        // GZDoom starts every module's OPEN scripts at level start.
+        room_sim::start_library_open_scripts(&mut world, first_lib);
         // ZScript program + MAPINFO event handlers (docs/34 / BD6).
         if let Some(prog) = self.zscript_program.clone() {
             let handlers = self.zscript_event_handlers.clone();

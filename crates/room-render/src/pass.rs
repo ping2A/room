@@ -17,6 +17,22 @@ use room_vfs::Vfs;
 
 const UNLIT_WGSL: &str = include_str!("shaders/unlit.wgsl");
 
+/// Sprite / translucent blending: premultiplied colour (so `RenderStyle Add`
+/// can write alpha 0 and add), destination alpha kept as with straight
+/// `ALPHA_BLENDING` (`a·a + dst·(1−a)`).
+const SPRITE_BLEND: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::SrcAlpha,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
 /// Owns pipelines and per-frame buffers for the unlit pass.
 pub struct UnlitPass {
     target_format: wgpu::TextureFormat,
@@ -286,7 +302,7 @@ impl UnlitPass {
             &layout,
             target_format,
             "sprite-pipe",
-            wgpu::BlendState::ALPHA_BLENDING,
+            SPRITE_BLEND,
             false,
             None,
             wgpu::ColorWrites::ALL,
@@ -308,7 +324,7 @@ impl UnlitPass {
             &layout,
             target_format,
             "opaque-sprite-pipe",
-            wgpu::BlendState::ALPHA_BLENDING,
+            SPRITE_BLEND,
             true,
             None,
             wgpu::ColorWrites::ALL,
@@ -1426,8 +1442,13 @@ fn make_unlit_pipeline_bias(
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            // MRT: colour + aux G-buffer-lite (RGBA8; docs/29 U16).
-            entry_point: Some("fs_main_mrt"),
+            // MRT: colour + aux G-buffer-lite (RGBA8; docs/29 U16). Premultiplied
+            // blending (sprites) needs the premultiplied entry point.
+            entry_point: Some(if blend == SPRITE_BLEND {
+                "fs_main_mrt_pm"
+            } else {
+                "fs_main_mrt"
+            }),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             // Same blend and write mask on both targets. WebGL2 rejects
             // independent blend, and slot 1 is discarded after the pass.

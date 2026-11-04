@@ -4,6 +4,7 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
+mod acs_hud;
 mod automap;
 mod canvas_bridge;
 mod doom_text;
@@ -25,6 +26,7 @@ mod title;
 mod weapon;
 mod zscript_bar;
 
+pub use acs_hud::{color_by_name, draw_acs_hud_messages, strip_color_codes};
 pub use automap::{AutomapView, draw_automap};
 pub use canvas_bridge::{
     CanvasSink, blit_draw_list, blit_draw_list_full, blit_draw_list_with_fonts,

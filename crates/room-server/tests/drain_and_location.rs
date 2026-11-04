@@ -26,6 +26,7 @@ async fn drain_rejects_creates_and_readyz_503() {
             game: None,
             fill_bots: false,
             quick_play: false,
+            preset: None,
         })
         .unwrap();
     assert_eq!(registry.locate_room(&created.id).as_deref(), Some("node-a"));

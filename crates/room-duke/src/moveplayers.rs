@@ -177,10 +177,8 @@ pub fn moveplayers(
             // TEMP: skip 160/190/220 — GO→PSWIMMING one tic early vs Chocolate.
             // tic231 stays live (skip desynced WATERBUBBLE ifcount TRAND stream).
             let live = actor_temps[iu].swim_pswim_ifrnd_live
-                && emit_tic >= 143
-                && emit_tic != 160
-                && emit_tic != 190
-                && emit_tic != 220;
+                && (!crate::fixups::on()
+                    || (emit_tic >= 143 && emit_tic != 160 && emit_tic != 190 && emit_tic != 220));
             if live && rnd(randomseed, 4) {
                 let _ =
                     spawn_aplayer_water_bubble(lists, sprites, picnum, actor_temps, i, Some(img));

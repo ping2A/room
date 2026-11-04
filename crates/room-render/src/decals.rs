@@ -316,6 +316,7 @@ pub fn append_decals(
                     flip_u: false,
                     anchor_u: 0.5,
                     orient: crate::sprites::SpriteOrient::Flat { yaw },
+                    additive: false,
                 },
                 camera.forward,
             );
@@ -341,6 +342,7 @@ pub fn append_decals(
                 flip_u: false,
                 anchor_u: 0.5,
                 orient: crate::sprites::SpriteOrient::Billboard,
+                additive: false,
             },
             camera.forward,
         );
@@ -473,6 +475,7 @@ pub fn emit_decal_quad(d: &DecalInstance, forward: Vec3) -> [WallVertex; 6] {
             flip_u: false,
             anchor_u: 0.5,
             orient: crate::sprites::SpriteOrient::Billboard,
+            additive: false,
         },
         forward,
     )

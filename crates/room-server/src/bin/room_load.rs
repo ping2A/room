@@ -97,6 +97,7 @@ async fn main() {
             game: None,
             fill_bots: false,
             quick_play: false,
+            preset: None,
         }) {
             Ok(r) => room_ids.push(r.id),
             Err(e) => {

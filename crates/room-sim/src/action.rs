@@ -4082,53 +4082,126 @@ fn a_custom_missile(world: &mut World, self_id: ActorId, args: &[String]) -> Act
     if class_name.is_empty() {
         return ActionResult::Continue;
     }
-    let spawnheight = args
-        .get(1)
-        .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
-        .unwrap_or(32.0);
-    let spawnofs_xy = args
-        .get(2)
-        .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
-        .unwrap_or(0.0);
-    let ang_off = args
-        .get(3)
-        .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
-        .unwrap_or(0.0);
-    let _ = a_face_target(world, self_id);
+    let spawnheight = parse_f64_arg(args, 1, 32.0);
+    let spawnofs_xy = parse_f64_arg(args, 2, 0.0);
+    let ang_off = parse_f64_arg(args, 3, 0.0);
+    let flags = parse_cmf_flags(args.get(4));
+    let pitch_arg = parse_f64_arg(args, 5, 0.0);
+    let aimmode = flags & CMF_AIMMODE;
     let Some(missile_class) = world.classes.find_name(&class_name) else {
         return ActionResult::Continue;
     };
     let Some(src) = world.actors.get(self_id).cloned() else {
         return ActionResult::Continue;
     };
-    let ang = Angle::from_degrees(src.angle.degrees() + ang_off);
-    let rad = ang.radians();
-    let c = dmath::cos(rad);
-    let s = dmath::sin(rad);
-    let pos = DVec3::new(
-        src.pos.x() + c * (src.radius + 8.0) - s * spawnofs_xy,
-        src.pos.y() + s * (src.radius + 8.0) + c * spawnofs_xy,
+    // GZDoom `A_SpawnProjectile`: `ref` is the target pointer; the caller's own
+    // angle is never changed (monsters call `A_FaceTarget` themselves). A player
+    // has no implicit target, so only `CMF_AIMDIRECTION` fires from one.
+    let is_player = world
+        .players
+        .iter()
+        .flatten()
+        .any(|p| p.mo == Some(self_id));
+    let reference = src
+        .target
+        .filter(|&t| t != self_id && target_is_valid(world, t))
+        .or_else(|| {
+            if is_player {
+                None
+            } else {
+                resolve_target(world, self_id).filter(|&t| t != self_id)
+            }
+        });
+    if reference.is_none() && aimmode != CMF_AIMDIRECTION {
+        return ActionResult::Continue;
+    }
+    let base = src.angle;
+    let brad = base.radians();
+    let (bc, bs) = (dmath::cos(brad), dmath::sin(brad));
+    // Lateral offset follows the shooter's facing (`AngleToVector(Angle - 90)`).
+    let origin = DVec3::new(
+        src.pos.x() - bs * spawnofs_xy,
+        src.pos.y() + bc * spawnofs_xy,
         src.pos.z() + spawnheight,
     );
-    let Ok(id) = world.spawn_at(missile_class, pos, ang) else {
-        return ActionResult::Continue;
-    };
     let speed = world
         .classes
         .get(missile_class)
         .map(|c| class_move_speed(world, c))
         .filter(|s| *s > 0.0)
         .unwrap_or(20.0);
+    // Aim: toward `ref` (modes 0/1) or along the shooter's facing (mode 2).
+    let aimed = if aimmode == CMF_AIMDIRECTION {
+        None
+    } else {
+        reference.and_then(|r| world.actors.get(r)).map(|t| {
+            let dx = t.pos.x() - origin.x();
+            let dy = t.pos.y() - origin.y();
+            let dist = dmath::sqrt(dx * dx + dy * dy).max(1.0);
+            let dz = t.pos.z() + t.height * 0.5 - origin.z();
+            (dmath::atan2(dy, dx).to_degrees(), dz / dist)
+        })
+    };
+    let ang_deg = if flags & CMF_ABSOLUTEANGLE != 0 {
+        ang_off
+    } else {
+        aimed.map_or(base.degrees(), |(a, _)| a) + ang_off
+    };
+    let ang = Angle::from_degrees(ang_deg);
+    let rad = ang.radians();
+    let (c, s) = (dmath::cos(rad), dmath::sin(rad));
+    let fwd = src.radius + 8.0;
+    let pos = DVec3::new(origin.x() + c * fwd, origin.y() + s * fwd, origin.z());
+    let vel = if aimmode == CMF_AIMDIRECTION || flags & CMF_ABSOLUTEPITCH != 0 {
+        let p = (-pitch_arg).to_radians();
+        let (pc, ps) = (dmath::cos(p), dmath::sin(p));
+        DVec3::new(c * pc * speed, s * pc * speed, -ps * speed)
+    } else {
+        let slope = aimed.map_or(0.0, |(_, sl)| sl);
+        DVec3::new(c * speed, s * speed, slope * speed)
+    };
+    let Ok(id) = world.spawn_at(missile_class, pos, ang) else {
+        return ActionResult::Continue;
+    };
     if let Some(m) = world.actors.get_mut(id) {
-        m.vel = DVec3::new(c * speed, s * speed, 0.0);
+        m.vel = vel;
         m.flags |= crate::class::FLAG_MISSILE;
         m.flags &= !crate::class::FLAG_SOLID;
         m.target = Some(self_id);
         m.master = Some(self_id);
-        m.tracer = src.target;
+        m.tracer = reference;
     }
     check_missile_spawn(world, id);
     ActionResult::Continue
+}
+
+const CMF_AIMMODE: i32 = 3;
+const CMF_AIMDIRECTION: i32 = 2;
+const CMF_ABSOLUTEPITCH: i32 = 16;
+const CMF_ABSOLUTEANGLE: i32 = 128;
+
+/// `CMF_*` flags as an int or `A|B` names (GZDoom `A_SpawnProjectile`).
+fn parse_cmf_flags(raw: Option<&String>) -> i32 {
+    let Some(raw) = raw.map(|s| s.trim_matches('"').trim()) else {
+        return 0;
+    };
+    if let Ok(n) = raw.parse::<i32>() {
+        return n;
+    }
+    raw.split('|')
+        .map(|f| match f.trim().to_ascii_uppercase().as_str() {
+            "CMF_AIMOFFSET" => 1,
+            "CMF_AIMDIRECTION" => CMF_AIMDIRECTION,
+            "CMF_TRACKOWNER" => 4,
+            "CMF_CHECKTARGETDEAD" => 8,
+            "CMF_ABSOLUTEPITCH" => CMF_ABSOLUTEPITCH,
+            "CMF_OFFSETPITCH" => 32,
+            "CMF_SAVEPITCH" => 64,
+            "CMF_ABSOLUTEANGLE" => CMF_ABSOLUTEANGLE,
+            "CMF_BADPITCH" => 256,
+            _ => f.trim().parse::<i32>().unwrap_or(0),
+        })
+        .fold(0, |a, b| a | b)
 }
 
 /// `A_CustomMeleeAttack(damage [, meleesound, misssound, damagetype, bleed])`.
@@ -7235,6 +7308,9 @@ fn a_brain_explode(world: &mut World, self_id: ActorId) -> ActionResult {
 /// `A_BrainDie`: exit the level.
 fn a_brain_die(world: &mut World) -> ActionResult {
     world.level.exiting = true;
+    if !cfg!(test) {
+        eprintln!("room: level exit: A_BrainDie (tic {})", world.level.time);
+    }
     world.level.secret_exit = false;
     ActionResult::Continue
 }
@@ -7584,11 +7660,24 @@ fn a_boss_death(world: &mut World, self_id: ActorId) -> ActionResult {
             );
             world.push_message("Boss defeated!");
         }
-        // E2M8 Cyber / E3M8 Spider / other last-of-class bosses → exit.
-        _ => {
+        // E2M8 Cyberdemon / E3M8 Spider Mastermind: vanilla exits the level.
+        "cyberdemon" if map == "E2M8" => {
             world.level.exiting = true;
+            if !cfg!(test) {
+                eprintln!("room: level exit: A_BossDeath (tic {})", world.level.time);
+            }
             world.push_message("Boss defeated!");
         }
+        "spidermastermind" if map == "E3M8" => {
+            world.level.exiting = true;
+            if !cfg!(test) {
+                eprintln!("room: level exit: A_BossDeath (tic {})", world.level.time);
+            }
+            world.push_message("Boss defeated!");
+        }
+        // GZDoom `A_BossDeath` does nothing on a map without a boss special for
+        // this class: mods (Brutal Doom) put it in ordinary death states.
+        _ => {}
     }
     ActionResult::Continue
 }
@@ -11538,7 +11627,7 @@ actor Fatso : Actor 3002
         let mut map = MapBuilder::new()
             .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
             .player_start(64.0, 64.0, 0)
-            .build_udmf("MAP01")
+            .build_udmf("E2M8")
             .unwrap();
         apply_nodes(&mut map);
         let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
@@ -11552,6 +11641,31 @@ actor Fatso : Actor 3002
     }
 
     #[test]
+    fn a_boss_death_off_a_boss_map_does_nothing() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("BIKERACE")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        // Brutal Doom calls A_BossDeath from ordinary death states (and its
+        // vehicles): killing the last one must not end a map with no boss special.
+        for name in ["Cyberdemon", "ZombieMan", "SpiderMastermind"] {
+            let class = classes.find_name(name).unwrap();
+            let id = w
+                .spawn_at(class, DVec3::new(200.0, 64.0, 0.0), Angle::ZERO)
+                .unwrap();
+            assert_eq!(a_boss_death(&mut w, id), ActionResult::Continue);
+            assert!(!w.level.exiting, "{name}");
+        }
+    }
+
+    #[test]
     fn boss_spawned_copy_does_not_block_boss_death() {
         let src = include_str!("../../../testdata/actors/doom_basic.txt");
         let file = parse_decorate(src).unwrap();
@@ -11560,7 +11674,7 @@ actor Fatso : Actor 3002
         let mut map = MapBuilder::new()
             .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
             .player_start(64.0, 64.0, 0)
-            .build_udmf("MAP01")
+            .build_udmf("E2M8")
             .unwrap();
         apply_nodes(&mut map);
         let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
@@ -14909,6 +15023,83 @@ actor Gunner : Actor 9004
     }
 
     #[test]
+    fn a_custom_missile_never_turns_the_shooter() {
+        let ir = parse_decorate(
+            r#"
+actor PlayerPawn : Actor 0
+{
+  Health 100
+  Radius 16
+  Height 56
+  +SOLID
+  +SHOOTABLE
+  States { Spawn: PLAY A -1 Stop }
+}
+actor Kick : Actor 9020
+{
+  Speed 10
+  Radius 4
+  Height 4
+  +NOGRAVITY
+  States { Spawn: BAL1 A -1 Stop }
+}
+actor Kicker : Actor 9021
+{
+  States
+  {
+  Spawn:
+    PLAY A 1 A_CustomMissile("Kick", 0, 0, 0, 2)
+    PLAY A -1
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let kicker = classes.find_name("Kicker").unwrap();
+        let kick = classes.find_name("Kick").unwrap();
+        let spawn = states.find_label(kicker, "Spawn").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        // Brutal Doom's player pawn fires `A_CustomMissile(.., CMF_AIMDIRECTION)` on
+        // spawn: the player has no target and must keep the map-start facing.
+        let player = w.players[0].as_ref().unwrap().mo.unwrap();
+        let facing = Angle::from_degrees(180.0);
+        w.actors.get_mut(player).unwrap().angle = facing;
+        w.set_state(player, Some(spawn), true);
+        assert_eq!(w.actors.get(player).unwrap().angle, facing);
+        let missile = w
+            .thinkers
+            .default
+            .iter()
+            .find_map(|&id| w.actors.get(id).filter(|a| a.class == kick))
+            .expect("CMF_AIMDIRECTION fires without a target");
+        assert!(
+            missile.vel.x() < 0.0,
+            "fired along the facing: {:?}",
+            missile.vel
+        );
+        // Without CMF_AIMDIRECTION and without a target nothing is fired.
+        let n = w.thinkers.default.len();
+        call_action_args(
+            &mut w,
+            player,
+            "A_CustomMissile",
+            &["\"Kick\"".into(), "0".into()],
+        );
+        assert_eq!(w.thinkers.default.len(), n);
+        assert_eq!(w.actors.get(player).unwrap().angle, facing);
+    }
+
+    #[test]
     fn a_rail_attack_pierces_multiple_targets() {
         let ir = parse_decorate(
             r#"
@@ -15113,14 +15304,25 @@ actor Ripper : Actor 9004
                 .unwrap()
         };
         // `A_SpawnItem("Guts", 0, 10)`: just clear of both radii ahead, 10 up.
-        call_action_args(&mut w, id, "A_SpawnItem", &["\"Guts\"".into(), "0".into(), "10".into()]);
+        call_action_args(
+            &mut w,
+            id,
+            "A_SpawnItem",
+            &["\"Guts\"".into(), "0".into(), "10".into()],
+        );
         let g = w.actors.get(find(&w)).unwrap().pos;
-        assert!((g.x() - 90.0).abs() < 1e-6 && (g.y() - 64.0).abs() < 1e-6, "{g:?}");
+        assert!(
+            (g.x() - 90.0).abs() < 1e-6 && (g.y() - 64.0).abs() < 1e-6,
+            "{g:?}"
+        );
         assert!((g.z() - 10.0).abs() < 1e-6, "{g:?}");
         // An explicit distance is used as given.
         call_action_args(&mut w, id, "A_SpawnItem", &["Guts".into(), "32".into()]);
         let g = w.actors.get(find(&w)).unwrap().pos;
-        assert!((g.x() - 96.0).abs() < 1e-6 && (g.y() - 64.0).abs() < 1e-6, "{g:?}");
+        assert!(
+            (g.x() - 96.0).abs() < 1e-6 && (g.y() - 64.0).abs() < 1e-6,
+            "{g:?}"
+        );
     }
 
     #[test]

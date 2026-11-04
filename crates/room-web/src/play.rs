@@ -347,6 +347,11 @@ impl PlaySession {
             if !libs.is_empty() {
                 game.set_acs_libraries(libs);
             }
+            // Full pool too: `LOAD` chunks name more libraries (GZDoom `LoadModule`).
+            game.set_acs_library_pool(
+                room_game::acs_library_pool(&vfs),
+                defs.loadacs.libraries.clone(),
+            );
         }
         let zs = room_game::load_zscript_from_vfs(&vfs);
         room_game::log_zscript_report(&zs, &zscript_handlers);
@@ -2325,7 +2330,10 @@ impl PlaySession {
                 let rot = sprite_rotation_digit(x, y, angle_deg, view_x, view_y);
                 let mut candidates = sprite_lump_candidates_rot(&sprite, frame, rot);
                 // Indexed lookup first: mixed-letter pairs (`BOS2A2C8`).
-                if let Some(hit) = self.patches.sprite_frame_lump(&self.vfs, &sprite, frame, rot) {
+                if let Some(hit) = self
+                    .patches
+                    .sprite_frame_lump(&self.vfs, &sprite, frame, rot)
+                {
                     candidates.insert(0, hit);
                 }
                 for (name, flip) in &candidates {
@@ -2375,6 +2383,7 @@ impl PlaySession {
                 flip_u,
                 anchor_u,
                 orient,
+                additive: false,
             });
         }
         out

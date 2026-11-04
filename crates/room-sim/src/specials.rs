@@ -903,6 +903,12 @@ pub fn execute_special(
         num::LIGHT_MIN_NEIGHBOR => light_neighbor(world, args, false),
         num::EXIT_NORMAL | num::EXIT_SECRET => {
             world.level.exiting = true;
+            if !cfg!(test) {
+                eprintln!(
+                    "room: level exit: Exit_Normal/Exit_Secret special (tic {})",
+                    world.level.time
+                );
+            }
             world.level.secret_exit = special == num::EXIT_SECRET;
             // Vanilla exit switch cue (`sfx_swtchx`).
             if let Some(mo) = activator {
@@ -1236,6 +1242,12 @@ pub fn execute_special(
 fn teleport_new_map(world: &mut World, args: &[i32; 5]) -> i32 {
     let map = args[0].clamp(1, 99);
     world.level.exiting = true;
+    if !cfg!(test) {
+        eprintln!(
+            "room: level exit: Teleport_NewMap (tic {})",
+            world.level.time
+        );
+    }
     world.level.secret_exit = false;
     world.level.next_map_override = Some(format!("MAP{map:02}"));
     let _ = (args[1], args[2]); // pos / face — hub start spot later
@@ -1245,6 +1257,12 @@ fn teleport_new_map(world: &mut World, args: &[i32; 5]) -> i32 {
 /// `Teleport_EndGame` — leave the episode (no next map).
 fn teleport_end_game(world: &mut World) -> i32 {
     world.level.exiting = true;
+    if !cfg!(test) {
+        eprintln!(
+            "room: level exit: Teleport_EndGame (tic {})",
+            world.level.time
+        );
+    }
     world.level.secret_exit = false;
     // Empty override = no next map (consumed by the game layer).
     world.level.next_map_override = Some(String::new());
@@ -2285,6 +2303,11 @@ pub fn activate_line(
                 return false;
             }
         }
+    }
+    // `Plane_Align` (181) is consumed at load (GZDoom `P_SetSlopes` zeroes the
+    // line special), so it never fires when crossed or used.
+    if special == 181 {
+        return false;
     }
     // Doom-format maps already translated into Hexen numbers at load for
     // some paths; raw Doom specials may still be present — treat as Hexen id.

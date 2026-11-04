@@ -279,6 +279,31 @@
           <ul id="mods-list" class="keys-list mods-list"></ul>
         </div>
         <div class="panel">
+          <div class="panel-head">
+            <h2>Content library</h2>
+            <span class="muted">PK3 / WAD files (mods like Brutal Doom, map packs, IWADs) players download for preset rooms</span>
+          </div>
+          <div class="row">
+            <label class="btn primary" for="content-file">Upload PK3 / WAD…</label>
+            <input type="file" id="content-file" accept=".pk3,.pk7,.zip,.wad,.ipk3,.ipk7" multiple hidden/>
+            <button type="button" id="content-rescan" class="btn">Rescan folder</button>
+            <p class="muted" id="content-status">—</p>
+          </div>
+          <ul id="content-list" class="keys-list mods-list"></ul>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Room presets</h2>
+            <span class="muted">Map / PK3 / WAD combinations players pick when they open a room</span>
+          </div>
+          <div class="row">
+            <button type="button" id="preset-add" class="btn primary">New preset</button>
+            <label class="field check"><span><input type="checkbox" id="preset-require"/> Rooms must use a preset</span></label>
+            <p class="muted" id="presets-status">—</p>
+          </div>
+          <ul id="presets-list" class="keys-list mods-list"></ul>
+        </div>
+        <div class="panel">
           <div class="panel-head"><h2>Security keys</h2>
             <span class="muted">Register a YubiKey / passkey for passwordless MFA</span>
           </div>

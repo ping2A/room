@@ -16,8 +16,9 @@ pub use load::{
 };
 pub use pcd::{acsf, aprop, levelinfo, secpart};
 pub use vm::{
-    AcsHost, AcsState, RunningScript, ScriptRunState, start_death_scripts, start_enter_scripts,
-    start_open_scripts, start_respawn_scripts, start_return_scripts, start_script,
-    start_script_with_activator, start_script_with_line, start_scripts_of_type,
-    start_unloading_scripts, suspend_script, terminate_script, tick_scripts,
+    AcsHost, AcsState, HudMessageArgs, ModuleLinks, RunningScript, ScriptRunState,
+    start_death_scripts, start_enter_scripts, start_open_scripts, start_open_scripts_from,
+    start_respawn_scripts, start_return_scripts, start_script, start_script_with_activator,
+    start_script_with_line, start_scripts_of_type, start_unloading_scripts, suspend_script,
+    terminate_script, tick_scripts,
 };

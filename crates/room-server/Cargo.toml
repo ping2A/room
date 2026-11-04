@@ -70,6 +70,7 @@ ciborium = { workspace = true }
 url = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
+zip = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tower-http = { workspace = true }

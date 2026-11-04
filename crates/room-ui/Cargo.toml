@@ -21,3 +21,4 @@ room-zvm = { path = "../room-zvm" }
 png.workspace = true
 room-nodebuild = { path = "../room-nodebuild" }
 room-testkit = { path = "../room-testkit" }
+room-acs = { path = "../room-acs" }

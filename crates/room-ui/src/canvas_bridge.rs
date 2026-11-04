@@ -18,13 +18,14 @@ pub trait CanvasSink {
         for row in 0..h {
             for col in 0..w {
                 let i = ((row * w + col) * 4) as usize;
-                if pixels[i + 3] < 128 {
+                if pixels[i + 3] == 0 {
                     continue;
                 }
                 let r = f32::from(pixels[i]) / 255.0;
                 let g = f32::from(pixels[i + 1]) / 255.0;
                 let b = f32::from(pixels[i + 2]) / 255.0;
-                self.fill_rect(x + col as f32, y + row as f32, 1.0, 1.0, [r, g, b, 1.0]);
+                let a = f32::from(pixels[i + 3]) / 255.0;
+                self.fill_rect(x + col as f32, y + row as f32, 1.0, 1.0, [r, g, b, a]);
             }
         }
     }
@@ -169,6 +170,8 @@ pub fn blit_draw_list_full(
                 pivot_x,
                 pivot_y,
                 tint,
+                alpha,
+                recolor,
             } => {
                 let dest_w = if size.x > 0.0 { size.x } else { 16.0 };
                 let dest_h = if size.y > 0.0 { size.y } else { 16.0 };
@@ -234,6 +237,14 @@ pub fn blit_draw_list_full(
                             }
                         }
                         apply_rgb_tint(&mut pixels, *tint);
+                        if let Some(ramp) = recolor {
+                            apply_recolor(&mut pixels, ramp);
+                        }
+                        if *alpha < 0.999 {
+                            for px in pixels.chunks_exact_mut(4) {
+                                px[3] = (f32::from(px[3]) * alpha.clamp(0.0, 1.0)) as u8;
+                            }
+                        }
                         if *flip {
                             mirror_rgba_rows(&mut pixels, dw);
                         }
@@ -274,6 +285,35 @@ pub fn blit_draw_list_full(
                 let rgba = [color.r, color.g, color.b, color.a];
                 stroke_line(sink, x0, y0, x1, y1, t, rgba);
             }
+        }
+    }
+}
+
+/// GZDoom font translation: map each pixel's luminance (normalised over the
+/// patch) onto the `[dark, bright]` colour ramp.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn apply_recolor(pixels: &mut [u8], ramp: &[[f32; 3]; 2]) {
+    let lum =
+        |p: &[u8]| 0.299 * f32::from(p[0]) + 0.587 * f32::from(p[1]) + 0.114 * f32::from(p[2]);
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    for p in pixels.chunks_exact(4).filter(|p| p[3] > 0) {
+        let l = lum(p);
+        lo = lo.min(l);
+        hi = hi.max(l);
+    }
+    if lo > hi {
+        return;
+    }
+    let span = (hi - lo).max(1.0);
+    for p in pixels.chunks_exact_mut(4) {
+        if p[3] == 0 {
+            continue;
+        }
+        // Keep some shading even on flat glyphs: 0.35..1 of the ramp.
+        let t = 0.35 + 0.65 * ((lum(p) - lo) / span);
+        for c in 0..3 {
+            let v = ramp[0][c] + (ramp[1][c] - ramp[0][c]) * t;
+            p[c] = (v.clamp(0.0, 1.0) * 255.0) as u8;
         }
     }
 }

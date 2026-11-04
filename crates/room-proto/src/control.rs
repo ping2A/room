@@ -65,6 +65,49 @@ pub struct WelcomeRoom {
     /// Empty seats are sim bots on every client (`GameOptions.fill_bots`, BE8).
     #[serde(default, skip_serializing_if = "is_false")]
     pub fill_bots: bool,
+    /// Server content files (PK3 / WAD) every seat mounts after the IWAD, in
+    /// order, before the gameplay mod and packs. From the room's preset;
+    /// downloaded from `GET /api/content/{file}`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content: Vec<RoomContentRef>,
+    /// Base game (IWAD) every seat uses instead of its default one (from the
+    /// preset; absent = the client's IWAD).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iwad: Option<RoomContentRef>,
+    /// Title of the server preset the room was created from (display only).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub preset: String,
+}
+
+/// A content file from the server library (`GET /api/content/{file}`).
+/// Clients must reject bytes whose [`content_fingerprint`] differs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoomContentRef {
+    /// File name in the library (`brutal22.pk3`, `freedoom2.wad`).
+    pub file: String,
+    /// [`content_fingerprint`] of the file, 16 hex digits.
+    pub fingerprint: String,
+    /// File size in bytes.
+    pub size: u64,
+}
+
+/// Valid content library file name: `[A-Za-z0-9._-]`, 1..=96 chars, a known
+/// extension (`wad`, `pk3`, `pk7`, `zip`, `ipk3`, `ipk7`), no leading dot.
+#[must_use]
+pub fn is_valid_content_file(name: &str) -> bool {
+    let ok_chars = !name.is_empty()
+        && name.len() <= 96
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'));
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    ok_chars
+        && matches!(
+            ext.as_deref(),
+            Some("wad" | "pk3" | "pk7" | "zip" | "ipk3" | "ipk7")
+        )
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -400,8 +443,12 @@ mod tests {
             packs: Vec::new(),
             time_limit: 0,
             fill_bots: false,
+            content: Vec::new(),
+            iwad: None,
+            preset: String::new(),
         };
         let plain = serde_json::to_string(&room).unwrap();
+        assert!(!plain.contains("content") && !plain.contains("iwad") && !plain.contains("preset"));
         assert!(
             !plain.contains("mod") && !plain.contains("time_limit") && !plain.contains("packs")
         );

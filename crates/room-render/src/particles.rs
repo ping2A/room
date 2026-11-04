@@ -765,6 +765,7 @@ pub fn append_particles_ex(
                 flip_u: false,
                 anchor_u: 0.5,
                 orient,
+                additive: false,
             },
             camera.forward,
         );

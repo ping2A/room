@@ -261,11 +261,34 @@ impl CanvasGpu {
                             }
                             let si = ((row * src_w + col) * 4) as usize;
                             let a = pixels[si + 3];
-                            if a < 128 {
+                            if a == 0 {
                                 continue;
                             }
                             let o = ((dy * self.width + dx) * 4) as usize;
-                            self.rgba[o..o + 4].copy_from_slice(&pixels[si..si + 4]);
+                            if a == 255 {
+                                self.rgba[o..o + 4].copy_from_slice(&pixels[si..si + 4]);
+                                continue;
+                            }
+                            // Straight alpha over (translucent HUD pictures / fades).
+                            let sa = u32::from(a);
+                            let da = u32::from(self.rgba[o + 3]);
+                            let out_a = sa * 255 + da * (255 - sa);
+                            if out_a == 0 {
+                                continue;
+                            }
+                            for c in 0..3 {
+                                let sc = u32::from(pixels[si + c]);
+                                let dc = u32::from(self.rgba[o + c]);
+                                #[allow(clippy::cast_possible_truncation)]
+                                {
+                                    self.rgba[o + c] =
+                                        ((sc * sa * 255 + dc * da * (255 - sa)) / out_a) as u8;
+                                }
+                            }
+                            #[allow(clippy::cast_possible_truncation)]
+                            {
+                                self.rgba[o + 3] = (out_a / 255) as u8;
+                            }
                         }
                     }
                 }

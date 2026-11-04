@@ -843,3 +843,151 @@ mod tests {
         assert_eq!(lists.sprite_stat[2], STAT_TRANSPORT);
     }
 }
+
+/// Chocolate `spawn(-1, i)` random rolls at map load (`game.c`), in sprite
+/// index order like `prelevel`'s spawn loop.
+///
+/// Room's [`classify_map_sprites`] mirrors the status / culling side of
+/// `spawn`; this pass adds the `TRAND` side so the level starts with the same
+/// `randomseed` as vanilla, and with the same random cstat / size / angle on
+/// the sprites that roll. DEMO1 (E3L11) rolls 13 times here: 6 cans, 1
+/// exploding barrel, 4 eggs (`cstat = 257 | (TRAND & 4)`) and one blood splat
+/// (two `7 + (TRAND & 7)` repeats).
+///
+/// `alive` says whether a sprite index survived `prelevel`'s marker deletes
+/// (`statnum < MAXSTATUS`). `monsters_off` is `ud.monsters_off`.
+pub fn spawn_load_rolls(
+    sprites: &mut [SpriteT],
+    alive: &dyn Fn(usize) -> bool,
+    actor_temps: &mut Vec<crate::con::ActorConTemps>,
+    randomseed: &mut i32,
+    skill: u8,
+    monsters_off: bool,
+) {
+    use room_build_engine::numeric::krand_step;
+    const WATERDRIP: i16 = 660;
+    const EGG: i16 = 675;
+    const WOODENHORSE: i16 = 904;
+    const BULLETHOLE: i16 = 952;
+    const HORSEONSIDE: i16 = 1026;
+    const RUBBERCAN: i16 = 1062;
+    const NUKEBARREL: i16 = 1227;
+    const NUKEBARRELDENTED: i16 = 1228;
+    const NUKEBARRELLEAKED: i16 = 1229;
+    const MONEY: i16 = 1233;
+    const EXPLODINGBARREL: i16 = 1238;
+    const FIREBARREL: i16 = 1240;
+    const RAT: i16 = 1267;
+    const TRASH: i16 = 1272;
+    const WATERSPLASH2: i16 = 1380;
+    const FIREVASE: i16 = 1390;
+    const MAIL: i16 = 4410;
+    const PAPER: i16 = 4460;
+    const CANWITHSOMETHING2: i16 = 4580;
+    const CANWITHSOMETHING4: i16 = 4582;
+    let roll = |seed: &mut i32| -> i32 { krand_step(seed) };
+    for i in 0..sprites.len() {
+        if !alive(i) {
+            continue;
+        }
+        let sp = &mut sprites[i];
+        // `spawn(-1, i)` header: `OW = hittype[i].owner = i` for every map
+        // sprite (`ifspawnedby`, `ifactor` owner checks rely on it).
+        sp.owner = i as i16;
+        match sp.picnum {
+            WATERSPLASH2 => {
+                let r = 16 + (roll(randomseed) & 15);
+                sp.xrepeat = r as u8;
+                sp.yrepeat = r as u8;
+            }
+            2296..=2299 => {
+                // BLOODSPLAT1…4 (cstat / z handled by classify).
+                sp.xrepeat = (7 + (roll(randomseed) & 7)) as u8;
+                sp.yrepeat = (7 + (roll(randomseed) & 7)) as u8;
+            }
+            BULLETHOLE => {
+                sp.xrepeat = 3;
+                sp.yrepeat = 3;
+                sp.cstat = (16 + (roll(randomseed) & 12)) as u16;
+            }
+            MONEY | MAIL | PAPER => {
+                let t0 = roll(randomseed) & 2047;
+                if actor_temps.len() <= i {
+                    actor_temps.resize_with(i + 1, Default::default);
+                }
+                actor_temps[i].g_t[0] = t0;
+                sp.cstat = (roll(randomseed) & 12) as u16;
+                sp.xrepeat = 8;
+                sp.yrepeat = 8;
+                sp.ang = (roll(randomseed) & 2047) as i16;
+            }
+            WATERDRIP => {
+                // j == -1: `z += 4<<8; T1 = z; T2 = TRAND & 127`.
+                sp.z += 4 << 8;
+                if actor_temps.len() <= i {
+                    actor_temps.resize_with(i + 1, Default::default);
+                }
+                actor_temps[i].g_t[0] = sp.z;
+                actor_temps[i].g_t[1] = roll(randomseed) & 127;
+            }
+            TRASH => sp.ang = (roll(randomseed) & 2047) as i16,
+            RAT => {
+                if i32::from(sp.lotag) <= i32::from(skill) && !monsters_off {
+                    sp.ang = (roll(randomseed) & 2047) as i16;
+                    sp.xrepeat = 48;
+                    sp.yrepeat = 48;
+                    sp.cstat = 0;
+                }
+            }
+            CANWITHSOMETHING
+            | CANWITHSOMETHING2..=CANWITHSOMETHING4
+            | RUBBERCAN
+            | EXPLODINGBARREL
+            | HORSEONSIDE
+            | FIREBARREL
+            | NUKEBARREL
+            | FIREVASE
+            | NUKEBARRELDENTED
+            | NUKEBARRELLEAKED
+            | WOODENHORSE
+            | EGG => {
+                if sp.picnum == EGG && monsters_off {
+                    continue;
+                }
+                sp.clipdist = if sp.picnum == EGG { 24 } else { 72 };
+                sp.cstat = (257 | (roll(randomseed) & 4)) as u16;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod load_roll_tests {
+    use super::*;
+
+    #[test]
+    fn barrels_eggs_and_splats_roll_like_chocolate_spawn() {
+        // Index order, one roll per can/barrel/egg, two per blood splat.
+        let mut sprites = vec![
+            SpriteT { picnum: CANWITHSOMETHING, ..Default::default() },
+            SpriteT { picnum: 2297, ..Default::default() }, // BLOODSPLAT3
+            SpriteT { picnum: 675, ..Default::default() },  // EGG
+            SpriteT { picnum: 100, ..Default::default() },  // no roll
+        ];
+        let mut temps = Vec::new();
+        let mut seed = 17;
+        spawn_load_rolls(&mut sprites, &|_| true, &mut temps, &mut seed, 2, false);
+        let mut expect = 17;
+        for _ in 0..4 {
+            let _ = room_build_engine::numeric::krand_step(&mut expect);
+        }
+        assert_eq!(seed, expect);
+        assert_eq!(sprites[0].cstat & 257, 257);
+        assert_eq!(sprites[0].clipdist, 72);
+        assert_eq!(sprites[2].clipdist, 24);
+        assert!((7..=14).contains(&sprites[1].xrepeat));
+        // `spawn(-1, i)` header: every map sprite owns itself.
+        assert!(sprites.iter().enumerate().all(|(i, s)| s.owner == i as i16));
+    }
+}

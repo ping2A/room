@@ -826,6 +826,7 @@ fn emit_thing_sprites(map: &MapGeometry, camera: &Camera, lists: &mut SceneLists
             flip_u: false,
             anchor_u: 0.5,
             orient: crate::sprites::SpriteOrient::Billboard,
+            additive: false,
         };
         #[allow(clippy::cast_possible_truncation)]
         let start = lists.sprites.len() as u32;
@@ -3725,6 +3726,7 @@ mod tests {
             flip_u: false,
             anchor_u: 0.5,
             orient: crate::sprites::SpriteOrient::Billboard,
+            additive: false,
         }];
         let with_live = build_scene(&map, &cam, Some(&live));
         assert_eq!(with_live.sprites.len(), 6);
@@ -3760,6 +3762,7 @@ mod tests {
             flip_u: false,
             anchor_u: 0.5,
             orient: crate::sprites::SpriteOrient::Billboard,
+            additive: false,
         }
     }
 
@@ -3821,6 +3824,7 @@ mod tests {
             flip_u: false,
             anchor_u: 0.5,
             orient: crate::sprites::SpriteOrient::Billboard,
+            additive: false,
         };
         let mut lists = SceneLists::default();
         // Actor order: near smoke, far monster, middle blood.
@@ -3913,6 +3917,7 @@ mod tests {
             flip_u: false,
             anchor_u: 0.5,
             orient: crate::sprites::SpriteOrient::Wall { yaw: 0.0 },
+            additive: false,
         };
         let cam = Camera {
             eye: Vec3::new(140.0, 0.0, 16.0),

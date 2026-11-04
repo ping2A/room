@@ -401,8 +401,11 @@ pub fn moveactors_with_skill(
             continue;
         }
         let pic_i = picnum[iu];
-        // Chocolate handles FIRE in `moveactors` C switch — not CON `killit`.
-        if pic_i == FIRE || pic_i == FIRE2 {
+        // FIRE / FIRE2 run their CON (`useractor notenemy FIRE … state
+        // firestate`): Chocolate `moveactors` has no C case for them. The old
+        // skip here dropped their `ifrnd` rolls (7 krands on DEMO1 tic 0).
+        // Legacy DEMO1 fix-ups were tuned with the skip, so keep it there.
+        if crate::fixups::on() && (pic_i == FIRE || pic_i == FIRE2) {
             i = next;
             continue;
         }

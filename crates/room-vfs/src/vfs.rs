@@ -34,6 +34,8 @@ pub struct VfsBuilder {
     lumps: Vec<(LumpInfo, LumpData)>,
     active_filters: Vec<String>,
     warnings: Vec<String>,
+    /// Mount `maps/NAME.wad` entries of archives as map WADs (GZDoom).
+    nested_map_wads: bool,
 }
 
 impl Default for VfsBuilder {
@@ -51,7 +53,18 @@ impl VfsBuilder {
             lumps: Vec::new(),
             active_filters: Vec::new(),
             warnings: Vec::new(),
+            nested_map_wads: true,
         }
+    }
+
+    /// Mount each `maps/NAME.wad` of a PK3 / PK7 / directory right after it,
+    /// so its map loads as `NAME` (GZDoom: the map takes the file's name).
+    /// On by default; the web editor turns it off because it mounts those
+    /// WADs itself under `pack.pk3:maps/name.wad` to edit them.
+    #[must_use]
+    pub fn nested_map_wads(mut self, on: bool) -> Self {
+        self.nested_map_wads = on;
+        self
     }
 
     /// Set active `filter/<name>/` directory names (from IWAD Autoname).
@@ -178,10 +191,36 @@ impl VfsBuilder {
 
     fn append_archive_entries(&mut self, entries: Vec<ArchiveEntry>) -> Result<(), VfsError> {
         let mut nested: Vec<(String, bytes::Bytes)> = Vec::new();
+        // (mount name, map name from the file stem, bytes)
+        let mut maps: Vec<(String, String, bytes::Bytes)> = Vec::new();
         for e in entries {
             if is_nested_root_wad(&e.info.full_path) && !is_map_wad(&e.info.full_path) {
                 if let StoredPayload::Inflated(ref b) = e.payload {
                     nested.push((e.info.full_path.clone(), b.clone()));
+                }
+            }
+            if self.nested_map_wads && is_map_wad(&e.info.full_path) {
+                let data = match &e.payload {
+                    StoredPayload::Inflated(b) => Some(b.clone()),
+                    StoredPayload::File(path) => std::fs::read(path).ok().map(bytes::Bytes::from),
+                };
+                if let Some(data) = data.filter(|d| d.starts_with(b"PWAD") || d.starts_with(b"IWAD"))
+                {
+                    let owner = self
+                        .containers
+                        .get(e.info.container.0 as usize)
+                        .map(|c| c.info.name.clone())
+                        .unwrap_or_default();
+                    let stem = e
+                        .info
+                        .full_path
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or_default()
+                        .rsplit_once('.')
+                        .map_or("", |(s, _)| s)
+                        .to_owned();
+                    maps.push((format!("{owner}:{}", e.info.full_path), stem, data));
                 }
             }
             self.lumps.push((e.info.clone(), LumpData::Archive(e)));
@@ -192,6 +231,29 @@ impl VfsBuilder {
                 Arc::new(MemorySource::new(data.clone())),
                 Some(data.as_ref()),
             )?;
+        }
+        for (name, stem, data) in maps {
+            let first = self.lumps.len();
+            if let Err(e) = self.mount_source(
+                name.clone(),
+                Arc::new(MemorySource::new(data.clone())),
+                Some(data.as_ref()),
+            ) {
+                self.warnings.push(format!("{name}: {e}"));
+                continue;
+            }
+            // GZDoom names the map after the file, whatever its header says.
+            if let Some((info, payload)) = self.lumps.get_mut(first) {
+                let want = ShortName::from_stem(&stem);
+                if !stem.is_empty() && info.short_name != want {
+                    info.short_name = want;
+                    info.full_path = want.as_str().to_ascii_lowercase();
+                    if let LumpData::Wad(w) = payload {
+                        w.info.short_name = want;
+                        w.info.full_path = info.full_path.clone();
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -585,6 +647,42 @@ mod tests {
 
     use super::*;
     use crate::write::WadWriter;
+
+    #[test]
+    fn pk3_map_wads_mount_under_the_file_name() {
+        // maps/bikerace.wad holds marker BIKERACE; maps/arena.wad says MAP01
+        // inside but GZDoom still calls the map ARENA.
+        let map = |marker: &str| {
+            WadWriter::pwad()
+                .marker(marker)
+                .add("TEXTMAP", b"namespace = \"zdoom\";".to_vec())
+                .marker("ENDMAP")
+                .finish()
+                .unwrap()
+        };
+        let pk3 = zip_from_files(&[
+            ("maps/bikerace.wad", map("BIKERACE").as_slice()),
+            ("maps/arena.wad", map("MAP01").as_slice()),
+            ("decorate.txt", b"".as_slice()),
+        ])
+        .unwrap();
+        let vfs = VfsBuilder::new()
+            .mount_memory("mod.pk3", pk3.clone())
+            .unwrap()
+            .build()
+            .unwrap();
+        assert!(vfs.find("BIKERACE", Namespace::Global).is_some());
+        assert!(vfs.find("ARENA", Namespace::Global).is_some());
+        assert!(vfs.find("MAP01", Namespace::Global).is_none());
+        // Off (web editor mounts them itself).
+        let vfs = VfsBuilder::new()
+            .nested_map_wads(false)
+            .mount_memory("mod.pk3", pk3)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert!(vfs.find("BIKERACE", Namespace::Global).is_none());
+    }
 
     #[test]
     fn last_loaded_wins() {

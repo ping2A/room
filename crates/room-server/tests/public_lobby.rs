@@ -23,6 +23,7 @@ async fn public_list_hides_private_and_serves_lobby() {
             game: None,
             fill_bots: false,
             quick_play: false,
+            preset: None,
         })
         .unwrap();
     let _priv = registry
@@ -38,6 +39,7 @@ async fn public_list_hides_private_and_serves_lobby() {
             game: None,
             fill_bots: false,
             quick_play: false,
+            preset: None,
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();

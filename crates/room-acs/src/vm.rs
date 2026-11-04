@@ -765,6 +765,10 @@ pub trait AcsHost {
     fn hud_message(&mut self, text: &str, bold: bool) {
         self.print(text, bold);
     }
+    /// Full `HudMessage` (GZDoom `PCD_ENDHUDMESSAGE`); defaults to [`Self::hud_message`].
+    fn hud_message_ex(&mut self, msg: HudMessageArgs) {
+        self.hud_message(&msg.text, msg.bold);
+    }
     /// `GetPlayerInput(playernum, input)` — button / mouse axes (0 stub).
     fn get_player_input(&self, player: i32, input: i32) -> i32 {
         let _ = (player, input);
@@ -944,6 +948,8 @@ pub struct CallFrame {
     pub locals: Vec<i32>,
     /// When true, discard the function return value (`CALLDISCARD`).
     pub discard_result: bool,
+    /// Module to resume in.
+    pub module: usize,
 }
 
 /// One live script instance (`DLevelScript` subset).
@@ -965,6 +971,16 @@ pub struct RunningScript {
     pub frames: Vec<CallFrame>,
     /// Print buffer between BEGINPRINT / ENDPRINT.
     pub print_buf: String,
+    /// Module whose bytecode is executing (changes across library `CALL`s).
+    pub module: usize,
+    /// `SetHudSize` width / height (script-local in GZDoom).
+    pub hud_w: i32,
+    /// `SetHudSize` height (negative = covers the status bar).
+    pub hud_h: i32,
+    /// `SetFont` (script-local `activefont`).
+    pub font: String,
+    /// `PCD_OPTHUDMESSAGE` stack mark (`optstart`).
+    pub optstart: Option<usize>,
     /// Activator side (0 = front).
     pub side: u8,
     /// Activating linedef index (`-1` if none / OPEN / manual start).
@@ -975,6 +991,39 @@ pub struct RunningScript {
 
 /// High bit marks a dynamic string index from [`AcsState::dyn_strings`].
 const DYN_STRING_TAG: i32 = 0x4000_0000;
+
+/// One `HudMessage` call, as decoded by the VM (GZDoom `PCD_ENDHUDMESSAGE`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HudMessageArgs {
+    /// Message text (escapes already decoded; may hold `\x1c` colour codes).
+    pub text: String,
+    /// `HUDMSG_*` type and flags.
+    pub type_flags: i32,
+    /// Message id (`0` = never replaced).
+    pub id: i32,
+    /// `CR_*` colour index (when not `HUDMSG_COLORSTRING`).
+    pub color: i32,
+    /// Colour name (`HUDMSG_COLORSTRING`).
+    pub color_name: Option<String>,
+    /// X / y position (`ACSToFloat`).
+    pub x: f32,
+    /// Y position.
+    pub y: f32,
+    /// Hold time in seconds.
+    pub hold: f32,
+    /// Optional arguments (fade / type-on times, alpha) as floats.
+    pub opt: Vec<f32>,
+    /// `SetHudSize` width (`0` = screen-relative coordinates).
+    pub hud_w: i32,
+    /// `SetHudSize` height (negative = covers the status bar).
+    pub hud_h: i32,
+    /// Font set by `SetFont` (empty = small font).
+    pub font: String,
+    /// `HudMessageBold` (shown to every player).
+    pub bold: bool,
+    /// Activator key (who sees a non-bold message).
+    pub activator: u64,
+}
 
 /// Level ACS state (lives on `World`).
 #[derive(Clone, Debug)]
@@ -995,6 +1044,25 @@ pub struct AcsState {
     pub result_value: i32,
     /// Dynamic strings (`StrLeft`/`StrMid`/…); bootstrap pool (no GC yet).
     pub dyn_strings: Vec<String>,
+    /// Map variables of library modules 1.. (`lib_vars[m - 1]`; module 0 is `map_vars`).
+    pub lib_vars: Vec<[i32; 128]>,
+    /// Map arrays of library modules 1.. (`lib_arrays[m - 1]`).
+    pub lib_arrays: Vec<Vec<Vec<i32>>>,
+    /// Per-module import links (`MIMP` / `AIMP` / `FUNC` imports), rebuilt on push.
+    pub links: Vec<ModuleLinks>,
+    /// `dyn_strings` index by text (GZDoom `ACSStringPool::AddString` dedupe).
+    pub dyn_index: std::collections::HashMap<String, i32>,
+}
+
+/// Resolved cross-module references of one module (GZDoom `FBehavior::Imports`).
+#[derive(Clone, Debug, Default)]
+pub struct ModuleLinks {
+    /// Imported map variable `slot` → (owner module, owner slot).
+    pub vars: Vec<(usize, usize, usize)>,
+    /// `AIMP` entry `j` (local array `own + j`) → (owner module, owner array).
+    pub arrays: Vec<Option<(usize, usize)>>,
+    /// Function `n` → (owner module, owner function) when imported.
+    pub funcs: Vec<Option<(usize, usize)>>,
 }
 
 impl Default for AcsState {
@@ -1008,6 +1076,10 @@ impl Default for AcsState {
             global_vars: [0; 64],
             result_value: 0,
             dyn_strings: Vec::new(),
+            lib_vars: Vec::new(),
+            lib_arrays: Vec::new(),
+            links: Vec::new(),
+            dyn_index: std::collections::HashMap::new(),
         }
     }
 }
@@ -1030,15 +1102,252 @@ impl AcsState {
     /// Applies `MINI` map-var defaults and clones `ARAY`/`AINI` arrays when this
     /// is the first (map) module.
     pub fn push_module(&mut self, module: AcsModule) {
-        if self.modules.is_empty() {
-            self.map_vars = module.map_var_defaults;
-            self.map_arrays = module
-                .map_arrays
-                .iter()
-                .map(|a| a.elements.clone())
-                .collect();
+        let name = module.name.clone();
+        self.push_module_named(module, &name);
+    }
+
+    /// Attach a module under `name` (its lump name, used to resolve `LOAD`).
+    ///
+    /// GZDoom `FBehavior::Init`: the module gets the next library id, its own
+    /// map variables / arrays, and its imports are linked by name. A library's
+    /// string-valued map variables become global strings (`MSTR`/`ASTR`/`ATAG`).
+    pub fn push_module_named(&mut self, mut module: AcsModule, name: &str) {
+        module.name = name.to_owned();
+        // Named scripts get globally unique numbers.
+        let base: i32 = self
+            .modules
+            .iter()
+            .map(|m| m.script_names.len() as i32)
+            .sum();
+        module.named_base = base;
+        if base != 0 {
+            for s in &mut module.scripts {
+                if s.number < 0 {
+                    s.number -= base;
+                }
+            }
+        }
+        let mut vars = module.map_var_defaults;
+        let mut arrays: Vec<Vec<i32>> = module
+            .map_arrays
+            .iter()
+            .map(|a| a.elements.clone())
+            .collect();
+        let first = self.modules.is_empty();
+        if !first {
+            // GZDoom tags a library's string-valued map data into the global pool.
+            let lib = self.modules.len();
+            let text = |v: i32| -> Option<String> {
+                let i = usize::try_from(v).ok()?;
+                (i < module.string_offsets.len()).then(|| module.string(i).to_owned())
+            };
+            for &var in &module.mstr_vars {
+                let Some(v) = vars.get(var as usize).copied() else {
+                    continue;
+                };
+                if let Some(t) = text(v) {
+                    vars[var as usize] = intern_string(self, t);
+                }
+            }
+            for &var in &module.astr_vars {
+                let arr = vars.get(var as usize).copied().unwrap_or(-1);
+                let Some(a) = usize::try_from(arr).ok().filter(|&a| a < arrays.len()) else {
+                    continue;
+                };
+                for j in 0..arrays[a].len() {
+                    if let Some(t) = text(arrays[a][j]) {
+                        arrays[a][j] = intern_string(self, t);
+                    }
+                }
+            }
+            for (var, tags) in &module.atags {
+                let arr = vars.get(*var as usize).copied().unwrap_or(-1);
+                let Some(a) = usize::try_from(arr).ok().filter(|&a| a < arrays.len()) else {
+                    continue;
+                };
+                for (j, tag) in tags.iter().enumerate() {
+                    let Some(v) = arrays[a].get(j).copied() else {
+                        break;
+                    };
+                    arrays[a][j] = match tag {
+                        2 => v | lib_id(lib),
+                        1 => text(v).map_or(v, |t| intern_string(self, t)),
+                        _ => v,
+                    };
+                }
+            }
+        }
+        if first {
+            self.map_vars = vars;
+            self.map_arrays = arrays;
+        } else {
+            self.lib_vars.push(vars);
+            self.lib_arrays.push(arrays);
         }
         self.modules.push(module);
+        self.relink();
+    }
+
+    /// Resolve every module's `LOAD` imports against the loaded modules
+    /// (GZDoom `FBehavior::Init` import pass: functions, `MIMP`, `AIMP`).
+    pub fn relink(&mut self) {
+        let mut all = Vec::with_capacity(self.modules.len());
+        let mut array_vars: Vec<(usize, usize, i32)> = Vec::new();
+        for (m, module) in self.modules.iter().enumerate() {
+            let imports: Vec<usize> = module
+                .libraries
+                .iter()
+                .filter_map(|lib| {
+                    self.modules
+                        .iter()
+                        .position(|o| !o.name.is_empty() && o.name.eq_ignore_ascii_case(lib))
+                        .filter(|&o| o != m)
+                })
+                .collect();
+            let mut links = ModuleLinks {
+                funcs: vec![None; module.functions.len()],
+                arrays: vec![None; module.array_imports.len()],
+                vars: Vec::new(),
+            };
+            for &lib in &imports {
+                let other = &self.modules[lib];
+                for (j, f) in module.functions.iter().enumerate() {
+                    if f.address != 0 || f.import_num != 0 || links.funcs[j].is_some() {
+                        continue;
+                    }
+                    let Some(fname) = module.function_names.get(j) else {
+                        continue;
+                    };
+                    if let Some(k) = other.find_function_name(fname) {
+                        let real = &other.functions[k];
+                        if real.address != 0 && real.import_num == 0 {
+                            links.funcs[j] = Some((lib, k));
+                        }
+                    }
+                }
+                for (var, vname) in &module.map_imports {
+                    if links.vars.iter().any(|(v, _, _)| *v == *var as usize) {
+                        continue;
+                    }
+                    if let Some(k) = other.find_map_var_name(vname) {
+                        links.vars.push((*var as usize, lib, k));
+                    }
+                }
+                for (j, (var, _size, aname)) in module.array_imports.iter().enumerate() {
+                    if links.arrays[j].is_some() {
+                        continue;
+                    }
+                    let Some(k) = other.find_map_var_name(aname) else {
+                        continue;
+                    };
+                    let owner_arr = self.var_storage(lib).get(k).copied().unwrap_or(-1);
+                    if let Ok(a) = usize::try_from(owner_arr) {
+                        links.arrays[j] = Some((lib, a));
+                        let local = (module.map_arrays.len() + j) as i32;
+                        array_vars.push((m, *var as usize, local));
+                    }
+                }
+            }
+            all.push(links);
+        }
+        self.links = all;
+        // `AIMP`: the importing variable holds the imported array's local number.
+        for (m, var, local) in array_vars {
+            if let Some(v) = self.var_storage_mut(m).get_mut(var) {
+                *v = local;
+            }
+        }
+    }
+
+    fn var_storage(&self, m: usize) -> &[i32; 128] {
+        if m == 0 {
+            &self.map_vars
+        } else {
+            &self.lib_vars[m - 1]
+        }
+    }
+
+    fn var_storage_mut(&mut self, m: usize) -> &mut [i32; 128] {
+        if m == 0 {
+            &mut self.map_vars
+        } else {
+            &mut self.lib_vars[m - 1]
+        }
+    }
+
+    fn array_storage_mut(&mut self, m: usize) -> &mut Vec<Vec<i32>> {
+        if m == 0 {
+            &mut self.map_arrays
+        } else {
+            &mut self.lib_arrays[m - 1]
+        }
+    }
+
+    /// Owner (module, slot) of map variable `slot` as seen from module `m`.
+    fn var_target(&self, m: usize, slot: usize) -> (usize, usize) {
+        self.links
+            .get(m)
+            .and_then(|l| l.vars.iter().find(|(v, _, _)| *v == slot))
+            .map_or((m, slot), |&(_, o, k)| (o, k))
+    }
+
+    /// Read map variable `slot` of module `m` (following `MIMP`).
+    #[must_use]
+    pub fn map_var(&self, m: usize, slot: usize) -> i32 {
+        let (o, k) = self.var_target(m, slot);
+        if o >= self.modules.len().max(1) && o != 0 {
+            return 0;
+        }
+        self.var_storage(o).get(k).copied().unwrap_or(0)
+    }
+
+    /// Mutable map variable `slot` of module `m` (following `MIMP`).
+    pub fn map_var_mut(&mut self, m: usize, slot: usize) -> Option<&mut i32> {
+        let (o, k) = self.var_target(m, slot);
+        if o != 0 && o > self.lib_vars.len() {
+            return None;
+        }
+        self.var_storage_mut(o).get_mut(k)
+    }
+
+    /// Owner (module, array) of array number `arr` as seen from module `m`.
+    fn array_target(&self, m: usize, arr: usize) -> Option<(usize, usize)> {
+        let own = self.modules.get(m).map_or(0, |md| md.map_arrays.len());
+        if arr < own {
+            return Some((m, arr));
+        }
+        self.links.get(m)?.arrays.get(arr - own).copied().flatten()
+    }
+
+    /// Mutable element `index` of the array held in module `m`'s map var `mapvar`.
+    pub fn map_array_elem_mut(&mut self, m: usize, mapvar: usize, index: i32) -> Option<&mut i32> {
+        let arr = usize::try_from(self.map_var(m, mapvar)).ok()?;
+        let (o, a) = self.array_target(m, arr)?;
+        let index = usize::try_from(index).ok()?;
+        if o != 0 && o > self.lib_arrays.len() {
+            return None;
+        }
+        self.array_storage_mut(o).get_mut(a)?.get_mut(index)
+    }
+
+    /// Element `index` of the array held in module `m`'s map var `mapvar`.
+    #[must_use]
+    pub fn map_array_elem(&self, m: usize, mapvar: usize, index: i32) -> i32 {
+        let Some(arr) = usize::try_from(self.map_var(m, mapvar)).ok() else {
+            return 0;
+        };
+        let Some((o, a)) = self.array_target(m, arr) else {
+            return 0;
+        };
+        let store = if o == 0 {
+            Some(&self.map_arrays)
+        } else {
+            self.lib_arrays.get(o - 1)
+        };
+        usize::try_from(index)
+            .ok()
+            .and_then(|i| store?.get(a)?.get(i).copied())
+            .unwrap_or(0)
     }
 
     /// Whether script `number` is currently running / delayed / waiting (not suspended/terminated).
@@ -1068,27 +1377,61 @@ pub fn start_scripts_of_type(
     script_type: ScriptType,
     activator: u64,
 ) {
-    let batch: Vec<(i32, u32, u8, u16)> = state
+    let batch: Vec<(usize, i32, u32, u8, u16)> = state
         .modules
         .iter()
-        .flat_map(|m| {
+        .enumerate()
+        .flat_map(|(mi, m)| {
             m.scripts
                 .iter()
                 .filter(|s| s.script_type == script_type)
-                .map(|s| (s.number, s.address, s.argc, s.local_count))
+                .map(|s| (mi, s.number, s.address, s.argc, s.local_count))
                 .collect::<Vec<_>>()
         })
         .collect();
-    for (number, address, argc, local_count) in batch {
+    for (module, number, address, argc, local_count) in batch {
         let _ = start_script_inner(
             state,
             host,
+            module,
             number,
             address,
             argc,
             local_count,
             &[0; 3],
             activator,
+            -1,
+            0,
+        );
+    }
+}
+
+/// Start the OPEN scripts of modules `from..` (libraries attached after the map).
+pub fn start_open_scripts_from(state: &mut AcsState, host: &mut dyn AcsHost, from: usize) {
+    let batch: Vec<(usize, i32, u32, u8, u16)> = state
+        .modules
+        .iter()
+        .enumerate()
+        .skip(from)
+        .flat_map(|(mi, m)| {
+            m.scripts
+                .iter()
+                .filter(|s| s.script_type == ScriptType::Open)
+                .map(|s| (mi, s.number, s.address, s.argc, s.local_count))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (module, number, address, argc, local_count) in batch {
+        let _ = start_script_inner(
+            state,
+            host,
+            module,
+            number,
+            address,
+            argc,
+            local_count,
+            &[0; 3],
+            0,
             -1,
             0,
         );
@@ -1183,15 +1526,18 @@ pub fn start_script_with_line(
     if !always && state.is_active(number) {
         return 0;
     }
-    let Some((address, argc, local_count)) = state.modules.iter().find_map(|m| {
-        m.find_script(number)
-            .map(|s| (s.address, s.argc, s.local_count))
-    }) else {
+    let Some((module, address, argc, local_count)) =
+        state.modules.iter().enumerate().find_map(|(mi, m)| {
+            m.find_script(number)
+                .map(|s| (mi, s.address, s.argc, s.local_count))
+        })
+    else {
         return 0;
     };
     start_script_inner(
         state,
         host,
+        module,
         number,
         address,
         argc,
@@ -1207,6 +1553,7 @@ pub fn start_script_with_line(
 fn start_script_inner(
     state: &mut AcsState,
     host: &mut dyn AcsHost,
+    module: usize,
     number: i32,
     address: u32,
     argc: u8,
@@ -1233,6 +1580,11 @@ fn start_script_inner(
         locals,
         frames: Vec::new(),
         print_buf: String::new(),
+        module,
+        hud_w: 0,
+        hud_h: 0,
+        font: String::new(),
+        optstart: None,
         side,
         line,
         activator,
@@ -1365,42 +1717,60 @@ enum Step {
 
 fn take_op(state: &mut AcsState, idx: usize) -> Option<u32> {
     let mut pc = state.scripts[idx].pc;
-    let op = state.modules.first()?.fetch_op(&mut pc)?;
+    let op = state
+        .modules
+        .get(state.scripts[idx].module)?
+        .fetch_op(&mut pc)?;
     state.scripts[idx].pc = pc;
     Some(op)
 }
 
 fn take_byte_or_word(state: &mut AcsState, idx: usize) -> Option<i32> {
     let mut pc = state.scripts[idx].pc;
-    let v = state.modules.first()?.fetch_byte_or_word(&mut pc)?;
+    let v = state
+        .modules
+        .get(state.scripts[idx].module)?
+        .fetch_byte_or_word(&mut pc)?;
     state.scripts[idx].pc = pc;
     Some(v)
 }
 
 fn take_i32(state: &mut AcsState, idx: usize) -> Option<i32> {
     let mut pc = state.scripts[idx].pc;
-    let v = state.modules.first()?.fetch_i32(&mut pc)?;
+    let v = state
+        .modules
+        .get(state.scripts[idx].module)?
+        .fetch_i32(&mut pc)?;
     state.scripts[idx].pc = pc;
     Some(v)
 }
 
 fn take_u32(state: &mut AcsState, idx: usize) -> Option<u32> {
     let mut pc = state.scripts[idx].pc;
-    let v = state.modules.first()?.fetch_u32(&mut pc)?;
+    let v = state
+        .modules
+        .get(state.scripts[idx].module)?
+        .fetch_u32(&mut pc)?;
     state.scripts[idx].pc = pc;
     Some(v)
 }
 
 fn take_u8(state: &mut AcsState, idx: usize) -> Option<u8> {
     let mut pc = state.scripts[idx].pc;
-    let v = state.modules.first()?.fetch_u8(&mut pc)?;
+    let v = state
+        .modules
+        .get(state.scripts[idx].module)?
+        .fetch_u8(&mut pc)?;
     state.scripts[idx].pc = pc;
     Some(v)
 }
 
 fn take_short_or_word(state: &mut AcsState, idx: usize) -> Option<i32> {
     let mut pc = state.scripts[idx].pc;
-    let v = state.modules.first()?.fetch_short_or_word(&mut pc)?;
+    let v = state
+        .modules
+        .get(state.scripts[idx].module)?
+        .fetch_short_or_word(&mut pc)?;
     state.scripts[idx].pc = pc;
     Some(v)
 }
@@ -1413,12 +1783,41 @@ fn acs_string(state: &AcsState, index: i32) -> String {
         let slot = (index & !DYN_STRING_TAG) as usize;
         return state.dyn_strings.get(slot).cloned().unwrap_or_default();
     }
-    let idx = index as usize;
+    // GZDoom `FBehaviorContainer::LookupString`: the library id lives in the
+    // high bits (`LIBRARYID_SHIFT`); untagged indices belong to module 0.
+    let lib = (index as u32 >> LIBRARYID_SHIFT) as usize;
+    let idx = (index & 0xffff) as usize;
     state
         .modules
-        .first()
+        .get(lib)
+        .filter(|m| idx < m.string_offsets.len())
         .map(|m| m.string(idx).to_owned())
         .unwrap_or_default()
+}
+
+/// `LIBRARYID_SHIFT` (GZDoom `p_acs.h`).
+const LIBRARYID_SHIFT: u32 = 20;
+
+/// Library id bits of module `m` (`FBehavior::GetLibraryID`).
+fn lib_id(m: usize) -> i32 {
+    (m as i32) << LIBRARYID_SHIFT
+}
+
+/// Tag an inline string operand with the running module (`TAGSTR`).
+fn tag_str(state: &AcsState, idx: usize, v: i32) -> i32 {
+    v | lib_id(state.scripts[idx].module)
+}
+
+/// Add `s` to the global string pool, reusing an equal entry (`AddString`).
+fn intern_string(state: &mut AcsState, s: String) -> i32 {
+    if let Some(&i) = state.dyn_index.get(&s) {
+        return i;
+    }
+    let i = add_dyn_string(state, s.clone());
+    if i != 0 {
+        state.dyn_index.insert(s, i);
+    }
+    i
 }
 
 /// ACS angle (16.16 turns, `1.0` = 360°) → radians for [`room_core::dmath`].
@@ -2336,8 +2735,13 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             Step::Continue
         }
         pcd::LSPEC1..=pcd::LSPEC5 => {
+            // GZDoom: the special number is an inline operand (`NEXTBYTE`);
+            // only the arguments come from the stack.
             let nargs = (op - pcd::LSPEC1 + 1) as usize;
-            let special = pop(state, idx);
+            let Some(special) = take_byte_or_word(state, idx) else {
+                state.scripts[idx].state = ScriptRunState::Terminated;
+                return Step::Break;
+            };
             let mut args = [0i32; 5];
             for i in (0..nargs).rev() {
                 args[i] = pop(state, idx);
@@ -2408,7 +2812,10 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 return Step::Break;
             };
             let v = pop(state, idx);
-            if let Some(slot) = state.map_vars.get_mut(i as usize) {
+            if let Some(slot) = {
+                let m = state.scripts[idx].module;
+                state.map_var_mut(m, i as usize)
+            } {
                 *slot = v;
             }
             Step::Continue
@@ -2438,7 +2845,10 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 state.scripts[idx].state = ScriptRunState::Terminated;
                 return Step::Break;
             };
-            let v = state.map_vars.get(i as usize).copied().unwrap_or(0);
+            let v = {
+                let m = state.scripts[idx].module;
+                state.map_var(m, i as usize)
+            };
             state.scripts[idx].stack.push(v);
             Step::Continue
         }
@@ -2480,7 +2890,10 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 state.scripts[idx].state = ScriptRunState::Terminated;
                 return Step::Break;
             };
-            if let Some(slot) = state.map_vars.get_mut(i as usize) {
+            if let Some(slot) = {
+                let m = state.scripts[idx].module;
+                state.map_var_mut(m, i as usize)
+            } {
                 *slot = slot.wrapping_add(1);
             }
             Step::Continue
@@ -2509,7 +2922,10 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 state.scripts[idx].state = ScriptRunState::Terminated;
                 return Step::Break;
             };
-            if let Some(slot) = state.map_vars.get_mut(i as usize) {
+            if let Some(slot) = {
+                let m = state.scripts[idx].module;
+                state.map_var_mut(m, i as usize)
+            } {
                 *slot = slot.wrapping_sub(1);
             }
             Step::Continue
@@ -2696,7 +3112,7 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 state.scripts[idx].state = ScriptRunState::Terminated;
                 return Step::Break;
             };
-            let tex = module_string(state, tex_i as usize);
+            let tex = acs_string(state, tag_str(state, idx, tex_i));
             host.change_flat(tag, &tex, false);
             Step::Continue
         }
@@ -2716,7 +3132,7 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 state.scripts[idx].state = ScriptRunState::Terminated;
                 return Step::Break;
             };
-            let tex = module_string(state, tex_i as usize);
+            let tex = acs_string(state, tag_str(state, idx, tex_i));
             host.change_flat(tag, &tex, true);
             Step::Continue
         }
@@ -2832,7 +3248,7 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 state.scripts[idx].state = ScriptRunState::Terminated;
                 return Step::Break;
             };
-            let item = acs_string(state, str_i);
+            let item = acs_string(state, tag_str(state, idx, str_i));
             let act = state.scripts[idx].activator;
             let _ = host.give_actor_inventory(0, &item, amount, act);
             Step::Continue
@@ -2846,7 +3262,7 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 state.scripts[idx].state = ScriptRunState::Terminated;
                 return Step::Break;
             };
-            let item = acs_string(state, str_i);
+            let item = acs_string(state, tag_str(state, idx, str_i));
             let act = state.scripts[idx].activator;
             let _ = host.take_actor_inventory(0, &item, amount, act);
             Step::Continue
@@ -2856,7 +3272,7 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 state.scripts[idx].state = ScriptRunState::Terminated;
                 return Step::Break;
             };
-            let item = acs_string(state, str_i);
+            let item = acs_string(state, tag_str(state, idx, str_i));
             let act = state.scripts[idx].activator;
             state.scripts[idx]
                 .stack
@@ -2884,13 +3300,14 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 state.scripts[idx].state = ScriptRunState::Terminated;
                 return Step::Break;
             };
-            let song = acs_string(state, str_i);
+            let song = acs_string(state, tag_str(state, idx, str_i));
             host.set_music(&song, order, unused);
             Step::Continue
         }
         pcd::SETFONT => {
             let str_i = pop(state, idx);
             let name = acs_string(state, str_i);
+            state.scripts[idx].font = name.clone();
             host.set_font(&name);
             Step::Continue
         }
@@ -2899,7 +3316,8 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 state.scripts[idx].state = ScriptRunState::Terminated;
                 return Step::Break;
             };
-            let name = acs_string(state, str_i);
+            let name = acs_string(state, tag_str(state, idx, str_i));
+            state.scripts[idx].font = name.clone();
             host.set_font(&name);
             Step::Continue
         }
@@ -2980,6 +3398,24 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             state.scripts[idx].stack.push(host.check_weapon(&name, act));
             Step::Continue
         }
+        pcd::TAGSTRING => {
+            // GZDoom: `Stack[sp-1] = GlobalACSStrings.AddString(activeBehavior->LookupString(..))`.
+            let v = pop(state, idx);
+            let m = state.scripts[idx].module;
+            let text = usize::try_from(v).ok().and_then(|i| {
+                state
+                    .modules
+                    .get(m)
+                    .filter(|md| i < md.string_offsets.len())
+                    .map(|md| md.string(i).to_owned())
+            });
+            let out = match text {
+                Some(t) => intern_string(state, t),
+                None => v,
+            };
+            state.scripts[idx].stack.push(out);
+            Step::Continue
+        }
         pcd::SETWEAPON => {
             let str_i = pop(state, idx);
             let name = acs_string(state, str_i);
@@ -3017,26 +3453,67 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
         }
         pcd::MOREHUDMESSAGE => {
             // GZDoom keeps the print buffer; subsequent PRINT* continue it.
+            state.scripts[idx].optstart = None;
             Step::Continue
         }
         pcd::OPTHUDMESSAGE => {
-            // type, id, color, x, y, hold [, …] — consume stack for BD5 bootstrap.
-            for _ in 0..6 {
-                let _ = pop(state, idx);
-            }
+            // GZDoom: mark where the optional arguments start.
+            state.scripts[idx].optstart = Some(state.scripts[idx].stack.len());
             Step::Continue
         }
         pcd::ENDHUDMESSAGE | pcd::ENDHUDMESSAGEBOLD => {
+            // GZDoom: Stack[optstart-6..optstart] = type, id, color, x, y, hold;
+            // Stack[optstart..sp] = optional fade / type-on times and alpha.
             let bold = op == pcd::ENDHUDMESSAGEBOLD;
             let text = std::mem::take(&mut state.scripts[idx].print_buf);
-            host.hud_message(&text, bold);
+            let sp = state.scripts[idx].stack.len();
+            let optstart = state.scripts[idx].optstart.take().unwrap_or(sp).min(sp);
+            if optstart < 6 {
+                state.scripts[idx].stack.clear();
+                host.hud_message(&text, bold);
+                return Step::Continue;
+            }
+            let st = &state.scripts[idx].stack;
+            let fixed = |v: i32| v as f32 / 65536.0;
+            let type_flags = st[optstart - 6];
+            let id = st[optstart - 5];
+            let color_raw = st[optstart - 4];
+            let x = fixed(st[optstart - 3]);
+            let y = fixed(st[optstart - 2]);
+            let hold = fixed(st[optstart - 1]);
+            let opt: Vec<f32> = st[optstart..].iter().map(|&v| fixed(v)).collect();
+            const HUDMSG_COLORSTRING: i32 = 0x4000_0000;
+            let color_name =
+                (type_flags & HUDMSG_COLORSTRING != 0).then(|| acs_string(state, color_raw));
+            let script = &state.scripts[idx];
+            let msg = HudMessageArgs {
+                text,
+                type_flags,
+                id,
+                color: color_raw,
+                color_name,
+                x,
+                y,
+                hold,
+                opt,
+                hud_w: script.hud_w,
+                hud_h: script.hud_h,
+                font: script.font.clone(),
+                bold,
+                activator: script.activator,
+            };
+            state.scripts[idx].stack.truncate(optstart - 6);
+            host.hud_message_ex(msg);
             Step::Continue
         }
         pcd::SETHUDSIZE => {
-            // Stack: width, height [, statusbar] — GZDoom pops 3 after SetHudSize.
+            // GZDoom: hudwidth = |w|, hudheight = |h|, negated when it covers the bar.
             let statusbar = pop(state, idx);
             let h = pop(state, idx);
             let w = pop(state, idx);
+            let script = &mut state.scripts[idx];
+            script.hud_w = w.abs();
+            script.hud_h = if statusbar != 0 { -h.abs() } else { h.abs() };
             host.set_hud_size(w, h, statusbar);
             Step::Continue
         }
@@ -3093,11 +3570,7 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
         }
         pcd::PRINTSTRING => {
             let i = pop(state, idx) as usize;
-            let s = state
-                .modules
-                .first()
-                .map(|m| m.string(i).to_owned())
-                .unwrap_or_default();
+            let s = acs_string(state, i as i32);
             state.scripts[idx].print_buf.push_str(&s);
             Step::Continue
         }
@@ -3421,11 +3894,7 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             let fov = pop(state, idx);
             let str_i = pop(state, idx) as usize;
             let tid = pop(state, idx);
-            let tex = state
-                .modules
-                .first()
-                .map(|m| m.string(str_i).to_owned())
-                .unwrap_or_default();
+            let tex = acs_string(state, str_i as i32);
             let act = state.scripts[idx].activator;
             host.set_camera_to_texture(tid, &tex, fov, act);
             Step::Continue
@@ -3452,11 +3921,7 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             let amount = pop(state, idx);
             let str_i = pop(state, idx) as usize;
             let tid = pop(state, idx);
-            let item = state
-                .modules
-                .first()
-                .map(|m| m.string(str_i).to_owned())
-                .unwrap_or_default();
+            let item = acs_string(state, str_i as i32);
             let act = state.scripts[idx].activator;
             state.scripts[idx]
                 .stack
@@ -3467,11 +3932,7 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             let amount = pop(state, idx);
             let str_i = pop(state, idx) as usize;
             let tid = pop(state, idx);
-            let item = state
-                .modules
-                .first()
-                .map(|m| m.string(str_i).to_owned())
-                .unwrap_or_default();
+            let item = acs_string(state, str_i as i32);
             let act = state.scripts[idx].activator;
             state.scripts[idx]
                 .stack
@@ -3481,11 +3942,7 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
         pcd::CHECKACTORINVENTORY => {
             let str_i = pop(state, idx) as usize;
             let tid = pop(state, idx);
-            let item = state
-                .modules
-                .first()
-                .map(|m| m.string(str_i).to_owned())
-                .unwrap_or_default();
+            let item = acs_string(state, str_i as i32);
             let act = state.scripts[idx].activator;
             state.scripts[idx]
                 .stack
@@ -3534,11 +3991,7 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
         pcd::THINGCOUNTNAME => {
             let tid = pop(state, idx);
             let str_i = pop(state, idx) as usize;
-            let name = state
-                .modules
-                .first()
-                .map(|m| m.string(str_i).to_owned())
-                .unwrap_or_default();
+            let name = acs_string(state, str_i as i32);
             state.scripts[idx]
                 .stack
                 .push(host.thing_count_name(&name, tid));
@@ -3557,11 +4010,7 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             let tag = pop(state, idx);
             let tid = pop(state, idx);
             let str_i = pop(state, idx) as usize;
-            let name = state
-                .modules
-                .first()
-                .map(|m| m.string(str_i).to_owned())
-                .unwrap_or_default();
+            let name = acs_string(state, str_i as i32);
             state.scripts[idx]
                 .stack
                 .push(host.thing_count_name_sector(&name, tid, tag));
@@ -3683,41 +4132,52 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 state.scripts[idx].state = ScriptRunState::Terminated;
                 return Step::Break;
             };
-            // Tag like a string id so CALLSTACK can clear the high bits.
-            state.scripts[idx]
-                .stack
-                .push(DYN_STRING_TAG | (funcnum & 0xffff));
+            // GZDoom `PushToStack(TAGSTR(funcnum))`: tag with the library id.
+            let tagged = tag_str(state, idx, funcnum & 0xffff);
+            state.scripts[idx].stack.push(tagged);
             Step::Continue
         }
         pcd::CALL | pcd::CALLDISCARD | pcd::CALLSTACK => {
+            // GZDoom: `CALLSTACK` takes a library-tagged function index; `CALL`
+            // indexes the running module, and an imported entry jumps into the
+            // library that defines it (`FBehavior::GetFunction`).
             let discard = op == pcd::CALLDISCARD;
-            let funcnum: u32 = if op == pcd::CALLSTACK {
+            let cur = state.scripts[idx].module;
+            let (module, funcnum) = if op == pcd::CALLSTACK {
                 let tagged = pop(state, idx);
-                (tagged & 0xffff) as u32
+                (
+                    (tagged as u32 >> LIBRARYID_SHIFT) as usize,
+                    (tagged & 0xffff) as usize,
+                )
             } else {
                 let Some(n) = take_byte_or_word(state, idx) else {
                     state.scripts[idx].state = ScriptRunState::Terminated;
                     return Step::Break;
                 };
-                n as u32
+                (cur, n as usize)
             };
-            let Some(func) = state
-                .modules
-                .first()
-                .and_then(|m| m.functions.get(funcnum as usize).cloned())
-            else {
+            let resolved = state.modules.get(module).and_then(|m| {
+                let f = m.functions.get(funcnum)?;
+                if f.address == 0 || f.import_num != 0 {
+                    let (o, k) = state
+                        .links
+                        .get(module)?
+                        .funcs
+                        .get(funcnum)
+                        .copied()
+                        .flatten()?;
+                    let real = state.modules.get(o)?.functions.get(k)?.clone();
+                    // Imported functions run with the defining module's locals count.
+                    Some((o, real))
+                } else {
+                    Some((module, f.clone()))
+                }
+            });
+            let Some((fmod, func)) = resolved else {
                 host.print(&format!("Function {funcnum} out of range"), false);
                 state.scripts[idx].state = ScriptRunState::Terminated;
                 return Step::Break;
             };
-            if func.import_num != 0 || func.address == 0 {
-                // Cross-library resolve deferred; CALLSTACK always pushes 0,
-                // CALL pushes 0 when the result is kept.
-                if !discard || op == pcd::CALLSTACK {
-                    state.scripts[idx].stack.push(0);
-                }
-                return Step::Continue;
-            }
             let argc = usize::from(func.argc);
             let local_extra = usize::from(func.local_count);
             let mut new_locals = vec![0i32; argc + local_extra];
@@ -3730,8 +4190,10 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 return_pc,
                 locals: old_locals,
                 discard_result: discard,
+                module: cur,
             });
             state.scripts[idx].pc = func.address;
+            state.scripts[idx].module = fmod;
             Step::Continue
         }
         pcd::RETURNVOID | pcd::RETURNVAL => {
@@ -3747,6 +4209,7 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             };
             state.scripts[idx].locals = frame.locals;
             state.scripts[idx].pc = frame.return_pc;
+            state.scripts[idx].module = frame.module;
             if !frame.discard_result {
                 state.scripts[idx].stack.push(value);
             }
@@ -3758,13 +4221,8 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 return Step::Break;
             };
             let index = pop(state, idx);
-            let arr_idx = state.map_vars.get(mapvar as usize).copied().unwrap_or(0);
-            let v = state
-                .map_arrays
-                .get(arr_idx as usize)
-                .and_then(|a| a.get(index as usize))
-                .copied()
-                .unwrap_or(0);
+            let m = state.scripts[idx].module;
+            let v = state.map_array_elem(m, mapvar as usize, index);
             state.scripts[idx].stack.push(v);
             Step::Continue
         }
@@ -3775,12 +4233,8 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             };
             let value = pop(state, idx);
             let index = pop(state, idx);
-            let arr_idx = state.map_vars.get(mapvar as usize).copied().unwrap_or(0);
-            if let Some(slot) = state
-                .map_arrays
-                .get_mut(arr_idx as usize)
-                .and_then(|a| a.get_mut(index as usize))
-            {
+            let m = state.scripts[idx].module;
+            if let Some(slot) = state.map_array_elem_mut(m, mapvar as usize, index) {
                 *slot = value;
             }
             Step::Continue
@@ -3796,12 +4250,8 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             };
             let value = pop(state, idx);
             let index = pop(state, idx);
-            let arr_idx = state.map_vars.get(mapvar as usize).copied().unwrap_or(0);
-            if let Some(slot) = state
-                .map_arrays
-                .get_mut(arr_idx as usize)
-                .and_then(|a| a.get_mut(index as usize))
-            {
+            let m = state.scripts[idx].module;
+            if let Some(slot) = state.map_array_elem_mut(m, mapvar as usize, index) {
                 *slot = match op {
                     pcd::ADDMAPARRAY => slot.wrapping_add(value),
                     pcd::SUBMAPARRAY => slot.wrapping_sub(value),
@@ -3833,12 +4283,8 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 return Step::Break;
             };
             let index = pop(state, idx);
-            let arr_idx = state.map_vars.get(mapvar as usize).copied().unwrap_or(0);
-            if let Some(slot) = state
-                .map_arrays
-                .get_mut(arr_idx as usize)
-                .and_then(|a| a.get_mut(index as usize))
-            {
+            let m = state.scripts[idx].module;
+            if let Some(slot) = state.map_array_elem_mut(m, mapvar as usize, index) {
                 if op == pcd::INCMAPARRAY {
                     *slot = slot.wrapping_add(1);
                 } else {
@@ -3913,11 +4359,7 @@ fn pop(state: &mut AcsState, idx: usize) -> i32 {
 }
 
 fn module_string(state: &AcsState, index: usize) -> String {
-    state
-        .modules
-        .first()
-        .map(|m| m.string(index).to_owned())
-        .unwrap_or_default()
+    acs_string(state, index as i32)
 }
 
 fn binop(state: &mut AcsState, idx: usize, f: impl FnOnce(i32, i32) -> i32) -> Step {
@@ -3955,7 +4397,10 @@ fn map_var_op(state: &mut AcsState, idx: usize, f: impl FnOnce(i32, i32) -> i32)
         return Step::Break;
     };
     let v = pop(state, idx);
-    if let Some(slot) = state.map_vars.get_mut(i as usize) {
+    if let Some(slot) = {
+        let m = state.scripts[idx].module;
+        state.map_var_mut(m, i as usize)
+    } {
         *slot = f(*slot, v);
     }
     Step::Continue
@@ -4000,7 +4445,10 @@ fn map_div(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
         state.scripts[idx].state = ScriptRunState::Terminated;
         return Step::Break;
     }
-    if let Some(slot) = state.map_vars.get_mut(i as usize) {
+    if let Some(slot) = {
+        let m = state.scripts[idx].module;
+        state.map_var_mut(m, i as usize)
+    } {
         *slot /= v;
     }
     Step::Continue
@@ -4050,7 +4498,10 @@ fn map_mod(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
         state.scripts[idx].state = ScriptRunState::Terminated;
         return Step::Break;
     }
-    if let Some(slot) = state.map_vars.get_mut(i as usize) {
+    if let Some(slot) = {
+        let m = state.scripts[idx].module;
+        state.map_var_mut(m, i as usize)
+    } {
         *slot %= v;
     }
     Step::Continue
@@ -4093,6 +4544,7 @@ mod tests {
         damage_type: String,
         sound_class: String,
         see_sound: String,
+        huds: Vec<HudMessageArgs>,
     }
 
     impl TestHost {
@@ -4111,11 +4563,15 @@ mod tests {
                 damage_type: String::new(),
                 sound_class: String::new(),
                 see_sound: String::new(),
+                huds: Vec::new(),
             }
         }
     }
 
     impl AcsHost for TestHost {
+        fn hud_message_ex(&mut self, msg: HudMessageArgs) {
+            self.huds.push(msg);
+        }
         fn execute_special(&mut self, special: i32, args: [i32; 5]) -> i32 {
             self.specials.push((special, args));
             1
@@ -4210,6 +4666,200 @@ mod tests {
         load_behavior(&out).expect("module")
     }
 
+    /// ACS0 module: `code` at offset 8, `scripts` as (number, code offset), and a
+    /// string table whose text is appended after the code.
+    fn acs0_module(code: &[u8], scripts: &[(i32, u32)], strings: &[&str]) -> AcsModule {
+        let mut body = code.to_vec();
+        // Keep the lump above the 32-byte minimum.
+        while body.len() < 24 {
+            body.extend_from_slice(&pcd::TERMINATE.to_le_bytes());
+        }
+        let mut str_offs = Vec::new();
+        for s in strings {
+            str_offs.push((8 + body.len()) as u32);
+            body.extend_from_slice(s.as_bytes());
+            body.push(0);
+        }
+        let dir_off = 8 + body.len();
+        let mut out = Vec::new();
+        out.extend_from_slice(b"ACS\0");
+        out.extend_from_slice(&(dir_off as u32).to_le_bytes());
+        out.extend_from_slice(&body);
+        out.extend_from_slice(&(scripts.len() as u32).to_le_bytes());
+        for &(num, ofs) in scripts {
+            out.extend_from_slice(&num.to_le_bytes());
+            out.extend_from_slice(&(8 + ofs).to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+        }
+        out.extend_from_slice(&(str_offs.len() as u32).to_le_bytes());
+        for o in str_offs {
+            out.extend_from_slice(&o.to_le_bytes());
+        }
+        load_behavior(&out).expect("module")
+    }
+
+    fn op(code: &mut Vec<u8>, op: u32, operands: &[i32]) {
+        code.extend_from_slice(&op.to_le_bytes());
+        for v in operands {
+            code.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn lspec_takes_the_special_inline_and_args_from_the_stack() {
+        // GZDoom `PCD_LSPEC2`: special = NEXTBYTE, args = STACK(2), STACK(1).
+        let mut code = Vec::new();
+        op(&mut code, pcd::PUSHNUMBER, &[5]);
+        op(&mut code, pcd::PUSHNUMBER, &[9]);
+        op(&mut code, pcd::LSPEC2, &[80]);
+        op(&mut code, pcd::TERMINATE, &[]);
+        let mut state = AcsState::new();
+        state.push_module(acs0_module(&code, &[(1, 0)], &[]));
+        let mut host = TestHost::new();
+        start_script(&mut state, &mut host, 1, &[0; 3], false);
+        assert_eq!(host.specials, vec![(80, [5, 9, 0, 0, 0])]);
+    }
+
+    #[test]
+    fn library_scripts_run_their_own_module() {
+        // Same code offset in both modules: the library script must not run the
+        // map module's bytecode (that fired random specials such as Exit_Normal).
+        let mut map_code = Vec::new();
+        op(&mut map_code, pcd::LSPEC1DIRECT, &[80, 1]);
+        op(&mut map_code, pcd::TERMINATE, &[]);
+        let mut lib_code = Vec::new();
+        op(&mut lib_code, pcd::LSPEC1DIRECT, &[81, 2]);
+        op(&mut lib_code, pcd::PUSHNUMBER, &[42]);
+        op(&mut lib_code, pcd::ASSIGNMAPVAR, &[0]);
+        op(&mut lib_code, pcd::TERMINATE, &[]);
+        let mut state = AcsState::new();
+        state.push_module_named(acs0_module(&map_code, &[(1, 0)], &[]), "MAP01");
+        state.push_module_named(acs0_module(&lib_code, &[(2, 0)], &[]), "LIB");
+        let mut host = TestHost::new();
+        start_script(&mut state, &mut host, 2, &[0; 3], false);
+        assert_eq!(host.specials, vec![(81, [2, 0, 0, 0, 0])]);
+        // Each module has its own map variables.
+        assert_eq!(state.map_vars[0], 0);
+        assert_eq!(state.lib_vars[0][0], 42);
+    }
+
+    #[test]
+    fn tagstring_reads_the_running_library_string_table() {
+        let mut lib_code = Vec::new();
+        op(&mut lib_code, pcd::BEGINPRINT, &[]);
+        op(&mut lib_code, pcd::PUSHNUMBER, &[0]);
+        op(&mut lib_code, pcd::TAGSTRING, &[]);
+        op(&mut lib_code, pcd::PRINTSTRING, &[]);
+        op(&mut lib_code, pcd::ENDPRINT, &[]);
+        op(&mut lib_code, pcd::TERMINATE, &[]);
+        let mut state = AcsState::new();
+        state.push_module_named(acs0_module(&[], &[], &["map string"]), "MAP01");
+        state.push_module_named(
+            acs0_module(&lib_code, &[(3, 0)], &["library string"]),
+            "LIB",
+        );
+        let mut host = TestHost::new();
+        start_script(&mut state, &mut host, 3, &[0; 3], false);
+        assert_eq!(host.prints, vec!["library string".to_owned()]);
+    }
+
+    #[test]
+    fn call_of_an_imported_function_runs_in_the_library() {
+        // Map: CALLDISCARD 0 (imported "Fx" from LIB), then LSPEC1DIRECT 80.
+        let mut map_code = Vec::new();
+        op(&mut map_code, pcd::CALLDISCARD, &[0]);
+        op(&mut map_code, pcd::LSPEC1DIRECT, &[80, 1]);
+        op(&mut map_code, pcd::TERMINATE, &[]);
+        let mut map = acs0_module(&map_code, &[(1, 0)], &[]);
+        map.libraries = vec!["LIB".into()];
+        map.functions = vec![crate::load::AcsFunction {
+            argc: 0,
+            local_count: 0,
+            has_return: 0,
+            import_num: 0,
+            address: 0,
+        }];
+        map.function_names = vec!["Fx".into()];
+        // Library: a dummy script, then `Fx` at code offset 8: LSPEC1DIRECT 81; RETURNVOID.
+        let mut lib_code = Vec::new();
+        op(&mut lib_code, pcd::TERMINATE, &[]);
+        op(&mut lib_code, pcd::TERMINATE, &[]);
+        let fx = 8 + lib_code.len() as u32;
+        op(&mut lib_code, pcd::LSPEC1DIRECT, &[81, 2]);
+        op(&mut lib_code, pcd::RETURNVOID, &[]);
+        let mut lib = acs0_module(&lib_code, &[(9, 0)], &[]);
+        lib.functions = vec![crate::load::AcsFunction {
+            argc: 0,
+            local_count: 0,
+            has_return: 0,
+            import_num: 0,
+            address: fx,
+        }];
+        lib.function_names = vec!["Fx".into()];
+        let mut state = AcsState::new();
+        state.push_module_named(map, "MAP01");
+        state.push_module_named(lib, "LIB");
+        let mut host = TestHost::new();
+        start_script(&mut state, &mut host, 1, &[0; 3], false);
+        assert_eq!(
+            host.specials,
+            vec![(81, [2, 0, 0, 0, 0]), (80, [1, 0, 0, 0, 0])]
+        );
+    }
+
+    #[test]
+    fn hud_message_reads_fixed_and_optional_args() {
+        // SetHudSize(320, 200, 0); HudMessage(d:42; HUDMSG_FADEOUT, 5, CR_RED, 0.5, 0.25, 2.0, 0.75)
+        let f = |v: f32| (v * 65536.0) as i32;
+        let mut code = Vec::new();
+        op(&mut code, pcd::PUSHNUMBER, &[320]);
+        op(&mut code, pcd::PUSHNUMBER, &[200]);
+        op(&mut code, pcd::PUSHNUMBER, &[0]);
+        op(&mut code, pcd::SETHUDSIZE, &[]);
+        op(&mut code, pcd::BEGINPRINT, &[]);
+        op(&mut code, pcd::PUSHNUMBER, &[42]);
+        op(&mut code, pcd::PRINTNUMBER, &[]);
+        for v in [1, 5, 6, f(0.5), f(0.25), f(2.0)] {
+            op(&mut code, pcd::PUSHNUMBER, &[v]);
+        }
+        op(&mut code, pcd::OPTHUDMESSAGE, &[]);
+        op(&mut code, pcd::PUSHNUMBER, &[f(0.75)]);
+        op(&mut code, pcd::ENDHUDMESSAGE, &[]);
+        op(&mut code, pcd::PUSHNUMBER, &[99]);
+        op(&mut code, pcd::LSPEC1, &[80]);
+        op(&mut code, pcd::TERMINATE, &[]);
+        let mut state = AcsState::new();
+        state.push_module(acs0_module(&code, &[(1, 0)], &[]));
+        let mut host = TestHost::new();
+        start_script(&mut state, &mut host, 1, &[0; 3], false);
+        assert_eq!(host.huds.len(), 1);
+        let h = &host.huds[0];
+        assert_eq!(
+            (h.text.as_str(), h.type_flags, h.id, h.color),
+            ("42", 1, 5, 6)
+        );
+        assert_eq!(
+            (h.x, h.y, h.hold, h.opt.clone()),
+            (0.5, 0.25, 2.0, vec![0.75])
+        );
+        assert_eq!((h.hud_w, h.hud_h), (320, 200));
+        // The stack is balanced afterwards: the next special sees its own argument.
+        assert_eq!(host.specials, vec![(80, [99, 0, 0, 0, 0])]);
+    }
+
+    #[test]
+    fn named_scripts_stay_unique_across_modules() {
+        let mut a = acs0_module(&[], &[], &[]);
+        a.script_names = vec!["Go".into()];
+        let mut b = acs0_module(&[], &[], &[]);
+        b.script_names = vec!["Stop".into()];
+        let mut state = AcsState::new();
+        state.push_module_named(a, "A");
+        state.push_module_named(b, "B");
+        assert_eq!(state.modules[0].script_number_by_name("Go"), Some(-1));
+        assert_eq!(state.modules[1].script_number_by_name("Stop"), Some(-2));
+    }
+
     #[test]
     fn delay_then_terminate() {
         let mut code = Vec::new();
@@ -4292,6 +4942,13 @@ mod tests {
             map_var_defaults: [0; 128],
             map_arrays: Vec::new(),
             map_exports: Vec::new(),
+            name: String::new(),
+            named_base: 0,
+            map_imports: Vec::new(),
+            array_imports: Vec::new(),
+            mstr_vars: Vec::new(),
+            astr_vars: Vec::new(),
+            atags: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -4335,6 +4992,13 @@ mod tests {
             map_var_defaults: [0; 128],
             map_arrays: Vec::new(),
             map_exports: Vec::new(),
+            name: String::new(),
+            named_base: 0,
+            map_imports: Vec::new(),
+            array_imports: Vec::new(),
+            mstr_vars: Vec::new(),
+            astr_vars: Vec::new(),
+            atags: Vec::new(),
         });
         let mut host = TestHost::new();
         assert_eq!(start_script(&mut state, &mut host, 1, &[0; 3], false), 1);
@@ -4571,6 +5235,13 @@ mod tests {
             map_var_defaults: [0; 128],
             map_arrays: Vec::new(),
             map_exports: Vec::new(),
+            name: String::new(),
+            named_base: 0,
+            map_imports: Vec::new(),
+            array_imports: Vec::new(),
+            mstr_vars: Vec::new(),
+            astr_vars: Vec::new(),
+            atags: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -4624,6 +5295,13 @@ mod tests {
             map_var_defaults: [0; 128],
             map_arrays: Vec::new(),
             map_exports: Vec::new(),
+            name: String::new(),
+            named_base: 0,
+            map_imports: Vec::new(),
+            array_imports: Vec::new(),
+            mstr_vars: Vec::new(),
+            astr_vars: Vec::new(),
+            atags: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -4689,6 +5367,13 @@ mod tests {
             map_var_defaults: [0; 128],
             map_arrays: Vec::new(),
             map_exports: Vec::new(),
+            name: String::new(),
+            named_base: 0,
+            map_imports: Vec::new(),
+            array_imports: Vec::new(),
+            mstr_vars: Vec::new(),
+            astr_vars: Vec::new(),
+            atags: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -4743,6 +5428,13 @@ mod tests {
             map_var_defaults: [0; 128],
             map_arrays: Vec::new(),
             map_exports: Vec::new(),
+            name: String::new(),
+            named_base: 0,
+            map_imports: Vec::new(),
+            array_imports: Vec::new(),
+            mstr_vars: Vec::new(),
+            astr_vars: Vec::new(),
+            atags: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -4797,6 +5489,13 @@ mod tests {
             map_var_defaults: [0; 128],
             map_arrays: Vec::new(),
             map_exports: Vec::new(),
+            name: String::new(),
+            named_base: 0,
+            map_imports: Vec::new(),
+            array_imports: Vec::new(),
+            mstr_vars: Vec::new(),
+            astr_vars: Vec::new(),
+            atags: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -4851,6 +5550,13 @@ mod tests {
             map_var_defaults: [0; 128],
             map_arrays: Vec::new(),
             map_exports: Vec::new(),
+            name: String::new(),
+            named_base: 0,
+            map_imports: Vec::new(),
+            array_imports: Vec::new(),
+            mstr_vars: Vec::new(),
+            astr_vars: Vec::new(),
+            atags: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -4893,6 +5599,13 @@ mod tests {
             map_var_defaults: [0; 128],
             map_arrays: Vec::new(),
             map_exports: Vec::new(),
+            name: String::new(),
+            named_base: 0,
+            map_imports: Vec::new(),
+            array_imports: Vec::new(),
+            mstr_vars: Vec::new(),
+            astr_vars: Vec::new(),
+            atags: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -4964,6 +5677,13 @@ mod tests {
             map_var_defaults: [0; 128],
             map_arrays: Vec::new(),
             map_exports: Vec::new(),
+            name: String::new(),
+            named_base: 0,
+            map_imports: Vec::new(),
+            array_imports: Vec::new(),
+            mstr_vars: Vec::new(),
+            astr_vars: Vec::new(),
+            atags: Vec::new(),
         });
         let mut host = TestHost::new();
         assert_eq!(start_script(&mut state, &mut host, 1, &[0; 3], false), 1);
@@ -5103,6 +5823,13 @@ mod tests {
                 elements: vec![9, 0, 0],
             }],
             map_exports: Vec::new(),
+            name: String::new(),
+            named_base: 0,
+            map_imports: Vec::new(),
+            array_imports: Vec::new(),
+            mstr_vars: Vec::new(),
+            astr_vars: Vec::new(),
+            atags: Vec::new(),
         });
         assert_eq!(state.map_arrays[0][0], 9);
         let mut host = TestHost::new();

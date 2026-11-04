@@ -360,7 +360,7 @@ impl<'a> ConVm<'a> {
                 // TEMP: DEMO1 OCTA furthest first-ray differs from Chocolate.
                 // At g_t[0]==64: #65/#402 → (−579,21861); #403 → (574,20736).
                 // Drop when face/cylinder hitscan matches Choc.
-                if self.sprite_picnum == 1820 && self.temps.g_t[0] == 64 {
+                if crate::fixups::on() && self.sprite_picnum == 1820 && self.temps.g_t[0] == 64 {
                     if self.sprite_i == 403 {
                         self.temps.lastvx = 574;
                         self.temps.lastvy = 20736;
