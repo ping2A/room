@@ -188,7 +188,10 @@ pub fn convert_grp_with_maps(
     w.add("COLORMAP", palette.colormap());
     add_anm_pics(&mut w, &mut warnings, &grp, &palette);
     if !content.decorate.is_empty() {
-        w.add("DECORATE", content.decorate.into_bytes());
+        w.add(
+            "DECORATE",
+            mark_scaled_collision(&content.decorate).into_bytes(),
+        );
         w.add("KEYCONF", content.keyconf.into_bytes());
     }
     w.add("MENUDEF", DUKE_MENUDEF.as_bytes().to_vec());
@@ -876,4 +879,27 @@ mod tests {
             let _ = convert_grp(&whole);
         }
     }
+}
+
+/// Tag every generated actor with Room's `+ROOMSCALEDCOLLISION`: the Duke
+/// definitions size sprites with `Scale` and expect the collision box to
+/// follow (GZDoom content keeps `Scale` visual only).
+fn mark_scaled_collision(decorate: &str) -> String {
+    let mut out = String::with_capacity(decorate.len() + 4096);
+    let mut pending = false;
+    for line in decorate.split_inclusive('\n') {
+        let t = line.trim_start();
+        if t.len() > 6 && t[..6].eq_ignore_ascii_case("actor ") {
+            pending = true;
+        }
+        out.push_str(line);
+        if pending && t.trim_end().ends_with('{') {
+            if !line.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("  +ROOMSCALEDCOLLISION\n");
+            pending = false;
+        }
+    }
+    out
 }

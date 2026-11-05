@@ -1197,8 +1197,8 @@ pub fn execute_special(
         num::SECTOR_SET_FLOOR_SCALE2 => sector_set_scale2(world, args, line, true),
         num::SECTOR_SET_CEILING_SCALE2 => sector_set_scale2(world, args, line, false),
         num::THING_SET_GOAL => thing_set_goal(world, args),
-        num::THING_PROJECTILE => thing_projectile(world, args, false),
-        num::THING_PROJECTILE_GRAVITY => thing_projectile(world, args, true),
+        num::THING_PROJECTILE => thing_projectile(world, args, false, activator),
+        num::THING_PROJECTILE_GRAVITY => thing_projectile(world, args, true, activator),
         num::THING_PROJECTILE_AIMED | num::THING_PROJECTILE_INTERCEPT => {
             thing_projectile_aimed(world, args)
         }
@@ -1683,7 +1683,17 @@ fn thing_destroy(world: &mut World, args: &[i32; 5]) -> i32 {
 }
 
 /// Resolve Hexen spawn `type` — bootstrap: treat as DoomEdNum (`spawnnums` later).
-fn class_for_spawn_type(world: &World, type_id: i32) -> Option<room_core::ClassId> {
+/// GZDoom `SpawnableThings`: specials name classes by `SpawnID`; Room falls
+/// back to the DoomEdNum for maps written against older ports.
+pub(crate) fn class_for_spawn_type(world: &World, type_id: i32) -> Option<room_core::ClassId> {
+    if type_id > 0 {
+        if let Some(c) = world.classes.iter().find(|c| c.spawn_id == type_id) {
+            return world
+                .classes
+                .find_name(&c.name)
+                .map(|id| world.classes.replacement(id));
+        }
+    }
     world.classes.find_doomednum(type_id)
 }
 
@@ -1963,20 +1973,50 @@ fn thing_set_goal(world: &mut World, args: &[i32; 5]) -> i32 {
 }
 
 /// `Thing_Projectile` / `Thing_ProjectileGravity` — tid, type, angle, speed, vspeed.
-fn thing_projectile(world: &mut World, args: &[i32; 5], gravity: bool) -> i32 {
-    let spot_tid = args[0];
-    let type_id = args[1];
-    let angle = byte_angle(args[2]);
-    // Hexen speed args are often in eighths; treat as map-units/tic for bootstrap.
-    let speed = f64::from(args[3]);
-    let vspeed = f64::from(args[4]);
-    let Some(class) = class_for_spawn_type(world, type_id) else {
+fn thing_projectile(
+    world: &mut World,
+    args: &[i32; 5],
+    gravity: bool,
+    activator: Option<ActorId>,
+) -> i32 {
+    let Some(class) = class_for_spawn_type(world, args[1]) else {
         return 0;
     };
-    let spots = actors_with_tid(world, spot_tid);
-    if spots.is_empty() {
-        return 0;
-    }
+    // GZDoom `SPEED(a)` = a / 8.
+    spawn_projectiles_at(
+        world,
+        args[0],
+        class,
+        args[2],
+        f64::from(args[3]) / 8.0,
+        f64::from(args[4]) / 8.0,
+        gravity,
+        0,
+        activator,
+    )
+}
+
+/// GZDoom `EV_Thing_Projectile` (no aiming): spawn `class` at every actor with
+/// `tid` (the activator when `tid` is 0), angle in byte units, speeds in map
+/// units per tic. Returns 1 when anything was spawned.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_projectiles_at(
+    world: &mut World,
+    tid: i32,
+    class: room_core::ClassId,
+    angle_byte: i32,
+    speed: f64,
+    vspeed: f64,
+    gravity: bool,
+    newtid: i32,
+    activator: Option<ActorId>,
+) -> i32 {
+    let spots = if tid == 0 {
+        activator.into_iter().collect()
+    } else {
+        actors_with_tid(world, tid)
+    };
+    let angle = byte_angle(angle_byte);
     let yaw = angle.radians();
     let (dx, dy) = (yaw.cos() * speed, yaw.sin() * speed);
     let mut n = 0;
@@ -1988,11 +2028,15 @@ fn thing_projectile(world: &mut World, args: &[i32; 5], gravity: bool) -> i32 {
             if let Some(a) = world.actors.get_mut(id) {
                 a.vel = DVec3::new(dx, dy, vspeed);
                 a.flags |= crate::class::FLAG_MISSILE;
-                if !gravity {
-                    a.flags |= crate::class::FLAG_NOGRAVITY;
-                } else {
+                if gravity {
                     a.flags &= !crate::class::FLAG_NOGRAVITY;
+                } else {
+                    a.flags |= crate::class::FLAG_NOGRAVITY;
                 }
+                if newtid != 0 {
+                    a.tid = newtid;
+                }
+                a.target = Some(spot);
             }
             n = 1;
         }
@@ -2668,6 +2712,23 @@ fn sectors_for_tag(world: &World, tag: i32, line: Option<LineId>) -> Vec<SectorI
     Vec::new()
 }
 
+/// GZDoom `P_CheckKeys` failure: only the console player's own body gets
+/// the "you need a key" message and `*usefail` sound — a monster bumping a
+/// locked door (or a voodoo doll) fails quietly.
+fn locked_door_denied(world: &mut World, mo: ActorId, lock: i32) {
+    let console_mo = world
+        .players
+        .first()
+        .and_then(|p| p.as_ref())
+        .and_then(|p| p.mo);
+    if console_mo != Some(mo) {
+        return;
+    }
+    let (msg, sound) = crate::locks::lock_deny_info(world, lock);
+    world.play_sound(&sound, 0.0, 0.0, 0.0, 1.0);
+    world.push_message(msg);
+}
+
 fn door_locked_raise(
     world: &mut World,
     args: &[i32; 5],
@@ -2680,9 +2741,7 @@ fn door_locked_raise(
             return 0;
         };
         if !crate::locks::actor_has_lock(world, mo, lock) {
-            let (msg, sound) = crate::locks::lock_deny_info(world, lock);
-            world.play_sound(&sound, 0.0, 0.0, 0.0, 1.0);
-            world.push_message(msg);
+            locked_door_denied(world, mo, lock);
             return 0;
         }
     }
@@ -2858,9 +2917,7 @@ fn generic_door(
             return 0;
         };
         if !crate::locks::actor_has_lock(world, mo, lock) {
-            let (msg, sound) = crate::locks::lock_deny_info(world, lock);
-            world.play_sound(&sound, 0.0, 0.0, 0.0, 1.0);
-            world.push_message(msg);
+            locked_door_denied(world, mo, lock);
             return 0;
         }
     }
@@ -7472,6 +7529,56 @@ fn ceiling_crush_stop(world: &mut World, args: &[i32; 5]) -> i32 {
     i32::from(removed)
 }
 
+/// Axis-aligned bounds of a sector's lines.
+fn sector_bbox(world: &World, sector: SectorId) -> Option<(f64, f64, f64, f64)> {
+    let ms = world.map.sectors.get(sector.raw() as usize)?;
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for lid in &ms.lines {
+        let Some(l) = world.map.lines.get(lid.raw() as usize) else {
+            continue;
+        };
+        for v in [l.v1, l.v2] {
+            if let Some(v) = world.map.vertices.get(v.raw() as usize) {
+                x0 = x0.min(v.pos.x());
+                y0 = y0.min(v.pos.y());
+                x1 = x1.max(v.pos.x());
+                y1 = y1.max(v.pos.y());
+            }
+        }
+    }
+    (x0 <= x1).then_some((x0, y0, x1, y1))
+}
+
+/// Vanilla `P_ChangeSector` "nofit" for a lowering ceiling: some living
+/// shootable thing touching `sector` no longer fits between its floor and the
+/// (new) ceiling. Corpses and non-shootable things never hold a door.
+fn door_squeezes_actor(world: &World, sector: SectorId) -> bool {
+    let Some((x0, y0, x1, y1)) = sector_bbox(world, sector) else {
+        return false;
+    };
+    world.thinkers.default.iter().any(|&id| {
+        let Some(a) = world.actors.get(id) else {
+            return false;
+        };
+        if a.destroyed
+            || a.health <= 0
+            || a.flags & crate::class::FLAG_SHOOTABLE == 0
+            || a.flags & crate::class::FLAG_NOBLOCKMAP != 0
+        {
+            return false;
+        }
+        let r = a.radius;
+        if a.pos.x() + r <= x0 || a.pos.x() - r >= x1 || a.pos.y() + r <= y0 || a.pos.y() - r >= y1
+        {
+            return false;
+        }
+        let check = crate::physics::check_position(world, a, a.pos, Some(id));
+        // Only this sector's ceiling matters: the thing must be touching it.
+        let ceil = world.sectors[sector.raw() as usize].ceiling_z;
+        (check.ceiling_z - ceil).abs() < 1e-6 && check.ceiling_z - check.floor_z < a.height
+    })
+}
+
 /// Apply vanilla-style crush damage to actors whose height exceeds the sector gap.
 ///
 /// Only actors whose centre lies in `sector` are affected (Doom `PIT_ChangeSector`
@@ -8874,6 +8981,11 @@ fn carry_floor_actors(world: &mut World, sector: SectorId, old_floor: f64, delta
         .is_some_and(|s| s.drop_actors);
     // Downward floors leave actors behind unless `dropactors` or `+STAYONLIFT`.
     let downward = delta < 0.0 && !drop;
+    let bbox = if delta > 0.0 {
+        sector_bbox(world, sector)
+    } else {
+        None
+    };
     let ids: Vec<ActorId> = world.thinkers.default.clone();
     for id in ids {
         let Some(a) = world.actors.get(id) else {
@@ -8891,6 +9003,24 @@ fn carry_floor_actors(world: &mut World, sector: SectorId, old_floor: f64, delta
             continue;
         };
         if sid != sector {
+            // Vanilla `P_ChangeSector` → `P_ThingHeightClip`: a rising floor
+            // also lifts things whose box only overlaps the sector edge (the
+            // lift picks up a player straddling it instead of rising through).
+            let touches = bbox.is_some_and(|(x0, y0, x1, y1)| {
+                let r = a.radius;
+                a.pos.x() + r > x0 && a.pos.x() - r < x1 && a.pos.y() + r > y0 && a.pos.y() - r < y1
+            });
+            if delta > 0.0 && touches && (a.pos.z() - old_floor).abs() <= 1.5 {
+                let check = crate::physics::check_position(world, a, a.pos, Some(id));
+                let new_floor = old_floor + delta;
+                if (check.floor_z - new_floor).abs() < 1e-6
+                    && check.ceiling_z - new_floor >= a.height
+                {
+                    if let Some(a) = world.actors.get_mut(id) {
+                        a.pos = DVec3::new(a.pos.x(), a.pos.y(), new_floor);
+                    }
+                }
+            }
             continue;
         }
         // Standing on the floor before this step (small tolerance for fixed→f64).
@@ -8920,6 +9050,7 @@ pub fn tick_doors(world: &mut World) {
             continue;
         };
         let mut crushing = false;
+        let mut old_ceiling = sec.ceiling_z;
         let mut new_dir = direction;
         let mut new_wait = world.doors[i].wait;
         let mut clear_wait_raise = false;
@@ -8941,6 +9072,7 @@ pub fn tick_doors(world: &mut World) {
             }
             -1 => {
                 crushing = true;
+                old_ceiling = sec.ceiling_z;
                 sec.ceiling_z -= speed;
                 if sec.ceiling_z <= bottom_z {
                     sec.ceiling_z = bottom_z;
@@ -8973,15 +9105,34 @@ pub fn tick_doors(world: &mut World) {
             }
             _ => true,
         };
+        let mut done = done;
+        if crushing && door_squeezes_actor(world, sector) {
+            // Vanilla `T_MovePlane(crush = false)` / GZDoom `DDoor::Tick`: a
+            // closing door never moves into a living thing — the ceiling is
+            // put back, and every door except a plain close goes back up.
+            if let Some(sec) = world.sectors.get_mut(sector.raw() as usize) {
+                sec.ceiling_z = old_ceiling;
+            }
+            done = false;
+            crushing = false;
+            let plain_close = !cwo && wait_max == 0;
+            if !plain_close {
+                new_dir = 1;
+                new_wait = world.doors[i].wait;
+                play_sector_sound(world, sector, "doors/open");
+                apply_door_sector_lights(world, sector, true);
+            } else {
+                new_dir = -1;
+            }
+        }
         let started_move = direction == 0 && new_dir != 0;
         world.doors[i].direction = new_dir;
         world.doors[i].wait = new_wait;
         if clear_wait_raise {
             world.doors[i].wait_then_raise = false;
         }
-        if crushing {
-            crush_sector_actors(world, sector);
-        }
+        // Doors are not crushers (vanilla `T_VerticalDoor` passes crush=false).
+        let _ = crushing;
         if started_move {
             let name = if new_dir < 0 {
                 "doors/close"
@@ -9309,7 +9460,7 @@ actor Dummy : Actor 9901
     }
 
     #[test]
-    fn door_closing_crushes_player() {
+    fn door_closing_never_crushes_player() {
         let ir = room_decorate::parse_decorate(
             r#"
 actor PlayerPawn : Actor 0
@@ -9350,8 +9501,15 @@ actor PlayerPawn : Actor 0
             w.level.time = 0;
             tick_doors(&mut w);
         }
-        assert!(w.sectors[0].ceiling_z < 56.0);
-        assert!(w.actors.get(mo).unwrap().health < hp0);
+        // Vanilla `T_VerticalDoor`: a door never crushes — a plain close
+        // stops above the player's head, without damage.
+        assert!(w.sectors[0].ceiling_z >= 56.0);
+        assert_eq!(w.actors.get(mo).unwrap().health, hp0);
+        // A raise door (wait > 0) bounces back up instead.
+        w.doors[0].wait_max = 150;
+        w.doors[0].direction = -1;
+        tick_doors(&mut w);
+        assert_eq!(w.doors[0].direction, 1);
     }
 
     #[test]

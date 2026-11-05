@@ -604,6 +604,10 @@ pub struct World {
     pub numplayersprites: i32,
     /// DukeMatch `frags[16][16]`.
     pub duke_frags: [[i16; 16]; 16],
+    /// Map came from the Build/Duke converter (its classes carry
+    /// `+ROOMSCALEDCOLLISION`): sectors may overlap, so collision tolerates a
+    /// centre sector whose floor is out of reach.
+    pub build_overlaps: bool,
     /// Duke `animatecnt`.
     pub animatecnt: i32,
     /// Duke `animategoal` (first `animatecnt` slots).
@@ -1470,6 +1474,9 @@ impl World {
         rng.set_seed(1993);
         rng.get_or_insert("world")
             .map_err(|e| SimError::Message(e.to_string()))?;
+        let build_overlaps = classes
+            .iter()
+            .any(|c| c.extra_flags.get_name("ROOMSCALEDCOLLISION"));
         let mut world = Self {
             classes,
             states,
@@ -1621,6 +1628,7 @@ impl World {
             connectpoint2: [-1; 16],
             numplayersprites: 0,
             duke_frags: [[0; 16]; 16],
+            build_overlaps,
             animatecnt: 0,
             animategoal: Vec::new(),
             animatevel: Vec::new(),
@@ -1907,6 +1915,10 @@ impl World {
                 if thing.gravity >= 0.0 {
                     a.gravity = thing.gravity;
                 }
+                // Map-thing scale (UDMF `scalex/scaley`, Build `xrepeat/yrepeat`
+                // from the Duke converter) also sizes the collision box: the
+                // converted Build maps rely on it to keep sprites clear of walls.
+                // Class `Scale` / `A_SetScale` stay visual only (GZDoom).
                 if thing.scale_x > 0.0 || thing.scale_y > 0.0 {
                     if let Some(def) = self.classes.get(a.class) {
                         let sx = if thing.scale_x > 0.0 {
@@ -2512,8 +2524,13 @@ impl World {
         } else {
             def.speed
         };
-        let radius = def.radius * def.scale_x;
-        let height = def.height * def.scale_y;
+        // GZDoom: `Scale` is visual only; collision uses the declared size.
+        // Room's generated Build/Duke actors opt in to scaled collision.
+        let (radius, height) = if def.extra_flags.get_name("ROOMSCALEDCOLLISION") {
+            (def.radius * def.scale_x, def.height * def.scale_y)
+        } else {
+            (def.radius, def.height)
+        };
         let mut spawn_pos = pos;
         // Doom things have no Z in the binary format (`z == 0`); snap feet to the
         // floor under XY (slope + sector height) so raised steps don't float items.
@@ -6327,7 +6344,7 @@ actor Z : Actor 9101
     }
 
     #[test]
-    fn spawn_applies_class_scale_to_size() {
+    fn spawn_class_scale_is_visual_only() {
         let ir = parse_decorate(
             r#"
 actor BigGuy : Actor 9950
@@ -6357,8 +6374,11 @@ actor BigGuy : Actor 9950
             )
             .unwrap();
         let a = w.actors.get(id).unwrap();
-        assert!((a.radius - 40.0).abs() < 1e-9);
-        assert!((a.height - 112.0).abs() < 1e-9);
+        // GZDoom: `Scale` never changes the collision box.
+        let def = w.classes.get(a.class).unwrap();
+        assert!((a.radius - def.radius).abs() < 1e-9);
+        assert!((a.height - def.height).abs() < 1e-9);
+        assert!(a.scale_x > 1.0);
     }
 
     #[test]
@@ -6655,8 +6675,8 @@ actor ZombieMan : Actor 3004
         assert!((friend.gravity - 0.5).abs() < 1e-9);
         assert!((friend.scale_x - 2.0).abs() < 1e-9);
         assert!((friend.scale_y - 2.0).abs() < 1e-9);
-        assert!((friend.radius - 40.0).abs() < 1e-9); // default radius 20 × scale
-        assert!((friend.height - 32.0).abs() < 1e-9); // default height 16 × scale
+        assert!((friend.radius - 40.0).abs() < 1e-9); // default radius 20 × map scale
+        assert!((friend.height - 32.0).abs() < 1e-9); // default height 16 × map scale
         assert!((friend.alpha - 0.25).abs() < 1e-9);
         assert!((friend.pitch.degrees() - 15.0).abs() < 1e-9);
         assert!((friend.roll.degrees() - (-10.0)).abs() < 1e-9);

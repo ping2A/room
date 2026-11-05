@@ -14,6 +14,10 @@ pub const ENGINE_SAMPLE_RATE: u32 = 44_100;
 const CLOSE_DIST: f64 = 160.0;
 /// Doom silence distance.
 const CLIP_DIST: f64 = 1200.0;
+/// GZDoom default `$limit`: copies of one sound allowed close together.
+const NEAR_LIMIT: usize = 2;
+/// GZDoom `LimitRange` default (256 map units).
+const NEAR_LIMIT_RANGE: f64 = 256.0;
 /// Doom `S_STEREO_SWING` (separation units out of 256).
 const STEREO_SWING: f64 = 96.0;
 /// Sources closer than this to the listener play centred (own weapon, pain, …).
@@ -183,6 +187,27 @@ impl Mixer {
                     // Replace same origin+channel unless overlapping (not in M5).
                     self.voices
                         .retain(|v| !(v.channel == channel && origins_eq(v.origin, origin)));
+                    // GZDoom `S_CheckSoundLimit`: a sound plays at most
+                    // `NEAR_LIMIT` times within `NEAR_LIMIT_RANGE` units of each
+                    // other (SNDINFO `$limit`, default 2). Without it a room of
+                    // Brutal Doom soldiers stacked every footstep and distant
+                    // gunshot into one loud wall of sound from far away.
+                    if let SoundOrigin::Point(p) = origin {
+                        let near = self
+                            .voices
+                            .iter()
+                            .filter(|v| {
+                                v.sound == sound
+                                    && matches!(v.origin, SoundOrigin::Point(q)
+                                        if (q.x() - p.x()).powi(2) + (q.y() - p.y()).powi(2)
+                                            + (q.z() - p.z()).powi(2)
+                                            < NEAR_LIMIT_RANGE * NEAR_LIMIT_RANGE)
+                            })
+                            .count();
+                        if near >= NEAR_LIMIT {
+                            continue;
+                        }
+                    }
                     self.voices.push(Voice {
                         sound,
                         cursor: 0,

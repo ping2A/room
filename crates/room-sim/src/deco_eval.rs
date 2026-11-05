@@ -340,7 +340,12 @@ fn resolve_aaptr(world: &World, self_id: ActorId, ptr: &str) -> Option<ActorId> 
     }
 }
 
-fn class_is_a(world: &World, mut id: room_core::ClassId, want: &str, match_super: bool) -> bool {
+pub(crate) fn class_is_a(
+    world: &World,
+    mut id: room_core::ClassId,
+    want: &str,
+    match_super: bool,
+) -> bool {
     loop {
         let Some(def) = world.classes.get(id) else {
             return false;

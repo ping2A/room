@@ -1319,6 +1319,15 @@ impl ClassRegistry {
                 "clearflags" => {
                     flags = 0;
                 }
+                // GZDoom `PROJECTILE` combo: NOBLOCKMAP, NOGRAVITY, DROPOFF, MISSILE,
+                // ACTIVATEIMPACT, ACTIVATEPCROSS, NOTELEPORT (`+`/`-` flags follow).
+                "projectile" if p.args.is_empty() => {
+                    flags |= FLAG_NOBLOCKMAP
+                        | FLAG_NOGRAVITY
+                        | FLAG_DROPOFF
+                        | FLAG_MISSILE
+                        | FLAG_NOTELEPORT;
+                }
                 "game"
                 | "projectile"
                 | "stencilcolor"
@@ -1359,7 +1368,13 @@ impl ClassRegistry {
                 }
                 name if name.starts_with("weapon.") => is_weapon = true,
                 "monster" => {
-                    flags |= FLAG_SOLID | FLAG_SHOOTABLE | FLAG_COUNTKILL | FLAG_CANUSEWALLS;
+                    // GZDoom `MONSTER` combo also sets `ISMONSTER` (RGF_MONSTERS,
+                    // A_RadiusGive / thing filters rely on it).
+                    flags |= FLAG_SOLID
+                        | FLAG_SHOOTABLE
+                        | FLAG_COUNTKILL
+                        | FLAG_CANUSEWALLS
+                        | FLAG_ISMONSTER;
                 }
                 _ => {}
             }

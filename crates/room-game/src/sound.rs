@@ -162,7 +162,26 @@ impl SoundSystem {
             let Some(sound) = self.resolve(vfs, &ev.name, idx) else {
                 continue;
             };
-            let attenuation = ev.attenuation;
+            let mut attenuation = ev.attenuation;
+            // SNDINFO `$rolloff name [type] min max`: the sound fades to silence
+            // at `max` instead of Doom's 1200 (Brutal Doom's distant gunfire
+            // carries far, blood drips stay local).
+            if attenuation > 0.0 {
+                if let Some(raw) = self.registry.rolloffs.get(&ev.name.to_ascii_lowercase()) {
+                    let nums: Vec<f64> = raw
+                        .split_whitespace()
+                        .filter_map(|t| t.parse::<f64>().ok())
+                        .collect();
+                    if let Some(&max) = nums.last() {
+                        if max > 0.0 {
+                            #[allow(clippy::cast_possible_truncation)]
+                            {
+                                attenuation *= (1200.0 / max) as f32;
+                            }
+                        }
+                    }
+                }
+            }
             let (origin, flags) = if attenuation <= 0.0 {
                 (SoundOrigin::None, SoundFlags(SoundFlags::ATTN_NONE))
             } else {

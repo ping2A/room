@@ -40,10 +40,13 @@ impl WallVertex {
         }
     }
 
-    /// Set opacity in `_pad[0]` (shader `@location(3).x`).
+    /// Set opacity in `_pad[0]` (shader `@location(3).x`). A negative value
+    /// flags `RenderStyle Add` (the shader adds the colour instead of
+    /// blending), so the sign must survive: clamping to 0 made every additive
+    /// sprite (Brutal Doom fireball trails, sparks, flares) invisible.
     #[must_use]
     pub fn with_alpha(mut self, alpha: f32) -> Self {
-        self._pad[0] = alpha.clamp(0.0, 1.0);
+        self._pad[0] = alpha.clamp(-1.0, 1.0);
         self
     }
 

@@ -240,6 +240,39 @@ pub trait AcsHost {
         let _ = (func_index, args, activator);
         0
     }
+    /// `PCD_PRINTNAME`: player name (`which` ≥ 0 / activator when 0) or
+    /// `PRINTNAME_LEVELNAME` (-1) / `PRINTNAME_LEVEL` (-2) / `PRINTNAME_SKILL` (-3).
+    fn print_name(&self, which: i32, activator: u64) -> String {
+        let _ = (which, activator);
+        "Player".into()
+    }
+    /// `SetThingSpecial(tid, special, args…)` (tid 0 = activator).
+    fn set_thing_special(&mut self, tid: i32, special: i32, args: [i32; 5], activator: u64) {
+        let _ = (tid, special, args, activator);
+    }
+    /// `Thing_Projectile2` (`type_id` = SpawnID) / `SpawnProjectile` (`class` name):
+    /// angle in byte units, speeds in eighths of a unit per tic.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_projectile(
+        &mut self,
+        tid: i32,
+        type_id: i32,
+        class: &str,
+        angle: i32,
+        speed: i32,
+        vspeed: i32,
+        gravity: bool,
+        newtid: i32,
+        activator: u64,
+    ) {
+        let _ = (
+            tid, type_id, class, angle, speed, vspeed, gravity, newtid, activator,
+        );
+    }
+    /// A p-code the VM does not implement was reached (the script is terminated).
+    fn unsupported_pcode(&mut self, op: u32) {
+        let _ = op;
+    }
     /// `Get*UDMFInt` — `kind`: 0=line, 1=thing, 2=sector, 3=side.
     fn udmf_int(&self, kind: u8, id: i32, key: &str) -> i32 {
         let _ = (kind, id, key);
@@ -950,6 +983,8 @@ pub struct CallFrame {
     pub discard_result: bool,
     /// Module to resume in.
     pub module: usize,
+    /// Caller's local arrays.
+    pub arrays: Vec<(u32, u32)>,
 }
 
 /// One live script instance (`DLevelScript` subset).
@@ -981,6 +1016,8 @@ pub struct RunningScript {
     pub font: String,
     /// `PCD_OPTHUDMESSAGE` stack mark (`optstart`).
     pub optstart: Option<usize>,
+    /// Local arrays of the running script / function: (locals offset, size).
+    pub arrays: Vec<(u32, u32)>,
     /// Activator side (0 = front).
     pub side: u8,
     /// Activating linedef index (`-1` if none / OPEN / manual start).
@@ -1052,6 +1089,10 @@ pub struct AcsState {
     pub links: Vec<ModuleLinks>,
     /// `dyn_strings` index by text (GZDoom `ACSStringPool::AddString` dedupe).
     pub dyn_index: std::collections::HashMap<String, i32>,
+    /// `ACS_WorldArrays` (hub-persistent sparse arrays): (array, index) → value.
+    pub world_arrays: std::collections::BTreeMap<(i32, i32), i32>,
+    /// `ACS_GlobalArrays`: (array, index) → value.
+    pub global_arrays: std::collections::BTreeMap<(i32, i32), i32>,
 }
 
 /// Resolved cross-module references of one module (GZDoom `FBehavior::Imports`).
@@ -1080,6 +1121,8 @@ impl Default for AcsState {
             lib_arrays: Vec::new(),
             links: Vec::new(),
             dyn_index: std::collections::HashMap::new(),
+            world_arrays: std::collections::BTreeMap::new(),
+            global_arrays: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -1124,6 +1167,11 @@ impl AcsState {
             for s in &mut module.scripts {
                 if s.number < 0 {
                     s.number -= base;
+                }
+            }
+            for (n, _) in &mut module.script_arrays {
+                if *n < 0 {
+                    *n -= base;
                 }
             }
         }
@@ -1585,6 +1633,12 @@ fn start_script_inner(
         hud_h: 0,
         font: String::new(),
         optstart: None,
+        arrays: state
+            .modules
+            .get(module)
+            .and_then(|m| m.script_arrays.iter().find(|(n, _)| *n == number))
+            .map(|(_, a)| a.clone())
+            .unwrap_or_default(),
         side,
         line,
         activator,
@@ -4186,11 +4240,27 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             }
             let old_locals = std::mem::replace(&mut state.scripts[idx].locals, new_locals);
             let return_pc = state.scripts[idx].pc;
+            let fidx = if fmod == module {
+                funcnum
+            } else {
+                state
+                    .links
+                    .get(module)
+                    .and_then(|l| l.funcs.get(funcnum).copied().flatten())
+                    .map_or(funcnum, |(_, k)| k)
+            };
+            let new_arrays = state
+                .modules
+                .get(fmod)
+                .and_then(|m| m.function_arrays.get(fidx).cloned())
+                .unwrap_or_default();
+            let old_arrays = std::mem::replace(&mut state.scripts[idx].arrays, new_arrays);
             state.scripts[idx].frames.push(CallFrame {
                 return_pc,
                 locals: old_locals,
                 discard_result: discard,
                 module: cur,
+                arrays: old_arrays,
             });
             state.scripts[idx].pc = func.address;
             state.scripts[idx].module = fmod;
@@ -4210,6 +4280,7 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             state.scripts[idx].locals = frame.locals;
             state.scripts[idx].pc = frame.return_pc;
             state.scripts[idx].module = frame.module;
+            state.scripts[idx].arrays = frame.arrays;
             if !frame.discard_result {
                 state.scripts[idx].stack.push(value);
             }
@@ -4346,8 +4417,334 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             state.scripts[idx].stack.push(retval);
             Step::Continue
         }
+        // ---- GZDoom p-codes added for Brutal Doom / ZDoom ACS parity ----
+        pcd::DUP => {
+            let v = state.scripts[idx].stack.last().copied().unwrap_or(0);
+            state.scripts[idx].stack.push(v);
+            Step::Continue
+        }
+        pcd::SWAP => {
+            let st = &mut state.scripts[idx].stack;
+            let n = st.len();
+            if n >= 2 {
+                st.swap(n - 1, n - 2);
+            }
+            Step::Continue
+        }
+        pcd::ISNETWORKGAME => {
+            let v = host.is_network_game();
+            state.scripts[idx].stack.push(v);
+            Step::Continue
+        }
+        pcd::PLAYERTEAM | pcd::PLAYERFRAGS => {
+            state.scripts[idx].stack.push(0);
+            Step::Continue
+        }
+        pcd::PLAYERHEALTH => {
+            let act = state.scripts[idx].activator;
+            let v = host.actor_property(0, crate::pcd::aprop::HEALTH, act);
+            state.scripts[idx].stack.push(v);
+            Step::Continue
+        }
+        pcd::PLAYERARMORPOINTS => {
+            let act = state.scripts[idx].activator;
+            let v = host.check_actor_inventory(0, "BasicArmor", act);
+            state.scripts[idx].stack.push(v);
+            Step::Continue
+        }
+        pcd::PLAYERCLASS | pcd::PLAYERISBOT => {
+            let n = pop(state, idx);
+            let in_game = host.player_in_game(n) != 0;
+            let v = match op {
+                pcd::PLAYERCLASS => {
+                    if in_game {
+                        0
+                    } else {
+                        -1
+                    }
+                }
+                _ => 0,
+            };
+            state.scripts[idx].stack.push(v);
+            Step::Continue
+        }
+        pcd::CHECKPLAYERCAMERA => {
+            let _ = pop(state, idx);
+            state.scripts[idx].stack.push(-1);
+            Step::Continue
+        }
+        pcd::GETSIGILPIECES => {
+            state.scripts[idx].stack.push(0);
+            Step::Continue
+        }
+        pcd::GETLINEROWOFFSET => {
+            state.scripts[idx].stack.push(0);
+            Step::Continue
+        }
+        pcd::PLAYMOVIE => {
+            let _ = pop(state, idx);
+            state.scripts[idx].stack.push(-1);
+            Step::Continue
+        }
+        pcd::SETLINEMONSTERBLOCKING => {
+            let _ = pop(state, idx);
+            let _ = pop(state, idx);
+            Step::Continue
+        }
+        pcd::MUSICCHANGE => {
+            let order = pop(state, idx);
+            let s_i = pop(state, idx);
+            let song = acs_string(state, s_i);
+            host.set_music(&song, order, 0);
+            Step::Continue
+        }
+        pcd::CONSOLECOMMAND => {
+            for _ in 0..3 {
+                let _ = pop(state, idx);
+            }
+            Step::Continue
+        }
+        pcd::CONSOLECOMMANDDIRECT => {
+            for _ in 0..3 {
+                if take_i32(state, idx).is_none() {
+                    state.scripts[idx].state = ScriptRunState::Terminated;
+                    return Step::Break;
+                }
+            }
+            Step::Continue
+        }
+        pcd::SETMARINEWEAPON | pcd::SETMARINESPRITE => {
+            let _ = pop(state, idx);
+            let _ = pop(state, idx);
+            Step::Continue
+        }
+        pcd::SETFLOORTRIGGER | pcd::SETCEILINGTRIGGER => {
+            for _ in 0..8 {
+                let _ = pop(state, idx);
+            }
+            Step::Continue
+        }
+        // Translations: consumed (Room has no ACS colour translation tables yet).
+        pcd::STARTTRANSLATION => {
+            let _ = pop(state, idx);
+            Step::Continue
+        }
+        pcd::TRANSLATIONRANGE1
+        | pcd::TRANSLATIONRANGE2
+        | pcd::TRANSLATIONRANGE3
+        | pcd::TRANSLATIONRANGE4
+        | pcd::TRANSLATIONRANGE5 => {
+            let n = match op {
+                pcd::TRANSLATIONRANGE1 => 4,
+                pcd::TRANSLATIONRANGE4 => 5,
+                pcd::TRANSLATIONRANGE5 => 6,
+                _ => 8,
+            };
+            for _ in 0..n {
+                let _ = pop(state, idx);
+            }
+            Step::Continue
+        }
+        pcd::ENDTRANSLATION => Step::Continue,
+        pcd::MORPHACTOR => {
+            for _ in 0..7 {
+                let _ = pop(state, idx);
+            }
+            state.scripts[idx].stack.push(0);
+            Step::Continue
+        }
+        pcd::UNMORPHACTOR => {
+            let _ = pop(state, idx);
+            let _ = pop(state, idx);
+            state.scripts[idx].stack.push(0);
+            Step::Continue
+        }
+        pcd::SETTHINGSPECIAL => {
+            // tid, special, arg0..arg4
+            let mut args = [0i32; 5];
+            for i in (0..5).rev() {
+                args[i] = pop(state, idx);
+            }
+            let special = pop(state, idx);
+            let tid = pop(state, idx);
+            let act = state.scripts[idx].activator;
+            host.set_thing_special(tid, special, args, act);
+            Step::Continue
+        }
+        pcd::THING_PROJECTILE2 => {
+            // tid, type, angle, speed, vspeed, gravity, newtid
+            let newtid = pop(state, idx);
+            let gravity = pop(state, idx);
+            let vspeed = pop(state, idx);
+            let speed = pop(state, idx);
+            let angle = pop(state, idx);
+            let type_id = pop(state, idx);
+            let tid = pop(state, idx);
+            let act = state.scripts[idx].activator;
+            host.spawn_projectile(
+                tid,
+                type_id,
+                "",
+                angle,
+                speed,
+                vspeed,
+                gravity != 0,
+                newtid,
+                act,
+            );
+            Step::Continue
+        }
+        pcd::SPAWNPROJECTILE => {
+            let newtid = pop(state, idx);
+            let gravity = pop(state, idx);
+            let vspeed = pop(state, idx);
+            let speed = pop(state, idx);
+            let angle = pop(state, idx);
+            let name_i = pop(state, idx);
+            let tid = pop(state, idx);
+            let name = acs_string(state, name_i);
+            let act = state.scripts[idx].activator;
+            host.spawn_projectile(
+                tid,
+                0,
+                &name,
+                angle,
+                speed,
+                vspeed,
+                gravity != 0,
+                newtid,
+                act,
+            );
+            Step::Continue
+        }
+        pcd::LSPEC5RESULT | pcd::LSPEC5EX | pcd::LSPEC5EXRESULT => {
+            let special = if op == pcd::LSPEC5RESULT {
+                take_byte_or_word(state, idx)
+            } else {
+                take_i32(state, idx)
+            };
+            let Some(special) = special else {
+                state.scripts[idx].state = ScriptRunState::Terminated;
+                return Step::Break;
+            };
+            let mut args = [0i32; 5];
+            for i in (0..5).rev() {
+                args[i] = pop(state, idx);
+            }
+            let r = host.execute_special(special, args);
+            if op != pcd::LSPEC5EX {
+                state.scripts[idx].stack.push(r);
+            }
+            Step::Continue
+        }
+        pcd::CASEGOTOSORTED => {
+            // GZDoom: 4-byte aligned case count, then sorted (value, offset) pairs.
+            let m = state.scripts[idx].module;
+            let mut pc = (state.scripts[idx].pc + 3) & !3;
+            let Some(md) = state.modules.get(m) else {
+                state.scripts[idx].state = ScriptRunState::Terminated;
+                return Step::Break;
+            };
+            let n = md.read_i32(pc).unwrap_or(0).max(0) as u32;
+            pc += 4;
+            let top = state.scripts[idx].stack.last().copied().unwrap_or(0);
+            let (mut lo, mut hi) = (0i64, i64::from(n) - 1);
+            let mut dest = None;
+            while lo <= hi {
+                let mid = (lo + hi) / 2;
+                let at = pc + (mid as u32) * 8;
+                let v = md.read_i32(at).unwrap_or(0);
+                if v == top {
+                    dest = md.read_u32(at + 4);
+                    break;
+                } else if v < top {
+                    lo = mid + 1;
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            match dest {
+                Some(d) => {
+                    let _ = pop(state, idx);
+                    state.scripts[idx].pc = d;
+                }
+                None => state.scripts[idx].pc = pc + n * 8,
+            }
+            Step::Continue
+        }
+        pcd::GOTOSTACK => {
+            let j = pop(state, idx);
+            let m = state.scripts[idx].module;
+            match state
+                .modules
+                .get(m)
+                .and_then(|md| md.jump_points.get(usize::try_from(j).ok()?).copied())
+            {
+                Some(d) => {
+                    state.scripts[idx].pc = d;
+                    Step::Continue
+                }
+                None => {
+                    state.scripts[idx].state = ScriptRunState::Terminated;
+                    Step::Break
+                }
+            }
+        }
+        pcd::PRINTFIXED => {
+            let v = pop(state, idx);
+            let f = f64::from(v) / 65536.0;
+            let txt = format_g(f);
+            state.scripts[idx].print_buf.push_str(&txt);
+            Step::Continue
+        }
+        pcd::PRINTBINARY => {
+            let v = pop(state, idx);
+            state.scripts[idx]
+                .print_buf
+                .push_str(&format!("{:b}", v as u32));
+            Step::Continue
+        }
+        pcd::PRINTHEX => {
+            let v = pop(state, idx);
+            state.scripts[idx]
+                .print_buf
+                .push_str(&format!("{:X}", v as u32));
+            Step::Continue
+        }
+        pcd::PRINTLOCALIZED => {
+            // Resolved by the shell (`$KEY` tokens go through LANGUAGE).
+            let v = pop(state, idx);
+            let key = acs_string(state, v);
+            let txt = if key.starts_with('$') {
+                key
+            } else {
+                format!("${key}")
+            };
+            state.scripts[idx].print_buf.push_str(&txt);
+            Step::Continue
+        }
+        pcd::PRINTBIND => {
+            let v = pop(state, idx);
+            let cmd = acs_string(state, v);
+            state.scripts[idx]
+                .print_buf
+                .push_str(&format!("??? ({cmd})"));
+            Step::Continue
+        }
+        pcd::PRINTNAME => {
+            let v = pop(state, idx);
+            let act = state.scripts[idx].activator;
+            let txt = host.print_name(v, act);
+            state.scripts[idx].print_buf.push_str(&txt);
+            Step::Continue
+        }
+        op if var_access_kind(op).is_some() => {
+            let (kind, vop) = var_access_kind(op).unwrap_or((VarKind::World, VarOp::Push));
+            var_access(state, host, idx, kind, vop)
+        }
         // Unimplemented PCD — terminate safely rather than runaway.
         _ => {
+            host.unsupported_pcode(op);
             state.scripts[idx].state = ScriptRunState::Terminated;
             Step::Break
         }
@@ -4367,6 +4764,277 @@ fn binop(state: &mut AcsState, idx: usize, f: impl FnOnce(i32, i32) -> i32) -> S
     let a = pop(state, idx);
     state.scripts[idx].stack.push(f(a, b));
     Step::Continue
+}
+
+/// Storage class addressed by a generic variable p-code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VarKind {
+    Script,
+    Map,
+    World,
+    Global,
+    ScriptArray,
+    MapArray,
+    WorldArray,
+    GlobalArray,
+}
+
+/// Operation of a generic variable p-code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VarOp {
+    Assign,
+    Push,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Inc,
+    Dec,
+    And,
+    Eor,
+    Or,
+    Ls,
+    Rs,
+}
+
+/// Generic handling for the variable/array p-codes Room implements through
+/// one path (global vars, world/global/script arrays and the bitwise ops).
+fn var_access_kind(op: u32) -> Option<(VarKind, VarOp)> {
+    use VarKind as K;
+    use VarOp as O;
+    Some(match op {
+        pcd::ASSIGNGLOBALVAR => (K::Global, O::Assign),
+        pcd::PUSHGLOBALVAR => (K::Global, O::Push),
+        pcd::ADDGLOBALVAR => (K::Global, O::Add),
+        pcd::SUBGLOBALVAR => (K::Global, O::Sub),
+        pcd::MULGLOBALVAR => (K::Global, O::Mul),
+        pcd::DIVGLOBALVAR => (K::Global, O::Div),
+        pcd::MODGLOBALVAR => (K::Global, O::Mod),
+        pcd::INCGLOBALVAR => (K::Global, O::Inc),
+        pcd::DECGLOBALVAR => (K::Global, O::Dec),
+        pcd::PUSHWORLDARRAY => (K::WorldArray, O::Push),
+        pcd::ASSIGNWORLDARRAY => (K::WorldArray, O::Assign),
+        pcd::ADDWORLDARRAY => (K::WorldArray, O::Add),
+        pcd::SUBWORLDARRAY => (K::WorldArray, O::Sub),
+        pcd::MULWORLDARRAY => (K::WorldArray, O::Mul),
+        pcd::DIVWORLDARRAY => (K::WorldArray, O::Div),
+        pcd::MODWORLDARRAY => (K::WorldArray, O::Mod),
+        pcd::INCWORLDARRAY => (K::WorldArray, O::Inc),
+        pcd::DECWORLDARRAY => (K::WorldArray, O::Dec),
+        pcd::PUSHGLOBALARRAY => (K::GlobalArray, O::Push),
+        pcd::ASSIGNGLOBALARRAY => (K::GlobalArray, O::Assign),
+        pcd::ADDGLOBALARRAY => (K::GlobalArray, O::Add),
+        pcd::SUBGLOBALARRAY => (K::GlobalArray, O::Sub),
+        pcd::MULGLOBALARRAY => (K::GlobalArray, O::Mul),
+        pcd::DIVGLOBALARRAY => (K::GlobalArray, O::Div),
+        pcd::MODGLOBALARRAY => (K::GlobalArray, O::Mod),
+        pcd::INCGLOBALARRAY => (K::GlobalArray, O::Inc),
+        pcd::DECGLOBALARRAY => (K::GlobalArray, O::Dec),
+        pcd::ASSIGNSCRIPTARRAY => (K::ScriptArray, O::Assign),
+        pcd::PUSHSCRIPTARRAY => (K::ScriptArray, O::Push),
+        pcd::ADDSCRIPTARRAY => (K::ScriptArray, O::Add),
+        pcd::SUBSCRIPTARRAY => (K::ScriptArray, O::Sub),
+        pcd::MULSCRIPTARRAY => (K::ScriptArray, O::Mul),
+        pcd::DIVSCRIPTARRAY => (K::ScriptArray, O::Div),
+        pcd::MODSCRIPTARRAY => (K::ScriptArray, O::Mod),
+        pcd::INCSCRIPTARRAY => (K::ScriptArray, O::Inc),
+        pcd::DECSCRIPTARRAY => (K::ScriptArray, O::Dec),
+        pcd::ANDSCRIPTARRAY => (K::ScriptArray, O::And),
+        pcd::EORSCRIPTARRAY => (K::ScriptArray, O::Eor),
+        pcd::ORSCRIPTARRAY => (K::ScriptArray, O::Or),
+        pcd::LSSCRIPTARRAY => (K::ScriptArray, O::Ls),
+        pcd::RSSCRIPTARRAY => (K::ScriptArray, O::Rs),
+        pcd::ANDSCRIPTVAR => (K::Script, O::And),
+        pcd::ANDMAPVAR => (K::Map, O::And),
+        pcd::ANDWORLDVAR => (K::World, O::And),
+        pcd::ANDGLOBALVAR => (K::Global, O::And),
+        pcd::ANDMAPARRAY => (K::MapArray, O::And),
+        pcd::ANDWORLDARRAY => (K::WorldArray, O::And),
+        pcd::ANDGLOBALARRAY => (K::GlobalArray, O::And),
+        pcd::EORSCRIPTVAR => (K::Script, O::Eor),
+        pcd::EORMAPVAR => (K::Map, O::Eor),
+        pcd::EORWORLDVAR => (K::World, O::Eor),
+        pcd::EORGLOBALVAR => (K::Global, O::Eor),
+        pcd::EORMAPARRAY => (K::MapArray, O::Eor),
+        pcd::EORWORLDARRAY => (K::WorldArray, O::Eor),
+        pcd::EORGLOBALARRAY => (K::GlobalArray, O::Eor),
+        pcd::ORSCRIPTVAR => (K::Script, O::Or),
+        pcd::ORMAPVAR => (K::Map, O::Or),
+        pcd::ORWORLDVAR => (K::World, O::Or),
+        pcd::ORGLOBALVAR => (K::Global, O::Or),
+        pcd::ORMAPARRAY => (K::MapArray, O::Or),
+        pcd::ORWORLDARRAY => (K::WorldArray, O::Or),
+        pcd::ORGLOBALARRAY => (K::GlobalArray, O::Or),
+        pcd::LSSCRIPTVAR => (K::Script, O::Ls),
+        pcd::LSMAPVAR => (K::Map, O::Ls),
+        pcd::LSWORLDVAR => (K::World, O::Ls),
+        pcd::LSGLOBALVAR => (K::Global, O::Ls),
+        pcd::LSMAPARRAY => (K::MapArray, O::Ls),
+        pcd::LSWORLDARRAY => (K::WorldArray, O::Ls),
+        pcd::LSGLOBALARRAY => (K::GlobalArray, O::Ls),
+        pcd::RSSCRIPTVAR => (K::Script, O::Rs),
+        pcd::RSMAPVAR => (K::Map, O::Rs),
+        pcd::RSWORLDVAR => (K::World, O::Rs),
+        pcd::RSGLOBALVAR => (K::Global, O::Rs),
+        pcd::RSMAPARRAY => (K::MapArray, O::Rs),
+        pcd::RSWORLDARRAY => (K::WorldArray, O::Rs),
+        pcd::RSGLOBALARRAY => (K::GlobalArray, O::Rs),
+        _ => return None,
+    })
+}
+
+fn var_read(state: &AcsState, idx: usize, kind: VarKind, n: i32, index: i32) -> i32 {
+    let m = state.scripts[idx].module;
+    match kind {
+        VarKind::Script => get_local(state, idx, n.max(0) as usize),
+        VarKind::Map => state.map_var(m, n.max(0) as usize),
+        VarKind::World => state
+            .world_vars
+            .get(n.max(0) as usize)
+            .copied()
+            .unwrap_or(0),
+        VarKind::Global => state
+            .global_vars
+            .get(n.max(0) as usize)
+            .copied()
+            .unwrap_or(0),
+        VarKind::MapArray => state.map_array_elem(m, n.max(0) as usize, index),
+        VarKind::WorldArray => state.world_arrays.get(&(n, index)).copied().unwrap_or(0),
+        VarKind::GlobalArray => state.global_arrays.get(&(n, index)).copied().unwrap_or(0),
+        VarKind::ScriptArray => state.scripts[idx]
+            .arrays
+            .get(n.max(0) as usize)
+            .filter(|(_, size)| (index as u32) < *size && index >= 0)
+            .map_or(0, |(off, _)| {
+                get_local(state, idx, (*off + index as u32) as usize)
+            }),
+    }
+}
+
+fn var_write(state: &mut AcsState, idx: usize, kind: VarKind, n: i32, index: i32, v: i32) {
+    let m = state.scripts[idx].module;
+    match kind {
+        VarKind::Script => set_local(state, idx, n.max(0) as usize, v),
+        VarKind::Map => {
+            if let Some(slot) = state.map_var_mut(m, n.max(0) as usize) {
+                *slot = v;
+            }
+        }
+        VarKind::World => {
+            if let Some(slot) = state.world_vars.get_mut(n.max(0) as usize) {
+                *slot = v;
+            }
+        }
+        VarKind::Global => {
+            if let Some(slot) = state.global_vars.get_mut(n.max(0) as usize) {
+                *slot = v;
+            }
+        }
+        VarKind::MapArray => {
+            if let Some(slot) = state.map_array_elem_mut(m, n.max(0) as usize, index) {
+                *slot = v;
+            }
+        }
+        VarKind::WorldArray => {
+            state.world_arrays.insert((n, index), v);
+        }
+        VarKind::GlobalArray => {
+            state.global_arrays.insert((n, index), v);
+        }
+        VarKind::ScriptArray => {
+            let slot = state.scripts[idx]
+                .arrays
+                .get(n.max(0) as usize)
+                .filter(|(_, size)| (index as u32) < *size && index >= 0)
+                .map(|(off, _)| (*off + index as u32) as usize);
+            if let Some(i) = slot {
+                set_local(state, idx, i, v);
+            }
+        }
+    }
+}
+
+/// GZDoom semantics: the variable number is an inline operand; arrays take
+/// their element index from the stack below the value.
+fn var_access(
+    state: &mut AcsState,
+    host: &mut dyn AcsHost,
+    idx: usize,
+    kind: VarKind,
+    op: VarOp,
+) -> Step {
+    let Some(n) = take_byte_or_word(state, idx) else {
+        state.scripts[idx].state = ScriptRunState::Terminated;
+        return Step::Break;
+    };
+    let is_array = matches!(
+        kind,
+        VarKind::ScriptArray | VarKind::MapArray | VarKind::WorldArray | VarKind::GlobalArray
+    );
+    let value = match op {
+        VarOp::Push | VarOp::Inc | VarOp::Dec => 0,
+        _ => pop(state, idx),
+    };
+    let index = if is_array { pop(state, idx) } else { 0 };
+    let cur = var_read(state, idx, kind, n, index);
+    let out = match op {
+        VarOp::Push => {
+            state.scripts[idx].stack.push(cur);
+            return Step::Continue;
+        }
+        VarOp::Assign => value,
+        VarOp::Add => cur.wrapping_add(value),
+        VarOp::Sub => cur.wrapping_sub(value),
+        VarOp::Mul => cur.wrapping_mul(value),
+        VarOp::Div | VarOp::Mod => {
+            if value == 0 {
+                host.print(
+                    if op == VarOp::Div {
+                        "Division by zero"
+                    } else {
+                        "Modulus by zero"
+                    },
+                    false,
+                );
+                state.scripts[idx].state = ScriptRunState::Terminated;
+                return Step::Break;
+            }
+            if op == VarOp::Div {
+                cur.wrapping_div(value)
+            } else {
+                cur.wrapping_rem(value)
+            }
+        }
+        VarOp::Inc => cur.wrapping_add(1),
+        VarOp::Dec => cur.wrapping_sub(1),
+        VarOp::And => cur & value,
+        VarOp::Eor => cur ^ value,
+        VarOp::Or => cur | value,
+        VarOp::Ls => cur.wrapping_shl(value as u32),
+        VarOp::Rs => cur.wrapping_shr(value as u32),
+    };
+    var_write(state, idx, kind, n, index, out);
+    Step::Continue
+}
+
+/// C `%g` (6 significant digits, trailing zeros trimmed).
+fn format_g(v: f64) -> String {
+    if v == 0.0 {
+        return "0".into();
+    }
+    let exp = v.abs().log10().floor() as i32;
+    if !(-5..6).contains(&exp) {
+        let s = format!("{:.5e}", v);
+        return s;
+    }
+    let decimals = (5 - exp).max(0) as usize;
+    let s = format!("{v:.decimals$}");
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_owned()
+    } else {
+        s
+    }
 }
 
 fn get_local(state: &AcsState, idx: usize, i: usize) -> i32 {
@@ -4949,6 +5617,9 @@ mod tests {
             mstr_vars: Vec::new(),
             astr_vars: Vec::new(),
             atags: Vec::new(),
+            script_arrays: Vec::new(),
+            function_arrays: Vec::new(),
+            jump_points: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -4999,6 +5670,9 @@ mod tests {
             mstr_vars: Vec::new(),
             astr_vars: Vec::new(),
             atags: Vec::new(),
+            script_arrays: Vec::new(),
+            function_arrays: Vec::new(),
+            jump_points: Vec::new(),
         });
         let mut host = TestHost::new();
         assert_eq!(start_script(&mut state, &mut host, 1, &[0; 3], false), 1);
@@ -5242,6 +5916,9 @@ mod tests {
             mstr_vars: Vec::new(),
             astr_vars: Vec::new(),
             atags: Vec::new(),
+            script_arrays: Vec::new(),
+            function_arrays: Vec::new(),
+            jump_points: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -5302,6 +5979,9 @@ mod tests {
             mstr_vars: Vec::new(),
             astr_vars: Vec::new(),
             atags: Vec::new(),
+            script_arrays: Vec::new(),
+            function_arrays: Vec::new(),
+            jump_points: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -5374,6 +6054,9 @@ mod tests {
             mstr_vars: Vec::new(),
             astr_vars: Vec::new(),
             atags: Vec::new(),
+            script_arrays: Vec::new(),
+            function_arrays: Vec::new(),
+            jump_points: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -5435,6 +6118,9 @@ mod tests {
             mstr_vars: Vec::new(),
             astr_vars: Vec::new(),
             atags: Vec::new(),
+            script_arrays: Vec::new(),
+            function_arrays: Vec::new(),
+            jump_points: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -5496,6 +6182,9 @@ mod tests {
             mstr_vars: Vec::new(),
             astr_vars: Vec::new(),
             atags: Vec::new(),
+            script_arrays: Vec::new(),
+            function_arrays: Vec::new(),
+            jump_points: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -5557,6 +6246,9 @@ mod tests {
             mstr_vars: Vec::new(),
             astr_vars: Vec::new(),
             atags: Vec::new(),
+            script_arrays: Vec::new(),
+            function_arrays: Vec::new(),
+            jump_points: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -5606,6 +6298,9 @@ mod tests {
             mstr_vars: Vec::new(),
             astr_vars: Vec::new(),
             atags: Vec::new(),
+            script_arrays: Vec::new(),
+            function_arrays: Vec::new(),
+            jump_points: Vec::new(),
         });
         let mut host = TestHost::new();
         start_script(&mut state, &mut host, 1, &[0; 3], false);
@@ -5684,6 +6379,9 @@ mod tests {
             mstr_vars: Vec::new(),
             astr_vars: Vec::new(),
             atags: Vec::new(),
+            script_arrays: Vec::new(),
+            function_arrays: Vec::new(),
+            jump_points: Vec::new(),
         });
         let mut host = TestHost::new();
         assert_eq!(start_script(&mut state, &mut host, 1, &[0; 3], false), 1);
@@ -5830,6 +6528,9 @@ mod tests {
             mstr_vars: Vec::new(),
             astr_vars: Vec::new(),
             atags: Vec::new(),
+            script_arrays: Vec::new(),
+            function_arrays: Vec::new(),
+            jump_points: Vec::new(),
         });
         assert_eq!(state.map_arrays[0][0], 9);
         let mut host = TestHost::new();

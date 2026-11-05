@@ -135,6 +135,12 @@ pub struct AcsModule {
     pub astr_vars: Vec<u32>,
     /// `ATAG` per-element tags (var number, tags: 0 int, 1 string, 2 function).
     pub atags: Vec<(u32, Vec<u8>)>,
+    /// `SARY` local arrays per script number: (locals offset, size) per array.
+    pub script_arrays: Vec<(i32, Vec<(u32, u32)>)>,
+    /// `FARY` local arrays per function index: (locals offset, size) per array.
+    pub function_arrays: Vec<Vec<(u32, u32)>>,
+    /// `JUMP` targets for `PCD_GOTOSTACK`.
+    pub jump_points: Vec<u32>,
 }
 
 impl AcsModule {
@@ -428,7 +434,9 @@ fn parse_chunks(
     let script_names = parse_snam_chunk(&data, chunks_off, data_end);
     let mut functions = parse_func_chunk(&data, chunks_off, data_end);
     let function_names = parse_fnam_chunk(&data, chunks_off, data_end);
-    apply_sary_fary(&mut scripts, &mut functions, &data, chunks_off, data_end);
+    let (script_arrays, function_arrays) =
+        apply_sary_fary(&mut scripts, &mut functions, &data, chunks_off, data_end);
+    let jump_points = parse_u32_list_chunk(&data, chunks_off, data_end, b"JUMP");
     let mut map_var_defaults = parse_mini_chunk(&data, chunks_off, data_end);
     let mut map_arrays = parse_aray_aini(&data, chunks_off, data_end, &mut map_var_defaults);
     apply_astr_atag(
@@ -463,6 +471,9 @@ fn parse_chunks(
         mstr_vars,
         astr_vars,
         atags,
+        script_arrays,
+        function_arrays,
+        jump_points,
     })
 }
 
@@ -723,6 +734,9 @@ fn parse_acs0(bytes: &[u8], dir_off: usize) -> Result<AcsModule, AcsError> {
         mstr_vars: Vec::new(),
         astr_vars: Vec::new(),
         atags: Vec::new(),
+        script_arrays: Vec::new(),
+        function_arrays: Vec::new(),
+        jump_points: Vec::new(),
     })
 }
 
@@ -887,13 +901,16 @@ fn parse_aray_aini(
 }
 
 /// `SARY` / `FARY` — local array size lists; bump script/function local counts.
+#[allow(clippy::type_complexity)]
 fn apply_sary_fary(
     scripts: &mut [ScriptDef],
     functions: &mut [AcsFunction],
     data: &[u8],
     chunks_off: usize,
     data_end: usize,
-) {
+) -> (Vec<(i32, Vec<(u32, u32)>)>, Vec<Vec<(u32, u32)>>) {
+    let mut script_arrays = Vec::new();
+    let mut function_arrays = vec![Vec::new(); functions.len()];
     let mut off = chunks_off;
     while off + 8 <= data_end {
         let id = [data[off], data[off + 1], data[off + 2], data[off + 3]];
@@ -905,51 +922,67 @@ fn apply_sary_fary(
         }
         if size >= 6 {
             if &id == b"SARY" {
-                if let Some((num, total)) = parse_local_array_chunk(data, off, size) {
-                    if let Some(s) = scripts.iter_mut().find(|s| s.number == i32::from(num)) {
+                if let Some((num, sizes)) = parse_local_array_chunk(data, off, size) {
+                    // Script numbers are signed shorts (named scripts are negative).
+                    let num = i32::from(num as i16);
+                    if let Some(s) = scripts.iter_mut().find(|s| s.number == num) {
                         let base = if s.local_count == 0 {
                             20u32
                         } else {
                             u32::from(s.local_count)
                         };
-                        s.local_count = base.saturating_add(total).min(u32::from(u16::MAX)) as u16;
+                        let (layout, end) = layout_arrays(base, &sizes);
+                        s.local_count = end.min(u32::from(u16::MAX)) as u16;
+                        script_arrays.push((num, layout));
                     }
                 }
             } else if &id == b"FARY" {
-                if let Some((num, total)) = parse_local_array_chunk(data, off, size) {
+                if let Some((num, sizes)) = parse_local_array_chunk(data, off, size) {
                     if let Some(f) = functions.get_mut(usize::from(num)) {
+                        // Functions do not count their arguments in `local_count`.
                         let base = u32::from(f.local_count) + u32::from(f.argc);
-                        let new_total = base.saturating_add(total);
-                        f.local_count = new_total.saturating_sub(u32::from(f.argc)).min(255) as u8;
+                        let (layout, end) = layout_arrays(base, &sizes);
+                        f.local_count = end.saturating_sub(u32::from(f.argc)).min(255) as u8;
+                        function_arrays[usize::from(num)] = layout;
                     }
                 }
             }
         }
         off = payload_end;
     }
+    (script_arrays, function_arrays)
+}
+
+/// Lay local arrays out after `base` locals: (offset, size) each, and the new end.
+fn layout_arrays(base: u32, sizes: &[u32]) -> (Vec<(u32, u32)>, u32) {
+    let mut off = base;
+    let mut out = Vec::with_capacity(sizes.len());
+    for &sz in sizes {
+        out.push((off, sz));
+        off = off.saturating_add(sz).min(1_048_576);
+    }
+    (out, off)
 }
 
 /// GZDoom `ParseLocalArrayChunk` — returns (script_or_func index, total elements).
-fn parse_local_array_chunk(data: &[u8], chunk_off: usize, size: usize) -> Option<(u16, u32)> {
+fn parse_local_array_chunk(data: &[u8], chunk_off: usize, size: usize) -> Option<(u16, Vec<u32>)> {
     if size < 6 || chunk_off + 10 > data.len() {
         return None;
     }
     let num = u16::from_le_bytes([data[chunk_off + 8], data[chunk_off + 9]]);
     let count = size.saturating_sub(2) / 4;
-    let mut total = 0u32;
+    let mut sizes = Vec::with_capacity(count);
     for i in 0..count {
         let base = chunk_off + 10 + i * 4;
         if base + 4 > data.len() {
             break;
         }
-        total = total.saturating_add(u32::from_le_bytes([
-            data[base],
-            data[base + 1],
-            data[base + 2],
-            data[base + 3],
-        ]));
+        sizes.push(
+            u32::from_le_bytes([data[base], data[base + 1], data[base + 2], data[base + 3]])
+                .min(1_048_576),
+        );
     }
-    Some((num, total.min(1_048_576)))
+    Some((num, sizes))
 }
 
 /// `ASTR` / `ATAG` — mark map-array cells as strings (lookup into string table → leave

@@ -277,6 +277,7 @@ impl CvarStore {
         reg_b(self, "r_impactfx", false);
         reg_b(self, "r_viewkick", false);
         reg_f(self, "r_viewkick_scale", 1.0);
+        reg_f(self, "r_quakeintensity", 1.0);
         reg_b(self, "r_weaponsmoke", false);
         reg_b(self, "r_casings", false);
         reg_b(self, "r_explosionfx", false);

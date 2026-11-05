@@ -372,6 +372,9 @@ pub fn xy_movement_fixed(world: &mut World, actor_id: ActorId) {
     let mut momx = Fixed::from_f64(actor.vel.x());
     let mut momy = Fixed::from_f64(actor.vel.y());
     if momx.0 == 0 && momy.0 == 0 {
+        if crate::physics::is_skull_flying(&actor) {
+            crate::physics::skull_slam(world, actor_id, None);
+        }
         return;
     }
     // Doom clamps each axis to ±MAXMOVE before stepping.
@@ -422,6 +425,12 @@ pub fn xy_movement_fixed(world: &mut World, actor_id: ActorId) {
         let dest = DVec3::new(ptry_x, ptry_y, z);
         let mv = try_move_fixed(world, actor_id, dest);
         if !mv.ok {
+            if !is_missile && mv.blocking_actor.is_some() && crate::physics::is_skull_flying(&actor)
+            {
+                // `PIT_CheckThing`: the skull slams into the thing.
+                crate::physics::skull_slam(world, actor_id, mv.blocking_actor);
+                return;
+            }
             if is_missile {
                 let mut ripped = false;
                 if let Some(victim) = mv.blocking_actor {
@@ -482,7 +491,12 @@ pub fn xy_movement_fixed(world: &mut World, actor_id: ActorId) {
             && Fixed::from_f64(chk.floor_z).0 != Fixed::from_f64(sec_floor).0;
         (on_ground, skip)
     });
-    if !is_missile && on_ground && !skip_corpse_fric {
+    // `if (mo->flags & (MF_MISSILE | MF_SKULLFLY)) return;` — no friction.
+    let skull = world
+        .actors
+        .get(actor_id)
+        .is_some_and(crate::physics::is_skull_flying);
+    if !is_missile && !skull && on_ground && !skip_corpse_fric {
         // Doom `P_XYMovement`: STOPSPEED stop is an *alternative* to friction
         // (check pre-friction mom). Applying friction first then zeroing stops
         // one tic early (DEMO1 @1369).

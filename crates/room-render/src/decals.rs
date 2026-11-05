@@ -60,6 +60,23 @@ pub struct DecalInstance {
     pub line: Option<u32>,
     /// Floor/ceiling projected splat (`docs/29` J2) — Flat orient, grows via stretch.
     pub on_floor: bool,
+    /// Plane the decal rides on (a door's upper wall moves with its ceiling).
+    pub anchor: Option<DecalAnchor>,
+    /// `anchor` has been resolved against the map.
+    pub anchor_checked: bool,
+}
+
+/// Wall tier a decal sits on, relative to the plane that bounds it (GZDoom
+/// decals belong to a sidedef part and move with it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DecalAnchor {
+    /// Sector whose plane carries the wall part.
+    pub sector: u32,
+    /// `true`: upper wall, rides the (lower) ceiling; `false`: lower wall,
+    /// rides the (higher) floor.
+    pub ceiling: bool,
+    /// Decal centre Z minus that plane at placement.
+    pub offset: f32,
 }
 
 /// Cap on retained decals (`cl_maxdecals` bootstrap default).
@@ -152,6 +169,8 @@ impl DecalStore {
             color_time_tics,
             color_goal_light,
             line,
+            anchor: None,
+            anchor_checked: false,
             on_floor: false,
         });
     }
@@ -200,6 +219,8 @@ impl DecalStore {
             color_time_tics: 0,
             color_goal_light: 0.0,
             line: None,
+            anchor: None,
+            anchor_checked: false,
             on_floor: true,
         });
     }
@@ -223,6 +244,59 @@ impl DecalStore {
             d.alpha = frac.clamp(0.0, 1.0);
             true
         });
+    }
+
+    /// Bind newly placed wall decals to the plane of the wall part they hit
+    /// (call with the live map before drawing).
+    pub fn anchor_to_planes(&mut self, map: &MapGeometry) {
+        for d in &mut self.decals {
+            if d.anchor_checked {
+                continue;
+            }
+            d.anchor_checked = true;
+            let Some(li) = d.line else {
+                continue;
+            };
+            let Some(line) = map.lines.get(li as usize) else {
+                continue;
+            };
+            let (Some(fs), Some(bs)) = (line.front_sector, line.back_sector) else {
+                continue;
+            };
+            let (Some(f), Some(b)) = (
+                map.sectors.get(fs.raw() as usize),
+                map.sectors.get(bs.raw() as usize),
+            ) else {
+                continue;
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            let z = d.pos.z;
+            let lo_ceil = f.ceiling_height.min(b.ceiling_height) as f32;
+            let hi_floor = f.floor_height.max(b.floor_height) as f32;
+            if z >= lo_ceil {
+                let sec = if f.ceiling_height <= b.ceiling_height {
+                    fs
+                } else {
+                    bs
+                };
+                d.anchor = Some(DecalAnchor {
+                    sector: sec.raw(),
+                    ceiling: true,
+                    offset: z - lo_ceil,
+                });
+            } else if z <= hi_floor {
+                let sec = if f.floor_height >= b.floor_height {
+                    fs
+                } else {
+                    bs
+                };
+                d.anchor = Some(DecalAnchor {
+                    sector: sec.raw(),
+                    ceiling: false,
+                    offset: z - hi_floor,
+                });
+            }
+        }
     }
 
     /// Clear all decals (map change).
@@ -395,7 +469,36 @@ fn emit_wall_decal(
     let bias = 0.5;
     let hw = f64::from(d.width) * 0.5;
     let hh = f64::from(d.height) * 0.5;
-    let z = f64::from(d.pos.z);
+    let mut z = f64::from(d.pos.z);
+    if let Some(an) = d.anchor {
+        // Ride the moving plane; drop the decal while its wall part is gone
+        // (an open door leaves no upper wall at the old height).
+        let (Some(fs), Some(bs)) = (line.front_sector, line.back_sector) else {
+            return true;
+        };
+        let (Some(f), Some(b)) = (
+            map.sectors.get(fs.raw() as usize),
+            map.sectors.get(bs.raw() as usize),
+        ) else {
+            return true;
+        };
+        let Some(sec) = map.sectors.get(an.sector as usize) else {
+            return true;
+        };
+        if an.ceiling {
+            z = sec.ceiling_height + f64::from(an.offset);
+            if z < f.ceiling_height.min(b.ceiling_height)
+                || z > f.ceiling_height.max(b.ceiling_height)
+            {
+                return true;
+            }
+        } else {
+            z = sec.floor_height + f64::from(an.offset);
+            if z > f.floor_height.max(b.floor_height) || z < f.floor_height.min(b.floor_height) {
+                return true;
+            }
+        }
+    }
     let x0 = cx - tx * hw + nx * bias;
     let y0 = cy - ty * hw + ny * bias;
     let x1 = cx + tx * hw + nx * bias;
@@ -514,6 +617,8 @@ mod tests {
             color_goal_light: 0.0,
             line: None,
             on_floor: false,
+            anchor: None,
+            anchor_checked: false,
         }
     }
 
@@ -576,6 +681,56 @@ mod tests {
         assert!(lists.sprites.is_empty(), "wall decals skip billboards");
         assert_eq!(lists.translucent_walls.len(), 6);
         assert_eq!(lists.translucent_wall_ranges[0].name, "BloodSplat");
+    }
+
+    #[test]
+    fn door_decal_rides_the_door_and_leaves_the_doorway() {
+        let Ok(mut map) = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .room("door", rect(256.0, 0.0, 264.0, 256.0), 0.0, 0.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+        else {
+            panic!("build_udmf");
+        };
+        apply_nodes(&mut map);
+        // The two-sided line between the room and the closed door.
+        let line = map
+            .lines
+            .iter()
+            .position(|l| {
+                l.back_sector.is_some()
+                    && map.vertices[l.v1.raw() as usize].pos.x() == 256.0
+                    && map.vertices[l.v2.raw() as usize].pos.x() == 256.0
+            })
+            .expect("door line") as u32;
+        let mut store = DecalStore::default();
+        store.ingest([("BulletChip".into(), 256.0, 128.0, 40.0, Some(line))]);
+        store.anchor_to_planes(&map);
+        assert!(store.decals[0].anchor.is_some_and(|a| a.ceiling));
+        let cam = Camera::default();
+        // Door half open: the hole moves up with the door's lower edge.
+        let door = map.lines[line as usize]
+            .front_sector
+            .zip(map.lines[line as usize].back_sector)
+            .map(|(f, b)| {
+                if map.sectors[f.raw() as usize].ceiling_height < 1.0 {
+                    f
+                } else {
+                    b
+                }
+            })
+            .unwrap();
+        map.sectors[door.raw() as usize].ceiling_height = 60.0;
+        let mut lists = SceneLists::default();
+        append_decals(&mut lists, &store, &cam, Some(&map));
+        assert_eq!(lists.translucent_walls.len(), 6);
+        assert!(lists.translucent_walls.iter().all(|v| v.pos[2] > 90.0));
+        // Fully open: the upper wall is gone, so is the decal (no floating hole).
+        map.sectors[door.raw() as usize].ceiling_height = 128.0;
+        let mut lists = SceneLists::default();
+        append_decals(&mut lists, &store, &cam, Some(&map));
+        assert!(lists.translucent_walls.is_empty() && lists.sprites.is_empty());
     }
 
     #[test]

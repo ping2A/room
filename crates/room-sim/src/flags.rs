@@ -330,6 +330,10 @@ pub static UZDOOM_FLAGS: &[&str] = &[
     "KEEPBOUNCEANGLE",
     "BOUNCEMODIFIESPITCH",
     "NOSAVEGAME",
+    // Room-only (appended so saved bit indices stay stable): the class's
+    // `Scale` also scales its collision box. Set by the Build/Duke converter,
+    // whose generated actors are sized that way; GZDoom content never sets it.
+    "ROOMSCALEDCOLLISION",
 ];
 
 impl ActorFlags {

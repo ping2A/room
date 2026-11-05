@@ -222,6 +222,13 @@ impl DecalInfo {
         g.entries.first().map(|(n, _)| n.as_str())
     }
 
+    /// Concrete decal definition picked for a placed decal/group.
+    #[must_use]
+    pub fn place_def(&self, placed_name: &str, salt: u32) -> Option<&DecalDef> {
+        let def_name = self.pick_decal_name(placed_name, salt)?;
+        self.decals.get(def_name)
+    }
+
     /// Texture lump to bind for a placed decal/group (`pic`, else the def name).
     #[must_use]
     pub fn place_texture(&self, placed_name: &str, salt: u32) -> Option<String> {

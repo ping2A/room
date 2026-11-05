@@ -2212,10 +2212,9 @@ fn move_player(world: &mut World, mo: ActorId, cmd: &crate::player::TicCmd) {
         a.vel = DVec3::new(vx, vy, a.vel.z());
     }
     let new_pos = DVec3::new(actor.pos.x() + vx, actor.pos.y() + vy, actor.pos.z());
-    if !try_move(world, mo, new_pos) {
-        // Vanilla: bumping a wall while moving plays `sfx_oof` / `*noway`.
-        play_player_sound(world, mo, "*noway");
-    }
+    // Doom and GZDoom play nothing when walking into a wall (only a failed
+    // *use* grunts); a bump sound here repeated every tic while held.
+    let _ = try_move(world, mo, new_pos);
 }
 
 #[cfg(test)]
@@ -2697,7 +2696,7 @@ actor DukePlayer : DoomPlayer
     }
 
     #[test]
-    fn blocked_move_plays_noway() {
+    fn blocked_move_is_silent() {
         let src = include_str!("../../../testdata/actors/doom_basic.txt");
         let file = parse_decorate(src).unwrap();
         let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
@@ -2721,14 +2720,11 @@ actor DukePlayer : DoomPlayer
         for _ in 0..8 {
             player_think(&mut w, &mut player);
             sounds.extend(w.drain_sound_events().into_iter().map(|e| e.name));
-            if sounds.iter().any(|n| n == "*noway") {
-                break;
-            }
         }
         w.players[0] = Some(player);
         assert!(
-            sounds.iter().any(|n| n == "*noway"),
-            "blocked walk should play *noway, got {sounds:?}"
+            !sounds.iter().any(|n| n == "*noway"),
+            "walking into a wall must not grunt (GZDoom), got {sounds:?}"
         );
     }
 
@@ -5160,18 +5156,18 @@ actor BdPistol : Weapon
         {
             let a = w.actors.get(mo).unwrap();
             assert!(a.pitch.degrees().abs() < 1e-6);
-            assert!((a.camera_pitch().degrees() - 20.0).abs() < 1e-6);
+            assert!((a.camera_pitch().degrees() + 20.0).abs() < 1e-6);
         }
         player_think(&mut w, &mut player);
         {
             let a = w.actors.get(mo).unwrap();
-            assert!((a.pitch.degrees() - 5.0).abs() < 1e-6);
-            assert!((a.camera_pitch().degrees() - 20.0).abs() < 1e-6);
+            assert!((a.pitch.degrees() + 5.0).abs() < 1e-6);
+            assert!((a.camera_pitch().degrees() + 20.0).abs() < 1e-6);
         }
         player_think(&mut w, &mut player);
         let a = w.actors.get(mo).unwrap();
-        assert!((a.pitch.degrees() - 5.0).abs() < 1e-6);
-        assert!((a.camera_pitch().degrees() - 89.0).abs() < 1e-6);
+        assert!((a.pitch.degrees() + 5.0).abs() < 1e-6);
+        assert!((a.camera_pitch().degrees() + 89.0).abs() < 1e-6);
     }
 
     #[test]

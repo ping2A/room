@@ -34,6 +34,21 @@ pub(crate) fn gzdoom_button_bits(room: u32) -> i32 {
     g
 }
 
+/// Log an ACS opcode / ACSF index with no implementation, once per process.
+pub(crate) fn report_unsupported_acs(kind: &str, index: i32) {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<std::collections::BTreeSet<(String, i32)>>> = OnceLock::new();
+    if cfg!(test) {
+        return;
+    }
+    let seen = SEEN.get_or_init(|| Mutex::new(std::collections::BTreeSet::new()));
+    if let Ok(mut s) = seen.lock() {
+        if s.insert((kind.to_owned(), index)) {
+            eprintln!("room: unsupported {kind} {index} (returns 0)");
+        }
+    }
+}
+
 /// World as ACS host (line specials, RNG, queries).
 pub(crate) struct WorldAcsHost<'a> {
     pub world: &'a mut World,
@@ -1192,6 +1207,80 @@ impl AcsHost for WorldAcsHost<'_> {
             .any(|p| p.id == po && p.motion.is_some())
     }
 
+    fn unsupported_pcode(&mut self, op: u32) {
+        report_unsupported_acs("ACS p-code", op as i32);
+    }
+
+    fn print_name(&self, which: i32, activator: u64) -> String {
+        match which {
+            -1 | -2 | -3 => String::new(),
+            _ => {
+                let seat = if which == 0 {
+                    let me = unpack_actor(activator);
+                    self.world
+                        .players
+                        .iter()
+                        .position(|p| p.as_ref().is_some_and(|p| p.mo.is_some() && p.mo == me))
+                        .unwrap_or(0)
+                } else {
+                    (which - 1).max(0) as usize
+                };
+                let raw = self.world.player_names.stored(seat);
+                let name = String::from_utf8_lossy(raw).into_owned();
+                if name.is_empty() {
+                    "Player".into()
+                } else {
+                    name
+                }
+            }
+        }
+    }
+
+    fn set_thing_special(&mut self, tid: i32, special: i32, args: [i32; 5], activator: u64) {
+        for id in collect_tid_ids(self.world, tid, activator) {
+            if let Some(a) = self.world.actors.get_mut(id) {
+                a.special = special.clamp(0, i32::from(u16::MAX)) as u16;
+                a.args = args;
+            }
+        }
+    }
+
+    fn spawn_projectile(
+        &mut self,
+        tid: i32,
+        type_id: i32,
+        class: &str,
+        angle: i32,
+        speed: i32,
+        vspeed: i32,
+        gravity: bool,
+        newtid: i32,
+        activator: u64,
+    ) {
+        let cls = if class.is_empty() {
+            crate::specials::class_for_spawn_type(self.world, type_id)
+        } else {
+            self.world
+                .classes
+                .find_name(class)
+                .map(|id| self.world.classes.replacement(id))
+        };
+        let Some(cls) = cls else {
+            return;
+        };
+        crate::specials::spawn_projectiles_at(
+            self.world,
+            tid,
+            cls,
+            angle,
+            f64::from(speed) / 8.0,
+            f64::from(vspeed) / 8.0,
+            gravity,
+            newtid,
+            unpack_actor(activator),
+        );
+    }
+
     fn call_func(&mut self, func_index: i32, args: &[i32], activator: u64) -> i32 {
         match func_index {
             acsf::GET_POLYOBJ_X => {
@@ -1246,7 +1335,15 @@ impl AcsHost for WorldAcsHost<'_> {
                 let add = args.get(4).copied().unwrap_or(0) != 0;
                 self.set_actor_velocity(tid, vx, vy, vz, add, activator)
             }
-            _ => 0,
+            // Zandronum extensions (ResetMap, PlayerIsSpectator,
+            // ConsolePlayerNumber, …): GZDoom's CallFunction falls through to
+            // `return 0` for these. In single player 0 is also the right
+            // answer (console player 0, not a spectator, no lives counter).
+            100..=199 => 0,
+            other => {
+                report_unsupported_acs("ACSF function", other);
+                0
+            }
         }
     }
 
@@ -1317,7 +1414,8 @@ impl AcsHost for WorldAcsHost<'_> {
     fn actor_pitch(&self, tid: i32, activator: u64) -> i32 {
         resolve_actor(self.world, tid, activator)
             .and_then(|id| self.world.actors.get(id))
-            .map(|a| angle_to_acs(a.pitch))
+            // ACS pitch is GZDoom-signed (positive = down); Room stores up.
+            .map(|a| angle_to_acs(Angle::from_degrees(-a.pitch.degrees())))
             .unwrap_or(0)
     }
 
@@ -1695,7 +1793,7 @@ impl AcsHost for WorldAcsHost<'_> {
             return;
         };
         if let Some(a) = self.world.actors.get_mut(id) {
-            a.pitch = acs_to_angle(pitch);
+            a.pitch = Angle::from_degrees(-acs_to_angle(pitch).degrees());
         }
     }
 
@@ -4692,6 +4790,9 @@ actor Marker : Actor 3004
             mstr_vars: Vec::new(),
             astr_vars: Vec::new(),
             atags: Vec::new(),
+            script_arrays: Vec::new(),
+            function_arrays: Vec::new(),
+            jump_points: Vec::new(),
         });
         resolve_actor_arg0_str(&mut w);
         let a = w.actors.get(w.find_by_tid(22).unwrap()).unwrap();

@@ -315,7 +315,9 @@ pub fn check_position(
             let ceiling_z = sector_z_at(world, si, pos.x(), pos.y(), false);
             // An overlapping Build sector (a balcony over a doorway) can contain
             // the same point. Ignore a floor the actor cannot step up to.
-            if floor_z - pos.z() <= step_limit(actor) {
+            // Doom/GZDoom always seed from the centre sector (an out-of-reach
+            // floor then blocks the move in `try_move`).
+            if !world.build_overlaps || floor_z - pos.z() <= step_limit(actor) {
                 contacted.insert(si);
                 result.floor_z = floor_z;
                 result.ceiling_z = ceiling_z;
@@ -461,6 +463,15 @@ pub fn check_position(
             || (other.flags & FLAG_NOBLOCKMAP) != 0
             || (other.flags & FLAG_NOINTERACTION) != 0
             || (actor.flags & FLAG_NOINTERACTION) != 0
+        {
+            continue;
+        }
+        // GZDoom `PIT_CheckThing`: a missile never hits its own shooter
+        // (`target`) unless `+HITOWNER`. The projectile spawns inside the
+        // shooter, so without this a fine-stepped fireball hit its imp.
+        if (actor.flags & FLAG_MISSILE) != 0
+            && actor.target == Some(*id)
+            && !actor.extra_flags.get_name("HITOWNER")
         {
             continue;
         }
@@ -1358,12 +1369,23 @@ pub fn z_movement(world: &mut World, actor_id: ActorId) {
             hit_floor = true;
         }
         z = floor_z;
-        vel_z = 0.0;
+        // Vanilla `P_ZMovement`: a charging skull bounces off the floor.
+        vel_z = if is_skull_flying(&actor) { -vel_z } else { 0.0 };
     }
     let head = z + actor.height;
     if head > ceiling_z {
-        z = ceiling_z - actor.height;
-        vel_z = 0.0;
+        // A squeezing ceiling never pushes a thing through its floor (GZDoom
+        // `P_ThingHeightClip` keeps it on the floor and reports "no fit").
+        z = if is_missile {
+            ceiling_z - actor.height
+        } else {
+            (ceiling_z - actor.height).max(floor_z.min(z))
+        };
+        vel_z = if is_skull_flying(&actor) && vel_z > 0.0 {
+            -vel_z
+        } else {
+            0.0
+        };
         hit_ceiling = true;
     }
     if let Some(a) = world.actors.get_mut(actor_id) {
@@ -1554,11 +1576,27 @@ pub fn xy_movement(world: &mut World, actor_id: ActorId) {
     let dx = actor.vel.x();
     let dy = actor.vel.y();
     if dx == 0.0 && dy == 0.0 {
+        if is_skull_flying(&actor) {
+            // Vanilla `P_XYMovement`: "the skull slammed into something".
+            skull_slam(world, actor_id, None);
+        }
         return;
     }
-    let sx = (dx.abs() / MAXMOVE).ceil() as i32;
-    let sy = (dy.abs() / MAXMOVE).ceil() as i32;
-    let steps = sx.max(sy).clamp(1, 8);
+    // GZDoom `P_XYMovement`: step in increments no larger than `radius - 1`
+    // so a small, fast projectile cannot tunnel through a thin door or wall
+    // (a radius-2 tracer moving 50 units/tic would otherwise skip a door
+    // sector entirely). Actors with radius ≤ 1 use `MAXMOVE`.
+    let maxmove = if actor.radius - 1.0 > 0.0 {
+        (actor.radius - 1.0).min(MAXMOVE)
+    } else {
+        MAXMOVE
+    };
+    let fastest = dx.abs().max(dy.abs());
+    let steps = if fastest > maxmove {
+        (1 + (fastest / maxmove) as i32).min(256)
+    } else {
+        1
+    };
     let step_x = dx / f64::from(steps);
     let step_y = dy / f64::from(steps);
     let mut x = actor.pos.x();
@@ -1577,6 +1615,17 @@ pub fn xy_movement(world: &mut World, actor_id: ActorId) {
                 && mv.blocking_actor.is_none()
                 && bounce_off_wall(world, actor_id, DVec3::new(nx, ny, z))
             {
+                break;
+            }
+            if !is_missile && is_skull_flying(&actor) {
+                if mv.blocking_actor.is_some() {
+                    // `PIT_CheckThing` → `AActor::Slam`: damage and stop.
+                    skull_slam(world, actor_id, mv.blocking_actor);
+                } else if let Some(a) = world.actors.get_mut(actor_id) {
+                    // Wall: XY momentum stops; the next tic's zero-velocity
+                    // check ends the charge (`P_XYMovement`).
+                    a.vel = DVec3::new(0.0, 0.0, a.vel.z());
+                }
                 break;
             }
             if is_missile {
@@ -1642,7 +1691,8 @@ pub fn xy_movement(world: &mut World, actor_id: ActorId) {
         }
     }
     // Ground friction for non-missiles (actor/class `Friction` × sector friction).
-    if !is_missile {
+    // Vanilla `P_XYMovement` returns before friction for `MF_SKULLFLY` too.
+    if !is_missile && !is_skull_flying(&actor) {
         let class_fric = if actor.friction > 0.0 {
             actor.friction
         } else {
@@ -1712,36 +1762,93 @@ pub(crate) fn apply_missile_damage(world: &mut World, missile_id: ActorId, victi
     if !missile_sp.is_empty() && missile_sp.eq_ignore_ascii_case(&victim_sp) {
         return;
     }
-    let base = if missile.damage > 0 {
-        missile.damage
+    let dmg = missile_damage_roll(world, missile_id, &missile, "pr_missile");
+    if dmg <= 0 {
+        return;
+    }
+    // Doom `PIT_CheckThing`: no puff/blood on missile hit — only damage + explode.
+    // Source is the shooter (`tmthing->target`), inflictor is the missile.
+    let source = missile.target;
+    let _ = crate::damage::damage_mobj(world, victim, Some(missile_id), source, dmg);
+}
+
+/// GZDoom `AActor::GetMissileDamage(7, 1)`: a parenthesised `Damage (expr)` is
+/// the exact damage; a plain number is multiplied by 1d8.
+fn missile_damage_roll(world: &mut World, id: ActorId, actor: &Actor, rng: &str) -> i32 {
+    let mut exact = false;
+    let base = if actor.damage > 0 {
+        actor.damage
     } else {
         let expr = world
             .classes
-            .get(missile.class)
+            .get(actor.class)
             .map(|c| c.damage_expr.clone())
             .unwrap_or_default();
         if expr.is_empty() {
             world
                 .classes
-                .get(missile.class)
+                .get(actor.class)
                 .map(|c| c.damage)
                 .unwrap_or(0)
         } else {
-            crate::deco_eval::eval_action_arg(world, missile_id, &expr)
+            exact = true;
+            crate::deco_eval::eval_action_arg(world, id, &expr)
                 .parse::<i32>()
                 .unwrap_or(0)
                 .max(0)
         }
     };
     if base <= 0 {
+        return 0;
+    }
+    if exact {
+        base
+    } else {
+        base * (i32::from(world.p_random(rng)) % 8 + 1)
+    }
+}
+
+/// `MF_SKULLFLY` charge state (`A_SkullAttack`).
+pub(crate) fn is_skull_flying(a: &Actor) -> bool {
+    a.extra_flags.get_name("SKULLFLY")
+}
+
+/// GZDoom `AActor::Slam` / vanilla `PIT_CheckThing` + `P_XYMovement` skull
+/// stop: clear `SKULLFLY`, zero velocity, damage the victim (melee damage
+/// type, inflictor and source = the charger) and return to the See state.
+pub(crate) fn skull_slam(world: &mut World, id: ActorId, victim: Option<ActorId>) {
+    let Some(actor) = world.actors.get(id).cloned() else {
+        return;
+    };
+    if let Some(a) = world.actors.get_mut(id) {
+        a.extra_flags.set_name("SKULLFLY", false);
+        a.vel = DVec3::ZERO;
+    }
+    if actor.health <= 0 {
         return;
     }
-    let roll = i32::from(world.p_random("pr_missile")) % 8 + 1;
-    let dmg = base * roll;
-    // Doom `PIT_CheckThing`: no puff/blood on missile hit — only damage + explode.
-    // Source is the shooter (`tmthing->target`), inflictor is the missile.
-    let source = missile.target;
-    let _ = crate::damage::damage_mobj(world, victim, Some(missile_id), source, dmg);
+    if let Some(v) = victim {
+        let dmg = missile_damage_roll(world, id, &actor, "pr_skullfly");
+        if dmg > 0 {
+            let _ = crate::damage::damage_mobj(world, v, Some(id), Some(id), dmg);
+        }
+    }
+    if world.actors.get(id).is_some_and(|a| a.health > 0) {
+        // Vanilla `PIT_CheckThing` returns to the spawn state; GZDoom `Slam`
+        // to the See state when there is one.
+        let vanilla = world.math_mode == crate::vanilla::SimMathMode::VanillaFixed;
+        let st = if vanilla {
+            world.states.find_label(actor.class, "Spawn")
+        } else {
+            world
+                .states
+                .find_label(actor.class, "See")
+                .or_else(|| world.states.find_label(actor.class, "Spawn"))
+        };
+        if let Some(st) = st {
+            world.set_state(id, Some(st), true);
+        }
+    }
 }
 
 /// Record missile impact metadata before [`explode_missile`] (`docs/31` MA4).
@@ -1801,6 +1908,162 @@ mod tests {
     use room_nodebuild::apply_nodes;
     use room_testkit::{MapBuilder, rect};
     use std::sync::Arc;
+
+    #[test]
+    fn missile_with_empty_death_label_vanishes() {
+        let ir = room_decorate::parse_decorate(
+            r#"
+actor Spark
+{
+  Radius 1
+  Height 1
+  Speed 6
+  Projectile
+  States
+  {
+  Spawn:
+    SPKO B 1 Bright
+    SPKO B 3 Bright
+    stop
+  Death:
+    Stop
+  }
+}
+actor Other
+{
+  States { Spawn: PLAY A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(200.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let spark = classes.find_name("Spark").unwrap();
+        let id = w
+            .spawn_at(
+                spark,
+                DVec3::new(100.0, 128.0, 40.0),
+                room_core::Angle::ZERO,
+            )
+            .unwrap();
+        explode_missile(&mut w, id);
+        let a = w.actors.get(id).unwrap();
+        assert!(
+            a.destroyed,
+            "`Death: Stop` must remove the actor, state={:?}",
+            a.state
+        );
+    }
+
+    #[test]
+    fn fast_small_missile_stops_at_closed_door() {
+        let ir = room_decorate::parse_decorate(
+            r#"
+actor Bullet
+{
+  Radius 2
+  Height 2
+  Speed 50
+  Projectile
+  States { Spawn: TRAC A -1 Stop Death: TNT1 A 1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .room("door", rect(256.0, 0.0, 264.0, 256.0), 0.0, 0.0)
+            .room("b", rect(264.0, 0.0, 520.0, 256.0), 0.0, 128.0)
+            .player_start(400.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let bullet = classes.find_name("Bullet").unwrap();
+        for (speed, dy) in [(50.0, 0.0), (140.0, 0.0), (50.0, 17.0), (140.0, 31.0)] {
+            let id = w
+                .spawn_at(
+                    bullet,
+                    DVec3::new(200.0, 128.0, 40.0),
+                    room_core::Angle::ZERO,
+                )
+                .unwrap();
+            if let Some(a) = w.actors.get_mut(id) {
+                a.vel = DVec3::new(speed, dy, 0.0);
+            }
+            for _ in 0..10 {
+                xy_movement(&mut w, id);
+            }
+            let a = w.actors.get(id).unwrap();
+            assert!(
+                a.pos.x() < 256.0,
+                "speed {speed}: bullet went through the door to {:?}",
+                a.pos
+            );
+        }
+    }
+
+    #[test]
+    fn hitscan_stops_at_closed_door() {
+        let ir = room_decorate::parse_decorate(
+            r#"
+actor Shooter : Actor 9941
+{
+  Health 100
+  Radius 20
+  Height 56
+  +SOLID
+  +SHOOTABLE
+  States { Spawn: POSS A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .room("door", rect(256.0, 0.0, 264.0, 256.0), 0.0, 0.0)
+            .room("b", rect(264.0, 0.0, 520.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let shooter = classes.find_name("Shooter").unwrap();
+        let victim = w
+            .spawn_at(
+                shooter,
+                DVec3::new(400.0, 128.0, 0.0),
+                room_core::Angle::ZERO,
+            )
+            .unwrap();
+        let src = w.players[0].as_ref().unwrap().mo.unwrap();
+        for deg in [0.0, 3.0, -3.0] {
+            let hit = crate::hitscan::line_attack(
+                &mut w,
+                src,
+                room_core::Angle::from_degrees(deg),
+                2048.0,
+                10,
+            );
+            assert_ne!(
+                hit.actor,
+                Some(victim),
+                "angle {deg}: shot went through the door"
+            );
+        }
+        assert_eq!(w.actors.get(victim).unwrap().health, 100);
+    }
 
     #[test]
     fn ripper_missile_damages_without_exploding() {
@@ -2097,10 +2360,8 @@ actor ExprBall : Actor
             xy_movement(&mut w, missile);
         }
         let hp_after = w.actors.get(victim).unwrap().health;
-        assert!(
-            hp_after <= hp_before - 4,
-            "expression damage: {hp_before} -> {hp_after}"
-        );
+        // GZDoom: `Damage (expr)` is exact (no 1d8 multiplier).
+        assert_eq!(hp_after, hp_before - 4, "expression damage");
         let death = w.states.find_label(ball, "Death").unwrap();
         assert_eq!(w.actors.get(missile).unwrap().state, Some(death));
         // Doom `PIT_CheckThing`: missiles damage + explode; blood is hitscan-only.

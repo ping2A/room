@@ -206,7 +206,9 @@ pub fn call_action_args(
         "A_SprayDecal" => a_spray_decal(world, self_id, args),
         "A_SpawnParticle" => a_spawn_particle(world, self_id, args),
         "A_ClearLastHeard" => a_clear_last_heard(world, self_id),
-        "A_PlaySound" | "A_StartSound" | "A_PlaySoundEx" => a_play_sound(world, self_id, args),
+        "A_PlaySound" => a_play_sound_kind(world, self_id, args, SoundCall::PlaySound),
+        "A_StartSound" => a_play_sound_kind(world, self_id, args, SoundCall::StartSound),
+        "A_PlaySoundEx" => a_play_sound_kind(world, self_id, args, SoundCall::PlaySoundEx),
         "A_StartSoundIfNotSame" => a_start_sound_if_not_same(world, self_id, args),
         "A_SoundVolume" => a_sound_volume(world, self_id, args),
         "A_SoundPitch" => a_sound_pitch(world, self_id, args),
@@ -310,7 +312,7 @@ pub fn call_action_args(
         "A_CPosAttack" => a_hitscan_attack(world, self_id, 1, "chainguy/attack"),
         "A_TroopAttack" => a_troop_attack(world, self_id),
         "A_SargAttack" => a_sarg_attack(world, self_id),
-        "A_SkullAttack" => a_skull_attack(world, self_id),
+        "A_SkullAttack" => a_skull_attack(world, self_id, args),
         "A_HeadAttack" => a_head_attack(world, self_id),
         "A_BruisAttack" => a_bruis_attack(world, self_id),
         "A_CyberAttack" => a_cyber_attack(world, self_id),
@@ -539,6 +541,21 @@ pub fn call_action_args(
     }
 }
 
+/// Log an action name with no implementation, once per name per process.
+fn report_unknown_action(name: &str) {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<std::collections::BTreeSet<String>>> = OnceLock::new();
+    if cfg!(test) || name.is_empty() {
+        return;
+    }
+    let seen = SEEN.get_or_init(|| Mutex::new(std::collections::BTreeSet::new()));
+    if let Ok(mut s) = seen.lock() {
+        if s.insert(name.to_ascii_lowercase()) {
+            eprintln!("room: unsupported action {name} (ignored)");
+        }
+    }
+}
+
 /// Run a line special by name (`ACS_NamedExecuteAlways`, `Radius_Quake`, …).
 fn try_special_as_action(
     world: &mut World,
@@ -584,6 +601,7 @@ fn try_special_as_action(
         return ActionResult::Continue;
     }
     let Some(special) = crate::special_names::special_number(name) else {
+        report_unknown_action(name);
         return ActionResult::Continue;
     };
     let mut sp_args = [0i32; 5];
@@ -925,27 +943,49 @@ fn a_clear_inventory(world: &mut World, self_id: ActorId) -> ActionResult {
     ActionResult::Continue
 }
 
-/// `A_SetScale(x [, y])` — rescale collision box from class defaults.
+/// `A_SetScale(x [, y [, ptr [, usezero]]])` — GZDoom sets the sprite scale
+/// only; collision size is untouched (`A_SetSize` changes that).
 fn a_set_scale(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
-    let sx = args
-        .first()
-        .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
-        .unwrap_or(1.0);
-    let sy = args
-        .get(1)
-        .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
-        .unwrap_or(sx);
-    let (base_r, base_h) = world
+    let num = |i: usize| {
+        args.get(i)
+            .and_then(|s| s.trim().trim_matches('"').parse::<f64>().ok())
+    };
+    let sx = num(0).unwrap_or(1.0);
+    let usezero = args.get(3).is_some_and(|s| {
+        let t = s.trim().to_ascii_lowercase();
+        t == "true" || t.parse::<i32>().is_ok_and(|v| v != 0)
+    });
+    let sy = match num(1) {
+        Some(v) if v != 0.0 || usezero => v,
+        _ => sx,
+    };
+    let target = match args.get(2) {
+        Some(tok) => match world
+            .actors
+            .get(self_id)
+            .and_then(|a| rearrange_value(a, tok))
+        {
+            Some(v) => v,
+            None => Some(self_id),
+        },
+        None => Some(self_id),
+    };
+    let Some(t) = target else {
+        return ActionResult::Continue;
+    };
+    let base = world
         .actors
-        .get(self_id)
+        .get(t)
         .and_then(|a| world.classes.get(a.class))
-        .map(|c| (c.radius, c.height))
-        .unwrap_or((20.0, 16.0));
-    if let Some(a) = world.actors.get_mut(self_id) {
+        .filter(|c| c.extra_flags.get_name("ROOMSCALEDCOLLISION"))
+        .map(|c| (c.radius, c.height));
+    if let Some(a) = world.actors.get_mut(t) {
         a.scale_x = sx;
         a.scale_y = sy;
-        a.radius = base_r * sx.abs();
-        a.height = base_h * sy.abs();
+        if let Some((r, h)) = base {
+            a.radius = r * sx.abs();
+            a.height = h * sy.abs();
+        }
     }
     ActionResult::Continue
 }
@@ -1361,8 +1401,24 @@ fn a_set_pitch(world: &mut World, self_id: ActorId, args: &[String]) -> ActionRe
         .first()
         .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
     {
+        // DECORATE/ZScript pitch is GZDoom-signed (positive = look down);
+        // Room stores positive = up (the `pitch` expression reads `-pitch`).
+        // Players are clamped to the look range, as `A_SetPitch` does.
+        let is_player = world
+            .players
+            .iter()
+            .flatten()
+            .any(|p| p.mo == Some(self_id));
+        let flags = args
+            .get(1)
+            .and_then(|s| s.trim().trim_matches('"').parse::<i32>().ok())
+            .unwrap_or(0);
+        let mut room = -deg;
+        if is_player || flags & 1 != 0 {
+            room = room.clamp(-89.0, 89.0);
+        }
         if let Some(a) = world.actors.get_mut(self_id) {
-            a.pitch = Angle::from_degrees(deg);
+            a.pitch = Angle::from_degrees(room);
         }
     }
     ActionResult::Continue
@@ -1393,7 +1449,8 @@ fn a_set_view_pitch(world: &mut World, self_id: ActorId, args: &[String]) -> Act
         deg = deg.clamp(-89.0, 89.0);
     }
     if let Some(a) = world.actors.get_mut(self_id) {
-        a.view_pitch = Some(Angle::from_degrees(deg));
+        // GZDoom-signed (positive = down) → Room (positive = up).
+        a.view_pitch = Some(Angle::from_degrees(-deg));
     }
     ActionResult::Continue
 }
@@ -2639,55 +2696,103 @@ pub fn apply_zscript_actor_ops(world: &mut World, self_id: ActorId) {
     }
 }
 
-/// `A_CheckRange(dist, "Label")` — jump if target is farther than `dist` (or missing).
+/// GZDoom `DoCheckSightOrRange`: is `self_id` within `range` of `camera`
+/// (3D unless `two_d`), or — when `check_sight` — visible from it?
+fn player_near_or_sees(
+    world: &World,
+    camera: ActorId,
+    self_id: ActorId,
+    range: f64,
+    two_d: bool,
+    check_sight: bool,
+) -> bool {
+    let (Some(c), Some(me)) = (world.actors.get(camera), world.actors.get(self_id)) else {
+        return false;
+    };
+    let dx = me.pos.x() - c.pos.x();
+    let dy = me.pos.y() - c.pos.y();
+    let dz = if two_d {
+        0.0
+    } else {
+        // GZDoom measures from the camera's eye height to the actor's centre.
+        (me.pos.z() + me.height * 0.5) - (c.pos.z() + c.view_height.max(0.0))
+    };
+    if dx * dx + dy * dy + dz * dz <= range * range {
+        return true;
+    }
+    check_sight && crate::sight::check_sight(world, camera, self_id)
+}
+
+/// The view actor of every player in the game (`players[i].camera`).
+fn player_cameras(world: &World) -> Vec<ActorId> {
+    world
+        .players
+        .iter()
+        .flatten()
+        .filter_map(|p| p.camera.or(p.mo))
+        .collect()
+}
+
+fn parse_bool_arg(args: &[String], i: usize) -> bool {
+    args.get(i).is_some_and(|s| {
+        let t = s.trim().trim_matches('"').to_ascii_lowercase();
+        t == "true" || t.parse::<i32>().is_ok_and(|v| v != 0)
+    })
+}
+
+/// `A_CheckRange(range, "Label" [, two_dimension])` — GZDoom: jump when **no
+/// player** is within `range` of the caller (not the chase target).
 fn a_check_range(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
-    let dist = args
-        .first()
-        .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
-        .unwrap_or(0.0);
+    let range = parse_f64_arg(args, 0, 0.0);
     let label = args
         .get(1)
-        .map(|s| s.trim_matches('"').to_owned())
+        .map(|s| s.trim().trim_matches('"').to_owned())
         .unwrap_or_default();
-    match distance_to_target(world, self_id) {
-        Some((_, d)) if d <= dist => ActionResult::Continue,
-        _ => jump_to_label(world, self_id, &label),
+    let two_d = parse_bool_arg(args, 2);
+    let near = player_cameras(world)
+        .into_iter()
+        .any(|c| player_near_or_sees(world, c, self_id, range, two_d, false));
+    if near {
+        ActionResult::Continue
+    } else {
+        jump_to_label(world, self_id, &label)
     }
 }
 
-/// `A_CheckSight("Label")` — jump if there is LOS to the chase target.
+/// `A_CheckSight("Label")` — GZDoom: jump when **no player can see** the
+/// caller (Brutal Doom's zombies use it to choose between backing off while
+/// in view and advancing unseen).
 fn a_check_sight(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
     let label = args
         .first()
-        .map(|s| s.trim_matches('"').to_owned())
+        .map(|s| s.trim().trim_matches('"').to_owned())
         .unwrap_or_default();
-    let Some(tid) = resolve_target(world, self_id) else {
-        return ActionResult::Continue;
-    };
-    if crate::sight::check_sight(world, self_id, tid) {
-        jump_to_label(world, self_id, &label)
-    } else {
+    let seen = player_cameras(world)
+        .into_iter()
+        .any(|c| c != self_id && crate::sight::check_sight(world, c, self_id));
+    if seen {
         ActionResult::Continue
+    } else {
+        jump_to_label(world, self_id, &label)
     }
 }
 
-/// `A_CheckSightOrRange(dist, "Label")` — jump if farther than `dist` or no LOS.
+/// `A_CheckSightOrRange(range, "Label" [, two_dimension])` — GZDoom: jump
+/// when no player is within `range` **and** none can see the caller.
 fn a_check_sight_or_range(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
-    let dist = args
-        .first()
-        .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
-        .unwrap_or(0.0);
+    let range = parse_f64_arg(args, 0, 0.0);
     let label = args
         .get(1)
-        .map(|s| s.trim_matches('"').to_owned())
+        .map(|s| s.trim().trim_matches('"').to_owned())
         .unwrap_or_default();
-    let Some((tid, d)) = distance_to_target(world, self_id) else {
-        return jump_to_label(world, self_id, &label);
-    };
-    if d > dist || !crate::sight::check_sight(world, self_id, tid) {
-        jump_to_label(world, self_id, &label)
-    } else {
+    let two_d = parse_bool_arg(args, 2);
+    let ok = player_cameras(world)
+        .into_iter()
+        .any(|c| player_near_or_sees(world, c, self_id, range, two_d, true));
+    if ok {
         ActionResult::Continue
+    } else {
+        jump_to_label(world, self_id, &label)
     }
 }
 
@@ -3209,20 +3314,115 @@ fn a_start_sound_if_not_same(world: &mut World, self_id: ActorId, args: &[String
 
 /// `A_PlaySound` / `A_StartSound("name" [, volume])` — queue a positional SFX.
 fn a_play_sound(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
-    let name = args
-        .first()
-        .map(|s| s.trim_matches('"').to_owned())
-        .filter(|s| !s.is_empty());
-    let volume = args
-        .get(1)
-        .and_then(|s| s.trim_matches('"').parse::<f32>().ok())
-        .unwrap_or(1.0)
-        .clamp(0.0, 1.0);
-    if let Some(name) = name {
-        if let Some(a) = world.actors.get(self_id) {
-            world.play_sound(&name, a.pos.x(), a.pos.y(), a.pos.z(), volume);
+    a_play_sound_kind(world, self_id, args, SoundCall::PlaySound)
+}
+
+/// Which GZDoom sound action supplied the arguments (they differ in order).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SoundCall {
+    /// `A_PlaySound(sound, slot = CHAN_BODY, volume = 1, looping, attenuation = ATTN_NORM, local)`.
+    PlaySound,
+    /// `A_StartSound(sound, slot = CHAN_BODY, flags, volume = 1, attenuation = ATTN_NORM, pitch, ...)`.
+    StartSound,
+    /// `A_PlaySoundEx(sound, channel name, looping, attenuation)` (attenuation 0 = normal).
+    PlaySoundEx,
+}
+
+/// Channel slot from a number or `CHAN_*` / `SoundSlotN` / `Auto|Weapon|Voice|Item|Body` name.
+fn parse_sound_channel(raw: Option<&String>) -> i32 {
+    let Some(raw) = raw.map(|s| s.trim().trim_matches('"')) else {
+        return 4; // CHAN_BODY
+    };
+    if let Ok(n) = raw.parse::<i32>() {
+        return n & 7;
+    }
+    let mut ch = 0;
+    for part in raw.split('|') {
+        let t = part.trim().to_ascii_uppercase();
+        let t = t.strip_prefix("CHAN_").unwrap_or(&t).to_owned();
+        let v = match t.as_str() {
+            "AUTO" => 0,
+            "WEAPON" => 1,
+            "VOICE" => 2,
+            "ITEM" => 3,
+            "BODY" => 4,
+            "SOUNDSLOT5" | "5" => 5,
+            "SOUNDSLOT6" | "6" => 6,
+            "SOUNDSLOT7" | "7" => 7,
+            _ => t
+                .strip_prefix("SOUNDSLOT")
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(-1),
+        };
+        if v >= 0 {
+            ch = v & 7;
         }
     }
+    ch
+}
+
+/// GZDoom attenuation: number or `ATTN_NONE` (0), `ATTN_NORM` (1), `ATTN_IDLE`
+/// (1.001), `ATTN_STATIC` (3). Larger values fade out sooner.
+fn parse_attenuation(raw: Option<&String>, default: f32) -> f32 {
+    let Some(raw) = raw.map(|s| s.trim().trim_matches('"')) else {
+        return default;
+    };
+    if let Ok(v) = raw.parse::<f32>() {
+        return v.max(0.0);
+    }
+    match raw.to_ascii_uppercase().as_str() {
+        "ATTN_NONE" => 0.0,
+        "ATTN_NORM" => 1.0,
+        "ATTN_IDLE" => 1.001,
+        "ATTN_STATIC" => 3.0,
+        _ => default,
+    }
+}
+
+fn a_play_sound_kind(
+    world: &mut World,
+    self_id: ActorId,
+    args: &[String],
+    kind: SoundCall,
+) -> ActionResult {
+    let Some(name) = args
+        .first()
+        .map(|s| s.trim().trim_matches('"').to_owned())
+        .filter(|s| !s.is_empty())
+    else {
+        return ActionResult::Continue;
+    };
+    let channel = parse_sound_channel(args.get(1));
+    let num = |i: usize, d: f32| {
+        args.get(i)
+            .and_then(|s| s.trim().trim_matches('"').parse::<f32>().ok())
+            .unwrap_or(d)
+    };
+    let (volume, attenuation) = match kind {
+        SoundCall::PlaySound => (num(2, 1.0), parse_attenuation(args.get(4), 1.0)),
+        SoundCall::StartSound => (num(3, 1.0), parse_attenuation(args.get(4), 1.0)),
+        SoundCall::PlaySoundEx => {
+            // ZDoom quirk: 0 here means "normal", not "none".
+            let at = parse_attenuation(args.get(3), 1.0);
+            (1.0, if at == 0.0 { 1.0 } else { at })
+        }
+    };
+    let Some(a) = world.actors.get(self_id) else {
+        return ActionResult::Continue;
+    };
+    let (x, y, z) = (a.pos.x(), a.pos.y(), a.pos.z());
+    world.sound_events.push(crate::world::SimSoundEvent {
+        name,
+        x,
+        y,
+        z,
+        volume: volume.clamp(0.0, 1.0),
+        pitch: 1.0,
+        channel,
+        adjust: crate::world::SimSoundAdjust::Start,
+        attenuation,
+        seat: None,
+    });
     ActionResult::Continue
 }
 
@@ -4524,50 +4724,225 @@ fn a_give_score(world: &mut World, self_id: ActorId, args: &[String]) -> ActionR
     ActionResult::Continue
 }
 
-/// `A_RadiusGive("Item", distance, flags, amount)` — grant inventory to nearby actors.
+const RGF_GIVESELF: i32 = 1;
+const RGF_PLAYERS: i32 = 1 << 1;
+const RGF_MONSTERS: i32 = 1 << 2;
+const RGF_OBJECTS: i32 = 1 << 3;
+const RGF_VOODOO: i32 = 1 << 4;
+const RGF_CORPSES: i32 = 1 << 5;
+const RGF_NOTARGET: i32 = 1 << 6;
+const RGF_NOTRACER: i32 = 1 << 7;
+const RGF_NOMASTER: i32 = 1 << 8;
+const RGF_CUBE: i32 = 1 << 9;
+const RGF_NOSIGHT: i32 = 1 << 10;
+const RGF_MISSILES: i32 = 1 << 11;
+const RGF_INCLUSIVE: i32 = 1 << 12;
+const RGF_ITEMS: i32 = 1 << 13;
+const RGF_KILLED: i32 = 1 << 14;
+const RGF_EXFILTER: i32 = 1 << 15;
+const RGF_EXSPECIES: i32 = 1 << 16;
+const RGF_EITHER: i32 = 1 << 17;
+/// GZDoom `RGF_MASK`: the target-selection bits.
+const RGF_MASK: i32 = RGF_GIVESELF
+    | RGF_PLAYERS
+    | RGF_MONSTERS
+    | RGF_OBJECTS
+    | RGF_VOODOO
+    | RGF_CORPSES
+    | RGF_MISSILES
+    | RGF_ITEMS
+    | RGF_KILLED;
+
+fn parse_rgf_flags(raw: Option<&String>) -> i32 {
+    let Some(raw) = raw.map(|s| s.trim_matches('"').trim()) else {
+        return 0;
+    };
+    if let Ok(n) = raw.parse::<i32>() {
+        return n;
+    }
+    raw.split('|')
+        .map(|f| match f.trim().to_ascii_uppercase().as_str() {
+            "RGF_GIVESELF" => RGF_GIVESELF,
+            "RGF_PLAYERS" => RGF_PLAYERS,
+            "RGF_MONSTERS" => RGF_MONSTERS,
+            "RGF_OBJECTS" => RGF_OBJECTS,
+            "RGF_VOODOO" => RGF_VOODOO,
+            "RGF_CORPSES" => RGF_CORPSES,
+            "RGF_NOTARGET" => RGF_NOTARGET,
+            "RGF_NOTRACER" => RGF_NOTRACER,
+            "RGF_NOMASTER" => RGF_NOMASTER,
+            "RGF_CUBE" => RGF_CUBE,
+            "RGF_NOSIGHT" => RGF_NOSIGHT,
+            "RGF_MISSILES" => RGF_MISSILES,
+            "RGF_INCLUSIVE" => RGF_INCLUSIVE,
+            "RGF_ITEMS" => RGF_ITEMS,
+            "RGF_KILLED" => RGF_KILLED,
+            "RGF_EXFILTER" => RGF_EXFILTER,
+            "RGF_EXSPECIES" => RGF_EXSPECIES,
+            "RGF_EITHER" => RGF_EITHER,
+            other => other.parse::<i32>().unwrap_or(0),
+        })
+        .fold(0, |a, b| a | b)
+}
+
+/// `A_RadiusGive(item, distance, flags [, amount, filter, species, mindist, limit])`
+/// — GZDoom `DoRadiusGive`: only the actor kinds selected by `flags` receive
+/// the item, within a sphere (or `RGF_CUBE`) measured to their centre, and
+/// in line of sight unless `RGF_NOSIGHT`.
 fn a_radius_give(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    use crate::class::{FLAG_CORPSE, FLAG_ISMONSTER, FLAG_MISSILE, FLAG_SHOOTABLE};
     let item = args
         .first()
         .map(|s| s.trim_matches('"').to_owned())
         .unwrap_or_default();
-    let distance = args
-        .get(1)
-        .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
-        .unwrap_or(0.0);
-    let amount = args
-        .get(3)
-        .and_then(|s| s.trim_matches('"').parse::<i32>().ok())
-        .or_else(|| {
-            args.get(2)
-                .and_then(|s| s.trim_matches('"').parse::<i32>().ok())
-        })
-        .unwrap_or(1);
-    if item.is_empty() || distance <= 0.0 || amount <= 0 {
+    let distance = parse_f64_arg(args, 1, 0.0);
+    let flags = parse_rgf_flags(args.get(2));
+    let mut amount = parse_i32_arg(args, 3, 0);
+    if amount == 0 {
+        amount = 1;
+    }
+    let filter = args
+        .get(4)
+        .map(|s| s.trim().trim_matches('"').to_owned())
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none"))
+        .and_then(|s| world.classes.find_name(&s));
+    let species = args
+        .get(5)
+        .map(|s| s.trim().trim_matches('"').to_owned())
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none"));
+    let mindist = parse_f64_arg(args, 6, 0.0);
+    let limit = parse_i32_arg(args, 7, 0);
+    if item.is_empty() || flags & RGF_MASK == 0 || distance <= 0.0 || mindist >= distance {
         return ActionResult::Continue;
     }
     let Some(cid) = world.classes.find_name(&item) else {
         return ActionResult::Continue;
     };
-    let Some(origin) = world.actors.get(self_id).map(|a| a.pos) else {
+    if !crate::deco_eval::class_is_a(world, cid, "Inventory", true) {
+        return ActionResult::Continue;
+    }
+    let Some(me) = world.actors.get(self_id).cloned() else {
         return ActionResult::Continue;
     };
+    let player_of = |world: &World, id: ActorId| -> Option<bool> {
+        // Some(true) = a player's real body, Some(false) = a voodoo doll.
+        if world.players.iter().flatten().any(|p| p.mo == Some(id)) {
+            return Some(true);
+        }
+        let a = world.actors.get(id)?;
+        crate::deco_eval::class_is_a(world, a.class, "PlayerPawn", true).then_some(false)
+    };
     let ids: Vec<ActorId> = world.thinkers.default.clone();
+    let mut given = 0;
     for id in ids {
-        if id == self_id {
-            continue;
+        if limit > 0 && given >= limit {
+            break;
         }
         let Some(other) = world.actors.get(id) else {
             continue;
         };
-        if other.destroyed || other.health <= 0 {
+        if other.destroyed {
             continue;
         }
-        let dx = other.pos.x() - origin.x();
-        let dy = other.pos.y() - origin.y();
-        if dmath::sqrt(dx * dx + dy * dy) > distance {
+        let oflags = other.flags;
+        let mut pass = false;
+        if id == self_id {
+            if flags & RGF_GIVESELF == 0 {
+                continue;
+            }
+            pass = true;
+        } else if oflags & FLAG_MISSILE != 0 {
+            if flags & RGF_MISSILES == 0 {
+                continue;
+            }
+            pass = true;
+        } else if (flags & RGF_ITEMS != 0
+            && crate::deco_eval::class_is_a(world, other.class, "Inventory", true))
+            || (flags & RGF_CORPSES != 0 && oflags & FLAG_CORPSE != 0)
+            || (flags & RGF_KILLED != 0 && other.health <= 0 && oflags & FLAG_CORPSE != 0)
+        {
+            pass = true;
+        } else if flags & (RGF_MONSTERS | RGF_OBJECTS | RGF_PLAYERS | RGF_VOODOO) != 0
+            && other.health > 0
+        {
+            match player_of(world, id) {
+                Some(real) => {
+                    pass = (flags & RGF_PLAYERS != 0 && real) || (flags & RGF_VOODOO != 0 && !real);
+                }
+                None => {
+                    let monster = oflags & FLAG_ISMONSTER != 0;
+                    pass = (flags & RGF_MONSTERS != 0 && monster)
+                        || (flags & RGF_OBJECTS != 0 && !monster && oflags & FLAG_SHOOTABLE != 0);
+                }
+            }
+        }
+        if !pass {
             continue;
         }
-        let _ = crate::inventory::give_inventory(world, id, cid, amount);
+        if id != self_id {
+            let filter_pass =
+                filter.is_none_or(|f| (other.class == f) != (flags & RGF_EXFILTER != 0));
+            let species_pass = species.as_deref().is_none_or(|sp| {
+                let own = if other.species.is_empty() {
+                    world
+                        .classes
+                        .get(other.class)
+                        .map(|c| c.species.clone())
+                        .unwrap_or_default()
+                } else {
+                    other.species.clone()
+                };
+                own.eq_ignore_ascii_case(sp) != (flags & RGF_EXSPECIES != 0)
+            });
+            let ok = if flags & RGF_EITHER != 0 {
+                filter_pass || species_pass
+            } else {
+                filter_pass && species_pass
+            };
+            if !ok {
+                continue;
+            }
+            if flags & (RGF_NOTARGET | RGF_NOMASTER | RGF_NOTRACER) != 0 {
+                let t = !(me.target == Some(id) && flags & RGF_NOTARGET != 0);
+                let m = !(me.master == Some(id) && flags & RGF_NOMASTER != 0);
+                let r = !(me.tracer == Some(id) && flags & RGF_NOTRACER != 0);
+                let ptr_ok = if flags & RGF_INCLUSIVE != 0 {
+                    t || m || r
+                } else {
+                    t && m && r
+                };
+                if !ptr_ok {
+                    continue;
+                }
+            }
+        }
+        let dx = other.pos.x() - me.pos.x();
+        let dy = other.pos.y() - me.pos.y();
+        let dz = other.pos.z() + other.height * 0.5 - me.pos.z();
+        if flags & RGF_CUBE != 0 {
+            let (ax, ay, az) = (dx.abs(), dy.abs(), dz.abs());
+            if ax > distance
+                || ay > distance
+                || az > distance
+                || (mindist > 0.0 && ax < mindist && ay < mindist && az < mindist)
+            {
+                continue;
+            }
+        } else {
+            let l2 = dx * dx + dy * dy + dz * dz;
+            if l2 > distance * distance || (mindist > 0.0 && l2 < mindist * mindist) {
+                continue;
+            }
+        }
+        if flags & RGF_NOSIGHT == 0
+            && id != self_id
+            && !crate::sight::check_sight(world, id, self_id)
+        {
+            continue;
+        }
+        if crate::inventory::give_inventory(world, id, cid, amount) {
+            given += 1;
+        }
     }
     ActionResult::Continue
 }
@@ -6841,7 +7216,7 @@ fn spawn_lost_soul(world: &mut World, self_id: ActorId, yaw_offset_deg: f64) -> 
         crate::damage::damage_mobj(world, id, Some(self_id), Some(self_id), 10_000);
         return false;
     }
-    let _ = a_skull_attack(world, id);
+    let _ = a_skull_attack(world, id, &[]);
     true
 }
 
@@ -7864,13 +8239,20 @@ fn a_vile_attack(world: &mut World, self_id: ActorId) -> ActionResult {
 }
 
 /// `A_SkullAttack`: charge toward the chase target (XY + Z aim, SKULLSPEED 20).
-fn a_skull_attack(world: &mut World, self_id: ActorId) -> ActionResult {
+fn a_skull_attack(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    // GZDoom `A_SkullAttack(double skullspeed = 20)`: no target → nothing.
+    if world.actors.get(self_id).and_then(|a| a.target).is_none() {
+        return ActionResult::Continue;
+    }
+    let mut speed = parse_f64_arg(args, 0, 20.0);
+    if speed <= 0.0 {
+        speed = 20.0;
+    }
     let _ = a_face_target(world, self_id);
     let Some(a) = world.actors.get(self_id).cloned() else {
         return ActionResult::Continue;
     };
     let ang = a.angle.radians();
-    let speed = 20.0;
     let (x, y, z) = (a.pos.x(), a.pos.y(), a.pos.z());
     let momz = a
         .target
@@ -7878,7 +8260,7 @@ fn a_skull_attack(world: &mut World, self_id: ActorId) -> ActionResult {
         .map(|t| {
             let dx = t.pos.x() - a.pos.x();
             let dy = t.pos.y() - a.pos.y();
-            let dist = (dx * dx + dy * dy).sqrt().max(1.0) / speed;
+            let dist = ((dx * dx + dy * dy).sqrt() / speed).max(1.0);
             (t.pos.z() + t.height * 0.5 - a.pos.z()) / dist
         })
         .unwrap_or(0.0);
@@ -7886,7 +8268,13 @@ fn a_skull_attack(world: &mut World, self_id: ActorId) -> ActionResult {
         a.vel = DVec3::new(dmath::cos(ang) * speed, dmath::sin(ang) * speed, momz);
         a.extra_flags.set_name("SKULLFLY", true);
     }
-    world.play_sound("skull/melee", x, y, z, 1.0);
+    let sound = world
+        .classes
+        .get(a.class)
+        .map(|c| c.attack_sound.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "skull/melee".to_owned());
+    world.play_sound(&sound, x, y, z, 1.0);
     ActionResult::Continue
 }
 
@@ -8802,6 +9190,15 @@ pub(crate) fn radius_attack(
         radius: distance,
         damage: max_damage,
     });
+    // Vanilla `P_RadiusAttack(spot, spot->target, damage)` / GZDoom: the
+    // blast is credited to the shooter of a missile (`bombsource`).
+    let bomb_source = world
+        .actors
+        .get(source)
+        .filter(|a| a.flags & crate::class::FLAG_MISSILE != 0)
+        .and_then(|a| a.target)
+        .or(Some(source));
+    let vanilla = world.math_mode == crate::vanilla::SimMathMode::VanillaFixed;
     let ids: Vec<ActorId> = world.thinkers.default.clone();
     for id in ids {
         if id == source {
@@ -8818,16 +9215,43 @@ pub(crate) fn radius_attack(
         if (other_flags & crate::class::FLAG_NORADIUSDMG) != 0 {
             continue;
         }
-        let dx = other.pos.x() - origin.x();
-        let dy = other.pos.y() - origin.y();
-        let dist = dmath::sqrt(dx * dx + dy * dy);
-        if dist >= distance {
+        // `PIT_RadiusAttack`: only shootable things take splash damage.
+        if other_flags & crate::class::FLAG_SHOOTABLE == 0 {
             continue;
         }
-        let dmg = ((1.0 - dist / distance) * f64::from(max_damage)) as i32;
+        let dx = other.pos.x() - origin.x();
+        let dy = other.pos.y() - origin.y();
+        // Doom distance: Chebyshev to the thing's box edge.
+        let flat = (dx.abs().max(dy.abs()) - other.radius).max(0.0);
+        let len = if vanilla {
+            flat
+        } else {
+            // GZDoom also counts the vertical gap to the thing's box.
+            let dz = if other.pos.z() > origin.z() {
+                other.pos.z() - origin.z()
+            } else if other.pos.z() + other.height < origin.z() {
+                origin.z() - (other.pos.z() + other.height)
+            } else {
+                0.0
+            };
+            dmath::sqrt(flat * flat + dz * dz)
+        };
+        if len >= distance {
+            continue;
+        }
+        let dmg = if vanilla {
+            (f64::from(max_damage) - len) as i32
+        } else {
+            ((1.0 - len / distance) * f64::from(max_damage)) as i32
+        };
         if dmg <= 0 {
             continue;
         }
+        // Blasts never go through walls (`P_CheckSight(thing, bombspot)`).
+        if !crate::sight::check_sight(world, id, source) {
+            continue;
+        }
+        let dist = dmath::sqrt(dx * dx + dy * dy);
         let mass = if other.mass > 0 {
             other.mass
         } else {
@@ -8837,7 +9261,7 @@ pub(crate) fn radius_attack(
                 .map(|c| c.mass.max(1))
                 .unwrap_or(100)
         };
-        crate::damage::damage_mobj(world, id, Some(source), Some(source), dmg);
+        crate::damage::damage_mobj(world, id, Some(source), bomb_source, dmg);
         // Vanilla-ish thrust: damage*(FRACUNIT>>3)*100/mass → map units ≈ dmg*12.5/mass.
         if dist > 0.0 && (other_flags & crate::class::FLAG_DONTTHRUST) == 0 {
             if let Some(a) = world.actors.get_mut(id) {
@@ -9886,11 +10310,12 @@ fn a_quake(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult
         .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
         .unwrap_or(0.0)
         .abs();
-    let sound = args
-        .get(4)
-        .map(|s| s.trim_matches('"').to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "world/quake".into());
+    // GZDoom: the default is "world/quake"; an explicit "" means silence
+    // (Brutal Doom's shotgun quake passes "").
+    let sound = args.get(4).map_or_else(
+        || "world/quake".into(),
+        |s| s.trim().trim_matches('"').to_owned(),
+    );
     push_quake(
         world,
         self_id,
@@ -9911,11 +10336,10 @@ fn a_quake_ex(world: &mut World, self_id: ActorId, args: &[String]) -> ActionRes
     let duration = parse_i32_arg(args, 3, 0).max(0);
     let damage_radius = parse_f64_arg(args, 4, 0.0).abs();
     let tremor_radius = parse_f64_arg(args, 5, 0.0).abs();
-    let sound = args
-        .get(6)
-        .map(|s| s.trim_matches('"').to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "world/quake".into());
+    let sound = args.get(6).map_or_else(
+        || "world/quake".into(),
+        |s| s.trim().trim_matches('"').to_owned(),
+    );
     push_quake(
         world,
         self_id,
@@ -11302,7 +11726,7 @@ actor ZombieMan : Actor 3004
         if let Some(a) = w.actors.get_mut(id) {
             a.target = Some(player);
         }
-        assert_eq!(a_skull_attack(&mut w, id), ActionResult::Continue);
+        assert_eq!(a_skull_attack(&mut w, id, &[]), ActionResult::Continue);
         let a = w.actors.get(id).unwrap();
         assert!(
             a.vel.z() > 0.0,
@@ -11314,6 +11738,52 @@ actor ZombieMan : Actor 3004
             "A_SkullAttack sets SKULLFLY"
         );
         assert!(a.vel.x() < 0.0, "should charge west toward player");
+    }
+
+    #[test]
+    fn skull_charge_slams_and_damages_target() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 256.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let soul = classes.find_name("LostSoul").unwrap();
+        let player = w.players[0].as_ref().and_then(|p| p.mo).unwrap();
+        let hp0 = w.actors.get(player).unwrap().health;
+        let id = w
+            .spawn_at(
+                soul,
+                DVec3::new(264.0, 64.0, 0.0),
+                Angle::from_degrees(180.0),
+            )
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(id) {
+            a.target = Some(player);
+            a.damage = 3; // Doom `LostSoul` `Damage 3`
+        }
+        let _ = a_skull_attack(&mut w, id, &[]);
+        let mut slammed = false;
+        for _ in 0..20 {
+            crate::physics::xy_movement(&mut w, id);
+            crate::physics::z_movement(&mut w, id);
+            if !w.actors.get(id).unwrap().extra_flags.get_name("SKULLFLY") {
+                slammed = true;
+                break;
+            }
+        }
+        assert!(slammed, "charge ends on contact");
+        let a = w.actors.get(id).unwrap();
+        assert_eq!(a.vel, DVec3::ZERO);
+        assert!(
+            w.actors.get(player).unwrap().health < hp0,
+            "player takes slam damage"
+        );
     }
 
     #[test]
@@ -13523,17 +13993,17 @@ actor NoisyPitch : Actor 9996
                 .iter()
                 .any(|e| e.name == "weapons/pistol" && (e.pitch - 1.0).abs() < 1e-6)
         );
-        let _ = call_action_args(&mut w, id, "A_SoundPitch", &["0".into(), "2".into()]);
+        let _ = call_action_args(&mut w, id, "A_SoundPitch", &["4".into(), "2".into()]);
         assert!(w.sound_events.iter().any(|e| {
             e.adjust == crate::world::SimSoundAdjust::Start
                 && e.name == "weapons/pistol"
-                && e.channel == 0
+                && e.channel == 4
                 && (e.pitch - 2.0).abs() < 1e-6
                 && (e.volume - 1.0).abs() < 1e-6
         }));
         assert!(w.sound_events.iter().any(|e| {
             e.adjust == crate::world::SimSoundAdjust::Pitch
-                && e.channel == 0
+                && e.channel == 4
                 && (e.pitch - 2.0).abs() < 1e-6
         }));
     }
@@ -13582,16 +14052,16 @@ actor NoisyVol : Actor 9995
                 .iter()
                 .any(|e| e.name == "weapons/pistol" && (e.volume - 1.0).abs() < 1e-6)
         );
-        let _ = call_action_args(&mut w, id, "A_SoundVolume", &["0".into(), "0.25".into()]);
+        let _ = call_action_args(&mut w, id, "A_SoundVolume", &["4".into(), "0.25".into()]);
         assert!(w.sound_events.iter().any(|e| {
             e.adjust == crate::world::SimSoundAdjust::Start
                 && e.name == "weapons/pistol"
-                && e.channel == 0
+                && e.channel == 4
                 && (e.volume - 0.25).abs() < 1e-6
         }));
         assert!(w.sound_events.iter().any(|e| {
             e.adjust == crate::world::SimSoundAdjust::Volume
-                && e.channel == 0
+                && e.channel == 4
                 && (e.volume - 0.25).abs() < 1e-6
         }));
     }
@@ -13605,7 +14075,7 @@ actor Noisy : Actor 9994
   States
   {
   Spawn:
-    POSS A 1 A_PlaySound("weapons/pistol", 0.5)
+    POSS A 1 A_PlaySound("weapons/pistol", CHAN_BODY, 0.5)
     POSS A -1
     Stop
   }
@@ -14341,11 +14811,13 @@ actor Scout : Actor 9017
   {
   Spawn:
     POSS A 0 A_CheckRange(50, "Far")
-    POSS A 0 A_CheckSight("Seen")
+    POSS A 0 A_CheckSight("Bad")
+    POSS A 0 A_Jump(256, "Seen")
     POSS A -1
     Stop
   Far:
     POSS B 0 A_CheckSightOrRange(50, "Bad")
+    POSS B 0 A_Jump(256, "Seen")
     POSS B -1
     Stop
   Seen:
@@ -14374,7 +14846,9 @@ actor Scout : Actor 9017
         let mut w =
             World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
         let player = w.players[0].as_ref().unwrap().mo.unwrap();
-        // ~136 units away → CheckRange(50) → Far → CheckSightOrRange(50) → Bad.
+        // GZDoom checks the players, not the target: ~136 units away →
+        // CheckRange(50) jumps to Far; the player sees it, so
+        // CheckSightOrRange does not jump → Seen.
         let id = w
             .spawn_at(scout, DVec3::new(200.0, 64.0, 0.0), Angle::ZERO)
             .unwrap();
@@ -14382,8 +14856,8 @@ actor Scout : Actor 9017
             a.target = Some(player);
         }
         w.set_state(id, Some(spawn), true);
-        assert_eq!(w.actors.get(id).unwrap().state, Some(bad));
-        // Close + LOS → CheckRange does not jump; CheckSight → Seen.
+        assert_eq!(w.actors.get(id).unwrap().state, Some(seen));
+        // Close: CheckRange does not jump; seen → CheckSight does not jump.
         if let Some(a) = w.actors.get_mut(id) {
             a.pos = DVec3::new(80.0, 64.0, 0.0);
         }
@@ -14917,7 +15391,7 @@ actor Giver : Actor 9005
   {
   Spawn:
     POSS A 1 A_SetDamageType("Fire")
-    POSS A 1 A_RadiusGive("Clip", 80, 0, 7)
+    POSS A 1 A_RadiusGive("Clip", 80, RGF_PLAYERS, 7)
     POSS A -1
     Stop
   }
@@ -15413,7 +15887,8 @@ actor Mover : Actor 9999
             .spawn_at(mover, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
             .unwrap();
         w.set_state(id, Some(spawn), true);
-        assert!((w.actors.get(id).unwrap().pitch.degrees() - 15.0).abs() < 1e-9);
+        // `A_SetPitch(15)` looks 15° down: Room stores positive = up.
+        assert!((w.actors.get(id).unwrap().pitch.degrees() + 15.0).abs() < 1e-9);
         // Relative +X along facing (0°) → vel (10,0,2), then scale 0.5 → (5,0,1).
         let next = states.get(spawn).unwrap().next.unwrap();
         w.set_state(id, Some(next), true);
@@ -17733,7 +18208,7 @@ actor Resizer : Actor 9987
     }
 
     #[test]
-    fn a_set_scale_resizes_from_class_defaults() {
+    fn a_set_scale_is_visual_only() {
         let ir = parse_decorate(
             r#"
 actor Grower : Actor 9986
@@ -17776,8 +18251,8 @@ actor Grower : Actor 9986
             .unwrap();
         assert!((w.actors.get(id).unwrap().radius - 20.0).abs() < 1e-9);
         w.set_state(id, Some(sid), true);
-        assert!((w.actors.get(id).unwrap().radius - 40.0).abs() < 1e-9);
-        assert!((w.actors.get(id).unwrap().height - 28.0).abs() < 1e-9);
+        // GZDoom `A_SetScale` is visual only: collision keeps the class size.
+        assert!((w.actors.get(id).unwrap().radius - 20.0).abs() < 1e-9);
         assert!((w.actors.get(id).unwrap().scale_x - 2.0).abs() < 1e-9);
         assert!((w.actors.get(id).unwrap().scale_y - 0.5).abs() < 1e-9);
     }

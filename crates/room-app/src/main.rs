@@ -1227,9 +1227,12 @@ struct ViewerApp {
     /// Eye / look after the last sim tic.
     cam_curr: Option<(f32, f32, f32, f32, f32)>,
     /// Sprite XYZ + yaw (degrees) at the previous tic, keyed by actor index.
-    sprite_prev: std::collections::HashMap<u32, (f32, f32, f32, f32)>,
+    /// Keyed by the full handle (index + generation): arena slots are reused
+    /// at once, so an index key made a fresh actor (a 2-tic fireball trail)
+    /// interpolate from wherever the slot's previous owner was.
+    sprite_prev: std::collections::HashMap<room_sim::ActorId, (f32, f32, f32, f32)>,
     /// Sprite XYZ + yaw after the last sim tic.
-    sprite_curr: std::collections::HashMap<u32, (f32, f32, f32, f32)>,
+    sprite_curr: std::collections::HashMap<room_sim::ActorId, (f32, f32, f32, f32)>,
     /// On-screen messages from the sim.
     messages: MessageQueue,
     /// Last logged text per ACS HudMessage id (console log dedupe).
@@ -2448,6 +2451,109 @@ impl ViewerApp {
     }
 
     /// Upload soft tint discs used by blood / muzzle / impact particles.
+    /// DECALDEF look for a placed decal: picture size × `x-scale`/`y-scale`,
+    /// `translucent`, wall light (unless `fullbright`), and `shade "rr gg bb"`
+    /// (the picture becomes an alpha mask filled with that colour — Brutal
+    /// Doom's bullet holes are grey pictures shaded black, not white blobs).
+    fn decal_look(&mut self, placed: &str, tex: &str, salt: u32, x: f64, y: f64) -> DecalLook {
+        let mut look = DecalLook {
+            texture: None,
+            width: 8.0,
+            height: 8.0,
+            light: 1.0,
+            alpha: 1.0,
+        };
+        let Some(vfs) = self.vfs.as_ref() else {
+            return look;
+        };
+        let def = self
+            .decaldef
+            .as_ref()
+            .and_then(|d| d.place_def(placed, salt))
+            .cloned();
+        let pal = *self.patches.palette();
+        let (pw, ph, rgba) = match self.patches.ensure(vfs, tex) {
+            Some(p) => {
+                let rgba = p.rgba.clone().unwrap_or_else(|| {
+                    let mut out = Vec::with_capacity(p.indices.len() * 4);
+                    for (i, &ix) in p.indices.iter().enumerate() {
+                        let c = pal[usize::from(ix)];
+                        out.extend_from_slice(&[
+                            c[0],
+                            c[1],
+                            c[2],
+                            p.alpha.get(i).copied().unwrap_or(255),
+                        ]);
+                    }
+                    out
+                });
+                (f32::from(p.width), f32::from(p.height), Some(rgba))
+            }
+            None => (8.0, 8.0, None),
+        };
+        let Some(def) = def else {
+            return look;
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            look.width = (pw * def.x_scale.unwrap_or(1.0) as f32).max(0.5);
+            look.height = (ph * def.y_scale.unwrap_or(1.0) as f32).max(0.5);
+            look.alpha = def.translucent.map_or(1.0, |t| t.clamp(0.0, 1.0) as f32);
+        }
+        if !def.fullbright {
+            if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
+                if let Some(sid) = room_nodebuild::point_in_sector(&world.map, x, y) {
+                    if let Some(sec) = world.sectors.get(sid.raw() as usize) {
+                        look.light = (f32::from(sec.light) / 255.0).clamp(0.1, 1.0);
+                    }
+                }
+            }
+        }
+        if let (Some(shade), Some(rgba)) = (def.shade.as_deref(), rgba) {
+            let parts: Vec<u8> = shade
+                .split_whitespace()
+                .filter_map(|p| u8::from_str_radix(p, 16).ok())
+                .collect();
+            if parts.len() == 3 {
+                let name = format!(
+                    "__DSHADE_{}_{:02X}{:02X}{:02X}",
+                    tex.to_ascii_uppercase(),
+                    parts[0],
+                    parts[1],
+                    parts[2]
+                );
+                if self.materials.get(&name).is_none() {
+                    if let Some(gpu) = self.gpu.as_ref() {
+                        // GZDoom shaded decals: alpha = picture luminance.
+                        let mut out = Vec::with_capacity(rgba.len());
+                        for px in rgba.chunks_exact(4) {
+                            let lum = (u32::from(px[0]) * 54
+                                + u32::from(px[1]) * 183
+                                + u32::from(px[2]) * 19)
+                                >> 8;
+                            let a = (lum * u32::from(px[3]) / 255) as u8;
+                            out.extend_from_slice(&[parts[0], parts[1], parts[2], a]);
+                        }
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        let _ = self.materials.upsert_rgba(
+                            &gpu.device,
+                            &gpu.queue,
+                            &name,
+                            pw as u32,
+                            ph as u32,
+                            &out,
+                        );
+                    }
+                }
+                if self.materials.get(&name).is_some() {
+                    look.texture = Some(name);
+                    look.light = 1.0;
+                }
+            }
+        }
+        look
+    }
+
     fn ensure_particle_tint_textures(
         materials: &mut MaterialCatalog,
         particles: &ParticleStore,
@@ -2571,13 +2677,11 @@ impl ViewerApp {
             .play
             .as_ref()
             .is_some_and(|g| g.state == GameState::Level);
-        let map_ref = self
-            .play
-            .as_ref()
-            .and_then(|g| g.world())
-            .map(|w| w.map.as_ref());
         if in_level {
-            append_decals(&mut scene, &self.decals, &self.camera, map_ref);
+            // `self.map` carries the live (interpolated) plane heights, so wall
+            // decals on doors and lifts ride their wall part.
+            self.decals.anchor_to_planes(&self.map);
+            append_decals(&mut scene, &self.decals, &self.camera, Some(&self.map));
             if let Some(gpu) = self.gpu.as_ref() {
                 Self::ensure_particle_tint_textures(&mut self.materials, &self.particles, gpu);
                 for d in &self.decals.decals {
@@ -3598,6 +3702,12 @@ impl ViewerApp {
                 Some(room_console::CvarValue::Int(i)) => *i != 0,
                 _ => false,
             };
+            // GZDoom `r_quakeintensity`: scales earthquake view jitter.
+            let quake_scale = match self.console.cvars.get("r_quakeintensity") {
+                Some(room_console::CvarValue::Float(f)) => (*f).clamp(0.0, 1.0),
+                Some(room_console::CvarValue::Int(i)) => f64::from(*i).clamp(0.0, 1.0),
+                _ => 1.0,
+            };
             let view_kick_scale = match self.console.cvars.get("r_viewkick_scale") {
                 Some(room_console::CvarValue::Float(f)) => *f as f32,
                 Some(room_console::CvarValue::Int(i)) => *i as f32,
@@ -4137,7 +4247,25 @@ impl ViewerApp {
                                 } else {
                                     room_sim::Player::zoomed_fov(base, p.weapon_zoom)
                                 };
-                                let (ex, ey, ez) = a.camera_eye(z);
+                                let (mut ex, mut ey, ez) = a.camera_eye(z);
+                                // GZDoom `R_SetupFrame` quake jiggers: classic
+                                // quakes push the eye along the view's forward
+                                // and side axes by up to ±intensity units.
+                                let intensity = world.quake_intensity_at(vid) * 0.5 * quake_scale;
+                                if intensity > 0.0 {
+                                    let t = u64::from(world.level.time);
+                                    let r = |k: u64| {
+                                        let mut h = t.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ k;
+                                        h ^= h >> 33;
+                                        h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+                                        h ^= h >> 33;
+                                        (h as f64 / u64::MAX as f64) * 2.0 - 1.0
+                                    };
+                                    let yaw = a.camera_yaw().radians();
+                                    let (fwd, side) = (r(1) * intensity, r(2) * intensity);
+                                    ex += yaw.cos() * fwd - yaw.sin() * side;
+                                    ey += yaw.sin() * fwd + yaw.cos() * side;
+                                }
                                 cam = Some((
                                     ex,
                                     ey,
@@ -4328,7 +4456,18 @@ impl ViewerApp {
                         }
                     })
                     .unwrap_or_default();
+                let look = self.decal_look(&name, &tex, salt, x, y);
+                let tex = look.texture.clone().unwrap_or(tex);
                 self.decals.ingest_one(tex, x, y, z, line, anim);
+                if let Some(d) = self.decals.decals.last_mut() {
+                    d.width = look.width;
+                    d.height = look.height;
+                    d.base_width = look.width;
+                    d.base_height = look.height;
+                    d.light = look.light;
+                    d.base_light = look.light;
+                    d.alpha = look.alpha;
+                }
             }
             self.decals.tick();
             self.particles.ingest(new_particles);
@@ -5129,7 +5268,7 @@ impl ViewerApp {
             };
             #[allow(clippy::cast_possible_truncation)]
             next.insert(
-                id.index(),
+                id,
                 (
                     a.pos.x() as f32,
                     a.pos.y() as f32,
@@ -5214,7 +5353,7 @@ impl ViewerApp {
                 );
                 #[allow(clippy::cast_possible_truncation)]
                 let alpha = alpha as f32;
-                let prev = self.sprite_prev.get(&id.index()).copied().unwrap_or((
+                let prev = self.sprite_prev.get(&id).copied().unwrap_or((
                     a.pos.x() as f32,
                     a.pos.y() as f32,
                     a.pos.z() as f32,
@@ -5323,6 +5462,11 @@ impl ViewerApp {
                     }
                 }
             }
+            if texture.is_empty()
+                && std::env::var("ROOM_DEBUG_SPRITE").is_ok_and(|v| sprite.eq_ignore_ascii_case(&v))
+            {
+                eprintln!("room: dbgsprite {sprite}{frame} NO TEXTURE");
+            }
             // `TNT1` and frames without a lump draw nothing (GZDoom).
             if texture.is_empty() {
                 continue;
@@ -5341,6 +5485,13 @@ impl ViewerApp {
             } else {
                 SpriteOrient::Billboard
             };
+            if std::env::var("ROOM_DEBUG_SPRITE")
+                .is_ok_and(|v| v == "*" || sprite.eq_ignore_ascii_case(&v))
+            {
+                eprintln!(
+                    "room: dbgsprite {sprite}{frame} tex={texture} w={w:.1} h={h:.1} pos=({x:.0},{y:.0},{z_bottom:.0}) alpha={alpha} add={additive} light={light}"
+                );
+            }
             out.push(SpriteInstance {
                 pos: Vec3::new(x as f32, y as f32, z_bottom as f32)
                     + sprite_offset_delta(
@@ -7315,4 +7466,13 @@ fn create_stencil_aux(
     });
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     (tex, view)
+}
+
+/// Size / light / opacity / texture chosen for one placed decal.
+struct DecalLook {
+    texture: Option<String>,
+    width: f32,
+    height: f32,
+    light: f32,
+    alpha: f32,
 }
