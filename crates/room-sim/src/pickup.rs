@@ -377,6 +377,7 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
             world.level.time, class_name, amount
         );
     }
+    crate::action::apply_powerup_giver(world, toucher, class);
     let (countitem, countsecret) = world.actors.get(item).map_or((false, false), |a| {
         (
             (a.flags & crate::class::FLAG_COUNTITEM) != 0,
@@ -613,15 +614,52 @@ fn is_custom_inventory(world: &World, class: room_core::ClassId) -> bool {
 
 /// Run the `Pickup` state. Inventory actions apply to `toucher`, not the item.
 fn run_custom_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
-    let Some(class) = world.actors.get(item).map(|a| a.class) else {
+    let Some((class, pos, angle)) = world.actors.get(item).map(|a| (a.class, a.pos, a.angle))
+    else {
         return false;
     };
+    run_custom_pickup_at(world, toucher, class, pos, angle)
+}
+
+/// Execute a `CustomInventory` Pickup state for an item granted directly by
+/// DECORATE (`A_GiveToTarget` / `A_GiveInventory`). GZDoom runs the item's
+/// pickup actions with its owner as target/activator even though there is no
+/// map pickup actor.
+pub(crate) fn run_given_custom_pickup(
+    world: &mut World,
+    owner: ActorId,
+    class: room_core::ClassId,
+) {
+    let Some((pos, angle)) = world.actors.get(owner).map(|a| (a.pos, a.angle)) else {
+        return;
+    };
+    let _ = run_custom_pickup_at(world, owner, class, pos, angle);
+}
+
+fn run_custom_pickup_at(
+    world: &mut World,
+    owner: ActorId,
+    class: room_core::ClassId,
+    pos: room_core::DVec3,
+    angle: room_core::Angle,
+) -> bool {
+    if !is_custom_inventory(world, class) {
+        return false;
+    }
     let Some(start) = world.states.find_label(class, "Pickup") else {
         return false;
     };
-    world.inventory_beneficiary = Some(toucher);
+    let Ok(item) = world.spawn_at(class, pos, angle) else {
+        return false;
+    };
+    if let Some(actor) = world.actors.get_mut(item) {
+        actor.target = Some(owner);
+        actor.flags = 0;
+        actor
+            .user_vars
+            .insert("room_internal_temp_custom_inventory".into(), 1);
+    }
     world.set_state(item, Some(start), true);
-    world.inventory_beneficiary = None;
     true
 }
 

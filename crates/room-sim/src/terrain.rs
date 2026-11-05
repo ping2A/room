@@ -17,6 +17,8 @@ pub struct SplashSpec {
     pub sound: Option<String>,
     /// Small-splash sound.
     pub small_sound: Option<String>,
+    /// UZDoom `FSplashDef::NoAlert`: do not call `P_NoiseAlert` for this splash.
+    pub no_alert: bool,
     /// `|vel_z|` below this uses the small splash (map units / tic).
     pub small_threshold: i32,
 }
@@ -129,9 +131,15 @@ pub fn hit_floor_splash(world: &mut World, actor_id: crate::actor::ActorId, vel_
             let _ = crate::damage::damage_mobj(world, actor_id, None, None, terrain.damage_on_land);
         }
     }
-    // A liquid hit wakes monsters unless `+NOSPLASHALERT` (UZ1).
-    if !actor.extra_flags.get_name("NOSPLASHALERT") {
-        crate::action::noise_alert(world, actor_id);
+    // UZDoom alerts from player splashes unless the splash definition says
+    // `noalert`; NOSPLASHALERT filters the monsters receiving the alert.
+    let is_player = world
+        .players
+        .iter()
+        .flatten()
+        .any(|player| player.mo == Some(actor_id));
+    if is_player && !splash.no_alert && !actor.extra_flags.get_name("DONTSPLASH") {
+        crate::action::noise_alert_splash(world, actor_id);
     }
 }
 
@@ -164,6 +172,7 @@ mod tests {
                 chunk_class: None,
                 sound: Some("world/watersplash".into()),
                 small_sound: Some("world/watersplash".into()),
+                no_alert: false,
                 small_threshold: 12,
             },
         );
@@ -204,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn nosplashalert_skips_the_noise() {
+    fn nosplashalert_on_player_does_not_suppress_water_noise() {
         let mut map = MapBuilder::new()
             .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
             .player_start(64.0, 64.0, 0)
@@ -224,6 +233,8 @@ mod tests {
             .extra_flags
             .set_name("NOSPLASHALERT", true);
         hit_floor_splash(&mut world, mo, -20.0);
-        assert_eq!(world.sectors[0].soundtarget, None);
+        // NOSPLASHALERT is a receiver-side filter; it does not silence the
+        // player splash or prevent the sector sound target from being set.
+        assert_eq!(world.sectors[0].soundtarget, Some(mo));
     }
 }

@@ -40,7 +40,9 @@ pub fn room_actions() -> BTreeSet<String> {
 /// Flag spellings accepted by `is_known_flag`.
 #[must_use]
 pub fn room_flags() -> BTreeSet<String> {
-    quoted_names_in_fn(CLASS_RS, "is_known_flag")
+    let mut names = quoted_names_in_fn(CLASS_RS, "is_known_flag");
+    names.extend(room_sim::UZDOOM_FLAGS.iter().map(|name| (*name).to_owned()));
+    names
 }
 
 /// Property spellings accepted by `is_known_property`.

@@ -67,14 +67,7 @@ pub fn state(sprite: &[u8; 4], frame: u8, tics: i32, flags: u32, callback_id: i3
 /// `reg_state_flow` — [`room_script_abi::state_flow_kind`]; returns 0 on success.
 pub fn state_flow(kind: i32, label: &str, offset: i32) -> i32 {
     // SAFETY: label slice lives for the import call.
-    unsafe {
-        sys::reg_state_flow(
-            kind,
-            label.as_ptr() as i32,
-            label.len() as i32,
-            offset,
-        )
-    }
+    unsafe { sys::reg_state_flow(kind, label.as_ptr() as i32, label.len() as i32, offset) }
 }
 
 /// `reg_state_action` — native action on the last state; returns 0 on success.

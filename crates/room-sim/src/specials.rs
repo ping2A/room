@@ -1226,7 +1226,7 @@ pub fn execute_special(
         num::SECTOR_SET_ROTATION => sector_set_rotation(world, args, line),
         num::DAMAGE_THING => damage_thing(world, args, activator),
         num::THING_DAMAGE => thing_damage(world, args),
-        num::THING_MOVE => thing_move(world, args),
+        num::THING_MOVE => thing_move(world, args, activator),
         num::SECTOR_CHANGE_FLAGS => sector_change_flags(world, args),
         num::GLASS_BREAK => glass_break(world, line),
         num::THING_SET_TRANSLATION => thing_set_translation(world, args, activator),
@@ -1459,6 +1459,21 @@ fn thing_change_tid(world: &mut World, args: &[i32; 5], activator: Option<ActorI
     for id in ids {
         if let Some(a) = world.actors.get_mut(id) {
             a.tid = new_tid;
+        }
+        if new_tid == 261 {
+            let actor = world.actors.get(id);
+            let class = actor
+                .and_then(|a| world.classes.get(a.class))
+                .map_or("<missing>", |c| c.name.as_str());
+            eprintln!(
+                "room: VEHICLE TID tic={} change old={} new={} actor=#{} class={} hp={}",
+                world.level.time,
+                old,
+                new_tid,
+                id.index(),
+                class,
+                actor.map_or(0, |a| a.health),
+            );
         }
     }
     1
@@ -7099,17 +7114,53 @@ fn thing_damage(world: &mut World, args: &[i32; 5]) -> i32 {
 }
 
 /// `Thing_Move(tid, mapspot, nofog)` — teleport tid actors to mapspot tid.
-fn thing_move(world: &mut World, args: &[i32; 5]) -> i32 {
-    let movers = actors_with_tid(world, args[0]);
+fn thing_move(world: &mut World, args: &[i32; 5], activator: Option<ActorId>) -> i32 {
+    // ACS uses TID 0 to mean the script activator. Vehicle entry scripts
+    // rely on Thing_Move(0, vehicle_tid, ...) to seat the player on the vehicle.
+    let movers = if args[0] == 0 {
+        activator.into_iter().collect()
+    } else {
+        actors_with_tid(world, args[0])
+    };
     let spots = actors_with_tid(world, args[1]);
     let Some(&spot) = spots.first() else {
+        if args[1] == 261 {
+            eprintln!(
+                "room: VEHICLE Thing_Move tic={} source_tid={} activator={:?} destination_tid=261 not found",
+                world.level.time,
+                args[0],
+                activator.map(|id| id.index()),
+            );
+        }
         return 0;
     };
     let Some(dest) = world.actors.get(spot).map(|a| (a.pos, a.angle)) else {
         return 0;
     };
     if movers.is_empty() {
+        if args[1] == 261 {
+            eprintln!(
+                "room: VEHICLE Thing_Move tic={} source_tid={} destination_tid=261 found=#{} but no movers",
+                world.level.time,
+                args[0],
+                spot.index(),
+            );
+        }
         return 0;
+    }
+    if args[1] == 261 {
+        let movers = movers.iter().map(|id| id.index()).collect::<Vec<_>>();
+        let dest_actor = world.actors.get(spot);
+        eprintln!(
+            "room: VEHICLE Thing_Move tic={} source_tid={} movers={:?} destination=#{} pos=({:.1},{:.1},{:.1})",
+            world.level.time,
+            args[0],
+            movers,
+            spot.index(),
+            dest_actor.map_or(0.0, |a| a.pos.x()),
+            dest_actor.map_or(0.0, |a| a.pos.y()),
+            dest_actor.map_or(0.0, |a| a.pos.z()),
+        );
     }
     let fog = args[2] == 0;
     for id in movers {

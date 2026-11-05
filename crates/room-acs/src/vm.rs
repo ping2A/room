@@ -7,7 +7,7 @@ use crate::pcd;
 #[allow(clippy::too_many_arguments)] // ACSF host mirrors GZDoom arity.
 pub trait AcsHost {
     /// Execute a Hexen/ZDoom line special with five args; return activation result.
-    fn execute_special(&mut self, special: i32, args: [i32; 5]) -> i32;
+    fn execute_special(&mut self, special: i32, args: [i32; 5], activator: u64) -> i32;
     /// Inclusive random in `[lo, hi]` (ACS `Random`).
     fn random(&mut self, lo: i32, hi: i32) -> i32;
     /// Level time in tics (`Timer()`).
@@ -208,6 +208,35 @@ pub trait AcsHost {
     /// `UseInventory(name)` — consume one; 1 on success.
     fn use_inventory(&mut self, name: &str, activator: u64) -> i32 {
         let _ = (name, activator);
+        0
+    }
+    /// `MorphActor(tid, playerclass, monsterclass, duration, style, enter, exit)`.
+    fn morph_actor(
+        &mut self,
+        tid: i32,
+        player_class: &str,
+        monster_class: &str,
+        duration: i32,
+        style: i32,
+        enter_flash: &str,
+        exit_flash: &str,
+        activator: u64,
+    ) -> i32 {
+        let _ = (
+            tid,
+            player_class,
+            monster_class,
+            duration,
+            style,
+            enter_flash,
+            exit_flash,
+            activator,
+        );
+        0
+    }
+    /// `UnMorphActor(tid, force)`.
+    fn unmorph_actor(&mut self, tid: i32, force: bool, activator: u64) -> i32 {
+        let _ = (tid, force, activator);
         0
     }
     /// `PlayerNumber()` — player slot of activator, or `-1`.
@@ -2758,7 +2787,8 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 };
                 *arg = i32::from(v);
             }
-            let _ = host.execute_special(i32::from(special), args);
+            let activator = state.scripts[idx].activator;
+            let _ = host.execute_special(i32::from(special), args, activator);
             Step::Continue
         }
         pcd::DELAYDIRECTB => {
@@ -2800,7 +2830,8 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             for i in (0..nargs).rev() {
                 args[i] = pop(state, idx);
             }
-            let _ = host.execute_special(special, args);
+            let activator = state.scripts[idx].activator;
+            let _ = host.execute_special(special, args, activator);
             Step::Continue
         }
         pcd::LSPEC1DIRECT..=pcd::LSPEC5DIRECT => {
@@ -2817,7 +2848,8 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
                 };
                 *arg = v;
             }
-            let _ = host.execute_special(special, args);
+            let activator = state.scripts[idx].activator;
+            let _ = host.execute_special(special, args, activator);
             Step::Continue
         }
         pcd::ADD => binop(state, idx, |a, b| a.wrapping_add(b)),
@@ -4547,16 +4579,37 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
         }
         pcd::ENDTRANSLATION => Step::Continue,
         pcd::MORPHACTOR => {
-            for _ in 0..7 {
-                let _ = pop(state, idx);
-            }
-            state.scripts[idx].stack.push(0);
+            let unmorph_flash_id = pop(state, idx);
+            let unmorph_flash = state.resolve_string(unmorph_flash_id);
+            let morph_flash_id = pop(state, idx);
+            let morph_flash = state.resolve_string(morph_flash_id);
+            let style = pop(state, idx);
+            let duration = pop(state, idx);
+            let monster_class_id = pop(state, idx);
+            let monster_class = state.resolve_string(monster_class_id);
+            let player_class_id = pop(state, idx);
+            let player_class = state.resolve_string(player_class_id);
+            let tid = pop(state, idx);
+            let activator = state.scripts[idx].activator;
+            let n = host.morph_actor(
+                tid,
+                &player_class,
+                &monster_class,
+                duration,
+                style,
+                &morph_flash,
+                &unmorph_flash,
+                activator,
+            );
+            state.scripts[idx].stack.push(n);
             Step::Continue
         }
         pcd::UNMORPHACTOR => {
-            let _ = pop(state, idx);
-            let _ = pop(state, idx);
-            state.scripts[idx].stack.push(0);
+            let force = pop(state, idx) != 0;
+            let tid = pop(state, idx);
+            let activator = state.scripts[idx].activator;
+            let n = host.unmorph_actor(tid, force, activator);
+            state.scripts[idx].stack.push(n);
             Step::Continue
         }
         pcd::SETTHINGSPECIAL => {
@@ -4631,7 +4684,8 @@ fn step(state: &mut AcsState, host: &mut dyn AcsHost, idx: usize) -> Step {
             for i in (0..5).rev() {
                 args[i] = pop(state, idx);
             }
-            let r = host.execute_special(special, args);
+            let activator = state.scripts[idx].activator;
+            let r = host.execute_special(special, args, activator);
             if op != pcd::LSPEC5EX {
                 state.scripts[idx].stack.push(r);
             }
@@ -5240,7 +5294,7 @@ mod tests {
         fn hud_message_ex(&mut self, msg: HudMessageArgs) {
             self.huds.push(msg);
         }
-        fn execute_special(&mut self, special: i32, args: [i32; 5]) -> i32 {
+        fn execute_special(&mut self, special: i32, args: [i32; 5], _activator: u64) -> i32 {
             self.specials.push((special, args));
             1
         }

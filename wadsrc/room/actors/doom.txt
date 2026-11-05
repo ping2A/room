@@ -124,6 +124,13 @@ actor SwitchableDecoration : Actor
   +USESPECIAL
 }
 
+// Vehicle base used by Brutal Doom's DECORATE vehicles. Keep it after
+// SwitchableDecoration: Brutal Doom redefines Tank with that parent.
+actor Tank : Actor
+{
+  +USESPECIAL
+}
+
 actor RandomSpawner : Actor
 {
   +NOBLOCKMAP

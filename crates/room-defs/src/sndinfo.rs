@@ -30,6 +30,8 @@ pub struct SoundRegistry {
     pub rolloffs: BTreeMap<String, String>,
     /// `$pitchshift` name → range.
     pub pitchshifts: BTreeMap<String, i64>,
+    /// `$playersound` and related mappings: (class, gender, logical sound) → target.
+    pub player_sounds: BTreeMap<(String, String, String), SoundDef>,
     /// Warnings for skipped/unknown commands.
     pub warnings: Vec<String>,
 }
@@ -59,6 +61,37 @@ impl SoundRegistry {
                     name = pick.to_ascii_lowercase();
                 }
                 None => return None,
+            }
+        }
+        None
+    }
+
+    /// Resolve a `*sound` token through `$playersound*`, with class/gender fallbacks.
+    #[must_use]
+    pub fn resolve_player_lump(&self, class: &str, gender: &str, logical: &str) -> Option<&str> {
+        let mut name = logical.to_ascii_lowercase();
+        let class = class.to_ascii_lowercase();
+        let gender = gender.to_ascii_lowercase();
+        for _ in 0..16 {
+            let definition = [
+                (class.as_str(), gender.as_str()),
+                (class.as_str(), "male"),
+                (class.as_str(), "female"),
+                (class.as_str(), "other"),
+                ("player", gender.as_str()),
+                ("player", "male"),
+                ("player", "female"),
+                ("player", "other"),
+            ]
+            .into_iter()
+            .find_map(|(class, gender)| {
+                self.player_sounds
+                    .get(&(class.to_owned(), gender.to_owned(), name.clone()))
+            })?;
+            match definition {
+                SoundDef::Lump(lump) => return Some(lump),
+                SoundDef::Alias(target) => name = target.to_ascii_lowercase(),
+                SoundDef::Random(_) => return None,
             }
         }
         None
@@ -171,6 +204,19 @@ pub fn parse_sndinfo(text: &str) -> Result<SoundRegistry, DefsError> {
                         let name = read_word(&mut sc)?;
                         let n = sc.must_get_number()?;
                         reg.pitchshifts.insert(name.to_ascii_lowercase(), n);
+                    }
+                    "$playersound" | "$playersounddup" | "$playeralias" => {
+                        let class = read_word(&mut sc)?.to_ascii_lowercase();
+                        let gender = read_word(&mut sc)?.to_ascii_lowercase();
+                        let logical = read_word(&mut sc)?.to_ascii_lowercase();
+                        let target = read_word(&mut sc)?;
+                        let definition = if cmd == "$playersound" {
+                            SoundDef::Lump(target)
+                        } else {
+                            SoundDef::Alias(target)
+                        };
+                        reg.player_sounds
+                            .insert((class, gender, logical), definition);
                     }
                     "$ifdoom" | "$ifheretic" | "$ifhexen" | "$ifstrife" => {
                         // Stub: always take the doom branch for now; skip others.

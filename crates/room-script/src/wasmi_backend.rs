@@ -173,7 +173,8 @@ impl WasmBackend for WasmiBackend {
                         return -1;
                     }
                     let n = (cap as usize).min(bytes.len());
-                    let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+                    let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory())
+                    else {
                         return -1;
                     };
                     let data = mem.data_mut(&mut caller);
@@ -540,7 +541,7 @@ fn link_reg_imports(linker: &mut Linker<HostState>) -> Result<(), ScriptError> {
                     .unwrap_or(-1)
             },
         )
-            .map_err(|e| ScriptError::Backend(e.to_string()))?;
+        .map_err(|e| ScriptError::Backend(e.to_string()))?;
     linker
         .func_wrap(
             "room",

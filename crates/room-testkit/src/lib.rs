@@ -762,7 +762,9 @@ mod tests {
             "expected Door_Raise on both faces of each door strip"
         );
         assert!(
-            map.sides.iter().any(|s| s.upper.eq_ignore_ascii_case("BIGDOOR2")),
+            map.sides
+                .iter()
+                .any(|s| s.upper.eq_ignore_ascii_case("BIGDOOR2")),
             "expected BIGDOOR2 on door faces"
         );
         // Every two-sided line must come from a full shared edge (no T-junction orphans).

@@ -162,6 +162,8 @@ pub struct FieldInfo {
     pub readonly: bool,
     /// `ui` / `play` / `clearscope` when set.
     pub scope: Option<String>,
+    /// Excluded from prediction rollback.
+    pub norollback: bool,
 }
 
 /// One parameter.
@@ -688,7 +690,8 @@ fn push_members(info: &mut ClassInfo, members: &[Member], diags: &mut Vec<Diagno
                         slot: 0,
                         native: f.quals.native.then(|| n.clone()),
                         readonly: f.quals.readonly,
-                        scope: None,
+                        scope: f.quals.scope.clone(),
+                        norollback: f.quals.norollback,
                     });
                 }
             }
@@ -853,6 +856,7 @@ fn int_field(name: &str) -> FieldInfo {
         native: None,
         readonly: false,
         scope: None,
+        norollback: false,
     }
 }
 

@@ -914,7 +914,11 @@ mod browser {
     ) -> String {
         iwad.map(|i| format!("iwad:{}@{}", i.file, i.fingerprint))
             .into_iter()
-            .chain(content.iter().map(|c| format!("{}@{}", c.file, c.fingerprint)))
+            .chain(
+                content
+                    .iter()
+                    .map(|c| format!("{}@{}", c.file, c.fingerprint)),
+            )
             .collect::<Vec<_>>()
             .join(",")
     }
@@ -957,7 +961,11 @@ mod browser {
         if !start {
             return Ok(());
         }
-        let total: u64 = iwad.iter().map(|i| i.size).chain(content.iter().map(|c| c.size)).sum();
+        let total: u64 = iwad
+            .iter()
+            .map(|i| i.size)
+            .chain(content.iter().map(|c| c.size))
+            .sum();
         set_lobby_html(&format!(
             "<h2>Downloading room content…</h2><p class=\"muted\">{} file(s), {:.1} MB</p>",
             content.len() + usize::from(iwad.is_some()),

@@ -11,9 +11,7 @@ pub use attack::{
     device_button_is_primary_on,
 };
 pub use mod_buttons::{ModButtonState, apply_mod_buttons, default_bind_pairs};
-pub use weapon_impulses::{
-    WeaponImpulseState, apply_weapon_impulses, bd_impulse_bind_pairs,
-};
+pub use weapon_impulses::{WeaponImpulseState, apply_weapon_impulses, bd_impulse_bind_pairs};
 
 /// Logical keys the binder cares about (M5 subset).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

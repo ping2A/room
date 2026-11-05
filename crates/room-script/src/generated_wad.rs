@@ -78,7 +78,8 @@ fn write_pwad(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
     let mut data_section = Vec::new();
     let mut directory = Vec::with_capacity(entries.len() * 16);
     for (name, payload) in entries {
-        let filepos = i32::try_from(12 + data_section.len()).map_err(|_| "wad too large".to_owned())?;
+        let filepos =
+            i32::try_from(12 + data_section.len()).map_err(|_| "wad too large".to_owned())?;
         let size = i32::try_from(payload.len()).map_err(|_| "lump too large".to_owned())?;
         data_section.extend_from_slice(payload);
         directory.extend_from_slice(&filepos.to_le_bytes());

@@ -970,10 +970,22 @@ mod load_roll_tests {
     fn barrels_eggs_and_splats_roll_like_chocolate_spawn() {
         // Index order, one roll per can/barrel/egg, two per blood splat.
         let mut sprites = vec![
-            SpriteT { picnum: CANWITHSOMETHING, ..Default::default() },
-            SpriteT { picnum: 2297, ..Default::default() }, // BLOODSPLAT3
-            SpriteT { picnum: 675, ..Default::default() },  // EGG
-            SpriteT { picnum: 100, ..Default::default() },  // no roll
+            SpriteT {
+                picnum: CANWITHSOMETHING,
+                ..Default::default()
+            },
+            SpriteT {
+                picnum: 2297,
+                ..Default::default()
+            }, // BLOODSPLAT3
+            SpriteT {
+                picnum: 675,
+                ..Default::default()
+            }, // EGG
+            SpriteT {
+                picnum: 100,
+                ..Default::default()
+            }, // no roll
         ];
         let mut temps = Vec::new();
         let mut seed = 17;

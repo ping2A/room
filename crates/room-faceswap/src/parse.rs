@@ -53,7 +53,8 @@ pub fn parse_headanchors(text: &str) -> Result<HeadAnchorsFile, ParseError> {
         ScanOptions {
             c_mode: true,
             semicolon_comments: false,
-         ..Default::default() },
+            ..Default::default()
+        },
     );
     let mut out = HeadAnchorsFile::default();
     loop {

@@ -241,7 +241,14 @@ fn frame_index(c: u8) -> Option<u8> {
 
 /// Record one `frame`/`rot` pair of a sprite lump (GZDoom `R_InstallSprite`):
 /// rotation 0 fills all eight views; a later rotated lump overrides its view.
-fn install_frame(table: &mut SpriteFrames, sprite: &str, frame: u8, rot: u8, lump: &str, flip: bool) {
+fn install_frame(
+    table: &mut SpriteFrames,
+    sprite: &str,
+    frame: u8,
+    rot: u8,
+    lump: &str,
+    flip: bool,
+) {
     let slots = table
         .entry((sprite.to_owned(), frame))
         .or_insert_with(|| std::array::from_fn(|_| None));
@@ -632,7 +639,10 @@ mod sprite_frame_tests {
     #[test]
     fn mixed_letter_pairs_install_the_mirrored_frame() {
         let t = build_sprite_frames(
-            ["BOS2A1C1", "BOS2A2C8", "BOS2A3C7", "BOS2A5C5", "BOS2C4", "POSSA0"].into_iter(),
+            [
+                "BOS2A1C1", "BOS2A2C8", "BOS2A3C7", "BOS2A5C5", "BOS2C4", "POSSA0",
+            ]
+            .into_iter(),
         );
         let a = t.get(&("BOS2".into(), 0)).unwrap();
         let c = t.get(&("BOS2".into(), 2)).unwrap();
@@ -642,7 +652,10 @@ mod sprite_frame_tests {
         assert_eq!(c[0], Some(("BOS2A1C1".into(), true)));
         assert_eq!(c[3], Some(("BOS2C4".into(), false)));
         let p = t.get(&("POSS".into(), 0)).unwrap();
-        assert!(p.iter().all(|s| s.as_ref().is_some_and(|(n, f)| n == "POSSA0" && !f)));
+        assert!(
+            p.iter()
+                .all(|s| s.as_ref().is_some_and(|(n, f)| n == "POSSA0" && !f))
+        );
     }
 
     #[test]

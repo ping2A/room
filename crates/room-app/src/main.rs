@@ -1962,7 +1962,13 @@ impl ApplicationHandler for ViewerApp {
                     KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::KeyF if !menu_open => {
                         self.keys.attack.set_key(down);
                     }
-                    KeyCode::KeyE if !menu_open => self.keys.use_btn = down,
+                    KeyCode::KeyE if !menu_open => {
+                        self.keys.use_btn = down;
+                        eprintln!(
+                            "room: VEHICLE KEY E down={} menu_open={} mapped_to=USE",
+                            down, menu_open
+                        );
+                    }
                     KeyCode::KeyG if !menu_open => {
                         self.apply_console(if down { "+mod1" } else { "-mod1" });
                     }
@@ -3656,6 +3662,7 @@ impl ViewerApp {
             let mut line_alphas = Vec::new();
             let mut new_decals = Vec::new();
             let mut new_particles = Vec::new();
+            let mut particle_level_frozen = false;
             let mut blood_sprays: Vec<(glam::Vec3, glam::Vec3, [u8; 3], i32, u64, Option<f32>)> =
                 Vec::new();
             // Floor splat: (x, y, floor_z, rgb, radius, seed)
@@ -3815,6 +3822,7 @@ impl ViewerApp {
                     }
                 }
                 if let Some(world) = game.world_mut() {
+                    particle_level_frozen = world.level.frozen;
                     msgs = world.drain_messages();
                     for line in world.drain_debug() {
                         eprintln!("room: {line}");
@@ -3838,7 +3846,22 @@ impl ViewerApp {
                     new_particles = world
                         .drain_particle_events()
                         .into_iter()
-                        .map(|e| (e.color, e.fullbright, e.lifetime, e.size, e.x, e.y, e.z))
+                        .map(|e| room_render::particles::ParticleSpawn {
+                            color: e.color,
+                            fullbright: e.fullbright,
+                            render_style: e.render_style,
+                            lifetime: e.lifetime,
+                            size: e.size,
+                            pos: [e.x, e.y, e.z],
+                            vel: [e.velocity.x(), e.velocity.y(), e.velocity.z()],
+                            accel: [e.acceleration.x(), e.acceleration.y(), e.acceleration.z()],
+                            alpha: e.alpha,
+                            fade_step: e.fade_step,
+                            flags: e.flags,
+                            fade_out_step: e.fade_out_step,
+                            size_step: e.size_step,
+                            roll: e.roll,
+                        })
                         .collect();
                     let maptime = world.level.maptime;
                     if trails_on {
@@ -4470,7 +4493,7 @@ impl ViewerApp {
                 }
             }
             self.decals.tick();
-            self.particles.ingest(new_particles);
+            self.particles.ingest_ex(new_particles);
             for (pos, dir, rgb, damage, seed, floor_z) in blood_sprays {
                 self.particles
                     .ingest_blood_spray(pos, dir, rgb, damage, seed, floor_z);
@@ -4569,7 +4592,7 @@ impl ViewerApp {
                     }
                 }
             }
-            self.particles.tick();
+            self.particles.tick_with_freeze(particle_level_frozen);
             if let Some((x, y, vz, ang, pit, fov)) = cam {
                 #[allow(clippy::cast_possible_truncation)]
                 {
@@ -5316,34 +5339,11 @@ impl ViewerApp {
                 {
                     return None;
                 }
-                let is_other_player = world
-                    .players
-                    .iter()
-                    .flatten()
-                    .any(|p| p.mo == Some(id) && Some(id) != local_mo);
                 let bright = a
                     .state
                     .and_then(|sid| world.states.get(sid))
                     .is_some_and(|st| st.bright);
-                let is_monster = (flags & FLAG_COUNTKILL) != 0;
-                // Imp/caco balls etc. — keep readable against dark flats.
-                let is_missile = a.sprite.starts_with("BAL")
-                    || a.sprite.starts_with("PLAS")
-                    || a.sprite.starts_with("PLSS")
-                    || a.sprite.starts_with("PLSE")
-                    || a.sprite.starts_with("BFS")
-                    || a.sprite.starts_with("BFE")
-                    || a.sprite.starts_with("MISL")
-                    || a.sprite.starts_with("ROKE");
-                let mut light = (actor_light_level(world, a) as f32 / 255.0).clamp(0.2, 1.0);
-                // COUNTKILL always fullbright: DoomSoftware + dark computer-room
-                // sectors made zombies unreadable ("invisible killer after the door").
-                if is_monster || is_missile || bright || is_other_player {
-                    light = 1.0;
-                }
-                if self.hit_flash.contains_key(&id.index()) {
-                    light = 1.0;
-                }
+                let light = (actor_light_level(world, a) as f32 / 255.0).clamp(0.2, 1.0);
                 let alpha = a.alpha.clamp(0.0, 1.0);
                 let fuzz = matches!(a.render_style, RenderStyle::Fuzzy | RenderStyle::OptFuzzy);
                 // GZDoom STYLE_Add family: colour × alpha added to the scene.
@@ -5383,6 +5383,7 @@ impl ViewerApp {
                     a.scale_x,
                     a.scale_y,
                     light,
+                    bright,
                     alpha,
                     fuzz,
                     a.sprite.clone(),
@@ -5404,7 +5405,8 @@ impl ViewerApp {
             height,
             scale_x,
             scale_y,
-            light,
+            mut light,
+            bright,
             alpha,
             fuzz,
             sprite,
@@ -5474,6 +5476,14 @@ impl ViewerApp {
             // GZDoom never draws sprite `TNT1`, even when a mod ships a TNT1A0 lump.
             if sprite.eq_ignore_ascii_case("TNT1") {
                 continue;
+            }
+            // UZDoom resolves disablefullbright against the actual sprite
+            // texture selected for this frame, not only the actor's base name.
+            if bright && !self.gldefs.disables_sprite_fullbright(&texture) {
+                light = 1.0;
+            }
+            if self.hit_flash.contains_key(&id.index()) {
+                light = 1.0;
             }
             #[allow(clippy::cast_possible_truncation)]
             let yaw = angle_deg.to_radians() as f32;

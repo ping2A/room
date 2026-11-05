@@ -49,9 +49,7 @@ macro_rules! export_mod {
             let bytes = unsafe { $crate::game::payload(ptr, len) };
             if callback_id < $crate::game::EVENT_CALLBACK_BASE {
                 let payload = $crate::ActionPayload::read_le(bytes).unwrap_or_default();
-                return __ROOM_MOD
-                    .with(|m| m.on_state_action(payload))
-                    .unwrap_or(0);
+                return __ROOM_MOD.with(|m| m.on_state_action(payload)).unwrap_or(0);
             }
             let index = callback_id - $crate::game::EVENT_CALLBACK_BASE;
             if !(0..64).contains(&index) {

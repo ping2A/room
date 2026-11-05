@@ -43,10 +43,7 @@ pub fn parse_json_lump(text: &str, expected: Option<&str>) -> Result<RawJsonLump
         .to_owned();
     if let Some(want) = expected {
         if !kind.eq_ignore_ascii_case(want) {
-            return Err(err(
-                label,
-                format!("type is {kind:?}, expected {want:?}"),
-            ));
+            return Err(err(label, format!("type is {kind:?}, expected {want:?}")));
         }
     }
     let version = obj
@@ -56,7 +53,10 @@ pub fn parse_json_lump(text: &str, expected: Option<&str>) -> Result<RawJsonLump
         .to_owned();
     let major = version.split('.').next().unwrap_or("");
     if major != "1" {
-        return Err(err(label, format!("unsupported version {version:?} (need 1.x.y)")));
+        return Err(err(
+            label,
+            format!("unsupported version {version:?} (need 1.x.y)"),
+        ));
     }
     let data = obj
         .get("data")
@@ -75,7 +75,11 @@ fn field<'a>(o: &'a serde_json::Map<String, Value>, k: &str) -> Option<&'a Value
     o.get(k).filter(|v| !v.is_null())
 }
 
-fn f_str(lump: &str, o: &serde_json::Map<String, Value>, k: &str) -> Result<Option<String>, DefsError> {
+fn f_str(
+    lump: &str,
+    o: &serde_json::Map<String, Value>,
+    k: &str,
+) -> Result<Option<String>, DefsError> {
     match field(o, k) {
         None => Ok(None),
         Some(Value::String(s)) => Ok(Some(s.clone())),
@@ -83,7 +87,11 @@ fn f_str(lump: &str, o: &serde_json::Map<String, Value>, k: &str) -> Result<Opti
     }
 }
 
-fn f_num(lump: &str, o: &serde_json::Map<String, Value>, k: &str) -> Result<Option<f64>, DefsError> {
+fn f_num(
+    lump: &str,
+    o: &serde_json::Map<String, Value>,
+    k: &str,
+) -> Result<Option<f64>, DefsError> {
     match field(o, k) {
         None => Ok(None),
         Some(v) => v
@@ -93,7 +101,11 @@ fn f_num(lump: &str, o: &serde_json::Map<String, Value>, k: &str) -> Result<Opti
     }
 }
 
-fn f_int(lump: &str, o: &serde_json::Map<String, Value>, k: &str) -> Result<Option<i64>, DefsError> {
+fn f_int(
+    lump: &str,
+    o: &serde_json::Map<String, Value>,
+    k: &str,
+) -> Result<Option<i64>, DefsError> {
     match field(o, k) {
         None => Ok(None),
         Some(v) => v
@@ -127,7 +139,11 @@ fn f_arr<'a>(
     }
 }
 
-fn as_obj<'a>(lump: &str, v: &'a Value, what: &str) -> Result<&'a serde_json::Map<String, Value>, DefsError> {
+fn as_obj<'a>(
+    lump: &str,
+    v: &'a Value,
+    what: &str,
+) -> Result<&'a serde_json::Map<String, Value>, DefsError> {
     v.as_object()
         .ok_or_else(|| err(lump, format!("{what} must be an object")))
 }
@@ -217,7 +233,9 @@ impl SkyDefs {
     /// Sky definition by texture name (case-insensitive).
     #[must_use]
     pub fn sky(&self, name: &str) -> Option<&SkyDef> {
-        self.skies.iter().find(|s| s.name.eq_ignore_ascii_case(name))
+        self.skies
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(name))
     }
 
     /// Sky texture a flat is mapped to (case-insensitive; last mapping wins).
@@ -267,7 +285,10 @@ pub fn parse_skydefs(text: &str) -> Result<SkyDefs, DefsError> {
                 None => None,
                 Some(f) => {
                     if kind != SkyKind::Fire {
-                        return Err(err(L, format!("skies[{i}].fire only allowed for Fire skies")));
+                        return Err(err(
+                            L,
+                            format!("skies[{i}].fire only allowed for Fire skies"),
+                        ));
                     }
                     let pal = f_arr(L, f, "palette")?
                         .ok_or_else(|| err(L, format!("skies[{i}].fire.palette missing")))?;
@@ -280,7 +301,10 @@ pub fn parse_skydefs(text: &str) -> Result<SkyDefs, DefsError> {
                             .as_i64()
                             .filter(|n| (0..=255).contains(n))
                             .ok_or_else(|| {
-                                err(L, format!("skies[{i}].fire.palette entries must be 0..=255"))
+                                err(
+                                    L,
+                                    format!("skies[{i}].fire.palette entries must be 0..=255"),
+                                )
                             })?;
                         palette.push(n as u8);
                     }
@@ -304,14 +328,19 @@ pub fn parse_skydefs(text: &str) -> Result<SkyDefs, DefsError> {
                     if kind != SkyKind::WithForeground {
                         return Err(err(
                             L,
-                            format!("skies[{i}].foregroundtex only allowed for With Foreground skies"),
+                            format!(
+                                "skies[{i}].foregroundtex only allowed for With Foreground skies"
+                            ),
                         ));
                     }
                     Some(parse_fore(L, f)?)
                 }
             };
             if kind == SkyKind::WithForeground && foreground.is_none() {
-                return Err(err(L, format!("skies[{i}]: With Foreground sky needs `foregroundtex`")));
+                return Err(err(
+                    L,
+                    format!("skies[{i}]: With Foreground sky needs `foregroundtex`"),
+                ));
             }
             out.skies.push(SkyDef {
                 kind,
@@ -328,7 +357,10 @@ pub fn parse_skydefs(text: &str) -> Result<SkyDefs, DefsError> {
     }
     if let Some(maps) = f_arr(L, data, "flatmapping")? {
         if maps.is_empty() {
-            return Err(err(L, "`flatmapping` must have at least one entry or be null"));
+            return Err(err(
+                L,
+                "`flatmapping` must have at least one entry or be null",
+            ));
         }
         for (i, mv) in maps.iter().enumerate() {
             let m = as_obj(L, mv, &format!("flatmapping[{i}]"))?;
@@ -412,7 +444,10 @@ pub fn parse_demoloop(text: &str) -> Result<DemoLoop, DefsError> {
             .ok_or_else(|| err(L, format!("entries[{i}].primarylump missing")))?;
         let duration = f_num(L, e, "duration")?;
         if kind == DemoKind::Art && !duration.is_some_and(|d| d > 0.0) {
-            return Err(err(L, format!("entries[{i}]: art screen needs duration > 0")));
+            return Err(err(
+                L,
+                format!("entries[{i}]: art screen needs duration > 0"),
+            ));
         }
         out.entries.push(DemoLoopEntry {
             primary,
@@ -519,7 +554,10 @@ pub struct GameConf {
 
 fn file_name(lump: &str, what: &str, s: &str) -> Result<String, DefsError> {
     if s.is_empty() || s.contains('/') || s.contains('\\') {
-        return Err(err(lump, format!("{what} {s:?} must be a file name without a path")));
+        return Err(err(
+            lump,
+            format!("{what} {s:?} must be a file name without a path"),
+        ));
     }
     Ok(s.to_owned())
 }
@@ -607,7 +645,10 @@ impl GameConf {
 
     /// Non-empty trimmed option lines.
     pub fn option_lines(&self) -> impl Iterator<Item = &str> {
-        self.options.lines().map(str::trim).filter(|l| !l.is_empty())
+        self.options
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
     }
 }
 
@@ -660,7 +701,10 @@ mod tests {
         assert_eq!(s.skies.len(), 3);
         let a = s.sky("sky1").unwrap();
         assert_eq!(a.kind, SkyKind::Normal);
-        assert_eq!((a.mid, a.scroll_x, a.scale_x, a.scale_y), (100.0, 2.5, 2.0, 1.0));
+        assert_eq!(
+            (a.mid, a.scroll_x, a.scale_x, a.scale_y),
+            (100.0, 2.5, 2.0, 1.0)
+        );
         let f = s.sky("SKYFIRE").unwrap();
         assert_eq!(f.fire.as_ref().unwrap().palette, vec![0, 1, 2, 255]);
         assert!((f.fire.as_ref().unwrap().update_time - 0.03).abs() < 1e-12);
@@ -678,12 +722,22 @@ mod tests {
         assert!(bad(r#"{"flatmapping":[]}"#));
         assert!(bad(r#"{"skies":[{"type":9,"name":"A"}]}"#));
         assert!(bad(r#"{"skies":[{"type":1,"name":"A"}]}"#)); // fire missing
-        assert!(bad(r#"{"skies":[{"type":1,"name":"A","fire":{"palette":[],"updatetime":1}}]}"#));
-        assert!(bad(r#"{"skies":[{"type":1,"name":"A","fire":{"palette":[300],"updatetime":1}}]}"#));
-        assert!(bad(r#"{"skies":[{"type":1,"name":"A","fire":{"palette":[1],"updatetime":0}}]}"#));
-        assert!(bad(r#"{"skies":[{"type":0,"name":"A","fire":{"palette":[1],"updatetime":1}}]}"#));
+        assert!(bad(
+            r#"{"skies":[{"type":1,"name":"A","fire":{"palette":[],"updatetime":1}}]}"#
+        ));
+        assert!(bad(
+            r#"{"skies":[{"type":1,"name":"A","fire":{"palette":[300],"updatetime":1}}]}"#
+        ));
+        assert!(bad(
+            r#"{"skies":[{"type":1,"name":"A","fire":{"palette":[1],"updatetime":0}}]}"#
+        ));
+        assert!(bad(
+            r#"{"skies":[{"type":0,"name":"A","fire":{"palette":[1],"updatetime":1}}]}"#
+        ));
         assert!(bad(r#"{"skies":[{"type":2,"name":"A"}]}"#)); // foreground missing
-        assert!(bad(r#"{"skies":[{"type":0,"name":"A","foregroundtex":{"name":"B"}}]}"#));
+        assert!(bad(
+            r#"{"skies":[{"type":0,"name":"A","foregroundtex":{"name":"B"}}]}"#
+        ));
         assert!(bad(r#"{"skies":[{"type":0}]}"#));
         // null arrays are allowed
         assert!(parse_skydefs(&lump("skydefs", r#"{"skies":null,"flatmapping":null}"#)).is_ok());
@@ -710,10 +764,16 @@ mod tests {
         assert!(bad(r#"{"entries":[]}"#));
         assert!(bad(r#"{"entries":null}"#));
         assert!(bad(r#"{"entries":[{"primarylump":"A","type":0}]}"#)); // art needs duration
-        assert!(bad(r#"{"entries":[{"primarylump":"A","type":0,"duration":0}]}"#));
-        assert!(bad(r#"{"entries":[{"primarylump":"A","type":2,"duration":1}]}"#));
+        assert!(bad(
+            r#"{"entries":[{"primarylump":"A","type":0,"duration":0}]}"#
+        ));
+        assert!(bad(
+            r#"{"entries":[{"primarylump":"A","type":2,"duration":1}]}"#
+        ));
         assert!(bad(r#"{"entries":[{"type":1}]}"#));
-        assert!(bad(r#"{"entries":[{"primarylump":"A","type":1,"outrowipe":5}]}"#));
+        assert!(bad(
+            r#"{"entries":[{"primarylump":"A","type":1,"outrowipe":5}]}"#
+        ));
     }
 
     #[test]
@@ -730,7 +790,10 @@ mod tests {
         assert_eq!(c.pwads, vec!["a.wad", "b.pk3"]);
         assert_eq!(c.executable, Some(Executable::Mbf21));
         assert_eq!(c.mode, Some(GameMode::Commercial));
-        assert_eq!(c.option_lines().collect::<Vec<_>>(), ["comp_soul 1", "comp_moveblock 0"]);
+        assert_eq!(
+            c.option_lines().collect::<Vec<_>>(),
+            ["comp_soul 1", "comp_moveblock 0"]
+        );
         let bad = |data: &str| GameConf::parse(&lump("gameconf", data)).is_err();
         assert!(bad(r#"{"iwad":"dir/doom2.wad"}"#));
         assert!(bad(r#"{"pwads":["..\\x.wad"]}"#));
@@ -768,7 +831,18 @@ mod tests {
     #[test]
     fn executable_ordering_matches_spec_list() {
         use Executable::*;
-        let order = [Doom19, LimitRemoving, BugFixed, Boom202, Complevel9, Mbf, MbfExtra, Mbf21, Mbf21Ex, Id24];
+        let order = [
+            Doom19,
+            LimitRemoving,
+            BugFixed,
+            Boom202,
+            Complevel9,
+            Mbf,
+            MbfExtra,
+            Mbf21,
+            Mbf21Ex,
+            Id24,
+        ];
         for w in order.windows(2) {
             assert!(w[0] < w[1]);
         }

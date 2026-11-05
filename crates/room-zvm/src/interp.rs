@@ -112,6 +112,19 @@ impl Zvm {
             natives.bind_imports(&program.native_imports);
         }
         remap_native_imports(&mut program, &natives);
+        let object_layouts = program
+            .classes
+            .iter()
+            .enumerate()
+            .map(|(class_id, class)| {
+                (
+                    class.name.to_ascii_lowercase(),
+                    (class_id as u32, class.n_i, class.n_a, class.n_s),
+                )
+            })
+            .collect();
+        let mut play = crate::natives::ZvmPlayHost::default();
+        play.object_layouts = object_layouts;
         Self {
             program,
             heap: ZvmHeap::new(),
@@ -121,7 +134,7 @@ impl Zvm {
             last_f: 0.0,
             last_i: [0; 4],
             last_s: String::new(),
-            play: crate::natives::ZvmPlayHost::default(),
+            play,
             args: Vec::new(),
             rets: [None; 8],
             fuel_left: 0,
@@ -444,6 +457,23 @@ impl Zvm {
                 Op::F2I => {
                     let v = stack[top].f.get(b as usize).copied().unwrap_or(0.0) as i64;
                     set_i(&mut stack[top], a, v);
+                }
+                Op::CmpF => {
+                    let lb = stack[top].f.get(b as usize).copied().unwrap_or(0.0);
+                    let rc = stack[top].f.get(c as usize).copied().unwrap_or(0.0);
+                    // Match ZScript's three-way operator: NaN compares as equal
+                    // because neither ordered comparison succeeds.
+                    set_i(
+                        &mut stack[top],
+                        a,
+                        if lb < rc {
+                            -1
+                        } else if lb > rc {
+                            1
+                        } else {
+                            0
+                        },
+                    );
                 }
                 Op::AddF | Op::SubF | Op::MulF | Op::DivF => {
                     let lb = stack[top].f.get(b as usize).copied().unwrap_or(0.0);

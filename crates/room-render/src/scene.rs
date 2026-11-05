@@ -439,6 +439,44 @@ pub fn apply_dyn_lights(lists: &mut SceneLists) {
     }
 }
 
+/// Apply CPU dynamic lighting to an appended sprite range.
+///
+/// Particle billboards are appended after [`apply_dyn_lights`], so they use
+/// this helper at insertion time and can honor `SPF_NODYNAMICLIGHTING`.
+pub(crate) fn apply_dyn_lights_to_sprite_range(
+    lists: &mut SceneLists,
+    range: std::ops::Range<u32>,
+) {
+    if lists.dyn_lights.is_empty() {
+        return;
+    }
+    let lights = &lists.dyn_lights;
+    let start = range.start as usize;
+    let end = (range.end as usize).min(lists.sprites.len());
+    for vertex in lists.sprites.iter_mut().take(end).skip(start) {
+        if vertex.light >= 0.999 {
+            continue;
+        }
+        let pos = Vec3::from_array(vertex.pos);
+        let mut add = 0.0f32;
+        for light in lights {
+            let distance = pos.distance(light.pos);
+            if distance >= light.radius || light.radius <= 1e-3 {
+                continue;
+            }
+            let falloff = (1.0 - distance / light.radius).max(0.0);
+            let intensity = (light.color[0] + light.color[1] + light.color[2]) / 3.0;
+            let contribution = falloff * falloff * intensity;
+            if light.subtractive {
+                add -= contribution;
+            } else {
+                add += contribution;
+            }
+        }
+        vertex.light = (vertex.light + add).clamp(0.05, 1.0);
+    }
+}
+
 /// Shift a surface sprite a fraction of a unit toward the camera along `normal`.
 fn lift_sprite_off_surface(quad: &mut [crate::mesh::WallVertex], eye: Vec3, normal: Vec3) {
     let n = normal.normalize_or_zero();

@@ -696,13 +696,48 @@ pub fn rail_attack(
     damage: i32,
     limit: i32,
 ) -> TraceHit {
-    let Some((origin, _)) = shoot_origin(world, source) else {
+    rail_attack_offset(world, source, angle, range, damage, limit, 0.0)
+}
+
+/// Rail trace with a lateral muzzle offset (UZDoom `FRailParams::offset_xy`).
+pub fn rail_attack_offset(
+    world: &mut World,
+    source: ActorId,
+    angle: Angle,
+    range: f64,
+    damage: i32,
+    limit: i32,
+    offset_xy: f64,
+) -> TraceHit {
+    rail_attack_offset_puff(world, source, angle, range, damage, limit, offset_xy, None)
+}
+
+/// Rail trace with an optional UZDoom puff actor class.
+pub fn rail_attack_offset_puff(
+    world: &mut World,
+    source: ActorId,
+    angle: Angle,
+    range: f64,
+    damage: i32,
+    limit: i32,
+    offset_xy: f64,
+    puff_class: Option<&str>,
+) -> TraceHit {
+    let Some((mut origin, _)) = shoot_origin(world, source) else {
         return TraceHit {
             actor: None,
             pos: DVec3::ZERO,
             distance: 0.0,
         };
     };
+    if offset_xy != 0.0 {
+        let fine = bam_to_fine(angle.to_bam().0);
+        origin = DVec3::new(
+            origin.x() - f64::from(finesine(fine)) * offset_xy / 65536.0,
+            origin.y() + f64::from(finecosine(fine)) * offset_xy / 65536.0,
+            origin.z(),
+        );
+    }
     let pitch = world
         .actors
         .get(source)
@@ -788,8 +823,35 @@ pub fn rail_attack(
         if limit > 0 && count >= limit {
             break;
         }
-        spawn_hitscan_impact(world, Some(id), pos, source, damage);
-        damage_mobj(world, id, Some(source), Some(source), damage);
+        let puff_name = puff_class.unwrap_or("BulletPuff");
+        let (puff_always, foil_invulnerable, bloodless_impact) = world
+            .classes
+            .find_name(puff_name)
+            .and_then(|class| world.classes.get(class))
+            .map(|class| {
+                (
+                    class.extra_flags.get_name("ALWAYSPUFF"),
+                    class.extra_flags.get_name("FOILINVUL"),
+                    class.extra_flags.get_name("BLOODLESSIMPACT"),
+                )
+            })
+            .unwrap_or_default();
+        let victim_flags = world
+            .actors
+            .get(id)
+            .map(|actor| actor.flags | world.classes.get(actor.class).map_or(0, |c| c.flags))
+            .unwrap_or(0);
+        let suppress_bleed = victim_flags & crate::class::FLAG_NOBLOOD != 0
+            || victim_flags & crate::class::FLAG_DORMANT != 0
+            || (victim_flags & crate::class::FLAG_INVULNERABLE != 0 && !foil_invulnerable);
+        if suppress_bleed || puff_always {
+            spawn_puff_class(world, pos, puff_name);
+        }
+        let bleed = !suppress_bleed && !bloodless_impact;
+        let dealt = damage_mobj(world, id, Some(source), Some(source), damage);
+        if bleed {
+            spawn_blood(world, id, pos, Some(source), dealt.max(damage));
+        }
         last = TraceHit {
             actor: Some(id),
             pos,
@@ -802,7 +864,15 @@ pub fn rail_attack(
             nearest_shoot_wall(world, origin, dir_x, dir_y, aim_slope, range)
         {
             if !wall_hit_is_sky(world, lid.raw(), wpos.z()) {
-                spawn_puff(world, wpos);
+                let puff_name = puff_class.unwrap_or("BulletPuff");
+                if world
+                    .classes
+                    .find_name(puff_name)
+                    .and_then(|class| world.classes.get(class))
+                    .is_some_and(|class| class.extra_flags.get_name("ALWAYSPUFF"))
+                {
+                    spawn_puff_class(world, wpos, puff_name);
+                }
                 spawn_wall_bullet_decal(world, source, wpos, Some(lid.raw()));
                 let _ = crate::specials::damage_linedef(world, lid, Some(source), damage);
             }
@@ -1217,7 +1287,11 @@ pub(crate) fn spawn_blood(
 
 /// Spawn a `BulletPuff` at `pos`.
 pub(crate) fn spawn_puff(world: &mut World, pos: DVec3) {
-    let Some(class) = world.classes.find_name("BulletPuff") else {
+    spawn_puff_class(world, pos, "BulletPuff");
+}
+
+fn spawn_puff_class(world: &mut World, pos: DVec3, class_name: &str) {
+    let Some(class) = world.classes.find_name(class_name) else {
         return;
     };
     let pos = DVec3::new(pos.x(), pos.y(), pos.z() + puff_blood_z_jitter(world));

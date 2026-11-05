@@ -619,8 +619,22 @@ impl<'a> Scanner<'a> {
                 c.is_ascii_whitespace()
                     || matches!(
                         c,
-                        b'{' | b'}' | b'(' | b')' | b',' | b';' | b'"' | b'+' | b'-' | b'*' | b'/'
-                            | b'=' | b'<' | b'>' | b'!' | b'|' | b'&'
+                        b'{' | b'}'
+                            | b'('
+                            | b')'
+                            | b','
+                            | b';'
+                            | b'"'
+                            | b'+'
+                            | b'-'
+                            | b'*'
+                            | b'/'
+                            | b'='
+                            | b'<'
+                            | b'>'
+                            | b'!'
+                            | b'|'
+                            | b'&'
                     )
             });
             if f_ok {
@@ -862,7 +876,8 @@ mod tests {
             ScanOptions {
                 c_mode: false,
                 semicolon_comments: true,
-             ..Default::default() },
+                ..Default::default()
+            },
         );
         assert_eq!(sc.next_token().unwrap(), Tok::Ident("weapons/pistol"));
         assert_eq!(sc.next_token().unwrap(), Tok::Ident("DSPISTOL"));

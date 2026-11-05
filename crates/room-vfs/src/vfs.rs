@@ -204,7 +204,8 @@ impl VfsBuilder {
                     StoredPayload::Inflated(b) => Some(b.clone()),
                     StoredPayload::File(path) => std::fs::read(path).ok().map(bytes::Bytes::from),
                 };
-                if let Some(data) = data.filter(|d| d.starts_with(b"PWAD") || d.starts_with(b"IWAD"))
+                if let Some(data) =
+                    data.filter(|d| d.starts_with(b"PWAD") || d.starts_with(b"IWAD"))
                 {
                     let owner = self
                         .containers

@@ -440,6 +440,7 @@ fn terrain_from_defs(info: &room_defs::TerrainInfo) -> room_sim::TerrainTable {
                 chunk_class: s.chunk_class.clone(),
                 sound: s.sound.clone(),
                 small_sound: s.small_sound.clone(),
+                no_alert: s.no_alert,
                 small_threshold: 12,
             },
         );
@@ -1242,7 +1243,7 @@ impl Headless {
             match world.zscript.activate_map_handlers() {
                 Ok(()) => {
                     // Local player seat 0 — BD Script_DamageMult grants on skill ≥ 6.
-                    world.arm_zscript_level();
+                    world.arm_zscript_level_with_return(hub_returning);
                     let n = world.zscript.handler_objs.len();
                     eprintln!(
                         "room: ZScript: activated {} handler(s) on {} (objs={n})",
@@ -1492,6 +1493,7 @@ impl Headless {
             return;
         };
         if world.level.exiting {
+            world.fire_zscript_world_unloaded();
             room_sim::start_unloading_scripts(world);
             let key = self.map_name.to_ascii_uppercase();
             let par = self

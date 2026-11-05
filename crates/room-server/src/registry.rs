@@ -326,7 +326,12 @@ impl RoomRegistry {
                 .find(|known| known.eq_ignore_ascii_case(g))
                 .ok_or(RegistryError::UnknownGame)?,
         };
-        let preset = match req.preset.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let preset = match req
+            .preset
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             Some(_) if game != GAMES[0] => return Err(RegistryError::ModNotAllowed),
             Some(id) => Some(
                 self.cfg

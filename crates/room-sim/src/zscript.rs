@@ -34,6 +34,15 @@ pub struct SavedObject {
     pub fields_i: Vec<i64>,
 }
 
+/// Actor data copied into a native `WorldEvent` payload for a single callback.
+#[derive(Clone, Debug)]
+pub(crate) struct ZscriptActorEventInfo {
+    pub class_name: String,
+    pub health: i32,
+    pub tid: i32,
+    pub is_monster: bool,
+}
+
 /// Per-world ZScript runtime state.
 #[derive(Default)]
 pub struct ZscriptRuntime {
@@ -53,6 +62,8 @@ pub struct ZscriptRuntime {
     modify_objs: BTreeMap<String, ObjHandle>,
     /// Reused shooter / projectile proxies (`bISMONSTER` in integer field 1).
     actor_proxies: Vec<ObjHandle>,
+    /// Reused class-layout-aware Actor values for event payloads.
+    event_actor_proxies: Vec<ObjHandle>,
     /// Non-null object stored in ZScript `target` when the playsim actor has one.
     target_sentinel: ObjHandle,
     /// True after [`Self::activate_map_handlers`] ran `OnRegister`/`WorldLoaded`.
@@ -81,6 +92,11 @@ impl ZscriptRuntime {
             Zvm::new((*program).clone())
         };
         vm.host = 0;
+        vm.play.class_names = program
+            .classes
+            .iter()
+            .map(|class| class.name.clone())
+            .collect();
         self.vm = Some(vm);
         self.program = Some(program);
         self.actor_fields.clear();
@@ -88,6 +104,7 @@ impl ZscriptRuntime {
         self.handler_objs.clear();
         self.modify_objs.clear();
         self.actor_proxies.clear();
+        self.event_actor_proxies.clear();
         self.map_handlers_active = false;
     }
 
@@ -201,6 +218,21 @@ impl ZscriptRuntime {
             .unwrap_or_default()
     }
 
+    /// Prime `A_CheckForResurrection` with the physical corpse candidate found
+    /// by the playsim for the next actor method call.
+    pub(crate) fn set_resurrection_candidate(&mut self, candidate: Option<(u32, u32)>) {
+        if let Some(vm) = self.vm.as_mut() {
+            vm.play.resurrection_candidate = candidate;
+        }
+    }
+
+    /// Set observer distance/LOS snapshots for the next ZScript actor call.
+    pub(crate) fn set_ai_observers(&mut self, observers: Vec<(f64, f64, bool)>) {
+        if let Some(vm) = self.vm.as_mut() {
+            vm.play.ai_observers = observers;
+        }
+    }
+
     /// Call `PostBeginPlay` once per actor when the class defines it (ZS3).
     pub fn notify_spawned(&mut self, actor_id: u32, class: &str) {
         if !self.is_active() || !self.has_method(class, "PostBeginPlay") {
@@ -219,7 +251,14 @@ impl ZscriptRuntime {
             return;
         }
         // Ensure PostBeginPlay has run before the first Tick (spawn mid-tic, etc.).
+        let resurrection_candidate = self
+            .vm
+            .as_ref()
+            .and_then(|vm| vm.play.resurrection_candidate);
         self.notify_spawned(actor_id, class);
+        if let Some(vm) = self.vm.as_mut() {
+            vm.play.resurrection_candidate = resurrection_candidate;
+        }
         let _ = self.call_actor_virtual(actor_id, class, "Tick");
     }
 
@@ -238,6 +277,19 @@ impl ZscriptRuntime {
         play.gamestate = gamestate;
     }
 
+    /// Publish the active map's MD5 for `LevelLocals.GetChecksum`.
+    pub fn set_level_checksum(&mut self, checksum: [u8; 16]) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut text = String::with_capacity(32);
+        for byte in checksum {
+            text.push(char::from(HEX[usize::from(byte >> 4)]));
+            text.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        if let Some(play) = self.play_mut() {
+            play.level_checksum = text;
+        }
+    }
+
     /// Install in-memory wad lumps for `Wads.*` (tests / BD_Hash).
     pub fn set_wad_lumps(&mut self, lumps: BTreeMap<String, String>) {
         if let Some(play) = self.play_mut() {
@@ -248,7 +300,60 @@ impl ZscriptRuntime {
     /// Install integer CVars for `CVar.GetCVar` / `GetInt` (ZS4 / BD CVARINFO).
     pub fn set_cvars(&mut self, cvars: BTreeMap<String, i32>) {
         if let Some(play) = self.play_mut() {
-            play.cvars = cvars;
+            play.cvars.clear();
+            play.cvar_floats.clear();
+            play.cvar_strings.clear();
+            for (name, value) in cvars {
+                play.set_cvar_int(&name, value);
+            }
+        }
+    }
+
+    /// Selected player voice gender used by SNDINFO `$playersound` lookup.
+    #[must_use]
+    pub fn player_gender(&self) -> &'static str {
+        match self.vm.as_ref().map_or(0, |vm| vm.play.cvar("gender")) {
+            1 => "female",
+            2 => "other",
+            _ => "male",
+        }
+    }
+
+    /// Install floating CVars for ZScript `CVar.GetFloat` / `SetFloat`.
+    pub fn set_cvar_floats(&mut self, cvars: BTreeMap<String, f64>) {
+        if let Some(play) = self.play_mut() {
+            for (name, value) in cvars {
+                play.set_cvar_float(&name, value);
+            }
+        }
+    }
+
+    /// Install floating-point defaults for ZScript CVar handles.
+    pub fn set_cvar_float_defaults(&mut self, cvars: BTreeMap<String, f64>) {
+        if let Some(play) = self.play_mut() {
+            play.cvar_float_defaults.clear();
+            for (name, value) in cvars {
+                play.set_cvar_float_default(&name, value);
+            }
+        }
+    }
+
+    /// Install string CVars for ZScript `CVar.GetString` / `SetString`.
+    pub fn set_cvar_strings(&mut self, cvars: BTreeMap<String, String>) {
+        if let Some(play) = self.play_mut() {
+            for (name, value) in cvars {
+                play.set_cvar_string(&name, &value);
+            }
+        }
+    }
+
+    /// Install string defaults for ZScript CVar handles.
+    pub fn set_cvar_string_defaults(&mut self, cvars: BTreeMap<String, String>) {
+        if let Some(play) = self.play_mut() {
+            play.cvar_string_defaults.clear();
+            for (name, value) in cvars {
+                play.set_cvar_string_default(&name, &value);
+            }
         }
     }
 
@@ -279,8 +384,171 @@ impl ZscriptRuntime {
     }
 
     /// `PlayerEntered` for a joining player number (0-based).
-    pub fn notify_player_entered(&mut self, player_number: i32) -> Result<(), room_zvm::Trap> {
-        self.dispatch_player_entered(player_number)
+    pub fn notify_player_entered(
+        &mut self,
+        player_number: i32,
+        from_hub: bool,
+    ) -> Result<(), room_zvm::Trap> {
+        self.dispatch_player_event("PlayerEntered", player_number, from_hub)
+    }
+
+    /// Dispatch `PlayerSpawned` after a player pawn has been placed in the world.
+    pub fn notify_player_spawned(&mut self, player_number: i32) -> Result<(), room_zvm::Trap> {
+        self.dispatch_player_event("PlayerSpawned", player_number, false)
+    }
+
+    /// Dispatch `PlayerRespawned` after a dead player has returned to play.
+    pub fn notify_player_respawned(&mut self, player_number: i32) -> Result<(), room_zvm::Trap> {
+        self.dispatch_player_event("PlayerRespawned", player_number, false)
+    }
+
+    /// Dispatch the veto-capable `PlayerRespawning` callback.
+    pub fn notify_player_respawning(&mut self, player_number: i32) -> Result<bool, room_zvm::Trap> {
+        let handlers = self.event_handlers.clone();
+        for class in handlers {
+            let Some(resolved) = self.resolve_func_name(&class, "PlayerRespawning") else {
+                continue;
+            };
+            let handler = self.handler_instance(&class)?;
+            let vm = self
+                .vm
+                .as_mut()
+                .ok_or_else(|| room_zvm::Trap::Native("no ZScript VM".into()))?;
+            let event = new_typed_object(vm, "PlayerEvent");
+            set_typed_int_field(vm, event, "PlayerNumber", i64::from(player_number));
+            if call_handler_with_event(vm, &resolved, handler, event)? == 0 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Dispatch `PlayerDied` for a player killed by the playsim.
+    pub fn notify_player_died(&mut self, player_number: i32) -> Result<(), room_zvm::Trap> {
+        self.dispatch_player_event("PlayerDied", player_number, false)
+    }
+
+    /// Dispatch the no-argument `StaticEventHandler.WorldTick` event.
+    pub fn notify_world_tick(&mut self) -> Result<(), room_zvm::Trap> {
+        self.dispatch_handlers("WorldTick")
+    }
+
+    /// Dispatch `WorldThingDied` with a lightweight Actor proxy in `event.Thing`.
+    pub(crate) fn notify_thing_died(
+        &mut self,
+        thing_info: &ZscriptActorEventInfo,
+        inflictor_info: Option<&ZscriptActorEventInfo>,
+    ) -> Result<(), room_zvm::Trap> {
+        let handlers = self.event_handlers.clone();
+        for class in handlers {
+            let Some(resolved) = self.resolve_func_name(&class, "WorldThingDied") else {
+                continue;
+            };
+            let handler = self.handler_instance(&class)?;
+            let Some(vm) = self.vm.as_mut() else {
+                return Err(room_zvm::Trap::Native("no ZScript VM".into()));
+            };
+            let thing = event_actor_proxy(vm, &mut self.event_actor_proxies, 0, thing_info);
+            let inflictor = inflictor_info
+                .map(|info| event_actor_proxy(vm, &mut self.event_actor_proxies, 1, info))
+                .unwrap_or(ObjHandle::NULL);
+            let event = new_typed_object(vm, "WorldEvent");
+            set_typed_object_field(vm, event, "Thing", thing);
+            set_typed_object_field(vm, event, "Inflictor", inflictor);
+            let _ = call_handler_with_event(vm, &resolved, handler, event)?;
+        }
+        Ok(())
+    }
+
+    /// Dispatch `WorldThingDestroyed` with the actor being explicitly removed.
+    pub(crate) fn notify_thing_destroyed(
+        &mut self,
+        thing_info: &ZscriptActorEventInfo,
+    ) -> Result<(), room_zvm::Trap> {
+        let handlers = self.event_handlers.clone();
+        for class in handlers {
+            let Some(resolved) = self.resolve_func_name(&class, "WorldThingDestroyed") else {
+                continue;
+            };
+            let handler = self.handler_instance(&class)?;
+            let Some(vm) = self.vm.as_mut() else {
+                return Err(room_zvm::Trap::Native("no ZScript VM".into()));
+            };
+            let thing = event_actor_proxy(vm, &mut self.event_actor_proxies, 0, thing_info);
+            let event = new_typed_object(vm, "WorldEvent");
+            set_typed_object_field(vm, event, "Thing", thing);
+            let _ = call_handler_with_event(vm, &resolved, handler, event)?;
+        }
+        Ok(())
+    }
+
+    /// Dispatch `WorldThingRevived` with the actor that has just been restored.
+    pub(crate) fn notify_thing_revived(
+        &mut self,
+        thing_info: &ZscriptActorEventInfo,
+    ) -> Result<(), room_zvm::Trap> {
+        let handlers = self.event_handlers.clone();
+        for class in handlers {
+            let Some(resolved) = self.resolve_func_name(&class, "WorldThingRevived") else {
+                continue;
+            };
+            let handler = self.handler_instance(&class)?;
+            let Some(vm) = self.vm.as_mut() else {
+                return Err(room_zvm::Trap::Native("no ZScript VM".into()));
+            };
+            let thing = event_actor_proxy(vm, &mut self.event_actor_proxies, 0, thing_info);
+            let event = new_typed_object(vm, "WorldEvent");
+            set_typed_object_field(vm, event, "Thing", thing);
+            let _ = call_handler_with_event(vm, &resolved, handler, event)?;
+        }
+        Ok(())
+    }
+
+    /// Dispatch the full actor damage subset represented by `WorldEvent`.
+    pub(crate) fn notify_thing_damaged(
+        &mut self,
+        thing_info: &ZscriptActorEventInfo,
+        inflictor_info: Option<&ZscriptActorEventInfo>,
+        source_info: Option<&ZscriptActorEventInfo>,
+        damage: i32,
+        damage_type: &str,
+    ) -> Result<(), room_zvm::Trap> {
+        let handlers = self.event_handlers.clone();
+        for class in handlers {
+            let Some(resolved) = self.resolve_func_name(&class, "WorldThingDamaged") else {
+                continue;
+            };
+            let handler = self.handler_instance(&class)?;
+            let Some(vm) = self.vm.as_mut() else {
+                return Err(room_zvm::Trap::Native("no ZScript VM".into()));
+            };
+            let thing = event_actor_proxy(vm, &mut self.event_actor_proxies, 0, thing_info);
+            let inflictor = inflictor_info
+                .map(|info| event_actor_proxy(vm, &mut self.event_actor_proxies, 1, info))
+                .unwrap_or(ObjHandle::NULL);
+            let source = source_info
+                .map(|info| event_actor_proxy(vm, &mut self.event_actor_proxies, 2, info))
+                .unwrap_or(ObjHandle::NULL);
+            let event = new_typed_object(vm, "WorldEvent");
+            set_typed_object_field(vm, event, "Thing", thing);
+            set_typed_object_field(vm, event, "Inflictor", inflictor);
+            set_typed_object_field(vm, event, "DamageSource", source);
+            set_typed_int_field(vm, event, "Damage", i64::from(damage));
+            set_typed_string_field(vm, event, "DamageType", damage_type);
+            let _ = call_handler_with_event(vm, &resolved, handler, event)?;
+        }
+        Ok(())
+    }
+
+    /// Dispatch map teardown callbacks once, before the world is discarded.
+    pub fn unload_map_handlers(&mut self) -> Result<(), room_zvm::Trap> {
+        if !self.map_handlers_active {
+            return Ok(());
+        }
+        self.dispatch_handlers("WorldUnloaded")?;
+        self.dispatch_handlers("OnUnregister")?;
+        self.map_handlers_active = false;
+        Ok(())
     }
 
     /// Drain `Actor.GiveInventory` grants recorded by the host (actor_cookie, item, amount).
@@ -301,11 +569,23 @@ impl ZscriptRuntime {
         }
     }
 
-    /// Drain `Actor.ChangeTID` recordings.
-    pub fn take_tid_changes(&mut self) -> Vec<(i64, i32)> {
-        self.play_mut()
+    /// Drain actor `ChangeTID` writes, resolving script object handles back to
+    /// the playsim actor index. Player proxy writes are handled by player TIDs.
+    pub fn take_tid_changes(&mut self) -> Vec<(u32, i32)> {
+        let changes = self
+            .play_mut()
             .map(|play| std::mem::take(&mut play.tid_changes))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        changes
+            .into_iter()
+            .filter_map(|(cookie, tid)| {
+                self.actor_fields.iter().find_map(|(&actor_id, handle)| {
+                    let handle_cookie =
+                        (i64::from(handle.generation) << 32) | i64::from(handle.index);
+                    (handle_cookie == cookie).then_some((actor_id, tid))
+                })
+            })
+            .collect()
     }
 
     /// Override `PlayerInGame` answers.
@@ -390,7 +670,7 @@ impl ZscriptRuntime {
         // so BD skill≥6 grant probes keep working without a live actor.
         let monster = method.eq_ignore_ascii_case("WorldThingSpawned");
         for class in handlers {
-            self.dispatch_one_handler(&class, method, None, monster)?;
+            self.dispatch_one_handler(&class, method, None, monster, false)?;
         }
         Ok(())
     }
@@ -443,6 +723,7 @@ impl ZscriptRuntime {
         method: &str,
         player_number: Option<i32>,
         thing_is_monster: bool,
+        player_is_return: bool,
     ) -> Result<(), room_zvm::Trap> {
         let Some(resolved) = self.resolve_func_name(class, method) else {
             return Ok(());
@@ -457,23 +738,31 @@ impl ZscriptRuntime {
                     *slot = i64::from(thing_is_monster);
                 }
             }
-            let event = vm.heap.new_object(0, 0, 1, 0);
-            if let Some(ObjKind::Object { fields_a, .. }) = vm.heap.get_mut(event) {
-                if !fields_a.is_empty() {
-                    fields_a[0] = thing;
-                }
-            }
+            let event = new_typed_object(vm, "WorldEvent");
+            set_typed_object_field(vm, event, "Thing", thing);
             let _ = call_handler_with_event(vm, &resolved, handler, event)?;
-        } else if method.eq_ignore_ascii_case("PlayerEntered") {
-            let event = vm.heap.new_object(0, 1, 0, 0);
-            if let Some(ObjKind::Object { fields_i, .. }) = vm.heap.get_mut(event) {
-                if let Some(slot) = fields_i.first_mut() {
-                    *slot = i64::from(player_number.unwrap_or(0));
-                }
-            }
+        } else if [
+            "PlayerEntered",
+            "PlayerSpawned",
+            "PlayerRespawned",
+            "PlayerDied",
+        ]
+        .iter()
+        .any(|name| method.eq_ignore_ascii_case(name))
+        {
+            let event = new_typed_object(vm, "PlayerEvent");
+            set_typed_int_field(
+                vm,
+                event,
+                "PlayerNumber",
+                i64::from(player_number.unwrap_or(0)),
+            );
+            set_typed_int_field(vm, event, "IsReturn", i64::from(player_is_return));
             let _ = call_handler_with_event(vm, &resolved, handler, event)?;
-        } else if method.eq_ignore_ascii_case("WorldLoaded") {
-            let event = vm.heap.new_object(0, 0, 1, 0);
+        } else if method.eq_ignore_ascii_case("WorldLoaded")
+            || method.eq_ignore_ascii_case("WorldUnloaded")
+        {
+            let event = new_typed_object(vm, "WorldEvent");
             let _ = call_handler_with_event(vm, &resolved, handler, event)?;
         } else if method.eq_ignore_ascii_case("OnRegister") {
             let _ = vm.call_method_self(&resolved, handler)?;
@@ -483,19 +772,38 @@ impl ZscriptRuntime {
         Ok(())
     }
 
-    fn dispatch_player_entered(&mut self, player_number: i32) -> Result<(), room_zvm::Trap> {
+    fn dispatch_player_event(
+        &mut self,
+        method: &str,
+        player_number: i32,
+        is_return: bool,
+    ) -> Result<(), room_zvm::Trap> {
         let handlers = self.event_handlers.clone();
         for class in handlers {
-            self.dispatch_one_handler(&class, "PlayerEntered", Some(player_number), false)?;
+            self.dispatch_one_handler(&class, method, Some(player_number), false, is_return)?;
         }
         Ok(())
     }
 
-    /// Fire `WorldThingSpawned` with `bISMONSTER` from the flag (ZS4 / BD6).
-    pub fn notify_thing_spawned_monster(&mut self, is_monster: bool) -> Result<(), room_zvm::Trap> {
+    /// Dispatch `WorldThingSpawned` with the spawned actor's available fields.
+    pub(crate) fn notify_thing_spawned(
+        &mut self,
+        info: &ZscriptActorEventInfo,
+    ) -> Result<(), room_zvm::Trap> {
         let handlers = self.event_handlers.clone();
         for class in handlers {
-            self.dispatch_one_handler(&class, "WorldThingSpawned", None, is_monster)?;
+            let Some(resolved) = self.resolve_func_name(&class, "WorldThingSpawned") else {
+                continue;
+            };
+            let handler = self.handler_instance(&class)?;
+            let vm = self
+                .vm
+                .as_mut()
+                .ok_or_else(|| room_zvm::Trap::Native("no ZScript VM".into()))?;
+            let thing = event_actor_proxy(vm, &mut self.event_actor_proxies, 0, info);
+            let event = new_typed_object(vm, "WorldEvent");
+            set_typed_object_field(vm, event, "Thing", thing);
+            let _ = call_handler_with_event(vm, &resolved, handler, event)?;
         }
         Ok(())
     }
@@ -517,7 +825,37 @@ impl ZscriptRuntime {
             .vm
             .as_mut()
             .ok_or_else(|| room_zvm::Trap::Native("no ZScript program".into()))?;
-        vm.call_method_self(&resolved, h)
+        let result = vm.call_method_self(&resolved, h);
+        vm.play.resurrection_candidate = None;
+        result
+    }
+
+    /// Invoke the ZScript `Actor.CanResurrect(other, passive)` virtual for one
+    /// side of UZDoom's two-way resurrection check. A missing script override
+    /// accepts by default, matching `Actor.CanResurrect`.
+    pub(crate) fn can_resurrect(
+        &mut self,
+        actor_id: u32,
+        class: &str,
+        other: &ZscriptActorEventInfo,
+        passive: bool,
+    ) -> bool {
+        if !self.is_active() {
+            return true;
+        }
+        let Some(resolved) = self.resolve_method(class, "CanResurrect") else {
+            return true;
+        };
+        let Some(h) = self.ensure_actor_object(actor_id, class) else {
+            return true;
+        };
+        let Some(vm) = self.vm.as_mut() else {
+            return true;
+        };
+        let other = event_actor_proxy(vm, &mut self.event_actor_proxies, 0, other);
+        let i_args = [i64::from(passive)];
+        vm.call_method_full(&resolved, h, &i_args, &[], &[other])
+            .is_ok_and(|result| result != 0)
     }
 
     fn ensure_actor_object(&mut self, actor_id: u32, class: &str) -> Option<ObjHandle> {
@@ -779,6 +1117,89 @@ fn call_handler_with_event(
     event: ObjHandle,
 ) -> Result<i64, room_zvm::Trap> {
     vm.call_method_self_args(name, self_h, &[event])
+}
+
+fn new_typed_object(vm: &mut Zvm, type_name: &str) -> ObjHandle {
+    let class_id = vm
+        .program
+        .class_by_name
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(type_name))
+        .map(|(_, &id)| id);
+    let Some(class_id) = class_id else {
+        return vm.heap.new_object(0, 8, 4, 4);
+    };
+    let layout = vm
+        .program
+        .classes
+        .get(class_id as usize)
+        .cloned()
+        .unwrap_or_default();
+    vm.heap
+        .new_object(class_id, layout.n_i, layout.n_a, layout.n_s)
+}
+
+fn typed_field(vm: &Zvm, object: ObjHandle, name: &str) -> Option<(u8, usize)> {
+    let class_id = match vm.heap.get(object)? {
+        ObjKind::Object { class_id, .. } => *class_id,
+        _ => return None,
+    };
+    let layout = vm.program.classes.get(class_id as usize)?;
+    let (bank, index) = layout.fields.get(&name.to_ascii_lowercase()).copied()?;
+    Some((bank, usize::from(index)))
+}
+
+fn set_typed_int_field(vm: &mut Zvm, object: ObjHandle, name: &str, value: i64) {
+    let Some((0, index)) = typed_field(vm, object, name) else {
+        return;
+    };
+    if let Some(ObjKind::Object { fields_i, .. }) = vm.heap.get_mut(object)
+        && let Some(slot) = fields_i.get_mut(index)
+    {
+        *slot = value;
+    }
+}
+
+fn set_typed_object_field(vm: &mut Zvm, object: ObjHandle, name: &str, value: ObjHandle) {
+    let Some((1, index)) = typed_field(vm, object, name) else {
+        return;
+    };
+    if let Some(ObjKind::Object { fields_a, .. }) = vm.heap.get_mut(object)
+        && let Some(slot) = fields_a.get_mut(index)
+    {
+        *slot = value;
+    }
+}
+
+fn set_typed_string_field(vm: &mut Zvm, object: ObjHandle, name: &str, value: &str) {
+    let Some((2, index)) = typed_field(vm, object, name) else {
+        return;
+    };
+    let text = vm.heap.intern_string(value);
+    if let Some(ObjKind::Object { fields_s, .. }) = vm.heap.get_mut(object)
+        && let Some(slot) = fields_s.get_mut(index)
+    {
+        *slot = text;
+    }
+}
+
+fn event_actor_proxy(
+    vm: &mut Zvm,
+    proxies: &mut Vec<ObjHandle>,
+    slot: usize,
+    info: &ZscriptActorEventInfo,
+) -> ObjHandle {
+    while proxies.len() <= slot {
+        let actor = new_typed_object(vm, "Actor");
+        proxies.push(actor);
+    }
+    let actor = proxies[slot];
+    set_typed_int_field(vm, actor, "Health", i64::from(info.health));
+    set_typed_int_field(vm, actor, "TID", i64::from(info.tid));
+    set_typed_int_field(vm, actor, "bIsMonster", i64::from(info.is_monster));
+    set_typed_int_field(vm, actor, "bISMONSTER", i64::from(info.is_monster));
+    set_typed_string_field(vm, actor, "ClassName", &info.class_name);
+    actor
 }
 
 #[cfg(test)]

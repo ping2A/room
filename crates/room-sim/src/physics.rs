@@ -1647,6 +1647,18 @@ pub fn xy_movement(world: &mut World, actor_id: ActorId) {
                         y = ny;
                         continue;
                     }
+                    if let Some(passes_through) = reflect_missile_off_actor(world, actor_id, victim)
+                    {
+                        if passes_through {
+                            if let Some(missile) = world.actors.get_mut(actor_id) {
+                                missile.pos = DVec3::new(nx, ny, z);
+                            }
+                            x = nx;
+                            y = ny;
+                            continue;
+                        }
+                        break;
+                    }
                     let pos = world
                         .actors
                         .get(actor_id)
@@ -1729,6 +1741,95 @@ pub fn xy_movement(world: &mut World, actor_id: ActorId) {
             a.vel = DVec3::new(vx, vy, a.vel.z());
         }
     }
+}
+
+/// GZDoom `P_ReflectOffActor`: reflective actors redirect missiles unless
+/// `THRUREFLECT` asks them to pass through and retarget. Returns `Some(true)`
+/// for pass-through, `Some(false)` for a rebound, and `None` when unmarked.
+fn reflect_missile_off_actor(
+    world: &mut World,
+    missile_id: ActorId,
+    blocker_id: ActorId,
+) -> Option<bool> {
+    let blocker = world.actors.get(blocker_id)?;
+    if !blocker.extra_flags.get_name("REFLECTIVE") {
+        return None;
+    }
+    let thru = blocker.extra_flags.get_name("THRUREFLECT");
+    let blocker_pos = blocker.pos;
+    let blocker_target = blocker.target;
+    let aim_reflect = blocker.extra_flags.get_name("AIMREFLECT");
+    let mirror_reflect = blocker.extra_flags.get_name("MIRRORREFLECT");
+    let Some(missile) = world.actors.get(missile_id) else {
+        return None;
+    };
+    let old_target = missile.target;
+    let velocity = missile.vel;
+    let missile_pos = missile.pos;
+    let missile_speed = missile.speed;
+    let seeker = missile.extra_flags.get_name("SEEKERMISSILE");
+    let aim_target = old_target.or(blocker_target);
+    let aim_pos = if aim_reflect && !thru {
+        aim_target
+            .and_then(|target| world.actors.get(target))
+            .map(|target| {
+                DVec3::new(
+                    target.pos.x(),
+                    target.pos.y(),
+                    target.pos.z() + target.height * 0.5,
+                )
+            })
+    } else {
+        None
+    };
+    if let Some(missile) = world.actors.get_mut(missile_id) {
+        if seeker {
+            missile.tracer = old_target;
+        }
+        missile.target = Some(blocker_id);
+        if !thru {
+            if let Some(target) = aim_pos {
+                let dx = target.x() - missile_pos.x();
+                let dy = target.y() - missile_pos.y();
+                let dz = target.z() - missile_pos.z();
+                let len = (dx * dx + dy * dy + dz * dz).sqrt();
+                if len > 0.0 {
+                    missile.vel = DVec3::new(
+                        dx / len * missile_speed,
+                        dy / len * missile_speed,
+                        dz / len * missile_speed,
+                    );
+                    missile.angle = room_core::Angle::from_radians(room_core::dmath::atan2(dy, dx));
+                }
+            } else if mirror_reflect {
+                missile.angle = room_core::Angle::from_degrees(missile.angle.degrees() + 180.0);
+                missile.vel = DVec3::new(
+                    -velocity.x() * 0.5,
+                    -velocity.y() * 0.5,
+                    -velocity.z() * 0.5,
+                );
+            } else {
+                let dx = missile.pos.x() - blocker_pos.x();
+                let dy = missile.pos.y() - blocker_pos.y();
+                let len = (dx * dx + dy * dy).sqrt();
+                if len > 0.0 {
+                    let speed = (velocity.x() * velocity.x() + velocity.y() * velocity.y()).sqrt();
+                    let reflected_speed = if missile.speed > 0.0 {
+                        missile.speed
+                    } else {
+                        speed
+                    };
+                    missile.vel = DVec3::new(
+                        dx / len * reflected_speed * 0.5,
+                        dy / len * reflected_speed * 0.5,
+                        -velocity.z() * 0.5,
+                    );
+                    missile.angle = room_core::Angle::from_radians(room_core::dmath::atan2(dy, dx));
+                }
+            }
+        }
+    }
+    Some(thru)
 }
 
 /// Apply class `Damage` to a victim hit by a missile.

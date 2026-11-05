@@ -18,6 +18,9 @@ const CLIP_DIST: f64 = 1200.0;
 const NEAR_LIMIT: usize = 2;
 /// GZDoom `LimitRange` default (256 map units).
 const NEAR_LIMIT_RANGE: f64 = 256.0;
+/// `CHAN_WEAPON` sounds belong to the listener's own weapon and must not be
+/// discarded by the positional duplicate limiter.
+const CHAN_WEAPON: i32 = 1;
 /// Doom `S_STEREO_SWING` (separation units out of 256).
 const STEREO_SWING: f64 = 96.0;
 /// Sources closer than this to the listener play centred (own weapon, pain, …).
@@ -111,6 +114,8 @@ pub struct Voice {
     pub origin: SoundOrigin,
     /// Channel.
     pub channel: i32,
+    /// Source actor token, when actor-bound.
+    pub source_id: Option<u64>,
     /// Attenuation scale.
     pub attenuation: f32,
 }
@@ -179,49 +184,112 @@ impl Mixer {
                     origin,
                     channel,
                     sound,
+                    check_sound,
+                    start_time,
                     volume,
                     attenuation,
                     pitch,
                     flags,
+                    source_id,
+                    no_restart,
                 } => {
-                    // Replace same origin+channel unless overlapping (not in M5).
-                    self.voices
-                        .retain(|v| !(v.channel == channel && origins_eq(v.origin, origin)));
+                    if check_sound.is_some_and(|check| {
+                        self.voices.iter().any(|voice| {
+                            voice.channel == channel
+                                && source_id.map_or_else(
+                                    || origins_eq(voice.origin, origin),
+                                    |id| voice.source_id == Some(id),
+                                )
+                                && voice.sound == check
+                        })
+                    }) {
+                        continue;
+                    }
+                    let overlap = flags.0 & SoundFlags::OVERLAP != 0;
+                    let nostop = flags.0 & SoundFlags::NOSTOP != 0;
+                    if nostop
+                        && self.voices.iter().any(|v| {
+                            v.channel == channel
+                                && source_id.map_or_else(
+                                    || origins_eq(v.origin, origin),
+                                    |id| v.source_id == Some(id),
+                                )
+                        })
+                    {
+                        continue;
+                    }
+                    if let Some(source_id) = source_id {
+                        let existing = self
+                            .voices
+                            .iter()
+                            .position(|v| v.source_id == Some(source_id) && v.channel == channel);
+                        if let Some(index) = existing {
+                            if no_restart {
+                                if self.voices[index].sound == sound {
+                                    let voice = &mut self.voices[index];
+                                    voice.origin = origin;
+                                    voice.volume = volume;
+                                    voice.pitch = pitch.max(0.01);
+                                    voice.attenuation = attenuation;
+                                    voice.loop_ |= flags.0 & SoundFlags::LOOP != 0;
+                                }
+                                continue;
+                            }
+                            if !overlap {
+                                self.voices.remove(index);
+                            }
+                        }
+                    } else if !overlap {
+                        // Replace same origin+channel unless overlapping.
+                        self.voices
+                            .retain(|v| !(v.channel == channel && origins_eq(v.origin, origin)));
+                    }
                     // GZDoom `S_CheckSoundLimit`: a sound plays at most
                     // `NEAR_LIMIT` times within `NEAR_LIMIT_RANGE` units of each
                     // other (SNDINFO `$limit`, default 2). Without it a room of
                     // Brutal Doom soldiers stacked every footstep and distant
                     // gunshot into one loud wall of sound from far away.
                     if let SoundOrigin::Point(p) = origin {
-                        let near = self
-                            .voices
-                            .iter()
-                            .filter(|v| {
-                                v.sound == sound
-                                    && matches!(v.origin, SoundOrigin::Point(q)
+                        let dx = p.x() - self.listener.x();
+                        let dy = p.y() - self.listener.y();
+                        let dz = p.z() - self.listener.z();
+                        let listener_local = dx * dx + dy * dy + dz * dz <= CLOSE_DIST * CLOSE_DIST;
+                        if channel != CHAN_WEAPON && !listener_local {
+                            let near = self
+                                .voices
+                                .iter()
+                                .filter(|v| {
+                                    v.sound == sound
+                                        && matches!(v.origin, SoundOrigin::Point(q)
                                         if (q.x() - p.x()).powi(2) + (q.y() - p.y()).powi(2)
                                             + (q.z() - p.z()).powi(2)
                                             < NEAR_LIMIT_RANGE * NEAR_LIMIT_RANGE)
-                            })
-                            .count();
-                        if near >= NEAR_LIMIT {
-                            continue;
+                                })
+                                .count();
+                            if near >= NEAR_LIMIT {
+                                continue;
+                            }
                         }
                     }
                     self.voices.push(Voice {
                         sound,
-                        cursor: 0,
+                        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                        cursor: (start_time.max(0.0) * self.sample_rate as f32) as usize,
                         volume,
                         pitch: pitch.max(0.01),
                         loop_: flags.0 & SoundFlags::LOOP != 0,
                         origin,
                         channel,
+                        source_id,
                         attenuation,
                     });
                 }
                 SoundEvent::Stop { origin, channel } => {
                     self.voices
                         .retain(|v| !(v.channel == channel && origins_eq(v.origin, origin)));
+                }
+                SoundEvent::StopActor { source_id } => {
+                    self.voices.retain(|v| v.source_id != Some(source_id));
                 }
                 SoundEvent::StopAll => self.voices.clear(),
                 SoundEvent::SetPitch {
@@ -421,6 +489,10 @@ mod tests {
                 origin: SoundOrigin::None,
                 channel: 1,
                 sound: SoundId::from_raw(1),
+                check_sound: None,
+                start_time: 0.0,
+                source_id: None,
+                no_restart: false,
                 volume: 1.0,
                 attenuation: 0.0,
                 pitch: 1.0,
@@ -430,6 +502,10 @@ mod tests {
                 origin: SoundOrigin::None,
                 channel: 2,
                 sound: SoundId::from_raw(1),
+                check_sound: None,
+                start_time: 0.0,
+                source_id: None,
+                no_restart: false,
                 volume: 1.0,
                 attenuation: 0.0,
                 pitch: 1.0,
@@ -451,6 +527,10 @@ mod tests {
                 origin: SoundOrigin::None,
                 channel: 1,
                 sound: SoundId::from_raw(1),
+                check_sound: None,
+                start_time: 0.0,
+                source_id: None,
+                no_restart: false,
                 volume: 1.0,
                 attenuation: 0.0,
                 pitch: 1.0,
@@ -460,6 +540,10 @@ mod tests {
                 origin: SoundOrigin::None,
                 channel: 2,
                 sound: SoundId::from_raw(1),
+                check_sound: None,
+                start_time: 0.0,
+                source_id: None,
+                no_restart: false,
                 volume: 1.0,
                 attenuation: 0.0,
                 pitch: 1.0,
@@ -487,6 +571,10 @@ mod tests {
                 origin: SoundOrigin::None,
                 channel: 1,
                 sound: SoundId::from_raw(1),
+                check_sound: None,
+                start_time: 0.0,
+                source_id: None,
+                no_restart: false,
                 volume: 1.0,
                 attenuation: 0.0,
                 pitch: 1.0,
@@ -496,6 +584,10 @@ mod tests {
                 origin: SoundOrigin::None,
                 channel: 2,
                 sound: SoundId::from_raw(1),
+                check_sound: None,
+                start_time: 0.0,
+                source_id: None,
+                no_restart: false,
                 volume: 1.0,
                 attenuation: 0.0,
                 pitch: 1.0,
@@ -522,6 +614,10 @@ mod tests {
             origin: SoundOrigin::None,
             channel: 1,
             sound: SoundId::from_raw(1),
+            check_sound: None,
+            start_time: 0.0,
+            source_id: None,
+            no_restart: false,
             volume: 1.0,
             attenuation: 0.0,
             pitch: 1.0,
@@ -543,6 +639,10 @@ mod tests {
             origin: SoundOrigin::Point(at),
             channel: 1,
             sound: SoundId::from_raw(1),
+            check_sound: None,
+            start_time: 0.0,
+            source_id: None,
+            no_restart: false,
             volume: 1.0,
             attenuation: 1.0,
             pitch: 1.0,

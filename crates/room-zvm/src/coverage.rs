@@ -41,7 +41,10 @@ pub fn coverage_report(
             .get(name)
             .copied()
             .or_else(|| {
-                if table.get_named(name).is_some() {
+                // GZDoom resolves ZScript native names case-insensitively;
+                // use the same rule here so lower-case source spellings do
+                // not become false Unsupported rows.
+                if table.id_ci(name).is_some() {
                     Some(NativeStatus::Implemented)
                 } else {
                     Some(NativeStatus::Unsupported)
@@ -106,10 +109,8 @@ pub fn bd_stub_map() -> BTreeMap<String, NativeStatus> {
         "EventHandler.Find",
         "Object.New",
         "Actor.GiveInventory",
-        "Actor.ChangeTID",
         "PlayerInfo.GetGender",
         "PlayerInfo.GetUserName",
-        "Wads.FindLump",
     ] {
         m.insert(n.into(), NativeStatus::Stub);
     }

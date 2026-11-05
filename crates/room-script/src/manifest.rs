@@ -402,7 +402,10 @@ file = "M.wasm"
             m.options.get("style"),
             Some(&OptionValue::Str("4point".into()))
         );
-        assert_eq!(m.options.get("place_weapon"), Some(&OptionValue::Bool(true)));
+        assert_eq!(
+            m.options.get("place_weapon"),
+            Some(&OptionValue::Bool(true))
+        );
         assert_eq!(Manifest::parse(&m.to_toml()).unwrap(), m);
     }
 

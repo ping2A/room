@@ -8,10 +8,10 @@ use crate::error::DefsError;
 use crate::fontdefs::{FontDef, parse_fontdefs};
 use crate::gameinfo::{GameInfo, parse_gameinfo};
 use crate::gldefs::{GlDefs, parse_gldefs};
+use crate::id24::{GameConf, Id24Defs, parse_demoloop, parse_json_lump, parse_skydefs};
 use crate::keyconf::{KeyConf, parse_keyconf};
 use crate::language::{Language, parse_language};
 use crate::loadacs::{LoadAcs, parse_loadacs};
-use crate::id24::{GameConf, Id24Defs, parse_demoloop, parse_json_lump, parse_skydefs};
 use crate::lockdefs::{LockDefs, parse_lockdefs};
 use crate::mapinfo::{MapInfo, parse_mapinfo};
 use crate::menudef::{MenuDef, parse_menudef};
@@ -563,7 +563,9 @@ mod tests {
     #[test]
     fn id24_lumps_load_and_merge_in_load_order() {
         let sky = |n: &str| {
-            format!(r#"{{"type":"skydefs","version":"1.0.0","data":{{"skies":[{{"type":0,"name":"{n}"}}]}}}}"#)
+            format!(
+                r#"{{"type":"skydefs","version":"1.0.0","data":{{"skies":[{{"type":0,"name":"{n}"}}]}}}}"#
+            )
         };
         let gc = |d: &str| format!(r#"{{"type":"gameconf","version":"1.0.0","data":{d}}}"#);
         let iwad = WadWriter::pwad()
@@ -575,7 +577,10 @@ mod tests {
             .unwrap();
         let pwad = WadWriter::pwad()
             .add("SKYDEFS", sky("SECOND").as_bytes())
-            .add("GAMECONF", gc(r#"{"pwads":["b.wad"],"executable":"boom2.02","options":"y 2"}"#).as_bytes())
+            .add(
+                "GAMECONF",
+                gc(r#"{"pwads":["b.wad"],"executable":"boom2.02","options":"y 2"}"#).as_bytes(),
+            )
             .add("DEMOLOOP", b"{ not json")
             .finish()
             .unwrap();
@@ -590,7 +595,10 @@ mod tests {
         let sd = defs.id24.skydefs.as_ref().unwrap();
         assert_eq!(sd.skies.len(), 1);
         assert_eq!(sd.skies[0].name, "SECOND"); // last lump wins
-        assert_eq!(defs.id24.demoloop.as_ref().unwrap().entries[0].primary, "D1"); // bad later lump ignored
+        assert_eq!(
+            defs.id24.demoloop.as_ref().unwrap().entries[0].primary,
+            "D1"
+        ); // bad later lump ignored
         assert!(defs.warnings.iter().any(|w| w.starts_with("DEMOLOOP:")));
         let g = &defs.id24.gameconf;
         assert_eq!(g.title.as_deref(), Some("Base"));

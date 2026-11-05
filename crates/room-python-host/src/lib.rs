@@ -24,10 +24,7 @@ pub fn load_native_mods(
     #[cfg(not(feature = "embed"))]
     {
         let _ = sources;
-        Err(
-            "Python mods require `room-app --features python-mods` (room-python-host/embed)"
-                .into(),
-        )
+        Err("Python mods require `room-app --features python-mods` (room-python-host/embed)".into())
     }
 }
 

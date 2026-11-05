@@ -96,7 +96,8 @@ impl SoundSystem {
         }
         let lump = self
             .registry
-            .resolve_lump(logical, random_index)?
+            .resolve_lump(logical, random_index)
+            .unwrap_or(logical)
             .to_owned();
         let lump_key = lump.to_ascii_uppercase();
         if let Some(&id) = self.lump_ids.get(&lump_key) {
@@ -136,6 +137,12 @@ impl SoundSystem {
                 out.push(SoundEvent::StopAll);
                 continue;
             }
+            if ev.adjust == SimSoundAdjust::StopActor {
+                if let Some(source_id) = ev.source_id {
+                    out.push(SoundEvent::StopActor { source_id });
+                }
+                continue;
+            }
             if ev.adjust == SimSoundAdjust::Volume || ev.adjust == SimSoundAdjust::Pitch {
                 let origin = if ev.attenuation <= 0.0 {
                     SoundOrigin::None
@@ -159,8 +166,15 @@ impl SoundSystem {
             }
             #[allow(clippy::cast_possible_truncation)]
             let idx = random_index.wrapping_mul(31).wrapping_add(i as u32);
-            let Some(sound) = self.resolve(vfs, &ev.name, idx) else {
+            let Some(sound) = self.resolve_event_sound(vfs, ev, &ev.name, idx) else {
                 continue;
+            };
+            let check_sound = if ev.adjust == SimSoundAdjust::StartIfNotSame {
+                ev.check_name
+                    .as_deref()
+                    .and_then(|name| self.resolve_event_sound(vfs, ev, name, idx))
+            } else {
+                None
             };
             let mut attenuation = ev.attenuation;
             // SNDINFO `$rolloff name [type] min max`: the sound fades to silence
@@ -182,7 +196,7 @@ impl SoundSystem {
                     }
                 }
             }
-            let (origin, flags) = if attenuation <= 0.0 {
+            let (origin, mut flags) = if attenuation <= 0.0 {
                 (SoundOrigin::None, SoundFlags(SoundFlags::ATTN_NONE))
             } else {
                 (
@@ -190,17 +204,66 @@ impl SoundSystem {
                     SoundFlags::default(),
                 )
             };
+            if ev.looping {
+                flags.0 |= SoundFlags::LOOP;
+            }
+            if ev.channel_flags & (1 << 5) != 0 {
+                flags.0 |= SoundFlags::UI;
+            }
+            if ev.channel_flags & (1 << 6) != 0 {
+                flags.0 |= SoundFlags::NOPAUSE;
+            }
+            if ev.channel_flags & (1 << 13) != 0 {
+                flags.0 |= SoundFlags::OVERLAP;
+            }
+            if ev.channel_flags & (1 << 12) != 0 {
+                flags.0 |= SoundFlags::NOSTOP;
+            }
+            if ev.channel_flags & (1 << 14) != 0 {
+                flags.0 |= SoundFlags::LOCAL;
+            }
+            if ev.channel_flags & (1 << 15) != 0 {
+                flags.0 |= SoundFlags::TRANSIENT;
+            }
+            if ev.channel_flags & (1 << 3) != 0 {
+                flags.0 |= SoundFlags::LISTENER_Z;
+            }
             out.push(SoundEvent::Start {
                 origin,
                 channel: ev.channel,
                 sound,
+                check_sound,
+                start_time: ev.start_time.max(0.0),
                 volume: ev.volume,
                 attenuation,
                 pitch: ev.pitch,
                 flags,
+                source_id: ev.source_id,
+                no_restart: ev.no_restart,
             });
         }
         out
+    }
+
+    fn resolve_event_sound(
+        &mut self,
+        vfs: &Vfs,
+        event: &SimSoundEvent,
+        logical: &str,
+        random_index: u32,
+    ) -> Option<SoundId> {
+        if logical.starts_with('*') {
+            let class = event.sound_class.as_deref().unwrap_or("player");
+            let gender = event.sound_gender.as_deref().unwrap_or("male");
+            let resolved = self
+                .registry
+                .resolve_player_lump(class, gender, logical)
+                .unwrap_or(logical)
+                .to_owned();
+            self.resolve(vfs, &resolved, random_index)
+        } else {
+            self.resolve(vfs, logical, random_index)
+        }
     }
 
     /// UI / menu cue (2D / no attenuation).
@@ -210,10 +273,14 @@ impl SoundSystem {
             origin: SoundOrigin::None,
             channel: 0,
             sound,
+            check_sound: None,
+            start_time: 0.0,
             volume: 1.0,
             attenuation: 0.0,
             pitch: 1.0,
             flags: SoundFlags(SoundFlags::UI),
+            source_id: None,
+            no_restart: false,
         })
     }
 }
@@ -256,6 +323,11 @@ mod tests {
         let vfs = VfsBuilder::new().build().unwrap();
         let ev = [SimSoundEvent {
             name: "missing/sound".into(),
+            check_name: None,
+            start_time: 0.0,
+            sound_class: None,
+            sound_gender: None,
+            source_id: None,
             x: 0.0,
             y: 0.0,
             z: 0.0,
@@ -263,6 +335,9 @@ mod tests {
             pitch: 1.0,
             channel: 0,
             adjust: SimSoundAdjust::Start,
+            looping: false,
+            no_restart: false,
+            channel_flags: 0,
             attenuation: 1.0,
             seat: None,
         }];
@@ -321,6 +396,11 @@ mod tests {
             .unwrap();
         let ev = [SimSoundEvent {
             name: "cyber/death".into(),
+            check_name: None,
+            start_time: 0.0,
+            sound_class: None,
+            sound_gender: None,
+            source_id: None,
             x: 100.0,
             y: 200.0,
             z: 0.0,
@@ -328,6 +408,9 @@ mod tests {
             pitch: 1.0,
             channel: 0,
             adjust: SimSoundAdjust::Start,
+            looping: false,
+            no_restart: false,
+            channel_flags: 0,
             attenuation: 0.0,
             seat: None,
         }];

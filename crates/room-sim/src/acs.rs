@@ -55,11 +55,17 @@ pub(crate) struct WorldAcsHost<'a> {
 }
 
 impl AcsHost for WorldAcsHost<'_> {
-    fn execute_special(&mut self, special: i32, args: [i32; 5]) -> i32 {
+    fn execute_special(&mut self, special: i32, args: [i32; 5], activator: u64) -> i32 {
         if special <= 0 {
             return 0;
         }
-        crate::specials::execute_special(self.world, special as u16, &args, None, None)
+        crate::specials::execute_special(
+            self.world,
+            special as u16,
+            &args,
+            unpack_actor(activator),
+            None,
+        )
     }
 
     fn random(&mut self, lo: i32, hi: i32) -> i32 {
@@ -85,7 +91,7 @@ impl AcsHost for WorldAcsHost<'_> {
         let Some(p) = self.world.players.get(seat).and_then(|s| s.as_ref()) else {
             return 0;
         };
-        match input {
+        let mut bits = match input {
             // GZDoom `EInputFlags`: OLDBUTTONS, BUTTONS, then axes.
             0 | 8 => gzdoom_button_bits(p.acs_prev_buttons),
             1 | 9 => gzdoom_button_bits(p.cmd.buttons.0),
@@ -93,7 +99,13 @@ impl AcsHost for WorldAcsHost<'_> {
             6 | 14 => i32::from(p.cmd.side_move),
             7 | 15 => i32::from(p.cmd.up_move),
             _ => 0,
+        };
+        if p.acs_use_latched && matches!(input, 0 | 1 | 8 | 9) {
+            // The same edge mounts the vehicle. Hide it from vehicle-control
+            // ACS until release, otherwise BDGeneralInput treats it as exit.
+            bits &= !(1 << 1); // GZDoom BT_USE
         }
+        bits
     }
 
     fn console_player_number(&self) -> i32 {
@@ -1520,6 +1532,38 @@ impl AcsHost for WorldAcsHost<'_> {
         n
     }
 
+    fn morph_actor(
+        &mut self,
+        tid: i32,
+        player_class: &str,
+        monster_class: &str,
+        _duration: i32,
+        _style: i32,
+        _enter_flash: &str,
+        _exit_flash: &str,
+        activator: u64,
+    ) -> i32 {
+        let class_name = if !player_class.is_empty() {
+            player_class
+        } else {
+            monster_class
+        };
+        let Some(class) = self.world.classes.find_name(class_name) else {
+            return 0;
+        };
+        let ids = collect_tid_ids(self.world, tid, activator);
+        ids.into_iter()
+            .filter(|&id| self.world.morph_actor_class(id, class))
+            .count() as i32
+    }
+
+    fn unmorph_actor(&mut self, tid: i32, _force: bool, activator: u64) -> i32 {
+        let ids = collect_tid_ids(self.world, tid, activator);
+        ids.into_iter()
+            .filter(|&id| self.world.unmorph_actor_class(id))
+            .count() as i32
+    }
+
     fn check_actor_inventory(&self, tid: i32, item: &str, activator: u64) -> i32 {
         if item.is_empty() {
             return 0;
@@ -1601,7 +1645,7 @@ impl AcsHost for WorldAcsHost<'_> {
         let Some(a) = self.world.actors.get(id) else {
             return 0;
         };
-        match prop {
+        let value = match prop {
             aprop::HEALTH => a.health,
             aprop::SPEED => Fixed::from_f64(a.speed).0,
             aprop::DAMAGE => a.damage,
@@ -1663,13 +1707,43 @@ impl AcsHost for WorldAcsHost<'_> {
                 .unwrap_or(0),
             aprop::FRIENDLYSEEBLOCKS => a.friendly_see_blocks,
             _ => 0,
+        };
+        if tid == 261 && prop == aprop::HEALTH {
+            let class = self
+                .world
+                .classes
+                .get(a.class)
+                .map_or("<missing>", |c| c.name.as_str());
+            eprintln!(
+                "room: VEHICLE ACS GetActorProperty tic={} tid=261 actor=#{} class={} health={}",
+                self.world.level.time,
+                id.index(),
+                class,
+                value,
+            );
         }
+        value
     }
 
     fn set_actor_property(&mut self, tid: i32, prop: i32, value: i32, activator: u64) {
         let Some(id) = resolve_actor(self.world, tid, activator) else {
             return;
         };
+        if prop == aprop::HEALTH {
+            let actor = self.world.actors.get(id);
+            let class = actor
+                .and_then(|a| self.world.classes.get(a.class))
+                .map_or("<missing>", |c| c.name.as_str());
+            eprintln!(
+                "room: VEHICLE ACS SetActorProperty tic={} tid={} actor=#{} class={} health={} -> {}",
+                self.world.level.time,
+                tid,
+                id.index(),
+                class,
+                actor.map_or(0, |a| a.health),
+                value,
+            );
+        }
         // Pointer props: resolve TID → actor before taking a mut borrow.
         if matches!(
             prop,
@@ -4241,10 +4315,66 @@ pub(crate) fn acs_named_execute_by_name(
         .iter()
         .find_map(|m| m.script_number_by_name(name))
     else {
+        if matches!(
+            name.to_ascii_lowercase().as_str(),
+            "getvehicleprevioushealth" | "bdentertank" | "bdleavetank"
+        ) {
+            eprintln!(
+                "room: VEHICLE ACS missing tic={} script={} modules={:?}",
+                world.level.time,
+                name,
+                world
+                    .acs
+                    .modules
+                    .iter()
+                    .map(|m| m.name.as_str())
+                    .collect::<Vec<_>>(),
+            );
+        }
         return 0;
     };
     let args = [number, 0, script_args[0], script_args[1], script_args[2]];
-    acs_execute(world, &args, always, activator, None)
+    let trace = matches!(
+        name.to_ascii_lowercase().as_str(),
+        "getvehicleprevioushealth" | "bdentertank" | "bdleavetank"
+    );
+    if trace {
+        let activator_text = activator
+            .and_then(|id| {
+                world
+                    .actors
+                    .get(id)
+                    .map(|a| (id.index(), a.tid, a.health, a.class))
+            })
+            .map(|(id, tid, hp, class)| {
+                format!(
+                    "#{}:{} tid={} hp={}",
+                    id,
+                    world
+                        .classes
+                        .get(class)
+                        .map_or("<missing>", |c| c.name.as_str()),
+                    tid,
+                    hp
+                )
+            })
+            .unwrap_or_else(|| "none".to_owned());
+        eprintln!(
+            "room: VEHICLE ACS start tic={} script={} number={} always={} activator={}",
+            world.level.time, name, number, always, activator_text,
+        );
+    }
+    let result = acs_execute(world, &args, always, activator, None);
+    if trace {
+        eprintln!(
+            "room: VEHICLE ACS queued tic={} script={} result={} running={}",
+            world.level.time,
+            name,
+            result,
+            world.acs.scripts.len(),
+        );
+    }
+    result
 }
 
 /// `ACS_Suspend(script, map)`.

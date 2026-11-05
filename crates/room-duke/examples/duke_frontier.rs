@@ -16,10 +16,18 @@ fn main() {
         let demo = room_build::DmoDemo::parse(&d).unwrap();
         let name = room_duke::demo_sync::duke_map_lump(&demo);
         let grp = room_build::grp::Grp::parse(&g).unwrap();
-        let w = room_build_engine::world::BuildWorld::load_map_bytes(grp.get(&name).unwrap()).unwrap();
+        let w =
+            room_build_engine::world::BuildWorld::load_map_bytes(grp.get(&name).unwrap()).unwrap();
         let mut h = std::collections::BTreeMap::new();
-        for s in w.sprites.iter() { *h.entry(s.picnum).or_insert(0) += 1; }
-        println!("{name} skill={} sprites={} {:?}", demo.skill, w.sprites.len(), h);
+        for s in w.sprites.iter() {
+            *h.entry(s.picnum).or_insert(0) += 1;
+        }
+        println!(
+            "{name} skill={} sprites={} {:?}",
+            demo.skill,
+            w.sprites.len(),
+            h
+        );
         return;
     }
     if mode == "krand" {
@@ -33,16 +41,25 @@ fn main() {
         let mut started = false;
         for l in text.lines() {
             if l.starts_with("# enterlevel") {
-                if started { break; }
+                if started {
+                    break;
+                }
                 started = true;
                 continue;
             }
-            if !started { continue; }
-            if l.starts_with("# endtic") { segs.push(Vec::new()); continue; }
+            if !started {
+                continue;
+            }
+            if l.starts_with("# endtic") {
+                segs.push(Vec::new());
+                continue;
+            }
             let f: Vec<&str> = l.split_whitespace().collect();
             if f.len() >= 3 {
                 let who = f.get(3).map_or(String::new(), |g| format!(" g_i={g}"));
-                segs.last_mut().unwrap().push((f[2].parse().unwrap(), format!("{}{who}", f[1])));
+                segs.last_mut()
+                    .unwrap()
+                    .push((f[2].parse().unwrap(), format!("{}{who}", f[1])));
             }
         }
         let g = std::fs::read(&grp).unwrap();
@@ -59,11 +76,23 @@ fn main() {
                 let r = room.get(k).map(|x| x.0);
                 let c = choc.get(k).map(|x| x.0);
                 if r != c {
-                    println!("tic {t}: first krand mismatch at call {k} (room {} calls, choc {} calls)", room.len(), choc.len());
-                    let from = if std::env::var_os("KRAND_ALL").is_some() { 0 } else { k.saturating_sub(3) };
+                    println!(
+                        "tic {t}: first krand mismatch at call {k} (room {} calls, choc {} calls)",
+                        room.len(),
+                        choc.len()
+                    );
+                    let from = if std::env::var_os("KRAND_ALL").is_some() {
+                        0
+                    } else {
+                        k.saturating_sub(3)
+                    };
                     for j in from..n.min(k + 12) {
-                        let rr = room.get(j).map_or("-".to_string(), |x| format!("{} {}", x.0, x.1));
-                        let cc = choc.get(j).map_or("-".to_string(), |x| format!("{} {}", x.0, x.1));
+                        let rr = room
+                            .get(j)
+                            .map_or("-".to_string(), |x| format!("{} {}", x.0, x.1));
+                        let cc = choc
+                            .get(j)
+                            .map_or("-".to_string(), |x| format!("{} {}", x.0, x.1));
                         println!("  #{j:3} room {rr:<60} choc {cc}");
                     }
                     return;
@@ -79,9 +108,26 @@ fn main() {
         let d = std::fs::read(&dmo).unwrap();
         let (s, _) = room_duke::demo_sync::session_from_grp_demo(&g, &d).unwrap();
         let w = s.world.as_ref().unwrap();
-        for id in a.get(3).map_or("", String::as_str).split(',').filter_map(|x| x.parse::<usize>().ok()) {
+        for id in a
+            .get(3)
+            .map_or("", String::as_str)
+            .split(',')
+            .filter_map(|x| x.parse::<usize>().ok())
+        {
             let sp = &w.sprites[id];
-            println!("#{id} pic={} stat={} sect={} xy=({},{}) z={} lotag={} hitag={} cstat={} owner={}", sp.picnum, s.lists.sprite_stat.get(id).copied().unwrap_or(-1), sp.sectnum, sp.x, sp.y, sp.z, sp.lotag, sp.hitag, sp.cstat, sp.owner);
+            println!(
+                "#{id} pic={} stat={} sect={} xy=({},{}) z={} lotag={} hitag={} cstat={} owner={}",
+                sp.picnum,
+                s.lists.sprite_stat.get(id).copied().unwrap_or(-1),
+                sp.sectnum,
+                sp.x,
+                sp.y,
+                sp.z,
+                sp.lotag,
+                sp.hitag,
+                sp.cstat,
+                sp.owner
+            );
         }
         return;
     }

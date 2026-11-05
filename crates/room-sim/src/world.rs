@@ -209,7 +209,7 @@ pub struct SectorDynamic {
     pub current_y: f64,
     /// Boom sector type push/wind bit (`0x200`) — accept linedef wind/current.
     pub boom_push: bool,
-    /// Doom `sector_t::soundtarget` — last noise emitter for `A_Look`.
+    /// Doom `sector_t::soundtarget` — compatibility fallback for `A_Look`.
     pub soundtarget: Option<ActorId>,
     /// ACS `SetSectorDamage` amount (0 = none).
     pub damage_amount: i32,
@@ -666,6 +666,9 @@ pub struct World {
     pub scripts: crate::script_host::ScriptHost,
     /// ZScript play runtime (`docs/34`).
     pub zscript: crate::zscript::ZscriptRuntime,
+    /// Actors currently dispatching `WorldThingDestroyed`; prevents removal
+    /// actions invoked by handlers from recursively redispatching the event.
+    zscript_destroyed_callbacks: std::collections::BTreeSet<u32>,
     /// Cached DECORATE→ZVM expression programs (ZS5).
     pub deco_expr_cache: crate::deco_zvm::DecoExprCache,
 }
@@ -804,12 +807,16 @@ impl ScreenFade {
 pub enum SimSoundAdjust {
     /// Start a sound.
     Start,
+    /// Start only if the actor channel is not currently playing `check_name`.
+    StartIfNotSame,
     /// Change the volume of a sound already playing on this channel.
     Volume,
     /// Change the pitch of a sound already playing on this channel.
     Pitch,
     /// Stop every playing sound.
     StopAll,
+    /// Stop every sound started by one actor.
+    StopActor,
 }
 
 /// Lightweight sim sound request (mapped to `room-audio::SoundEvent` by the shell).
@@ -817,6 +824,16 @@ pub enum SimSoundAdjust {
 pub struct SimSoundEvent {
     /// Logical sound name (SNDINFO key).
     pub name: String,
+    /// Optional sound name used by `A_StartSoundIfNotSame` as the active-voice check.
+    pub check_name: Option<String>,
+    /// Start position within the sample, in seconds.
+    pub start_time: f32,
+    /// Sound class used to resolve `*name` player sounds.
+    pub sound_class: Option<String>,
+    /// Player sound gender (`male`, `female`, or `other`).
+    pub sound_gender: Option<String>,
+    /// Generational actor handle packed as generation:32 | index:32.
+    pub source_id: Option<u64>,
     /// World position.
     pub x: f64,
     /// Y.
@@ -831,6 +848,12 @@ pub struct SimSoundEvent {
     pub channel: i32,
     /// Start a voice, or change one that is already playing.
     pub adjust: SimSoundAdjust,
+    /// `A_PlaySound(..., looping = true)`.
+    pub looping: bool,
+    /// `A_PlaySound`'s loop mode also avoids restarting a busy actor channel.
+    pub no_restart: bool,
+    /// GZDoom `CHANF_*` flags supplied to `A_StartSound`.
+    pub channel_flags: u32,
     /// Attenuation scale (`1.0` = normal, `0.0` = full volume / no falloff).
     pub attenuation: f32,
     /// When `Some(seat)`, only that console seat should hear it (Mod HUD UI cue).
@@ -869,6 +892,24 @@ pub struct SimParticleEvent {
     pub z: f64,
     /// Fullbright flag.
     pub fullbright: bool,
+    /// Optional UZDoom legacy render style (`None` keeps Room's existing default).
+    pub render_style: Option<i32>,
+    /// Velocity applied by the render-owned particle store.
+    pub velocity: room_core::DVec3,
+    /// Acceleration applied by the render-owned particle store.
+    pub acceleration: room_core::DVec3,
+    /// Initial particle opacity.
+    pub alpha: f64,
+    /// Opacity delta; negative values follow `SPF_NEGATIVE_FADESTEP` handling.
+    pub fade_step: f64,
+    /// Per-tic size delta.
+    pub size_step: f64,
+    /// UZDoom particle flags (`SPF_*`).
+    pub flags: u32,
+    /// Opacity step used after fade-in when a fade mode is active.
+    pub fade_out_step: f64,
+    /// Particle roll: start angle, velocity, and acceleration in degrees.
+    pub roll: [f64; 3],
 }
 
 /// ACS `SetHUDClipRect` (HUD draw clip; shell applies).
@@ -1657,6 +1698,7 @@ impl World {
             acs: room_acs::AcsState::new(),
             scripts: crate::script_host::ScriptHost::new(),
             zscript: crate::zscript::ZscriptRuntime::default(),
+            zscript_destroyed_callbacks: std::collections::BTreeSet::new(),
             deco_expr_cache: crate::deco_zvm::DecoExprCache::default(),
             vanilla_rng: VanillaRng::new(),
         };
@@ -1700,11 +1742,16 @@ impl World {
 
     /// Run `PlayerEntered` and apply `GiveInventory` grants to that player.
     pub fn fire_player_entered(&mut self, player_number: i32) {
+        self.fire_player_entered_with_return(player_number, false);
+    }
+
+    fn fire_player_entered_with_return(&mut self, player_number: i32, from_hub: bool) {
         if self.zscript.event_handlers.is_empty() || !self.zscript.is_active() {
             return;
         }
         self.zscript.sync_host(self.skill, player_number, 0);
-        let _ = self.zscript.notify_player_entered(player_number);
+        self.zscript.set_level_checksum(self.map.md5);
+        let _ = self.zscript.notify_player_entered(player_number, from_hub);
         let grants = self.zscript.take_grants();
         let Some(mo) = self
             .players
@@ -1714,19 +1761,272 @@ impl World {
         else {
             return;
         };
-        for (_cookie, item, amount) in grants {
-            if let Some(cid) = self.classes.find_name(&item) {
-                let _ = crate::inventory::give_inventory(self, mo, cid, amount);
+        for (cookie, item, amount) in grants {
+            self.apply_zscript_inventory_change(mo, cookie, &item, amount);
+        }
+    }
+
+    /// Notify ZScript handlers after a player pawn has spawned and apply queued
+    /// actor operations and inventory grants to that pawn.
+    pub fn fire_player_spawned(&mut self, player_number: i32) {
+        let Some(mo) = self
+            .players
+            .get(player_number as usize)
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo)
+        else {
+            return;
+        };
+        self.fire_player_spawned_at(player_number, mo);
+    }
+
+    fn fire_player_spawned_at(&mut self, player_number: i32, mo: ActorId) {
+        if self.zscript.event_handlers.is_empty() || !self.zscript.is_active() {
+            return;
+        }
+        self.zscript.sync_host(self.skill, player_number, 0);
+        self.zscript.set_level_checksum(self.map.md5);
+        let _ = self.zscript.notify_player_spawned(player_number);
+        crate::action::apply_zscript_actor_ops(self, mo);
+        for (cookie, item, amount) in self.zscript.take_grants() {
+            self.apply_zscript_inventory_change(mo, cookie, &item, amount);
+        }
+    }
+
+    /// Dispatch post-respawn ZScript callbacks for a pawn temporarily removed
+    /// from `players` while its thinker is executing.
+    pub(crate) fn fire_player_respawned(&mut self, player_number: i32, mo: ActorId) {
+        if self.zscript.event_handlers.is_empty() || !self.zscript.is_active() {
+            return;
+        }
+        self.zscript.sync_host(self.skill, player_number, 0);
+        self.zscript.set_level_checksum(self.map.md5);
+        let _ = self.zscript.notify_player_respawned(player_number);
+        crate::action::apply_zscript_actor_ops(self, mo);
+        for (cookie, item, amount) in self.zscript.take_grants() {
+            self.apply_zscript_inventory_change(mo, cookie, &item, amount);
+        }
+    }
+
+    pub(crate) fn fire_player_respawning(&mut self, player_number: i32, mo: ActorId) -> bool {
+        if self.zscript.event_handlers.is_empty() || !self.zscript.is_active() {
+            return true;
+        }
+        self.zscript.sync_host(self.skill, player_number, 0);
+        self.zscript.set_level_checksum(self.map.md5);
+        let allowed = self
+            .zscript
+            .notify_player_respawning(player_number)
+            .unwrap_or(true);
+        crate::action::apply_zscript_actor_ops(self, mo);
+        for (cookie, item, amount) in self.zscript.take_grants() {
+            self.apply_zscript_inventory_change(mo, cookie, &item, amount);
+        }
+        allowed
+    }
+
+    pub(crate) fn fire_player_died(&mut self, player_number: i32, mo: ActorId) {
+        if self.zscript.event_handlers.is_empty() || !self.zscript.is_active() {
+            return;
+        }
+        self.zscript.sync_host(self.skill, player_number, 0);
+        self.zscript.set_level_checksum(self.map.md5);
+        let _ = self.zscript.notify_player_died(player_number);
+        crate::action::apply_zscript_actor_ops(self, mo);
+        for (cookie, item, amount) in self.zscript.take_grants() {
+            self.apply_zscript_inventory_change(mo, cookie, &item, amount);
+        }
+    }
+
+    /// Run MAPINFO ZScript `WorldTick` handlers and apply their queued actor
+    /// inventory changes. Handler activation is lazy for hosts that attach
+    /// their ZScript program after constructing the world.
+    fn fire_zscript_world_tick(&mut self) {
+        if !self.zscript.is_active() || self.zscript.event_handlers.is_empty() {
+            return;
+        }
+        self.zscript.sync_host(self.skill, 0, 0);
+        self.zscript.set_level_checksum(self.map.md5);
+        if !self.zscript.map_handlers_active {
+            let _ = self.zscript.activate_map_handlers();
+        }
+        let _ = self.zscript.notify_world_tick();
+        let grants = self.zscript.take_grants();
+        if let Some(player) = self.players.first().and_then(Option::as_ref)
+            && let Some(mo) = player.mo
+        {
+            for (cookie, item, amount) in grants {
+                self.apply_zscript_inventory_change(mo, cookie, &item, amount);
             }
+        }
+    }
+
+    /// Deliver map teardown events and apply inventory effects before unload.
+    pub fn fire_zscript_world_unloaded(&mut self) {
+        if !self.zscript.is_active() || self.zscript.event_handlers.is_empty() {
+            return;
+        }
+        self.zscript.sync_host(self.skill, 0, 0);
+        self.zscript.set_level_checksum(self.map.md5);
+        let _ = self.zscript.unload_map_handlers();
+        let grants = self.zscript.take_grants();
+        if let Some(player) = self.players.first().and_then(Option::as_ref)
+            && let Some(mo) = player.mo
+        {
+            for (cookie, item, amount) in grants {
+                self.apply_zscript_inventory_change(mo, cookie, &item, amount);
+            }
+        }
+    }
+
+    /// Dispatch a killed actor to MAPINFO ZScript handlers and apply effects.
+    pub(crate) fn zscript_actor_event_info(
+        &self,
+        id: ActorId,
+    ) -> Option<crate::zscript::ZscriptActorEventInfo> {
+        let actor = self.actors.get(id)?;
+        Some(crate::zscript::ZscriptActorEventInfo {
+            class_name: self
+                .classes
+                .get(actor.class)
+                .map(|class| class.name.clone())
+                .unwrap_or_default(),
+            health: actor.health,
+            tid: actor.tid,
+            is_monster: actor.flags & crate::class::FLAG_COUNTKILL != 0,
+        })
+    }
+
+    pub(crate) fn fire_zscript_thing_died(&mut self, target: ActorId, inflictor: Option<ActorId>) {
+        if !self.zscript.is_active() || self.zscript.event_handlers.is_empty() {
+            return;
+        }
+        let Some(thing_info) = self.zscript_actor_event_info(target) else {
+            return;
+        };
+        let inflictor_info = inflictor.and_then(|id| self.zscript_actor_event_info(id));
+        self.zscript.sync_host(self.skill, 0, 0);
+        self.zscript.set_level_checksum(self.map.md5);
+        if !self.zscript.map_handlers_active {
+            let _ = self.zscript.activate_map_handlers();
+        }
+        let _ = self
+            .zscript
+            .notify_thing_died(&thing_info, inflictor_info.as_ref());
+        crate::action::apply_zscript_actor_ops(self, target);
+        for (cookie, item, amount) in self.zscript.take_grants() {
+            self.apply_zscript_inventory_change(target, cookie, &item, amount);
+        }
+    }
+
+    pub(crate) fn fire_zscript_thing_destroyed(&mut self, target: ActorId) {
+        if !self.zscript.is_active() || self.zscript.event_handlers.is_empty() {
+            return;
+        }
+        if !self.zscript_destroyed_callbacks.insert(target.index()) {
+            return;
+        }
+        let Some(thing_info) = self.zscript_actor_event_info(target) else {
+            self.zscript_destroyed_callbacks.remove(&target.index());
+            return;
+        };
+        self.zscript.sync_host(self.skill, 0, 0);
+        self.zscript.set_level_checksum(self.map.md5);
+        if !self.zscript.map_handlers_active {
+            let _ = self.zscript.activate_map_handlers();
+        }
+        let _ = self.zscript.notify_thing_destroyed(&thing_info);
+        crate::action::apply_zscript_actor_ops(self, target);
+        for (cookie, item, amount) in self.zscript.take_grants() {
+            self.apply_zscript_inventory_change(target, cookie, &item, amount);
+        }
+        self.zscript_destroyed_callbacks.remove(&target.index());
+    }
+
+    pub(crate) fn fire_zscript_thing_revived(&mut self, target: ActorId) {
+        if !self.zscript.is_active() {
+            return;
+        }
+        let Some(thing_info) = self.zscript_actor_event_info(target) else {
+            return;
+        };
+        let class_name = thing_info.class_name.clone();
+        self.zscript.sync_host(self.skill, 0, 0);
+        self.zscript.set_level_checksum(self.map.md5);
+        if self
+            .zscript
+            .resolve_method(&class_name, "OnRevive")
+            .is_some()
+        {
+            let candidate = crate::action::zscript_resurrection_candidate(self, target)
+                .map(|id| (id.index(), id.generation()));
+            self.zscript
+                .set_ai_observers(self.zscript_ai_observers(target));
+            self.zscript.set_resurrection_candidate(candidate);
+            let _ = self
+                .zscript
+                .call_actor_virtual(target.index(), &class_name, "OnRevive");
+            crate::action::apply_zscript_actor_ops(self, target);
+        }
+        if !self.zscript.event_handlers.is_empty() {
+            if !self.zscript.map_handlers_active {
+                let _ = self.zscript.activate_map_handlers();
+            }
+            let _ = self.zscript.notify_thing_revived(&thing_info);
+            crate::action::apply_zscript_actor_ops(self, target);
+        }
+    }
+
+    pub(crate) fn fire_zscript_thing_damaged(
+        &mut self,
+        target: ActorId,
+        inflictor: Option<ActorId>,
+        source: Option<ActorId>,
+        damage: i32,
+        damage_type: &str,
+    ) {
+        if !self.zscript.is_active() || self.zscript.event_handlers.is_empty() {
+            return;
+        }
+        let Some(thing_info) = self.zscript_actor_event_info(target) else {
+            return;
+        };
+        let inflictor_info = inflictor.and_then(|id| self.zscript_actor_event_info(id));
+        let source_info = source.and_then(|id| self.zscript_actor_event_info(id));
+        self.zscript.sync_host(self.skill, 0, 0);
+        self.zscript.set_level_checksum(self.map.md5);
+        if !self.zscript.map_handlers_active {
+            let _ = self.zscript.activate_map_handlers();
+        }
+        let _ = self.zscript.notify_thing_damaged(
+            &thing_info,
+            inflictor_info.as_ref(),
+            source_info.as_ref(),
+            damage,
+            damage_type,
+        );
+        crate::action::apply_zscript_actor_ops(self, target);
+        for (cookie, item, amount) in self.zscript.take_grants() {
+            self.apply_zscript_inventory_change(target, cookie, &item, amount);
         }
     }
 
     /// After ZScript handlers attach, grant items the level-start scripts would
     /// have given: the player, and monsters already placed on the map.
     pub fn arm_zscript_level(&mut self) {
-        self.fire_player_entered(0);
+        self.arm_zscript_level_with_return(false);
+    }
+
+    /// Arm event callbacks with the map's hub-return state.
+    pub fn arm_zscript_level_with_return(&mut self, from_hub: bool) {
         if self.zscript.event_handlers.is_empty() || !self.zscript.is_active() {
             return;
+        }
+        for seat in 0..self.players.len() {
+            if self.players[seat].is_some() {
+                self.fire_player_entered_with_return(seat as i32, from_hub);
+                self.fire_player_spawned(seat as i32);
+            }
         }
         let player_mos: Vec<_> = self.players.iter().flatten().filter_map(|p| p.mo).collect();
         let monsters: Vec<_> = self
@@ -1744,12 +2044,14 @@ impl World {
             .collect();
         for id in monsters {
             self.zscript.sync_host(self.skill, 0, 0);
-            let _ = self.zscript.notify_thing_spawned_monster(true);
+            self.zscript.set_level_checksum(self.map.md5);
+            if let Some(info) = self.zscript_actor_event_info(id) {
+                let _ = self.zscript.notify_thing_spawned(&info);
+            }
+            crate::action::apply_zscript_actor_ops(self, id);
             let grants = self.zscript.take_grants();
-            for (_cookie, item, amount) in grants {
-                if let Some(cid) = self.classes.find_name(&item) {
-                    let _ = crate::inventory::give_inventory(self, id, cid, amount);
-                }
+            for (cookie, item, amount) in grants {
+                self.apply_zscript_inventory_change(id, cookie, &item, amount);
             }
         }
     }
@@ -1805,15 +2107,8 @@ impl World {
         else {
             return;
         };
-        for (_cookie, item, amount) in grants {
-            let Some(cid) = self.classes.find_name(&item) else {
-                continue;
-            };
-            if amount < 0 {
-                let _ = crate::inventory::take_inventory(self, mo, cid, -amount);
-            } else {
-                let _ = crate::inventory::give_inventory(self, mo, cid, amount);
-            }
+        for (cookie, item, amount) in grants {
+            self.apply_zscript_inventory_change(mo, cookie, &item, amount);
         }
         if let Some(class) = self.zscript.take_sound_class(player_number) {
             if let Some(actor) = self.actors.get_mut(mo) {
@@ -2602,6 +2897,7 @@ impl World {
                 threshold: def.threshold,
                 pain_threshold: def.pain_threshold,
                 target: None,
+                last_heard: None,
                 master: None,
                 tracer: None,
                 goal: None,
@@ -2726,6 +3022,7 @@ impl World {
             threshold: def.threshold,
             pain_threshold: def.pain_threshold,
             target: None,
+            last_heard: None,
             master: None,
             tracer: None,
             goal: None,
@@ -2782,22 +3079,264 @@ impl World {
         if self.zscript.is_active() {
             let class_name = self.classes.get(class).map(|c| c.name.clone());
             if let Some(name) = class_name {
+                let candidate = crate::action::zscript_resurrection_candidate(self, id)
+                    .map(|candidate| (candidate.index(), candidate.generation()));
+                self.zscript.set_ai_observers(self.zscript_ai_observers(id));
+                self.zscript.set_resurrection_candidate(candidate);
                 self.zscript.notify_spawned(id.index(), &name);
+                self.zscript.set_resurrection_candidate(None);
+                crate::action::apply_zscript_actor_ops(self, id);
             }
-            let is_monster = (def.flags & crate::class::FLAG_COUNTKILL) != 0;
             if !self.zscript.event_handlers.is_empty() {
                 // GS_LEVEL is 0 in the host stub. Skill comes from the world.
                 self.zscript.sync_host(self.skill, 0, 0);
-                let _ = self.zscript.notify_thing_spawned_monster(is_monster);
+                self.zscript.set_level_checksum(self.map.md5);
+                if let Some(info) = self.zscript_actor_event_info(id) {
+                    let _ = self.zscript.notify_thing_spawned(&info);
+                }
+                crate::action::apply_zscript_actor_ops(self, id);
                 let grants = self.zscript.take_grants();
-                for (_cookie, item, amount) in grants {
-                    if let Some(cid) = self.classes.find_name(&item) {
-                        let _ = crate::inventory::give_inventory(self, id, cid, amount);
-                    }
+                for (cookie, item, amount) in grants {
+                    self.apply_zscript_inventory_change(id, cookie, &item, amount);
                 }
             }
         }
         Ok(id)
+    }
+
+    /// Apply a queued ZScript GiveInventory/TakeInventory to its receiver.
+    /// The cookie is the generational actor handle encoded by room-zvm; stale
+    /// or non-actor receivers fall back to the call site's owner.
+    fn apply_zscript_inventory_change(
+        &mut self,
+        fallback: ActorId,
+        cookie: i64,
+        item_name: &str,
+        amount: i32,
+    ) {
+        let raw = cookie as u64;
+        let requested = ActorId::from_raw(raw as u32, (raw >> 32) as u32);
+        let owner = if self.actors.get(requested).is_some() {
+            requested
+        } else {
+            fallback
+        };
+        let Some(class) = self.classes.find_name(item_name) else {
+            return;
+        };
+        if amount < 0 {
+            let _ = crate::inventory::take_inventory(self, owner, class, amount.saturating_abs());
+        } else {
+            let _ = crate::inventory::give_inventory(self, owner, class, amount);
+        }
+    }
+
+    /// Morph an actor to another DECORATE class while retaining its actor id.
+    /// The original class is kept in a private user variable so ACS
+    /// `UnMorphActor` can restore it without replacing player/thinker handles.
+    pub(crate) fn morph_actor_class(&mut self, id: ActorId, class: ClassId) -> bool {
+        const ORIGINAL_CLASS: &str = "room_internal_morph_class";
+        let Some(def) = self.classes.get(class).cloned() else {
+            return false;
+        };
+        let Some(current) = self.actors.get(id) else {
+            return false;
+        };
+        if current.destroyed || current.user_vars.contains_key(ORIGINAL_CLASS) {
+            return false;
+        }
+        let old_class = current.class;
+        let _ = crate::action::call_action(self, id, "A_StopSound");
+        let morph_weapon = self.classes.find_name(&def.player_morph_weapon);
+        let old_morph_weapon_count =
+            morph_weapon.map_or(0, |weapon| self.inventory.count(id, weapon));
+        let old_ready_weapon = self.players.iter().flatten().find(|p| p.mo == Some(id));
+        {
+            let Some(actor) = self.actors.get_mut(id) else {
+                return false;
+            };
+            actor
+                .user_vars
+                .insert(ORIGINAL_CLASS.to_owned(), old_class.raw() as i32);
+            actor.user_vars.insert(
+                "room_internal_morph_weapon_count".to_owned(),
+                old_morph_weapon_count,
+            );
+            actor.user_vars.insert(
+                "room_internal_morph_weapon".to_owned(),
+                old_ready_weapon.map_or(-1, |player| {
+                    player.ready_weapon.map_or(-1, |weapon| weapon.raw() as i32)
+                }),
+            );
+            actor.user_vars.insert(
+                "room_internal_morph_weapon_class".to_owned(),
+                morph_weapon.map_or(-1, |weapon| weapon.raw() as i32),
+            );
+            actor.class = class;
+            actor.flags = def.flags;
+            actor.extra_flags = def.extra_flags;
+            actor.radius = if def.extra_flags.get_name("ROOMSCALEDCOLLISION") {
+                def.radius * def.scale_x
+            } else {
+                def.radius
+            };
+            actor.height = if def.extra_flags.get_name("ROOMSCALEDCOLLISION") {
+                def.height * def.scale_y
+            } else {
+                def.height
+            };
+            actor.speed = if self.fast_monsters && def.fast_speed > 0.0 {
+                def.fast_speed
+            } else {
+                def.speed
+            };
+            actor.gravity = def.gravity;
+            actor.mass = def.mass;
+            actor.view_height = def.view_height;
+            actor.jump_z = def.jump_z;
+            actor.friction = def.friction;
+            actor.max_step_height = def.max_step_height;
+            actor.max_dropoff_height = def.max_dropoff_height;
+            actor.scale_x = def.scale_x;
+            actor.scale_y = def.scale_y;
+            actor.state = None;
+            actor.tics = 0;
+        }
+        if let Some(weapon) = morph_weapon {
+            let _ = crate::inventory::give_inventory(self, id, weapon, 1);
+        }
+        if let Some(player) = self.players.iter_mut().flatten().find(|p| p.mo == Some(id)) {
+            player.cls = class;
+            player.view_height = if def.view_height > 0.0 {
+                def.view_height
+            } else {
+                41.0
+            };
+            player.ready_weapon = morph_weapon;
+            player.pending_weapon = None;
+            player.pspr_state = None;
+            player.pspr_tics = 0;
+            player.pspr_y = crate::player::WEAPON_BOTTOM;
+        }
+        let spawn = self.states.find_label(class, "Spawn");
+        self.set_state(id, spawn, true);
+        if std::env::var_os("ROOM_TRACE_VEHICLES").is_some() {
+            let actor = self.actors.get(id);
+            eprintln!(
+                "room: VEHICLE MORPH tic={} actor=#{} {} -> {} result=true hp={} weapon={}",
+                self.level.time,
+                id.index(),
+                self.classes
+                    .get(old_class)
+                    .map_or("<missing>", |c| c.name.as_str()),
+                def.name,
+                actor.map_or(0, |a| a.health),
+                self.players
+                    .iter()
+                    .flatten()
+                    .find(|p| p.mo == Some(id))
+                    .and_then(|p| p.ready_weapon)
+                    .and_then(|weapon| self.classes.get(weapon))
+                    .map_or("none", |c| c.name.as_str()),
+            );
+        }
+        true
+    }
+
+    /// Restore an actor changed by [`Self::morph_actor_class`].
+    pub(crate) fn unmorph_actor_class(&mut self, id: ActorId) -> bool {
+        const ORIGINAL_CLASS: &str = "room_internal_morph_class";
+        let Some((raw, saved_weapon, old_morph_weapon_count, morph_weapon_raw)) =
+            self.actors.get(id).and_then(|a| {
+                Some((
+                    *a.user_vars.get(ORIGINAL_CLASS)?,
+                    *a.user_vars.get("room_internal_morph_weapon")?,
+                    a.user_vars
+                        .get("room_internal_morph_weapon_count")
+                        .copied()
+                        .unwrap_or(0),
+                    a.user_vars
+                        .get("room_internal_morph_weapon_class")
+                        .copied()
+                        .unwrap_or(-1),
+                ))
+            })
+        else {
+            return false;
+        };
+        let class = ClassId::from_raw(raw as u32);
+        let Some(def) = self.classes.get(class).cloned() else {
+            return false;
+        };
+        let _ = crate::action::call_action(self, id, "A_StopSound");
+        {
+            let Some(actor) = self.actors.get_mut(id) else {
+                return false;
+            };
+            actor.user_vars.remove(ORIGINAL_CLASS);
+            actor.user_vars.remove("room_internal_morph_weapon");
+            actor.user_vars.remove("room_internal_morph_weapon_count");
+            actor.user_vars.remove("room_internal_morph_weapon_class");
+            actor.class = class;
+            actor.flags = def.flags;
+            actor.extra_flags = def.extra_flags;
+            actor.radius = if def.extra_flags.get_name("ROOMSCALEDCOLLISION") {
+                def.radius * def.scale_x
+            } else {
+                def.radius
+            };
+            actor.height = if def.extra_flags.get_name("ROOMSCALEDCOLLISION") {
+                def.height * def.scale_y
+            } else {
+                def.height
+            };
+            actor.speed = def.speed;
+            actor.gravity = def.gravity;
+            actor.mass = def.mass;
+            actor.view_height = def.view_height;
+            actor.jump_z = def.jump_z;
+            actor.friction = def.friction;
+            actor.max_step_height = def.max_step_height;
+            actor.max_dropoff_height = def.max_dropoff_height;
+            actor.scale_x = def.scale_x;
+            actor.scale_y = def.scale_y;
+            actor.state = None;
+            actor.tics = 0;
+        }
+        if morph_weapon_raw >= 0 {
+            let morph_weapon = ClassId::from_raw(morph_weapon_raw as u32);
+            crate::inventory::set_inventory(self, id, morph_weapon, old_morph_weapon_count);
+        }
+        if let Some(player) = self.players.iter_mut().flatten().find(|p| p.mo == Some(id)) {
+            player.cls = class;
+            player.view_height = if def.view_height > 0.0 {
+                def.view_height
+            } else {
+                41.0
+            };
+            player.ready_weapon =
+                (saved_weapon >= 0).then(|| ClassId::from_raw(saved_weapon as u32));
+            player.pending_weapon = None;
+            player.pspr_state = None;
+            player.pspr_tics = 0;
+            player.pspr_y = crate::player::WEAPON_BOTTOM;
+        }
+        let spawn = self.states.find_label(class, "Spawn");
+        self.set_state(id, spawn, true);
+        if std::env::var_os("ROOM_TRACE_VEHICLES").is_some() {
+            let actor = self.actors.get(id);
+            eprintln!(
+                "room: VEHICLE UNMORPH tic={} actor=#{} class={} hp={} pos=({:.1},{:.1},{:.1})",
+                self.level.time,
+                id.index(),
+                def.name,
+                actor.map_or(0, |a| a.health),
+                actor.map_or(0.0, |a| a.pos.x()),
+                actor.map_or(0.0, |a| a.pos.y()),
+                actor.map_or(0.0, |a| a.pos.z()),
+            );
+        }
+        true
     }
 
     /// Run ZScript `Tick` for an actor whose class name matches a script class (ZS3).
@@ -2813,7 +3352,52 @@ impl World {
         else {
             return;
         };
+        if !self.zscript.has_method(&class_name, "Tick") {
+            return;
+        }
+        let candidate = crate::action::zscript_resurrection_candidate(self, id)
+            .map(|candidate| (candidate.index(), candidate.generation()));
+        self.zscript.set_ai_observers(self.zscript_ai_observers(id));
+        self.zscript.set_resurrection_candidate(candidate);
         self.zscript.tick_actor(id.index(), &class_name);
+        crate::action::apply_zscript_actor_ops(self, id);
+    }
+
+    /// Player observer distances and visibility for ZScript's Check* natives.
+    pub(crate) fn zscript_ai_observers(&self, target: ActorId) -> Vec<(f64, f64, bool)> {
+        let Some(actor) = self.actors.get(target) else {
+            return Vec::new();
+        };
+        self.players
+            .iter()
+            .filter_map(Option::as_ref)
+            .filter_map(|player| {
+                let observer = player.mo?;
+                let camera = self.actors.get(observer)?;
+                let dx = actor.pos.x() - camera.pos.x();
+                let dy = actor.pos.y() - camera.pos.y();
+                // GZDoom measures from the camera's center. For a possessed
+                // pawn, `view_z` includes crouch/view-offset adjustments;
+                // non-player observers use their physical center.
+                let eye_z = if player.view_z.is_finite() {
+                    player.view_z
+                } else {
+                    camera.pos.z() + camera.height * 0.5
+                };
+                let dz = if eye_z > actor.pos.z() + actor.height {
+                    actor.pos.z() + actor.height - eye_z
+                } else if eye_z < actor.pos.z() {
+                    actor.pos.z() - eye_z
+                } else {
+                    0.0
+                };
+                Some((
+                    dx * dx + dy * dy,
+                    dx * dx + dy * dy + dz * dz,
+                    crate::sight::check_sight(self, observer, target),
+                ))
+            })
+            .collect()
     }
 
     /// First living actor with Hexen/UDMF `tid` (0 never matches).
@@ -2876,6 +3460,11 @@ impl World {
     ) {
         self.sound_events.push(SimSoundEvent {
             name: name.to_owned(),
+            check_name: None,
+            start_time: 0.0,
+            sound_class: None,
+            sound_gender: None,
+            source_id: None,
             x,
             y,
             z,
@@ -2883,6 +3472,9 @@ impl World {
             pitch: 1.0,
             channel: 0,
             adjust: SimSoundAdjust::Start,
+            looping: false,
+            no_restart: false,
+            channel_flags: 0,
             attenuation,
             seat: None,
         });
@@ -2892,6 +3484,11 @@ impl World {
     pub fn play_seat_sound(&mut self, seat: Option<u8>, name: &str, volume: f32) {
         self.sound_events.push(SimSoundEvent {
             name: name.to_owned(),
+            check_name: None,
+            start_time: 0.0,
+            sound_class: None,
+            sound_gender: None,
+            source_id: None,
             x: 0.0,
             y: 0.0,
             z: 0.0,
@@ -2899,6 +3496,9 @@ impl World {
             pitch: 1.0,
             channel: 0,
             adjust: SimSoundAdjust::Start,
+            looping: false,
+            no_restart: false,
+            channel_flags: 0,
             attenuation: 0.0,
             seat,
         });
@@ -4463,6 +5063,56 @@ impl World {
             y,
             z,
             fullbright,
+            render_style: None,
+            velocity: room_core::DVec3::ZERO,
+            acceleration: room_core::DVec3::ZERO,
+            alpha: 1.0,
+            fade_step: -1.0,
+            size_step: 0.0,
+            roll: [0.0; 3],
+            flags: 0,
+            fade_out_step: 0.0,
+        });
+    }
+
+    /// Queue a DECORATE/ZScript particle with motion and fade parameters.
+    pub fn spawn_particle_ex(
+        &mut self,
+        color: u32,
+        fullbright: bool,
+        lifetime: i32,
+        size: f64,
+        position: room_core::DVec3,
+        velocity: room_core::DVec3,
+        acceleration: room_core::DVec3,
+        alpha: f64,
+        fade_step: f64,
+        size_step: f64,
+        render_style: Option<i32>,
+        roll: [f64; 3],
+        flags: u32,
+        fade_out_step: f64,
+    ) {
+        if lifetime <= 0 {
+            return;
+        }
+        self.particle_events.push(SimParticleEvent {
+            color,
+            lifetime: lifetime.clamp(1, 255),
+            size: size.abs().max(0.1),
+            x: position.x(),
+            y: position.y(),
+            z: position.z(),
+            fullbright,
+            render_style,
+            velocity,
+            acceleration,
+            alpha: alpha.clamp(0.0, 1.0),
+            fade_step,
+            size_step,
+            roll,
+            flags,
+            fade_out_step,
         });
     }
 
@@ -5122,6 +5772,7 @@ impl World {
                 })
                 .collect();
             for id in kills {
+                self.fire_zscript_thing_destroyed(id);
                 if let Some(a) = self.actors.get_mut(id) {
                     a.destroyed = true;
                     a.health = 0;
@@ -5280,6 +5931,7 @@ impl World {
         // feed `raw_cmd` + script `WorldTick` so Mod HUD menus (draft, etc.)
         // can resolve. `maptime` does not advance.
         if self.paused {
+            self.fire_zscript_world_tick();
             self.scripts.sync_from_world(self);
             self.sound_heard = self.sound_events.iter().map(|e| e.name.clone()).collect();
             self.sound_events.clear();
@@ -5351,12 +6003,13 @@ impl World {
             if self.players[i].is_some() {
                 let mut p = self.players[i].take().unwrap_or_default();
                 self.thinking_up_move = p.cmd.up_move;
-                think_player::player_think(self, &mut p);
+                think_player::player_think_for_seat(self, &mut p, i as i32);
                 self.thinking_up_move = 0;
                 self.players[i] = Some(p);
             }
         }
         // events.world_tick (WASM EventHandlers) + flush WASM→ACS starts
+        self.fire_zscript_world_tick();
         let _ = self.scripts.dispatch_world_tick();
         // A mod may set `rule::PAUSED` during WorldTick (e.g. Survival draft).
         // Skip the rest of this tic so in-flight missiles cannot still kill.
@@ -5493,6 +6146,17 @@ impl World {
         // and shows up as a ghost gun billboard (BD "phantom gun frames").
         let saved = (self.psprite_weapon.take(), self.psprite_state.take());
         self.set_state_chain(id, state, call_action);
+        if let Some(actor) = self.actors.get_mut(id)
+            && actor.state.is_none()
+            && actor
+                .user_vars
+                .contains_key("room_internal_temp_custom_inventory")
+        {
+            actor.destroyed = true;
+            actor
+                .user_vars
+                .remove("room_internal_temp_custom_inventory");
+        }
         self.psprite_weapon = saved.0;
         self.psprite_state = saved.1;
     }
@@ -5528,6 +6192,9 @@ impl World {
                 }
             }
             let Some(sid) = next else {
+                if self.actors.get(id).is_some_and(|actor| !actor.destroyed) {
+                    self.fire_zscript_thing_destroyed(id);
+                }
                 if let Some(a) = self.actors.get_mut(id) {
                     a.state = None;
                     a.destroyed = true;
@@ -5541,6 +6208,32 @@ impl World {
             let action_args = st.action_args.clone();
             let callback_id = st.callback_id;
             let module_index = st.module_index;
+            let vehicle_active = self.actors.get(id).is_some_and(|actor| {
+                let mut class = Some(actor.class);
+                for _ in 0..64 {
+                    let Some(def) = class.and_then(|cid| self.classes.get(cid)) else {
+                        break;
+                    };
+                    if def.name.eq_ignore_ascii_case("Tank") {
+                        return self.states.find_label(actor.class, "Active") == Some(sid);
+                    }
+                    class = def.parent;
+                }
+                false
+            });
+            if vehicle_active {
+                eprintln!(
+                    "room: VEHICLE STATE tic={} actor=#{} state=Active sprite={} tics={} action={} args={:?} callback={} next={:?}",
+                    self.level.time,
+                    id.index(),
+                    st.sprite,
+                    st.tics,
+                    action.as_deref().unwrap_or("<none>"),
+                    action_args,
+                    callback_id,
+                    st.next,
+                );
+            }
             let old_sprite = self.actors.get(id).map(|a| a.sprite.clone());
             let countkill = self.actors.get(id).is_some_and(|a| {
                 let class_flags = self.classes.get(a.class).map(|c| c.flags).unwrap_or(0);
@@ -5666,6 +6359,9 @@ impl World {
                 // 0-tic loop. Leaving it in place re-ran the whole loop (and its
                 // spawns) every tic: Brutal Doom's `BurningZombie` Spawn state
                 // fires `A_CustomMissile` in a 0-tic `Loop`.
+                if self.actors.get(id).is_some_and(|actor| !actor.destroyed) {
+                    self.fire_zscript_thing_destroyed(id);
+                }
                 if let Some(a) = self.actors.get_mut(id) {
                     a.state = None;
                     a.destroyed = true;
@@ -5886,6 +6582,9 @@ impl World {
 }
 
 fn destroy_queued_corpse(world: &mut World, id: ActorId) {
+    if world.actors.get(id).is_some_and(|actor| !actor.destroyed) {
+        world.fire_zscript_thing_destroyed(id);
+    }
     if let Some(a) = world.actors.get_mut(id) {
         a.destroyed = true;
         a.state = None;
@@ -5937,6 +6636,7 @@ fn try_nightmare_respawn(world: &mut World, id: ActorId) {
     if !check.ok {
         return;
     }
+    world.fire_zscript_thing_destroyed(id);
     if let Some(corpse) = world.actors.get_mut(id) {
         corpse.destroyed = true;
         corpse.state = None;

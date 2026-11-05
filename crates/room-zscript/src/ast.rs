@@ -166,6 +166,10 @@ pub struct FieldQuals {
     pub meta: bool,
     /// `internal` (engine-only field)
     pub internal: bool,
+    /// `ui` / `play` / `clearscope` / `unsafe(clearscope)` field scope.
+    pub scope: Option<String>,
+    /// `norollback` prediction metadata.
+    pub norollback: bool,
 }
 
 /// Method declaration.
@@ -204,6 +208,8 @@ pub struct MethodQuals {
     pub scope: Option<String>,
     /// `const` method.
     pub const_: bool,
+    /// `unsafe(const)` restores legacy mutable-self behavior for a const method.
+    pub unsafe_const: bool,
 }
 
 /// Parameter.

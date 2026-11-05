@@ -29,18 +29,8 @@ mod imp {
             flags: i32,
             callback_id: i32,
         ) -> i32;
-        pub fn reg_state_flow(
-            kind: i32,
-            label_ptr: i32,
-            label_len: i32,
-            offset: i32,
-        ) -> i32;
-        pub fn reg_state_action(
-            name_ptr: i32,
-            name_len: i32,
-            args_ptr: i32,
-            args_len: i32,
-        ) -> i32;
+        pub fn reg_state_flow(kind: i32, label_ptr: i32, label_len: i32, offset: i32) -> i32;
+        pub fn reg_state_action(name_ptr: i32, name_len: i32, args_ptr: i32, args_len: i32) -> i32;
         pub fn reg_state_offset(x: i32, y: i32) -> i32;
         pub fn reg_class_virtual(slot: i32, callback_id: i32);
         pub fn reg_event_handler(
@@ -79,12 +69,7 @@ mod imp {
             lump_len: i32,
             limit: i32,
         ) -> i32;
-        pub fn reg_weapon_slot(
-            slot: i32,
-            class_ptr: i32,
-            class_len: i32,
-            priority: i32,
-        ) -> i32;
+        pub fn reg_weapon_slot(slot: i32, class_ptr: i32, class_len: i32, priority: i32) -> i32;
         pub fn manifest_option_i32(key_ptr: i32, key_len: i32, default: i32) -> i32;
         pub fn manifest_option_str(key_ptr: i32, key_len: i32, buf_ptr: i32, cap: i32) -> i32;
         pub fn lump_find(name_ptr: i32, name_len: i32, namespace: i32) -> i32;

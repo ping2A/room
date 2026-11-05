@@ -385,9 +385,9 @@ impl Console {
                     })?;
                     let mut script_args = [0i32; 3];
                     for (i, a) in args.iter().skip(1).take(3).enumerate() {
-                        script_args[i] = a.parse().map_err(|_| {
-                            ConsoleError::Message(format!("puke: bad arg '{a}'"))
-                        })?;
+                        script_args[i] = a
+                            .parse()
+                            .map_err(|_| ConsoleError::Message(format!("puke: bad arg '{a}'")))?;
                     }
                     host.push(HostCommand::Puke {
                         script,
@@ -717,9 +717,7 @@ mod tests {
     #[test]
     fn puke_and_pukename_emit_host() {
         let mut con = Console::with_defaults();
-        let r = con
-            .exec("puke 7 1 2; pukename DoorOpen always 3")
-            .unwrap();
+        let r = con.exec("puke 7 1 2; pukename DoorOpen always 3").unwrap();
         assert_eq!(
             r.host,
             vec![

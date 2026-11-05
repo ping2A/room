@@ -67,10 +67,7 @@ pub fn admin_routes() -> Router<AppState> {
                 .delete(delete_content)
                 .layer(axum::extract::DefaultBodyLimit::disable()),
         )
-        .route(
-            "/admin/api/v1/presets",
-            get(get_presets).put(put_presets),
-        )
+        .route("/admin/api/v1/presets", get(get_presets).put(put_presets))
         .route("/admin/api/v1/maintenance", post(maintenance))
         .route("/admin/api/v1/locations", get(list_locations))
 }
@@ -257,7 +254,10 @@ async fn upload_content(
             let _ = tokio::fs::remove_file(&temp).await;
             return Err((
                 StatusCode::PAYLOAD_TOO_LARGE,
-                format!("file exceeds {} MiB (--content-max-mb)", store.max_bytes() >> 20),
+                format!(
+                    "file exceeds {} MiB (--content-max-mb)",
+                    store.max_bytes() >> 20
+                ),
             ));
         }
         out.write_all(&chunk).await.map_err(io)?;

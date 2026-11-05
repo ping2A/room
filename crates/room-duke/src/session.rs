@@ -2350,7 +2350,10 @@ impl DukeSession {
         // Chocolate `prelevel` → `spawn(-1, i)` TRAND rolls (index order).
         {
             let stat = world.lists.sprite_stat.clone();
-            let alive = |i: usize| stat.get(i).is_some_and(|&s| s != room_build_engine::world::MAXSTATUS as i16);
+            let alive = |i: usize| {
+                stat.get(i)
+                    .is_some_and(|&s| s != room_build_engine::world::MAXSTATUS as i16)
+            };
             crate::spawn::spawn_load_rolls(
                 world.sprites.as_mut(),
                 &alive,
@@ -40431,16 +40434,13 @@ impl DukeSession {
         let emit_tic = self.tic.saturating_sub(1);
         // Early DEMO1: skipped pre-standable TRAND count drifts as weapons /
         // effectors stay stubbed; extend [`DEMO1_PAD_PRE`] when frontier advances.
-        let pad_pre = self
-            .pad_pre_override
-            .take()
-            .unwrap_or_else(|| {
-                if self.trace_fixups {
-                    DEMO1_PAD_PRE.get(emit_tic as usize).copied().unwrap_or(7)
-                } else {
-                    0
-                }
-            });
+        let pad_pre = self.pad_pre_override.take().unwrap_or_else(|| {
+            if self.trace_fixups {
+                DEMO1_PAD_PRE.get(emit_tic as usize).copied().unwrap_or(7)
+            } else {
+                0
+            }
+        });
         for _ in 0..pad_pre {
             let _ = krand_step(&mut self.randomseed);
         }

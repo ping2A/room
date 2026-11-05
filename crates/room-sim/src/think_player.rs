@@ -201,7 +201,13 @@ fn death_think(world: &mut World, player: &mut Player, mo: ActorId) -> bool {
 }
 
 /// Apply this tic's `TicCmd` to the player's mobj.
+#[cfg(test)]
 pub fn player_think(world: &mut World, player: &mut Player) {
+    player_think_for_seat(world, player, 0);
+}
+
+/// Run one player's thinker with its stable player slot for ZScript events.
+pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat: i32) {
     let Some(mo) = player.mo else {
         return;
     };
@@ -243,7 +249,8 @@ pub fn player_think(world: &mut World, player: &mut Player) {
             }
         }
         if cmd.buttons.any(Buttons::USE) && !world.no_player_respawn {
-            if world.respawn_player_at(player) {
+            if world.fire_player_respawning(seat, mo) && world.respawn_player_at(player) {
+                world.fire_player_respawned(seat, mo);
                 if let Some(mo) = player.mo {
                     crate::acs::start_respawn_scripts(world, mo);
                 }
@@ -401,14 +408,56 @@ pub fn player_think(world: &mut World, player: &mut Player) {
     // Doom `player->usedown`: use fires once per press, not every held tic
     // (otherwise Door_Raise re-trigger reverses the door while E is held).
     let use_btn = cmd.buttons.any(Buttons::USE);
+    let was_use_down = player.use_down;
+    // These traces are edge-triggered, so leave them on by default while
+    // diagnosing vehicle interaction. They do not emit every simulation tic.
+    let trace_vehicle = true;
+    if trace_vehicle && use_btn != was_use_down {
+        eprintln!(
+            "room: VEHICLE INPUT tic={} player=#{} USE={} edge={} pos=({:.1},{:.1},{:.1}) angle={:.1}",
+            world.level.time,
+            mo.index(),
+            use_btn,
+            use_btn && !was_use_down,
+            world.actors.get(mo).map_or(0.0, |a| a.pos.x()),
+            world.actors.get(mo).map_or(0.0, |a| a.pos.y()),
+            world.actors.get(mo).map_or(0.0, |a| a.pos.z()),
+            world.actors.get(mo).map_or(0.0, |a| a.angle.degrees()),
+        );
+    }
+    if !use_btn {
+        player.acs_use_latched = false;
+    }
     if use_btn && !player.use_down {
         // Park the in-hand player so `activate_line` sees `players[].mo` (the
         // slot is empty for the duration of `player_think`). Without this,
         // non-door Use specials (Exit, floors, lights, …) are refused as
         // monster uses while doors still work via the monster whitelist.
-        let used = world.with_parked_player(player, |world| {
-            use_lines(world, mo) || crate::use_lines::use_actors(world, mo)
+        let (used, used_actor) = world.with_parked_player(player, |world| {
+            // Prefer a usable actor at the crosshair. If a linedef is hit
+            // first, the short-circuit would otherwise swallow USE before
+            // vehicles such as Brutal Doom's Bike can enter their Active state.
+            let used_actor = crate::use_lines::use_actors(world, mo);
+            (used_actor || use_lines(world, mo), used_actor)
         });
+        if used_actor {
+            player.acs_use_latched = true;
+        }
+        if trace_vehicle {
+            eprintln!(
+                "room: VEHICLE INPUT tic={} result={} actor={} ACS-use-latched={}",
+                world.level.time,
+                if used_actor {
+                    "vehicle/actor"
+                } else if used {
+                    "line"
+                } else {
+                    "nothing"
+                },
+                used_actor,
+                player.acs_use_latched,
+            );
+        }
         // Vanilla: failed use (nothing usable / refused) plays `*noway` / oof.
         if !used {
             play_player_sound(world, mo, "*noway");
@@ -753,6 +802,16 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                         action_i32(&args, 2, 0),
                     );
                 }
+                "A_ClearOverlays" => {
+                    let start = action_i32(&args, 0, 0);
+                    let stop = action_i32(&args, 1, 0);
+                    // Defaults clear all safe overlays; this runtime currently
+                    // models the weapon overlay at id 2 (GZDoom reserves id 1
+                    // for the weapon and id 0 for CHAN_AUTO-like selection).
+                    if (start == 0 && stop == 0) || (start <= 2 && stop >= 2) {
+                        player.clear_secondary_overlay();
+                    }
+                }
                 "A_OverlayScale" => {
                     // A Y of 0 copies X. Layer 1 is the gun. Layer 2 is the overlay.
                     let sx = action_f64(&args, 1, 1.0);
@@ -1025,6 +1084,51 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                         }
                     }
                 }
+                "A_CheckForReload" => {
+                    // UZDoom StateProvider.A_CheckForReload. ReloadCounter belongs
+                    // to each weapon inventory, so preserve it across weapon swaps.
+                    if let Some(wpn) = player.ready_weapon {
+                        let count = action_i32(&args, 0, 0);
+                        if count > 0 {
+                            let dont_increment = args.get(2).is_some_and(|value| {
+                                let value = value.trim().trim_matches('"');
+                                value.eq_ignore_ascii_case("true") || value == "1"
+                            });
+                            let previous = player
+                                .reload_counters
+                                .iter()
+                                .find(|(weapon, _)| *weapon == wpn)
+                                .map(|(_, value)| *value)
+                                .unwrap_or(0);
+                            let next = if dont_increment && previous == 0 {
+                                1
+                            } else {
+                                (previous + 1) % count
+                            };
+                            if !dont_increment {
+                                set_reload_counter(player, wpn, next);
+                            }
+                            if next != 0 {
+                                if let Some(label) = args.get(1) {
+                                    let label = label.trim().trim_matches('"');
+                                    if let Some(jump) = world.states.find_label(wpn, label) {
+                                        state = jump;
+                                        continue;
+                                    }
+                                }
+                            } else if !has_ammo(world, mo, wpn) {
+                                if let Some(alt) = best_weapon_with_ammo(world, mo, Some(wpn)) {
+                                    request_weapon(world, player, mo, alt);
+                                }
+                            }
+                        }
+                    }
+                }
+                "A_ResetReloadCounter" => {
+                    if let Some(wpn) = player.ready_weapon {
+                        set_reload_counter(player, wpn, 0);
+                    }
+                }
                 "A_OpenShotgun2" => play_player_sound(world, mo, "weapons/sshoto"),
                 "A_LoadShotgun2" => play_player_sound(world, mo, "weapons/sshotl"),
                 "A_CloseShotgun2" => play_player_sound(world, mo, "weapons/sshotc"),
@@ -1032,6 +1136,7 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                 "A_Light1" => player.extralight = 1,
                 "A_Light2" => player.extralight = 2,
                 "A_Light0" | "A_LightDone" => player.extralight = 0,
+                "A_Light" => player.extralight = action_i32(&args, 0, 0).clamp(-20, 20),
                 "A_WeaponReady" => {
                     let wrf = parse_wrf_flags(args.first());
                     if let Some(prev) = player.quick_kick_restore.take() {
@@ -1300,6 +1405,18 @@ fn start_flash_psprite(world: &World, player: &mut Player, offset: usize) {
             "A_Light1" => player.extralight = 1,
             "A_Light2" => player.extralight = 2,
             "A_Light0" | "A_LightDone" => player.extralight = 0,
+            "A_Light" => {
+                let args = st
+                    .map(|state| state.action_args.as_slice())
+                    .unwrap_or_default();
+                player.extralight = action_i32(args, 0, 0).clamp(-20, 20);
+            }
+            "A_SetTics" => {
+                let args = st
+                    .map(|state| state.action_args.as_slice())
+                    .unwrap_or_default();
+                player.pspr_flash_tics = action_i32(args, 0, player.pspr_flash_tics);
+            }
             _ => {}
         }
     }
@@ -1374,6 +1491,12 @@ fn advance_flash_psprite(world: &World, player: &mut Player) {
                 Some("A_Light1") => player.extralight = 1,
                 Some("A_Light2") => player.extralight = 2,
                 Some("A_Light0" | "A_LightDone") => player.extralight = 0,
+                Some("A_Light") => {
+                    player.extralight = action_i32(&st.action_args, 0, 0).clamp(-20, 20);
+                }
+                Some("A_SetTics") => {
+                    player.pspr_flash_tics = action_i32(&st.action_args, 0, player.pspr_flash_tics);
+                }
                 _ => {}
             }
         }
@@ -1996,6 +2119,18 @@ fn action_i32(args: &[String], index: usize, default: i32) -> i32 {
     args.get(index)
         .and_then(|s| s.trim().trim_matches('"').parse().ok())
         .unwrap_or(default)
+}
+
+fn set_reload_counter(player: &mut Player, weapon: room_core::ClassId, value: i32) {
+    if let Some((_, counter)) = player
+        .reload_counters
+        .iter_mut()
+        .find(|(class, _)| *class == weapon)
+    {
+        *counter = value;
+    } else {
+        player.reload_counters.push((weapon, value));
+    }
 }
 
 /// `A_ReFire`'s second argument. Omitted means switch when the gun is empty.

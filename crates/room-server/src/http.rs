@@ -409,7 +409,10 @@ async fn get_content_file(
         header::CONTENT_TYPE,
         header::HeaderValue::from_static("application/octet-stream"),
     );
-    h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, header::HeaderValue::from_static("*"));
+    h.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        header::HeaderValue::from_static("*"),
+    );
     h.insert(
         header::CACHE_CONTROL,
         header::HeaderValue::from_static("public, max-age=86400"),

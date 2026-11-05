@@ -10,6 +10,10 @@ use room_core::dmath;
 /// Doom `USERANGE` ≈ 64.
 const USE_RANGE: f64 = 64.0;
 
+fn trace_vehicle_use() -> bool {
+    true
+}
+
 /// Trace a short ray from the actor and activate the first usable linedef.
 pub fn use_lines(world: &mut World, mo: ActorId) -> bool {
     let Some(actor) = world.actors.get(mo).cloned() else {
@@ -78,14 +82,55 @@ pub fn use_lines(world: &mut World, mo: ActorId) -> bool {
     }
 }
 
-/// Use the nearest `+USESPECIAL` actor in front of `mo` (its `Use` state).
+/// Use the nearest `+USESPECIAL` actor in front of `mo`.
+///
+/// Actors normally expose a `Use` state. Vehicle classes (including the
+/// Brutal Doom `Tank` base) expose `Active` instead; this is the state their
+/// native use handler activates in GZDoom-compatible content.
 pub fn use_actors(world: &mut World, mo: ActorId) -> bool {
     let Some(user) = world.actors.get(mo).cloned() else {
         return false;
     };
+    let is_vehicle_rider = world
+        .classes
+        .get(user.class)
+        .is_some_and(|class| class.name.eq_ignore_ascii_case("PlayerBike"));
+    if is_vehicle_rider {
+        // Let Brutal Doom's vehicle-control ACS see USE so it can dismount.
+        // Selecting the bike again here would consume the key before ACS.
+        eprintln!(
+            "room: VEHICLE USE tic={} rider=#{} class=PlayerBike forwarding USE to vehicle ACS",
+            world.level.time,
+            mo.index(),
+        );
+        return false;
+    }
     let rad = user.angle.radians();
     let dir = DVec2::new(dmath::cos(rad), dmath::sin(rad));
     let origin = DVec2::new(user.pos.x(), user.pos.y());
+    if trace_vehicle_use() {
+        let class = world
+            .classes
+            .get(user.class)
+            .map(|c| c.name.as_str())
+            .unwrap_or("<missing>");
+        eprintln!(
+            "room: VEHICLE USE tic={} player=#{} class={} pos=({:.1},{:.1},{:.1}) angle={:.1} use_down={}",
+            world.level.time,
+            mo.index(),
+            class,
+            user.pos.x(),
+            user.pos.y(),
+            user.pos.z(),
+            user.angle.degrees(),
+            world
+                .players
+                .iter()
+                .flatten()
+                .find(|p| p.mo == Some(mo))
+                .is_some_and(|p| p.use_down),
+        );
+    }
     let mut best: Option<(ActorId, f64)> = None;
     for &id in &world.thinkers.default {
         if id == mo {
@@ -94,13 +139,39 @@ pub fn use_actors(world: &mut World, mo: ActorId) -> bool {
         let Some(a) = world.actors.get(id) else {
             continue;
         };
-        if a.destroyed || a.health <= 0 || (a.flags & crate::class::FLAG_USESPECIAL) == 0 {
+        let vehicle = class_is_tank_derived(world, a.class);
+        let class_name = world
+            .classes
+            .get(a.class)
+            .map(|c| c.name.as_str())
+            .unwrap_or("<missing>");
+        if a.destroyed
+            || a.health <= 0
+            || ((a.flags & crate::class::FLAG_USESPECIAL) == 0 && !vehicle)
+        {
             continue;
         }
         let dx = a.pos.x() - origin.x();
         let dy = a.pos.y() - origin.y();
         let dist = dx.hypot(dy);
-        if dist > USE_RANGE + a.radius {
+        let actor_range = USE_RANGE + a.radius + if vehicle { 32.0 } else { 0.0 };
+        if trace_vehicle_use() && vehicle {
+            let forward = dx * dir.x() + dy * dir.y();
+            eprintln!(
+                "room: VEHICLE CANDIDATE tic={} actor=#{} class={} hp={} tid={} flags_use={} vehicle={} dist={:.1}/{:.1} forward={:.1}",
+                world.level.time,
+                id.index(),
+                class_name,
+                a.health,
+                a.tid,
+                (a.flags & crate::class::FLAG_USESPECIAL) != 0,
+                vehicle,
+                dist,
+                actor_range,
+                forward,
+            );
+        }
+        if dist > actor_range {
             continue;
         }
         if dx * dir.x() + dy * dir.y() < -8.0 {
@@ -111,6 +182,12 @@ pub fn use_actors(world: &mut World, mo: ActorId) -> bool {
         }
     }
     let Some((id, _)) = best else {
+        if trace_vehicle_use() {
+            eprintln!(
+                "room: VEHICLE USE tic={} result=no eligible actor",
+                world.level.time
+            );
+        }
         return false;
     };
     if let Some(a) = world.actors.get_mut(id) {
@@ -119,11 +196,103 @@ pub fn use_actors(world: &mut World, mo: ActorId) -> bool {
     let Some(class) = world.actors.get(id).map(|a| a.class) else {
         return false;
     };
-    let Some(st) = world.states.find_label(class, "Use") else {
+    let use_state = world.states.find_label(class, "Use");
+    let st = use_state.or_else(|| world.states.find_label(class, "Active"));
+    let Some(st) = st else {
         return false;
     };
+    if use_state.is_none() && class_is_tank_derived(world, class) {
+        // Brutal Doom's vehicle ACS hardcodes TID 261 as the active vehicle
+        // for GetVehiclePreviousHealth / Thing_Move. Map bikes briefly share
+        // that TID during their spawn states, so reserve it for the one the
+        // player just used before Active starts.
+        let mut cleared_tids = Vec::new();
+        for &other in &world.thinkers.default {
+            if other != id && world.actors.get(other).is_some_and(|a| a.tid == 261) {
+                if let Some(a) = world.actors.get_mut(other) {
+                    a.tid = 0;
+                    cleared_tids.push(other.index());
+                }
+            }
+        }
+        if let Some(a) = world.actors.get_mut(id) {
+            a.tid = 261;
+        }
+        if trace_vehicle_use() {
+            eprintln!(
+                "room: VEHICLE TID reserve tic={} selected=#{} cleared_tid261={:?}",
+                world.level.time,
+                id.index(),
+                cleared_tids,
+            );
+        }
+    }
+    if trace_vehicle_use() {
+        if let Some(actor) = world.actors.get(id) {
+            let name = world
+                .classes
+                .get(class)
+                .map(|c| c.name.as_str())
+                .unwrap_or("<missing>");
+            eprintln!(
+                "room: VEHICLE USE tic={} selected=#{} class={} state={} target=#{} tid={} hp={} pos=({:.1},{:.1},{:.1})",
+                world.level.time,
+                id.index(),
+                name,
+                if use_state.is_some() { "Use" } else { "Active" },
+                mo.index(),
+                actor.tid,
+                actor.health,
+                actor.pos.x(),
+                actor.pos.y(),
+                actor.pos.z(),
+            );
+        }
+    }
     world.set_state(id, Some(st), true);
+    if class_is_tank_derived(world, class)
+        && world
+            .classes
+            .get(class)
+            .is_some_and(|def| def.name.eq_ignore_ascii_case("Bike"))
+    {
+        // BIKERACE's BikePowerup is the same PowerupGiver used by the mod's
+        // touch-to-mount path. A_Activate/Active only starts the bike's health
+        // monitor; mounting also needs to apply its PowerMorph.PlayerClass.
+        if let Some(giver) = world.classes.find_name("BikePowerup") {
+            let granted = crate::inventory::give_inventory(world, mo, giver, 1);
+            let morphed = granted && crate::action::apply_powerup_giver(world, mo, giver);
+            eprintln!(
+                "room: VEHICLE MOUNT tic={} bike=#{} rider=#{} giver=BikePowerup granted={} morphed={}",
+                world.level.time,
+                id.index(),
+                mo.index(),
+                granted,
+                morphed,
+            );
+        } else {
+            eprintln!(
+                "room: VEHICLE MOUNT tic={} bike=#{} BikePowerup class missing",
+                world.level.time,
+                id.index(),
+            );
+        }
+    }
     true
+}
+
+fn class_is_tank_derived(world: &World, class: room_core::ClassId) -> bool {
+    let mut current = Some(class);
+    for _ in 0..64 {
+        let Some(def) = current.and_then(|id| world.classes.get(id)) else {
+            return false;
+        };
+        if def.name.eq_ignore_ascii_case("Tank") {
+            return true;
+        }
+        current = def.parent;
+    }
+    false
 }
 
 /// Parametric hit of ray a→b against segment c→d; returns t in [0,1] along a→b.

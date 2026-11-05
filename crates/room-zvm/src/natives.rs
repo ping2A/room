@@ -38,12 +38,78 @@ pub type NativeFn = fn(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Resul
 pub enum ZsActorOp {
     /// `A_Look`.
     Look,
-    /// `A_Chase`.
-    Chase,
+    /// `A_Chase` with optional state labels and UZDoom chase flags.
+    Chase {
+        /// Melee state label (empty means the actor's default `Melee` state).
+        melee: String,
+        /// Missile state label (empty means the actor's default `Missile` state).
+        missile: String,
+        /// `CHF_*` bit field.
+        flags: i32,
+    },
+    /// `A_RadiusDamageSelf`: damage the actor's target based on distance.
+    RadiusDamageSelf {
+        /// Maximum damage.
+        damage: i32,
+        /// Full-radius distance.
+        distance: f64,
+        /// `RDSF_*` flags.
+        flags: i32,
+        /// Optional flash actor class name.
+        flash_class: Option<String>,
+    },
+    /// `A_Burst` with a resolved chunk actor class name.
+    Burst {
+        /// Name of the chunk actor class.
+        chunk_class: String,
+    },
+    /// Restore the actor's prepared resurrection candidate (`A_CheckForResurrection`).
+    ResurrectCandidate {
+        /// Generational arena index of the corpse selected before this VM call.
+        actor_index: u32,
+        /// Generation of the selected corpse handle.
+        generation: u32,
+    },
     /// `A_Face` / `A_FaceTarget`.
     Face,
     /// `A_StartSound`.
     Sound(String),
+    /// Full ZScript `Actor.A_StartSound` call.
+    SoundStart {
+        /// Sound name or `*player-sound` token.
+        name: String,
+        /// Channel slot.
+        channel: i32,
+        /// `CHANF_*` flags.
+        flags: i32,
+        /// Volume.
+        volume: f64,
+        /// Attenuation.
+        attenuation: f64,
+        /// Playback pitch (zero selects default pitch).
+        pitch: f64,
+        /// Start position in seconds.
+        start_time: f64,
+    },
+    /// `A_StartSoundIfNotSame` with UZDoom's sound comparison and channel parameters.
+    SoundIfNotSame {
+        /// Sound to start when the current voice differs.
+        name: String,
+        /// Sound that suppresses the start when it is already playing.
+        check_name: String,
+        /// Actor sound channel.
+        channel: i32,
+        /// `CHANF_*` flags.
+        flags: i32,
+        /// Linear volume.
+        volume: f64,
+        /// Distance attenuation.
+        attenuation: f64,
+        /// Playback pitch.
+        pitch: f64,
+        /// Start position in seconds.
+        start_time: f64,
+    },
     /// `LineAttack` hitscan. `range` is map units; `damage` is hit points.
     LineAttack {
         /// Trace length.
@@ -129,6 +195,41 @@ pub enum ZsActorOp {
         name: String,
         /// Up to four integer arguments.
         args: [i64; 4],
+    },
+    /// `Actor.A_SpawnParticleEx` motion and fade request.
+    ParticleEx {
+        /// Packed RGB color.
+        color: u32,
+        /// UZDoom legacy render style (`STYLE_*`).
+        render_style: i32,
+        /// Particle flags (`SPF_*`).
+        flags: u32,
+        /// Lifetime in tics.
+        lifetime: i32,
+        /// Initial size.
+        size: f64,
+        /// Direction angle in degrees.
+        angle: f64,
+        /// Spawn offset.
+        offset: [f64; 3],
+        /// Initial velocity.
+        velocity: [f64; 3],
+        /// Acceleration.
+        acceleration: [f64; 3],
+        /// Starting opacity.
+        alpha: f64,
+        /// Opacity delta per tic.
+        fade_step: f64,
+        /// Size delta per tic.
+        size_step: f64,
+        /// Initial roll in degrees.
+        roll: f64,
+        /// Roll velocity in degrees per tic.
+        roll_velocity: f64,
+        /// Roll acceleration in degrees per tic squared.
+        roll_acceleration: f64,
+        /// Opacity step used after fade-in when a fade mode is active.
+        fade_out_step: f64,
     },
 }
 
@@ -287,6 +388,8 @@ mod play_natives {
         pub skill: i32,
         /// `consoleplayer`.
         pub consoleplayer: i32,
+        /// Lowercase hexadecimal MD5 for the active map's gameplay lumps.
+        pub level_checksum: String,
         /// `gamestate` (`0` = `GS_LEVEL`).
         pub gamestate: i32,
         /// In-memory lumps for `Wads.*`, keyed by name. Index is `BTreeMap` order.
@@ -295,6 +398,14 @@ mod play_natives {
         pub grants: Vec<(i64, String, i32)>,
         /// Integer CVars (`CVar.GetCVar`).
         pub cvars: BTreeMap<String, i32>,
+        /// Floating-point CVars. Keys are normalized to lowercase on writes.
+        pub cvar_floats: BTreeMap<String, f64>,
+        /// String CVars. Keys are normalized to lowercase on writes.
+        pub cvar_strings: BTreeMap<String, String>,
+        /// Floating-point defaults for CVars whose declared type is float.
+        pub cvar_float_defaults: BTreeMap<String, f64>,
+        /// String defaults for CVars whose declared type is string.
+        pub cvar_string_defaults: BTreeMap<String, String>,
         /// Menu labels from `SetCVarDescription`, keyed by CVar name.
         pub cvar_desc: BTreeMap<String, String>,
         /// `Console.Printf` lines.
@@ -325,8 +436,17 @@ mod play_natives {
         pub color_rgb: Option<(u8, u8, u8)>,
         /// Actor natives queued for the playsim (`A_Look`, `LineAttack`, …).
         pub actor_ops: Vec<super::ZsActorOp>,
+        /// Physical corpse candidate for the current actor VM call.
+        pub resurrection_candidate: Option<(u32, u32)>,
         /// Registered name of the native currently running (`Actor.A_SetSize`).
         pub native_name: String,
+        /// ZScript class-id → class name table for `class<T>` values passed to natives.
+        pub class_names: Vec<String>,
+        /// Script class layouts used by `Object.New`, keyed by lowercase class name.
+        pub object_layouts: BTreeMap<String, (u32, u16, u16, u16)>,
+        /// Per-player `(2d distance², vertical-adjusted distance², visible)` for the actor
+        /// whose ZScript method is currently running.
+        pub ai_observers: Vec<(f64, f64, bool)>,
     }
 
     impl Default for ZvmPlayHost {
@@ -334,10 +454,15 @@ mod play_natives {
             Self {
                 skill: 3,
                 consoleplayer: 0,
+                level_checksum: String::new(),
                 gamestate: 0,
                 wads: BTreeMap::new(),
                 grants: Vec::new(),
                 cvars: BTreeMap::new(),
+                cvar_floats: BTreeMap::new(),
+                cvar_strings: BTreeMap::new(),
+                cvar_float_defaults: BTreeMap::new(),
+                cvar_string_defaults: BTreeMap::new(),
                 cvar_desc: BTreeMap::new(),
                 printf: Vec::new(),
                 handlers: BTreeMap::new(),
@@ -347,7 +472,11 @@ mod play_natives {
                 mo_player: BTreeMap::new(),
                 sound_class: BTreeMap::new(),
                 actor_ops: Vec::new(),
+                resurrection_candidate: None,
                 native_name: String::new(),
+                class_names: Vec::new(),
+                object_layouts: BTreeMap::new(),
+                ai_observers: Vec::new(),
                 gametic: 0,
                 wp_nochange: ObjHandle::NULL,
                 inter_music: String::new(),
@@ -368,6 +497,21 @@ mod play_natives {
                 .map_or(-1, |i| i as i32)
         }
 
+        /// `Wads.FindLump`: find the next matching entry at or after `start`.
+        /// The current injected lump view has no archive namespace metadata, so
+        /// the namespace filter is intentionally applied by its caller only
+        /// when that metadata becomes available.
+        #[must_use]
+        pub fn wad_find(&self, name: &str, start: i32) -> i32 {
+            let start = usize::try_from(start.max(0)).unwrap_or(usize::MAX);
+            self.wads
+                .keys()
+                .enumerate()
+                .skip(start)
+                .find(|(_, key)| key.eq_ignore_ascii_case(name))
+                .map_or(-1, |(index, _)| i32::try_from(index).unwrap_or(-1))
+        }
+
         /// `Wads.ReadLump`.
         #[must_use]
         pub fn wad_read(&self, lump: i32) -> Option<String> {
@@ -380,6 +524,13 @@ mod play_natives {
         /// Built-in value used when a CVar has not been set.
         #[must_use]
         pub fn cvar_default(&self, name: &str) -> i32 {
+            let key = name.to_ascii_lowercase();
+            if let Some(value) = self.cvar_float_defaults.get(&key) {
+                return *value as i32;
+            }
+            if let Some(value) = self.cvar_string_defaults.get(&key) {
+                return value.trim().parse::<i32>().unwrap_or(0);
+            }
             match name.to_ascii_lowercase().as_str() {
                 "screenblocks" => 10,
                 "skill" => self.skill,
@@ -391,10 +542,134 @@ mod play_natives {
         /// Integer CVar, ASCII case-insensitive. Missing names use [`Self::cvar_default`].
         #[must_use]
         pub fn cvar(&self, name: &str) -> i32 {
+            let key = name.to_ascii_lowercase();
+            if let Some(value) = self.cvar_strings.get(&key) {
+                return value.trim().parse::<i32>().unwrap_or(0);
+            }
+            if let Some(value) = self.cvar_floats.get(&key) {
+                return *value as i32;
+            }
             self.cvars
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case(name))
                 .map_or_else(|| self.cvar_default(name), |(_, v)| *v)
+        }
+
+        /// Floating CVar value, falling back to the integer/default value.
+        #[must_use]
+        pub fn cvar_float(&self, name: &str) -> f64 {
+            let key = name.to_ascii_lowercase();
+            if let Some(value) = self.cvar_floats.get(&key) {
+                return *value;
+            }
+            if let Some(value) = self.cvar_strings.get(&key) {
+                return value.trim().parse::<f64>().unwrap_or(0.0);
+            }
+            if let Some(value) = self.cvars.get(&key) {
+                return f64::from(*value);
+            }
+            self.cvar_default_float(name)
+        }
+
+        /// Floating default value with integer fallback.
+        #[must_use]
+        pub fn cvar_default_float(&self, name: &str) -> f64 {
+            self.cvar_float_defaults
+                .get(&name.to_ascii_lowercase())
+                .copied()
+                .unwrap_or_else(|| f64::from(self.cvar_default(name)))
+        }
+
+        /// String default value with typed numeric conversion fallback.
+        #[must_use]
+        pub fn cvar_default_string(&self, name: &str) -> String {
+            let key = name.to_ascii_lowercase();
+            if let Some(value) = self.cvar_string_defaults.get(&key) {
+                value.clone()
+            } else if let Some(value) = self.cvar_float_defaults.get(&key) {
+                value.to_string()
+            } else {
+                self.cvar_default(name).to_string()
+            }
+        }
+
+        /// CVar text value using UZDoom-style type conversion.
+        #[must_use]
+        pub fn cvar_string(&self, name: &str) -> String {
+            let key = name.to_ascii_lowercase();
+            if let Some(value) = self.cvar_strings.get(&key) {
+                return value.clone();
+            }
+            match key.as_str() {
+                "name" | "playername" => return "Player".into(),
+                "language" => return "en".into(),
+                "playerclass" => return "DoomPlayer".into(),
+                "gender" => return "male".into(),
+                _ => {}
+            }
+            if let Some(value) = self.cvar_floats.get(&key) {
+                return value.to_string();
+            }
+            if let Some(value) = self.cvar_string_defaults.get(&key) {
+                return value.clone();
+            }
+            if let Some(value) = self.cvar_float_defaults.get(&key) {
+                return value.to_string();
+            }
+            self.cvar(name).to_string()
+        }
+
+        /// CVar runtime type (`CVAR_Int` = 1, `CVAR_Float` = 2, `CVAR_String` = 3).
+        #[must_use]
+        pub fn cvar_type(&self, name: &str) -> i32 {
+            let key = name.to_ascii_lowercase();
+            if self.cvar_strings.contains_key(&key) || self.cvar_string_defaults.contains_key(&key)
+            {
+                3
+            } else if self.cvar_floats.contains_key(&key)
+                || self.cvar_float_defaults.contains_key(&key)
+            {
+                2
+            } else {
+                1
+            }
+        }
+
+        /// Store an integer CVar and clear any previous typed value.
+        pub fn set_cvar_int(&mut self, name: &str, value: i32) {
+            let key = name.to_ascii_lowercase();
+            self.cvar_floats.remove(&key);
+            self.cvar_strings.remove(&key);
+            self.cvars.insert(key, value);
+        }
+
+        /// Store a floating-point CVar and its integer conversion.
+        pub fn set_cvar_float(&mut self, name: &str, value: f64) {
+            let key = name.to_ascii_lowercase();
+            self.cvar_strings.remove(&key);
+            self.cvars.insert(key.clone(), value as i32);
+            self.cvar_floats.insert(key, value);
+        }
+
+        /// Store a string CVar and its numeric conversion when available.
+        pub fn set_cvar_string(&mut self, name: &str, value: &str) {
+            let key = name.to_ascii_lowercase();
+            self.cvar_floats.remove(&key);
+            self.cvars
+                .insert(key.clone(), value.trim().parse::<i32>().unwrap_or(0));
+            self.cvar_strings.insert(key, value.to_owned());
+        }
+
+        /// Install a floating-point CVar default.
+        pub fn set_cvar_float_default(&mut self, name: &str, value: f64) {
+            self.cvar_float_defaults
+                .insert(name.to_ascii_lowercase(), value);
+        }
+
+        /// Install a string CVar default.
+        pub fn set_cvar_string_default(&mut self, name: &str, value: &str) {
+            self.cvar_string_defaults
+                .insert(name.to_ascii_lowercase(), value.to_owned());
         }
 
         /// `EventHandler.Find`.
@@ -438,17 +713,29 @@ mod play_natives {
         add("Array.NewS", array_new_s);
         add("Array.PushS", array_push_s);
         add("String.CharCodeAt", string_char_code_at);
+        add("String.ByteAt", string_byte_at);
         add("String.Length", string_length);
         add("String.Mid", string_mid);
         add("String.Format", string_format);
         add("String.ToInt", string_to_int);
+        add("String.ToDouble", string_to_double);
         add("String.Eq", string_eq);
         add("String.Left", string_left);
+        add("String.Right", string_right);
         add("String.MakeLower", string_make_lower);
+        add("String.MakeUpper", string_make_upper);
         add("String.Replace", string_replace);
         add("String.CharLower", string_char_lower);
         add("String.Filter", string_filter);
         add("String.IndexOf", string_index_of);
+        add("String.LastIndexOf", string_right_index_of);
+        add("String.RightIndexOf", string_right_index_of);
+        add("String.IsEmpty", string_is_empty);
+        add("String.IsNotEmpty", string_is_not_empty);
+        add("String.IsInt", string_is_int);
+        add("String.IsDouble", string_is_double);
+        add("String.Compare", string_compare);
+        add("String.CompareNoCase", string_compare_nocase);
         add("String.Split", string_split);
         add("StringTable.Localize", string_identity);
         add("StringTable.GetUnlocalizedString", string_identity);
@@ -1171,8 +1458,12 @@ mod play_natives {
         add("cvar.GetFloat", cvar_get_float);
         add("cvar.GetDefaultFloat", cvar_get_default_float);
         add("cvar.GetString", cvar_get_string);
+        add("cvar.GetDefaultString", cvar_get_default_string);
         add("cvar.SetInt", cvar_set_int);
+        add("cvar.SetFloat", cvar_set_float);
+        add("cvar.SetString", cvar_set_string);
         add("cvar.GetRealType", cvar_real_type);
+        add("cvar.ResetToDefault", cvar_reset_to_default);
         add("font.FindFontColor", font_find_color);
         add("font.GetCursor", font_cursor);
         add("font.GetDisplacement", font_displacement);
@@ -1203,6 +1494,7 @@ mod play_natives {
         add("EventHandler.Find", event_handler_find);
         add("Object.New", object_new);
         add("Actor.GiveInventory", actor_give_inventory);
+        add("Actor.TakeInventory", actor_take_inventory);
         add("Actor.SetSoundClass", actor_set_sound_class);
         add("Actor.ChangeTID", actor_change_tid);
         add("PlayerInfo.GetGender", player_get_gender);
@@ -1226,7 +1518,9 @@ mod play_natives {
             "optionmenuitemoption.setcvardescription",
             cvar_set_description,
         );
-        add("Wads.FindLump", stub_neg1);
+        add("Wads.FindLump", wad_find_lump);
+        add("Wads.FindLumpFullName", wad_find_lump);
+        add("LevelLocals.GetChecksum", level_checksum);
         // Room is not Zandronum — BD takes GZDoom branches (docs/33 §7).
         add("ZandroCompat.IsZandronum", stub_zero);
         add("System.IsZandronum", stub_zero);
@@ -1378,6 +1672,9 @@ mod play_natives {
         add("actor.isvisible", level_yes);
         add("actor.hitfloor", level_yes);
         add("actor.getspecies", actor_species);
+        add("actor.checkifseen", actor_check_if_seen);
+        add("actor.checksightorrange", actor_check_sight_or_range);
+        add("actor.checkrange", actor_check_range);
         add("actor.lookforplayers", actor_look);
         add("actor.die", actor_die);
         add("actor.explodemissile", actor_explode);
@@ -1464,8 +1761,64 @@ mod play_natives {
         add("Actor.A_Look", actor_look);
         add("Actor.A_Chase", actor_chase);
         add("Actor.A_Face", actor_face);
-        add("Actor.A_StartSound", actor_start_sound);
-        add("global.A_StartSound", actor_start_sound);
+        add("Actor.A_StartSound", actor_start_sound_full);
+        add("global.A_StartSound", actor_start_sound_full);
+        add("Actor.A_CheckForResurrection", act_check_for_resurrection);
+        // MBF21 weapon psprite actions used by ID24 and DeHackEd-derived ZScript.
+        // They use the same playsim action dispatcher as DECORATE actions.
+        for name in [
+            "A_CheckAmmo",
+            "A_GunFlashTo",
+            "A_RefireTo",
+            "A_BulletAttack",
+            "A_ChangeCountFlags",
+            "A_ChangeLinkFlags",
+            "A_KillTarget",
+            "A_KillTracer",
+            "A_SetChaseThreshold",
+            "A_ActiveAndUnblock",
+            "A_ActiveSound",
+            "A_ClearOverlays",
+            "A_ClearSoundTarget",
+            "A_Overlay",
+            "A_OverlayAlpha",
+            "A_OverlayFlags",
+            "A_OverlayOffset",
+            "A_OverlayPivot",
+            "A_OverlayPivotAlign",
+            "A_OverlayRenderStyle",
+            "A_OverlayRotate",
+            "A_OverlayScale",
+            "A_OverlayTranslation",
+            "A_SpriteOffset",
+            "A_WeaponOffset",
+            "A_StopSounds",
+            "A_SetViewAngle",
+            "A_SetViewPitch",
+            "A_SetViewPos",
+            "A_SetViewRoll",
+            "A_HideThing",
+            "A_LowGravity",
+            "A_ResetHealth",
+            "A_RemoveTarget",
+            "A_RemoveTracer",
+            "A_ScreamAndUnblock",
+            "A_SetFloat",
+            "A_UnsetFloat",
+            "A_SetReflective",
+            "A_UnSetReflective",
+            "A_SetReflectiveInvulnerable",
+            "A_UnSetReflectiveInvulnerable",
+            "A_SetShootable",
+            "A_UnSetShootable",
+            "A_SetSolid",
+            "A_UnsetSolid",
+            "A_UnHideThing",
+            "A_WeaponAlert",
+        ] {
+            add(&format!("Actor.{name}"), act_by_name);
+            add(&format!("global.{name}"), act_by_name);
+        }
         add("Actor.AimLineAttack", actor_aim_line);
         add("Actor.LineAttack", actor_line_attack);
         add("Actor.A_Pain", actor_pain);
@@ -1509,6 +1862,10 @@ mod play_natives {
         add("global.A_DamageSelf", act_damage_self);
         add("Actor.A_DamageTarget", act_damage_target);
         add("global.A_DamageTarget", act_damage_target);
+        add("Actor.A_RadiusDamageSelf", act_radius_damage_self);
+        add("global.A_RadiusDamageSelf", act_radius_damage_self);
+        add("Actor.A_Burst", actor_burst);
+        add("global.A_Burst", actor_burst);
         add("Actor.A_Respawn", act_respawn);
         add("global.A_Respawn", act_respawn);
         add("Actor.A_VileChase", act_vile_chase);
@@ -1531,6 +1888,7 @@ mod play_natives {
             "A_Print",
             "A_Log",
             "A_SetTranslation",
+            "A_ExtChase",
             "A_DropItem",
             "A_SpawnProjectile",
             "A_FireProjectile",
@@ -1539,13 +1897,17 @@ mod play_natives {
             add(&format!("Actor.{name}"), act_by_name);
             add(&format!("global.{name}"), act_by_name);
         }
-        add("object.A_StartSound", actor_start_sound);
-        add("Actor.A_StartSoundIfNotSame", actor_start_sound);
-        add("global.A_StartSoundIfNotSame", actor_start_sound);
+        add("object.A_StartSound", actor_start_sound_full);
+        add("Actor.A_StartSoundIfNotSame", actor_start_sound_if_not_same);
+        add(
+            "global.A_StartSoundIfNotSame",
+            actor_start_sound_if_not_same,
+        );
         add("Actor.A_StopSounds", act_stop_sounds);
         add("global.A_StopSounds", act_stop_sounds);
         add("Actor.A_MonsterRail", act_monster_rail);
         add("global.A_MonsterRail", act_monster_rail);
+        add("Actor.A_SpawnParticleEx", actor_spawn_particle_ex);
         ids
     }
 
@@ -1555,9 +1917,65 @@ mod play_natives {
     }
 
     fn act_monster_rail(ctx: &mut ZvmCtx<'_>, _regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
-        ctx.play.actor_ops.push(super::ZsActorOp::Action {
-            name: "A_RailAttack".into(),
-            args: [50, 0, 0, 0],
+        queue_action(ctx, _regs, "A_MonsterRail");
+        Ok(())
+    }
+
+    fn actor_spawn_particle_ex(
+        ctx: &mut ZvmCtx<'_>,
+        regs: &mut NativeRegs<'_>,
+    ) -> Result<(), Trap> {
+        let integer = |index: usize| regs.i.get(index).copied().unwrap_or(0);
+        let float = |index: usize, default: f64| regs.f.get(index).copied().unwrap_or(default);
+        let flags = integer(3) as u32;
+        ctx.play.actor_ops.push(super::ZsActorOp::ParticleEx {
+            color: integer(0) as u32,
+            render_style: integer(2) as i32,
+            flags,
+            lifetime: integer(4) as i32,
+            size: float(0, 1.0),
+            angle: float(1, 0.0),
+            offset: [float(2, 0.0), float(3, 0.0), float(4, 0.0)],
+            velocity: [float(5, 0.0), float(6, 0.0), float(7, 0.0)],
+            acceleration: [float(8, 0.0), float(9, 0.0), float(10, 0.0)],
+            alpha: float(11, 1.0),
+            fade_step: float(12, -1.0),
+            size_step: float(13, 0.0),
+            roll: if flags & (1 << 6) != 0 {
+                float(14, 0.0)
+            } else {
+                0.0
+            },
+            roll_velocity: if flags & (1 << 6) != 0 {
+                float(15, 0.0)
+            } else {
+                0.0
+            },
+            roll_acceleration: if flags & (1 << 6) != 0 {
+                float(16, 0.0)
+            } else {
+                0.0
+            },
+            fade_out_step: float(17, 0.0),
+        });
+        Ok(())
+    }
+
+    fn actor_burst(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let string_class = regs
+            .s
+            .first()
+            .map(|class| ctx.heap.str(*class).to_owned())
+            .filter(|class| !class.is_empty());
+        let class_name = string_class.unwrap_or_else(|| {
+            usize::try_from(regs.i.first().copied().unwrap_or(-1))
+                .ok()
+                .and_then(|id| ctx.play.class_names.get(id))
+                .cloned()
+                .unwrap_or_default()
+        });
+        ctx.play.actor_ops.push(super::ZsActorOp::Burst {
+            chunk_class: class_name,
         });
         Ok(())
     }
@@ -1649,12 +2067,62 @@ mod play_natives {
         queue_action(ctx, regs, "A_DamageTarget");
         Ok(())
     }
+    fn act_radius_damage_self(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        ctx.play.actor_ops.push(super::ZsActorOp::RadiusDamageSelf {
+            damage: regs.i.first().copied().unwrap_or(128) as i32,
+            distance: regs.f.first().copied().unwrap_or(128.0),
+            flags: regs.i.get(1).copied().unwrap_or(0) as i32,
+            flash_class: regs
+                .s
+                .first()
+                .map(|handle| ctx.heap.str(*handle).to_owned())
+                .filter(|name| !name.is_empty()),
+        });
+        Ok(())
+    }
     fn act_respawn(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         queue_action(ctx, regs, "A_Respawn");
         Ok(())
     }
     fn act_vile_chase(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         queue_action(ctx, regs, "A_VileChase");
+        Ok(())
+    }
+    fn act_check_for_resurrection(
+        ctx: &mut ZvmCtx<'_>,
+        regs: &mut NativeRegs<'_>,
+    ) -> Result<(), Trap> {
+        // Actor natives receive the VM receiver in A[0]; a non-null state
+        // argument, when present, follows it. Bare/global calls have no
+        // receiver and therefore use A[0] for their first argument.
+        let receiver_present = regs.a.first().is_some_and(|value| !value.is_null());
+        let custom_state = regs
+            .a
+            .get(usize::from(receiver_present))
+            .is_some_and(|value| !value.is_null());
+        let custom_sound = regs.i.first().copied().unwrap_or(0) != 0;
+        if custom_state || custom_sound {
+            ctx.play.resurrection_candidate = None;
+            if let Some(result) = regs.i.first_mut() {
+                *result = 0;
+            }
+            return Ok(());
+        }
+        let Some((actor_index, generation)) = ctx.play.resurrection_candidate.take() else {
+            if let Some(result) = regs.i.first_mut() {
+                *result = 0;
+            }
+            return Ok(());
+        };
+        ctx.play
+            .actor_ops
+            .push(super::ZsActorOp::ResurrectCandidate {
+                actor_index,
+                generation,
+            });
+        if let Some(result) = regs.i.first_mut() {
+            *result = 1;
+        }
         Ok(())
     }
     fn act_boss_death(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
@@ -2427,6 +2895,44 @@ mod play_natives {
         Ok(())
     }
 
+    // GZDoom's Check* methods return true when the actor is outside the
+    // relevant range/sight of every in-game player (the state wrappers jump
+    // when these return false). Distances and LOS are captured by room-sim
+    // before entering the VM, keeping the native deterministic and world-free.
+    fn actor_check_if_seen(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        write_num(regs, f64::from(!ctx.play.ai_observers.iter().any(|o| o.2)));
+        Ok(())
+    }
+
+    fn actor_check_sight_or_range(
+        ctx: &mut ZvmCtx<'_>,
+        regs: &mut NativeRegs<'_>,
+    ) -> Result<(), Trap> {
+        let range = regs.f.first().copied().unwrap_or(0.0).max(0.0);
+        let two_d = regs.i.first().copied().unwrap_or(0) != 0;
+        let range2 = range * range;
+        let in_interest = ctx
+            .play
+            .ai_observers
+            .iter()
+            .any(|o| (if two_d { o.0 } else { o.1 }) <= range2 || o.2);
+        write_num(regs, f64::from(!in_interest));
+        Ok(())
+    }
+
+    fn actor_check_range(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let range = regs.f.first().copied().unwrap_or(0.0).max(0.0);
+        let two_d = regs.i.first().copied().unwrap_or(0) != 0;
+        let range2 = range * range;
+        let in_range = ctx
+            .play
+            .ai_observers
+            .iter()
+            .any(|o| (if two_d { o.0 } else { o.1 }) <= range2);
+        write_num(regs, f64::from(!in_range));
+        Ok(())
+    }
+
     /// BeginPlay asks this before keeping `crouchsprite`. No crouch frames are built.
     fn player_setup_crouch_sprite(
         _ctx: &mut ZvmCtx<'_>,
@@ -2819,8 +3325,39 @@ mod play_natives {
         Ok(())
     }
 
-    fn actor_chase(ctx: &mut ZvmCtx<'_>, _regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
-        ctx.play.actor_ops.push(super::ZsActorOp::Chase);
+    fn actor_chase(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let melee = regs
+            .s
+            .first()
+            .copied()
+            .map(|handle| {
+                let label = ctx.heap.str(handle);
+                if label == "__room_null_state" {
+                    "null".to_owned()
+                } else {
+                    label.to_owned()
+                }
+            })
+            .unwrap_or_default();
+        let missile = regs
+            .s
+            .get(1)
+            .copied()
+            .map(|handle| {
+                let label = ctx.heap.str(handle);
+                if label == "__room_null_state" {
+                    "null".to_owned()
+                } else {
+                    label.to_owned()
+                }
+            })
+            .unwrap_or_default();
+        let flags = regs.i.first().copied().unwrap_or(0) as i32;
+        ctx.play.actor_ops.push(super::ZsActorOp::Chase {
+            melee,
+            missile,
+            flags,
+        });
         Ok(())
     }
 
@@ -2835,6 +3372,62 @@ mod play_natives {
             .str(regs.s.first().copied().unwrap_or_default())
             .to_owned();
         ctx.play.actor_ops.push(super::ZsActorOp::Sound(name));
+        Ok(())
+    }
+
+    fn actor_start_sound_full(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let name = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
+        let number = |index: usize, fallback: f64| {
+            regs.f
+                .get(index)
+                .copied()
+                .filter(|value| value.is_finite())
+                .unwrap_or(fallback)
+        };
+        ctx.play.actor_ops.push(super::ZsActorOp::SoundStart {
+            name,
+            channel: i32::try_from(regs.i.first().copied().unwrap_or(4)).unwrap_or(4),
+            flags: i32::try_from(regs.i.get(1).copied().unwrap_or(0)).unwrap_or(0),
+            volume: number(0, 1.0),
+            attenuation: number(1, 1.0),
+            pitch: number(2, 0.0),
+            start_time: number(3, 0.0),
+        });
+        Ok(())
+    }
+
+    fn actor_start_sound_if_not_same(
+        ctx: &mut ZvmCtx<'_>,
+        regs: &mut NativeRegs<'_>,
+    ) -> Result<(), Trap> {
+        let name = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
+        let check_name = ctx
+            .heap
+            .str(regs.s.get(1).copied().unwrap_or_default())
+            .to_owned();
+        let number = |index: usize, fallback: f64| {
+            regs.f
+                .get(index)
+                .copied()
+                .filter(|value| value.is_finite())
+                .unwrap_or(fallback)
+        };
+        ctx.play.actor_ops.push(super::ZsActorOp::SoundIfNotSame {
+            name,
+            check_name,
+            channel: i32::try_from(regs.i.first().copied().unwrap_or(4)).unwrap_or(4),
+            flags: i32::try_from(regs.i.get(1).copied().unwrap_or(0)).unwrap_or(0),
+            volume: number(0, 1.0),
+            attenuation: number(1, 1.0),
+            pitch: number(2, 0.0),
+            start_time: number(3, 0.0),
+        });
         Ok(())
     }
 
@@ -2898,6 +3491,19 @@ mod play_natives {
         }
         if regs.s.len() > 1 {
             regs.s[1] = h;
+        }
+        Ok(())
+    }
+
+    fn wad_find_lump(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let name = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
+        let start = i32::try_from(regs.i.first().copied().unwrap_or(0)).unwrap_or(i32::MAX);
+        let found = ctx.play.wad_find(&name, start);
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = i64::from(found);
         }
         Ok(())
     }
@@ -3361,12 +3967,85 @@ mod play_natives {
         Ok(())
     }
 
+    fn string_right(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let s = ctx.heap.str(regs.s.first().copied().unwrap_or_default());
+        let len = usize::try_from(regs.i.first().copied().unwrap_or(0).max(0)).unwrap_or(0);
+        let chars: Vec<char> = s.chars().collect();
+        let start = chars.len().saturating_sub(len);
+        let out: String = chars.into_iter().skip(start).collect();
+        store_string(ctx, regs, &out);
+        Ok(())
+    }
+
     fn string_make_lower(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         let s = ctx
             .heap
             .str(regs.s.first().copied().unwrap_or_default())
             .to_lowercase();
         store_string(ctx, regs, &s);
+        Ok(())
+    }
+
+    fn string_make_upper(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let s = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_uppercase();
+        store_string(ctx, regs, &s);
+        Ok(())
+    }
+
+    fn string_is_not_empty(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let text = ctx.heap.str(regs.s.first().copied().unwrap_or_default());
+        write_num(regs, if text.is_empty() { 0.0 } else { 1.0 });
+        Ok(())
+    }
+
+    fn string_is_int(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let text = ctx.heap.str(regs.s.first().copied().unwrap_or_default());
+        let valid = text.trim().parse::<i64>().is_ok();
+        write_num(regs, if valid { 1.0 } else { 0.0 });
+        Ok(())
+    }
+
+    fn string_is_double(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let text = ctx.heap.str(regs.s.first().copied().unwrap_or_default());
+        let valid = text.trim().parse::<f64>().is_ok_and(f64::is_finite);
+        write_num(regs, if valid { 1.0 } else { 0.0 });
+        Ok(())
+    }
+
+    fn string_compare(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let left = ctx.heap.str(regs.s.first().copied().unwrap_or_default());
+        let right = ctx.heap.str(regs.s.get(1).copied().unwrap_or_default());
+        let ordering = left.cmp(right);
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = match ordering {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            };
+        }
+        Ok(())
+    }
+
+    fn string_compare_nocase(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let left = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_ascii_lowercase();
+        let right = ctx
+            .heap
+            .str(regs.s.get(1).copied().unwrap_or_default())
+            .to_ascii_lowercase();
+        let ordering = left.cmp(&right);
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = match ordering {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            };
+        }
         Ok(())
     }
 
@@ -3479,6 +4158,36 @@ mod play_natives {
         };
         if let Some(slot) = regs.i.first_mut() {
             *slot = found.unwrap_or(-1);
+        }
+        Ok(())
+    }
+
+    fn string_right_index_of(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let hay = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
+        let needle = ctx
+            .heap
+            .str(regs.s.get(1).copied().unwrap_or_default())
+            .to_owned();
+        let hay: Vec<char> = hay.chars().collect();
+        let needle: Vec<char> = needle.chars().collect();
+        let end = usize::try_from(regs.i.first().copied().unwrap_or(i64::MAX).max(0))
+            .unwrap_or(usize::MAX)
+            .min(hay.len());
+        let found = if needle.is_empty() {
+            Some(end)
+        } else if needle.len() > hay.len() {
+            None
+        } else {
+            let last_start = hay.len().saturating_sub(needle.len()).min(end);
+            (0..=last_start)
+                .rev()
+                .find(|&start| hay[start..start + needle.len()] == needle)
+        };
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = found.map_or(-1, |index| i64::try_from(index).unwrap_or(i64::MAX));
         }
         Ok(())
     }
@@ -3683,8 +4392,24 @@ mod play_natives {
     }
 
     fn player_user_name(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
-        let name = ctx.play.player_name.clone();
-        store_string(ctx, regs, &name);
+        let name = if ctx.play.player_name.is_empty() {
+            ctx.play.cvar_string("name")
+        } else {
+            ctx.play.player_name.clone()
+        };
+        let limit = regs.i.first().copied().unwrap_or(0).max(0) as usize;
+        let value = if limit > 0 {
+            let mut chars = name.chars();
+            let prefix = chars.by_ref().take(limit).collect::<String>();
+            if chars.next().is_some() {
+                format!("{prefix}...")
+            } else {
+                name
+            }
+        } else {
+            name
+        };
+        store_string(ctx, regs, &value);
         Ok(())
     }
 
@@ -3779,6 +4504,12 @@ mod play_natives {
 
     fn level_yes(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         write_num(regs, 1.0);
+        Ok(())
+    }
+
+    fn level_checksum(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let checksum = ctx.play.level_checksum.clone();
+        store_string(ctx, regs, &checksum);
         Ok(())
     }
 
@@ -3975,6 +4706,24 @@ mod play_natives {
         Ok(())
     }
 
+    fn actor_take_inventory(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        // The playsim applies negative inventory requests as TakeInventory.
+        let recv = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let item = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
+        let amount = regs.i.first().copied().unwrap_or(0) as i32;
+        let cookie = (i64::from(recv.generation) << 32) | i64::from(recv.index);
+        ctx.play
+            .grants
+            .push((cookie, item, amount.saturating_abs().saturating_neg()));
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = 1;
+        }
+        Ok(())
+    }
+
     /// `CVar.GetCVar` / `FindCVar` → object whose `GetInt` returns the value (ZS4).
     fn cvar_get_cvar(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         let name_h = regs.s.first().copied().unwrap_or_default();
@@ -3987,7 +4736,14 @@ mod play_natives {
         }
         let v = ctx.play.cvar(&name);
         let def = ctx.play.cvar_default(&name);
-        let h = ctx.heap.new_object(0, 2, 0, 1);
+        let float_value = ctx.play.cvar_float(&name);
+        let float_default = ctx.play.cvar_default_float(&name);
+        let cvar_type = ctx.play.cvar_type(&name);
+        let current_string = ctx.play.cvar_string(&name);
+        let default_string = ctx.play.cvar_default_string(&name);
+        let current_string_h = ctx.heap.intern_string(&current_string);
+        let default_string_h = ctx.heap.intern_string(&default_string);
+        let h = ctx.heap.new_object(0, 6, 0, 3);
         if let Some(ObjKind::Object {
             fields_i, fields_s, ..
         }) = ctx.heap.get_mut(h)
@@ -3998,8 +4754,23 @@ mod play_natives {
             if let Some(slot) = fields_i.get_mut(1) {
                 *slot = i64::from(def);
             }
+            if let Some(slot) = fields_i.get_mut(3) {
+                *slot = i64::from(cvar_type);
+            }
+            if let Some(slot) = fields_i.get_mut(4) {
+                *slot = float_value.to_bits() as i64;
+            }
+            if let Some(slot) = fields_i.get_mut(5) {
+                *slot = float_default.to_bits() as i64;
+            }
             if let Some(slot) = fields_s.first_mut() {
                 *slot = name_h;
+            }
+            if let Some(slot) = fields_s.get_mut(1) {
+                *slot = current_string_h;
+            }
+            if let Some(slot) = fields_s.get_mut(2) {
+                *slot = default_string_h;
             }
         }
         if let Some(slot) = regs.a.first_mut() {
@@ -4060,13 +4831,27 @@ mod play_natives {
 
     fn cvar_get_float(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
-        write_num(regs, cvar_int_field(ctx, h, 0) as f64);
+        let ty = cvar_int_field(ctx, h, 3);
+        let bits = cvar_int_field(ctx, h, 4) as u64;
+        let value = if ty == 2 {
+            f64::from_bits(bits)
+        } else {
+            cvar_int_field(ctx, h, 0) as f64
+        };
+        write_num(regs, value);
         Ok(())
     }
 
     fn cvar_get_default_float(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
-        write_num(regs, cvar_int_field(ctx, h, 1) as f64);
+        let ty = cvar_int_field(ctx, h, 3);
+        let bits = cvar_int_field(ctx, h, 5) as u64;
+        let value = if ty == 2 {
+            f64::from_bits(bits)
+        } else {
+            cvar_int_field(ctx, h, 1) as f64
+        };
+        write_num(regs, value);
         Ok(())
     }
 
@@ -4087,6 +4872,29 @@ mod play_natives {
 
     fn cvar_get_string(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        if cvar_int_field(ctx, h, 3) == 3 {
+            let text = match ctx.heap.get(h) {
+                Some(ObjKind::Object { fields_s, .. }) => ctx
+                    .heap
+                    .str(fields_s.get(1).copied().unwrap_or_default())
+                    .to_owned(),
+                _ => String::new(),
+            };
+            store_string(ctx, regs, &text);
+            return Ok(());
+        }
+        let value = match ctx.heap.get(h) {
+            Some(ObjKind::Object { fields_s, .. }) => ctx
+                .heap
+                .str(fields_s.get(1).copied().unwrap_or_default())
+                .to_owned(),
+            _ => String::new(),
+        };
+        if !value.is_empty() {
+            let text = value;
+            store_string(ctx, regs, &text);
+            return Ok(());
+        }
         if let Some(text) = object_user_string(ctx, h) {
             store_string(ctx, regs, &text);
             return Ok(());
@@ -4107,26 +4915,183 @@ mod play_natives {
         let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
         let v = regs.i.first().copied().unwrap_or(0);
         let name = cvar_stored_name(ctx, h);
-        if let Some(ObjKind::Object { fields_i, .. }) = ctx.heap.get_mut(h) {
+        let ty = cvar_int_field(ctx, h, 3);
+        let text = ctx.heap.intern_string(&(v as i32).to_string());
+        if let Some(ObjKind::Object {
+            fields_i, fields_s, ..
+        }) = ctx.heap.get_mut(h)
+        {
             if let Some(slot) = fields_i.first_mut() {
                 *slot = v;
             }
+            if let Some(slot) = fields_i.get_mut(4) {
+                *slot = (v as f64).to_bits() as i64;
+            }
+            if let Some(slot) = fields_s.get_mut(1) {
+                *slot = text;
+            }
         }
         if !name.is_empty() {
-            ctx.play.cvars.insert(name, v as i32);
+            match ty {
+                2 => ctx.play.set_cvar_float(&name, v as f64),
+                3 => ctx.play.set_cvar_string(&name, &(v as i32).to_string()),
+                _ => ctx.play.set_cvar_int(&name, v as i32),
+            }
         }
+        Ok(())
+    }
+
+    fn cvar_set_float(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let value = regs.f.first().copied().unwrap_or(0.0);
+        let name = cvar_stored_name(ctx, h);
+        let ty = cvar_int_field(ctx, h, 3);
+        let converted = match ty {
+            3 => value.to_string(),
+            _ => (value as i32).to_string(),
+        };
+        let text = ctx.heap.intern_string(&converted);
+        if let Some(ObjKind::Object {
+            fields_i, fields_s, ..
+        }) = ctx.heap.get_mut(h)
+        {
+            if let Some(slot) = fields_i.first_mut() {
+                *slot = value as i32 as i64;
+            }
+            if let Some(slot) = fields_i.get_mut(4) {
+                *slot = (if ty == 2 { value } else { value as i32 as f64 }).to_bits() as i64;
+            }
+            if let Some(slot) = fields_s.get_mut(1) {
+                *slot = text;
+            }
+        }
+        if !name.is_empty() {
+            match ty {
+                2 => ctx.play.set_cvar_float(&name, value),
+                3 => ctx.play.set_cvar_string(&name, &converted),
+                _ => ctx.play.set_cvar_int(&name, value as i32),
+            }
+        }
+        Ok(())
+    }
+
+    fn cvar_set_string(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let value = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
+        let name = cvar_stored_name(ctx, h);
+        let ty = cvar_int_field(ctx, h, 3);
+        let converted = match ty {
+            2 => value.trim().parse::<f64>().unwrap_or(0.0).to_string(),
+            3 => value.clone(),
+            _ => value.trim().parse::<i32>().unwrap_or(0).to_string(),
+        };
+        let string = ctx.heap.intern_string(&converted);
+        if let Some(ObjKind::Object {
+            fields_i, fields_s, ..
+        }) = ctx.heap.get_mut(h)
+        {
+            if let Some(slot) = fields_i.first_mut() {
+                *slot = if ty == 2 {
+                    converted.parse::<f64>().unwrap_or(0.0) as i32 as i64
+                } else {
+                    converted.parse::<i64>().unwrap_or(0)
+                };
+            }
+            if let Some(slot) = fields_i.get_mut(4) {
+                let float_value = if ty == 2 {
+                    converted.parse::<f64>().unwrap_or(0.0)
+                } else {
+                    converted.parse::<i64>().unwrap_or(0) as f64
+                };
+                *slot = float_value.to_bits() as i64;
+            }
+            if let Some(slot) = fields_s.get_mut(1) {
+                *slot = string;
+            }
+        }
+        if !name.is_empty() {
+            match ty {
+                2 => ctx
+                    .play
+                    .set_cvar_float(&name, converted.parse().unwrap_or(0.0)),
+                3 => ctx.play.set_cvar_string(&name, &converted),
+                _ => ctx.play.set_cvar_int(&name, converted.parse().unwrap_or(0)),
+            }
+        }
+        Ok(())
+    }
+
+    fn cvar_get_default_string(
+        ctx: &mut ZvmCtx<'_>,
+        regs: &mut NativeRegs<'_>,
+    ) -> Result<(), Trap> {
+        let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let text = match ctx.heap.get(h) {
+            Some(ObjKind::Object { fields_s, .. }) => ctx
+                .heap
+                .str(fields_s.get(2).copied().unwrap_or_default())
+                .to_owned(),
+            _ => String::new(),
+        };
+        store_string(ctx, regs, &text);
         Ok(())
     }
 
     fn cvar_real_type(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
-        let name = cvar_stored_name(ctx, h).to_ascii_lowercase();
-        let kind = match name.as_str() {
-            "name" | "playername" | "language" | "playerclass" | "gender" => 3,
-            "mouse_sensitivity" | "gamma" | "hud_scalefactor" => 2,
-            _ => 1,
+        write_num(regs, cvar_int_field(ctx, h, 3) as f64);
+        Ok(())
+    }
+
+    fn cvar_reset_to_default(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let name = cvar_stored_name(ctx, h);
+        let value = ctx.play.cvar_default(&name);
+        let ty = cvar_int_field(ctx, h, 3);
+        let default_string = match ctx.heap.get(h) {
+            Some(ObjKind::Object { fields_s, .. }) => fields_s.get(2).copied().unwrap_or_default(),
+            _ => Default::default(),
         };
-        write_num(regs, kind as f64);
+        let default_float = if ty == 2 {
+            cvar_int_field(ctx, h, 5) as u64
+        } else {
+            f64::from(value).to_bits()
+        };
+        let default_text = ctx.heap.str(default_string).to_owned();
+        let default_int = match ty {
+            2 => f64::from(value) as i64,
+            3 => default_text.trim().parse::<i64>().unwrap_or(0),
+            _ => i64::from(value),
+        };
+        if let Some(ObjKind::Object {
+            fields_i, fields_s, ..
+        }) = ctx.heap.get_mut(h)
+        {
+            if let Some(slot) = fields_i.first_mut() {
+                *slot = default_int;
+            }
+            if let Some(slot) = fields_i.get_mut(4) {
+                *slot = default_float as i64;
+            }
+            if let Some(slot) = fields_s.get_mut(1) {
+                *slot = default_string;
+            }
+        }
+        if !name.is_empty() {
+            match ty {
+                2 => ctx
+                    .play
+                    .set_cvar_float(&name, f64::from_bits(default_float)),
+                3 => ctx.play.set_cvar_string(&name, &default_text),
+                _ => ctx.play.set_cvar_int(&name, value),
+            }
+        }
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = 1;
+        }
         Ok(())
     }
 
@@ -4192,11 +5157,20 @@ mod play_natives {
         Ok(())
     }
 
-    /// `Object.New("Class")` — allocate a generic script object (layout soft).
+    /// `Object.New("Class")` — allocate a script instance using its class layout.
     fn object_new(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
-        let _name = ctx.heap.str(regs.s.first().copied().unwrap_or_default());
-        // Soft layout until class id is threaded through ZvmCtx (ZS2 float/fields).
-        let h = ctx.heap.new_object(0, 8, 4, 4);
+        let name = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_ascii_lowercase();
+        let h = if let Some((class_id, n_i, n_a, n_s)) = ctx.play.object_layouts.get(&name).copied()
+        {
+            ctx.heap.new_object(class_id, n_i, n_a, n_s)
+        } else {
+            // Keep the prior soft behavior for DECORATE/native classes that
+            // are not present in the compiled ZScript class table.
+            ctx.heap.new_object(0, 8, 4, 4)
+        };
         if let Some(slot) = regs.a.first_mut() {
             *slot = h;
         }
@@ -4259,13 +5233,6 @@ mod play_natives {
     fn stub_zero(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         if let Some(slot) = regs.i.first_mut() {
             *slot = 0;
-        }
-        Ok(())
-    }
-
-    fn stub_neg1(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
-        if let Some(slot) = regs.i.first_mut() {
-            *slot = -1;
         }
         Ok(())
     }
@@ -7873,7 +8840,7 @@ mod tests {
         }
         assert!(matches!(
             ctx.play.actor_ops.last(),
-            Some(super::ZsActorOp::Chase)
+            Some(super::ZsActorOp::Chase { .. })
         ));
         i[0] = 40;
         {

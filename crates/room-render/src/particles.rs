@@ -11,6 +11,13 @@ pub const PARTICLE_TEX: &str = "__PARTICLE";
 /// Additive particle quads (shell binds Add blend).
 pub const PARTICLE_TEX_ADD: &str = "__PARTICLE_ADD";
 
+const SPF_NEGATIVE_FADESTEP: u32 = 1 << 10;
+const SPF_REPLACE: u32 = 1 << 7;
+const SPF_NOTIMEFREEZE: u32 = 1 << 5;
+const SPF_NODYNAMICLIGHTING: u32 = 1 << 18;
+const SPF_FADE_IN_OUT: u32 = 1 << 16;
+const SPF_FADE_IN_HOLD_OUT: u32 = 1 << 17;
+
 /// Particle blend / draw style (GZDoom `SPF_*` subset).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ParticleStyle {
@@ -44,12 +51,59 @@ pub struct ParticleInstance {
     pub life: u32,
     /// Initial lifetime (for fade).
     pub life_max: u32,
+    /// Per-tic opacity delta.
+    pub fade_step: f32,
+    /// UZDoom particle flags used by fade state transitions.
+    pub flags: u32,
+    /// Opacity step after a fade-in phase.
+    pub fade_out_step: f32,
+    /// Per-tic size delta.
+    pub size_step: f32,
+    /// Roll angle in degrees.
+    pub roll: f32,
+    /// Per-tic roll velocity in degrees.
+    pub roll_velocity: f32,
+    /// Per-tic roll acceleration in degrees.
+    pub roll_acceleration: f32,
     /// Draw style.
     pub style: ParticleStyle,
     /// Optional floor Z (map units). When set, particles clamp and settle on contact.
     pub floor_z: Option<f32>,
     /// Draw as a horizontal floor disc (`Flat`) instead of a vertical billboard.
     pub on_floor: bool,
+}
+
+/// Playsim particle request transferred to the render-owned particle store.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParticleSpawn {
+    /// Packed RGB (`0xRRGGBB`).
+    pub color: u32,
+    /// Fullbright rendering.
+    pub fullbright: bool,
+    /// Optional UZDoom legacy render style (`STYLE_Add` = 7, `STYLE_Translucent` = 6).
+    pub render_style: Option<i32>,
+    /// Lifetime in tics.
+    pub lifetime: i32,
+    /// Initial size in map units.
+    pub size: f64,
+    /// Initial position.
+    pub pos: [f64; 3],
+    /// Velocity in map units per tic.
+    pub vel: [f64; 3],
+    /// Acceleration in map units per tic².
+    pub accel: [f64; 3],
+    /// Initial opacity.
+    pub alpha: f64,
+    /// Per-tic opacity delta.
+    pub fade_step: f64,
+    /// UZDoom particle flags (`SPF_*`).
+    pub flags: u32,
+    /// Opacity step after a fade-in phase.
+    pub fade_out_step: f64,
+    /// Per-tic size delta.
+    pub size_step: f64,
+    /// Initial roll, velocity, and acceleration in degrees.
+    pub roll: [f64; 3],
 }
 
 /// Soft-circle RGBA texture name for a quantized tint (`__PARTICLE_T_rrggbb`).
@@ -134,10 +188,101 @@ impl ParticleStore {
                 alpha: 1.0,
                 life,
                 life_max: life,
+                fade_step: 1.0 / life as f32,
+                flags: 0,
+                fade_out_step: 0.0,
+                size_step: 0.0,
+                roll: 0.0,
+                roll_velocity: 0.0,
+                roll_acceleration: 0.0,
                 style: if fullbright {
                     ParticleStyle::Additive
                 } else {
                     ParticleStyle::Translucent
+                },
+                floor_z: None,
+                on_floor: false,
+            });
+        }
+    }
+
+    /// Ingest full playsim particle requests while retaining their motion and fade values.
+    pub fn ingest_ex(&mut self, events: impl IntoIterator<Item = ParticleSpawn>) {
+        for event in events {
+            if event.lifetime <= 0 {
+                continue;
+            }
+            let life = event.lifetime.clamp(1, 255) as u32;
+            let rgb = [
+                ((event.color >> 16) & 0xff) as f32 / 255.0,
+                ((event.color >> 8) & 0xff) as f32 / 255.0,
+                (event.color & 0xff) as f32 / 255.0,
+            ];
+            if self.particles.len() >= MAX_PARTICLES {
+                if event.flags & SPF_REPLACE == 0 {
+                    continue;
+                }
+                self.particles.remove(0);
+            }
+            let fade_mode = event.flags & (SPF_FADE_IN_OUT | SPF_FADE_IN_HOLD_OUT);
+            let auto_fade = (event.fade_step < 0.0 && event.flags & SPF_NEGATIVE_FADESTEP == 0)
+                || event.fade_step <= -1.0;
+            let fade_step = if auto_fade {
+                let step = 1.0 / life as f32;
+                if event.flags & SPF_FADE_IN_OUT != 0 {
+                    -2.0 * step
+                } else if event.flags & SPF_FADE_IN_HOLD_OUT != 0 {
+                    -3.0 * step
+                } else {
+                    step
+                }
+            } else {
+                event.fade_step as f32
+            };
+            let fade_out_step = if auto_fade && fade_mode != 0 {
+                -fade_step
+            } else {
+                event.fade_out_step as f32
+            };
+            self.particles.push(ParticleInstance {
+                pos: Vec3::new(
+                    event.pos[0] as f32,
+                    event.pos[1] as f32,
+                    event.pos[2] as f32,
+                ),
+                vel: Vec3::new(
+                    event.vel[0] as f32,
+                    event.vel[1] as f32,
+                    event.vel[2] as f32,
+                ),
+                accel: Vec3::new(
+                    event.accel[0] as f32,
+                    event.accel[1] as f32,
+                    event.accel[2] as f32,
+                ),
+                size: event.size.abs().max(0.5) as f32,
+                light: if event.fullbright {
+                    1.0
+                } else {
+                    (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]).clamp(0.05, 1.0)
+                },
+                color: rgb,
+                alpha: event.alpha.clamp(0.0, 1.0) as f32,
+                life,
+                life_max: life,
+                fade_step,
+                flags: event.flags,
+                fade_out_step,
+                size_step: event.size_step as f32,
+                roll: event.roll[0] as f32,
+                roll_velocity: event.roll[1] as f32,
+                roll_acceleration: event.roll[2] as f32,
+                style: match event.render_style {
+                    Some(7) => ParticleStyle::Additive,
+                    Some(1 | 6) => ParticleStyle::Translucent,
+                    Some(10) => ParticleStyle::Soft,
+                    _ if event.fullbright => ParticleStyle::Additive,
+                    _ => ParticleStyle::Translucent,
                 },
                 floor_z: None,
                 on_floor: false,
@@ -193,6 +338,13 @@ impl ParticleStore {
             alpha: 1.0,
             life,
             life_max: life,
+            fade_step: 1.0 / life as f32,
+            flags: 0,
+            fade_out_step: 0.0,
+            size_step: 0.0,
+            roll: 0.0,
+            roll_velocity: 0.0,
+            roll_acceleration: 0.0,
             style,
             floor_z: None,
             on_floor: false,
@@ -247,6 +399,13 @@ impl ParticleStore {
             alpha: 1.0,
             life,
             life_max: life,
+            fade_step: 1.0 / life as f32,
+            flags: 0,
+            fade_out_step: 0.0,
+            size_step: 0.0,
+            roll: 0.0,
+            roll_velocity: 0.0,
+            roll_acceleration: 0.0,
             style,
             floor_z,
             on_floor: floor_z.is_some() && vel.z.abs() < 0.05 && accel.z.abs() < 0.01,
@@ -255,11 +414,40 @@ impl ParticleStore {
 
     /// Advance one tic; remove expired. Blood particles with [`ParticleInstance::floor_z`] settle.
     pub fn tick(&mut self) {
+        self.tick_with_freeze(false);
+    }
+
+    /// Advance a tic while honoring UZDoom's level-freeze particle behavior.
+    pub fn tick_with_freeze(&mut self, level_frozen: bool) {
         self.particles.retain_mut(|p| {
+            if level_frozen && p.flags & SPF_NOTIMEFREEZE == 0 {
+                return true;
+            }
+            let remaining_tics = p.life;
+            p.alpha -= p.fade_step;
+            let fade_in_out = p.flags & SPF_FADE_IN_OUT != 0;
+            let fade_in_hold_out = p.flags & SPF_FADE_IN_HOLD_OUT != 0;
+            if (fade_in_out && p.alpha >= 1.0)
+                || (fade_in_hold_out
+                    && remaining_tics as f32 * p.fade_out_step.abs() <= p.alpha.abs().min(1.0))
+            {
+                p.alpha = p.alpha.abs().min(1.0);
+                p.fade_step = p.fade_out_step;
+                p.flags &= !(SPF_FADE_IN_OUT | SPF_FADE_IN_HOLD_OUT);
+            }
+            if p.alpha > 1.0 {
+                p.alpha = 1.0;
+            }
+            p.size += p.size_step;
+            if p.alpha <= 0.0 || p.size <= 0.0 {
+                return false;
+            }
             p.life = p.life.saturating_sub(1);
             if p.life == 0 {
                 return false;
             }
+            p.roll += p.roll_velocity;
+            p.roll_velocity += p.roll_acceleration;
             p.vel += p.accel;
             p.pos += p.vel;
             if let Some(fz) = p.floor_z {
@@ -276,12 +464,11 @@ impl ParticleStore {
                     p.on_floor = true;
                 }
             }
-            #[allow(clippy::cast_precision_loss)]
-            let frac = p.life as f32 / p.life_max.max(1) as f32;
-            p.alpha = match p.style {
-                ParticleStyle::Soft => (frac * frac).clamp(0.0, 1.0),
-                ParticleStyle::Additive | ParticleStyle::Translucent => frac.clamp(0.0, 1.0),
-            };
+            if p.style == ParticleStyle::Soft {
+                #[allow(clippy::cast_precision_loss)]
+                let frac = p.life as f32 / p.life_max.max(1) as f32;
+                p.alpha = (frac * frac).clamp(0.0, 1.0);
+            }
             true
         });
     }
@@ -376,6 +563,13 @@ impl ParticleStore {
                         alpha: 1.0,
                         life,
                         life_max: life,
+                        fade_step: 1.0 / life as f32,
+                        flags: 0,
+                        fade_out_step: 0.0,
+                        size_step: 0.0,
+                        roll: 0.0,
+                        roll_velocity: 0.0,
+                        roll_acceleration: 0.0,
                         style: ParticleStyle::Soft,
                         floor_z: Some(fz),
                         on_floor: true,
@@ -753,7 +947,7 @@ pub fn append_particles_ex(
         };
         #[allow(clippy::cast_possible_truncation)]
         let start = lists.sprites.len() as u32;
-        let quad = emit_sprite_quad(
+        let mut quad = emit_sprite_quad(
             SpriteInstance {
                 pos: p.pos,
                 width,
@@ -769,7 +963,21 @@ pub fn append_particles_ex(
             },
             camera.forward,
         );
+        if p.roll.abs() > 1.0e-5 && !p.on_floor {
+            let axis = camera.forward.normalize_or_zero();
+            let angle = p.roll.to_radians();
+            let (sin, cos) = angle.sin_cos();
+            for vertex in &mut quad {
+                let point = Vec3::from_array(vertex.pos) - p.pos;
+                let rotated =
+                    point * cos + axis.cross(point) * sin + axis * axis.dot(point) * (1.0 - cos);
+                vertex.pos = (p.pos + rotated).to_array();
+            }
+        }
         lists.sprites.extend_from_slice(&quad);
+        if p.flags & SPF_NODYNAMICLIGHTING == 0 {
+            crate::scene::apply_dyn_lights_to_sprite_range(lists, start..start.saturating_add(6));
+        }
         lists.sprite_ranges.push(MaterialRange {
             name: tex,
             start,

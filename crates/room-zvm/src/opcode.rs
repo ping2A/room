@@ -126,6 +126,8 @@ pub enum Op {
     Ret = 100,
     /// Copy return slot `c` into `bank a`, register `b`.
     GetRet = 101,
+    /// `i[a] = -1 / 0 / 1` from comparing floating-point values `f[b]`, `f[c]`.
+    CmpF = 102,
 }
 
 impl Op {
@@ -194,6 +196,7 @@ impl Op {
             99 => Self::CallNat,
             100 => Self::Ret,
             101 => Self::GetRet,
+            102 => Self::CmpF,
             _ => return None,
         })
     }

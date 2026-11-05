@@ -12,7 +12,7 @@ use std::ffi::CString;
 use pyo3::prelude::*;
 use pyo3::types::{PyAnyMethods, PyDict, PyModule};
 use room_game::{NativePlayMod, PythonModSource};
-use room_sim::{World, FLAG_COUNTKILL};
+use room_sim::{FLAG_COUNTKILL, World};
 
 const SDK_PY: &str = include_str!("../../../python/room/sdk.py");
 
@@ -79,11 +79,7 @@ fn snapshot_monsters(world: &World) -> HashMap<u32, ActorSnap> {
         if !is_monster {
             continue;
         }
-        let is_player = world
-            .players
-            .iter()
-            .flatten()
-            .any(|p| p.mo == Some(id));
+        let is_player = world.players.iter().flatten().any(|p| p.mo == Some(id));
         let class_name = world
             .classes
             .get(a.class)
@@ -161,7 +157,12 @@ impl HostSession {
 
     fn set_player_health(&self, health: i32) -> bool {
         with_world(|w| {
-            let Some(mo) = w.players.first().and_then(|p| p.as_ref()).and_then(|p| p.mo) else {
+            let Some(mo) = w
+                .players
+                .first()
+                .and_then(|p| p.as_ref())
+                .and_then(|p| p.mo)
+            else {
                 return false;
             };
             if let Some(a) = w.actors.get_mut(mo) {

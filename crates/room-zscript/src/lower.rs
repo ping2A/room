@@ -1084,6 +1084,9 @@ fn emit_expr(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
             if let Some(&v) = lx.consts.get(&name.to_ascii_lowercase()) {
                 return load_i(f, lx, v);
             }
+            if let Some(&class_id) = lx.class_ids.get(&name.to_ascii_lowercase()) {
+                return load_i(f, lx, i64::from(class_id));
+            }
             if let Some(s) = lx.string_consts.get(&name.to_ascii_lowercase()).cloned() {
                 let reg = load_s(f, lx, &s);
                 return string_truthy(f, lx, reg);
@@ -1508,6 +1511,71 @@ fn emit_native(
             load_i(f, lx, 1)
         };
         prepared.push((0, keep));
+    } else if name.eq_ignore_ascii_case("Actor.A_Burst")
+        || name.eq_ignore_ascii_case("global.A_Burst")
+    {
+        // Class values are represented by their stable program-local class
+        // id. String/name class expressions are also accepted by UZDoom.
+        let class_reg = match args.first() {
+            None => (0, load_i(f, lx, 0)),
+            Some(arg) => match arg {
+                Expr::Ident(name, _) if lx.class_ids.contains_key(&name.to_ascii_lowercase()) => {
+                    (2, load_s(f, lx, name))
+                }
+                Expr::Name(name, _) | Expr::String(name, _) => (2, load_s(f, lx, name)),
+                expr if expr_yields_string(expr, lx) => (2, emit_expr_s(f, expr, lx)),
+                _ => (0, emit_expr(f, arg, lx)),
+            },
+        };
+        prepared.push(class_reg);
+    } else if name.eq_ignore_ascii_case("Actor.A_RadiusDamageSelf")
+        || name.eq_ignore_ascii_case("global.A_RadiusDamageSelf")
+    {
+        // Preserve ZScript native defaults because CallNat transports only
+        // explicit arguments, unlike UZDoom's generated VM thunk.
+        let damage = args
+            .first()
+            .map(|arg| emit_expr(f, arg, lx))
+            .unwrap_or_else(|| load_i(f, lx, 128));
+        let distance = args
+            .get(1)
+            .map(|arg| emit_expr_f(f, arg, lx))
+            .unwrap_or_else(|| load_f(f, lx, 128.0));
+        let flags = args
+            .get(2)
+            .map(|arg| emit_expr(f, arg, lx))
+            .unwrap_or_else(|| load_i(f, lx, 0));
+        prepared.extend([(0, damage), (1, distance), (0, flags)]);
+        if let Some(flash_type) = args.get(3) {
+            let class_name = match flash_type {
+                Expr::Ident(name, _) if name.eq_ignore_ascii_case("null") => String::new(),
+                Expr::Ident(name, _) | Expr::Name(name, _) | Expr::String(name, _) => name.clone(),
+                _ => String::new(),
+            };
+            // This VM has no first-class Class handle yet; carry direct class
+            // literals as names so the playsim can spawn the requested flash.
+            prepared.push((2, load_s(f, lx, &class_name)));
+        }
+    } else if name.eq_ignore_ascii_case("Actor.A_Chase")
+        || name.eq_ignore_ascii_case("global.A_Chase")
+    {
+        // `statelabel` parameters are carried in the string bank by this VM.
+        // Preserve the null/explicit-state distinction so the native can tell
+        // an omitted default label from an explicitly disabled attack state.
+        for (index, arg) in args.iter().enumerate() {
+            if index < 2 {
+                let state = match arg {
+                    Expr::Ident(ident, _) if ident.eq_ignore_ascii_case("null") => {
+                        "__room_null_state".to_owned()
+                    }
+                    Expr::String(value, _) | Expr::Name(value, _) => value.clone(),
+                    _ => String::new(),
+                };
+                prepared.push((2, load_s(f, lx, &state)));
+            } else {
+                prepared.push((0, emit_expr(f, arg, lx)));
+            }
+        }
     } else {
         for arg in args {
             if let Expr::String(s, _) = arg {
@@ -3491,9 +3559,14 @@ fn emit_expr_f(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
             if let Some(dest) = emit_script_call(f, lx, callee, args, 1) {
                 return dest;
             }
-            // Int-returning calls still run; the float result is 0.
-            if emit_script_call(f, lx, callee, args, 0).is_some() {
-                return load_f(f, lx, 0.0);
+            if let Some(dest) = emit_script_call(f, lx, callee, args, 0) {
+                return i2f(f, lx, dest);
+            }
+            if let Some(dest) = emit_field_method(f, lx, callee, args, 0) {
+                return i2f(f, lx, dest);
+            }
+            if let Some(dest) = emit_type_call(f, lx, callee, args, 0) {
+                return i2f(f, lx, dest);
             }
             if let Some(dest) = emit_type_call(f, lx, callee, args, 1) {
                 return dest;
@@ -3784,6 +3857,13 @@ fn emit_binary(
     }
     if op == "is" {
         return emit_is(f, lx, lhs, rhs);
+    }
+    if op == "<=>" || op == "<>=" {
+        let left = emit_expr_f(f, lhs, lx);
+        let right = emit_expr_f(f, rhs, lx);
+        let result = lx.alloc();
+        f.emit(Op::CmpF, result, left, right);
+        return result;
     }
     if op == "=" || int_assign_op(op).is_some() {
         if let Expr::Index { arr, index, .. } = lhs {

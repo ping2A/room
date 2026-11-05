@@ -299,6 +299,20 @@ impl GlDefs {
         self.brightmaps.get(&key).map(|b| b.map.as_str())
     }
 
+    /// `true` when a GLDEFS brightmap disables an actor sprite's `Bright` state.
+    /// UZDoom applies this override to the selected sprite texture; actor
+    /// definitions commonly refer to the four-character sprite family instead
+    /// of the resolved frame lump, so accept either spelling.
+    #[must_use]
+    pub fn disables_sprite_fullbright(&self, sprite: &str) -> bool {
+        let key = sprite.trim().to_ascii_uppercase();
+        self.brightmaps.iter().any(|(name, def)| {
+            def.kind == GlTexKind::Sprite
+                && def.disable_fullbright
+                && (name == &key || name.starts_with(&key) || key.starts_with(name))
+        })
+    }
+
     /// `true` when this flat/texture should draw fullbright from Glow defs.
     #[must_use]
     pub fn glow_fullbright(&self, name: &str) -> bool {

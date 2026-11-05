@@ -266,9 +266,14 @@ impl ContentStore {
     ///
     /// Library disabled or bad file name.
     pub fn upload_temp(&self, file: &str) -> Result<PathBuf, String> {
-        let dir = self.dir.as_ref().ok_or("content library disabled (no --content-dir / --data-dir)")?;
+        let dir = self
+            .dir
+            .as_ref()
+            .ok_or("content library disabled (no --content-dir / --data-dir)")?;
         if !is_valid_content_file(file) {
-            return Err(format!("bad file name {file:?} (A-Z a-z 0-9 . _ -, .wad/.pk3/.pk7/.zip)"));
+            return Err(format!(
+                "bad file name {file:?} (A-Z a-z 0-9 . _ -, .wad/.pk3/.pk7/.zip)"
+            ));
         }
         Ok(dir.join(format!(".upload-{file}")))
     }
@@ -331,7 +336,11 @@ impl ContentStore {
     /// # Errors
     ///
     /// Invalid preset or write failure.
-    pub fn set_presets(&self, mut cfg: PresetConfig, known_mod: &dyn Fn(&str) -> bool) -> Result<(), String> {
+    pub fn set_presets(
+        &self,
+        mut cfg: PresetConfig,
+        known_mod: &dyn Fn(&str) -> bool,
+    ) -> Result<(), String> {
         let mut seen = std::collections::BTreeSet::new();
         {
             let lib = self.entries_r();
@@ -374,9 +383,17 @@ impl ContentStore {
                     p.default_map = p.maps.first().cloned().unwrap_or_default();
                 }
                 if !p.maps.is_empty() && !p.maps.contains(&p.default_map) {
-                    return Err(format!("{}: default map {} is not in its map list", p.title, p.default_map));
+                    return Err(format!(
+                        "{}: default map {} is not in its map list",
+                        p.title, p.default_map
+                    ));
                 }
-                if let Some(m) = p.game_mod.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+                if let Some(m) = p
+                    .game_mod
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|m| !m.is_empty())
+                {
                     if !known_mod(m) {
                         return Err(format!("{}: unknown or disallowed mod {m}", p.title));
                     }
@@ -649,7 +666,12 @@ mod tests {
 
     #[test]
     fn finds_wad_maps() {
-        let w = wad(b"IWAD", &["PLAYPAL", "MAP01", "THINGS", "LINEDEFS", "MAP02", "TEXTMAP", "ENDMAP"]);
+        let w = wad(
+            b"IWAD",
+            &[
+                "PLAYPAL", "MAP01", "THINGS", "LINEDEFS", "MAP02", "TEXTMAP", "ENDMAP",
+            ],
+        );
         assert_eq!(wad_maps(&w), ["MAP01", "MAP02"]);
     }
 
@@ -659,7 +681,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let lib = root.join("content");
         std::fs::create_dir_all(&lib).unwrap();
-        std::fs::write(lib.join("base.wad"), wad(b"IWAD", &["MAP01", "THINGS", "MAP07", "THINGS"])).unwrap();
+        std::fs::write(
+            lib.join("base.wad"),
+            wad(b"IWAD", &["MAP01", "THINGS", "MAP07", "THINGS"]),
+        )
+        .unwrap();
         let mut zip_bytes = Vec::new();
         {
             use std::io::Write;
@@ -673,12 +699,24 @@ mod tests {
         std::fs::write(lib.join("bd.pk3"), &zip_bytes).unwrap();
         std::fs::write(lib.join("junk.wad"), b"nope").unwrap();
         let store = ContentStore::open(Some(lib.clone()), root.to_str().unwrap(), 64);
-        let files: Vec<_> = store.list().into_iter().map(|e| (e.file, e.kind, e.maps)).collect();
+        let files: Vec<_> = store
+            .list()
+            .into_iter()
+            .map(|e| (e.file, e.kind, e.maps))
+            .collect();
         assert_eq!(
             files,
             [
-                ("base.wad".into(), ContentKind::Iwad, vec!["MAP01".to_string(), "MAP07".into()]),
-                ("bd.pk3".into(), ContentKind::Archive, vec!["BIKERACE".to_string()]),
+                (
+                    "base.wad".into(),
+                    ContentKind::Iwad,
+                    vec!["MAP01".to_string(), "MAP07".into()]
+                ),
+                (
+                    "bd.pk3".into(),
+                    ContentKind::Archive,
+                    vec!["BIKERACE".to_string()]
+                ),
             ]
         );
         let cfg = PresetConfig {
@@ -710,7 +748,10 @@ mod tests {
         assert!(store.delete("bd.pk3").is_err());
         let bad = PresetConfig {
             require_preset: false,
-            presets: vec![Preset { content: vec!["nope.pk3".into()], ..again.presets().presets[0].clone() }],
+            presets: vec![Preset {
+                content: vec!["nope.pk3".into()],
+                ..again.presets().presets[0].clone()
+            }],
         };
         assert!(store.set_presets(bad, &|_| false).is_err());
         let _ = std::fs::remove_dir_all(&root);

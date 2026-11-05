@@ -130,6 +130,8 @@ pub struct Actor {
     pub pain_threshold: i32,
     /// Current chase / attack target (`A_Look`, damage, missiles).
     pub target: Option<ActorId>,
+    /// Last actor whose noise this mobj heard (`A_Look`, `A_ClearLastHeard`).
+    pub last_heard: Option<ActorId>,
     /// Master / owner (e.g. Pain Elemental for Lost Soul).
     pub master: Option<ActorId>,
     /// Homing aim pointer (e.g. Revenant tracer seek).

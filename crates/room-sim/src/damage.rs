@@ -379,8 +379,52 @@ pub fn damage_mobj(
     source: Option<ActorId>,
     damage: i32,
 ) -> i32 {
+    damage_mobj_with_flags(world, target, inflictor, source, damage, false, false)
+}
+
+/// Apply damage with action-supplied foil flags (UZDoom `DMG_FOILINVUL` and
+/// `DMG_FOILBUDDHA`) in addition to flags read from the source actor.
+pub(crate) fn damage_mobj_with_flags(
+    world: &mut World,
+    target: ActorId,
+    inflictor: Option<ActorId>,
+    source: Option<ActorId>,
+    damage: i32,
+    foil_invul_from_action: bool,
+    foil_buddha_from_action: bool,
+) -> i32 {
     if damage <= 0 {
         return 0;
+    }
+    if world.players.iter().flatten().any(|p| p.mo == Some(target)) {
+        let actor = world.actors.get(target);
+        let target_class = actor
+            .and_then(|a| world.classes.get(a.class))
+            .map_or("<missing>", |c| c.name.as_str());
+        let source_class = source
+            .and_then(|id| world.actors.get(id))
+            .and_then(|a| world.classes.get(a.class))
+            .map_or("<none>", |c| c.name.as_str());
+        let inflictor_class = inflictor
+            .and_then(|id| world.actors.get(id))
+            .and_then(|a| world.classes.get(a.class))
+            .map_or("<none>", |c| c.name.as_str());
+        let vehicle_damage = source_class.to_ascii_lowercase().contains("bike")
+            || source_class.to_ascii_lowercase().contains("tank")
+            || inflictor_class.to_ascii_lowercase().contains("bike")
+            || inflictor_class.to_ascii_lowercase().contains("tank");
+        if vehicle_damage {
+            eprintln!(
+                "room: VEHICLE DAMAGE tic={} target=#{} class={} hp={} damage={} source={} inflictor={}",
+                world.level.time,
+                target.index(),
+                target_class,
+                actor.map_or(0, |a| a.health),
+                damage,
+                source_class,
+                inflictor_class,
+            );
+        }
     }
     if std::env::var_os("ROOM_TRACE_HIT").is_some() {
         if let Some(a) = world.actors.get(target) {
@@ -628,12 +672,13 @@ pub fn damage_mobj(
             return 0;
         }
         // `+FOILINVUL` on the source pierces `INVULNERABLE` (UZ1). `NODAMAGE` still holds.
-        let foil_invul = source.is_some_and(|id| {
-            world
-                .actors
-                .get(id)
-                .is_some_and(|s| s.extra_flags.get_name("FOILINVUL"))
-        });
+        let foil_invul = foil_invul_from_action
+            || source.is_some_and(|id| {
+                world
+                    .actors
+                    .get(id)
+                    .is_some_and(|s| s.extra_flags.get_name("FOILINVUL"))
+            });
         let block = if foil_invul {
             crate::class::FLAG_NODAMAGE
         } else {
@@ -649,7 +694,7 @@ pub fn damage_mobj(
             a.user_vars.remove(USER_FREEZE);
             a.user_vars.remove(USER_ICECORPSE);
         }
-        die(world, target, class, source, dtype.as_deref());
+        die(world, target, class, source, inflictor, dtype.as_deref());
         return damage;
     }
     if dtype
@@ -688,12 +733,13 @@ pub fn damage_mobj(
         .map(|c| c.name.clone())
         .unwrap_or_default();
     let is_player_pawn = world.players.iter().flatten().any(|p| p.mo == Some(target));
-    let foil_buddha = source.is_some_and(|id| {
-        world
-            .actors
-            .get(id)
-            .is_some_and(|s| s.extra_flags.get_name("FOILBUDDHA"))
-    });
+    let foil_buddha = foil_buddha_from_action
+        || source.is_some_and(|id| {
+            world
+                .actors
+                .get(id)
+                .is_some_and(|s| s.extra_flags.get_name("FOILBUDDHA"))
+        });
     let health = {
         let Some(actor) = world.actors.get_mut(target) else {
             return 0;
@@ -799,8 +845,17 @@ pub fn damage_mobj(
         damage: health_damage,
         health,
     });
+    if health_damage > 0 {
+        world.fire_zscript_thing_damaged(
+            target,
+            inflictor,
+            source,
+            health_damage,
+            dtype.as_deref().unwrap_or(""),
+        );
+    }
     if health <= 0 {
-        die(world, target, class, source, dtype.as_deref());
+        die(world, target, class, source, inflictor, dtype.as_deref());
         return health_damage;
     }
     let wound_health = world
@@ -914,6 +969,7 @@ pub(crate) fn die(
     target: ActorId,
     class: room_core::ClassId,
     source: Option<ActorId>,
+    inflictor: Option<ActorId>,
     damage_type: Option<&str>,
 ) {
     let (countkill, health) = world
@@ -979,6 +1035,7 @@ pub(crate) fn die(
                 crate::think_player::start_death_weapon_lower(world, &mut player);
                 world.players[i] = Some(player);
             }
+            world.fire_player_died(i as i32, target);
         }
         crate::acs::start_death_scripts(world, target);
         if let Some(src) = source {
@@ -1027,6 +1084,7 @@ pub(crate) fn die(
     } else {
         typed("Death").or_else(|| world.states.find_label(class, "Death"))
     };
+    let destroyed_without_death_state = label.is_none();
     // Doom `P_KillMobj`: clear shootable immediately so later pellets in the same
     // shotgun blast cannot keep damaging / re-entering death. Keep `SOLID` until
     // `A_Fall` / `A_NoBlocking` in the death sequence (DEMO1@891 corpse block).
@@ -1071,10 +1129,12 @@ pub(crate) fn die(
     }
     if let Some(death) = label {
         world.set_state(target, Some(death), true);
-    } else if let Some(a) = world.actors.get_mut(target) {
-        a.health = 0;
-        a.destroyed = true;
-        a.state = None;
+    } else {
+        if let Some(a) = world.actors.get_mut(target) {
+            a.health = 0;
+            a.destroyed = true;
+            a.state = None;
+        }
     }
     // GZDoom `AActor::Die`: the thing's special runs with the killer as activator.
     if let Some((special, args)) = world
@@ -1118,6 +1178,11 @@ pub(crate) fn die(
     } else if countkill {
         world.queue_corpse(target);
     }
+    // UZDoom `StaticEventHandler.WorldThingDied` observes the post-death actor.
+    world.fire_zscript_thing_died(target, inflictor);
+    if destroyed_without_death_state {
+        world.fire_zscript_thing_destroyed(target);
+    }
 }
 
 /// Vanilla `P_DropWeapon`: spawn the ready weapon pickup (not Fist/Pistol).
@@ -1142,7 +1207,7 @@ fn spawn_dropped_weapon(world: &mut World, target: ActorId, weapon: Option<room_
 }
 
 /// Spawn `DropItem` classes at the dying actor's feet.
-fn spawn_drop_items(world: &mut World, target: ActorId, class: room_core::ClassId) {
+pub(crate) fn spawn_drop_items(world: &mut World, target: ActorId, class: room_core::ClassId) {
     let drops: Vec<String> = world
         .classes
         .get(class)

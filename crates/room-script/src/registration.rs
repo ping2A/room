@@ -881,7 +881,11 @@ impl RegistrationSession {
         use room_script_abi::{lump_limits, lump_ns};
         if !matches!(
             namespace,
-            lump_ns::GLOBAL | lump_ns::SPRITES | lump_ns::GRAPHICS | lump_ns::SOUNDS | lump_ns::FLATS
+            lump_ns::GLOBAL
+                | lump_ns::SPRITES
+                | lump_ns::GRAPHICS
+                | lump_ns::SOUNDS
+                | lump_ns::FLATS
         ) {
             return -1;
         }

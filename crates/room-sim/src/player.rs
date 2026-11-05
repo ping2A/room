@@ -164,6 +164,8 @@ pub struct Player {
     pub falling_tics: u32,
     /// Ready weapon inventory class (if any).
     pub ready_weapon: Option<ClassId>,
+    /// Per-weapon `ReloadCounter` used by ZScript state providers.
+    pub reload_counters: Vec<(ClassId, i32)>,
     /// Weapon being switched to (`WP_NOCHANGE` = `None` while idle).
     pub pending_weapon: Option<ClassId>,
     /// Weapon psprite screen Y (`WEAPONTOP`=32 … `WEAPONBOTTOM`=128).
@@ -286,6 +288,9 @@ pub struct Player {
     pub jump_down: bool,
     /// Use button was held last tic (Doom `player->usedown` edge).
     pub use_down: bool,
+    /// The Use press that mounted a usable actor is hidden from ACS until
+    /// released, so vehicle input scripts do not immediately treat it as exit.
+    pub acs_use_latched: bool,
     /// Inventory-use button was held last tic.
     pub invuse_down: bool,
     /// Quick-kick button was held last tic.
@@ -395,6 +400,24 @@ pub struct Player {
 }
 
 impl Player {
+    /// Clear the secondary weapon overlay layer (GZDoom `A_ClearOverlays`).
+    pub(crate) fn clear_secondary_overlay(&mut self) {
+        self.overlay2_state = None;
+        self.overlay2_tics = 0;
+        self.overlay2_sprite.clear();
+        self.overlay2_frame = 0;
+        self.overlay2_ofs_x = 0.0;
+        self.overlay2_ofs_y = 0.0;
+        self.overlay2_alpha = None;
+        self.overlay2_scale = None;
+        self.overlay2_flip = false;
+        self.overlay2_mirror = false;
+        self.overlay2_angle = 0.0;
+        self.overlay2_pivot = None;
+        self.overlay2_translation.clear();
+        self.overlay2_style = None;
+    }
+
     /// View FOV after `A_ZoomFactor`. A factor of 2 halves `base_deg`.
     #[must_use]
     pub fn zoomed_fov(base_deg: f64, zoom: f32) -> f64 {
@@ -491,6 +514,7 @@ impl Player {
         self.weapon_translation.clear();
         self.jump_down = false;
         self.use_down = false;
+        self.acs_use_latched = false;
         self.invuse_down = false;
         self.quick_kick_down = false;
         self.quick_kick_restore = None;

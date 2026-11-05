@@ -16,9 +16,8 @@ pub use game::{GameBridge, GameFn, GuestMemory, SharedGameBridge, ValKind};
 pub use generated_wad::pack_generated_pwad;
 pub use registration::{
     GeneratedLump, GeneratedSoundAlias, GeneratedWeaponSlot, PropId, RegCall, RegisteredClass,
-    RegisteredEventHandler, RegisteredStaticFunction, RegisteredThinkerClass,
-    RegistrationSession, SharedRegistration, VirtualSlot, event_handler_flags, event_mask,
-    shared_registration,
+    RegisteredEventHandler, RegisteredStaticFunction, RegisteredThinkerClass, RegistrationSession,
+    SharedRegistration, VirtualSlot, event_handler_flags, event_mask, shared_registration,
 };
 pub use room_script_abi::{
     ABI_VERSION, ActorRef, ExportId, ModuleConfig, ModuleScope, SessionKind,

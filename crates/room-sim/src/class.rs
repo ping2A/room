@@ -339,6 +339,12 @@ pub struct ClassDef {
     pub is_inventory: bool,
     /// `+INVENTORY.AUTOACTIVATE`.
     pub inventory_autoactivate: bool,
+    /// `Powerup.Type` on `PowerupGiver` (used to resolve `Power{Type}`).
+    pub powerup_type: String,
+    /// `PowerMorph.PlayerClass` morph target class name.
+    pub power_morph_player_class: String,
+    /// `Player.MorphWeapon` selected while morphed.
+    pub player_morph_weapon: String,
     /// `ProjectileKickBack`.
     pub projectile_kickback: i32,
     /// `BounceCount` max (−1 = unlimited).
@@ -509,6 +515,9 @@ impl ClassRegistry {
             is_ammo: false,
             is_inventory: false,
             inventory_autoactivate: false,
+            powerup_type: String::new(),
+            power_morph_player_class: String::new(),
+            player_morph_weapon: String::new(),
             projectile_kickback: 0,
             bounce_count_max: -1,
             wall_bounce_factor: 0.7,
@@ -647,9 +656,12 @@ impl ClassRegistry {
 
     fn add_actor(&mut self, def: &ActorDef) -> Result<ClassId, ClassError> {
         let parent_name = def.parent.as_deref().unwrap_or("Actor");
-        let parent_id = self
-            .find_name(parent_name)
-            .ok_or_else(|| ClassError::Message(format!("unknown parent {parent_name}")))?;
+        let parent_id = self.find_name(parent_name).ok_or_else(|| {
+            ClassError::Message(format!(
+                "unknown parent {parent_name} for actor {}",
+                def.name
+            ))
+        })?;
         let parent = self.classes[parent_id.raw() as usize].clone();
         let mut tag = parent.tag.clone();
         let mut health = parent.health;
@@ -706,6 +718,11 @@ impl ClassRegistry {
         let mut extra_flags = parent.extra_flags;
         let mut inventory_amount = parent.inventory_amount;
         let mut inventory_max_amount = parent.inventory_max_amount;
+        let mut inventory_autoactivate = parent.inventory_autoactivate;
+        let mut is_inventory = parent.is_inventory;
+        let mut powerup_type = parent.powerup_type.clone();
+        let mut power_morph_player_class = parent.power_morph_player_class.clone();
+        let mut player_morph_weapon = parent.player_morph_weapon.clone();
         let mut start_bullets = parent.start_bullets;
         let mut pickup_message = parent.pickup_message.clone();
         let mut pickup_sound = parent.pickup_sound.clone();
@@ -1044,6 +1061,21 @@ impl ClassRegistry {
                 "inventory.maxamount" => {
                     if let Some(a) = p.args.first() {
                         inventory_max_amount = a.parse().unwrap_or(inventory_max_amount);
+                    }
+                }
+                "powerup.type" => {
+                    if let Some(a) = p.args.first() {
+                        powerup_type = a.trim_matches('"').to_owned();
+                    }
+                }
+                "powermorph.playerclass" => {
+                    if let Some(a) = p.args.first() {
+                        power_morph_player_class = a.trim_matches('"').to_owned();
+                    }
+                }
+                "player.morphweapon" => {
+                    if let Some(a) = p.args.first() {
+                        player_morph_weapon = a.trim_matches('"').to_owned();
                     }
                 }
                 "startbullets" => {
@@ -1391,6 +1423,10 @@ impl ClassRegistry {
             is_weapon = true;
         }
         for f in &def.flags {
+            if f.name.eq_ignore_ascii_case("INVENTORY.AUTOACTIVATE") {
+                inventory_autoactivate = f.set;
+                is_inventory |= f.set;
+            }
             apply_flag(&mut flags, &mut extra_flags, f);
         }
         let spawn_tics = spawn_tics_from_states(def).unwrap_or(parent.spawn_tics);
@@ -1494,8 +1530,11 @@ impl ClassRegistry {
             slot.ammo_backpack_amount = parent.ammo_backpack_amount;
             slot.ammo_backpack_max_amount = parent.ammo_backpack_max_amount;
             slot.is_ammo = parent.is_ammo;
-            slot.is_inventory = parent.is_inventory;
-            slot.inventory_autoactivate = parent.inventory_autoactivate;
+            slot.is_inventory = is_inventory;
+            slot.inventory_autoactivate = inventory_autoactivate;
+            slot.powerup_type = powerup_type;
+            slot.power_morph_player_class = power_morph_player_class;
+            slot.player_morph_weapon = player_morph_weapon;
             slot.projectile_kickback = projectile_kickback;
             slot.bounce_count_max = bounce_count_max;
             slot.wall_bounce_factor = wall_bounce_factor;
@@ -1620,8 +1659,11 @@ impl ClassRegistry {
             ammo_backpack_amount: parent.ammo_backpack_amount,
             ammo_backpack_max_amount: parent.ammo_backpack_max_amount,
             is_ammo: parent.is_ammo,
-            is_inventory: parent.is_inventory,
-            inventory_autoactivate: parent.inventory_autoactivate,
+            is_inventory,
+            inventory_autoactivate,
+            powerup_type,
+            power_morph_player_class,
+            player_morph_weapon,
             projectile_kickback,
             bounce_count_max,
             wall_bounce_factor,

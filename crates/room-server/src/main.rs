@@ -213,8 +213,7 @@ async fn main() {
     } else {
         None
     };
-    let content =
-        room_server::ContentStore::open(content_dir, &args.data_dir, args.content_max_mb);
+    let content = room_server::ContentStore::open(content_dir, &args.data_dir, args.content_max_mb);
     let cfg = ServerConfig {
         bind: args.bind,
         admin_bind: args.admin_bind,

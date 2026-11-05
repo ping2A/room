@@ -10,10 +10,10 @@ extern crate alloc;
 
 use room_script_abi::ABI_VERSION;
 
-mod bump;
 /// Doom patch encoder (`docs/31` MA3; needs `alloc`).
 #[cfg(feature = "alloc")]
 pub mod art;
+mod bump;
 /// World / actor / level control and typed events (play scope).
 pub mod game;
 /// Retained Mod HUD builder (`docs/27` §9).

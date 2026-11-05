@@ -35,7 +35,7 @@ pub fn parse_sources(sources: &[(String, String)]) -> ParseResult {
     let pp = preprocess(entry_name, entry_text, |path| {
         lookup.get(&path.to_ascii_lowercase()).cloned()
     });
-    let mut result = parse_file(entry_name, &pp.text);
+    let mut result = parse_file_with_version(entry_name, &pp.text, pp.version.clone());
     result.diagnostics.extend(pp.diagnostics);
     if result.unit.version.is_none() {
         result.unit.version = pp.version;
@@ -110,11 +110,16 @@ fn foreach_while(names: Vec<String>, iter: Expr, body: Block, span: Span) -> Stm
 
 /// Parse a single file's text.
 pub fn parse_file(path: &str, text: &str) -> ParseResult {
+    parse_file_with_version(path, text, None)
+}
+
+fn parse_file_with_version(path: &str, text: &str, version: Option<String>) -> ParseResult {
     let (tokens, mut diags) = lex(SourceId(0), path, text);
     let mut p = Parser {
         tokens,
         pos: 0,
         path: path.to_owned(),
+        version,
         diags: Vec::new(),
     };
     let unit = p.parse_unit();
@@ -129,6 +134,7 @@ struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     path: String,
+    version: Option<String>,
     diags: Vec<Diagnostic>,
 }
 
@@ -154,6 +160,11 @@ impl Parser {
             span,
             path: self.path.clone(),
         });
+    }
+
+    fn warn(&mut self, span: Span, msg: impl Into<String>) {
+        self.diags
+            .push(Diagnostic::warn(self.path.clone(), span, msg));
     }
 
     fn expect_punct(&mut self, p: &str) -> bool {
@@ -201,6 +212,7 @@ impl Parser {
             // version "x.y";
             if self.eat_kw("version") {
                 if let TokenKind::String(v) = self.bump().kind {
+                    self.version = Some(v.clone());
                     unit.version = Some(v);
                 }
                 self.eat_punct(";");
@@ -629,10 +641,14 @@ impl Parser {
                 fq.access = Some("private".into());
                 continue;
             }
-            // GZDoom `norollback` (net prediction). One field in the stdlib.
+            // UZDoom 4.15.1: field prediction qualifier.
             if matches!(&self.peek().kind, TokenKind::Ident(s) if s.eq_ignore_ascii_case("norollback"))
             {
-                self.bump();
+                let span = self.bump().span;
+                fq.norollback = true;
+                if !version_at_least(self.version.as_deref().unwrap_or("2.3"), 4, 15, 1) {
+                    self.error(span, "norollback requires ZScript version 4.15.1 or above");
+                }
                 continue;
             }
             if self.eat_kw("protected") {
@@ -645,7 +661,32 @@ impl Parser {
                 || self.check_kw("virtualscope")
             {
                 if let TokenKind::Kw(s) = self.bump().kind {
+                    fq.scope = Some(s.clone());
                     mq.scope = Some(s);
+                }
+                continue;
+            }
+            if matches!(&self.peek().kind, TokenKind::Ident(s) if s.eq_ignore_ascii_case("unsafe"))
+            {
+                let unsafe_span = self.bump().span;
+                if !version_at_least(self.version.as_deref().unwrap_or("2.3"), 4, 15, 1) {
+                    self.error(
+                        unsafe_span,
+                        "unsafe effects require ZScript version 4.15.1 or above",
+                    );
+                }
+                if self.eat_punct("(") {
+                    let effect = self.parse_ident_name().unwrap_or_default();
+                    self.expect_punct(")");
+                    if effect.eq_ignore_ascii_case("const") {
+                        mq.unsafe_const = true;
+                    } else if effect.eq_ignore_ascii_case("clearscope") {
+                        fq.scope = Some("unsafe(clearscope)".into());
+                    } else {
+                        self.error(unsafe_span, format!("unknown unsafe effect '{effect}'"));
+                    }
+                } else {
+                    self.error(unsafe_span, "expected '(' after unsafe");
                 }
                 continue;
             }
@@ -700,6 +741,12 @@ impl Parser {
             if let Some(n) = self.parse_ident_name() {
                 names.push(n);
             }
+        }
+        if fq.norollback && fq.scope.as_deref().is_some_and(|scope| scope == "play") {
+            self.error(
+                self.peek().span,
+                "norollback cannot be used with play-scoped fields",
+            );
         }
         self.expect_punct(";");
         Some(Member::Field(FieldDecl {
@@ -1337,7 +1384,7 @@ impl Parser {
             "^" => (11, 12),
             "&" => (13, 14),
             "==" | "!=" | "~==" => (15, 16),
-            "<" | "<=" | ">" | ">=" | "is" | "<>=|" => (17, 18),
+            "<" | "<=" | ">" | ">=" | "<=>" | "<>=" | "is" => (17, 18),
             "<<" | ">>" | ">>>" => (19, 20),
             ".." => (21, 22),
             "+" | "-" => (23, 24),
@@ -1362,7 +1409,14 @@ impl Parser {
             if l_bp < min_bp {
                 break;
             }
+            let op_span = self.peek().span;
             self.bump();
+            let file_version = self.version.as_deref().unwrap_or("2.3");
+            if op == "<=>" && !version_at_least(file_version, 4, 15, 1) {
+                self.error(op_span, "<=> requires ZScript version 4.15.1 or above");
+            } else if op == "<>=" && version_at_least(file_version, 4, 15, 1) {
+                self.warn(op_span, "<>= is deprecated in favor of <=>");
+            }
             if op == "?" {
                 let then_e = self.parse_expr(0);
                 self.expect_punct(":");
@@ -1633,6 +1687,18 @@ fn type_ref_name(ty: &TypeRef) -> String {
         TypeRef::Readonly(inner) => format!("readonly<{}>", type_ref_name(inner)),
         TypeRef::Void => "void".into(),
     }
+}
+
+fn version_at_least(version: &str, major: u32, minor: u32, patch: u32) -> bool {
+    let mut parts = version
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .map(|part| part.parse::<u32>().unwrap_or(0));
+    [
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    ] >= [major, minor, patch]
 }
 
 #[cfg(test)]

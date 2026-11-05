@@ -174,7 +174,8 @@ impl WasmBackend for WasmtimeBackend {
                         return -1;
                     }
                     let n = (cap as usize).min(bytes.len());
-                    let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+                    let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory())
+                    else {
                         return -1;
                     };
                     let data = mem.data_mut(&mut caller);
