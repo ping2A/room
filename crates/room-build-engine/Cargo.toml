@@ -12,8 +12,8 @@ workspace = true
 [dependencies]
 room-core = { path = "../room-core" }
 room-build = { path = "../room-build" }
+serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

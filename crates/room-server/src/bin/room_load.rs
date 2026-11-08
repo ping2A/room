@@ -89,6 +89,8 @@ async fn main() {
             map: "E1M1".into(),
             skill: 3,
             max_players: args.players,
+            duke_game_mode: 1,
+            duke_friendly_fire: false,
             enable_verifier: false,
             visibility: "public".into(),
             game_mod: None,

@@ -27,8 +27,9 @@ Implement wrapping 32-bit semantics matching historical Build pragmas
 | `divscale(a, b, s)` | `(i64(a) << s) / i64(b)` truncated; define `/0` via golden |
 | `dmulscale(a,b,c,d,s)` | `((a*b)+(c*d)) >> s` as `i64` then trunc |
 | `scale(a, b, c)` | `(a * b) / c` with documented `/0` |
-| `klabs(x)` | absolute value; `i32::MIN` → documented (often stays `MIN`) |
+| `klabs(x)` | two's-complement absolute value; `i32::MIN` stays `MIN` |
 | `ksqrt(n)` | integer square root of non-negative; define negative input |
+| `find_distance_3d(x, y, z)` | Build's `FindDistance3D`: wrapping absolute value (so `i32::MIN` stays `MIN`), sort signed results descending and return `x - (x >> 4) + ((y + z) >> 2) + ((y + z) >> 3)` with wrapping intermediates; Duke callers pass `dz >> 4` |
 | `getangle(x, y)` | atan2-like into 0..2047 using sintable / binary search |
 
 Use `wrapping_*` / explicit casts. Never panic on overflow.
@@ -40,8 +41,9 @@ Use `wrapping_*` / explicit casts. Never panic on overflow.
   `randomseed = randomseed.wrapping_mul(2_758_4621).wrapping_add(1)`  
   return `((randomseed as u32) >> 16) as i32` (high 16 bits as signed-ish
   value used by game code — confirm with black-box goldens).
-- `TRAND` (Watcom `rand`) belongs to Duke game code (`room-duke`), not this
-  crate — but engine code must not call libc `rand`.
+- Chocolate Duke's compatibility header defines gameplay `TRAND` as `krand()`
+  (same `randomseed` stream). Implementations targeting the measured Chocolate
+  trace must preserve that alias; engine code must not call libc `rand`.
 
 ## Acceptance
 

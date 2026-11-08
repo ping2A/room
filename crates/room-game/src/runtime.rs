@@ -4,19 +4,22 @@
 //! `docs/decisions/0004-native-build-runtime.md`.
 
 use crate::headless::Headless;
+use room_duke::{DukeInput, DukeSession};
 use room_sim::TicCmd;
 
 /// Per-tic command for a [`GameRuntime`].
 ///
-/// Duke input lands in D10 (`room-proto`); until then only Doom `TicCmd` is used.
+/// Per-tic command for a [`GameRuntime`].
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub enum GameCmd {
     /// Doom / Hexen / converter-Duke path (`room-sim`).
     Doom(TicCmd),
+    /// Native Duke Build runtime.
+    Duke(DukeInput),
 }
 
-/// Playsim driver shared by Doom [`Headless`] and future `DukeRuntime`.
+/// Playsim driver shared by Doom [`Headless`] and native Duke [`DukeSession`].
 pub trait GameRuntime {
     /// Tics per second. Doom: 35. Native Duke: 30.
     fn tic_rate(&self) -> u32;
@@ -38,6 +41,7 @@ impl GameRuntime for Headless {
         for cmd in cmds {
             match cmd {
                 GameCmd::Doom(c) => doom.push(*c),
+                GameCmd::Duke(_) => {}
             }
         }
         self.tick(&doom);
@@ -45,6 +49,27 @@ impl GameRuntime for Headless {
 
     fn checksum(&self) -> Option<u64> {
         Headless::checksum(self)
+    }
+}
+
+impl GameRuntime for DukeSession {
+    fn tic_rate(&self) -> u32 {
+        DukeSession::tic_rate(self)
+    }
+
+    fn tick_runtime(&mut self, cmds: &[GameCmd]) {
+        let inputs: Vec<DukeInput> = cmds
+            .iter()
+            .filter_map(|cmd| match cmd {
+                GameCmd::Duke(input) => Some(*input),
+                GameCmd::Doom(_) => None,
+            })
+            .collect();
+        self.tick_inputs(&inputs);
+    }
+
+    fn checksum(&self) -> Option<u64> {
+        DukeSession::checksum(self)
     }
 }
 

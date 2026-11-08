@@ -16,7 +16,9 @@ use audio_out::AudioOut;
 use clap::Parser;
 use glam::Vec3;
 use midi_device::{MidiBackend, load_genmidi, resolve_midi_device};
+use room_audio::{SampleBank, SoundEvent, SoundFlags, SoundOrigin};
 use room_console::{Console, HostCommand};
+use room_core::SoundId;
 use room_decorate::parse_decorate;
 use room_defs::{
     DefinitionsBuilder, DynLightKind, GlDefs, Language, ModelDefs, VoxelDefs, parse_language,
@@ -29,18 +31,18 @@ use room_game::{
     play_music_lump, read_save_info, title_music_candidates,
 };
 use room_input::{
-    AttackLatch, InputSample, Key, ModButtonState, WeaponImpulseState,
+    AttackLatch, InputSample, Key, MOUSE_DEG_PER_COUNT, ModButtonState, WeaponImpulseState,
     build_ticcmd_with_mods_and_impulses, default_bind_pairs, device_button_is_primary,
 };
 use room_map::{MapGeometry, load_map};
 use room_nodebuild::{apply_nodes, ensure_nodes};
 use room_render::{
-    Camera, Canvas, CanvasGpu, CubemapFaces, DecalStore, DynLightInstance, GpuContext, LightMode,
-    MAX_VOXEL_WALL_VERTS_PER_FRAME, MaterialCatalog, MaterialMaps, ModZonePass, ModelActorPose,
-    ModelCatalog, OffscreenTarget, PARTICLE_TEX, PARTICLE_TEX_ADD, ParticleStore, PostChain,
-    PostChainInputs, RenderSettings, SceneLists, SpriteInstance, SpriteOrient, TextureAnimator,
-    UnlitPass, VoxelActorPose, VoxelCatalog, ZoneDraw, ZoneMeshes, append_actor_models,
-    append_decals, append_particles_ex, apply_glow_fullbright, build_scene,
+    Camera, Canvas, CanvasCmd, CanvasGpu, CubemapFaces, DecalStore, DynLightInstance, GpuContext,
+    LightMode, MAX_VOXEL_WALL_VERTS_PER_FRAME, MaterialCatalog, MaterialMaps, ModZonePass,
+    ModelActorPose, ModelCatalog, OffscreenTarget, PARTICLE_TEX, PARTICLE_TEX_ADD, ParticleStore,
+    PostChain, PostChainInputs, RenderSettings, SceneLists, SpriteInstance, SpriteOrient,
+    TextureAnimator, UnlitPass, VoxelActorPose, VoxelCatalog, ZoneDraw, ZoneMeshes,
+    append_actor_models, append_decals, append_particles_ex, apply_glow_fullbright, build_scene,
     build_scene_with_sky_ex_sized, build_zone_meshes, clip_scene_to_mirror_line, mirror_clip_plane,
     particle_tint_tex_name, read_rgba, read_texture_rgba, render_offscreen, scroll_sky_u,
     soft_disc_rgba, sprite_lump_candidates_rot, sprite_offset_delta, sprite_rotation_digit,
@@ -55,12 +57,12 @@ use room_sim::{
 use room_testkit::{MapBuilder, combat_arena, rect};
 use room_ui::{
     AutomapView, CanvasSink, DoomStatusBar, DrawCmd, DukeStatusBar, FontRegistry, HudState,
-    IntermissionStats, MenuCommand, MenuSfx, MenuStack, MessageQueue, ModHudMapCtx, PatchCache,
-    StatusBar, UiDrawList, anim_pic, blit_draw_list_full, draw_automap, draw_crosshair,
-    draw_finale, draw_intermission, draw_mod_hud_layer, draw_mod_hud_modals,
-    draw_mod_zones_automap, draw_outside_zone_tint, draw_stcfn_string, draw_title, draw_weapon_lit,
-    draw_weapon_tinted, finale_anm_prefix, overlay_bob, overlay_layer_bob, parse_titledef,
-    player_map_poses, splash_ms, title_screen_pic,
+    IntermissionStats, ListMenu, MenuCommand, MenuItem, MenuSfx, MenuStack, MessageQueue,
+    ModHudMapCtx, PatchCache, StatusBar, UiDrawList, Vec2, anim_pic, blit_draw_list_full,
+    draw_automap, draw_crosshair, draw_finale, draw_intermission, draw_mod_hud_layer,
+    draw_mod_hud_modals, draw_mod_zones_automap, draw_outside_zone_tint, draw_stcfn_string,
+    draw_title, draw_weapon_lit, draw_weapon_tinted, finale_anm_prefix, overlay_bob,
+    overlay_layer_bob, parse_titledef, player_map_poses, splash_ms, title_screen_pic,
 };
 use room_vfs::{Namespace, Vfs, VfsBuilder};
 use screen_capture::GifRecorder;
@@ -78,16 +80,27 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+const DUKE_RTS_SOUND_BASE: u32 = 0x1_0000;
+
 #[derive(Debug, Parser)]
 #[command(name = "room", about = "Room map viewer / play shell (M4–M5)")]
 struct Args {
+    /// Run the native Build-based Duke runtime for a Duke 3D GRP.
+    #[arg(long, default_value_t = false)]
+    native_duke: bool,
     /// IWAD / PWAD / directory to mount (optional; uses built-in test room).
     #[arg(long)]
     iwad: Option<PathBuf>,
+    /// Add-on Duke GRP mounted after the base GRP (repeatable; native Duke only).
+    #[arg(long, requires = "native_duke")]
+    grp: Vec<PathBuf>,
+    /// Replace the native Duke root CON script (`-x` style; includes resolve from GRPs).
+    #[arg(long, requires = "native_duke")]
+    con: Option<PathBuf>,
     /// PWAD / PK3 / directory mounted after `--iwad` (repeatable; e.g. WASM mods).
     #[arg(long)]
     file: Vec<PathBuf>,
-    /// Map lump name (e.g. MAP01).
+    /// Map lump name (Duke: E1L1) or a standalone `.MAP` path.
     #[arg(long, default_value = "MAP01")]
     map: String,
     /// Run Headless playsim and drive the player with WASD (M5 bootstrap).
@@ -137,6 +150,17 @@ struct Args {
     /// Coop player count when hosting (2..=4 UDP/TCP; 2..=8 with `--transport tcp-server`).
     #[arg(long, default_value_t = 2)]
     players: u8,
+    /// Native Duke network mode: 0 = DukeMatch, 1 = co-op, 2 = no-spawn.
+    #[arg(
+        long,
+        requires = "native_duke",
+        default_value_t = 1,
+        value_parser = clap::value_parser!(u8).range(0..=2)
+    )]
+    duke_game_mode: u8,
+    /// Enable damage between allied Duke players (native Duke network only).
+    #[arg(long, requires = "native_duke", default_value_t = false)]
+    duke_friendly_fire: bool,
     /// Net transport: `udp` (default), `tcp` (P2P), or `tcp-server` (host packet-server relay).
     #[arg(long, value_enum, default_value_t = netplay::NetTransportKind::Udp)]
     transport: netplay::NetTransportKind,
@@ -155,6 +179,22 @@ struct Args {
 fn main() {
     crash::install();
     let mut args = Args::parse();
+    if args.native_duke {
+        if args.combat_demo {
+            eprintln!("room: native Duke cannot be combined with --combat-demo");
+            std::process::exit(2);
+        }
+        args.play = true;
+        args.title = false;
+        if args.iwad.is_none() {
+            args.iwad = Some(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/duke/duke3d.grp"),
+            );
+        }
+        if args.map.eq_ignore_ascii_case("MAP01") {
+            args.map = "E1L1".into();
+        }
+    }
     if args.host.is_some() && args.join.is_some() {
         eprintln!("room: use only one of --host / --join");
         std::process::exit(2);
@@ -238,7 +278,15 @@ fn main() {
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "builtin".into());
-    let fingerprint = netplay::session_fingerprint(&iwad_label, &args.map, skill.0);
+    let fingerprint_map = if args.native_duke {
+        format!(
+            "{}|duke-mode={}|duke-friendly-fire={}",
+            args.map, args.duke_game_mode, args.duke_friendly_fire
+        )
+    } else {
+        args.map.clone()
+    };
+    let fingerprint = netplay::session_fingerprint(&iwad_label, &fingerprint_map, skill.0);
     let mut net: Option<netplay::NetPlay> = None;
     let mut local_seat: u8 = 0;
     let mut coop_players: u8 = 1;
@@ -311,7 +359,7 @@ fn main() {
             }
         }
     }
-    let (play, decaldef) = if args.play {
+    let (play, decaldef) = if args.play && !args.native_duke {
         let (mut game, decaldef) = start_play_session(
             &map,
             args.decorate.as_deref(),
@@ -411,6 +459,154 @@ fn main() {
     } else {
         (None, None)
     };
+    let (duke_session, duke_renderer, duke_sound_bank, duke_campaign_content, duke_start_state) =
+        if args.native_duke {
+            let path = args.iwad.as_ref().expect("native Duke input path");
+            let bytes = match std::fs::read(path) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    eprintln!("room: read Duke GRP {}: {e}", path.display());
+                    std::process::exit(1);
+                }
+            };
+            let addon_bytes: Vec<Vec<u8>> = args
+                .grp
+                .iter()
+                .map(|addon| {
+                    std::fs::read(addon).unwrap_or_else(|error| {
+                        eprintln!("room: read Duke add-on GRP {}: {error}", addon.display());
+                        std::process::exit(1);
+                    })
+                })
+                .collect();
+            let mut grp_bytes = Vec::with_capacity(addon_bytes.len() + 1);
+            grp_bytes.push(bytes);
+            grp_bytes.extend(addon_bytes);
+            let grp_layers: Vec<&[u8]> = grp_bytes.iter().map(Vec::as_slice).collect();
+            let con_bytes = args.con.as_ref().map(|con| {
+                std::fs::read(con).unwrap_or_else(|error| {
+                    eprintln!("room: read Duke CON {}: {error}", con.display());
+                    std::process::exit(1);
+                })
+            });
+            let con_override = con_bytes.as_deref();
+            let mut con_includes = args.con.as_ref().map(|con| DukeConIncludes {
+                directory: con
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .to_path_buf(),
+            });
+            let selected_skill = args.skill.clamp(1, 5);
+            let skill = selected_skill - 1;
+            let tables_dat = path.parent().and_then(|parent| {
+                ["TABLES.DAT", "tables.dat"]
+                    .into_iter()
+                    .find_map(|name| std::fs::read(parent.join(name)).ok())
+            });
+            let renderer = match room_duke::DukeSoftRenderer::from_grp_layers_with_tables(
+                &grp_layers,
+                tables_dat.as_deref(),
+            ) {
+                Ok(renderer) => renderer,
+                Err(e) => {
+                    eprintln!("room: Duke renderer: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let map_file = std::path::Path::new(&args.map);
+            let session_result = if map_file.is_file() {
+                match std::fs::read(map_file) {
+                    Ok(map_bytes) => room_duke::session_from_grp_map_bytes_with_con_and_includes(
+                        &grp_layers,
+                        &map_bytes,
+                        skill,
+                        con_override,
+                        con_includes
+                            .as_mut()
+                            .map(|resolver| resolver as &mut dyn room_duke::con::IncludeResolver),
+                    ),
+                    Err(error) => Err(format!("read user map {}: {error}", map_file.display())),
+                }
+            } else {
+                room_duke::session_from_grp_layers_with_con_and_includes(
+                    &grp_layers,
+                    &args.map,
+                    skill,
+                    con_override,
+                    con_includes
+                        .as_mut()
+                        .map(|resolver| resolver as &mut dyn room_duke::con::IncludeResolver),
+                )
+            };
+            let mut session = match session_result {
+                Ok(session) => session,
+                Err(e) => {
+                    eprintln!("room: Duke start: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if net.is_some()
+                && let Err(error) = session.configure_multiplayer_mode(
+                    usize::from(coop_players),
+                    args.duke_game_mode,
+                    args.duke_friendly_fire,
+                )
+            {
+                eprintln!("room: Duke multiplayer setup: {error}");
+                std::process::exit(1);
+            }
+            if net.is_some() {
+                let mode = match args.duke_game_mode {
+                    0 => "DukeMatch",
+                    1 => "co-op",
+                    _ => "no-spawn",
+                };
+                eprintln!(
+                    "room: Duke network settings — mode={mode}, friendly_fire={}",
+                    args.duke_friendly_fire
+                );
+            }
+            if let Some((volume, level)) = duke_campaign_coordinates(&args.map) {
+                session.campaign = room_duke::DukeCampaignProgress::new(volume, level);
+            }
+            if args.give_all {
+                session.player.gotweapon.fill(true);
+                for weapon in 0..session.player.ammo.len() {
+                    session.player.ammo[weapon] =
+                        room_duke::weapons::max_ammo_amount(weapon as i16);
+                }
+                session.player.extra = 100;
+                eprintln!("room: Duke give all → weapons + full ammo");
+            }
+            let sound_bank = duke_sound_bank(&grp_layers, session.script.as_ref(), audio_rate);
+            if !args.grp.is_empty() {
+                eprintln!("room: mounted {} Duke add-on GRP(s)", args.grp.len());
+            }
+            eprintln!(
+                "room: entered native Duke {} (difficulty {selected_skill}, internal skill {skill}); WASD move, mouse/Q/arrows turn, 1–0 weapons, Space jump, Ctrl/F/LMB fire, E tagged switches/doors (partial)",
+                args.map,
+            );
+            let campaign_content = Some(DukeCampaignContent {
+                grp_layers: grp_bytes,
+                con_override: con_bytes,
+                con_directory: args.con.as_ref().map(|con| {
+                    con.parent()
+                        .unwrap_or_else(|| std::path::Path::new("."))
+                        .to_path_buf()
+                }),
+                sample_rate: audio_rate,
+            });
+            let start_state = session.save_fsave().ok();
+            (
+                Some(session),
+                Some(renderer),
+                sound_bank,
+                campaign_content,
+                start_state,
+            )
+        } else {
+            (None, None, SampleBank::new(), None, None)
+        };
     let fonts = vfs
         .as_ref()
         .map(FontRegistry::load_doom_fonts)
@@ -512,21 +708,56 @@ fn main() {
         pitch: 0.0,
         roll: 0.0,
         weapon_bob_prev: (0.0, 0.0),
-        mouse_look: false,
+        mouse_look: args.native_duke,
         ignore_warp_motion: false,
         unfocused_since: None,
         menu_cursor: (160.0, 100.0),
         last_frame: std::time::Instant::now(),
         frames: 0,
+        elapsed_ms: 0,
         title_anim_origin: 0,
+        finale_anim_origin: 0,
+        duke_finale_sound_frame: None,
         title_skip_ms: 0,
         demo_slot: "quick".into(),
         fps_window: std::time::Instant::now(),
         fps_count: 0,
+        duke_fps: 0,
         automap: false,
+        duke_view_key_down: false,
+        duke_brightness_key_down: false,
+        duke_help_page: 0,
+        duke_help_key_down: false,
+        duke_cheat_phase: 0,
+        duke_cheat_buffer: String::new(),
         automap_scale: 0.35,
+        duke_automap_seen: Vec::new(),
+        duke_show_all_map: false,
+        duke_coords_on: false,
+        duke_rate_on: false,
+        duke_debug_on: false,
         hud: HudState::doom_default(),
         play,
+        duke_session,
+        duke_start_state,
+        duke_renderer,
+        duke_sound_bank,
+        duke_campaign_content,
+        duke_demo_recorder: None,
+        duke_atomic_demo_recorder: None,
+        duke_demo_playback: None,
+        duke_atomic_demo_playback: None,
+        duke_demo_map: duke_map_coordinates(&args.map),
+        duke_music_selection: {
+            let (volume, level) = duke_map_coordinates(&args.map);
+            usize::from(volume) * 11 + usize::from(level)
+        },
+        duke_music_quote_tics: 0,
+        duke_bonus_panel: None,
+        duke_music_key_down: false,
+        duke_rts_key_down: None,
+        duke_environment_music_active: false,
+        duke_last_save_slot: None,
         net,
         local_seat,
         tic_accum: 0.0,
@@ -603,12 +834,28 @@ fn main() {
         audio,
     };
     if let Some(audio) = &app.audio {
-        configure_music(
-            audio,
-            args.mididevice,
-            args.soundfont.as_deref(),
-            app.vfs.as_ref(),
-        );
+        if app.duke_session.is_some() {
+            if let Ok(mut shared) = audio.shared.lock() {
+                shared.mixer.bank.merge_missing(&app.duke_sound_bank);
+            }
+        }
+    }
+    if let Some(audio) = &app.audio {
+        if app.duke_session.is_some() {
+            configure_duke_music(
+                audio,
+                args.mididevice,
+                args.soundfont.as_deref(),
+                app.duke_campaign_content.as_ref(),
+            );
+        } else {
+            configure_music(
+                audio,
+                args.mididevice,
+                args.soundfont.as_deref(),
+                app.vfs.as_ref(),
+            );
+        }
     }
     if let Some(conf) = app.play.as_ref().and_then(|g| g.keyconf()) {
         for line in keyconf_alias_lines(conf) {
@@ -653,6 +900,9 @@ fn main() {
     {
         app.start_level_music();
         app.set_play_look(true);
+    } else if app.duke_session.is_some() {
+        app.start_duke_level_music();
+        app.set_play_look(true);
     }
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("room: {e}");
@@ -693,6 +943,183 @@ fn configure_music(
     }
     shared.music.set_mididevice(device);
     eprintln!("room: mididevice {backend} → {device:?}");
+}
+
+/// Configure the shared sequencer against the native Duke GRP instead of the
+/// Doom VFS. Atomic MIDI files use the same synth backends; some GRP variants
+/// also carry the OPL `GENMIDI` bank.
+fn configure_duke_music(
+    audio: &AudioOut,
+    backend: MidiBackend,
+    soundfont: Option<&std::path::Path>,
+    content: Option<&DukeCampaignContent>,
+) {
+    let sf = load_first_soundfont(soundfont);
+    let genmidi = content.and_then(|content| {
+        let layers: Vec<&[u8]> = content.grp_layers.iter().map(Vec::as_slice).collect();
+        let grp = room_build::grp::GrpStack::parse_layers(&layers).ok()?;
+        let bytes = grp.get("GENMIDI")?;
+        match room_music::GenMidiBank::parse(bytes) {
+            Ok(bank) => Some(bank),
+            Err(error) => {
+                eprintln!("room: Duke GENMIDI: {error}");
+                None
+            }
+        }
+    });
+    let Some(device) = resolve_midi_device(backend, sf.is_some(), genmidi.is_some()) else {
+        eprintln!("room: no Duke music synth (pass --soundfont; OPL needs GRP GENMIDI)");
+        return;
+    };
+    let Ok(mut shared) = audio.shared.lock() else {
+        return;
+    };
+    if let Some((path, font)) = sf {
+        shared.music.set_softfont(font);
+        if device == room_music::MidiDevice::SoftFont {
+            eprintln!("room: soundfont {}", path.display());
+        }
+    }
+    if let Some(bank) = genmidi {
+        shared.music.set_genmidi(bank);
+        if device == room_music::MidiDevice::Opl {
+            eprintln!("room: Duke GENMIDI → OPL MIDI device");
+        }
+    }
+    shared.music.set_mididevice(device);
+    eprintln!("room: Duke mididevice {backend} → {device:?}");
+}
+
+/// Resolve external includes relative to a user-supplied root CON file.
+struct DukeConIncludes {
+    directory: PathBuf,
+}
+
+/// Reusable native campaign assets retained for Atomic map-to-map transitions.
+struct DukeCampaignContent {
+    grp_layers: Vec<Vec<u8>>,
+    con_override: Option<Vec<u8>>,
+    con_directory: Option<PathBuf>,
+    sample_rate: u32,
+}
+
+impl DukeCampaignContent {
+    fn load_level_at_skill(
+        &self,
+        volume: u8,
+        level: u8,
+        skill: u8,
+    ) -> Result<room_duke::DukeSession, String> {
+        let map = format!("E{}L{}", volume + 1, level + 1);
+        let layers: Vec<&[u8]> = self.grp_layers.iter().map(Vec::as_slice).collect();
+        let mut includes = self
+            .con_directory
+            .as_ref()
+            .map(|directory| DukeConIncludes {
+                directory: directory.clone(),
+            });
+        room_duke::session_from_grp_layers_with_con_and_includes(
+            &layers,
+            &map,
+            skill,
+            self.con_override.as_deref(),
+            includes
+                .as_mut()
+                .map(|resolver| resolver as &mut dyn room_duke::con::IncludeResolver),
+        )
+    }
+
+    fn sound_bank(
+        &self,
+        script: Option<&room_duke::con::ScriptImage>,
+        sample_rate: u32,
+    ) -> SampleBank {
+        let layers: Vec<&[u8]> = self.grp_layers.iter().map(Vec::as_slice).collect();
+        duke_sound_bank(&layers, script, sample_rate)
+    }
+}
+
+impl room_duke::con::IncludeResolver for DukeConIncludes {
+    fn read_include(&mut self, name: &str) -> Option<Vec<u8>> {
+        let requested = std::path::Path::new(name);
+        let candidates = if requested.is_absolute() {
+            vec![requested.to_path_buf()]
+        } else {
+            vec![
+                self.directory.join(requested),
+                self.directory.join(name.to_ascii_uppercase()),
+                self.directory.join(name.to_ascii_lowercase()),
+            ]
+        };
+        candidates
+            .into_iter()
+            .find_map(|path| std::fs::read(path).ok())
+    }
+}
+
+/// Decode native Duke CON `definesound` VOC assets into the shared mixer bank.
+fn duke_sound_bank(
+    grp_layers: &[&[u8]],
+    script: Option<&room_duke::con::ScriptImage>,
+    sample_rate: u32,
+) -> SampleBank {
+    let mut bank = SampleBank::new();
+    let Ok(grp) = room_build::grp::GrpStack::parse_layers(grp_layers) else {
+        return bank;
+    };
+    if let Some(script) = script {
+        for (id, definition) in script.sounds.iter().enumerate() {
+            let Some(definition) = definition else {
+                continue;
+            };
+            let Some(bytes) = grp.get(&definition.file) else {
+                continue;
+            };
+            let Ok(decoded) = room_formats::decode_sound(bytes) else {
+                continue;
+            };
+            insert_duke_sample(
+                &mut bank,
+                SoundId::from_raw(id as u32),
+                decoded,
+                sample_rate,
+            );
+        }
+    }
+    if let Some(bytes) = grp.get("DUKE.RTS")
+        && let Ok(rts) = room_build::DukeRts::parse(bytes)
+    {
+        for index in 0..rts.len() {
+            let Some(bytes) = rts.sound(index) else {
+                continue;
+            };
+            let Ok(decoded) = room_formats::decode_sound(bytes) else {
+                continue;
+            };
+            insert_duke_sample(
+                &mut bank,
+                SoundId::from_raw(DUKE_RTS_SOUND_BASE + index as u32),
+                decoded,
+                sample_rate,
+            );
+        }
+    }
+    bank
+}
+
+fn insert_duke_sample(
+    bank: &mut SampleBank,
+    id: SoundId,
+    decoded: room_formats::DecodedSound,
+    sample_rate: u32,
+) {
+    let channels = usize::from(decoded.channels.max(1));
+    let mono: Vec<f32> = decoded
+        .samples
+        .chunks_exact(channels)
+        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+        .collect();
+    bank.insert_resampled(id, &mono, decoded.rate.max(1), sample_rate.max(1));
 }
 
 fn dirs_room_ini() -> PathBuf {
@@ -756,6 +1183,461 @@ fn read_play_save_bytes(slot: &str) -> Result<(PathBuf, Vec<u8>), String> {
     std::fs::read(&sav)
         .map(|b| (sav, b))
         .map_err(|e| e.to_string())
+}
+
+/// Parse Atomic campaign coordinates from the currently selected Duke map.
+/// Non-campaign names and standalone maps use episode/map zero metadata.
+fn duke_map_coordinates(map: &str) -> (u8, u8) {
+    duke_campaign_coordinates(map).unwrap_or((0, 0))
+}
+
+fn duke_time_string(tics: u32) -> String {
+    let seconds = tics / u32::from(room_duke::DUKE_TIC_RATE);
+    format!("{:02}:{:02}", seconds / 60, seconds % 60)
+}
+
+fn duke_campaign_coordinates(map: &str) -> Option<(u8, u8)> {
+    let bytes = map.as_bytes();
+    if !(4..=5).contains(&bytes.len())
+        || !bytes[0].eq_ignore_ascii_case(&b'E')
+        || !bytes[2].eq_ignore_ascii_case(&b'L')
+        || !(b'1'..=b'4').contains(&bytes[1])
+    {
+        return None;
+    }
+    let level = map.get(3..)?.parse::<u8>().ok()?;
+    (1..=11)
+        .contains(&level)
+        .then_some((bytes[1] - b'1', level - 1))
+}
+
+fn duke_audio_volume(cvars: &room_console::CvarStore, name: &str) -> f32 {
+    match cvars.get(name) {
+        Some(room_console::CvarValue::Int(value)) => (*value).clamp(0, 255) as f32 / 255.0,
+        _ => 1.0,
+    }
+}
+
+fn duke_reverb_zone_level(
+    session: Option<&room_duke::DukeSession>,
+    _listener: (i32, i32, i32, i16),
+) -> i32 {
+    session.map_or(0, |session| i32::from(session.duke_reverb_level))
+}
+
+fn duke_sound_visibility_geometry(
+    session: Option<&room_duke::DukeSession>,
+) -> Option<(
+    Vec<room_build_engine::geom::SectorZ>,
+    Vec<room_build_engine::geom::WallXY>,
+)> {
+    let world = session?.world.as_ref()?;
+    let sectors = world
+        .sectors
+        .iter()
+        .map(|sector| room_build_engine::geom::SectorZ {
+            wallptr: sector.wallptr,
+            wallnum: sector.wallnum,
+            ceilingz: sector.ceilingz,
+            floorz: sector.floorz,
+            ceilingstat: sector.ceilingstat,
+            floorstat: sector.floorstat,
+            ceilingheinum: sector.ceilingheinum,
+            floorheinum: sector.floorheinum,
+        })
+        .collect();
+    let walls = world
+        .walls
+        .iter()
+        .map(|wall| room_build_engine::geom::WallXY {
+            x: wall.x,
+            y: wall.y,
+            point2: wall.point2,
+            nextsector: wall.nextsector,
+            cstat: wall.cstat,
+        })
+        .collect();
+    Some((sectors, walls))
+}
+
+fn duke_sound_is_occluded(
+    session: Option<&room_duke::DukeSession>,
+    event: &room_duke::DukeSoundEvent,
+    listener: (i32, i32, i32, i16),
+    sectors: &[room_build_engine::geom::SectorZ],
+    walls: &[room_build_engine::geom::WallXY],
+) -> bool {
+    if event.global || event.ambience {
+        return false;
+    }
+    let Some(session) = session else {
+        return false;
+    };
+    let listener_sector = session.player.cursectnum;
+    let source_sector = event
+        .source_id
+        .and_then(|id| usize::try_from(id).ok())
+        .and_then(|index| session.world.as_ref()?.sprites.get(index))
+        .map_or(listener_sector, |sprite| sprite.sectnum);
+    let eye_offset = 24_i32 << 8;
+    !room_build_engine::geom::cansee(
+        listener.0,
+        listener.1,
+        listener.2.wrapping_sub(eye_offset),
+        listener_sector,
+        event.position[0],
+        event.position[1],
+        event.position[2].wrapping_sub(eye_offset),
+        source_sector,
+        sectors,
+        walls,
+    )
+}
+
+fn duke_audio_menu(cvars: &room_console::CvarStore) -> ListMenu {
+    let is_on = |name: &str| !matches!(cvars.get(name), Some(room_console::CvarValue::Bool(false)));
+    let autoaim = match cvars.get("duke_autoaim") {
+        Some(room_console::CvarValue::Int(value)) if *value == 1 => "BULLET ONLY",
+        _ => "FULL",
+    };
+    let volume = |name: &str| match cvars.get(name) {
+        Some(room_console::CvarValue::Int(value)) => ((*value).clamp(0, 255) * 100) / 255,
+        _ => 100,
+    };
+    ListMenu {
+        title: "SETUP SOUNDS".into(),
+        items: vec![
+            MenuItem::text(
+                format!("SOUND: {}", if is_on("duke_sound") { "ON" } else { "OFF" }),
+                "duke_audio_sound",
+            ),
+            MenuItem::text(
+                format!("MUSIC: {}", if is_on("duke_music") { "ON" } else { "OFF" }),
+                "duke_audio_music",
+            ),
+            MenuItem::text(
+                format!("SOUND VOLUME: {}%", volume("duke_sfx_volume")),
+                "duke_audio_sfx_volume",
+            ),
+            MenuItem::text(
+                format!("MUSIC VOLUME: {}%", volume("duke_music_volume")),
+                "duke_audio_music_volume",
+            ),
+            MenuItem::text(
+                format!(
+                    "DUKE TALK: {}",
+                    if is_on("duke_talk") { "ON" } else { "OFF" }
+                ),
+                "duke_audio_talk",
+            ),
+            MenuItem::text(
+                format!(
+                    "AMBIENCE: {}",
+                    if is_on("duke_ambience") { "ON" } else { "OFF" }
+                ),
+                "duke_audio_ambience",
+            ),
+            MenuItem::text(
+                format!(
+                    "FLIP STEREO: {}",
+                    if is_on("duke_reverse_stereo") {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
+                ),
+                "duke_audio_reverse_stereo",
+            ),
+            MenuItem::text(format!("AUTO-AIM: {autoaim}"), "duke_audio_autoaim"),
+            MenuItem::text("BACK", "duke_audio_close"),
+        ],
+        selected: 0,
+        scroll: 0,
+        visible_rows: 0,
+        origin: Vec2::new(84.0, 64.0),
+        dim_background: true,
+        line_spacing: 18.0,
+        show_title: true,
+    }
+}
+
+fn duke_save_menu(load: bool, selected_slot: usize) -> ListMenu {
+    let items = (0..10)
+        .map(|slot| {
+            let name = format!("duke-{slot}");
+            let exists = dirs_room_save(&name).is_file();
+            if load && !exists {
+                MenuItem::text(format!("EMPTY SLOT {}", slot + 1), "duke_slot_empty")
+            } else {
+                MenuItem::text(
+                    format!("{} SLOT {}", if load { "LOAD" } else { "SAVE" }, slot + 1),
+                    format!("duke_{}_slot {slot}", if load { "load" } else { "save" }),
+                )
+            }
+        })
+        .chain(std::iter::once(MenuItem::text("BACK", "duke_slot_close")))
+        .collect();
+    ListMenu {
+        title: if load { "LOAD GAME" } else { "SAVE GAME" }.into(),
+        items,
+        selected: selected_slot.min(10),
+        scroll: 0,
+        visible_rows: 0,
+        origin: Vec2::new(84.0, 44.0),
+        dim_background: true,
+        line_spacing: 14.0,
+        show_title: true,
+    }
+}
+
+fn duke_quickload_confirm_menu(slot: usize) -> ListMenu {
+    ListMenu {
+        title: "QUICK LOAD".into(),
+        items: vec![
+            MenuItem::text(
+                "LOAD LAST SAVED GAME?",
+                format!("duke_confirm_load_slot {slot}"),
+            ),
+            MenuItem::text("CANCEL", "duke_slot_close"),
+        ],
+        selected: 1,
+        scroll: 0,
+        visible_rows: 0,
+        origin: Vec2::new(84.0, 74.0),
+        dim_background: true,
+        line_spacing: 18.0,
+        show_title: true,
+    }
+}
+
+fn duke_quit_confirm_menu() -> ListMenu {
+    ListMenu {
+        title: "ARE YOU SURE YOU WANT TO QUIT?".into(),
+        items: vec![
+            MenuItem::text("YES", "menu_quit_yes"),
+            MenuItem::text("NO", "duke_quit_cancel"),
+        ],
+        selected: 1,
+        scroll: 0,
+        visible_rows: 0,
+        origin: Vec2::new(80.0, 80.0),
+        dim_background: true,
+        line_spacing: 18.0,
+        show_title: true,
+    }
+}
+
+fn duke_pause_menu() -> ListMenu {
+    ListMenu {
+        title: "GAME MENU".into(),
+        items: vec![
+            MenuItem::text("RESUME", "duke_pause_resume"),
+            MenuItem::text("SAVE GAME", "duke_pause_save"),
+            MenuItem::text("LOAD GAME", "duke_pause_load"),
+            MenuItem::text("SOUND SETUP", "duke_pause_audio"),
+            MenuItem::text("QUIT", "duke_pause_quit"),
+        ],
+        selected: 0,
+        scroll: 0,
+        visible_rows: 0,
+        origin: Vec2::new(84.0, 48.0),
+        dim_background: true,
+        line_spacing: 18.0,
+        show_title: true,
+    }
+}
+
+/// Carry Atomic's persistent player inventory/weapon state into the next map
+/// while keeping the spawn pose and sprite handle created by the new map.
+/// Draw a first native Duke automap directly from Build wall loops.
+///
+/// This keeps Duke's loaded native world as the source of truth instead of
+/// displaying the unrelated Doom map geometry held by the desktop shell.
+fn draw_duke_automap(
+    world: &room_build_engine::world::BuildWorld,
+    seen_sectors: &[bool],
+    visible_sectors: &[bool],
+    player_x: i32,
+    player_y: i32,
+    player_angle: i16,
+    zoom: f32,
+    list: &mut UiDrawList,
+) {
+    use room_ui::{Rect, Rgba, Vec2};
+
+    let viewport = Rect::new(0.0, 0.0, 320.0, 168.0);
+    list.fill(
+        viewport,
+        Rgba {
+            r: 0.015,
+            g: 0.02,
+            b: 0.03,
+            a: 0.88,
+        },
+    );
+    let scale = 0.004 * (zoom / 0.35).clamp(0.06, 12.0);
+    let point = |x: i32, y: i32| {
+        Vec2::new(
+            160.0 + (x.saturating_sub(player_x) as f32) * scale,
+            84.0 - (y.saturating_sub(player_y) as f32) * scale,
+        )
+    };
+    let solid = Rgba {
+        r: 0.9,
+        g: 0.74,
+        b: 0.28,
+        a: 1.0,
+    };
+    let portal = Rgba {
+        r: 0.32,
+        g: 0.72,
+        b: 0.9,
+        a: 0.85,
+    };
+    for (sector_index, sector) in world
+        .sectors
+        .iter()
+        .take(world.numsectors.max(0) as usize)
+        .enumerate()
+    {
+        if !seen_sectors.get(sector_index).copied().unwrap_or(false) {
+            continue;
+        }
+        let first = usize::try_from(sector.wallptr).unwrap_or(usize::MAX);
+        let count = usize::try_from(sector.wallnum).unwrap_or_default();
+        let end_wall = first.saturating_add(count).min(world.walls.len());
+        for wall in world.walls.get(first..end_wall).unwrap_or_default() {
+            let Ok(next) = usize::try_from(wall.point2) else {
+                continue;
+            };
+            let Some(end) = world.walls.get(next) else {
+                continue;
+            };
+            list.cmds.push(DrawCmd::Line {
+                a: point(wall.x, wall.y),
+                b: point(end.x, end.y),
+                color: if wall.nextsector >= 0 { portal } else { solid },
+                thickness: 1.0,
+            });
+        }
+    }
+
+    let sprite_color = Rgba {
+        r: 1.0,
+        g: 0.35,
+        b: 0.25,
+        a: 1.0,
+    };
+    for sprite in world.sprites.iter().filter(|sprite| {
+        sprite.xrepeat != 0
+            && sprite.yrepeat != 0
+            && sprite.cstat & 0x8000 == 0
+            && usize::try_from(sprite.sectnum)
+                .ok()
+                .and_then(|sector| visible_sectors.get(sector))
+                .copied()
+                .unwrap_or(false)
+    }) {
+        let center = point(sprite.x, sprite.y);
+        list.fill(
+            Rect::new(center.x - 1.5, center.y - 1.5, 3.0, 3.0),
+            sprite_color,
+        );
+    }
+
+    let angle = f32::from(player_angle) * (std::f32::consts::TAU / 2048.0);
+    let direction = Vec2::new(angle.cos(), -angle.sin());
+    let side = Vec2::new(-direction.y, direction.x);
+    let tip = Vec2::new(160.0 + direction.x * 9.0, 84.0 + direction.y * 9.0);
+    let left = Vec2::new(
+        160.0 - direction.x * 6.0 + side.x * 4.0,
+        84.0 - direction.y * 6.0 + side.y * 4.0,
+    );
+    let right = Vec2::new(
+        160.0 - direction.x * 6.0 - side.x * 4.0,
+        84.0 - direction.y * 6.0 - side.y * 4.0,
+    );
+    let player_color = Rgba {
+        r: 0.2,
+        g: 1.0,
+        b: 0.3,
+        a: 1.0,
+    };
+    for (a, b) in [(tip, left), (left, right), (right, tip)] {
+        list.cmds.push(DrawCmd::Line {
+            a,
+            b,
+            color: player_color,
+            thickness: 2.0,
+        });
+    }
+}
+
+/// Chocolate Build renderer's automap sector flood, scoped to the active view.
+/// The ported cross-product gate only decides which portal sectors are marked;
+/// wall clipping and the view-frustum rasterizer remain separate concerns.
+fn duke_automap_visible_sectors(
+    world: &room_build_engine::world::BuildWorld,
+    start_sector: i16,
+    player_x: i32,
+    player_y: i32,
+) -> Vec<bool> {
+    let sector_count = world.numsectors.max(0) as usize;
+    let mut visible = vec![false; sector_count];
+    let Ok(start) = usize::try_from(start_sector) else {
+        return visible;
+    };
+    if start >= sector_count {
+        return visible;
+    }
+    let mut pending = vec![start];
+    while let Some(sector_index) = pending.pop() {
+        if std::mem::replace(&mut visible[sector_index], true) {
+            continue;
+        }
+        let sector = world.sectors[sector_index];
+        let first = usize::try_from(sector.wallptr).unwrap_or(usize::MAX);
+        let count = usize::try_from(sector.wallnum).unwrap_or_default();
+        let end = first.saturating_add(count).min(world.walls.len());
+        for wall in world.walls.get(first..end).unwrap_or_default() {
+            if wall.nextsector < 0 || wall.cstat & 32 != 0 {
+                continue;
+            }
+            let Ok(next_sector) = usize::try_from(wall.nextsector) else {
+                continue;
+            };
+            if next_sector >= sector_count || visible[next_sector] {
+                continue;
+            }
+            let Ok(point2) = usize::try_from(wall.point2) else {
+                continue;
+            };
+            let Some(end_wall) = world.walls.get(point2) else {
+                continue;
+            };
+            let x1 = wall.x.wrapping_sub(player_x);
+            let y1 = wall.y.wrapping_sub(player_y);
+            let x2 = end_wall.x.wrapping_sub(player_x);
+            let y2 = end_wall.y.wrapping_sub(player_y);
+            let cross = x1.wrapping_mul(y2).wrapping_sub(x2.wrapping_mul(y1));
+            // Chocolate's unsigned range check is equivalent to a signed
+            // interval [-262144, 262143] while preserving 32-bit wraparound.
+            let facing = (cross as u32).wrapping_add(262_144) < 524_288;
+            if !facing {
+                continue;
+            }
+            let wall_dx = x2.wrapping_sub(x1);
+            let wall_dy = y2.wrapping_sub(y1);
+            let cross_scaled = ((i64::from(cross) * i64::from(cross)) >> 5) as i32;
+            let wall_length_squared = wall_dx
+                .wrapping_mul(wall_dx)
+                .wrapping_add(wall_dy.wrapping_mul(wall_dy));
+            if cross_scaled <= wall_length_squared {
+                pending.push(next_sector);
+            }
+        }
+    }
+    visible
 }
 
 fn dirs_room_demo(slot: &str) -> PathBuf {
@@ -922,6 +1804,17 @@ fn mount_pwads(mut builder: VfsBuilder, args: &Args) -> Result<VfsBuilder, Strin
 }
 
 fn load_viewer_map(args: &Args) -> Result<(MapGeometry, Option<Vfs>), String> {
+    if args.native_duke {
+        // Native Duke is rendered from BuildWorld; this inert map only supplies
+        // the existing GPU shell's frame/canvas lifecycle, never game geometry.
+        let mut map = MapBuilder::new()
+            .room("native-duke", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(256.0, 256.0, 0)
+            .build_udmf("MAP01")
+            .map_err(|e| e.to_string())?;
+        apply_nodes(&mut map);
+        return Ok((map, None));
+    }
     if args.combat_demo {
         let iwad = args.iwad.clone().or_else(default_freedoom2);
         let Some(path) = iwad else {
@@ -1089,6 +1982,9 @@ struct Keys {
     attack: AttackLatch,
     /// Alt attack held (mouse right in play mode; `docs/31` MA4).
     alt_attack: bool,
+    /// Physical Alt modifiers, used by Duke's RTS hotkeys.
+    alt_left: bool,
+    alt_right: bool,
     /// Use (E).
     use_btn: bool,
     /// Weapon slots 1..=9 edge (cleared after sample).
@@ -1098,6 +1994,12 @@ struct Keys {
     weapon_cycle: i32,
     /// Fractional wheel notches not yet turned into a cycle.
     wheel_remainder: f32,
+}
+
+struct DukeBonusPanel {
+    stats: room_duke::DukeLevelBonusStats,
+    remaining_tics: u16,
+    transition: room_duke::DukeCampaignTransition,
 }
 
 struct ViewerApp {
@@ -1200,22 +2102,82 @@ struct ViewerApp {
     menu_cursor: (f32, f32),
     last_frame: std::time::Instant,
     frames: u64,
-    /// `frames` when the current title/splash started.
+    /// Monotonic wall time used by title, ANM and finale frame selection.
+    elapsed_ms: u64,
+    /// Millisecond clock value when the current title/splash started.
     title_anim_origin: u64,
+    /// Millisecond clock value when the current finale started.
+    finale_anim_origin: u64,
+    /// Last finale ANM frame whose sound cues were processed.
+    duke_finale_sound_frame: Option<(String, u32)>,
     /// Extra title elapsed so Enter / click can skip `RADLOGO`.
     title_skip_ms: u64,
     /// Slot name for the in-progress Room demo (`record` / `stop`).
     demo_slot: String,
     fps_window: std::time::Instant,
     fps_count: u32,
+    duke_fps: u32,
     /// Tab toggles classic automap overlay.
     automap: bool,
+    /// F7 rising-edge latch for Atomic's native shoulder-view toggle.
+    duke_view_key_down: bool,
+    /// Rising-edge latch for Atomic's F11 brightness cycle.
+    duke_brightness_key_down: bool,
+    /// Chocolate `ud.show_help`: 0 hidden, 1 TEXTSTORY, 2 F1HELP.
+    duke_help_page: u8,
+    /// Prevent OS key-repeat from cycling several help pages in one press.
+    duke_help_key_down: bool,
+    /// Atomic single-player cheat parser phase: idle, after D, after DN.
+    duke_cheat_phase: u8,
+    duke_cheat_buffer: String,
     /// Automap zoom: screen pixels per map unit (`=`/`-` / mouse wheel).
     automap_scale: f32,
+    /// Build sectors seen while the native Duke automap is open.
+    duke_automap_seen: Vec<bool>,
+    /// Atomic `ud.showallmap`, toggled by the native `dnshowmap` cheat.
+    duke_show_all_map: bool,
+    /// Atomic `ud.coords`, toggled by the native `dncoords` cheat.
+    duke_coords_on: bool,
+    /// Atomic `ud.tickrate & 1`, toggled by the native `dnrate` cheat.
+    duke_rate_on: bool,
+    /// Atomic `debug_on`; displays native playsim counts in the HUD.
+    duke_debug_on: bool,
     /// Status bar numbers (viewer stub).
     hud: HudState,
     /// Optional Headless playsim session (`--play`).
     play: Option<Headless>,
+    /// Optional native Build-based Duke simulation and soft renderer.
+    duke_session: Option<room_duke::DukeSession>,
+    duke_start_state: Option<Vec<u8>>,
+    duke_renderer: Option<room_duke::DukeSoftRenderer>,
+    /// VOC samples indexed by native Duke CON sound id.
+    duke_sound_bank: SampleBank,
+    /// GRP/CON layers needed to load subsequent Atomic campaign maps.
+    duke_campaign_content: Option<DukeCampaignContent>,
+    /// Active native Duke `.fdem` recording (input plus post-tic state hashes).
+    duke_demo_recorder: Option<room_duke::DukeDemoRecorder>,
+    /// Matching Atomic `.DMO` recording for the same native input stream.
+    duke_atomic_demo_recorder: Option<room_duke::DukeAtomicDemoRecorder>,
+    /// Active native Duke `.fdem` playback.
+    duke_demo_playback: Option<room_duke::DukeDemoRecorder>,
+    /// Active Atomic revision 117 `.DMO` playback.
+    duke_atomic_demo_playback: Option<room_duke::DukeAtomicDemoPlayer>,
+    /// Campaign coordinates used in native `.fdem` metadata.
+    duke_demo_map: (u8, u8),
+    /// Atomic `music_select`, initialized from the campaign map and changed by Shift-F5.
+    duke_music_selection: usize,
+    /// Remaining Duke tics for the F5/Shift-F5 music hint quote.
+    duke_music_quote_tics: u16,
+    /// Frozen native intermission overlay shown after a solo campaign exit.
+    duke_bonus_panel: Option<DukeBonusPanel>,
+    /// Suppress OS key-repeat events while the music shortcut is held.
+    duke_music_key_down: bool,
+    /// Alt+F1..F10 edge latch for Atomic remote-ridicule sounds.
+    duke_rts_key_down: Option<usize>,
+    /// True while a native Duke pause/menu state has selected environment music.
+    duke_environment_music_active: bool,
+    /// Atomic `lastsavedpos` for F6/F9 quick-save/load shortcuts.
+    duke_last_save_slot: Option<usize>,
     /// Optional UDP lockstep coop session (`--host` / `--join`).
     net: Option<netplay::NetPlay>,
     /// Local player seat when netplaying (also used for camera / HUD).
@@ -1897,6 +2859,11 @@ impl ApplicationHandler for ViewerApp {
                 ..
             } => {
                 let down = state == ElementState::Pressed;
+                match code {
+                    KeyCode::AltLeft => self.keys.alt_left = down,
+                    KeyCode::AltRight => self.keys.alt_right = down,
+                    _ => {}
+                }
                 if down && code == KeyCode::Backquote {
                     self.console_open = !self.console_open;
                     if !self.console_open {
@@ -1934,8 +2901,318 @@ impl ApplicationHandler for ViewerApp {
                 if down && self.try_skip_title_splash() {
                     return;
                 }
+                let rts_index = match code {
+                    KeyCode::F1 => Some(0),
+                    KeyCode::F2 => Some(1),
+                    KeyCode::F3 => Some(2),
+                    KeyCode::F4 => Some(3),
+                    KeyCode::F5 => Some(4),
+                    KeyCode::F6 => Some(5),
+                    KeyCode::F7 => Some(6),
+                    KeyCode::F8 => Some(7),
+                    KeyCode::F9 => Some(8),
+                    KeyCode::F10 => Some(9),
+                    _ => None,
+                };
+                if let Some(index) = rts_index
+                    && self.duke_session.is_some()
+                {
+                    if !down && self.duke_rts_key_down == Some(index) {
+                        self.duke_rts_key_down = None;
+                        return;
+                    }
+                    if down && (self.keys.alt_left || self.keys.alt_right) && self.menu.is_none() {
+                        if self.duke_rts_key_down != Some(index) {
+                            self.duke_rts_key_down = Some(index);
+                            if self.play_duke_rts_sound(index)
+                                && let Some(net) = self.net.as_mut()
+                                && let Err(error) = net.broadcast_duke_rts(index)
+                            {
+                                eprintln!("room: Duke RTS send: {error}");
+                            }
+                        }
+                        return;
+                    }
+                }
+                let help_advance = matches!(
+                    code,
+                    KeyCode::F1 | KeyCode::Space | KeyCode::Enter | KeyCode::NumpadEnter
+                );
+                if !down && help_advance {
+                    self.duke_help_key_down = false;
+                    if self.duke_help_page != 0 {
+                        return;
+                    }
+                }
+                if self.duke_help_page != 0 {
+                    if down {
+                        match code {
+                            KeyCode::Escape => self.duke_help_page = 0,
+                            _ if help_advance && !self.duke_help_key_down => {
+                                self.duke_help_key_down = true;
+                                self.duke_help_page = if self.duke_help_page == 1 { 2 } else { 0 };
+                            }
+                            _ => {}
+                        }
+                    }
+                    return;
+                }
                 let menu_open = self.menu.is_some();
+                if down
+                    && !menu_open
+                    && self.duke_demo_recorder.is_none()
+                    && self.duke_atomic_demo_recorder.is_none()
+                    && self.duke_demo_playback.is_none()
+                    && self
+                        .duke_session
+                        .as_ref()
+                        .is_some_and(|s| s.player_count() == 1 && s.skill < 4)
+                {
+                    if self.duke_cheat_phase == 1 {
+                        if code == KeyCode::KeyN {
+                            self.duke_cheat_phase = 2;
+                            self.duke_cheat_buffer.clear();
+                            return;
+                        }
+                        if code != KeyCode::KeyD {
+                            self.duke_cheat_phase = 0;
+                        }
+                    } else if self.duke_cheat_phase == 2 {
+                        let ch = keycode_keyconf_name(code).filter(|name| name.len() == 1);
+                        if let Some(ch) = ch {
+                            self.duke_cheat_buffer.push_str(ch);
+                            let cheats = [
+                                "cornholio",
+                                "kroz",
+                                "stuff",
+                                "weapons",
+                                "items",
+                                "inventory",
+                                "keys",
+                                "hyper",
+                                "beta",
+                                "todd",
+                                "allen",
+                                "time",
+                                "rate",
+                                "monsters",
+                                "debug",
+                                "showmap",
+                                "view",
+                                "coords",
+                                "unlock",
+                                "cashman",
+                                "clip",
+                            ];
+                            let is_scotty_prefix = if self.duke_cheat_buffer.len() <= 6 {
+                                "scotty".starts_with(&self.duke_cheat_buffer)
+                            } else {
+                                self.duke_cheat_buffer.starts_with("scotty")
+                                    && self.duke_cheat_buffer.len() <= 9
+                                    && self.duke_cheat_buffer[6..]
+                                        .bytes()
+                                        .all(|byte| byte.is_ascii_digit())
+                            };
+                            let scotty_complete = self.duke_cheat_buffer.len() == 9
+                                && self.duke_cheat_buffer.starts_with("scotty")
+                                && self.duke_cheat_buffer[6..]
+                                    .bytes()
+                                    .all(|byte| byte.is_ascii_digit());
+                            let is_skill_prefix = if self.duke_cheat_buffer.len() <= 5 {
+                                "skill".starts_with(&self.duke_cheat_buffer)
+                            } else {
+                                self.duke_cheat_buffer.len() == 6
+                                    && self.duke_cheat_buffer.starts_with("skill")
+                                    && matches!(self.duke_cheat_buffer.as_bytes()[5], b'1'..=b'5')
+                            };
+                            let skill_complete = self.duke_cheat_buffer.len() == 6
+                                && self.duke_cheat_buffer.starts_with("skill")
+                                && matches!(self.duke_cheat_buffer.as_bytes()[5], b'1'..=b'5');
+                            let complete = cheats.contains(&self.duke_cheat_buffer.as_str())
+                                || scotty_complete
+                                || skill_complete;
+                            let prefix = is_scotty_prefix
+                                || is_skill_prefix
+                                || cheats.iter().any(|candidate| {
+                                    candidate.starts_with(&self.duke_cheat_buffer)
+                                });
+                            if complete {
+                                let cheat = self.duke_cheat_buffer.clone();
+                                self.duke_cheat_phase = 0;
+                                self.duke_cheat_buffer.clear();
+                                if scotty_complete {
+                                    let bytes = cheat.as_bytes();
+                                    let volume = bytes[6].checked_sub(b'1');
+                                    let level =
+                                        ((bytes[7] - b'0') * 10 + (bytes[8] - b'0')).checked_sub(1);
+                                    if let (Some(volume), Some(level)) = (volume, level)
+                                        && let Some(progress) =
+                                            room_duke::DukeCampaignProgress::new(volume, level)
+                                        && let Some(session) = self.duke_session.as_mut()
+                                    {
+                                        session.campaign = Some(progress);
+                                        self.advance_duke_campaign(
+                                            room_duke::DukeCampaignTransition::NextLevel {
+                                                volume,
+                                                level,
+                                            },
+                                            None,
+                                        );
+                                    }
+                                    return;
+                                }
+                                if skill_complete {
+                                    let skill = cheat.as_bytes()[5] - b'1';
+                                    if let Some(campaign) = self
+                                        .duke_session
+                                        .as_ref()
+                                        .and_then(|session| session.campaign)
+                                    {
+                                        self.advance_duke_campaign(
+                                            room_duke::DukeCampaignTransition::NextLevel {
+                                                volume: campaign.volume,
+                                                level: campaign.level,
+                                            },
+                                            Some(skill),
+                                        );
+                                    }
+                                    return;
+                                }
+                                if cheat == "showmap" {
+                                    self.duke_show_all_map = !self.duke_show_all_map;
+                                    if let Some(world) = self
+                                        .duke_session
+                                        .as_ref()
+                                        .and_then(|session| session.world.as_ref())
+                                    {
+                                        self.duke_automap_seen = vec![
+                                            self.duke_show_all_map;
+                                            world.numsectors.max(0)
+                                                as usize
+                                        ];
+                                    }
+                                    self.messages.push(
+                                        if self.duke_show_all_map {
+                                            "Full map revealed"
+                                        } else {
+                                            "Map reveal disabled"
+                                        },
+                                        70,
+                                    );
+                                    return;
+                                }
+                                if cheat == "coords" {
+                                    self.duke_coords_on = !self.duke_coords_on;
+                                    self.messages.push(
+                                        if self.duke_coords_on {
+                                            "Coordinates ON"
+                                        } else {
+                                            "Coordinates OFF"
+                                        },
+                                        70,
+                                    );
+                                    return;
+                                }
+                                if cheat == "rate" {
+                                    self.duke_rate_on = !self.duke_rate_on;
+                                    self.messages.push(
+                                        if self.duke_rate_on {
+                                            "Rate display ON"
+                                        } else {
+                                            "Rate display OFF"
+                                        },
+                                        70,
+                                    );
+                                    return;
+                                }
+                                if cheat == "debug" {
+                                    self.duke_debug_on = !self.duke_debug_on;
+                                    self.messages.push(
+                                        if self.duke_debug_on {
+                                            "Duke debug ON"
+                                        } else {
+                                            "Duke debug OFF"
+                                        },
+                                        70,
+                                    );
+                                    return;
+                                }
+                                if let Some(session) = self.duke_session.as_mut() {
+                                    if session.apply_player_cheat(&cheat).is_some() {
+                                        self.messages.push(format!("Cheat: {cheat}"), 70);
+                                    }
+                                }
+                                return;
+                            }
+                            if prefix {
+                                return;
+                            }
+                        }
+                        self.duke_cheat_phase = 0;
+                        self.duke_cheat_buffer.clear();
+                    } else if code == KeyCode::KeyD {
+                        self.duke_cheat_phase = 1;
+                    }
+                }
                 match code {
+                    KeyCode::F11 if self.duke_session.is_some() => {
+                        if down && !self.duke_brightness_key_down {
+                            if let Some(renderer) = self.duke_renderer.as_ref() {
+                                let row = renderer.brightness();
+                                let next = if self.keys.shift {
+                                    if row < 2 { 14 } else { row - 2 }
+                                } else if row >= 14 {
+                                    0
+                                } else {
+                                    row + 2
+                                };
+                                renderer.set_brightness(next);
+                                self.messages.push(format!("Brightness {}", next * 2), 60);
+                            }
+                        }
+                        self.duke_brightness_key_down = down;
+                    }
+                    KeyCode::F1 if down && !menu_open && self.duke_session.is_some() => {
+                        self.duke_help_page = 1;
+                        self.duke_help_key_down = true;
+                        self.keys = Keys::default();
+                        self.keys.attack.clear();
+                    }
+                    KeyCode::F7 if self.duke_session.is_some() => {
+                        if down && !self.duke_view_key_down && !menu_open {
+                            if let Some(session) = self.duke_session.as_mut() {
+                                session.player.over_shoulder_on = !session.player.over_shoulder_on;
+                                session.player.shoulder_camera_distance = 0;
+                                self.messages.push(
+                                    if session.player.over_shoulder_on {
+                                        "Third-person view"
+                                    } else {
+                                        "First-person view"
+                                    },
+                                    45,
+                                );
+                            }
+                        }
+                        self.duke_view_key_down = down;
+                    }
+                    KeyCode::ArrowLeft
+                        if down && menu_open && self.duke_audio_setting_row_selected() =>
+                    {
+                        if self.duke_audio_autoaim_row_selected() {
+                            self.adjust_duke_autoaim(-1);
+                        } else {
+                            self.adjust_selected_duke_audio_volume(-4);
+                        }
+                    }
+                    KeyCode::ArrowRight
+                        if down && menu_open && self.duke_audio_setting_row_selected() =>
+                    {
+                        if self.duke_audio_autoaim_row_selected() {
+                            self.adjust_duke_autoaim(1);
+                        } else {
+                            self.adjust_selected_duke_audio_volume(4);
+                        }
+                    }
                     KeyCode::ArrowUp | KeyCode::KeyW if down && menu_open => {
                         let sfx = self.menu.as_mut().and_then(|m| m.move_cursor(-1));
                         if let Some(sfx) = sfx {
@@ -1975,7 +3252,11 @@ impl ApplicationHandler for ViewerApp {
                     KeyCode::KeyM if !menu_open => {
                         self.apply_console(if down { "+mod2" } else { "-mod2" });
                     }
-                    KeyCode::KeyL if down && self.play.is_some() && !menu_open => {
+                    KeyCode::KeyL
+                        if down
+                            && (self.play.is_some() || self.duke_session.is_some())
+                            && !menu_open =>
+                    {
                         self.set_play_look(!self.mouse_look);
                     }
                     KeyCode::KeyQ if !menu_open => self.keys.left = down,
@@ -2025,7 +3306,90 @@ impl ApplicationHandler for ViewerApp {
                         self.zoom_automap(1.0 / 1.25);
                     }
                     KeyCode::KeyP if down && self.play.is_some() => self.toggle_pause(),
-                    KeyCode::F5 if down => {
+                    KeyCode::F2 if down && !menu_open && self.duke_session.is_some() => {
+                        if self
+                            .duke_session
+                            .as_ref()
+                            .is_some_and(|session| session.player.extra > 0)
+                        {
+                            self.menu = Some(MenuStack {
+                                stack: vec![duke_save_menu(false, 0)],
+                                ..MenuStack::default()
+                            });
+                            self.set_play_look(false);
+                        } else {
+                            self.messages.push("Cannot save while dead", 70);
+                        }
+                    }
+                    KeyCode::F3 if down && !menu_open && self.duke_session.is_some() => {
+                        self.menu = Some(MenuStack {
+                            stack: vec![duke_save_menu(true, 0)],
+                            ..MenuStack::default()
+                        });
+                        self.set_play_look(false);
+                    }
+                    KeyCode::F6 if down && !menu_open && self.duke_session.is_some() => {
+                        if let Some(slot) = self.duke_last_save_slot {
+                            if self
+                                .duke_session
+                                .as_ref()
+                                .is_some_and(|session| session.player.extra > 0)
+                            {
+                                self.menu = Some(MenuStack {
+                                    stack: vec![duke_save_menu(false, slot)],
+                                    ..MenuStack::default()
+                                });
+                                self.set_play_look(false);
+                            } else {
+                                self.messages.push("Cannot save while dead", 70);
+                            }
+                        } else {
+                            self.menu = Some(MenuStack {
+                                stack: vec![duke_save_menu(false, 0)],
+                                ..MenuStack::default()
+                            });
+                            self.set_play_look(false);
+                        }
+                    }
+                    KeyCode::F8 if down && !menu_open && self.duke_session.is_some() => {
+                        if let Some(session) = self.duke_session.as_mut() {
+                            session.player.fta_enabled = !session.player.fta_enabled;
+                            // Chocolate uses a forced FTA quote for this
+                            // notification, so it remains visible even when
+                            // ordinary first-time messages are disabled.
+                            session.player.quote_id = 0;
+                            session.player.quote_timer = 0;
+                            self.messages.push(
+                                if session.player.fta_enabled {
+                                    "Messages ON"
+                                } else {
+                                    "Messages OFF"
+                                },
+                                70,
+                            );
+                        }
+                    }
+                    KeyCode::F4 if down && self.duke_session.is_some() => {
+                        self.open_duke_audio_menu();
+                    }
+                    KeyCode::F5 if !down => self.duke_music_key_down = false,
+                    KeyCode::F5
+                        if down
+                            && !self.duke_music_key_down
+                            && self.duke_session.is_some()
+                            && self.keys.shift =>
+                    {
+                        self.duke_music_key_down = true;
+                        self.cycle_duke_music();
+                    }
+                    KeyCode::F5
+                        if down && !self.duke_music_key_down && self.duke_session.is_some() =>
+                    {
+                        self.duke_music_key_down = true;
+                        self.show_duke_music();
+                    }
+                    KeyCode::F5 if down && !self.duke_music_key_down => {
+                        self.duke_music_key_down = true;
                         self.hud.fullscreen = !self.hud.fullscreen;
                         self.messages.push(
                             if self.hud.fullscreen {
@@ -2035,6 +3399,25 @@ impl ApplicationHandler for ViewerApp {
                             },
                             35,
                         );
+                    }
+                    KeyCode::F5 if down => {}
+                    KeyCode::F9 if down && !menu_open && self.duke_session.is_some() => {
+                        if let Some(slot) = self.duke_last_save_slot {
+                            self.menu = Some(MenuStack {
+                                stack: vec![duke_quickload_confirm_menu(slot)],
+                                ..MenuStack::default()
+                            });
+                            self.set_play_look(false);
+                        } else {
+                            self.menu = Some(MenuStack {
+                                stack: vec![duke_save_menu(true, 0)],
+                                ..MenuStack::default()
+                            });
+                            self.set_play_look(false);
+                        }
+                    }
+                    KeyCode::F10 if down && !menu_open && self.duke_session.is_some() => {
+                        self.open_duke_quit_confirmation();
                     }
                     KeyCode::ArrowLeft if !menu_open => self.keys.left = down,
                     KeyCode::ArrowRight if !menu_open => self.keys.right = down,
@@ -2067,6 +3450,14 @@ impl ApplicationHandler for ViewerApp {
                         self.request_screenshot();
                     }
                     KeyCode::Escape if down => {
+                        if self.duke_session.is_some() {
+                            if self.menu.is_some() {
+                                self.close_duke_menu();
+                            } else {
+                                self.open_duke_pause_menu();
+                            }
+                            return;
+                        }
                         let in_level = self
                             .play
                             .as_ref()
@@ -2153,7 +3544,7 @@ impl ApplicationHandler for ViewerApp {
                 state,
                 button: MouseButton::Left,
                 ..
-            } if self.play.is_some() && self.menu.is_none() => {
+            } if (self.play.is_some() || self.duke_session.is_some()) && self.menu.is_none() => {
                 self.keys
                     .attack
                     .set_window_left(state == ElementState::Pressed);
@@ -2164,7 +3555,7 @@ impl ApplicationHandler for ViewerApp {
                 ..
             } => {
                 // Viewer: hold RMB to look. Play: RMB = alt attack (`docs/31` MA4).
-                if self.play.is_none() {
+                if self.play.is_none() && self.duke_session.is_none() {
                     self.set_play_look(state == ElementState::Pressed);
                 } else if self.menu.is_none() {
                     self.keys.alt_attack = state == ElementState::Pressed;
@@ -2273,7 +3664,7 @@ impl ApplicationHandler for ViewerApp {
             // Raw buttons while grabbed (primary path on macOS Locked cursor).
             // Ids are OS-specific — never treat right as left.
             DeviceEvent::Button { button, state }
-                if self.play.is_some()
+                if (self.play.is_some() || self.duke_session.is_some())
                     && self.menu.is_none()
                     && device_button_is_primary(button) =>
             {
@@ -2293,6 +3684,50 @@ impl ApplicationHandler for ViewerApp {
 }
 
 impl ViewerApp {
+    fn play_duke_rts_sound(&mut self, index: usize) -> bool {
+        let sound_enabled = !matches!(
+            self.console.cvars.get("duke_sound"),
+            Some(room_console::CvarValue::Bool(false))
+        );
+        let lockout = matches!(
+            self.console.cvars.get("duke_lockout"),
+            Some(room_console::CvarValue::Bool(true))
+        );
+        if !sound_enabled || lockout {
+            return false;
+        }
+        let Some(audio) = self.audio.as_ref() else {
+            return false;
+        };
+        let Ok(mut shared) = audio.shared.lock() else {
+            return false;
+        };
+        if shared.mixer.voices.iter().any(|voice| {
+            let raw = voice.sound.raw();
+            (DUKE_RTS_SOUND_BASE..DUKE_RTS_SOUND_BASE + 10).contains(&raw)
+        }) {
+            return false;
+        }
+        let sound = SoundId::from_raw(DUKE_RTS_SOUND_BASE + index as u32);
+        if shared.mixer.bank.get(sound).is_none() {
+            return false;
+        }
+        shared.mixer.apply(&[SoundEvent::Start {
+            origin: SoundOrigin::None,
+            channel: -100 - i32::try_from(index).unwrap_or(0),
+            sound,
+            check_sound: None,
+            start_time: 0.0,
+            volume: 1.0,
+            attenuation: 1.0,
+            pitch: 1.0,
+            flags: SoundFlags::default(),
+            source_id: None,
+            no_restart: false,
+        }]);
+        true
+    }
+
     fn zoom_automap(&mut self, factor: f32) {
         self.automap_scale = (self.automap_scale * factor).clamp(0.06, 4.0);
     }
@@ -2588,9 +4023,15 @@ impl ViewerApp {
     }
 
     fn frame(&mut self) {
-        let dt = self.last_frame.elapsed().as_secs_f32().min(0.05);
+        let elapsed = self.last_frame.elapsed();
+        let dt = elapsed.as_secs_f32().min(0.05);
         self.last_frame = std::time::Instant::now();
-        if self
+        self.elapsed_ms = self
+            .elapsed_ms
+            .saturating_add(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+        if self.duke_session.is_some() {
+            self.tick_play(dt);
+        } else if self
             .play
             .as_ref()
             .is_some_and(|g| g.state == GameState::Level)
@@ -2606,6 +4047,7 @@ impl ViewerApp {
         self.fps_count = self.fps_count.wrapping_add(1);
         if self.fps_window.elapsed().as_secs() >= 1 {
             let fps = self.fps_count;
+            self.duke_fps = fps;
             self.fps_count = 0;
             self.fps_window = std::time::Instant::now();
             if let Some(w) = &self.window {
@@ -2798,6 +4240,32 @@ impl ViewerApp {
         self.render_settings = render_settings_from_cvars(&self.console.cvars);
         let render_settings = self.render_settings.clone();
         let use_post = render_settings.needs_post();
+        let duke_frame = self
+            .duke_bonus_panel
+            .is_none()
+            .then(|| self.duke_session.as_ref())
+            .flatten()
+            .and_then(|session| {
+                let renderer = self.duke_renderer.as_ref()?;
+                let world = session.world.as_ref()?;
+                let (width, height) = self
+                    .config
+                    .as_ref()
+                    .map_or((640, 400), |c| (c.width.max(1), c.height.max(1)));
+                Some((
+                    width,
+                    height,
+                    renderer.render_rgba_interpolated(
+                        world,
+                        &session.player,
+                        width,
+                        height,
+                        session.tic,
+                        session.earthquake_time,
+                        (self.tic_accum / (1.0 / 30.0) * 1000.0).clamp(0.0, 1000.0) as u32,
+                    ),
+                ))
+            });
         let capture_rgba = {
             let (
                 Some(surface),
@@ -2841,18 +4309,20 @@ impl ViewerApp {
             let ui_only = matches!(
                 self.play.as_ref().map(|g| g.state),
                 Some(GameState::Title | GameState::Intermission | GameState::Finale) | None
-            );
+            ) || self.duke_bonus_panel.is_some();
 
             let mut hud = Canvas::new();
             hud.clear([0.0, 0.0, 0.0, 0.0]);
+            if let Some((width, height, rgba)) = duke_frame {
+                hud.blit_rgba(0.0, 0.0, width, height, rgba);
+            }
             // Build UI draw list (status bar + optional automap) then blit to canvas.
             let mut ui = UiDrawList::new();
             match self.play.as_ref().map(|g| g.state) {
                 Some(GameState::Title) => {
                     let elapsed_ms = self
-                        .frames
+                        .elapsed_ms
                         .saturating_sub(self.title_anim_origin)
-                        .saturating_mul(16)
                         .saturating_add(self.title_skip_ms);
                     let (pic, splash) = self.vfs.as_ref().map_or((None, false), |v| {
                         let read_def = |name: &str| {
@@ -2909,7 +4379,7 @@ impl ViewerApp {
                         .and_then(|g| g.intermission.as_ref())
                         .map(|t| t.map_name.as_str())
                         .unwrap_or("");
-                    let elapsed_ms = self.frames.saturating_mul(16);
+                    let elapsed_ms = self.elapsed_ms.saturating_sub(self.finale_anim_origin);
                     let pic = self.vfs.as_ref().and_then(|v| {
                         let prefix = finale_anm_prefix(map_name)?;
                         let def = v.find_any_ns(&format!("{prefix}DEF"))?;
@@ -2918,6 +4388,35 @@ impl ViewerApp {
                         Some(anim_pic(prefix, n, fps, elapsed_ms))
                     });
                     draw_finale(&mut ui, map_name, 320.0, 200.0, pic.as_deref());
+                    if let (Some(prefix), Some(pic)) = (finale_anm_prefix(map_name), pic.as_deref())
+                        && let Some(frame) = pic
+                            .strip_prefix(prefix)
+                            .and_then(|suffix| suffix.parse::<u32>().ok())
+                    {
+                        let map_key = map_name.to_owned();
+                        let previous = self.duke_finale_sound_frame.clone();
+                        let first_frame = previous
+                            .as_ref()
+                            .filter(|(previous_map, previous_frame)| {
+                                previous_map == &map_key && *previous_frame <= frame
+                            })
+                            .map_or(1, |(_, previous_frame)| previous_frame.saturating_add(1));
+                        let cues: Vec<_> = (first_frame..=frame)
+                            .flat_map(|cue_frame| {
+                                room_duke::campaign::finale_sound_labels(map_name, cue_frame)
+                                    .iter()
+                                    .copied()
+                            })
+                            .collect();
+                        self.duke_finale_sound_frame = Some((map_key, frame));
+                        if !cues.is_empty() {
+                            if let Some(session) = self.duke_session.as_mut() {
+                                for label in cues {
+                                    session.queue_frontend_sound_label(label);
+                                }
+                            }
+                        }
+                    }
                 }
                 _ => {
                     if self.automap {
@@ -2941,8 +4440,39 @@ impl ViewerApp {
                             // Play mode: only show linedefs the player has walked near.
                             fog: self.play.is_some(),
                         };
+                        // Native Duke maps use Build wall loops and keep their
+                        // own camera pose; the Doom `MapGeometry` automap is
+                        // not the map loaded by DukeSession.
+                        if let Some(session) = self.duke_session.as_ref() {
+                            if let Some(world) = session.world.as_ref() {
+                                let sector_count = world.numsectors.max(0) as usize;
+                                self.duke_automap_seen.resize(sector_count, false);
+                                let visible = duke_automap_visible_sectors(
+                                    world,
+                                    session.player.cursectnum,
+                                    session.player.posx,
+                                    session.player.posy,
+                                );
+                                for (seen, in_view) in self
+                                    .duke_automap_seen
+                                    .iter_mut()
+                                    .zip(visible.iter().copied())
+                                {
+                                    *seen |= in_view;
+                                }
+                                draw_duke_automap(
+                                    world,
+                                    &self.duke_automap_seen,
+                                    &visible,
+                                    session.player.posx,
+                                    session.player.posy,
+                                    session.player.view_ang(),
+                                    self.automap_scale,
+                                    &mut ui,
+                                );
+                            }
                         // Live world map carries `ML_MAPPED` exploration bits.
-                        if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
+                        } else if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
                             draw_automap(&world.map, &view, &mut ui);
                             let maptime = world.level.maptime;
                             draw_mod_zones_automap(&world.mod_zones, maptime, 1000, &view, &mut ui);
@@ -3218,16 +4748,121 @@ impl ViewerApp {
             if self.console_open {
                 draw_console_overlay(&mut ui, &self.console, &self.console_line);
             }
-            struct Sink<'a>(&'a mut Canvas);
+            let duke_palette_state = match (&self.duke_session, &self.duke_renderer) {
+                (Some(session), Some(renderer)) => session
+                    .world
+                    .as_ref()
+                    .map(|world| (renderer, world, &session.player)),
+                _ => None,
+            };
+            type DukePaletteState<'a> = Option<(
+                &'a room_duke::DukeSoftRenderer,
+                &'a room_build_engine::world::BuildWorld,
+                &'a room_duke::Player,
+            )>;
+            struct Sink<'a> {
+                canvas: &'a mut Canvas,
+                duke_palette_state: DukePaletteState<'a>,
+                remap_cache: std::collections::HashMap<[u8; 3], [u8; 3]>,
+            }
+            impl Sink<'_> {
+                fn map_rgb(
+                    state: DukePaletteState<'_>,
+                    cache: &mut std::collections::HashMap<[u8; 3], [u8; 3]>,
+                    rgb: [u8; 3],
+                ) -> [u8; 3] {
+                    if let Some(mapped) = cache.get(&rgb) {
+                        return *mapped;
+                    }
+                    let mapped = state
+                        .and_then(|(renderer, world, player)| {
+                            renderer.remap_screen_rgb(world, player, rgb)
+                        })
+                        .unwrap_or(rgb);
+                    cache.insert(rgb, mapped);
+                    mapped
+                }
+
+                fn remap_rgb(&mut self, rgb: [u8; 3]) -> [u8; 3] {
+                    Self::map_rgb(self.duke_palette_state, &mut self.remap_cache, rgb)
+                }
+
+                fn remap_ui_color(&mut self, color: [f32; 4]) -> [f32; 4] {
+                    let to_byte = |channel: f32| (channel.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let mapped =
+                        self.remap_rgb([to_byte(color[0]), to_byte(color[1]), to_byte(color[2])]);
+                    [
+                        f32::from(mapped[0]) / 255.0,
+                        f32::from(mapped[1]) / 255.0,
+                        f32::from(mapped[2]) / 255.0,
+                        color[3],
+                    ]
+                }
+
+                fn remap_canvas_from(&mut self, first_command: usize) {
+                    let Self {
+                        canvas,
+                        duke_palette_state,
+                        remap_cache,
+                    } = self;
+                    for command in canvas.cmds.iter_mut().skip(first_command) {
+                        match command {
+                            CanvasCmd::Clear { color }
+                            | CanvasCmd::FillRect { color, .. }
+                            | CanvasCmd::Text { color, .. } => {
+                                let to_byte =
+                                    |channel: f32| (channel.clamp(0.0, 1.0) * 255.0).round() as u8;
+                                let mapped = Self::map_rgb(
+                                    *duke_palette_state,
+                                    remap_cache,
+                                    [to_byte(color[0]), to_byte(color[1]), to_byte(color[2])],
+                                );
+                                color[..3].copy_from_slice(&[
+                                    f32::from(mapped[0]) / 255.0,
+                                    f32::from(mapped[1]) / 255.0,
+                                    f32::from(mapped[2]) / 255.0,
+                                ]);
+                            }
+                            CanvasCmd::BlitRgba { pixels, .. } => {
+                                for pixel in pixels.chunks_exact_mut(4) {
+                                    if pixel[3] == 0 {
+                                        continue;
+                                    }
+                                    let mapped = Self::map_rgb(
+                                        *duke_palette_state,
+                                        remap_cache,
+                                        [pixel[0], pixel[1], pixel[2]],
+                                    );
+                                    pixel[..3].copy_from_slice(&mapped);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             impl CanvasSink for Sink<'_> {
                 fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
-                    self.0.fill_rect(x, y, w, h, color);
+                    let color = self.remap_ui_color(color);
+                    self.canvas.fill_rect(x, y, w, h, color);
                 }
                 fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]) {
-                    self.0.text(x, y, text, color);
+                    let color = self.remap_ui_color(color);
+                    self.canvas.text(x, y, text, color);
                 }
                 fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
-                    self.0.blit_rgba(x, y, w, h, pixels.to_vec());
+                    if self.duke_palette_state.is_none() {
+                        self.canvas.blit_rgba(x, y, w, h, pixels.to_vec());
+                        return;
+                    }
+                    let mut mapped = pixels.to_vec();
+                    for pixel in mapped.chunks_exact_mut(4) {
+                        if pixel[3] == 0 {
+                            continue;
+                        }
+                        let rgb = self.remap_rgb([pixel[0], pixel[1], pixel[2]]);
+                        pixel[..3].copy_from_slice(&rgb);
+                    }
+                    self.canvas.blit_rgba(x, y, w, h, mapped);
                 }
             }
             let (fb_w, fb_h) = self
@@ -3270,11 +4905,273 @@ impl ViewerApp {
                 Some(&self.fonts),
                 Some(&self.patches),
                 &mut OffsetSink {
-                    inner: Sink(&mut hud),
+                    inner: Sink {
+                        canvas: &mut hud,
+                        duke_palette_state,
+                        remap_cache: std::collections::HashMap::new(),
+                    },
                     ox,
                     oy,
                 },
             );
+            let draw_list_end = hud.cmds.len();
+            if self.duke_bonus_panel.is_none()
+                && let Some(session) = &self.duke_session
+            {
+                // Native Duke has no Doom status bar. Keep the first playable
+                // shell legible while the Duke-specific HUD is implemented.
+                hud.text(
+                    12.0,
+                    20.0,
+                    format!(
+                        "HEALTH {}  AMMO {}  WEAPON {}",
+                        session.player.extra.max(0),
+                        session.player.ammo[session.player.curr_weapon.clamp(0, 11) as usize],
+                        session.player.curr_weapon
+                    ),
+                    [1.0, 1.0, 1.0, 1.0],
+                );
+                if let Some(quote) = session.active_quote() {
+                    let quote_width =
+                        f32::from(u16::try_from(quote.chars().count()).unwrap_or(u16::MAX)) * 8.0;
+                    let x = ((fb_w - quote_width) * 0.5).max(8.0);
+                    let y = (fb_h - 52.0).max(8.0);
+                    hud.text(x + 1.0, y + 1.0, quote, [0.0, 0.0, 0.0, 1.0]);
+                    hud.text(x, y, quote, [1.0, 0.88, 0.2, 1.0]);
+                }
+                let rts_playing = self.audio.as_ref().is_some_and(|audio| {
+                    audio.shared.lock().is_ok_and(|shared| {
+                        shared.mixer.voices.iter().any(|voice| {
+                            let raw = voice.sound.raw();
+                            (DUKE_RTS_SOUND_BASE..DUKE_RTS_SOUND_BASE + 10).contains(&raw)
+                        })
+                    })
+                });
+                if rts_playing {
+                    hud.text(
+                        (fb_w - 96.0).max(8.0),
+                        20.0,
+                        "RTS PLAYING",
+                        [1.0, 0.82, 0.25, 1.0],
+                    );
+                }
+                if self.duke_coords_on {
+                    hud.text(
+                        12.0,
+                        40.0,
+                        format!(
+                            "X {} Y {} Z {} ANG {} SECT {}",
+                            session.player.posx,
+                            session.player.posy,
+                            session.player.posz,
+                            session.player.ang,
+                            session.player.cursectnum
+                        ),
+                        [0.95, 0.95, 0.65, 1.0],
+                    );
+                }
+                if self.duke_rate_on {
+                    let map = session.campaign.map_or_else(
+                        || "MAP".to_owned(),
+                        |campaign| {
+                            format!(
+                                "E{}L{}",
+                                campaign.volume.saturating_add(1),
+                                campaign.level.saturating_add(1)
+                            )
+                        },
+                    );
+                    hud.text(
+                        12.0,
+                        if self.duke_coords_on { 60.0 } else { 40.0 },
+                        format!("{map} {} fps", self.duke_fps),
+                        [0.95, 0.95, 0.65, 1.0],
+                    );
+                }
+                if self.duke_debug_on {
+                    let count_stat = |status: i16| {
+                        session
+                            .lists
+                            .sprite_stat
+                            .iter()
+                            .filter(|&&sprite_status| sprite_status == status)
+                            .count()
+                    };
+                    let live_sprites = session
+                        .lists
+                        .sprite_stat
+                        .iter()
+                        .filter(|&&sprite_status| {
+                            sprite_status != room_build_engine::world::MAXSTATUS as i16
+                        })
+                        .count();
+                    let y = if self.duke_coords_on && self.duke_rate_on {
+                        80.0
+                    } else if self.duke_coords_on || self.duke_rate_on {
+                        60.0
+                    } else {
+                        40.0
+                    };
+                    hud.text(
+                        12.0,
+                        y,
+                        format!(
+                            "DEBUG tic {} sprites {} actors {} proj {} fx {}",
+                            session.tic,
+                            live_sprites,
+                            count_stat(room_duke::STAT_ACTOR),
+                            count_stat(room_duke::STAT_PROJECTILE),
+                            count_stat(room_duke::STAT_FX),
+                        ),
+                        [0.65, 1.0, 0.65, 1.0],
+                    );
+                    hud.text(
+                        12.0,
+                        y + 16.0,
+                        format!(
+                            "sectors {} walls {} effectors {}",
+                            session.world.as_ref().map_or(0, |world| world.numsectors),
+                            session.world.as_ref().map_or(0, |world| world.numwalls),
+                            count_stat(room_duke::STAT_EFFECTOR),
+                        ),
+                        [0.65, 1.0, 0.65, 1.0],
+                    );
+                }
+                if session.tip_timer() > 0
+                    && let Some(renderer) = self.duke_renderer.as_ref()
+                {
+                    const TIP: i16 = 2576;
+                    const TIP_Y: [i16; 21] = [
+                        0, -8, -16, -32, -64, -84, -108, -108, -108, -108, -108, -108, -108, -108,
+                        -108, -108, -96, -72, -64, -32, -16,
+                    ];
+                    let remaining = session.tip_timer().min(26);
+                    let frame = (26 - remaining) >> 4;
+                    let picnum = TIP + i16::from(frame);
+                    let y_index = usize::from(remaining.min(20));
+                    if let Some((width, height, pixels)) =
+                        renderer.ui_tile_rgba(picnum, fb_w as u32, fb_h as u32)
+                    {
+                        let x = 170.0 * fb_w / 320.0;
+                        // Chocolate `animatetip` anchors the tip at virtual
+                        // y=240, then applies the tip pose and player horizon.
+                        let horizon = (i32::from(session.player.horiz)
+                            - i32::from(session.player.horizoff))
+                            >> 4;
+                        let y =
+                            (240.0 + f32::from(TIP_Y[y_index] / 2) - horizon as f32) * fb_h / 240.0;
+                        hud.blit_rgba(x, y, width, height, pixels);
+                    }
+                }
+                if session.player.loogie_tics > 0
+                    && let Some(renderer) = self.duke_renderer.as_ref()
+                    && let Some((base_w, base_h, base_pixels)) =
+                        renderer.ui_tile_rgba(1637, fb_w as u32, fb_h as u32)
+                {
+                    for index in 0..usize::from(session.player.num_loogies.min(6)) {
+                        let phase = ((i32::from(session.player.loogie_tics)
+                            + i32::try_from(index).unwrap_or(0))
+                            << 6)
+                            & 2047;
+                        let wiggle = room_build_engine::helpers::sincos_q14(phase).0 >> 10;
+                        let x_virtual = i32::from(session.player.loogie_x[index]) + wiggle;
+                        let y_virtual = 200 + i32::from(session.player.loogie_y[index])
+                            - i32::from(session.player.loogie_tics) * 4;
+                        let zoom = (4096
+                            + ((i32::from(session.player.loogie_tics)
+                                + i32::try_from(index).unwrap_or(0))
+                                << 9)
+                            - (i32::try_from(index).unwrap_or(0) << 8))
+                            .clamp(1, 65_536) as u32;
+                        let width = (u64::from(base_w) * u64::from(zoom) / 65_536).max(1) as u32;
+                        let height = (u64::from(base_h) * u64::from(zoom) / 65_536).max(1) as u32;
+                        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+                        for y in 0..height {
+                            let source_y = y * base_h / height;
+                            for x in 0..width {
+                                let source_x = x * base_w / width;
+                                let source = ((source_y * base_w + source_x) * 4) as usize;
+                                pixels.extend_from_slice(&base_pixels[source..source + 4]);
+                            }
+                        }
+                        let x = x_virtual as f32 * fb_w / 320.0 - width as f32 * 0.5;
+                        let y = y_virtual as f32 * fb_h / 200.0 - height as f32 * 0.5;
+                        hud.blit_rgba(x, y, width, height, pixels);
+                    }
+                }
+                if session.player.palette_flash_tics > 0 {
+                    let tint = session.player.palette_flash;
+                    let alpha = 0.32 * f32::from(session.player.palette_flash_tics) / 32.0;
+                    hud.fill_rect(
+                        0.0,
+                        0.0,
+                        fb_w,
+                        fb_h,
+                        [
+                            f32::from(tint[0]) / 64.0,
+                            f32::from(tint[1]) / 64.0,
+                            f32::from(tint[2]) / 64.0,
+                            alpha,
+                        ],
+                    );
+                }
+            }
+            if let Some(panel) = &self.duke_bonus_panel {
+                let left = fb_w * 0.18;
+                let top = fb_h * 0.18;
+                let width = fb_w * 0.64;
+                let height = fb_h * 0.64;
+                hud.fill_rect(left, top, width, height, [0.02, 0.02, 0.025, 0.94]);
+                let title = "BONUS";
+                hud.text(
+                    fb_w * 0.46,
+                    top + fb_h * 0.07,
+                    title,
+                    [1.0, 0.82, 0.12, 1.0],
+                );
+                let stats = panel.stats;
+                let countup_tics = 30_u32.saturating_sub(u32::from(panel.remaining_tics.min(30)));
+                let countup = |value: u32| value.saturating_mul(countup_tics) / 30;
+                let lines = [
+                    format!(
+                        "KILLS       {:>3} / {:>3}",
+                        countup(u32::from(stats.kills)),
+                        stats.total_kills
+                    ),
+                    format!(
+                        "SECRETS     {:>3} / {:>3}",
+                        countup(u32::from(stats.secrets_found)),
+                        stats.total_secrets
+                    ),
+                    format!(
+                        "YOUR TIME   {}",
+                        duke_time_string(countup(stats.elapsed_tics))
+                    ),
+                    format!("PAR TIME    {}", duke_time_string(countup(stats.par_tics))),
+                    format!(
+                        "3D REALMS   {}",
+                        duke_time_string(countup(stats.designer_tics))
+                    ),
+                ];
+                for (index, line) in lines.iter().enumerate() {
+                    hud.text(
+                        left + width * 0.16,
+                        top + fb_h * (0.19 + index as f32 * 0.075),
+                        line,
+                        [0.95, 0.93, 0.78, 1.0],
+                    );
+                }
+            }
+            if self.duke_help_page != 0
+                && let Some(renderer) = self.duke_renderer.as_ref()
+            {
+                let tile = if self.duke_help_page == 1 { 3280 } else { 2445 };
+                if let Some((width, height, pixels)) =
+                    renderer.ui_tile_rgba(tile, fb_w as u32, fb_h as u32)
+                {
+                    hud.blit_rgba(0.0, 0.0, width, height, pixels);
+                }
+            }
             // Pain and ACS FadeTo cover the whole window. The post chain
             // already mixes the palette tint when it is on.
             if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
@@ -3293,6 +5190,14 @@ impl ViewerApp {
                         [fade.r, fade.g, fade.b, fade.a.min(1.0)],
                     );
                 }
+            }
+            if duke_palette_state.is_some() {
+                Sink {
+                    canvas: &mut hud,
+                    duke_palette_state,
+                    remap_cache: std::collections::HashMap::new(),
+                }
+                .remap_canvas_from(draw_list_end);
             }
 
             let Ok(frame) = surface.get_current_texture() else {
@@ -3612,6 +5517,10 @@ impl ViewerApp {
 
     /// Drive Headless from keyboard / mouse samples at [`GameRuntime::tic_rate`].
     fn tick_play(&mut self, dt: f32) {
+        if self.duke_session.is_some() {
+            self.tick_duke(dt);
+            return;
+        }
         let tic = 1.0 / self.play.as_ref().map(GameRuntime::tic_rate).unwrap_or(35) as f32;
         self.tic_accum += dt;
         while self.tic_accum >= tic {
@@ -4706,6 +6615,541 @@ impl ViewerApp {
             );
         } else if let Some(curr) = self.cam_curr {
             self.camera.eye = Vec3::new(curr.0, curr.1, curr.2);
+        }
+    }
+
+    /// Drive the native Build playsim from desktop input at Duke's 30 Hz.
+    fn tick_duke(&mut self, dt: f32) {
+        if self.menu.is_some() || self.duke_help_page != 0 {
+            return;
+        }
+        const TICS_PER_SECOND: f32 = 30.0;
+        const TIC: f32 = 1.0 / TICS_PER_SECOND;
+        self.tic_accum += dt;
+        while self.tic_accum >= TIC {
+            self.tic_accum -= TIC;
+            if self.duke_bonus_panel.is_some() {
+                let transition = self.duke_bonus_panel.as_mut().and_then(|panel| {
+                    panel.remaining_tics = panel.remaining_tics.saturating_sub(1);
+                    (panel.remaining_tics == 0).then_some(panel.transition)
+                });
+                if let Some(transition) = transition {
+                    self.duke_bonus_panel = None;
+                    self.advance_duke_campaign(transition, None);
+                }
+                continue;
+            }
+            self.duke_music_quote_tics = self.duke_music_quote_tics.saturating_sub(1);
+            let sample = self.sample_input();
+            let requested_weapon = sample.keys.iter().find_map(|key| match key {
+                Key::Weapon1 => room_duke::weapons::weapon_slot_from_hotkey(1),
+                Key::Weapon2 => room_duke::weapons::weapon_slot_from_hotkey(2),
+                Key::Weapon3 => room_duke::weapons::weapon_slot_from_hotkey(3),
+                Key::Weapon4 => room_duke::weapons::weapon_slot_from_hotkey(4),
+                Key::Weapon5 => room_duke::weapons::weapon_slot_from_hotkey(5),
+                Key::Weapon6 => room_duke::weapons::weapon_slot_from_hotkey(6),
+                Key::Weapon7 => room_duke::weapons::weapon_slot_from_hotkey(7),
+                Key::Weapon8 => room_duke::weapons::weapon_slot_from_hotkey(8),
+                Key::Weapon9 => room_duke::weapons::weapon_slot_from_hotkey(9),
+                Key::Weapon0 => room_duke::weapons::weapon_slot_from_hotkey(10),
+                _ => None,
+            });
+            let weapon_cycle = if sample.keys.contains(&Key::NextWeapon) {
+                1
+            } else if sample.keys.contains(&Key::PrevWeapon) {
+                -1
+            } else {
+                0
+            };
+            let run = self.keys.shift
+                || matches!(
+                    self.console.cvars.get("cl_run"),
+                    Some(room_console::CvarValue::Bool(true))
+                );
+            let speed = if run { 2047 } else { 1280 };
+            let fvel = (i16::from(self.keys.w) - i16::from(self.keys.s)) * speed;
+            let svel =
+                (i16::from(self.keys.d) - i16::from(self.keys.a)) * if run { 1536 } else { 1024 };
+            let key_turn = (i16::from(self.keys.right) - i16::from(self.keys.left)) * 4;
+            let mouse_turn =
+                (-(sample.mouse_yaw as f64) * MOUSE_DEG_PER_COUNT * 2048.0 / 360.0 / 8.0).round()
+                    as i16;
+            let turn = (key_turn + mouse_turn).clamp(-127, 127) as i8;
+            let horz = (sample.mouse_pitch / 4).clamp(-127, 127) as i8;
+            let mut bits = 0_u32;
+            // Chocolate's `ud.auto_aim = 2` is full; mode 1 is bullet-only.
+            // Keep it as an archived console setting so the mode survives runs.
+            let duke_autoaim = match self.console.cvars.get("duke_autoaim") {
+                Some(room_console::CvarValue::Int(mode)) => (*mode).clamp(1, 2),
+                _ => 2,
+            };
+            if duke_autoaim == 2 {
+                bits |= room_duke::INPUT_AUTO_AIM;
+            }
+            if sample.keys.contains(&Key::Jump) {
+                bits |= 1;
+            }
+            if self.keys.c {
+                bits |= 2;
+            }
+            if sample.keys.contains(&Key::Use) {
+                // Chocolate maps gamefunc_Open to sync bit 29.
+                bits |= room_duke::INPUT_OPEN;
+            }
+            if sample.keys.contains(&Key::InvUse) {
+                bits |= room_duke::INPUT_INVENTORY_USE;
+            }
+            if run {
+                bits |= 1 << 5;
+            }
+            if sample.keys.contains(&Key::Attack) {
+                bits |= 1 << 2;
+            }
+            // Atomic transports direct weapon selection/cycling in
+            // sync.bits. Desktop solo selection is handled by the existing
+            // request path below; networked Duke must place it on the local
+            // seat's command so every peer simulates the same action.
+            if self.net.is_some() {
+                let choice = requested_weapon
+                    .and_then(|weapon| u32::try_from(weapon).ok())
+                    .filter(|weapon| (1..=9).contains(weapon))
+                    .map(|weapon| weapon.saturating_add(1))
+                    .or_else(|| match weapon_cycle {
+                        -1 => Some(11),
+                        1 => Some(12),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                bits |= (choice & 0x0f) << room_duke::weapons::INPUT_WEAPON_SHIFT;
+            }
+            let active_duke_sound_owners = self
+                .audio
+                .as_ref()
+                .and_then(|audio| {
+                    audio
+                        .shared
+                        .lock()
+                        .ok()
+                        .map(|shared| shared.mixer.duke_active_sound_owners())
+                })
+                .unwrap_or_default();
+            let mut duke_campaign_transition = None;
+            let mut duke_campaign_bonus_stats = None;
+            let mut duke_restart_requested = false;
+            let mut incoming_duke_rts = Vec::new();
+            if let Some(session) = self.duke_session.as_mut() {
+                session.set_active_sound_owners(&active_duke_sound_owners);
+                let duke_input = room_duke::DukeInput {
+                    fvel,
+                    svel,
+                    avel: turn,
+                    horz,
+                    bits,
+                };
+                if let Some(playback) = self.duke_demo_playback.as_mut() {
+                    if let Err(error) = playback.playback_next(session) {
+                        self.messages.push(format!("playdemo: {error}"), 70);
+                        self.duke_demo_playback = None;
+                    }
+                } else if let Some(playback) = self.duke_atomic_demo_playback.as_mut() {
+                    if let Err(error) = playback.playback_next(session) {
+                        if matches!(error, room_duke::DukeDemoError::EndOfDemo) {
+                            self.messages.push("Atomic Duke demo finished", 70);
+                        } else {
+                            self.messages.push(format!("playatomicdemo: {error}"), 70);
+                        }
+                        self.duke_atomic_demo_playback = None;
+                    } else {
+                        // Atomic demos can continue across campaign maps. The
+                        // recording stores inputs, while level progression is
+                        // still driven by the native NUKEBUTTON/exit logic.
+                        duke_campaign_transition = session.take_campaign_exit_request();
+                    }
+                } else if let Some(net) = self.net.as_mut() {
+                    let checksum = session.checksum().map(|value| (session.tic, value));
+                    let frame = match net.advance_duke_tic(duke_input, checksum) {
+                        Ok(frame) => frame,
+                        Err(error) => {
+                            eprintln!("room: Duke netplay: {error}");
+                            continue;
+                        }
+                    };
+                    incoming_duke_rts.extend(net.drain_duke_rts());
+                    session.tick_inputs(&frame);
+                    duke_restart_requested = session.take_player_restart_request();
+                    if self.duke_demo_recorder.is_none() {
+                        duke_campaign_transition = session.take_campaign_exit_request();
+                    }
+                } else {
+                    if let Some(weapon) = requested_weapon {
+                        room_duke::weapons::select_weapon(&mut session.player, weapon);
+                    }
+                    if weapon_cycle > 0 {
+                        room_duke::weapons::cycle_weapon(&mut session.player, 1);
+                    } else if weapon_cycle < 0 {
+                        room_duke::weapons::cycle_weapon(&mut session.player, -1);
+                    }
+                    session.tick(duke_input);
+                    duke_restart_requested = session.take_player_restart_request();
+                    if self.duke_demo_recorder.is_none() {
+                        let bonus_stats = session.level_bonus_stats();
+                        duke_campaign_transition = session.take_campaign_exit_request();
+                        if duke_campaign_transition.is_some() {
+                            duke_campaign_bonus_stats = Some(bonus_stats);
+                        }
+                    }
+                    if let Some(recorder) = self.duke_demo_recorder.as_mut()
+                        && let Err(error) = recorder.record_tic_with_weapon_actions(
+                            session,
+                            duke_input,
+                            requested_weapon,
+                            weapon_cycle,
+                        )
+                    {
+                        self.messages.push(format!("record: {error}"), 70);
+                        self.duke_demo_recorder = None;
+                        self.duke_atomic_demo_recorder = None;
+                    }
+                    if let Some(recorder) = self.duke_atomic_demo_recorder.as_mut()
+                        && let Err(error) = recorder.record_tic_with_weapon_actions(
+                            duke_input,
+                            requested_weapon,
+                            weapon_cycle as i8,
+                        )
+                    {
+                        self.messages.push(format!("record DMO: {error}"), 70);
+                        self.duke_demo_recorder = None;
+                        self.duke_atomic_demo_recorder = None;
+                    }
+                }
+            }
+            for (_, index) in incoming_duke_rts {
+                self.play_duke_rts_sound(index);
+            }
+            let (sound_events, listener) = self
+                .duke_session
+                .as_mut()
+                .map(|session| {
+                    // Chocolate `xyzsound` samples the `opos` snapshot made
+                    // at processinput entry, while actors emit later in tic.
+                    (
+                        session.drain_sound_events(),
+                        (
+                            session.player.oposx,
+                            session.player.oposy,
+                            session.player.oposz,
+                            session.player.view_ang(),
+                        ),
+                    )
+                })
+                .unwrap_or_default();
+            self.play_duke_sounds(&sound_events, listener);
+            if duke_restart_requested {
+                if let Some(slot) = self.duke_last_save_slot {
+                    self.menu = Some(MenuStack {
+                        stack: vec![duke_save_menu(true, slot)],
+                        ..MenuStack::default()
+                    });
+                    self.set_play_look(false);
+                } else if let (Some(session), Some(start_state)) =
+                    (self.duke_session.as_mut(), self.duke_start_state.as_deref())
+                {
+                    match session.load_fsave(start_state) {
+                        Ok(()) => {
+                            self.duke_last_save_slot = None;
+                            self.duke_automap_seen.clear();
+                            self.duke_show_all_map = false;
+                            self.messages.push("Restarted Duke level", 70);
+                            self.start_duke_level_music();
+                        }
+                        Err(error) => self.messages.push(format!("Duke restart: {error}"), 70),
+                    }
+                } else {
+                    self.messages.push(
+                        "Duke restart unavailable: initial state could not be saved",
+                        70,
+                    );
+                }
+            }
+            if let Some(transition) = duke_campaign_transition {
+                if matches!(
+                    transition,
+                    room_duke::DukeCampaignTransition::NextLevel { .. }
+                ) && self.net.is_none()
+                    && self.duke_demo_playback.is_none()
+                    && self.duke_atomic_demo_playback.is_none()
+                    && let Some(stats) = duke_campaign_bonus_stats
+                {
+                    self.duke_bonus_panel = Some(DukeBonusPanel {
+                        stats,
+                        remaining_tics: 150,
+                        transition,
+                    });
+                } else {
+                    self.advance_duke_campaign(transition, None);
+                }
+            }
+        }
+    }
+
+    fn advance_duke_campaign(
+        &mut self,
+        transition: room_duke::DukeCampaignTransition,
+        skill_override: Option<u8>,
+    ) {
+        match transition {
+            room_duke::DukeCampaignTransition::EndGame => {
+                self.messages.push("Duke campaign complete", 100);
+            }
+            room_duke::DukeCampaignTransition::NextLevel { volume, level } => {
+                let Some(content) = self.duke_campaign_content.as_ref() else {
+                    return;
+                };
+                let Some(previous) = self.duke_session.take() else {
+                    return;
+                };
+                let campaign = previous.campaign;
+                let skill = skill_override.unwrap_or(previous.skill);
+                let actor_toggle = previous.actor_toggle;
+                let atomic_globals = previous.atomic_globals.clone();
+                let mut next = match content.load_level_at_skill(volume, level, skill) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        self.duke_session = Some(previous);
+                        self.messages.push(format!("Duke next level: {error}"), 100);
+                        return;
+                    }
+                };
+                if skill_override.is_none() {
+                    if let Err(error) = next.inherit_campaign_roster(&previous) {
+                        self.duke_session = Some(previous);
+                        self.messages
+                            .push(format!("Duke next level roster: {error}"), 100);
+                        return;
+                    }
+                }
+                next.campaign = campaign;
+                next.actor_toggle = actor_toggle;
+                next.atomic_globals = atomic_globals;
+                if let (Some(progress), Some(globals)) = (&next.campaign, &mut next.atomic_globals)
+                {
+                    globals.volume = Some(i32::from(progress.volume));
+                    globals.level = Some(i32::from(progress.level));
+                    globals.from_bonus = Some(i32::from(progress.from_bonus));
+                }
+                if let Some(world) = next.world.as_mut() {
+                    room_duke::sync_player_sprite(&next.player, world.sprites.as_mut());
+                }
+                self.duke_start_state = next.save_fsave().ok();
+                self.duke_sound_bank =
+                    content.sound_bank(next.script.as_ref(), content.sample_rate);
+                if let Some(renderer) = self.duke_renderer.as_ref() {
+                    renderer.invalidate_camera_feed();
+                }
+                self.duke_session = Some(next);
+                self.duke_last_save_slot = None;
+                self.duke_demo_map = (volume, level);
+                self.duke_music_selection = usize::from(volume) * 11 + usize::from(level);
+                self.start_duke_level_music();
+                self.duke_automap_seen.clear();
+                self.duke_show_all_map = false;
+                self.cam_prev = None;
+                self.cam_curr = None;
+                self.messages
+                    .push(format!("Duke: entered E{}L{}", volume + 1, level + 1), 100);
+            }
+        }
+    }
+
+    fn play_duke_sounds(
+        &mut self,
+        sound_events: &[room_duke::DukeSoundEvent],
+        listener: (i32, i32, i32, i16),
+    ) {
+        let duke_sound_enabled = !matches!(
+            self.console.cvars.get("duke_sound"),
+            Some(room_console::CvarValue::Bool(false))
+        );
+        let duke_lockout = matches!(
+            self.console.cvars.get("duke_lockout"),
+            Some(room_console::CvarValue::Bool(true))
+        );
+        let duke_talk_enabled = !matches!(
+            self.console.cvars.get("duke_talk"),
+            Some(room_console::CvarValue::Bool(false))
+        );
+        let duke_ambience_enabled = !matches!(
+            self.console.cvars.get("duke_ambience"),
+            Some(room_console::CvarValue::Bool(false))
+        );
+        let Some(audio) = self.audio.as_ref() else {
+            return;
+        };
+        let visibility_geometry = duke_sound_visibility_geometry(self.duke_session.as_ref());
+        let Ok(mut shared) = audio.shared.lock() else {
+            return;
+        };
+        shared.mixer.duke_sfx_gain = duke_audio_volume(&self.console.cvars, "duke_sfx_volume");
+        shared
+            .mixer
+            .set_reverb_level(duke_reverb_zone_level(self.duke_session.as_ref(), listener));
+        shared.mixer.reverse_stereo = matches!(
+            self.console.cvars.get("duke_reverse_stereo"),
+            Some(room_console::CvarValue::Bool(true))
+        );
+        let to_audio_point = |position: [i32; 3]| {
+            room_core::DVec3::new(
+                f64::from(position[0]) / 16.0,
+                f64::from(position[1]) / 16.0,
+                f64::from(position[2]) / 256.0,
+            )
+        };
+        let listener_pos = to_audio_point([listener.0, listener.1, listener.2]);
+        let listener_angle =
+            f64::from(listener.3.rem_euclid(2048)) * (std::f64::consts::TAU / 2048.0);
+        shared.mixer.set_listener(listener_pos, listener_angle);
+        for event in sound_events {
+            let sound = SoundId::from_raw(u32::from(event.sound_id));
+            if event.stop {
+                shared.mixer.apply(&[SoundEvent::StopSound { sound }]);
+                continue;
+            }
+            if event.stop_source_sound {
+                shared.mixer.apply(&[SoundEvent::Stop {
+                    origin: SoundOrigin::Point(to_audio_point(event.position)),
+                    channel: i32::from(event.sound_id),
+                }]);
+                continue;
+            }
+            if self.duke_session.as_ref().is_some_and(|session| {
+                session.player.time_before_exit > 0 && session.player.time_before_exit <= 26 * 3
+            }) {
+                // Chocolate `xyzsound` rejects new starts during the final
+                // three seconds of `timebeforeexit`; stop events above still
+                // pass so already-active voices can be cleaned up.
+                continue;
+            }
+            let lockout_only = self
+                .duke_session
+                .as_ref()
+                .and_then(|session| session.script.as_ref())
+                .and_then(|script| script.sounds.get(usize::from(event.sound_id)))
+                .and_then(Option::as_ref)
+                .is_some_and(|definition| definition.m & 8 != 0);
+            let talk_only = self
+                .duke_session
+                .as_ref()
+                .and_then(|session| session.script.as_ref())
+                .and_then(|script| script.sounds.get(usize::from(event.sound_id)))
+                .and_then(Option::as_ref)
+                .is_some_and(|definition| definition.m & 4 != 0);
+            if !duke_sound_enabled
+                || (duke_lockout && lockout_only)
+                || (!duke_talk_enabled && talk_only)
+                || (!duke_ambience_enabled && event.ambience)
+            {
+                continue;
+            }
+            let pitch = self.duke_session.as_ref().map_or(1.0, |session| {
+                let underwater = session
+                    .world
+                    .as_ref()
+                    .and_then(|world| world.sectors.get(session.player.cursectnum.max(0) as usize))
+                    .is_some_and(|sector| sector.lotag == 2);
+                room_duke::audio::pitch_scale(
+                    session.script.as_ref(),
+                    event.sound_id,
+                    session.tic,
+                    event.source_id,
+                    underwater,
+                    event.global,
+                )
+            });
+            let distance_offset = if event.global || event.no_attenuation {
+                0
+            } else {
+                self.duke_session
+                    .as_ref()
+                    .and_then(|session| session.script.as_ref())
+                    .and_then(|script| script.sounds.get(usize::from(event.sound_id)))
+                    .and_then(Option::as_ref)
+                    .map_or(0, |definition| definition.vo / 16)
+            };
+            let line_of_sight = visibility_geometry.as_ref().is_none_or(|(sectors, walls)| {
+                !duke_sound_is_occluded(self.duke_session.as_ref(), event, listener, sectors, walls)
+            });
+            let xyzsound_actor_voice = !event.global && !event.ambience && !event.play_once;
+            if xyzsound_actor_voice {
+                let dead_badguy = self
+                    .duke_session
+                    .as_ref()
+                    .and_then(|session| {
+                        let source = usize::try_from(event.source_id?).ok()?;
+                        let sprite = session.world.as_ref()?.sprites.get(source)?;
+                        Some(
+                            sprite.extra <= 0
+                                && room_duke::badguy_pic(
+                                    sprite.picnum,
+                                    session
+                                        .script
+                                        .as_ref()
+                                        .map_or(&[], |script| script.actortype.as_slice()),
+                                ),
+                        )
+                    })
+                    .unwrap_or(false);
+                shared
+                    .mixer
+                    .duke_xyzsound_stop_latest(sound, event.source_id, dead_badguy);
+            }
+            shared.mixer.apply(&[SoundEvent::Start {
+                origin: if event.global {
+                    SoundOrigin::None
+                } else {
+                    SoundOrigin::Point(to_audio_point(event.position))
+                },
+                channel: i32::from(event.sound_id),
+                sound,
+                check_sound: None,
+                start_time: 0.0,
+                volume: 1.0,
+                attenuation: if line_of_sight { 1.0 } else { 1.03125 },
+                pitch,
+                flags: SoundFlags(
+                    (if event.play_once {
+                        SoundFlags::UNIQUE_SOUND
+                    } else {
+                        0
+                    }) | (if event.loop_sound {
+                        SoundFlags::LOOP
+                    } else {
+                        0
+                    }) | match event.voice_limit {
+                        1 => SoundFlags::DUKE_LIMIT_ONE,
+                        2..=4 => SoundFlags::DUKE_LIMIT_FOUR,
+                        _ => 0,
+                    } | if event.exclusive {
+                        SoundFlags::DUKE_EXCLUSIVE
+                    } else {
+                        0
+                    } | if event.no_attenuation || event.global {
+                        SoundFlags::ATTN_NONE
+                    } else {
+                        0
+                    } | if event.ambience {
+                        SoundFlags::DUKE_AMBIENCE
+                    } else {
+                        0
+                    } | if xyzsound_actor_voice {
+                        SoundFlags::OVERLAP
+                    } else {
+                        0
+                    } | SoundFlags::with_duke_priority(i32::from(event.priority)).0
+                        | SoundFlags::with_duke_distance_offset(distance_offset).0,
+                ),
+                source_id: event.source_id,
+                no_restart: false,
+            }]);
         }
     }
 
@@ -5830,6 +8274,7 @@ impl ViewerApp {
                     }
                 } else {
                     game.enter_finale();
+                    self.finale_anim_origin = self.elapsed_ms;
                     self.menu = None;
                     self.messages.push("Finale", 35);
                     // Keep intermission theme through the finale stub.
@@ -5918,6 +8363,50 @@ impl ViewerApp {
         }
         self.messages
             .push("Graphics — arrows / Enter, Esc back", 70);
+    }
+
+    /// Open Duke's native Sound Setup screen (F4).
+    fn open_duke_audio_menu(&mut self) {
+        if self.duke_session.is_none() {
+            return;
+        }
+        let mut stack = MenuStack::default();
+        stack.push_menu(duke_audio_menu(&self.console.cvars));
+        self.menu = Some(stack);
+        self.keys.attack.clear();
+        self.set_play_look(false);
+    }
+
+    fn open_duke_pause_menu(&mut self) {
+        self.menu = Some(MenuStack {
+            stack: vec![duke_pause_menu()],
+            ..MenuStack::default()
+        });
+        self.keys.attack.clear();
+        self.set_play_look(false);
+        self.duke_environment_music_active = true;
+        self.start_duke_environment_music();
+    }
+
+    fn open_duke_quit_confirmation(&mut self) {
+        self.menu = Some(MenuStack {
+            stack: vec![duke_quit_confirm_menu()],
+            ..MenuStack::default()
+        });
+        self.keys.attack.clear();
+        self.set_play_look(false);
+        self.duke_environment_music_active = true;
+        self.start_duke_environment_music();
+    }
+
+    fn close_duke_menu(&mut self) {
+        self.menu = None;
+        self.keys.attack.clear();
+        self.set_play_look(true);
+        if self.duke_environment_music_active {
+            self.duke_environment_music_active = false;
+            self.start_duke_level_music();
+        }
     }
 
     /// Grab / release the cursor for mouselook.
@@ -6031,7 +8520,153 @@ impl ViewerApp {
                 self.messages.push("Read This — help screen TBD", 70);
             }
             MenuCommand::Other(action) => {
-                if let Some(rest) = action.strip_prefix("optioncycle ") {
+                if action == "duke_pause_resume" {
+                    self.close_duke_menu();
+                } else if action == "duke_pause_save" {
+                    self.menu = Some(MenuStack {
+                        stack: vec![duke_save_menu(false, self.duke_last_save_slot.unwrap_or(0))],
+                        ..MenuStack::default()
+                    });
+                } else if action == "duke_pause_load" {
+                    self.menu = Some(MenuStack {
+                        stack: vec![duke_save_menu(true, self.duke_last_save_slot.unwrap_or(0))],
+                        ..MenuStack::default()
+                    });
+                } else if action == "duke_pause_audio" {
+                    self.open_duke_audio_menu();
+                } else if action == "duke_pause_quit" {
+                    self.open_duke_quit_confirmation();
+                } else if action == "duke_slot_empty" {
+                    self.messages.push("Empty save slot", 35);
+                } else if let Some(rest) = action.strip_prefix("duke_save_slot ") {
+                    if let Ok(slot) = rest.parse::<usize>()
+                        && slot < 10
+                    {
+                        self.save_duke_slot(slot);
+                    }
+                } else if let Some(rest) = action.strip_prefix("duke_load_slot ") {
+                    if let Ok(slot) = rest.parse::<usize>()
+                        && slot < 10
+                    {
+                        self.load_duke_slot(slot);
+                    }
+                } else if let Some(rest) = action.strip_prefix("duke_confirm_load_slot ") {
+                    if let Ok(slot) = rest.parse::<usize>()
+                        && slot < 10
+                    {
+                        self.load_duke_slot(slot);
+                    }
+                } else if action == "duke_slot_close"
+                    || action == "duke_audio_close"
+                    || action == "duke_quit_cancel"
+                {
+                    self.close_duke_menu();
+                } else if action == "duke_audio_sound" {
+                    let enabled = !matches!(
+                        self.console.cvars.get("duke_sound"),
+                        Some(room_console::CvarValue::Bool(false))
+                    );
+                    let next = if enabled { "false" } else { "true" };
+                    let _ = self.console.cvars.set("duke_sound", next);
+                    if enabled {
+                        if let Some(audio) = self.audio.as_ref() {
+                            if let Ok(mut shared) = audio.shared.lock() {
+                                shared.mixer.voices.clear();
+                            }
+                        }
+                    }
+                    self.refresh_duke_audio_menu();
+                } else if action == "duke_audio_music" {
+                    let enabled = !matches!(
+                        self.console.cvars.get("duke_music"),
+                        Some(room_console::CvarValue::Bool(false))
+                    );
+                    let _ = self
+                        .console
+                        .cvars
+                        .set("duke_music", if enabled { "false" } else { "true" });
+                    if enabled {
+                        if let Some(audio) = self.audio.as_ref() {
+                            if let Ok(mut shared) = audio.shared.lock() {
+                                shared.music.stop();
+                            }
+                        }
+                    } else {
+                        if self.duke_environment_music_active {
+                            self.start_duke_environment_music();
+                        } else {
+                            self.start_duke_level_music();
+                        }
+                    }
+                    self.refresh_duke_audio_menu();
+                } else if action == "duke_audio_talk" {
+                    let enabled = !matches!(
+                        self.console.cvars.get("duke_talk"),
+                        Some(room_console::CvarValue::Bool(false))
+                    );
+                    let _ = self
+                        .console
+                        .cvars
+                        .set("duke_talk", if enabled { "false" } else { "true" });
+                    if enabled {
+                        if let Some(audio) = self.audio.as_ref() {
+                            if let Ok(mut shared) = audio.shared.lock() {
+                                shared.mixer.voices.retain(|voice| {
+                                    voice.flags.0 & SoundFlags::DUKE_EXCLUSIVE == 0
+                                });
+                            }
+                        }
+                    }
+                    self.refresh_duke_audio_menu();
+                } else if action == "duke_audio_ambience" {
+                    let enabled = !matches!(
+                        self.console.cvars.get("duke_ambience"),
+                        Some(room_console::CvarValue::Bool(false))
+                    );
+                    let _ = self
+                        .console
+                        .cvars
+                        .set("duke_ambience", if enabled { "false" } else { "true" });
+                    if let Some(session) = self.duke_session.as_mut() {
+                        session.reset_ambient_sound_markers();
+                    }
+                    if enabled {
+                        if let Some(audio) = self.audio.as_ref() {
+                            if let Ok(mut shared) = audio.shared.lock() {
+                                shared
+                                    .mixer
+                                    .voices
+                                    .retain(|voice| voice.flags.0 & SoundFlags::DUKE_AMBIENCE == 0);
+                            }
+                        }
+                    }
+                    self.refresh_duke_audio_menu();
+                } else if action == "duke_audio_reverse_stereo" {
+                    let enabled = !matches!(
+                        self.console.cvars.get("duke_reverse_stereo"),
+                        Some(room_console::CvarValue::Bool(false))
+                    );
+                    let _ = self.console.cvars.set(
+                        "duke_reverse_stereo",
+                        if enabled { "false" } else { "true" },
+                    );
+                    if let Some(audio) = self.audio.as_ref() {
+                        if let Ok(mut shared) = audio.shared.lock() {
+                            shared.mixer.reverse_stereo = !enabled;
+                        }
+                    }
+                    self.refresh_duke_audio_menu();
+                } else if action == "duke_audio_autoaim" {
+                    self.adjust_duke_autoaim(1);
+                } else if action == "duke_audio_sfx_volume" || action == "duke_audio_music_volume" {
+                    let name = if action == "duke_audio_sfx_volume" {
+                        "duke_sfx_volume"
+                    } else {
+                        "duke_music_volume"
+                    };
+                    self.adjust_duke_audio_volume(name, 4);
+                    self.refresh_duke_audio_menu();
+                } else if let Some(rest) = action.strip_prefix("optioncycle ") {
                     // `optioncycle <cvar> <lo> <hi>`
                     let parts: Vec<&str> = rest.split_whitespace().collect();
                     if parts.len() >= 3 {
@@ -6113,6 +8748,111 @@ impl ViewerApp {
             menu.ensure_scroll_visible();
             stack.replace_top(menu);
         }
+    }
+
+    fn refresh_duke_audio_menu(&mut self) {
+        let Some(stack) = self.menu.as_mut() else {
+            return;
+        };
+        if stack
+            .top_title()
+            .is_some_and(|title| title.eq_ignore_ascii_case("SETUP SOUNDS"))
+        {
+            let (selected, scroll) = stack
+                .top()
+                .map(|menu| (menu.selected, menu.scroll))
+                .unwrap_or((0, 0));
+            let mut menu = duke_audio_menu(&self.console.cvars);
+            menu.selected = selected.min(menu.items.len().saturating_sub(1));
+            menu.scroll = scroll;
+            menu.ensure_scroll_visible();
+            stack.replace_top(menu);
+        }
+    }
+
+    fn adjust_duke_audio_volume(&mut self, name: &str, delta: i32) {
+        let current = match self.console.cvars.get(name) {
+            Some(room_console::CvarValue::Int(value)) => *value,
+            _ => 255,
+        }
+        .clamp(0, 255);
+        let next = (current + delta).clamp(0, 255);
+        let _ = self.console.cvars.set(name, &next.to_string());
+        if let Some(audio) = self.audio.as_ref() {
+            if let Ok(mut shared) = audio.shared.lock() {
+                if name == "duke_sfx_volume" {
+                    shared.mixer.duke_sfx_gain = next as f32 / 255.0;
+                } else {
+                    shared.mixer.music_gain = next as f32 / 255.0;
+                }
+            }
+        }
+    }
+
+    fn adjust_selected_duke_audio_volume(&mut self, delta: i32) {
+        let action = self
+            .menu
+            .as_ref()
+            .filter(|menu| {
+                menu.top_title()
+                    .is_some_and(|title| title.eq_ignore_ascii_case("SETUP SOUNDS"))
+            })
+            .and_then(MenuStack::top)
+            .and_then(|menu| menu.items.get(menu.selected))
+            .map(|item| item.action.as_str());
+        let name = match action {
+            Some("duke_audio_sfx_volume") => "duke_sfx_volume",
+            Some("duke_audio_music_volume") => "duke_music_volume",
+            _ => return,
+        };
+        self.adjust_duke_audio_volume(name, delta);
+        self.refresh_duke_audio_menu();
+    }
+
+    fn adjust_duke_autoaim(&mut self, delta: i32) {
+        let current = match self.console.cvars.get("duke_autoaim") {
+            Some(room_console::CvarValue::Int(value)) => (*value).clamp(1, 2),
+            _ => 2,
+        };
+        let next = if delta < 0 {
+            if current == 1 { 2 } else { current - 1 }
+        } else if current == 2 {
+            1
+        } else {
+            current + 1
+        };
+        let _ = self.console.cvars.set("duke_autoaim", &next.to_string());
+        self.refresh_duke_audio_menu();
+    }
+
+    fn duke_audio_volume_row_selected(&self) -> bool {
+        self.menu
+            .as_ref()
+            .filter(|menu| {
+                menu.top_title()
+                    .is_some_and(|title| title.eq_ignore_ascii_case("SETUP SOUNDS"))
+            })
+            .and_then(MenuStack::top)
+            .and_then(|menu| menu.items.get(menu.selected))
+            .is_some_and(|item| {
+                item.action == "duke_audio_sfx_volume" || item.action == "duke_audio_music_volume"
+            })
+    }
+
+    fn duke_audio_autoaim_row_selected(&self) -> bool {
+        self.menu
+            .as_ref()
+            .filter(|menu| {
+                menu.top_title()
+                    .is_some_and(|title| title.eq_ignore_ascii_case("SETUP SOUNDS"))
+            })
+            .and_then(MenuStack::top)
+            .and_then(|menu| menu.items.get(menu.selected))
+            .is_some_and(|item| item.action == "duke_audio_autoaim")
+    }
+
+    fn duke_audio_setting_row_selected(&self) -> bool {
+        self.duke_audio_volume_row_selected() || self.duke_audio_autoaim_row_selected()
     }
 
     /// Persist config; skips shader CVars when [`Self::ephemeral_shaders`].
@@ -6312,6 +9052,7 @@ impl ViewerApp {
                 HostCommand::Record(slot) => self.begin_play_demo(slot.as_deref()),
                 HostCommand::StopDemo => self.stop_play_demo(),
                 HostCommand::PlayDemo(slot) => self.play_play_demo(slot.as_deref()),
+                HostCommand::PlayAtomicDemo(path) => self.play_atomic_duke_demo(&path),
                 HostCommand::Kill(target) => {
                     let kind = target.as_deref();
                     if kind.is_none_or(|t| t.eq_ignore_ascii_case("monsters")) {
@@ -6367,6 +9108,19 @@ impl ViewerApp {
         } else {
             format!("{} → {name}", h.name)
         };
+        if let Some(session) = self.duke_session.as_mut() {
+            match session.restore_atomic_sav(&h) {
+                Ok(()) => {
+                    self.menu = None;
+                    self.console_open = false;
+                    self.messages
+                        .push(format!("Restored Atomic Duke save {label}"), 70);
+                    self.start_level_music();
+                }
+                Err(e) => self.messages.push(format!("load {label}: {e}"), 70),
+            }
+            return;
+        }
         let Some(vfs) = self.vfs.as_ref() else {
             self.messages
                 .push(format!("load {label}: no IWAD mounted"), 70);
@@ -6578,7 +9332,7 @@ impl ViewerApp {
                         }
                     }
                 }
-                if let Some(p) = h.player {
+                if let Some(p) = h.player.as_ref() {
                     if let Some(w) = game.world_mut() {
                         let (x, y) = p.room_xy();
                         if let Some(n) = p.room_prev_pitch() {
@@ -6969,6 +9723,103 @@ impl ViewerApp {
         }
     }
 
+    fn save_duke_slot(&mut self, slot: usize) {
+        let Some(session) = self.duke_session.as_ref() else {
+            self.messages.push("save: no native Duke session", 70);
+            return;
+        };
+        let bytes = match session.save_fsave() {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.messages.push(format!("save: {error}"), 70);
+                return;
+            }
+        };
+        let atomic_bytes = session.save_atomic_sav();
+        let path = dirs_room_save(&format!("duke-{slot}"));
+        let atomic_path = path.with_extension("sav");
+        if let Some(directory) = path.parent()
+            && let Err(error) = std::fs::create_dir_all(directory)
+        {
+            self.messages.push(format!("save: {error}"), 70);
+            return;
+        }
+        match std::fs::write(&path, bytes) {
+            Ok(()) => {
+                let atomic_notice = match atomic_bytes {
+                    Ok(bytes) => match std::fs::write(&atomic_path, bytes) {
+                        Ok(()) => None,
+                        Err(error) => {
+                            let _ = std::fs::remove_file(&atomic_path);
+                            Some(format!("; Atomic companion save failed: {error}"))
+                        }
+                    },
+                    Err(room_duke::DukeSaveError::MissingAtomicTemplate) => {
+                        let _ = std::fs::remove_file(&atomic_path);
+                        None
+                    }
+                    Err(error) => {
+                        let _ = std::fs::remove_file(&atomic_path);
+                        Some(format!("; Atomic companion save skipped: {error}"))
+                    }
+                };
+                self.duke_last_save_slot = Some(slot);
+                self.messages.push(
+                    format!(
+                        "Saved Duke slot {}{}",
+                        slot + 1,
+                        atomic_notice.unwrap_or_default()
+                    ),
+                    70,
+                );
+                self.close_duke_menu();
+            }
+            Err(error) => self.messages.push(format!("save: {error}"), 70),
+        }
+    }
+
+    fn load_duke_slot(&mut self, slot: usize) {
+        let path = dirs_room_save(&format!("duke-{slot}"));
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.messages.push(format!("load: {error}"), 70);
+                return;
+            }
+        };
+        let Some(session) = self.duke_session.as_mut() else {
+            self.messages.push("load: no native Duke session", 70);
+            return;
+        };
+        match session.load_fsave(&bytes) {
+            Ok(()) => {
+                let atomic_restore = std::fs::read(path.with_extension("sav")).ok().map(|bytes| {
+                    room_build::SavHeader::parse(&bytes)
+                        .map_err(|error| error.to_string())
+                        .and_then(|save| session.restore_atomic_sav(&save))
+                });
+                self.duke_last_save_slot = Some(slot);
+                if let Some(renderer) = self.duke_renderer.as_ref() {
+                    renderer.invalidate_camera_feed();
+                }
+                let message = match atomic_restore {
+                    Some(Err(error)) => format!(
+                        "Loaded Duke slot {} (.fsave); Atomic companion restore failed: {error}",
+                        slot + 1
+                    ),
+                    Some(Ok(())) => format!("Loaded Duke slot {} (.fsave + Atomic)", slot + 1),
+                    None => format!("Loaded Duke slot {}", slot + 1),
+                };
+                self.messages.push(message, 70);
+                self.duke_environment_music_active = false;
+                self.menu = None;
+                self.set_play_look(true);
+                self.start_duke_level_music();
+            }
+            Err(error) => self.messages.push(format!("load: {error}"), 70),
+        }
+    }
+
     fn save_play_save(&mut self, slot: Option<&str>) {
         let slot = save_slot_name(slot);
         let Some(game) = self.play.as_mut() else {
@@ -7065,6 +9916,45 @@ impl ViewerApp {
 
     fn begin_play_demo(&mut self, slot: Option<&str>) {
         self.demo_slot = save_slot_name(slot);
+        if self.duke_session.is_some() {
+            let Some(session) = self.duke_session.as_ref() else {
+                return;
+            };
+            let recorder = match room_duke::DukeDemoRecorder::new(
+                session,
+                self.duke_demo_map.0,
+                self.duke_demo_map.1,
+                session.skill,
+            ) {
+                Ok(recorder) => recorder,
+                Err(error) => {
+                    self.messages.push(format!("record: {error}"), 70);
+                    return;
+                }
+            };
+            self.duke_demo_playback = None;
+            self.duke_atomic_demo_playback = None;
+            let atomic_recorder = match room_duke::DukeAtomicDemoRecorder::new_multiplayer(
+                session,
+                self.duke_demo_map.0,
+                self.duke_demo_map.1,
+                session.skill,
+                session.player_count(),
+            ) {
+                Ok(recorder) => recorder,
+                Err(error) => {
+                    self.messages.push(format!("record DMO: {error}"), 70);
+                    return;
+                }
+            };
+            self.duke_demo_recorder = Some(recorder);
+            self.duke_atomic_demo_recorder = Some(atomic_recorder);
+            self.messages.push(
+                format!("Recording Duke {} (.fdem + .dmo)", self.demo_slot),
+                70,
+            );
+            return;
+        }
         let Some(game) = self.play.as_mut() else {
             self.messages.push("record: not in play mode", 70);
             return;
@@ -7075,6 +9965,58 @@ impl ViewerApp {
     }
 
     fn stop_play_demo(&mut self) {
+        if self.duke_demo_playback.take().is_some() {
+            self.messages.push("Stopped Duke demo playback", 70);
+            return;
+        }
+        if self.duke_atomic_demo_playback.take().is_some() {
+            self.messages.push("Stopped Atomic Duke demo playback", 70);
+            return;
+        }
+        if let Some(demo) = self.duke_demo_recorder.take() {
+            let atomic_demo = self.duke_atomic_demo_recorder.take();
+            let path = dirs_room_demo(&self.demo_slot);
+            if let Some(dir) = path.parent()
+                && let Err(error) = std::fs::create_dir_all(dir)
+            {
+                self.messages.push(format!("stop: {error}"), 70);
+                return;
+            }
+            match demo.to_fdem().and_then(|bytes| {
+                std::fs::write(&path, bytes)
+                    .map_err(|error| room_duke::DukeDemoError::Invalid(error.to_string()))
+            }) {
+                Ok(()) => self.messages.push(
+                    format!("Wrote {} ({} tics)", path.display(), demo.len()),
+                    70,
+                ),
+                Err(error) => self.messages.push(format!("stop: {error}"), 70),
+            }
+            if let Some(atomic_demo) = atomic_demo {
+                let atomic_path = path.with_extension("dmo");
+                if let Some(dir) = atomic_path.parent()
+                    && let Err(error) = std::fs::create_dir_all(dir)
+                {
+                    self.messages.push(format!("stop DMO: {error}"), 70);
+                    return;
+                }
+                match atomic_demo.to_dmo().and_then(|bytes| {
+                    std::fs::write(&atomic_path, bytes)
+                        .map_err(|error| room_duke::DukeDemoError::Invalid(error.to_string()))
+                }) {
+                    Ok(()) => self.messages.push(
+                        format!(
+                            "Wrote {} ({} tics)",
+                            atomic_path.display(),
+                            atomic_demo.len()
+                        ),
+                        70,
+                    ),
+                    Err(error) => self.messages.push(format!("stop DMO: {error}"), 70),
+                }
+            }
+            return;
+        }
         let Some(game) = self.play.as_mut() else {
             self.messages.push("stop: not in play mode", 70);
             return;
@@ -7111,6 +10053,25 @@ impl ViewerApp {
                 return;
             }
         };
+        if self.duke_session.is_some() {
+            let recorder = match room_duke::DukeDemoRecorder::from_fdem(&bytes) {
+                Ok(recorder) => recorder,
+                Err(error) => {
+                    self.messages.push(format!("playdemo: {error}"), 70);
+                    return;
+                }
+            };
+            if recorder.is_empty() {
+                self.messages.push("playdemo: recording is empty", 70);
+                return;
+            }
+            self.duke_demo_recorder = None;
+            self.duke_atomic_demo_recorder = None;
+            self.duke_atomic_demo_playback = None;
+            self.duke_demo_playback = Some(recorder);
+            self.messages.push(format!("Playing Duke demo {slot}"), 70);
+            return;
+        }
         let rec = match DemoRecorder::from_fdem(&bytes) {
             Ok(r) => r,
             Err(e) => {
@@ -7164,6 +10125,76 @@ impl ViewerApp {
         }
     }
 
+    fn play_atomic_duke_demo(&mut self, path: &str) {
+        let demo_path = PathBuf::from(path);
+        let bytes = match std::fs::read(&demo_path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.messages.push(
+                    format!("playatomicdemo {}: {error}", demo_path.display()),
+                    70,
+                );
+                return;
+            }
+        };
+        let playback = match room_duke::DukeAtomicDemoPlayer::from_bytes(&bytes) {
+            Ok(playback) => playback,
+            Err(error) => {
+                self.messages.push(format!("playatomicdemo: {error}"), 70);
+                return;
+            }
+        };
+        let Some(content) = self.duke_campaign_content.as_ref() else {
+            self.messages
+                .push("playatomicdemo: native Duke GRP is not loaded", 70);
+            return;
+        };
+        let layers: Vec<&[u8]> = content.grp_layers.iter().map(Vec::as_slice).collect();
+        let mut con_includes = content
+            .con_directory
+            .as_ref()
+            .map(|directory| DukeConIncludes {
+                directory: directory.clone(),
+            });
+        let mut session = match playback.load_session_with_con(
+            &layers,
+            content.con_override.as_deref(),
+            con_includes
+                .as_mut()
+                .map(|resolver| resolver as &mut dyn room_duke::con::IncludeResolver),
+        ) {
+            Ok(session) => session,
+            Err(error) => {
+                self.messages.push(format!("playatomicdemo: {error}"), 70);
+                return;
+            }
+        };
+        session.campaign =
+            room_duke::DukeCampaignProgress::new(playback.volume(), playback.level());
+        self.duke_sound_bank = content.sound_bank(session.script.as_ref(), content.sample_rate);
+        self.duke_demo_map = (playback.volume(), playback.level());
+        self.duke_music_selection =
+            usize::from(playback.volume()) * 11 + usize::from(playback.level());
+        self.duke_demo_recorder = None;
+        self.duke_atomic_demo_recorder = None;
+        self.duke_demo_playback = None;
+        self.duke_atomic_demo_playback = Some(playback);
+        self.duke_start_state = session.save_fsave().ok();
+        if let Some(renderer) = self.duke_renderer.as_ref() {
+            renderer.invalidate_camera_feed();
+        }
+        self.duke_session = Some(session);
+        self.duke_automap_seen.clear();
+        self.duke_show_all_map = false;
+        self.cam_prev = None;
+        self.cam_curr = None;
+        self.menu = None;
+        self.set_play_look(self.mouse_look_enabled());
+        self.start_duke_level_music();
+        self.messages
+            .push(format!("Playing Atomic Duke {}", demo_path.display()), 70);
+    }
+
     fn start_level_music(&mut self) {
         let Some(vfs) = self.vfs.as_ref() else {
             return;
@@ -7187,6 +10218,127 @@ impl ViewerApp {
         }
     }
 
+    fn start_duke_level_music(&mut self) {
+        if matches!(
+            self.console.cvars.get("duke_music"),
+            Some(room_console::CvarValue::Bool(false))
+        ) {
+            return;
+        }
+        let Some(content) = self.duke_campaign_content.as_ref() else {
+            return;
+        };
+        let Some(script) = self
+            .duke_session
+            .as_ref()
+            .and_then(|session| session.script.as_ref())
+        else {
+            return;
+        };
+        let Some(name) = script
+            .music_tracks
+            .get(self.duke_music_selection)
+            .filter(|name| !name.is_empty())
+        else {
+            return;
+        };
+        let layers: Vec<&[u8]> = content.grp_layers.iter().map(Vec::as_slice).collect();
+        let Ok(grp) = room_build::grp::GrpStack::parse_layers(&layers) else {
+            return;
+        };
+        let Some(midi) = grp.get(name) else {
+            eprintln!("room: Duke music {name} missing from GRP layers");
+            return;
+        };
+        let Some(audio) = self.audio.as_ref() else {
+            return;
+        };
+        let Ok(mut shared) = audio.shared.lock() else {
+            return;
+        };
+        shared.mixer.music_gain = duke_audio_volume(&self.console.cvars, "duke_music_volume");
+        shared.music.play_midi(name, midi.to_vec(), true);
+    }
+
+    fn start_duke_environment_music(&mut self) {
+        if matches!(
+            self.console.cvars.get("duke_music"),
+            Some(room_console::CvarValue::Bool(false))
+        ) {
+            return;
+        }
+        let Some(content) = self.duke_campaign_content.as_ref() else {
+            return;
+        };
+        let Some(name) = self
+            .duke_session
+            .as_ref()
+            .and_then(|session| session.script.as_ref())
+            .and_then(|script| script.environment_music.first())
+            .filter(|name| !name.is_empty())
+        else {
+            return;
+        };
+        let layers: Vec<&[u8]> = content.grp_layers.iter().map(Vec::as_slice).collect();
+        let Ok(grp) = room_build::grp::GrpStack::parse_layers(&layers) else {
+            return;
+        };
+        let Some(midi) = grp.get(name) else {
+            eprintln!("room: Duke environment music {name} missing from GRP layers");
+            return;
+        };
+        let Some(audio) = self.audio.as_ref() else {
+            return;
+        };
+        let Ok(mut shared) = audio.shared.lock() else {
+            return;
+        };
+        shared.mixer.music_gain = duke_audio_volume(&self.console.cvars, "duke_music_volume");
+        shared.music.play_midi(name, midi.to_vec(), true);
+    }
+
+    fn show_duke_music(&mut self) {
+        let Some(name) = self
+            .duke_session
+            .as_ref()
+            .and_then(|session| session.script.as_ref())
+            .and_then(|script| script.music_tracks.get(self.duke_music_selection))
+            .filter(|name| !name.is_empty())
+            .cloned()
+        else {
+            self.messages.push("No Duke music track", 70);
+            return;
+        };
+        self.duke_music_quote_tics = 100;
+        self.messages
+            .push(format!("{name}. USE SHIFT-F5 TO CHANGE."), 100);
+    }
+
+    fn cycle_duke_music(&mut self) {
+        if self.duke_music_quote_tics == 0 {
+            return;
+        }
+        let Some(script) = self
+            .duke_session
+            .as_ref()
+            .and_then(|session| session.script.as_ref())
+        else {
+            return;
+        };
+        if script.music_tracks.is_empty() {
+            return;
+        }
+        self.duke_music_selection = (self.duke_music_selection + 1) % script.music_tracks.len();
+        let name = script.music_tracks[self.duke_music_selection].clone();
+        if name.is_empty() {
+            self.messages.push("No Duke music track", 70);
+            return;
+        }
+        self.duke_music_quote_tics = 100;
+        self.messages.push(format!("PLAYING {name}"), 100);
+        self.start_duke_level_music();
+    }
+
     fn mouse_look_enabled(&self) -> bool {
         !matches!(
             self.console.cvars.get("mouse_look"),
@@ -7195,9 +10347,8 @@ impl ViewerApp {
     }
 
     fn title_elapsed_ms(&self) -> u64 {
-        self.frames
+        self.elapsed_ms
             .saturating_sub(self.title_anim_origin)
-            .saturating_mul(16)
             .saturating_add(self.title_skip_ms)
     }
 
@@ -7238,7 +10389,7 @@ impl ViewerApp {
     }
 
     fn restart_title_anim(&mut self) {
-        self.title_anim_origin = self.frames;
+        self.title_anim_origin = self.elapsed_ms;
         self.title_skip_ms = 0;
     }
 

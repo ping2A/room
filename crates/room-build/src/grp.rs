@@ -17,6 +17,42 @@ pub struct Grp<'a> {
     files: Vec<(String, &'a [u8])>,
 }
 
+/// Ordered GRP archives; later archives override earlier duplicate names.
+#[derive(Debug, Clone)]
+pub struct GrpStack<'a> {
+    archives: Vec<Grp<'a>>,
+}
+
+impl<'a> GrpStack<'a> {
+    /// Parse a base archive followed by zero or more add-on archives.
+    pub fn parse_layers(archives: &[&'a [u8]]) -> Result<Self, BuildError> {
+        let archives = archives
+            .iter()
+            .map(|bytes| Grp::parse(bytes))
+            .collect::<Result<Vec<_>, _>>()?;
+        if archives.is_empty() {
+            return Err(BuildError::Invalid("GRP stack has no base archive"));
+        }
+        Ok(Self { archives })
+    }
+
+    /// Look up a file, searching add-ons before the base archive.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&'a [u8]> {
+        self.archives
+            .iter()
+            .rev()
+            .find_map(|archive| archive.get(name))
+    }
+
+    /// Names in archive/load order. Duplicates are retained so format loaders
+    /// can apply each archive's content in order while `get` resolves the
+    /// winning bytes from the latest archive.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.archives.iter().flat_map(Grp::names)
+    }
+}
+
 impl<'a> Grp<'a> {
     /// Parse the directory of `data`.
     pub fn parse(data: &'a [u8]) -> Result<Self, BuildError> {

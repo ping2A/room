@@ -4,7 +4,7 @@
 
 use crate::helpers::{approx_sincos_q14, getangle, sincos_q14};
 use crate::numeric::{divscale, dmulscale, klabs, mulscale, nsqrtasm, scale};
-use crate::world::{BuildWorld, MAXSECTORS};
+use crate::world::{BuildWorld, MAXSECTORS, SpriteLists};
 
 fn ksgn(x: i32) -> i32 {
     if x > 0 {
@@ -881,12 +881,13 @@ pub fn clipmove_xy_at_z(
     )
 }
 
-/// Chocolate `clipmove` with face-sprite L-clips (`CLIPMASK0` / `dasprclipmask`).
+/// Chocolate `clipmove` with face and wall-aligned sprite clips
+/// (`CLIPMASK0` / `dasprclipmask`).
 ///
 /// `xvect`/`yvect` are **world-unit** deltas (caller shifts `posxv>>14` /
-/// movesprite `(xchange*TIC)>>3`). Face sprites (`cstat&48==0`) add the Build L:
-/// vertical at `x±(clipdist<<2+walldist)` (sign from `gx`) and horizontal at
-/// `y±…` (sign from `gy`). Hit codes `49152+i`.
+/// movesprite `(xchange*TIC)>>3`). Face sprites (`cstat&48==0`) add the Build L;
+/// wall-aligned sprites (`cstat&48==16`) add their ART-sized one-sided quad
+/// and endpoint blockers. Hit codes are `49152+i`.
 pub fn clipmove_xy_at_z_sprites(
     x: &mut i32,
     y: &mut i32,
@@ -902,6 +903,46 @@ pub fn clipmove_xy_at_z_sprites(
     sector_z: Option<&[SectorZ]>,
     sprites: &[SpriteZClip],
     dasprclipmask: u16,
+) -> i32 {
+    clipmove_xy_at_z_sprites_with_lists(
+        x,
+        y,
+        z,
+        sect,
+        xvect,
+        yvect,
+        walldist,
+        ceildist,
+        flordist,
+        sectors,
+        walls,
+        sector_z,
+        sprites,
+        dasprclipmask,
+        None,
+    )
+}
+
+/// Chocolate `clipmove` with optional live sector-list ordering for sprite
+/// candidates. When supplied, candidates are visited sector-by-sector in the
+/// exact `headspritesect` / `nextspritesect` order used by the engine.
+#[allow(clippy::too_many_arguments)]
+pub fn clipmove_xy_at_z_sprites_with_lists(
+    x: &mut i32,
+    y: &mut i32,
+    z: i32,
+    sect: &mut i16,
+    xvect: i32,
+    yvect: i32,
+    walldist: i32,
+    ceildist: i32,
+    flordist: i32,
+    sectors: &[SectorWalls],
+    walls: &[WallXY],
+    sector_z: Option<&[SectorZ]>,
+    sprites: &[SpriteZClip],
+    dasprclipmask: u16,
+    sprite_lists: Option<&SpriteLists>,
 ) -> i32 {
     if (xvect | yvect) == 0 || *sect < 0 {
         return 0;
@@ -1095,9 +1136,40 @@ pub fn clipmove_xy_at_z_sprites(
         }
     }
 
+    let sprite_scan_order: Vec<usize> = if let Some(lists) = sprite_lists {
+        let mut order = Vec::new();
+        for &sector in clipsectorlist.iter().take(clipsectnum) {
+            let Ok(sector_index) = usize::try_from(sector) else {
+                continue;
+            };
+            if sector_index >= MAXSECTORS {
+                continue;
+            }
+            let mut sprite_i = lists.headspritesect[sector_index];
+            let mut guard = 0;
+            while sprite_i >= 0 && guard < sprites.len() {
+                let index = sprite_i as usize;
+                if index >= sprites.len() {
+                    break;
+                }
+                if sprites[index].sectnum == sector {
+                    order.push(index);
+                }
+                sprite_i = lists.nextspritesect[index];
+                guard += 1;
+            }
+        }
+        order
+    } else {
+        (0..sprites.len()).collect()
+    };
+
     // Face sprites in BFS sectors (Chocolate `cstat&48==0` L-clips).
     if dasprclipmask != 0 {
-        for (si, spr) in sprites.iter().enumerate() {
+        for &si in &sprite_scan_order {
+            let Some(spr) = sprites.get(si) else {
+                continue;
+            };
             if spr.sectnum < 0 {
                 continue;
             }
@@ -1156,6 +1228,231 @@ pub fn clipmove_xy_at_z_sprites(
                 y1.wrapping_sub(bsz),
             ));
             clipobjectval.push(oval);
+        }
+
+        // Chocolate's cstat&16 wall sprites form a rotated, one-sided quad.
+        // Emit the front plane plus endpoint side blockers, preserving the
+        // native sprite hit code (49152 + sprite index).
+        let cx = (x.wrapping_add(goalx)) >> 1;
+        let cy = (y.wrapping_add(goaly)) >> 1;
+        let rad = nsqrtasm(gx.wrapping_mul(gx).wrapping_add(gy.wrapping_mul(gy)) as u32)
+            + 1024
+            + walldist
+            + 8;
+        for &si in &sprite_scan_order {
+            let Some(spr) = sprites.get(si) else {
+                continue;
+            };
+            if spr.sectnum < 0
+                || spr.cstat & dasprclipmask == 0
+                || spr.cstat & 48 != 16
+                || spr.tile_height <= 0
+                || spr.tile_width <= 0
+                || spr.yrepeat == 0
+                || !clipsectorlist
+                    .iter()
+                    .take(clipsectnum)
+                    .any(|&listed| listed == spr.sectnum)
+            {
+                continue;
+            }
+            let height = (i32::from(spr.tile_height) * i32::from(spr.yrepeat)) << 2;
+            let mut top = spr.z;
+            if spr.cstat & 128 != 0 {
+                top = top.wrapping_add(height >> 1);
+            }
+            top = top.wrapping_sub(i32::from(spr.picanm_yoff) * i32::from(spr.yrepeat) * 4);
+            if !(z < top.wrapping_add(ceildist)
+                && z > top.wrapping_sub(height).wrapping_sub(flordist))
+            {
+                continue;
+            }
+
+            let angle = i32::from(spr.ang);
+            let (sin, cos) = crate::helpers::sincos_q14(angle);
+            let sx = sin.wrapping_mul(i32::from(spr.xrepeat));
+            let sy = -cos.wrapping_mul(i32::from(spr.xrepeat));
+            let mut xoff = i32::from(spr.picanm_xoff) + i32::from(spr.xoffset);
+            if spr.cstat & 4 != 0 {
+                xoff = -xoff;
+            }
+            let half = (i32::from(spr.tile_width) >> 1) + xoff;
+            let x1 = spr.x.wrapping_sub(sx.wrapping_mul(half) >> 16);
+            let y1 = spr.y.wrapping_sub(sy.wrapping_mul(half) >> 16);
+            let x2 = x1.wrapping_add(sx.wrapping_mul(i32::from(spr.tile_width)) >> 16);
+            let y2 = y1.wrapping_add(sy.wrapping_mul(i32::from(spr.tile_width)) >> 16);
+            if !clipinsideboxline(cx, cy, x1, y1, x2, y2, rad) {
+                continue;
+            }
+
+            let (front_x, _) = crate::helpers::sincos_q14(angle + 768);
+            let (front_y, _) = crate::helpers::sincos_q14(angle + 256);
+            let dx = front_x.wrapping_mul(walldist) >> 14;
+            let dy = front_y.wrapping_mul(walldist) >> 14;
+            let oval = si as i32 + 49_152;
+            let front = (x1.wrapping_sub(*x)).wrapping_mul(y2.wrapping_sub(*y))
+                >= (x2.wrapping_sub(*x)).wrapping_mul(y1.wrapping_sub(*y));
+            if front {
+                clipit.push((
+                    x1.wrapping_add(dx),
+                    y1.wrapping_add(dy),
+                    x2.wrapping_add(dy),
+                    y2.wrapping_sub(dx),
+                ));
+                clipobjectval.push(oval);
+            } else {
+                if spr.cstat & 64 != 0 {
+                    continue;
+                }
+                clipit.push((
+                    x2.wrapping_sub(dx),
+                    y2.wrapping_sub(dy),
+                    x1.wrapping_sub(dy),
+                    y1.wrapping_add(dx),
+                ));
+                clipobjectval.push(oval);
+            }
+            let dot1 = (x2.wrapping_sub(x1)).wrapping_mul(x.wrapping_sub(x1))
+                + (y2.wrapping_sub(y1)).wrapping_mul(y.wrapping_sub(y1));
+            if dot1 < 0 {
+                clipit.push((
+                    x1.wrapping_sub(dy),
+                    y1.wrapping_add(dx),
+                    x1.wrapping_add(dx),
+                    y1.wrapping_add(dy),
+                ));
+                clipobjectval.push(oval);
+            } else {
+                let dot2 = (x1.wrapping_sub(x2)).wrapping_mul(x.wrapping_sub(x2))
+                    + (y1.wrapping_sub(y2)).wrapping_mul(y.wrapping_sub(y2));
+                if dot2 < 0 {
+                    clipit.push((
+                        x2.wrapping_add(dy),
+                        y2.wrapping_sub(dx),
+                        x2.wrapping_sub(dx),
+                        y2.wrapping_sub(dy),
+                    ));
+                    clipobjectval.push(oval);
+                }
+            }
+        }
+
+        // Chocolate cstat&32 floor sprites are clipped as oriented quads.
+        // Each visible edge gets its own inflated segment so movement can
+        // approach from the other side where the sprite is two-sided.
+        for &si in &sprite_scan_order {
+            let Some(spr) = sprites.get(si) else {
+                continue;
+            };
+            if spr.sectnum < 0
+                || spr.cstat & dasprclipmask == 0
+                || spr.cstat & 48 != 32
+                || spr.tile_height <= 0
+                || spr.tile_width <= 0
+                || spr.xrepeat == 0
+                || spr.yrepeat == 0
+                || !clipsectorlist
+                    .iter()
+                    .take(clipsectnum)
+                    .any(|&listed| listed == spr.sectnum)
+            {
+                continue;
+            }
+            if !(z < spr.z.wrapping_add(ceildist) && z > spr.z.wrapping_sub(flordist)) {
+                continue;
+            }
+            if spr.cstat & 64 != 0 && (z > spr.z) == (spr.cstat & 8 == 0) {
+                continue;
+            }
+
+            let mut xoff = i32::from(spr.picanm_xoff) + i32::from(spr.xoffset);
+            let mut yoff = i32::from(spr.picanm_yoff) + i32::from(spr.yoffset);
+            if spr.cstat & 4 != 0 {
+                xoff = -xoff;
+            }
+            if spr.cstat & 8 != 0 {
+                yoff = -yoff;
+            }
+            let angle = i32::from(spr.ang);
+            let (sin, cos) = crate::helpers::sincos_q14(angle);
+            let width = i32::from(spr.tile_width);
+            let height = i32::from(spr.tile_height);
+            let xrepeat = i32::from(spr.xrepeat);
+            let yrepeat = i32::from(spr.yrepeat);
+            let dax = (width / 2 + xoff).wrapping_mul(xrepeat);
+            let day = (height / 2 + yoff).wrapping_mul(yrepeat);
+            let mul16 = |a: i32, b: i32| a.wrapping_mul(b) >> 16;
+            let dmul16 = |a: i32, b: i32, c: i32, d: i32| {
+                a.wrapping_mul(b).wrapping_add(c.wrapping_mul(d)) >> 16
+            };
+            let mut rx = [0_i32; 4];
+            let mut ry = [0_i32; 4];
+            rx[0] = spr.x.wrapping_add(dmul16(sin, dax, cos, day));
+            ry[0] = spr.y.wrapping_add(dmul16(sin, day, -cos, dax));
+            let span_x = width.wrapping_mul(xrepeat);
+            rx[1] = rx[0].wrapping_sub(mul16(sin, span_x));
+            ry[1] = ry[0].wrapping_add(mul16(cos, span_x));
+            let span_y = height.wrapping_mul(yrepeat);
+            let k = -mul16(cos, span_y);
+            rx[2] = rx[1].wrapping_add(k);
+            rx[3] = rx[0].wrapping_add(k);
+            let k = -mul16(sin, span_y);
+            ry[2] = ry[1].wrapping_add(k);
+            ry[3] = ry[0].wrapping_add(k);
+
+            let (normal_x, _) = crate::helpers::sincos_q14(angle + 256);
+            let (normal_y, _) = crate::helpers::sincos_q14(angle - 256);
+            let dx = normal_x.wrapping_mul(walldist) >> 14;
+            let dy = normal_y.wrapping_mul(walldist) >> 14;
+            let oval = si as i32 + 49_152;
+
+            let e = (rx[0].wrapping_sub(*x)).wrapping_mul(ry[1].wrapping_sub(*y));
+            let f = (rx[1].wrapping_sub(*x)).wrapping_mul(ry[0].wrapping_sub(*y));
+            if e < f && clipinsideboxline(cx, cy, rx[1], ry[1], rx[0], ry[0], rad) {
+                clipit.push((
+                    rx[1].wrapping_sub(dy),
+                    ry[1].wrapping_add(dx),
+                    rx[0].wrapping_add(dx),
+                    ry[0].wrapping_add(dy),
+                ));
+                clipobjectval.push(oval);
+            } else {
+                let e = (rx[2].wrapping_sub(*x)).wrapping_mul(ry[3].wrapping_sub(*y));
+                let f = (rx[3].wrapping_sub(*x)).wrapping_mul(ry[2].wrapping_sub(*y));
+                if e < f && clipinsideboxline(cx, cy, rx[3], ry[3], rx[2], ry[2], rad) {
+                    clipit.push((
+                        rx[3].wrapping_add(dy),
+                        ry[3].wrapping_sub(dx),
+                        rx[2].wrapping_sub(dx),
+                        ry[2].wrapping_sub(dy),
+                    ));
+                    clipobjectval.push(oval);
+                }
+            }
+
+            let e = (rx[1].wrapping_sub(*x)).wrapping_mul(ry[2].wrapping_sub(*y));
+            let f = (rx[2].wrapping_sub(*x)).wrapping_mul(ry[1].wrapping_sub(*y));
+            if e < f && clipinsideboxline(cx, cy, rx[2], ry[2], rx[1], ry[1], rad) {
+                clipit.push((
+                    rx[2].wrapping_sub(dx),
+                    ry[2].wrapping_sub(dy),
+                    rx[1].wrapping_sub(dy),
+                    ry[1].wrapping_add(dx),
+                ));
+                clipobjectval.push(oval);
+            } else {
+                let e = (rx[3].wrapping_sub(*x)).wrapping_mul(ry[0].wrapping_sub(*y));
+                let f = (rx[0].wrapping_sub(*x)).wrapping_mul(ry[3].wrapping_sub(*y));
+                if e < f && clipinsideboxline(cx, cy, rx[0], ry[0], rx[3], ry[3], rad) {
+                    clipit.push((
+                        rx[0].wrapping_add(dx),
+                        ry[0].wrapping_add(dy),
+                        rx[3].wrapping_add(dy),
+                        ry[3].wrapping_sub(dx),
+                    ));
+                    clipobjectval.push(oval);
+                }
+            }
         }
     }
 
@@ -1230,7 +1527,96 @@ pub fn clipmove_xy_at_z_sprites(
             return retval;
         }
     }
-    updatesector(*x, *y, sect, sectors, walls);
+    if let Some(sz) = sector_z {
+        // Chocolate fallback when the clipped point belongs to no sector in
+        // the portal BFS: scan every sector in reverse order and choose using
+        // the point's vertical distance to its ceiling/floor planes.
+        *sect = -1;
+        let mut nearest_z = i32::MAX;
+        for si in (0..sectors.len().min(sz.len())).rev() {
+            let sec_i = si as i16;
+            if !inside(*x, *y, sec_i, sectors, walls) {
+                continue;
+            }
+            let (ceil_z, floor_z) = if sz[si].ceilingstat & 2 != 0 || sz[si].floorstat & 2 != 0 {
+                getzsofslope(sec_i, *x, *y, sz, walls)
+            } else {
+                (sz[si].ceilingz, sz[si].floorz)
+            };
+            let ceiling_delta = ceil_z.wrapping_sub(z);
+            if ceiling_delta > 0 {
+                if ceiling_delta < nearest_z {
+                    *sect = sec_i;
+                    nearest_z = ceiling_delta;
+                }
+                continue;
+            }
+            let floor_delta = z.wrapping_sub(floor_z);
+            if floor_delta <= 0 {
+                *sect = sec_i;
+                return retval;
+            }
+            if floor_delta < nearest_z {
+                *sect = sec_i;
+                nearest_z = floor_delta;
+            }
+        }
+    } else {
+        updatesector(*x, *y, sect, sectors, walls);
+    }
+    retval
+}
+
+/// Chocolate `movesprite`'s ordinary (non-actor) `CLIPMASK0` branch.
+///
+/// `top_offset` is the sprite's scaled ART height; XY clipping uses the top
+/// of the sprite while the accepted Z update uses its base. `ceiling_z` and
+/// `floor_z` are the caller's cached `hittype` bounds. Actor-specific stay-put
+/// rules, badguy angle changes, and STAT 4's special radius remain caller work.
+#[allow(clippy::too_many_arguments)]
+pub fn movesprite_xy_at_z(
+    x: &mut i32,
+    y: &mut i32,
+    z: &mut i32,
+    sect: &mut i16,
+    xvect: i32,
+    yvect: i32,
+    zvect: i32,
+    top_offset: i32,
+    walldist: i32,
+    ceiling_z: i32,
+    floor_z: i32,
+    sectors: &[SectorWalls],
+    walls: &[WallXY],
+    sector_z: Option<&[SectorZ]>,
+    sprites: &[SpriteZClip],
+    clipmask: u16,
+    sprite_lists: Option<&SpriteLists>,
+) -> i32 {
+    let clip_z = z.wrapping_sub(top_offset);
+    let retval = clipmove_xy_at_z_sprites_with_lists(
+        x,
+        y,
+        clip_z,
+        sect,
+        xvect,
+        yvect,
+        walldist,
+        4 << 8,
+        4 << 8,
+        sectors,
+        walls,
+        sector_z,
+        sprites,
+        clipmask,
+        sprite_lists,
+    );
+    let next_z = z.wrapping_add(zvect);
+    if next_z > ceiling_z && next_z <= floor_z {
+        *z = next_z;
+    } else if retval == 0 {
+        return 16_384_i32.wrapping_add(i32::from(*sect));
+    }
     retval
 }
 
@@ -1252,6 +1638,48 @@ fn keepaway_clipit(x: &mut i32, y: &mut i32, w: i32, clipit: &[(i32, i32, i32, i
         }
         first = !first;
     }
+}
+
+/// Chocolate `clipinsideboxline`: test whether a segment overlaps the
+/// walldist-sized square centered on a point, returning true for either side.
+fn clipinsideboxline(x: i32, y: i32, x1: i32, y1: i32, x2: i32, y2: i32, walldist: i32) -> bool {
+    let r = walldist.wrapping_mul(2);
+    let x1 = x1.wrapping_add(walldist).wrapping_sub(x);
+    let x2 = x2.wrapping_add(walldist).wrapping_sub(x);
+    if (x1 < 0 && x2 < 0) || (x1 >= r && x2 >= r) {
+        return false;
+    }
+    let y1 = y1.wrapping_add(walldist).wrapping_sub(y);
+    let y2 = y2.wrapping_add(walldist).wrapping_sub(y);
+    if (y1 < 0 && y2 < 0) || (y1 >= r && y2 >= r) {
+        return false;
+    }
+    let dx = x2.wrapping_sub(x1);
+    let dy = y2.wrapping_sub(y1);
+    if dx.wrapping_mul(walldist.wrapping_sub(y1)) >= dy.wrapping_mul(walldist.wrapping_sub(x1)) {
+        let xx = if dx > 0 {
+            dx.wrapping_mul(0_i32.wrapping_sub(y1))
+        } else {
+            dx.wrapping_mul(r.wrapping_sub(y1))
+        };
+        let yy = if dy > 0 {
+            dy.wrapping_mul(r.wrapping_sub(x1))
+        } else {
+            dy.wrapping_mul(0_i32.wrapping_sub(x1))
+        };
+        return xx < yy;
+    }
+    let xx = if dx > 0 {
+        dx.wrapping_mul(r.wrapping_sub(y1))
+    } else {
+        dx.wrapping_mul(0_i32.wrapping_sub(y1))
+    };
+    let yy = if dy > 0 {
+        dy.wrapping_mul(0_i32.wrapping_sub(x1))
+    } else {
+        dy.wrapping_mul(r.wrapping_sub(x1))
+    };
+    xx >= yy
 }
 
 fn raytrace_clipit(
@@ -1714,7 +2142,10 @@ fn point_on_wall_line(px: i32, py: i32, a: WallXY, b: WallXY) -> bool {
     dx * ey - dy * ex == 0
 }
 
-fn ray_seg_intersect(
+/// Intersect a forward ray and a wall segment.
+///
+/// Returns the ray parameter in 16.16 units and the intersection point.
+pub fn ray_seg_intersect(
     ox: i32,
     oy: i32,
     vx: i32,

@@ -1,8 +1,8 @@
 //! Chocolate `shoot` / `aim` (player shotgun path for D6 / DEMO1 tic135).
 
 use room_build_engine::geom::{
-    HitScan, SectorWalls, SectorZ, SpriteHit, WallXY, cansee, getzsofslope, hitscan_full, pushmove,
-    updatesector,
+    HitScan, SectorWalls, SectorZ, SpriteHit, WallXY, cansee, clipmove_xy, getzsofslope,
+    hitscan_full, pushmove, updatesector,
 };
 use room_build_engine::helpers::{getangle, sincos_q14};
 use room_build_engine::numeric::{klabs, krand_step, mulscale};
@@ -13,17 +13,35 @@ use crate::badguy::badguy_pic;
 use crate::con::{ActorConTemps, ScriptImage, actor_header_hitag, init_actor_temps_from_script};
 use crate::player::{CLIPMASK0, Player, TileZMeta};
 use crate::spawn::WATERBUBBLE;
-use crate::stat::{STAT_DEFAULT, STAT_MISC, STAT_PROJECTILE};
-use crate::weapons::SHOTGUN_WEAPON;
+use crate::stat::{STAT_DEFAULT, STAT_EFFECTOR, STAT_MISC, STAT_PROJECTILE};
+use crate::weapons::{SHOTGUN_WEAPON, checkavailweapon};
 
 /// Atomic tile numbers used by shotgun FX.
 pub const SHOTSPARK1: i16 = 2595;
+/// Atomic `FREEZEBLAST` projectile tile.
+pub const FREEZEBLAST: i16 = 1641;
+/// Atomic `SHRINKSPARK` projectile tile.
+pub const SHRINKSPARK: i16 = 1646;
+/// Atomic `GROWSPARK` impact sprite tile.
+pub const GROWSPARK: i16 = 2448;
+const DRONE: i16 = 1880;
+const COMMANDER: i16 = 1920;
+const GREENSLIME: i16 = 2370;
+const ORGANTIC: i16 = 2420;
+const ROTATEGUN: i16 = 2360;
+const RECON: i16 = 1960;
+/// Atomic `CHAINGUN` weapon damage profile.
+pub const CHAINGUN: i16 = 2536;
 /// Atomic `COOLEXPLOSION1` — OCTABRAIN projectile (`shoot` / STAT_PROJECTILE).
 pub const COOLEXPLOSION1: i16 = 1360;
+/// Atomic `SPIT` projectile tile used by Lizman shooters.
+pub const SPIT: i16 = 1636;
+/// Atomic `FIRELASER` projectile tile used by sector shooter effectors.
+pub const FIRELASER: i16 = 1625;
 pub const SHOTGUN: i16 = 2613;
+/// Atomic `KNEE` hit sprite / weapon view tile.
+pub const KNEE: i16 = 2521;
 pub const SMALLSMOKE: i16 = 2329;
-/// Atomic `COMMANDER` — muzzle offset exempt in `shoot` enemy path.
-const COMMANDER: i16 = 1920;
 pub const JIBS6: i16 = 2286;
 pub const BLOOD: i16 = 1620;
 pub const BLOODSPLAT1: i16 = 2296;
@@ -33,68 +51,31 @@ pub const BLOODSPLAT4: i16 = 2299;
 pub const APLAYER: i16 = 1405;
 /// Atomic `SHOTGUNSHELL` (ejected casing).
 pub const SHOTGUNSHELL: i16 = 2535;
+/// Atomic `SHELL` (pistol casing).
+pub const SHELL: i16 = 2533;
+/// Atomic bullet impact decal.
+const BULLETHOLE: i16 = 952;
+/// Atomic RPG projectile tile (defs.con `RPG`).
+pub const RPG_PROJECTILE: i16 = 2605;
+/// Atomic `HEAVYHBOMB` (pipebomb projectile and weapon view).
+pub const HEAVYHBOMB: i16 = 26;
+
+/// Resolve a CON tile definition while retaining the Atomic tile as the
+/// fallback for older or partial script images.
+#[must_use]
+pub(crate) fn script_tile_or(script: Option<&ScriptImage>, name: &str, fallback: i16) -> i16 {
+    script
+        .and_then(|image| image.labels.get(name))
+        .filter(|label| !label.is_ptr)
+        .and_then(|label| i16::try_from(label.value).ok())
+        .unwrap_or(fallback)
+}
 
 /// Chocolate `CLIPMASK1`.
 const CLIPMASK1: u32 = (256 << 16) + 64;
 
 /// Chocolate `AUTO_AIM_ANGLE`.
 const AUTO_AIM_ANGLE: i16 = 48;
-
-/// TEMP: pre-burst TRAND (0 — first spark matches Chocolate; was 1 for early
-/// floor-miss experiments). Real pre-shotgun site TBD if seed drifts.
-const PRE_SHOT_PAD: u32 = 0;
-
-/// TEMP: floor/wall miss skips hit-path JIBS ang TRAND (1). With
-/// BLOOD_SPLAT_TRANDS=9, miss pad=1 yields Chocolate SMALLSMOKE XYZ on DEMO1
-/// tic135 (floor pellet early — freelist order still open).
-const MISS_HITPATH_PAD: u32 = 1;
-
-/// TEMP: Chocolate `shoot(enemy, BLOODSPLAT)×4` TRAND count stub. 8 (=4×2 sa/zvel)
-/// was one short; 9 matches tic135 smoke scatter. Replace with real BLOODSPLAT shoot.
-const BLOOD_SPLAT_TRANDS: u32 = 9;
-
-/// TEMP: pad before 7th pellet (0 — unused while miss=1 floors early).
-const LAST_SHOT_PAD: u32 = 0;
-
-/// Test overrides (<0 = use const). Set via `set_shot_pads` in demo_sync probes.
-static PRE_SHOT_PAD_OVR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
-static MISS_HITPATH_PAD_OVR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
-static BLOOD_SPLAT_TRANDS_OVR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
-static FIRST_FACE_EXTRA_OVR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
-static LAST_SHOT_PAD_OVR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
-
-pub fn set_shot_pads(pre: i32, miss: i32, blood: i32, first_extra: i32) {
-    set_shot_pads5(pre, miss, blood, first_extra, -1);
-}
-
-pub fn set_shot_pads5(pre: i32, miss: i32, blood: i32, first_extra: i32, last: i32) {
-    PRE_SHOT_PAD_OVR.store(pre, std::sync::atomic::Ordering::SeqCst);
-    MISS_HITPATH_PAD_OVR.store(miss, std::sync::atomic::Ordering::SeqCst);
-    BLOOD_SPLAT_TRANDS_OVR.store(blood, std::sync::atomic::Ordering::SeqCst);
-    FIRST_FACE_EXTRA_OVR.store(first_extra, std::sync::atomic::Ordering::SeqCst);
-    LAST_SHOT_PAD_OVR.store(last, std::sync::atomic::Ordering::SeqCst);
-}
-
-fn pre_shot_pad() -> u32 {
-    let v = PRE_SHOT_PAD_OVR.load(std::sync::atomic::Ordering::SeqCst);
-    if v < 0 { PRE_SHOT_PAD } else { v as u32 }
-}
-fn miss_hitpath_pad() -> u32 {
-    let v = MISS_HITPATH_PAD_OVR.load(std::sync::atomic::Ordering::SeqCst);
-    if v < 0 { MISS_HITPATH_PAD } else { v as u32 }
-}
-fn blood_splat_trands() -> u32 {
-    let v = BLOOD_SPLAT_TRANDS_OVR.load(std::sync::atomic::Ordering::SeqCst);
-    if v < 0 { BLOOD_SPLAT_TRANDS } else { v as u32 }
-}
-fn first_face_extra() -> u32 {
-    let v = FIRST_FACE_EXTRA_OVR.load(std::sync::atomic::Ordering::SeqCst);
-    if v < 0 { 0 } else { v as u32 }
-}
-fn last_shot_pad() -> u32 {
-    let v = LAST_SHOT_PAD_OVR.load(std::sync::atomic::Ordering::SeqCst);
-    if v < 0 { LAST_SHOT_PAD } else { v as u32 }
-}
 
 /// Chocolate `FindDistance2D` (Build approx — not `ksqrt` / not manhattan).
 #[must_use]
@@ -144,6 +125,9 @@ pub fn aim(
 
     let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
     let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+    let shrinker_aim = s.picnum == APLAYER && player.is_some_and(|p| p.curr_weapon == 6);
+    let freezer_aim = s.picnum == APLAYER && player.is_some_and(|p| p.curr_weapon == 9);
+    let coop_player_aim = s.picnum == APLAYER && player.is_some_and(|p| p.coop_mode);
 
     // Chocolate aimstats[] = {10, 13, 1, 2}
     let aimstats = [10_i16, 13, 1, 2];
@@ -168,6 +152,26 @@ pub fn aim(
                 let is_bg = badguy_pic(t.picnum, actortype);
                 if is_bg || k < 2 {
                     if is_bg || t.picnum == APLAYER || t.picnum == 1550 {
+                        if coop_player_aim
+                            && t.picnum == APLAYER
+                            && player.is_some_and(|p| p.sprite_i != i)
+                        {
+                            // Chocolate excludes other players in coop, but
+                            // leaves the shooter itself eligible.
+                            i = next;
+                            continue;
+                        }
+                        if freezer_aim && t.pal == 1 {
+                            i = next;
+                            continue;
+                        }
+                        if shrinker_aim && t.xrepeat < 30 {
+                            let small_slime = (2370..=2377).contains(&t.picnum);
+                            if !small_slime {
+                                i = next;
+                                continue;
+                            }
+                        }
                         let xv = t.x.wrapping_sub(s.x);
                         let yv = t.y.wrapping_sub(s.y);
                         if (dy1 * xv) <= (dx1 * yv) && (dy2 * xv) >= (dx2 * yv) {
@@ -185,6 +189,14 @@ pub fn aim(
                                 } else {
                                     true
                                 };
+                                // Chocolate `aim()` uses the unshifted source
+                                // Z for ORGANTIC and ROTATEGUN targets; other
+                                // targets test visibility from 32 units below.
+                                let source_los_z = if matches!(t.picnum, ORGANTIC | ROTATEGUN) {
+                                    s.z
+                                } else {
+                                    s.z.wrapping_sub(32 << 8)
+                                };
                                 let cans = cansee(
                                     t.x,
                                     t.y,
@@ -192,7 +204,7 @@ pub fn aim(
                                     t.sectnum,
                                     s.x,
                                     s.y,
-                                    s.z - (32 << 8),
+                                    source_los_z,
                                     s.sectnum,
                                     &sec_z,
                                     &wxy,
@@ -212,7 +224,7 @@ pub fn aim(
     best
 }
 
-fn egs(
+pub(crate) fn egs(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
     picnum_out: &mut Vec<i16>,
@@ -272,10 +284,18 @@ fn egs(
         actor_temps.resize_with(iu + 1, ActorConTemps::default);
     }
     actor_temps[iu] = temps;
+    // Chocolate `spawn(parent, pic)` stores the parent sprite's tile in
+    // `hittype[child].picnum`, which CON exposes through `ifspawnedby`.
+    if let Some(parent) = usize::try_from(owner)
+        .ok()
+        .filter(|&parent| parent < sprites.len())
+    {
+        actor_temps[iu].hit_picnum = sprites[parent].picnum;
+    }
     i
 }
 
-fn spawn_smallsmoke(
+pub(crate) fn spawn_smallsmoke(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
     sectors: &[SectorT],
@@ -651,36 +671,51 @@ fn checkhitsprite_shotgun(
     if !badguy_pic(sprites[iu].picnum, actortype) {
         return;
     }
-    let j = egs(
-        lists,
-        sprites,
-        picnum_out,
-        actor_temps,
-        script,
-        sprites[su].sectnum,
-        sprites[su].x,
-        sprites[su].y,
-        sprites[su].z,
-        JIBS6,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        spark,
-        STAT_DEFAULT,
-    );
-    if j >= 0 {
-        let ju = j as usize;
-        let _ = lists.changespritestat(j, STAT_MISC);
-        sprites[ju].z += 4 << 8;
-        sprites[ju].xvel = 16;
-        sprites[ju].xrepeat = 24;
-        sprites[ju].yrepeat = 24;
-        sprites[ju].ang = sprites[ju]
-            .ang
-            .wrapping_add(32 - ((krand_step(randomseed) & 63) as i16));
+    // Chocolate `checkhitsprite`: this specific debris spawn is suppressed
+    // for these actor families and for actor types with custom CON handling.
+    let target_pic = sprites[iu].picnum;
+    let vanilla_jibs = !matches!(target_pic, DRONE | COMMANDER | ROTATEGUN)
+        && !(GREENSLIME..=GREENSLIME + 7).contains(&target_pic)
+        && actortype
+            .get(target_pic.max(0) as usize)
+            .copied()
+            .unwrap_or(0)
+            == 0
+        && sprites[su].picnum != FREEZEBLAST
+        && sprites[su].owner != hitspr
+        && lists.sprite_stat.get(iu).copied() != Some(STAT_PROJECTILE);
+    if vanilla_jibs {
+        let j = egs(
+            lists,
+            sprites,
+            picnum_out,
+            actor_temps,
+            script,
+            sprites[su].sectnum,
+            sprites[su].x,
+            sprites[su].y,
+            sprites[su].z,
+            JIBS6,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            spark,
+            STAT_DEFAULT,
+        );
+        if j >= 0 {
+            let ju = j as usize;
+            let _ = lists.changespritestat(j, STAT_MISC);
+            sprites[ju].z += 4 << 8;
+            sprites[ju].xvel = 16;
+            sprites[ju].xrepeat = 24;
+            sprites[ju].yrepeat = 24;
+            sprites[ju].ang = sprites[ju]
+                .ang
+                .wrapping_add(32 - ((krand_step(randomseed) & 63) as i16));
+        }
     }
     // Chocolate: owner APLAYER + shotgun → `shoot(enemy, BLOODSPLAT×4)`.
     let owner = sprites[su].owner;
@@ -860,12 +895,179 @@ fn tracers(
     }
 }
 
-/// Chocolate `shoot(i, SHOTGUN)` for a player body sprite.
-pub fn shoot_shotgun_player(
+#[allow(clippy::too_many_arguments)]
+fn spawn_bullethole(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
     sectors: &[SectorT],
     walls: &[WallT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    script: Option<&ScriptImage>,
+    randomseed: &mut i32,
+    impact_sprite: usize,
+    wall_index: usize,
+    hit_sector: i16,
+) {
+    let tile = |name: &str| {
+        script.and_then(|image| {
+            image
+                .labels
+                .get(name)
+                .filter(|label| !label.is_ptr)
+                .map(|label| label.value as i16)
+        })
+    };
+    let bullethole_tile = tile("BULLETHOLE").unwrap_or(BULLETHOLE);
+    let Some(wall) = walls.get(wall_index).copied() else {
+        return;
+    };
+    let Some(sector) = sectors
+        .get(hit_sector.max(0) as usize)
+        .filter(|_| hit_sector >= 0)
+    else {
+        return;
+    };
+    if crate::interactions::is_door_operator_wall(wall.picnum)
+        || crate::interactions::is_switch(wall.picnum)
+        || wall.hitag != 0
+        || usize::try_from(wall.nextwall)
+            .ok()
+            .and_then(|peer| walls.get(peer))
+            .is_some_and(|peer| peer.hitag != 0)
+        || sector.lotag != 0
+        || tile("BIGFORCE") == Some(wall.overpicnum)
+        || wall.cstat & 16 != 0
+    {
+        return;
+    }
+    if wall.nextsector >= 0
+        && sectors
+            .get(wall.nextsector as usize)
+            .is_none_or(|next| next.lotag != 0)
+    {
+        return;
+    }
+    if wall.nextsector < 0 && sector.lotag != 0 {
+        return;
+    }
+    // Chocolate suppresses decals on walls bordering an SE13 explosion
+    // sector, by scanning the adjacent sector's sprite list.
+    if let Ok(next_sector) = usize::try_from(wall.nextsector)
+        && let Some(mut sprite) = lists.headspritesect.get(next_sector).copied()
+    {
+        while sprite >= 0 {
+            let index = sprite as usize;
+            sprite = lists.nextspritesect.get(index).copied().unwrap_or(-1);
+            if sprites
+                .get(index)
+                .is_some_and(|marker| marker.statnum == STAT_EFFECTOR && marker.lotag == 13)
+            {
+                return;
+            }
+        }
+    }
+
+    let misc = STAT_MISC as usize;
+    let mut sprite = lists.headspritestat.get(misc).copied().unwrap_or(-1);
+    while sprite >= 0 {
+        let index = sprite as usize;
+        sprite = lists.nextspritestat.get(index).copied().unwrap_or(-1);
+        if sprites
+            .get(index)
+            .is_some_and(|decal| decal.picnum == bullethole_tile)
+        {
+            // Chocolate evaluates TRAND for each existing bullet hole reached
+            // in STAT_MISC list order, even when the candidate is not close.
+            let range = 12 + (krand_step(randomseed) & 7);
+            let source = sprites.get(impact_sprite).copied().unwrap_or_default();
+            let decal = sprites[index];
+            if room_build_engine::numeric::find_distance_3d(
+                source.x.wrapping_sub(decal.x),
+                source.y.wrapping_sub(decal.y),
+                source.z.wrapping_sub(decal.z) >> 4,
+            ) < range
+            {
+                return;
+            }
+        }
+    }
+
+    let Some(impact) = sprites.get(impact_sprite).copied() else {
+        return;
+    };
+    let decal_i = egs(
+        lists,
+        sprites,
+        picnum_out,
+        actor_temps,
+        script,
+        impact.sectnum,
+        impact.x,
+        impact.y,
+        impact.z,
+        bullethole_tile,
+        0,
+        0,
+        0,
+        impact.ang,
+        0,
+        0,
+        i16::try_from(impact_sprite).unwrap_or(impact.owner),
+        STAT_MISC,
+    );
+    let Ok(decal_index) = usize::try_from(decal_i) else {
+        return;
+    };
+    let Some(end) = usize::try_from(wall.point2)
+        .ok()
+        .and_then(|point| walls.get(point))
+    else {
+        return;
+    };
+    let angle = getangle(wall.x.wrapping_sub(end.x), wall.y.wrapping_sub(end.y)).wrapping_add(512);
+    sprites[decal_index].xrepeat = 3;
+    sprites[decal_index].yrepeat = 3;
+    sprites[decal_index].cstat = 16 + ((krand_step(randomseed) & 12) as u16);
+    sprites[decal_index].xvel = -1;
+    sprites[decal_index].ang = angle as i16;
+    // Match the immediate `ssp(decal, CLIPMASK0)` nudge onto the struck wall.
+    let (sin, cos) = sincos_q14(angle);
+    let mut x = sprites[decal_index].x;
+    let mut y = sprites[decal_index].y;
+    let mut sectnum = sprites[decal_index].sectnum;
+    let sector_walls: Vec<SectorWalls> = sectors
+        .iter()
+        .map(|sector| SectorWalls {
+            wallptr: sector.wallptr,
+            wallnum: sector.wallnum,
+        })
+        .collect();
+    let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+    let _ = clipmove_xy(
+        &mut x,
+        &mut y,
+        &mut sectnum,
+        -cos >> 14,
+        -sin >> 14,
+        i32::from(sprites[decal_index].clipdist) << 2,
+        &sector_walls,
+        &wall_xy,
+    );
+    sprites[decal_index].x = x;
+    sprites[decal_index].y = y;
+    if sectnum != impact.sectnum {
+        sprites[decal_index].sectnum = sectnum;
+        let _ = lists.changespritesect(decal_i, sectnum);
+    }
+}
+
+/// Chocolate `shoot(i, SHOTGUN)` for a player body sprite.
+pub fn shoot_shotgun_player(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &mut [WallT],
     picnum_out: &mut Vec<i16>,
     actor_temps: &mut Vec<ActorConTemps>,
     tile_meta: &[TileZMeta],
@@ -874,8 +1076,11 @@ pub fn shoot_shotgun_player(
     randomseed: &mut i32,
     player: &Player,
     body_i: i16,
+    weapon_picnum: i16,
     // When true, first badguy hit this call also spawns floor BLOOD.
     spawn_blood: bool,
+    pending_sound_ids: &mut Vec<u16>,
+    pending_switch_hits: &mut Vec<(i16, Option<i16>, Option<i16>)>,
 ) -> bool {
     let bu = body_i as usize;
     if bu >= sprites.len() {
@@ -890,7 +1095,10 @@ pub fn shoot_shotgun_player(
     let j = aim(
         &sprites[bu],
         AUTO_AIM_ANGLE,
-        true,
+        // Chocolate's SHOTSPARK1/SHOTGUN/CHAINGUN path uses `auto_aim != 0`:
+        // bullet-only mode still steers hitscan fire, while projectile
+        // weapons require mode 2.
+        player.auto_aim != 0,
         lists,
         sprites,
         sectors,
@@ -1035,7 +1243,7 @@ pub fn shoot_shotgun_player(
 
     let atwith_extra = script
         .and_then(|img| {
-            let pn = SHOTGUN.max(0) as usize;
+            let pn = weapon_picnum.max(0) as usize;
             if pn < img.actorscrptr.len() && img.actorscrptr[pn] > 0 {
                 let idx = img.actorscrptr[pn] as usize;
                 img.script.get(idx).map(|&w| w as i16)
@@ -1081,6 +1289,19 @@ pub fn shoot_shotgun_player(
                     return false;
                 }
             }
+            check_hit_ceiling(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                picnum_out,
+                actor_temps,
+                script,
+                randomseed,
+                hit.hitsect,
+                body_i,
+                pending_sound_ids,
+            );
         }
         spawn_smallsmoke(
             lists,
@@ -1093,12 +1314,15 @@ pub fn shoot_shotgun_player(
             randomseed,
             k,
         );
-        for _ in 0..miss_hitpath_pad() {
-            let _ = krand_step(randomseed);
-        }
     } else if hit.hitsprite >= 0 {
         let hu = hit.hitsprite as usize;
         let is_bg = hu < sprites.len() && badguy_pic(sprites[hu].picnum, actortype);
+        let activates_switch = hu < sprites.len()
+            && sprites[hu].lotag > 0
+            && crate::interactions::is_shoot_activated_switch(sprites[hu].picnum);
+        if activates_switch {
+            pending_switch_hits.push((body_i, None, Some(hit.hitsprite)));
+        }
         checkhitsprite_shotgun(
             lists,
             sprites,
@@ -1141,11 +1365,11 @@ pub fn shoot_shotgun_player(
                 randomseed,
                 k,
             );
-            if spawn_blood {
-                for _ in 0..first_face_extra() {
-                    let _ = krand_step(randomseed);
-                }
-            }
+        }
+        // Chocolate returns from `shoot` immediately after checkhitswitch;
+        // the rare PISTOL_RICOCHET TRAND below is not consumed on this hit.
+        if activates_switch {
+            return false;
         }
     } else if hit.hitwall >= 0 {
         spawn_smallsmoke(
@@ -1159,15 +1383,1209 @@ pub fn shoot_shotgun_player(
             randomseed,
             k,
         );
-        for _ in 0..miss_hitpath_pad() {
-            let _ = krand_step(randomseed);
+        let original_wall_index = hit.hitwall as usize;
+        if original_wall_index < walls.len() {
+            let hit_wall = walls[original_wall_index];
+            let switch_tile = crate::interactions::is_shoot_activated_switch(hit_wall.picnum);
+            if switch_tile {
+                if let Ok(wall_i) = i16::try_from(original_wall_index) {
+                    pending_switch_hits.push((body_i, Some(wall_i), None));
+                }
+                // Chocolate's wall switch path also returns before the
+                // ricochet roll and before bullet-hole / checkhitwall logic.
+                return false;
+            } else {
+                spawn_bullethole(
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    picnum_out,
+                    actor_temps,
+                    script,
+                    randomseed,
+                    ku,
+                    original_wall_index,
+                    hit.hitsect,
+                );
+                let mut wall_index = original_wall_index;
+                if walls.get(wall_index).is_some_and(|wall| {
+                    wall.cstat & 2 != 0
+                        && wall.nextsector >= 0
+                        && sectors
+                            .get(wall.nextsector as usize)
+                            .is_some_and(|next| hit.hitz >= next.floorz)
+                }) && let Some(peer) = walls
+                    .get(wall_index)
+                    .and_then(|wall| usize::try_from(wall.nextwall).ok())
+                {
+                    wall_index = peer;
+                }
+                if wall_index < walls.len() {
+                    // Chocolate calls checkhitwall after the impact spark and
+                    // small-smoke cue, using SHOTSPARK1 as `atwith`.
+                    let wall_sounds = crate::weapons_move::apply_checkhitwall(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        picnum_out,
+                        actor_temps,
+                        randomseed,
+                        sprites[ku],
+                        k,
+                        SHOTSPARK1,
+                        wall_index,
+                        hit.hitx,
+                        hit.hity,
+                        hit.hitz,
+                        hit.hitsect,
+                        script,
+                    );
+                    if actor_temps.len() <= ku {
+                        actor_temps.resize_with(ku + 1, ActorConTemps::default);
+                    }
+                    actor_temps[ku].pending_actor_sounds.extend(wall_sounds);
+                }
+            }
         }
+    }
+    // Chocolate `shoot`: after resolving the shot, roll the rare ricochet
+    // sound on every valid hitscan, including sprite and floor hits.
+    if krand_step(randomseed) & 255 < 4
+        && script.is_some_and(|img| img.sounds.get(1).is_some_and(Option::is_some))
+    {
+        // PISTOL_RICOCHET is sound id 1 in Atomic's soundefs.h.
+        pending_sound_ids.push(1);
     }
     did_blood
 }
 
+/// Chocolate `checkhitceiling`: break the Atomic ceiling-light tiles, spawn
+/// glass with the vanilla RNG order, and signal linked SE 12 / SE 3 markers.
+pub(crate) fn check_hit_ceiling(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &[WallT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    script: Option<&ScriptImage>,
+    randomseed: &mut i32,
+    sector_index: i16,
+    owner: i16,
+    pending_sound_ids: &mut Vec<u16>,
+) {
+    const LIGHTS: &[(&str, &str, i16, i16)] = &[
+        ("WALLLIGHT1", "WALLLIGHTBUST1", 703, 704),
+        ("WALLLIGHT2", "WALLLIGHTBUST2", 705, 706),
+        ("WALLLIGHT3", "WALLLIGHTBUST3", 701, 702),
+        ("WALLLIGHT4", "WALLLIGHTBUST4", 124, 125),
+        ("TECHLIGHT2", "TECHLIGHTBUST2", 120, 121),
+        ("TECHLIGHT4", "TECHLIGHTBUST4", 122, 123),
+    ];
+    let tile = |name: &str| {
+        script.and_then(|image| {
+            image
+                .labels
+                .get(name)
+                .filter(|label| !label.is_ptr)
+                .map(|label| label.value as i16)
+        })
+    };
+    let Ok(si) = usize::try_from(sector_index) else {
+        return;
+    };
+    let Some(sector) = sectors.get(si).copied() else {
+        return;
+    };
+    let Some((_, broken_name, _, broken_fallback)) = LIGHTS
+        .iter()
+        .find(|(name, _, original, _)| sector.ceilingpicnum == tile(name).unwrap_or(*original))
+    else {
+        return;
+    };
+    let broken_tile = tile(broken_name).unwrap_or(*broken_fallback);
+    let glass_pieces = tile("GLASSPIECES").unwrap_or(1031);
+    sectors[si].ceilingpicnum = broken_tile;
+
+    // `ceilingglass(player, sector, 10)` walks all but the closing wall and
+    // emits ten shards per edge, consuming angle, z, then x-velocity RNG.
+    let start = usize::try_from(sector.wallptr).unwrap_or(usize::MAX);
+    let end = start
+        .saturating_add(usize::try_from(sector.wallnum).unwrap_or_default())
+        .min(walls.len());
+    if end.saturating_sub(start) >= 2 {
+        for wall_index in start..end - 1 {
+            let wall = walls[wall_index];
+            let next = walls.get(wall_index + 1);
+            let Some(next) = next else { continue };
+            let dx = (next.x - wall.x) / 11;
+            let dy = (next.y - wall.y) / 11;
+            let (mut x, mut y) = (wall.x, wall.y);
+            for shard in (1..=10).rev() {
+                x = x.saturating_add(dx);
+                y = y.saturating_add(dy);
+                let angle = (krand_step(randomseed) & 2047) as i16;
+                let z = sector.ceilingz + ((krand_step(randomseed) & 15) << 8);
+                let xvel = krand_step(randomseed) & 31;
+                let sprite_i = egs(
+                    lists,
+                    sprites,
+                    picnum_out,
+                    actor_temps,
+                    script,
+                    sector_index,
+                    x,
+                    y,
+                    z,
+                    glass_pieces + shard % 3,
+                    -32,
+                    36,
+                    36,
+                    angle,
+                    xvel as i16,
+                    0,
+                    owner,
+                    STAT_MISC,
+                );
+                let _ = sprite_i;
+            }
+        }
+    }
+    pending_sound_ids.push(19); // GLASS_BREAKING
+
+    // A sector with no hitag can discover one local SE12, then extinguish all
+    // SE12 markers carrying that marker's hitag, matching `checkhitceiling`.
+    if sector.hitag == 0 {
+        let mut local = lists.headspritesect[si];
+        let mut tagged_hit = None;
+        while local >= 0 {
+            let li = local as usize;
+            local = lists.nextspritesect[li];
+            if let Some(marker) = sprites.get(li)
+                && marker.statnum == STAT_EFFECTOR
+                && marker.lotag == 12
+            {
+                tagged_hit = Some(marker.hitag);
+                break;
+            }
+        }
+        if let Some(hitag) = tagged_hit {
+            let mut effector = lists.headspritestat[STAT_EFFECTOR as usize];
+            while effector >= 0 {
+                let ei = effector as usize;
+                effector = lists.nextspritestat[ei];
+                if sprites.get(ei).is_some_and(|marker| marker.hitag == hitag) {
+                    if actor_temps.len() <= ei {
+                        actor_temps.resize_with(ei + 1, ActorConTemps::default);
+                    }
+                    actor_temps[ei].g_t[3] = 1;
+                }
+            }
+        }
+    }
+
+    // Chocolate consumes this TRAND even when the sector has no SE3.
+    let flicker = krand_step(randomseed) & 1;
+    let mut effector = lists.headspritestat[STAT_EFFECTOR as usize];
+    while effector >= 0 {
+        let ei = effector as usize;
+        effector = lists.nextspritestat[ei];
+        if sprites
+            .get(ei)
+            .is_some_and(|marker| marker.lotag == 3 && marker.hitag == sector.hitag)
+        {
+            if actor_temps.len() <= ei {
+                actor_temps.resize_with(ei + 1, ActorConTemps::default);
+            }
+            actor_temps[ei].g_t[2] = flicker;
+            actor_temps[ei].g_t[4] = 1;
+        }
+    }
+}
+
 /// Chocolate shotgun branch of `processinput` SHOOTINCODE (kickback + fire).
-pub fn process_weapons_shotgun(
+fn tick_weapon_pos(p: &mut Player) {
+    if p.weapon_pos != 0 {
+        if p.weapon_pos == -9 {
+            p.weapon_pos = 10;
+            p.last_weapon = -1;
+        } else {
+            p.weapon_pos -= 1;
+        }
+    }
+}
+
+/// Advance the common raise/lower animation for weapons whose firing logic is
+/// not implemented yet. This prevents selecting an unsupported weapon from
+/// incorrectly firing the shotgun.
+pub fn process_unimplemented_weapon(p: &mut Player) {
+    tick_weapon_pos(p);
+}
+
+/// Atomic knee weapon: starts immediately, hits on kickback tic 7, and repeats
+/// after tic 14 while fire remains held.
+pub fn process_weapons_knee(
+    p: &mut Player,
+    sync_bits: u32,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    tile_meta: &[TileZMeta],
+    actortype: &[u8],
+    script: Option<&ScriptImage>,
+    randomseed: &mut i32,
+) -> Option<KneeHit> {
+    const WEAPON: i16 = 0;
+    tick_weapon_pos(p);
+    if p.curr_weapon != WEAPON {
+        return None;
+    }
+    let fire = sync_bits & (1 << 2) != 0;
+    if p.kickback_pic == 0 {
+        if fire && p.last_weapon == -1 && p.weapon_pos == 0 {
+            p.kickback_pic = 1;
+        }
+        return None;
+    }
+    p.kickback_pic += 1;
+    if p.kickback_pic == 7 {
+        return shoot_knee_player(
+            p,
+            sprites,
+            sectors,
+            walls,
+            actor_temps,
+            tile_meta,
+            actortype,
+            script,
+            randomseed,
+        );
+    }
+    if p.kickback_pic == 14 {
+        p.kickback_pic = if fire {
+            1 + (krand_step(randomseed) & 3) as i16
+        } else {
+            0
+        };
+    }
+    None
+}
+
+/// Result of Chocolate `shoot(player, KNEE)` reaching a wall or sprite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KneeHit {
+    /// Wall reached by the knee hitscan, if any.
+    pub wall: Option<i16>,
+    /// Sprite reached by the knee hitscan, if any.
+    pub sprite: Option<i16>,
+    /// Build sector of the impact.
+    pub sector: i16,
+    /// Build-space point where the knee hitscan ended.
+    pub position: [i32; 3],
+    /// Damage carried by the spawned KNEE hit actor, including player bonuses.
+    pub damage: i16,
+    /// KNEE CON strength plus the random roll, before player's steroid bonus.
+    pub impact_strength: i16,
+}
+
+/// Atomic `shoot(player, KNEE)` hitscan subset. Returns a hit target when the
+/// short reach test connects; this is also the `KICK_HIT` sound condition.
+fn shoot_knee_player(
+    p: &Player,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    tile_meta: &[TileZMeta],
+    actortype: &[u8],
+    script: Option<&ScriptImage>,
+    randomseed: &mut i32,
+) -> Option<KneeHit> {
+    let Some(body) = usize::try_from(p.sprite_i)
+        .ok()
+        .filter(|&i| i < sprites.len())
+    else {
+        return None;
+    };
+    let sect = sprites[body].sectnum;
+    if sect < 0 || sect as usize >= sectors.len() {
+        return None;
+    }
+    let (sin, cos) = sincos_q14(i32::from(p.ang.wrapping_add(15)));
+    let z = p.posz + p.pyoff + (10 << 8);
+    let vz = ((100 - i32::from(p.horiz) - i32::from(p.horizoff)) << 5) << 6;
+    let sec_walls: Vec<SectorWalls> = sectors
+        .iter()
+        .map(|s| SectorWalls {
+            wallptr: s.wallptr,
+            wallnum: s.wallnum,
+        })
+        .collect();
+    let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+    let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+    let sprite_hits: Vec<SpriteHit> = sprites
+        .iter()
+        .map(|s| {
+            let meta = tile_meta
+                .get(s.picnum.max(0) as usize)
+                .copied()
+                .unwrap_or_default();
+            SpriteHit {
+                x: s.x,
+                y: s.y,
+                z: s.z,
+                sectnum: s.sectnum,
+                clipdist: 0,
+                cstat: s.cstat,
+                face_span: i32::from(meta.width) * i32::from(s.xrepeat),
+                face_height: (i32::from(meta.height) * i32::from(s.yrepeat)) << 2,
+            }
+        })
+        .collect();
+    let body_cstat = sprites[body].cstat;
+    sprites[body].cstat &= !257;
+    let hit = hitscan_full(
+        p.posx,
+        p.posy,
+        z,
+        sect,
+        cos,
+        sin,
+        vz,
+        CLIPMASK1,
+        &sec_walls,
+        &wall_xy,
+        &sprite_hits,
+        Some(&sec_z),
+    );
+    sprites[body].cstat = body_cstat;
+    if hit.hitsect < 0
+        || hit.hitwall < 0 && hit.hitsprite < 0
+        || hit
+            .hitx
+            .wrapping_sub(p.posx)
+            .saturating_abs()
+            .saturating_add(hit.hity.wrapping_sub(p.posy).saturating_abs())
+            >= 1024
+    {
+        return None;
+    }
+    let knee_strength = script.map_or(10, |image| init_actor_temps_from_script(image, KNEE).0);
+    let random_bonus = krand_step(randomseed) & 7;
+    let impact_strength = i32::from(knee_strength) + random_bonus;
+    let steroid_bonus = if p.steroids_amount > 0 && p.steroids_amount < 400 {
+        script
+            .and_then(|image| image.gamestartup.get(2).copied())
+            .unwrap_or(100)
+            >> 2
+    } else {
+        0
+    };
+    let damage =
+        (impact_strength + steroid_bonus).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    let impact_strength = impact_strength.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    if let Ok(target) = usize::try_from(hit.hitsprite)
+        && target < sprites.len()
+        && badguy_pic(sprites[target].picnum, actortype)
+    {
+        if actor_temps.len() <= target {
+            actor_temps.resize_with(target + 1, ActorConTemps::default);
+        }
+        let temp = &mut actor_temps[target];
+        temp.hit_picnum = KNEE;
+        temp.hit_extra = if temp.hit_extra < 0 {
+            damage
+        } else {
+            temp.hit_extra.saturating_add(damage)
+        };
+        temp.hit_owner = p.sprite_i;
+        temp.hit_ang = p.ang.wrapping_add(15);
+    }
+    Some(KneeHit {
+        wall: (hit.hitwall >= 0).then_some(hit.hitwall),
+        sprite: (hit.hitsprite >= 0).then_some(hit.hitsprite),
+        sector: hit.hitsect,
+        position: [hit.hitx, hit.hity, hit.hitz],
+        damage,
+        impact_strength,
+    })
+}
+
+/// Advance and fire Atomic's RPG weapon (weapon slot 4), including the shared
+/// Chocolate aim cone, target height solve, projectile launch offset and cadence.
+pub fn process_weapons_rpg(
+    p: &mut Player,
+    sync_bits: u32,
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum_out: &mut Vec<i16>,
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
+    actortype: &[u8],
+    randomseed: &mut i32,
+) {
+    const WEAPON: i16 = 4;
+    tick_weapon_pos(p);
+    if p.curr_weapon != WEAPON {
+        return;
+    }
+    let fire = sync_bits & (1 << 2) != 0;
+    let rpg_tile = script_tile_or(script, "RPG", RPG_PROJECTILE);
+    if p.kickback_pic == 0 {
+        if fire
+            && p.last_weapon == -1
+            && p.weapon_pos == 0
+            && p.ammo.get(WEAPON as usize).copied().unwrap_or(0) > 0
+        {
+            p.kickback_pic = 1;
+        }
+        return;
+    }
+    p.kickback_pic += 1;
+    if p.kickback_pic == 2 {
+        if let Some(body) = (p.sprite_i >= 0)
+            .then_some(p.sprite_i as usize)
+            .filter(|&i| i < sprites.len())
+        {
+            let source = sprites[body];
+            let mut shot_ang = i32::from(p.ang);
+            let mut z = p.posz + p.pyoff + (4 << 8);
+            let target = aim(
+                &source,
+                AUTO_AIM_ANGLE,
+                p.auto_aim == 2,
+                lists,
+                sprites,
+                sectors,
+                walls,
+                actortype,
+                Some(p),
+            );
+            let mut zvel = (100 - i32::from(p.horiz) - i32::from(p.horizoff)) * 81;
+            if target >= 0 {
+                let target_sprite = &sprites[target as usize];
+                let height = tile_meta
+                    .get(target_sprite.picnum.max(0) as usize)
+                    .map_or(0, |meta| i32::from(meta.height));
+                let dal = (i32::from(target_sprite.xrepeat) * height * 2) + (8 << 8);
+                zvel = ((target_sprite.z - z - dal) * 644) / ldist(&source, target_sprite).max(1);
+                if target_sprite.picnum != RECON {
+                    shot_ang = getangle(
+                        target_sprite.x.wrapping_sub(p.posx),
+                        target_sprite.y.wrapping_sub(p.posy),
+                    );
+                }
+            }
+            z += 3 << 8;
+            let sect = source.sectnum;
+            if sect >= 0 && (sect as usize) < sectors.len() {
+                let k = lists.insertsprite(sect, STAT_PROJECTILE);
+                if k >= 0 && (k as usize) < sprites.len() {
+                    let i = k as usize;
+                    let projectile_z = z - (1 << 8);
+                    let (base_extra, temps) = script
+                        .map(|s| crate::con::init_actor_temps_from_script(s, rpg_tile))
+                        .unwrap_or_default();
+                    sprites[i] = SpriteT {
+                        x: p.posx + sincos_q14(shot_ang + 348).1 / 448,
+                        y: p.posy + sincos_q14(shot_ang + 348).0 / 448,
+                        z: projectile_z,
+                        ang: shot_ang as i16,
+                        sectnum: sect,
+                        picnum: rpg_tile,
+                        shade: if source.extra >= 0 { -96 } else { 0 },
+                        xrepeat: 16,
+                        yrepeat: 16,
+                        xvel: 644,
+                        zvel: zvel as i16,
+                        owner: p.sprite_i,
+                        yvel: target,
+                        cstat: 128,
+                        clipdist: 4,
+                        extra: base_extra.saturating_add((krand_step(randomseed) & 7) as i16),
+                        ..Default::default()
+                    };
+                    if picnum_out.len() <= i {
+                        picnum_out.resize(i + 1, 0);
+                    }
+                    picnum_out[i] = rpg_tile;
+                    if actor_temps.len() <= i {
+                        actor_temps.resize_with(i + 1, ActorConTemps::default);
+                    }
+                    actor_temps[i] = temps;
+                } else if k >= 0 {
+                    let _ = lists.deletesprite(k);
+                }
+            }
+        }
+        p.ammo[WEAPON as usize] = p.ammo[WEAPON as usize].saturating_sub(1);
+        if p.ammo[WEAPON as usize] == 0 {
+            checkavailweapon(p);
+        }
+    }
+    if p.kickback_pic >= 20 {
+        p.kickback_pic = 0;
+    }
+}
+
+/// Advance Atomic's Freezethrower cadence (weapon slot 9). Chocolate fires
+/// one FREEZEBLAST on kickback tic 3, consumes one cell, then permits an
+/// automatic repeat while fire remains held after the short recovery.
+pub fn process_weapons_freezer(
+    p: &mut Player,
+    sync_bits: u32,
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    tile_meta: &[TileZMeta],
+    actortype: &[u8],
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum_out: &mut Vec<i16>,
+    script: Option<&ScriptImage>,
+    randomseed: &mut i32,
+    pending_sound_ids: &mut Vec<u16>,
+) {
+    const WEAPON: i16 = 9;
+    tick_weapon_pos(p);
+    if p.curr_weapon != WEAPON {
+        return;
+    }
+    let fire = sync_bits & (1 << 2) != 0;
+    if p.kickback_pic == 0 {
+        if fire && p.last_weapon == -1 && p.weapon_pos == 0 && p.ammo[WEAPON as usize] > 0 {
+            p.kickback_pic = 1;
+            if let Some(sound_id) = script
+                .and_then(|image| image.labels.get("CAT_FIRE"))
+                .and_then(|label| u16::try_from(label.value).ok())
+            {
+                pending_sound_ids.push(sound_id);
+            }
+        } else {
+            return;
+        }
+    }
+    // Chocolate checks the recovery/repeat branch before advancing a new
+    // firing cycle. Capture that state so reaching tic 4 doesn't rearm early.
+    let rearming = p.kickback_pic >= 4;
+    if p.kickback_pic < 4 {
+        p.kickback_pic += 1;
+    }
+    if p.kickback_pic == 3 {
+        if let Some(body) = (p.sprite_i >= 0)
+            .then_some(p.sprite_i as usize)
+            .filter(|&i| i < sprites.len())
+        {
+            let source = sprites[body];
+            let mut shot_ang = i32::from(p.ang);
+            let mut z = p.posz + p.pyoff + (7 << 8);
+            let target = aim(
+                &source,
+                AUTO_AIM_ANGLE,
+                p.auto_aim == 2,
+                lists,
+                sprites,
+                sectors,
+                walls,
+                actortype,
+                Some(p),
+            );
+            let mut zvel = (100 - i32::from(p.horiz) - i32::from(p.horizoff)) * 81;
+            if target >= 0 {
+                let target = &sprites[target as usize];
+                let height = tile_meta
+                    .get(target.picnum.max(0) as usize)
+                    .map_or(0, |meta| i32::from(meta.height));
+                let dal = (i32::from(target.xrepeat) * height * 2) + (8 << 8);
+                let distance = ldist(&source, target).max(1);
+                zvel = ((target.z - z - dal) * 644) / distance;
+                if target.picnum != RECON {
+                    shot_ang =
+                        getangle(target.x.wrapping_sub(p.posx), target.y.wrapping_sub(p.posy));
+                }
+            }
+            z += 3 << 8;
+            let sect = source.sectnum;
+            if sect >= 0 && (sect as usize) < sectors.len() {
+                let k = lists.insertsprite(sect, STAT_PROJECTILE);
+                if k >= 0 && (k as usize) < sprites.len() {
+                    let i = k as usize;
+                    let projectile_z = z - (1 << 8);
+                    let (extra, temps) = script
+                        .map(|s| crate::con::init_actor_temps_from_script(s, FREEZEBLAST))
+                        .unwrap_or_default();
+                    sprites[i] = SpriteT {
+                        x: p.posx + sincos_q14(shot_ang + 348).1 / 448,
+                        y: p.posy + sincos_q14(shot_ang + 348).0 / 448,
+                        z: projectile_z,
+                        ang: shot_ang as i16,
+                        sectnum: sect,
+                        picnum: FREEZEBLAST,
+                        shade: -127,
+                        xrepeat: 7,
+                        yrepeat: 7,
+                        xvel: 644,
+                        zvel: (zvel - (2 << 4)) as i16,
+                        owner: p.sprite_i,
+                        cstat: 128,
+                        clipdist: 4,
+                        yvel: script
+                            .and_then(|image| {
+                                let index = if image.con_version == crate::con::ConVersion::V15 {
+                                    26
+                                } else {
+                                    24
+                                };
+                                image.gamestartup.get(index).copied()
+                            })
+                            .unwrap_or(3)
+                            .clamp(0, i32::from(i16::MAX)) as i16,
+                        extra: extra.saturating_add((krand_step(randomseed) & 7) as i16),
+                        ..Default::default()
+                    };
+                    if picnum_out.len() <= i {
+                        picnum_out.resize(i + 1, 0);
+                    }
+                    picnum_out[i] = FREEZEBLAST;
+                    if actor_temps.len() <= i {
+                        actor_temps.resize_with(i + 1, ActorConTemps::default);
+                    }
+                    actor_temps[i] = temps;
+                } else if k >= 0 {
+                    let _ = lists.deletesprite(k);
+                }
+            }
+        }
+        p.ammo[WEAPON as usize] = p.ammo[WEAPON as usize].saturating_sub(1);
+        if p.ammo[WEAPON as usize] == 0 {
+            checkavailweapon(p);
+        }
+        if p.sprite_i >= 0
+            && sprites
+                .get(p.sprite_i as usize)
+                .is_some_and(|body| body.xrepeat < 32)
+        {
+            p.kickback_pic = 0;
+            return;
+        }
+    }
+    if rearming {
+        if fire && p.ammo[WEAPON as usize] > 0 {
+            p.kickback_pic = 1;
+            if let Some(sound_id) = script
+                .and_then(|image| image.labels.get("CAT_FIRE"))
+                .and_then(|label| u16::try_from(label.value).ok())
+            {
+                pending_sound_ids.push(sound_id);
+            }
+        } else {
+            p.kickback_pic = 0;
+        }
+    }
+}
+
+/// Advance the Shrinker and Grower firing states (slots 6 and 11).
+/// Shrinker emits a moving SHRINKSPARK every 12 kickback tics; Grower uses a
+/// hitscan and leaves its one-tic impact cue at the resolved hit point.
+pub fn process_weapons_shrink_grow(
+    p: &mut Player,
+    sync_bits: u32,
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum_out: &mut Vec<i16>,
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
+    actortype: &[u8],
+    randomseed: &mut i32,
+    pending_sound_ids: &mut Vec<u16>,
+) {
+    const SHRINKER: i16 = 6;
+    const GROWER: i16 = 11;
+    tick_weapon_pos(p);
+    let weapon = p.curr_weapon;
+    if weapon != SHRINKER && weapon != GROWER {
+        return;
+    }
+    let fire = sync_bits & (1 << 2) != 0;
+    if p.kickback_pic == 0 {
+        if fire && p.last_weapon == -1 && p.weapon_pos == 0 && p.ammo[weapon as usize] > 0 {
+            p.kickback_pic = 1;
+            let sound = if weapon == GROWER {
+                "EXPANDERSHOOT"
+            } else {
+                "SHRINKER_FIRE"
+            };
+            if let Some(sound_id) = script
+                .and_then(|image| image.labels.get(sound))
+                .and_then(|label| u16::try_from(label.value).ok())
+            {
+                pending_sound_ids.push(sound_id);
+            }
+            return;
+        } else {
+            return;
+        }
+    }
+    p.kickback_pic += 1;
+    // The activation tic stores frame 1 but does not enter Chocolate's
+    // nonzero-kickback arm; the following tics increment first, so our
+    // post-increment edge is one greater than its pre-increment threshold.
+    let fire_tic = if weapon == GROWER { 5 } else { 12 };
+    if p.kickback_pic == fire_tic {
+        let body = (p.sprite_i >= 0)
+            .then_some(p.sprite_i as usize)
+            .filter(|&i| i < sprites.len());
+        if let Some(body) = body {
+            let source = sprites[body];
+            let mut shot_ang = i32::from(p.ang);
+            let (mut sin, mut cos) = sincos_q14(shot_ang);
+            let base_z = p.posz + p.pyoff + (4 << 8);
+            let target = aim(
+                &source,
+                AUTO_AIM_ANGLE,
+                p.auto_aim == 2,
+                lists,
+                sprites,
+                sectors,
+                walls,
+                actortype,
+                Some(p),
+            );
+            let mut zvel;
+            if target >= 0 {
+                let target_sprite = &sprites[target as usize];
+                shot_ang = getangle(
+                    target_sprite.x.wrapping_sub(p.posx),
+                    target_sprite.y.wrapping_sub(p.posy),
+                );
+                let height = tile_meta
+                    .get(target_sprite.picnum.max(0) as usize)
+                    .map_or(0, |meta| i32::from(meta.height));
+                let mut dal = (i32::from(target_sprite.xrepeat) * height * 2)
+                    + if weapon == GROWER { 5 << 8 } else { 0 };
+                if weapon == GROWER && matches!(target_sprite.picnum, 2370..=2377 | 2360) {
+                    dal -= 8 << 8;
+                }
+                let distance = ldist(&source, target_sprite).max(1);
+                zvel = if weapon == GROWER {
+                    ((target_sprite.z - base_z - dal) << 8) / distance
+                } else {
+                    ((target_sprite.z - base_z - dal - (4 << 8)) * 768) / distance
+                };
+                (sin, cos) = sincos_q14(shot_ang);
+            } else if weapon == GROWER {
+                shot_ang += 16 - (krand_step(randomseed) & 31);
+                zvel = (100 - i32::from(p.horiz) - i32::from(p.horizoff)) << 5;
+                zvel += 128 - (krand_step(randomseed) & 255);
+                (sin, cos) = sincos_q14(shot_ang);
+            } else {
+                zvel = (100 - i32::from(p.horiz) - i32::from(p.horizoff)) * 98;
+            }
+            let z = if weapon == GROWER {
+                base_z - (2 << 8)
+            } else {
+                base_z
+            };
+            if weapon == SHRINKER {
+                let sect = source.sectnum;
+                if sect >= 0 && (sect as usize) < sectors.len() {
+                    let k = lists.insertsprite(sect, STAT_PROJECTILE);
+                    if k >= 0 && (k as usize) < sprites.len() {
+                        let i = k as usize;
+                        let (extra, temps) = script
+                            .map(|s| crate::con::init_actor_temps_from_script(s, SHRINKSPARK))
+                            .unwrap_or_default();
+                        sprites[i] = SpriteT {
+                            x: source.x - sincos_q14(shot_ang).0 / 4096,
+                            y: source.y + sincos_q14(shot_ang + 348).0 / 4096,
+                            z: z + (2 << 8),
+                            ang: shot_ang as i16,
+                            sectnum: sect,
+                            picnum: SHRINKSPARK,
+                            shade: -16,
+                            xrepeat: 28,
+                            yrepeat: 28,
+                            xvel: 768,
+                            zvel: zvel as i16,
+                            owner: p.sprite_i,
+                            cstat: 128,
+                            clipdist: 32,
+                            extra,
+                            ..Default::default()
+                        };
+                        if picnum_out.len() <= i {
+                            picnum_out.resize(i + 1, 0);
+                        }
+                        picnum_out[i] = SHRINKSPARK;
+                        if actor_temps.len() <= i {
+                            actor_temps.resize_with(i + 1, ActorConTemps::default);
+                        }
+                        actor_temps[i] = temps;
+                    } else if k >= 0 {
+                        let _ = lists.deletesprite(k);
+                    }
+                }
+            } else {
+                let sec_walls: Vec<SectorWalls> = sectors
+                    .iter()
+                    .map(|s| SectorWalls {
+                        wallptr: s.wallptr,
+                        wallnum: s.wallnum,
+                    })
+                    .collect();
+                let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+                let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+                let sprite_hits: Vec<SpriteHit> = sprites
+                    .iter()
+                    .enumerate()
+                    .map(|(index, s)| {
+                        let meta = tile_meta
+                            .get(s.picnum.max(0) as usize)
+                            .copied()
+                            .unwrap_or_default();
+                        let mut hit = SpriteHit::cylinder(
+                            s.x,
+                            s.y,
+                            s.z,
+                            s.sectnum,
+                            i32::from(s.clipdist) << 2,
+                            s.cstat,
+                        );
+                        hit.face_span = i32::from(meta.width) * i32::from(s.xrepeat);
+                        hit.face_height = (i32::from(meta.height) * i32::from(s.yrepeat)) << 2;
+                        if index == body {
+                            hit.cstat &= !257;
+                        }
+                        hit
+                    })
+                    .collect();
+                let hit = hitscan_full(
+                    source.x,
+                    source.y,
+                    z,
+                    source.sectnum,
+                    cos,
+                    sin,
+                    zvel << 6,
+                    CLIPMASK1,
+                    &sec_walls,
+                    &wall_xy,
+                    &sprite_hits,
+                    Some(&sec_z),
+                );
+                if hit.hitsect >= 0 {
+                    let effect = egs(
+                        lists,
+                        sprites,
+                        picnum_out,
+                        actor_temps,
+                        script,
+                        hit.hitsect,
+                        hit.hitx,
+                        hit.hity,
+                        hit.hitz,
+                        GROWSPARK,
+                        -16,
+                        1,
+                        1,
+                        shot_ang as i16,
+                        0,
+                        0,
+                        p.sprite_i,
+                        STAT_PROJECTILE,
+                    );
+                    if effect >= 0 {
+                        let ei = effect as usize;
+                        sprites[ei].pal = 2;
+                        sprites[ei].cstat |= 130;
+                    }
+                    if hit.hitsprite >= 0 {
+                        let target = hit.hitsprite as usize;
+                        if target < sprites.len() {
+                            if actor_temps.len() <= target {
+                                actor_temps.resize_with(target + 1, ActorConTemps::default);
+                            }
+                            actor_temps[target].hit_picnum = GROWSPARK;
+                            actor_temps[target].hit_extra = 0;
+                            actor_temps[target].hit_owner = p.sprite_i;
+                            actor_temps[target].hit_ang = shot_ang as i16;
+                        }
+                    }
+                }
+            }
+        }
+        p.ammo[weapon as usize] = p.ammo[weapon as usize].saturating_sub(1);
+        if p.ammo[weapon as usize] == 0 {
+            checkavailweapon(p);
+        }
+    }
+    let cycle = if weapon == GROWER { 4 } else { 11 };
+    if p.kickback_pic >= cycle {
+        p.kickback_pic = if fire && p.ammo[weapon as usize] > 0 {
+            1
+        } else {
+            0
+        };
+    }
+}
+
+/// Advance Atomic's hand bomb / remote cycle (weapon slots 5 and 10).
+///
+/// Throw strength follows Chocolate `player.c::shoot`: the held-fire count
+/// biases horizontal velocity, while horizon sets vertical velocity. The
+/// actor-side bounce and detonation behavior is handled by `move_pipebombs`.
+pub fn process_weapons_pipebomb(
+    p: &mut Player,
+    sync_bits: u32,
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum_out: &mut Vec<i16>,
+    script: Option<&ScriptImage>,
+) {
+    const HANDBOMB: i16 = 5;
+    const REMOTE: i16 = 10;
+    tick_weapon_pos(p);
+    if p.curr_weapon != HANDBOMB && p.curr_weapon != REMOTE {
+        return;
+    }
+    let fire = sync_bits & (1 << 2) != 0;
+    let heavybomb_tile = script_tile_or(script, "HEAVYHBOMB", HEAVYHBOMB);
+    if p.rapid_fire_hold {
+        if fire {
+            return;
+        }
+        p.rapid_fire_hold = false;
+    }
+    if p.kickback_pic == 0 {
+        if fire && p.last_weapon == -1 && p.weapon_pos == 0 {
+            if p.curr_weapon == REMOTE || p.ammo[HANDBOMB as usize] > 0 {
+                p.hbomb_hold_delay = 0;
+                p.kickback_pic = 1;
+            }
+        }
+        return;
+    }
+    if p.curr_weapon == HANDBOMB {
+        if p.kickback_pic == 6 && fire {
+            p.rapid_fire_hold = true;
+            return;
+        }
+        p.kickback_pic += 1;
+        if p.kickback_pic == 12 {
+            p.ammo[HANDBOMB as usize] = p.ammo[HANDBOMB as usize].saturating_sub(1);
+            if p.sprite_i >= 0 {
+                let owner = p.sprite_i;
+                let sect = sprites
+                    .get(owner as usize)
+                    .map_or(p.cursectnum, |s| s.sectnum);
+                if sect >= 0 && (sect as usize) < sectors.len() {
+                    let low_throw = p.on_ground && (sync_bits & 2 != 0);
+                    let strength = if low_throw { 15 } else { 140 };
+                    let zvel = if low_throw {
+                        (i32::from(p.horiz) + i32::from(p.horizoff) - 100) * 20
+                    } else {
+                        -512 - (i32::from(p.horiz) + i32::from(p.horizoff) - 100) * 20
+                    };
+                    let (sin, cos) = sincos_q14(i32::from(p.ang));
+                    let bomb = egs(
+                        lists,
+                        sprites,
+                        picnum_out,
+                        actor_temps,
+                        script,
+                        sect,
+                        p.posx + (cos >> 6),
+                        p.posy + (sin >> 6),
+                        p.posz + if low_throw { 8 << 8 } else { 0 },
+                        heavybomb_tile,
+                        -16,
+                        9,
+                        9,
+                        p.ang,
+                        strength + (p.hbomb_hold_delay << 5),
+                        zvel as i16,
+                        owner,
+                        crate::stat::STAT_ACTOR,
+                    );
+                    if bomb >= 0 {
+                        if let Some(sprite) = sprites.get_mut(bomb as usize) {
+                            // Chocolate EGS initializes this C actor with one
+                            // point of blast strength; it is not a CON health.
+                            sprite.extra = 1;
+                            if low_throw {
+                                sprite.yvel = 3;
+                            }
+                        }
+                        if let Some(source) = sprites.get(owner as usize).copied() {
+                            let sector_walls: Vec<SectorWalls> = sectors
+                                .iter()
+                                .map(|sector| SectorWalls {
+                                    wallptr: sector.wallptr,
+                                    wallnum: sector.wallnum,
+                                })
+                                .collect();
+                            let sector_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+                            let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+                            // Chocolate `hits(pi)` slows a just-thrown bomb
+                            // and reverses it when the player faces a nearby
+                            // wall. Use walls only: actor sprite hits here
+                            // would include the newly spawned bomb itself.
+                            if crate::actors::hits_xy(
+                                &source,
+                                &[],
+                                &sector_walls,
+                                &wall_xy,
+                                &sector_z,
+                            ) < 512
+                            {
+                                if let Some(sprite) = sprites.get_mut(bomb as usize) {
+                                    sprite.ang = (sprite.ang + 1024) & 2047;
+                                    sprite.zvel /= 3;
+                                    sprite.xvel /= 3;
+                                }
+                            }
+                        }
+                    }
+                    p.hbomb_on = true;
+                }
+            }
+        } else if p.kickback_pic < 12 && fire {
+            p.hbomb_hold_delay = p.hbomb_hold_delay.saturating_add(1);
+        } else if p.kickback_pic > 19 {
+            p.kickback_pic = 0;
+            p.curr_weapon = REMOTE;
+            p.last_weapon = -1;
+            p.weapon_pos = 10;
+        }
+    } else {
+        p.kickback_pic += 1;
+        if p.kickback_pic == 2 {
+            p.hbomb_on = false;
+        }
+        if p.kickback_pic == 10 {
+            p.kickback_pic = 0;
+            if p.ammo[HANDBOMB as usize] > 0 {
+                p.curr_weapon = HANDBOMB;
+                p.last_weapon = -1;
+                p.weapon_pos = -1;
+            } else {
+                checkavailweapon(p);
+            }
+        }
+    }
+}
+
+/// Chocolate `doincrements`: fire the player-triggered quick kick on the tic
+/// its countdown reaches eight. Unlike the normal knee weapon state machine,
+/// this does not change `kickback_pic` or require the fire button.
+#[allow(clippy::too_many_arguments)]
+pub fn process_quick_kick(
+    p: &Player,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    tile_meta: &[TileZMeta],
+    actortype: &[u8],
+    script: Option<&ScriptImage>,
+    randomseed: &mut i32,
+) -> Option<KneeHit> {
+    shoot_knee_player(
+        p,
+        sprites,
+        sectors,
+        walls,
+        actor_temps,
+        tile_meta,
+        actortype,
+        script,
+        randomseed,
+    )
+}
+
+/// Advance Atomic's Devastator burst (`player.c`, `DEVISTATOR_WEAPON`). It
+/// fires two spread RPG projectiles on kickback tics 3 and 5, alternating the
+/// barrel offset and consuming one ammo unit for each projectile.
+pub fn process_weapons_devastator(
+    p: &mut Player,
+    sync_bits: u32,
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum_out: &mut Vec<i16>,
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
+    actortype: &[u8],
+    randomseed: &mut i32,
+    pending_sound_ids: &mut Vec<u16>,
+) {
+    const WEAPON: i16 = 7;
+    tick_weapon_pos(p);
+    if p.curr_weapon != WEAPON {
+        return;
+    }
+    let fire = sync_bits & (1 << 2) != 0;
+    if p.kickback_pic == 0 {
+        if fire
+            && p.last_weapon == -1
+            && p.weapon_pos == 0
+            && p.ammo.get(WEAPON as usize).copied().unwrap_or(0) > 0
+        {
+            p.kickback_pic = 1;
+            p.hbomb_hold_delay ^= 1;
+            if let Some(sound_id) = script
+                .and_then(|image| image.labels.get("CAT_FIRE"))
+                .and_then(|label| u16::try_from(label.value).ok())
+            {
+                pending_sound_ids.push(sound_id);
+            }
+        } else {
+            return;
+        }
+    }
+
+    p.kickback_pic += 1;
+    if p.kickback_pic & 1 != 0 {
+        spawn_devastator_projectile(
+            p,
+            lists,
+            sprites,
+            sectors,
+            walls,
+            actor_temps,
+            picnum_out,
+            tile_meta,
+            script,
+            actortype,
+            randomseed,
+        );
+        p.ammo[WEAPON as usize] = p.ammo[WEAPON as usize].saturating_sub(1);
+        if p.ammo[WEAPON as usize] == 0 {
+            checkavailweapon(p);
+        }
+    }
+    if p.kickback_pic > 5 {
+        p.kickback_pic = 0;
+    }
+}
+
+/// Advance Atomic tripbomb placement (weapon slot 8). The player may fire only
+/// when the laser reaches a nearby, non-sprite wall in a safe sector.
+pub fn process_weapons_tripbomb(
     p: &mut Player,
     sync_bits: u32,
     lists: &mut SpriteLists,
@@ -1178,21 +2596,379 @@ pub fn process_weapons_shotgun(
     actor_temps: &mut Vec<ActorConTemps>,
     tile_meta: &[TileZMeta],
     script: Option<&ScriptImage>,
+    pending_sound_ids: &mut Vec<u16>,
+) {
+    const WEAPON: i16 = 8;
+    tick_weapon_pos(p);
+    if p.curr_weapon != WEAPON {
+        return;
+    }
+    let fire = sync_bits & (1 << 2) != 0;
+    if p.kickback_pic == 0 {
+        if fire
+            && p.last_weapon == -1
+            && p.weapon_pos == 0
+            && p.ammo[WEAPON as usize] > 0
+            && tripbomb_target(p, lists, sprites, sectors, walls, tile_meta, script).is_some()
+        {
+            p.kickback_pic = 1;
+        }
+        return;
+    }
+
+    if p.kickback_pic < 4 {
+        p.posz = p.oposz;
+        p.poszv = 0;
+        if p.kickback_pic == 3
+            && let Some(target) =
+                tripbomb_target(p, lists, sprites, sectors, walls, tile_meta, script)
+        {
+            if sprites.get(p.sprite_i.max(0) as usize).is_none() {
+                p.kickback_pic += 1;
+                return;
+            }
+            let bomb = crate::shoot::egs(
+                lists,
+                sprites,
+                picnum_out,
+                actor_temps,
+                script,
+                target.hitsect,
+                target.hitx,
+                target.hity,
+                target.hitz,
+                script
+                    .and_then(|script| script.labels.get("TRIPBOMB"))
+                    .filter(|label| !label.is_ptr)
+                    .map_or(2566, |label| label.value as i16),
+                -16,
+                4,
+                5,
+                p.ang,
+                0,
+                0,
+                p.sprite_i,
+                crate::stat::STAT_STANDABLE,
+            );
+            if let Ok(bomb_index) = usize::try_from(bomb)
+                && let Some(bomb_sprite) = sprites.get_mut(bomb_index)
+            {
+                bomb_sprite.hitag = bomb;
+                bomb_sprite.xvel = -20;
+                bomb_sprite.cstat = 16;
+                // Chocolate calls SSP using the player's firing angle before
+                // it rotates the planted actor to face along the wall.
+                let (sin, cos) = sincos_q14(i32::from(p.ang));
+                bomb_sprite.x = bomb_sprite.x.wrapping_sub((20 * cos) >> 14);
+                bomb_sprite.y = bomb_sprite.y.wrapping_sub((20 * sin) >> 14);
+                let sector_walls: Vec<SectorWalls> = sectors
+                    .iter()
+                    .map(|sector| SectorWalls {
+                        wallptr: sector.wallptr,
+                        wallnum: sector.wallnum,
+                    })
+                    .collect();
+                let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+                let mut new_sector = bomb_sprite.sectnum;
+                if updatesector(
+                    bomb_sprite.x,
+                    bomb_sprite.y,
+                    &mut new_sector,
+                    &sector_walls,
+                    &wall_xy,
+                ) >= 0
+                    && new_sector != bomb_sprite.sectnum
+                {
+                    let _ = lists.changespritesect(bomb, new_sector);
+                    bomb_sprite.sectnum = new_sector;
+                }
+                let wall = &walls[target.hitwall as usize];
+                let end = walls[wall.point2.max(0) as usize];
+                let angle = getangle(wall.x.wrapping_sub(end.x), wall.y.wrapping_sub(end.y))
+                    .wrapping_sub(512) as i16;
+                bomb_sprite.ang = angle;
+                if actor_temps.len() <= bomb_index {
+                    actor_temps.resize_with(bomb_index + 1, ActorConTemps::default);
+                }
+                actor_temps[bomb_index].g_t[0] = 17; // Atomic map-spawn baseline.
+                actor_temps[bomb_index].g_t[2] = 0;
+                actor_temps[bomb_index].g_t[5] = i32::from(angle);
+                pending_sound_ids.push(15); // LASERTRIP_ONWALL.
+                p.ammo[WEAPON as usize] = p.ammo[WEAPON as usize].saturating_sub(1);
+            } else if bomb >= 0 {
+                let _ = lists.deletesprite(bomb);
+            }
+        }
+    }
+    if p.kickback_pic == 16 {
+        p.kickback_pic = 0;
+        crate::weapons::checkavailweapon(p);
+        p.weapon_pos = -9;
+    } else {
+        p.kickback_pic += 1;
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TripbombTarget {
+    hitsect: i16,
+    hitwall: i16,
+    hitx: i32,
+    hity: i32,
+    hitz: i32,
+}
+
+fn tripbomb_target(
+    p: &Player,
+    lists: &SpriteLists,
+    sprites: &[SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
+) -> Option<TripbombTarget> {
+    let body = usize::try_from(p.sprite_i)
+        .ok()
+        .filter(|&index| index < sprites.len())?;
+    let sect = sprites[body].sectnum;
+    if sect < 0 || sect as usize >= sectors.len() {
+        return None;
+    }
+    let (sin, cos) = sincos_q14(i32::from(p.ang));
+    let zvel = (100 - i32::from(p.horiz) - i32::from(p.horizoff)) << 5;
+    let sec_walls: Vec<SectorWalls> = sectors
+        .iter()
+        .map(|sector| SectorWalls {
+            wallptr: sector.wallptr,
+            wallnum: sector.wallnum,
+        })
+        .collect();
+    let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+    let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+    let mut sprite_hits: Vec<SpriteHit> = sprites
+        .iter()
+        .map(|sprite| {
+            let meta = tile_meta
+                .get(sprite.picnum.max(0) as usize)
+                .copied()
+                .unwrap_or_default();
+            SpriteHit {
+                x: sprite.x,
+                y: sprite.y,
+                z: sprite.z,
+                sectnum: sprite.sectnum,
+                clipdist: 0,
+                cstat: sprite.cstat,
+                face_span: i32::from(meta.width) * i32::from(sprite.xrepeat),
+                face_height: (i32::from(meta.height) * i32::from(sprite.yrepeat)) << 2,
+            }
+        })
+        .collect();
+    sprite_hits[body].cstat &= !257;
+    let hit = hitscan_full(
+        p.posx,
+        p.posy,
+        p.posz,
+        sect,
+        cos,
+        sin,
+        zvel << 6,
+        CLIPMASK1,
+        &sec_walls,
+        &wall_xy,
+        &sprite_hits,
+        Some(&sec_z),
+    );
+    let hit_sector = sectors.get(hit.hitsect as usize)?;
+    if hit.hitsect < 0 || hit.hitsprite >= 0 || hit_sector.lotag > 2 || hit.hitwall < 0 {
+        return None;
+    }
+    let wall = walls.get(hit.hitwall as usize)?;
+    if wall.cstat & 16 != 0
+        || script_tile_is_bigforce(wall.overpicnum)
+        || (wall.nextsector >= 0
+            && sectors
+                .get(wall.nextsector as usize)
+                .is_none_or(|sector| sector.lotag > 2))
+        || (wall.nextsector < 0 && hit_sector.lotag > 2)
+    {
+        return None;
+    }
+    let radius_sq = i64::from(290_i32 * 290);
+    let dx = i64::from(hit.hitx.wrapping_sub(p.posx));
+    let dy = i64::from(hit.hity.wrapping_sub(p.posy));
+    if dx * dx + dy * dy >= radius_sq {
+        return None;
+    }
+    let mut sprite = lists.headspritesect[hit.hitsect as usize];
+    let tripbomb_tile = script
+        .and_then(|script| script.labels.get("TRIPBOMB"))
+        .filter(|label| !label.is_ptr)
+        .map_or(2566, |label| label.value as i16);
+    while sprite >= 0 {
+        let index = sprite as usize;
+        sprite = lists.nextspritesect[index];
+        let Some(candidate) = sprites.get(index) else {
+            continue;
+        };
+        let sx = i64::from(candidate.x.wrapping_sub(hit.hitx));
+        let sy = i64::from(candidate.y.wrapping_sub(hit.hity));
+        if candidate.picnum == tripbomb_tile
+            && candidate.z.abs_diff(hit.hitz) < (12 << 8) as u32
+            && sx * sx + sy * sy < radius_sq
+        {
+            return None;
+        }
+    }
+    Some(TripbombTarget {
+        hitsect: hit.hitsect,
+        hitwall: hit.hitwall,
+        hitx: hit.hitx,
+        hity: hit.hity,
+        hitz: hit.hitz,
+    })
+}
+
+fn script_tile_is_bigforce(tile: i16) -> bool {
+    tile == 230
+}
+
+fn spawn_devastator_projectile(
+    p: &Player,
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum_out: &mut Vec<i16>,
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
     actortype: &[u8],
     randomseed: &mut i32,
 ) {
-    if p.weapon_pos != 0 {
-        if p.weapon_pos == -9 {
-            if p.last_weapon >= 0 {
-                p.weapon_pos = 10;
-                p.last_weapon = -1;
-            } else {
-                p.weapon_pos = 10;
-            }
-        } else {
-            p.weapon_pos -= 1;
-        }
+    let Some(body_i) = (p.sprite_i >= 0)
+        .then_some(p.sprite_i as usize)
+        .filter(|&i| i < sprites.len())
+    else {
+        return;
+    };
+    let source = sprites[body_i];
+    let sect = source.sectnum;
+    if sect < 0 || sect as usize >= sectors.len() {
+        return;
     }
+    let k = lists.insertsprite(sect, crate::stat::STAT_PROJECTILE);
+    if k < 0 || k as usize >= sprites.len() {
+        if k >= 0 {
+            let _ = lists.deletesprite(k);
+        }
+        return;
+    }
+    let i = k as usize;
+    // Chocolate `shoot(pi, RPG)`: acquire within the 48-unit aim cone, then
+    // apply the Devastator-specific angle and vertical spread rolls.
+    let target = aim(
+        &source,
+        AUTO_AIM_ANGLE,
+        p.auto_aim == 2,
+        lists,
+        sprites,
+        sectors,
+        walls,
+        actortype,
+        Some(p),
+    );
+    let mut sa = i32::from(p.ang);
+    let mut zvel = if target >= 0 {
+        let target_u = target as usize;
+        let target_sprite = &sprites[target_u];
+        let target_height = tile_meta
+            .get(target_sprite.picnum.max(0) as usize)
+            .map_or(0, |meta| i32::from(meta.height));
+        let target_dz = (i32::from(target_sprite.xrepeat) * target_height * 2) + (8 << 8);
+        let target_dist = ldist(&source, target_sprite).max(1);
+        if target_sprite.picnum != 1880 {
+            sa = getangle(
+                target_sprite.x.wrapping_sub(p.posx),
+                target_sprite.y.wrapping_sub(p.posy),
+            );
+        }
+        ((target_sprite.z.wrapping_sub(p.posz + p.pyoff + (4 << 8)) - target_dz) * 644)
+            / target_dist
+    } else {
+        (100 - i32::from(p.horiz) - i32::from(p.horizoff)) * 81
+    };
+    sa += 16 - (krand_step(randomseed) & 31);
+    zvel += 256 - (krand_step(randomseed) & 511);
+    let muzzle_x = sincos_q14(sa + 860).0 / 448;
+    let muzzle_y = sincos_q14(sa + 348).0 / 448;
+    let base_x = p.posx + muzzle_x;
+    let base_y = p.posy + muzzle_y;
+    let base_z = p.posz + p.pyoff + (4 << 8);
+    let side_x = sincos_q14(sa).0;
+    let side_y = sincos_q14(sa + 1536).0;
+    let (x, y) = if p.hbomb_hold_delay != 0 {
+        (base_x - (side_x / 644), base_y - (side_y / 644))
+    } else {
+        (base_x + (side_x >> 8), base_y + (side_y >> 8))
+    };
+    let rpg_tile = script_tile_or(script, "RPG", RPG_PROJECTILE);
+    let (base_extra, temps) = script
+        .map(|image| crate::con::init_actor_temps_from_script(image, rpg_tile))
+        .unwrap_or_default();
+    // Chocolate EGS initializes `sprite[j].extra` from the projectile's
+    // CON strength, then `shoot()` adds TRAND&7 and quarters the result for
+    // Devastator shots. Keep the same order and preserve scripted strength.
+    let extra = base_extra.wrapping_add((krand_step(randomseed) & 7) as i16) >> 2;
+    sprites[i] = SpriteT {
+        x,
+        y,
+        z: base_z - (1 << 8),
+        ang: (sa & 2047) as i16,
+        sectnum: sect,
+        picnum: rpg_tile,
+        shade: -96,
+        xrepeat: 7,
+        yrepeat: 7,
+        xvel: 644,
+        zvel: zvel as i16,
+        owner: p.sprite_i,
+        cstat: 128,
+        clipdist: 4,
+        yvel: target,
+        extra,
+        ..Default::default()
+    };
+    if picnum_out.len() <= i {
+        picnum_out.resize(i + 1, 0);
+    }
+    picnum_out[i] = rpg_tile;
+    if let Some(image) = script {
+        sprites[i].hitag = crate::con::actor_header_hitag(image, rpg_tile) as i16;
+    }
+    if actor_temps.len() <= i {
+        actor_temps.resize_with(i + 1, ActorConTemps::default);
+    }
+    actor_temps[i] = temps;
+}
+
+pub fn process_weapons_shotgun(
+    p: &mut Player,
+    sync_bits: u32,
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &mut [WallT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
+    actortype: &[u8],
+    randomseed: &mut i32,
+    pending_sound_ids: &mut Vec<u16>,
+    pending_switch_hits: &mut Vec<(i16, Option<i16>, Option<i16>)>,
+) {
+    tick_weapon_pos(p);
 
     if p.curr_weapon != SHOTGUN_WEAPON {
         return;
@@ -1203,25 +2979,20 @@ pub fn process_weapons_shotgun(
         if fire && p.last_weapon == -1 && p.weapon_pos == 0 {
             if p.ammo.get(SHOTGUN_WEAPON as usize).copied().unwrap_or(0) > 0 {
                 p.kickback_pic = 1;
+            } else {
+                return;
             }
+        } else {
+            return;
         }
-        return;
     }
 
     p.kickback_pic += 1;
     if p.kickback_pic == 4 {
-        for _ in 0..pre_shot_pad() {
-            let _ = krand_step(randomseed);
-        }
         let body = p.sprite_i;
         if body >= 0 {
             let mut need_blood = true;
-            for shot in 0..7 {
-                if shot == 6 {
-                    for _ in 0..last_shot_pad() {
-                        let _ = krand_step(randomseed);
-                    }
-                }
+            for _ in 0..7 {
                 if shoot_shotgun_player(
                     lists,
                     sprites,
@@ -1235,7 +3006,10 @@ pub fn process_weapons_shotgun(
                     randomseed,
                     p,
                     body,
+                    SHOTGUN,
                     need_blood,
+                    pending_sound_ids,
+                    pending_switch_hits,
                 ) {
                     need_blood = false;
                 }
@@ -1244,6 +3018,9 @@ pub fn process_weapons_shotgun(
         if let Some(a) = p.ammo.get_mut(SHOTGUN_WEAPON as usize) {
             *a = a.saturating_sub(1);
         }
+        if p.ammo[SHOTGUN_WEAPON as usize] == 0 {
+            checkavailweapon(p);
+        }
     }
     match p.kickback_pic {
         17 | 20 => {
@@ -1251,7 +3028,7 @@ pub fn process_weapons_shotgun(
         }
         24 => {
             // Chocolate: `spawn(pi,SHOTGUNSHELL); ang+=1024; ssp; ang+=1024; kb++`.
-            let _ = spawn_shotgun_shell(
+            let _ = spawn_player_shell(
                 p,
                 lists,
                 sprites,
@@ -1260,6 +3037,9 @@ pub fn process_weapons_shotgun(
                 picnum_out,
                 actor_temps,
                 randomseed,
+                SHOTGUNSHELL,
+                6,
+                20,
             );
             p.kickback_pic += 1;
         }
@@ -1270,8 +3050,198 @@ pub fn process_weapons_shotgun(
     }
 }
 
+/// Native pistol firing loop. The Atomic pistol uses the same player hitscan
+/// path as the shotgun, but emits one SHOTSPARK1 and uses that actor's CON
+/// strength for its 6–11 damage roll.
+pub fn process_weapons_pistol(
+    p: &mut Player,
+    sync_bits: u32,
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &mut [WallT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
+    actortype: &[u8],
+    randomseed: &mut i32,
+    pending_sound_ids: &mut Vec<u16>,
+    pending_switch_hits: &mut Vec<(i16, Option<i16>, Option<i16>)>,
+) {
+    const PISTOL: i16 = 1;
+    tick_weapon_pos(p);
+    if p.curr_weapon != PISTOL {
+        return;
+    }
+    let fire = sync_bits & (1 << 2) != 0;
+    if p.kickback_pic == 0 {
+        if fire && p.last_weapon == -1 && p.weapon_pos == 0 && p.ammo[PISTOL as usize] > 0 {
+            // Chocolate consumes the round when input starts the kickback,
+            // then executes the frame-1 shot in the same processinput tic.
+            p.kickback_pic = 1;
+            p.ammo[PISTOL as usize] -= 1;
+        } else {
+            return;
+        }
+    }
+    if p.kickback_pic == 1 {
+        if p.sprite_i >= 0 {
+            let _ = shoot_shotgun_player(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                picnum_out,
+                actor_temps,
+                tile_meta,
+                script,
+                actortype,
+                randomseed,
+                p,
+                p.sprite_i,
+                SHOTSPARK1,
+                true,
+                pending_sound_ids,
+                pending_switch_hits,
+            );
+        }
+        if let Some(sound_id) = script
+            .and_then(|image| image.labels.get("PISTOL_FIRE"))
+            .and_then(|label| u16::try_from(label.value).ok())
+        {
+            pending_sound_ids.push(sound_id);
+        }
+    } else if p.kickback_pic == 2 {
+        let _ = spawn_player_shell(
+            p,
+            lists,
+            sprites,
+            sectors,
+            walls,
+            picnum_out,
+            actor_temps,
+            randomseed,
+            SHELL,
+            3,
+            20,
+        );
+    }
+    p.kickback_pic += 1;
+    if p.kickback_pic >= 5 {
+        if p.ammo[PISTOL as usize] == 0 || p.ammo[PISTOL as usize] % 12 != 0 {
+            p.kickback_pic = 0;
+            checkavailweapon(p);
+        } else {
+            let sound = match p.kickback_pic {
+                5 => Some("EJECT_CLIP"),
+                8 => Some("INSERT_CLIP"),
+                _ => None,
+            };
+            if let Some(sound_id) = sound
+                .and_then(|name| script.and_then(|image| image.labels.get(name)))
+                .and_then(|label| u16::try_from(label.value).ok())
+            {
+                pending_sound_ids.push(sound_id);
+            }
+            if p.kickback_pic == 27 {
+                p.kickback_pic = 0;
+                checkavailweapon(p);
+            }
+        }
+    }
+}
+
+/// Atomic chaingun's repeating hitscan cadence (Chocolate `processinput`).
+pub fn process_weapons_chaingun(
+    p: &mut Player,
+    sync_bits: u32,
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &mut [WallT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
+    actortype: &[u8],
+    randomseed: &mut i32,
+    pending_sound_ids: &mut Vec<u16>,
+    pending_switch_hits: &mut Vec<(i16, Option<i16>, Option<i16>)>,
+) {
+    const WEAPON: i16 = 3;
+    tick_weapon_pos(p);
+    if p.curr_weapon != WEAPON {
+        return;
+    }
+
+    let fire = sync_bits & (1 << 2) != 0;
+    if p.kickback_pic == 0 {
+        if fire && p.last_weapon == -1 && p.weapon_pos == 0 && p.ammo[WEAPON as usize] > 0 {
+            p.kickback_pic = 1;
+        } else {
+            return;
+        }
+    }
+
+    p.kickback_pic += 1;
+    if p.kickback_pic <= 12 {
+        if p.kickback_pic % 3 == 0 {
+            p.ammo[WEAPON as usize] = p.ammo[WEAPON as usize].saturating_sub(1);
+            if p.sprite_i >= 0 {
+                let _ = spawn_player_shell(
+                    p,
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    picnum_out,
+                    actor_temps,
+                    randomseed,
+                    SHELL,
+                    6,
+                    52,
+                );
+            }
+            if let Some(sound_id) = script
+                .and_then(|image| image.labels.get("CHAINGUN_FIRE"))
+                .and_then(|label| u16::try_from(label.value).ok())
+            {
+                pending_sound_ids.push(sound_id);
+            }
+            if p.sprite_i >= 0 {
+                let _ = shoot_shotgun_player(
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    picnum_out,
+                    actor_temps,
+                    tile_meta,
+                    script,
+                    actortype,
+                    randomseed,
+                    p,
+                    p.sprite_i,
+                    CHAINGUN,
+                    false,
+                    pending_sound_ids,
+                    pending_switch_hits,
+                );
+            }
+            if p.ammo[WEAPON as usize] == 0 {
+                checkavailweapon(p);
+            }
+        }
+    } else {
+        // Chocolate loops back to frame 1 while fire remains held; otherwise
+        // it clears the kickback state. The next bullet fires after two tics.
+        p.kickback_pic = if fire { 1 } else { 0 };
+    }
+}
+
 /// Chocolate `spawn(player, SHOTGUNSHELL)` + immediate `ssp` (kickback_pic == 24).
-fn spawn_shotgun_shell(
+fn spawn_player_shell(
     p: &Player,
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
@@ -1280,6 +3250,9 @@ fn spawn_shotgun_shell(
     picnum_out: &mut Vec<i16>,
     actor_temps: &mut Vec<ActorConTemps>,
     randomseed: &mut i32,
+    shell_tile: i16,
+    shell_height: i32,
+    shell_xvel: i16,
 ) -> i16 {
     use room_build_engine::geom::{SectorWalls, WallXY, clipmove_xy};
     use room_build_engine::helpers::sincos_q14;
@@ -1294,7 +3267,8 @@ fn spawn_shotgun_shell(
     let a = i32::from(p.ang) - (krand_step(randomseed) & 63) + 8;
     let t1 = (krand_step(randomseed) & 1) as i32;
     let zvel = -(krand_step(randomseed) & 255) as i16;
-    let z = (6 << 8) + p.pyoff + p.posz - ((i32::from(p.horizoff) + i32::from(p.horiz) - 100) << 4);
+    let z = (shell_height << 8) + p.pyoff + p.posz
+        - ((i32::from(p.horizoff) + i32::from(p.horiz) - 100) << 4);
     // Chocolate: x += sintable[(a+512)&2047]>>7; y += sintable[a&2047]>>7
     let (sin_a, cos_a) = sincos_q14(a);
     let x = sprites[bu].x + (cos_a >> 7);
@@ -1316,11 +3290,11 @@ fn spawn_shotgun_shell(
         z,
         ang,
         sectnum: sect,
-        picnum: SHOTGUNSHELL,
+        picnum: shell_tile,
         shade: -8,
         xrepeat: 4,
         yrepeat: 4,
-        xvel: 20,
+        xvel: shell_xvel,
         zvel,
         owner: body,
         ..Default::default()
@@ -1328,7 +3302,7 @@ fn spawn_shotgun_shell(
     if picnum_out.len() <= iu {
         picnum_out.resize(iu + 1, 0);
     }
-    picnum_out[iu] = SHOTGUNSHELL;
+    picnum_out[iu] = shell_tile;
     if actor_temps.len() <= iu {
         actor_temps.resize_with(iu + 1, ActorConTemps::default);
     }
@@ -1351,4 +3325,62 @@ fn spawn_shotgun_shell(
     }
     sprites[iu].ang = ((i32::from(sprites[iu].ang) + 1024) & 2047) as i16;
     i
+}
+
+#[cfg(test)]
+mod knee_weapon_tests {
+    use super::process_weapons_knee;
+    use crate::con::ActorConTemps;
+    use crate::player::Player;
+    use room_build_engine::types::{SectorT, SpriteT, WallT};
+
+    #[test]
+    fn knee_weapon_hits_on_tic_seven_and_repeats_at_fourteen() {
+        let mut player = Player {
+            curr_weapon: 0,
+            last_weapon: -1,
+            weapon_pos: 0,
+            ..Player::default()
+        };
+        let mut sprites = Vec::<SpriteT>::new();
+        let sectors = Vec::<SectorT>::new();
+        let walls = Vec::<WallT>::new();
+        let mut temps = Vec::<ActorConTemps>::new();
+        let mut randomseed = 17;
+        let input = 1 << 2;
+        for tic in 1..=7 {
+            let hit = process_weapons_knee(
+                &mut player,
+                input,
+                &mut sprites,
+                &sectors,
+                &walls,
+                &mut temps,
+                &[],
+                &[],
+                None,
+                &mut randomseed,
+            );
+            assert!(hit.is_none());
+            assert_eq!(player.kickback_pic, tic);
+        }
+        for tic in 8..=14 {
+            process_weapons_knee(
+                &mut player,
+                input,
+                &mut sprites,
+                &sectors,
+                &walls,
+                &mut temps,
+                &[],
+                &[],
+                None,
+                &mut randomseed,
+            );
+            if tic < 14 {
+                assert_eq!(player.kickback_pic, tic);
+            }
+        }
+        assert!((1..=4).contains(&player.kickback_pic));
+    }
 }

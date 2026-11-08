@@ -33,7 +33,7 @@ impl BuildWorld {
         if sect < 0 || sect >= self.numsectors || !inside(posx, posy, sect, &sectors, &walls) {
             crate::geom::updatesector(posx, posy, &mut sect, &sectors, &walls);
         }
-        let visible = portal_flood(self, sect);
+        let visible = portal_flood(self, sect, posx, posy);
         BuildView {
             posx,
             posy,
@@ -46,7 +46,7 @@ impl BuildWorld {
     }
 }
 
-fn portal_flood(world: &BuildWorld, start: i16) -> Vec<i16> {
+fn portal_flood(world: &BuildWorld, start: i16, view_x: i32, view_y: i32) -> Vec<i16> {
     if start < 0 || start >= world.numsectors {
         return Vec::new();
     }
@@ -69,7 +69,32 @@ fn portal_flood(world: &BuildWorld, start: i16) -> Vec<i16> {
             .min(world.walls.len());
         for w in &world.walls[start_w..end] {
             let ns = w.nextsector;
-            if ns >= 0 && (ns as usize) < world.sectors.len() && !visited[ns as usize] {
+            let Some(next) = usize::try_from(w.point2)
+                .ok()
+                .and_then(|point2| world.walls.get(point2))
+            else {
+                continue;
+            };
+            // Chocolate `scansector` treats cstat bit 5 as a one-way masked
+            // wall, and only pushes portals within its front-facing cross-
+            // product bounds. Preserve the C int32 wrapping at the cross test.
+            let x1 = w.x.wrapping_sub(view_x);
+            let y1 = w.y.wrapping_sub(view_y);
+            let x2 = next.x.wrapping_sub(view_x);
+            let y2 = next.y.wrapping_sub(view_y);
+            let cross = x1.wrapping_mul(y2).wrapping_sub(x2.wrapping_mul(y1));
+            let within_portal_angle = (cross as u32).wrapping_add(262_144) < 524_288;
+            let wall_dx = i128::from(next.x) - i128::from(w.x);
+            let wall_dy = i128::from(next.y) - i128::from(w.y);
+            let cross_magnitude = (i128::from(cross) * i128::from(cross)) >> 5;
+            let within_portal_width = cross_magnitude <= wall_dx * wall_dx + wall_dy * wall_dy;
+            if ns >= 0
+                && w.cstat & 32 == 0
+                && within_portal_angle
+                && within_portal_width
+                && (ns as usize) < world.sectors.len()
+                && !visited[ns as usize]
+            {
                 visited[ns as usize] = true;
                 if qt < queue.len() {
                     queue[qt] = ns;

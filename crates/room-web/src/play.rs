@@ -247,7 +247,7 @@ impl PlaySession {
         let builder = mount_embedded_engine(VfsBuilder::new()).map_err(|e| e.to_string())?;
         // Duke Nukem 3D GRP → converted UDMF PWAD (room-build).
         let mut builder = if room_build::is_grp(iwad) {
-            let wad = room_build::grp_to_wad(iwad).map_err(|e| format!("GRP: {e}"))?;
+            let wad = room_build::export::grp_to_wad(iwad).map_err(|e| format!("GRP: {e}"))?;
             builder.mount_memory("duke3d.wad", Bytes::from(wad))
         } else {
             builder.mount_memory("doom1.wad", Bytes::copy_from_slice(iwad))

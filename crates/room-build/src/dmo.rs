@@ -7,6 +7,16 @@
 
 use crate::error::BuildError;
 
+/// Maximum size accepted for a newly encoded Atomic demo.
+const MAX_ATOMIC_DMO_BYTES: usize = 64 * 1024 * 1024;
+/// Atomic Edition 1.5 demo revision (`BYTEVERSION_117`).
+const ATOMIC_15_DEMO_VERSION: u8 = 117;
+/// Original player input size from `duke3d.h` (`#pragma pack(1)`).
+const DUKE_INPUT_BYTES: usize = 10;
+/// Atomic 1.5 stores one aim-mode byte and ten weapon-choice bytes per player
+/// between the fixed header and compressed tic array.
+const ATOMIC_15_PLAYER_HEADER_BYTES: usize = 11;
+
 /// One player's input for one Duke tic (1.3D / 1.5 layout).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DmoInput {
@@ -31,18 +41,29 @@ pub struct DmoDemo {
     pub level: u8,
     /// Skill 0..=4.
     pub skill: u8,
+    /// Atomic `ud.coop` game mode (0 = DukeMatch, 1 = co-op).
+    pub coop: u8,
+    /// Atomic friendly-fire option (`ud.ffire`).
+    pub friendly_fire: u8,
     /// Players in the recording (1..=8).
     pub players: u8,
-    /// Player-0 inputs. Empty when the body is still LZW-compressed.
+    /// Player-0 inputs, retained as a compatibility view.
     pub tics: Vec<DmoInput>,
+    /// Inputs for each player, ordered by seat. `tics` is player zero's
+    /// compatibility view.
+    pub player_tics: Vec<Vec<DmoInput>>,
+    /// Atomic per-player aim mode from the v117 header, when present.
+    pub aim_modes: Vec<u8>,
+    /// Atomic per-player ten-slot weapon preference table, when present.
+    pub weapon_choices: Vec<[u8; 10]>,
 }
 
 impl DmoDemo {
-    /// Room map lump (`E1M1` …).
+    /// Room map lump (`E1L1` …).
     #[must_use]
     pub fn map_name(&self) -> String {
         format!(
-            "E{}M{}",
+            "E{}L{}",
             self.volume.saturating_add(1),
             self.level.saturating_add(1)
         )
@@ -53,55 +74,212 @@ impl DmoDemo {
         if bytes.len() < 9 {
             return Err(BuildError::Truncated("DMO"));
         }
-        let (volume, level, skill, players, body) =
+        let (volume, level, skill, coop, friendly_fire, players, aim_modes, weapon_choices, body) =
             if bytes.len() >= 0x2A2 && matches!(bytes[4], 116 | 117) {
-                let players = u16::from_le_bytes([bytes[0x0A], bytes[0x0B]]).clamp(1, 16) as u8;
+                let player_count = u16::from_le_bytes([bytes[0x0A], bytes[0x0B]]);
+                if !(1..=8).contains(&player_count) {
+                    return Err(BuildError::Invalid("DMO player count"));
+                }
+                let players = player_count as u8;
                 let volume = bytes[5];
                 let level = bytes[6];
                 let skill = bytes[7];
-                let start = 0x2A2 + usize::from(players);
+                let player_header = usize::from(players)
+                    .checked_mul(ATOMIC_15_PLAYER_HEADER_BYTES)
+                    .ok_or(BuildError::Invalid("DMO player header length"))?;
+                let start = 0x2A2usize
+                    .checked_add(player_header)
+                    .ok_or(BuildError::Invalid("DMO player header length"))?;
+                if bytes.len() < start {
+                    return Err(BuildError::Truncated("DMO player header"));
+                }
                 let body = bytes.get(start..).unwrap_or(&[]);
-                (volume, level, skill, players.max(1), body)
+                let mut aim_modes = Vec::with_capacity(usize::from(players));
+                let mut weapon_choices = Vec::with_capacity(usize::from(players));
+                for seat in 0..usize::from(players) {
+                    let offset = 0x2A2 + seat * ATOMIC_15_PLAYER_HEADER_BYTES;
+                    aim_modes.push(bytes[offset]);
+                    let mut choices = [0u8; 10];
+                    choices.copy_from_slice(&bytes[offset + 1..offset + 11]);
+                    weapon_choices.push(choices);
+                }
+                (
+                    volume,
+                    level,
+                    skill,
+                    bytes[8],
+                    bytes[9],
+                    players.max(1),
+                    aim_modes,
+                    weapon_choices,
+                    body,
+                )
             } else if bytes.len() >= 24 && bytes[4] <= 3 {
                 let players = u16::from_le_bytes([bytes[8], bytes[9]]).clamp(1, 8) as u8;
-                (bytes[4], bytes[5], bytes[6], players.max(1), &bytes[24..])
+                (
+                    bytes[4],
+                    bytes[5],
+                    bytes[6],
+                    0,
+                    0,
+                    players.max(1),
+                    Vec::new(),
+                    Vec::new(),
+                    &bytes[24..],
+                )
             } else {
                 let players = u16::from_le_bytes([bytes[7], bytes[8]]).clamp(1, 8) as u8;
-                (bytes[4], bytes[5], bytes[6], players.max(1), &bytes[9..])
+                (
+                    bytes[4],
+                    bytes[5],
+                    bytes[6],
+                    0,
+                    0,
+                    players.max(1),
+                    Vec::new(),
+                    Vec::new(),
+                    &bytes[9..],
+                )
             };
         if volume > 3 || level > 15 {
             return Err(BuildError::Invalid("DMO map"));
         }
-        let tics = parse_lzw_tics(body, players).unwrap_or_else(|| parse_raw_tics(body, players));
+        let player_tics =
+            parse_lzw_tics(body, players).unwrap_or_else(|| parse_raw_tics(body, players));
+        let tics = player_tics.first().cloned().unwrap_or_default();
         Ok(Self {
             volume,
             level,
             skill,
+            coop,
+            friendly_fire,
             players,
             tics,
+            player_tics,
+            aim_modes,
+            weapon_choices,
         })
+    }
+
+    /// Encode an Atomic Edition 1.5 `.DMO` stream for one or more seats.
+    ///
+    /// The header follows Chocolate `opendemowrite`'s v117 layout. Input
+    /// records use Build's 10-byte packed `input` shape; their bytes are delta
+    /// encoded as `dfwrite` expects, then wrapped in raw Ken LZW chunks
+    /// (`strtot == 0`, accepted by the reference `uncompress`). The Atomic
+    /// CRC-bearing v119 header is deliberately not emitted.
+    ///
+    /// For multiple players, `player_tics` must contain one equally sized
+    /// stream per player. Missing aim-mode and weapon-choice entries are
+    /// written as zero defaults.
+    pub fn encode_atomic_15(&self, monsters_off: bool) -> Result<Vec<u8>, BuildError> {
+        if self.volume > 3
+            || self.level > 15
+            || self.skill > 4
+            || self.coop > 2
+            || self.friendly_fire > 1
+            || self.players == 0
+            || self.players > 8
+        {
+            return Err(BuildError::Invalid("Atomic 1.5 DMO metadata"));
+        }
+        let streams = if self.player_tics.len() == usize::from(self.players) {
+            self.player_tics.as_slice()
+        } else if self.players == 1 && self.player_tics.is_empty() {
+            std::slice::from_ref(&self.tics)
+        } else {
+            return Err(BuildError::Invalid("Atomic 1.5 DMO player streams"));
+        };
+        let tic_count = streams.first().map_or(0, Vec::len);
+        if streams.iter().any(|stream| stream.len() != tic_count) {
+            return Err(BuildError::Invalid("Atomic 1.5 DMO player tic count"));
+        }
+        let record_size = DUKE_INPUT_BYTES
+            .checked_mul(usize::from(self.players))
+            .ok_or(BuildError::Invalid("Atomic 1.5 DMO record size"))?;
+        let record_bytes = tic_count
+            .checked_mul(record_size)
+            .ok_or(BuildError::Invalid("Atomic 1.5 DMO length"))?;
+        let max_tics = i32::MAX as usize;
+        if tic_count > max_tics {
+            return Err(BuildError::Invalid("Atomic 1.5 DMO tic count"));
+        }
+
+        let player_header = usize::from(self.players)
+            .checked_mul(ATOMIC_15_PLAYER_HEADER_BYTES)
+            .ok_or(BuildError::Invalid("Atomic 1.5 DMO player header"))?;
+        let mut out = vec![0u8; 0x2A2 + player_header];
+        out[0..4].copy_from_slice(&(tic_count as i32).to_le_bytes());
+        out[4] = ATOMIC_15_DEMO_VERSION;
+        out[5] = self.volume;
+        out[6] = self.level;
+        out[7] = self.skill;
+        out[8] = self.coop; // `ud.m_coop`
+        out[9] = self.friendly_fire; // `ud.m_ffire`
+        out[10..12].copy_from_slice(&u16::from(self.players).to_le_bytes()); // `ud.multimode`
+        out[12..14].copy_from_slice(&u16::from(monsters_off).to_le_bytes());
+        if (!self.aim_modes.is_empty() && self.aim_modes.len() != usize::from(self.players))
+            || (!self.weapon_choices.is_empty()
+                && self.weapon_choices.len() != usize::from(self.players))
+        {
+            return Err(BuildError::Invalid("Atomic 1.5 DMO player metadata"));
+        }
+        for seat in 0..usize::from(self.players) {
+            let offset = 0x2A2 + seat * ATOMIC_15_PLAYER_HEADER_BYTES;
+            out[offset] = self.aim_modes.get(seat).copied().unwrap_or_default();
+            if let Some(choices) = self.weapon_choices.get(seat) {
+                out[offset + 1..offset + 11].copy_from_slice(choices);
+            }
+        }
+
+        if record_bytes == 0 {
+            return Ok(out);
+        }
+        let mut raw = Vec::with_capacity(record_bytes);
+        for tic in 0..tic_count {
+            for stream in streams {
+                let input = stream[tic];
+                raw.extend_from_slice(&[
+                    input.turn as u8,
+                    input.horizon as u8,
+                    input.forward as u8,
+                    (input.forward >> 8) as u8,
+                    input.strafe as u8,
+                    (input.strafe >> 8) as u8,
+                    input.bits as u8,
+                    (input.bits >> 8) as u8,
+                    (input.bits >> 16) as u8,
+                    (input.bits >> 24) as u8,
+                ]);
+            }
+        }
+        let blocks = kdfwrite_array_raw(&raw, record_size, tic_count)
+            .ok_or(BuildError::Invalid("Atomic 1.5 DMO chunk encoding"))?;
+        out.extend_from_slice(&blocks);
+        if out.len() > MAX_ATOMIC_DMO_BYTES {
+            return Err(BuildError::Invalid("Atomic 1.5 DMO exceeds size limit"));
+        }
+        Ok(out)
     }
 }
 
 /// Uncompressed 1.3D records: 10 bytes per player per tic.
-fn parse_raw_tics(body: &[u8], players: u8) -> Vec<DmoInput> {
+fn parse_raw_tics(body: &[u8], players: u8) -> Vec<Vec<DmoInput>> {
     let stride = 10 * usize::from(players.max(1));
     if stride == 0 || body.len() < 10 || body.len() % stride != 0 {
-        return Vec::new();
+        return vec![Vec::new(); usize::from(players.max(1))];
     }
-    body.chunks_exact(stride)
-        .map(|chunk| DmoInput {
-            turn: chunk[0] as i8,
-            horizon: chunk[1] as i8,
-            forward: i16::from_le_bytes([chunk[2], chunk[3]]),
-            strafe: i16::from_le_bytes([chunk[4], chunk[5]]),
-            bits: u32::from_le_bytes([chunk[6], chunk[7], chunk[8], chunk[9]]),
-        })
-        .collect()
+    let mut streams = vec![Vec::new(); usize::from(players.max(1))];
+    for record in body.chunks_exact(stride) {
+        for (seat, bytes) in record.chunks_exact(DUKE_INPUT_BYTES).enumerate() {
+            streams[seat].push(decode_dmo_input(bytes));
+        }
+    }
+    streams
 }
 
 /// Ken `kdfread`: `u16` blob length, LZW payload, then wrapping byte deltas.
-fn parse_lzw_tics(body: &[u8], players: u8) -> Option<Vec<DmoInput>> {
+fn parse_lzw_tics(body: &[u8], players: u8) -> Option<Vec<Vec<DmoInput>>> {
     let stride = 10 * usize::from(players.max(1));
     if body.len() < 6 {
         return None;
@@ -139,17 +317,23 @@ fn parse_lzw_tics(body: &[u8], players: u8) -> Option<Vec<DmoInput>> {
             tail[j] = tail[j].wrapping_add(prev[j]);
         }
     }
-    Some(
-        raw.chunks_exact(stride)
-            .map(|chunk| DmoInput {
-                turn: chunk[0] as i8,
-                horizon: chunk[1] as i8,
-                forward: i16::from_le_bytes([chunk[2], chunk[3]]),
-                strafe: i16::from_le_bytes([chunk[4], chunk[5]]),
-                bits: u32::from_le_bytes([chunk[6], chunk[7], chunk[8], chunk[9]]),
-            })
-            .collect(),
-    )
+    let mut streams = vec![Vec::with_capacity(n); usize::from(players.max(1))];
+    for record in raw.chunks_exact(stride) {
+        for (seat, bytes) in record.chunks_exact(DUKE_INPUT_BYTES).enumerate() {
+            streams[seat].push(decode_dmo_input(bytes));
+        }
+    }
+    Some(streams)
+}
+
+fn decode_dmo_input(bytes: &[u8]) -> DmoInput {
+    DmoInput {
+        turn: bytes[0] as i8,
+        horizon: bytes[1] as i8,
+        forward: i16::from_le_bytes([bytes[2], bytes[3]]),
+        strafe: i16::from_le_bytes([bytes[4], bytes[5]]),
+        bits: u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]),
+    }
 }
 
 /// One `kdfread(..., dasizeof, 1)` record (its own LZW blob).
@@ -185,6 +369,51 @@ pub(crate) fn kdfread_blob(src: &[u8], pos: &mut usize) -> Option<Vec<u8>> {
     Some(chunk)
 }
 
+/// Read one complete `kdfread` array, consuming every compressed block and
+/// reconstructing Build's element-wise byte deltas.
+pub(crate) fn kdfread_array(
+    src: &[u8],
+    pos: &mut usize,
+    element_size: usize,
+    count: usize,
+) -> Option<Vec<u8>> {
+    if element_size == 0 {
+        return None;
+    }
+    let total = element_size.checked_mul(count)?;
+    if total == 0 {
+        return Some(Vec::new());
+    }
+    let mut out = Vec::with_capacity(total);
+    while out.len() < total {
+        if pos.checked_add(2)? > src.len() {
+            return None;
+        }
+        let compressed_len = usize::from(u16::from_le_bytes([src[*pos], src[*pos + 1]]));
+        *pos += 2;
+        let end = pos.checked_add(compressed_len)?;
+        let compressed = src.get(*pos..end)?;
+        let deltas = ken_uncompress(compressed)?;
+        if deltas.is_empty() || deltas.len() % element_size != 0 {
+            return None;
+        }
+        let needed = total - out.len();
+        if deltas.len() > needed {
+            return None;
+        }
+        for delta in deltas {
+            let value = if out.len() < element_size {
+                delta
+            } else {
+                delta.wrapping_add(out[out.len() - element_size])
+            };
+            out.push(value);
+        }
+        *pos = end;
+    }
+    Some(out)
+}
+
 /// Advance past one Ken `kdfread` blob without keeping the payload.
 pub(crate) fn kdfskip_one(src: &[u8], pos: &mut usize) -> bool {
     if *pos + 2 > src.len() {
@@ -197,6 +426,69 @@ pub(crate) fn kdfskip_one(src: &[u8], pos: &mut usize) -> bool {
     }
     *pos += leng;
     true
+}
+
+/// Encode the raw-block form accepted by Chocolate's `uncompress` (`strtot=0`).
+/// The caller supplies bytes that are already delta-coded for `dfread`.
+fn kdfwrite_raw_blob(data: &[u8], out: &mut Vec<u8>) -> Option<()> {
+    let encoded_len = data.len().checked_add(4)?;
+    let encoded_len = u16::try_from(encoded_len).ok()?;
+    let block_len = usize::from(encoded_len);
+    out.extend_from_slice(&encoded_len.to_le_bytes());
+    out.extend_from_slice(&(data.len() as u16).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(data);
+    debug_assert_eq!(block_len, data.len() + 4);
+    Some(())
+}
+
+/// Encode Build's `dfwrite` byte-delta array using valid uncompressed Ken LZW
+/// blocks. This is larger than Chocolate's compressed output, but has identical
+/// `dfread` semantics and avoids introducing a second codec implementation.
+///
+/// `element_size` is the record stride passed to `dfwrite`; zero-sized records
+/// and payloads that cannot fit the format's 16-bit block lengths are rejected.
+pub(crate) fn kdfwrite_array_raw(
+    data: &[u8],
+    element_size: usize,
+    count: usize,
+) -> Option<Vec<u8>> {
+    const LZW_SIZE: usize = 16_384;
+    if element_size == 0 {
+        return None;
+    }
+    let total = element_size.checked_mul(count)?;
+    if data.len() != total {
+        return None;
+    }
+    if total == 0 {
+        return Some(Vec::new());
+    }
+    let stride = if element_size > LZW_SIZE {
+        1
+    } else {
+        element_size
+    };
+    let records = total / stride;
+    let mut deltas = Vec::with_capacity(total);
+    deltas.extend_from_slice(&data[..stride]);
+    for i in 1..records {
+        let current = &data[i * stride..(i + 1) * stride];
+        let previous = &data[(i - 1) * stride..i * stride];
+        deltas.extend(
+            current
+                .iter()
+                .zip(previous)
+                .map(|(a, b)| a.wrapping_sub(*b)),
+        );
+    }
+
+    let records_per_block = (LZW_SIZE / stride).max(1);
+    let mut out = Vec::new();
+    for block in deltas.chunks(records_per_block * stride) {
+        kdfwrite_raw_blob(block, &mut out)?;
+    }
+    Some(out)
 }
 
 /// Stored-uncompressed Ken blob (strtot = 0) for tests and tiny headers.

@@ -1,8 +1,8 @@
 //! Wake sleeping actors — Chocolate `movefta` (STAT 2 → STAT 1).
 //!
 //! Finds the nearest player, accumulates `timetosleep`, and on `cansee`
-//! promotes the sprite to [`STAT_ACTOR`]. Barrel-style picnums go to
-//! [`STAT_STANDABLE`] (stat 6); those picnums are stubbed empty for now.
+//! promotes the sprite to [`STAT_ACTOR`]. Atomic barrels, cans, fire vases,
+//! wooden horses and tripbombs instead enter [`STAT_STANDABLE`] (stat 6).
 
 use room_build_engine::geom::{SectorZ, WallXY, cansee, updatesector};
 use room_build_engine::numeric::krand_step;
@@ -12,7 +12,67 @@ use room_build_engine::world::{MAXSPRITES, SpriteLists};
 use crate::badguy::badguy_pic;
 use crate::con::ActorConTemps;
 use crate::player::Player;
-use crate::stat::{STAT_ACTOR, STAT_DUMMY};
+use crate::stat::{STAT_ACTOR, STAT_DUMMY, STAT_STANDABLE};
+
+/// Chocolate's `SLEEPTIME` (`24 * 64`) assigned by successful actor wakeups.
+pub(crate) const SLEEPTIME: i16 = 24 * 64;
+
+// Atomic tile IDs from Chocolate Duke's `movefta` classification switch.
+const FTA_STANDABLE_PICS: &[i16] = &[
+    904,  // WOODENHORSE
+    1026, // HORSEONSIDE
+    1062, // RUBBERCAN
+    1227, // NUKEBARREL
+    1228, // NUKEBARRELDENTED
+    1229, // NUKEBARRELLEAKED
+    1232, // CANWITHSOMETHING
+    1238, // EXPLODINGBARREL
+    1240, // FIREBARREL
+    1390, // FIREVASE
+    2566, // TRIPBOMB
+    4580, // CANWITHSOMETHING2
+    4581, // CANWITHSOMETHING3
+    4582, // CANWITHSOMETHING4
+];
+
+/// Queue Chocolate `check_fta_sounds` cues when a regular enemy wakes.
+fn queue_wake_sounds(pic: i16, palette: u8, health: i16, temps: &mut ActorConTemps) {
+    if health <= 0 {
+        return;
+    }
+    let actor_sound = match pic {
+        1680 | 1681 | 1715 | 1725 | 1741 | 1742 | 1744 => Some(111), // PRED_RECOG
+        2120 | 2150 | 2160 | 2165 => Some(117),                      // CAPT_RECOG
+        2000 | 2045 => Some(121),                                    // PIG_RECOG
+        1880 => Some(126),                                           // RECO_RECOG
+        1960 => Some(131),                                           // DRON_RECOG
+        1920 | 1921 => Some(136),                                    // COMM_RECOG
+        2420 => Some(146),                                           // TURR_RECOG
+        1820 | 1821 => Some(141),                                    // OCTA_RECOG
+        2370 => Some(26),                                            // SLIM_RECOG
+        _ => None,
+    };
+    if let Some(sound) = actor_sound {
+        temps.pending_actor_sounds.push(sound);
+        return;
+    }
+    match pic {
+        2630 => temps.pending_global_sounds.push(97), // BOSS1_RECOG
+        2710 => temps
+            .pending_global_sounds
+            .push(if palette == 1 { 102 } else { 294 }),
+        2760 => temps
+            .pending_global_sounds
+            .push(if palette == 1 { 151 } else { 284 }),
+        4740 | 4741 => {
+            if palette == 1 {
+                temps.pending_global_sounds.push(342); // BOS4_RECOG
+            }
+            temps.pending_global_sounds.push(371); // BOSS4_FIRSTSEE
+        }
+        _ => {}
+    }
+}
 
 fn klabs(x: i32) -> i32 {
     if x == i32::MIN { i32::MIN } else { x.abs() }
@@ -61,16 +121,24 @@ pub fn movefta(
             continue;
         }
         let s = sprites[iu];
-        let (_pidx, x) = findplayer_dist(&s, players);
-        let p = match players.first() {
-            Some(p) if p.sprite_i >= 0 => p,
+        let (pidx, x) = findplayer_dist(&s, players);
+        let p = match players.get(pidx) {
+            Some(p)
+                if p.sprite_i >= 0
+                    && sprites
+                        .get(p.sprite_i as usize)
+                        .is_some_and(|body| body.extra > 0) =>
+            {
+                p
+            }
             _ => {
                 i = next;
                 continue;
             }
         };
 
-        // Living player: health lives on sprite.extra later; for now always awake-capable.
+        // Chocolate checks the selected player's live body sprite, not a stale
+        // cached player health field, before doing wake timers or shade updates.
         if x < 30_000 {
             if temps.len() <= iu {
                 temps.resize(iu + 1, ActorConTemps::default());
@@ -128,11 +196,32 @@ pub fn movefta(
                 };
                 if seen {
                     temps[iu].timetosleep = 0;
-                    let _ = lists.changespritestat(i, STAT_ACTOR);
+                    if FTA_STANDABLE_PICS.contains(&s.picnum) {
+                        if let Some(sector) = sectors.get(s.sectnum.max(0) as usize) {
+                            sprites[iu].shade = if sector.ceilingstat & 1 != 0 {
+                                sector.ceilingshade
+                            } else {
+                                sector.floorshade
+                            };
+                        }
+                        let _ = lists.changespritestat(i, STAT_STANDABLE);
+                    } else {
+                        queue_wake_sounds(s.picnum, s.pal, s.extra, &mut temps[iu]);
+                        let _ = lists.changespritestat(i, STAT_ACTOR);
+                    }
                 } else {
                     temps[iu].timetosleep = 0;
                 }
             }
+        }
+        if badguy_pic(s.picnum, actortype)
+            && let Some(sector) = sectors.get(s.sectnum.max(0) as usize)
+        {
+            sprites[iu].shade = if sector.ceilingstat & 1 != 0 {
+                sector.ceilingshade
+            } else {
+                sector.floorshade
+            };
         }
         i = next;
     }
@@ -199,6 +288,7 @@ mod tests {
             picnum: 2000,
             ..Default::default()
         };
+        sprites[1].extra = 100;
         let players = [Player {
             posx: 1100,
             posy: 1100,

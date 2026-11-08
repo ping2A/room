@@ -25,6 +25,9 @@ room-audio = { path = "../room-audio" }
 room-console = { path = "../room-console" }
 room-decorate = { path = "../room-decorate" }
 room-build = { path = "../room-build" }
+room-build-engine = { path = "../room-build-engine" }
+room-duke = { path = "../room-duke" }
+room-formats = { path = "../room-formats" }
 room-defs = { path = "../room-defs" }
 room-game = { path = "../room-game" }
 room-input = { path = "../room-input" }

@@ -109,6 +109,33 @@ impl CoopSocket {
     fn is_v2(&self) -> bool {
         matches!(self, Self::V2(_))
     }
+
+    pub fn send_duke_input(&mut self, tic: u32, input: room_duke::DukeInput) {
+        if let Self::V2(t) = self {
+            t.send_duke_tic_cmd(
+                tic,
+                room_proto::DukeSyncInput {
+                    avel: input.avel,
+                    horz: input.horz,
+                    fvel: input.fvel,
+                    svel: input.svel,
+                    bits: input.bits,
+                },
+            );
+        }
+    }
+
+    pub fn poll_duke_frames(&mut self, out: &mut Vec<room_proto::DukeSyncFrameMsg>) {
+        if let Self::V2(t) = self {
+            t.poll_duke_frames(out);
+        }
+    }
+
+    fn keepalive_v2(&mut self) {
+        if let Self::V2(t) = self {
+            t.keepalive();
+        }
+    }
 }
 
 /// Server tic period in milliseconds.
@@ -181,6 +208,10 @@ pub struct NetJoinConfig {
     pub map: String,
     /// Skill 1..=5.
     pub skill: u8,
+    /// Atomic Duke `ud.coop` mode from room welcome (0/1/2).
+    pub duke_game_mode: u8,
+    /// Atomic Duke friendly-fire setting from room welcome.
+    pub duke_friendly_fire: bool,
     /// Host RNG seed (seat 0); joiners take seed from lobby Welcome/Start.
     pub rng_seed: u32,
     /// Optional minted join ticket (v2); defaults to room id from the URL.
@@ -233,6 +264,69 @@ pub struct NetReady {
     pub fill_bots: bool,
     /// First bot seat from server `start`.
     pub bot_first_seat: u8,
+}
+
+/// Native Duke v2 input/frame channel. The server frame is authoritative and
+/// includes every seat's input in stable seat order.
+pub struct DukeNetPlay {
+    transport: CoopSocket,
+    pub peer_count: u8,
+    spectator: bool,
+    next_send_tic: u32,
+    frames: BTreeMap<u32, Vec<room_duke::DukeInput>>,
+}
+
+impl DukeNetPlay {
+    #[must_use]
+    pub fn from_ready(ready: NetReady) -> Self {
+        Self {
+            transport: ready.transport,
+            peer_count: ready.peer_count,
+            spectator: ready.spectator,
+            next_send_tic: 0,
+            frames: BTreeMap::new(),
+        }
+    }
+
+    pub fn submit(&mut self, input: room_duke::DukeInput) {
+        if !self.spectator {
+            self.transport.send_duke_input(self.next_send_tic, input);
+        }
+        self.next_send_tic = self.next_send_tic.wrapping_add(1);
+    }
+
+    pub fn keepalive(&mut self) {
+        self.transport.keepalive_v2();
+    }
+
+    pub fn take_frame(&mut self, tic: u32) -> Option<Vec<room_duke::DukeInput>> {
+        let mut incoming = Vec::new();
+        self.transport.poll_duke_frames(&mut incoming);
+        for frame in incoming {
+            let mut cmds = vec![room_duke::DukeInput::default(); usize::from(self.peer_count)];
+            let mut idx = 0;
+            for seat in 0..8u8 {
+                if frame.seat_mask & (1 << seat) == 0 {
+                    continue;
+                }
+                let Some(cmd) = frame.cmds.get(idx).copied() else {
+                    break;
+                };
+                idx += 1;
+                if let Some(slot) = cmds.get_mut(usize::from(seat)) {
+                    *slot = room_duke::DukeInput {
+                        avel: cmd.avel,
+                        horz: cmd.horz,
+                        fvel: cmd.fvel,
+                        svel: cmd.svel,
+                        bits: cmd.bits,
+                    };
+                }
+            }
+            self.frames.insert(frame.tic, cmds);
+        }
+        self.frames.remove(&tic)
+    }
 }
 
 /// Connecting / lobby phases before the sim starts.
@@ -372,7 +466,7 @@ impl NetLobby {
 
     /// Match settings after welcome (for map prepare).
     #[must_use]
-    pub fn prepare_opts(&self) -> Option<(String, u8, u32, u8, u8)> {
+    pub fn prepare_opts(&self) -> Option<(String, u8, u32, u8, u8, u8, bool)> {
         let seat = self.local?.0;
         Some((
             self.cfg.map.clone(),
@@ -380,6 +474,8 @@ impl NetLobby {
             self.cfg.rng_seed,
             self.cfg.players,
             seat,
+            self.cfg.duke_game_mode,
+            self.cfg.duke_friendly_fire,
         ))
     }
 
@@ -519,6 +615,8 @@ impl NetLobby {
                 self.cfg.map = w.room.map;
                 self.cfg.skill = w.room.skill;
                 self.cfg.players = w.room.max_players;
+                self.cfg.duke_game_mode = w.room.duke_game_mode;
+                self.cfg.duke_friendly_fire = w.room.duke_friendly_fire;
                 self.cfg.game_mod = w.room.game_mod.clone();
                 self.cfg.packs = w.room.packs.clone();
                 self.cfg.content = w.room.content.clone();

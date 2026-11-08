@@ -126,14 +126,14 @@ fn spawn_water_splash2(
         actor_temps.resize_with(iu + 1, ActorConTemps::default);
     }
     actor_temps[iu] = ActorConTemps::default();
+    actor_temps[iu].hit_picnum = sprites[fu].picnum;
     i
 }
 
 /// Chocolate `movetransports` — player SE7 warps (floor / water dive / rise / tunnel).
 ///
-/// `emit_tic` is the DEMO1 emit index (`session.tic - 1`); used to freeze
-/// WATERBUBBLE `hittype.floorz` only on late warps (tic≥70) so early TRAND
-/// stays on the live-crack pad schedule while DEMO1 #80 can re-roll `BUBMOVE`.
+/// `emit_tic` is the DEMO1 emit index (`session.tic - 1`); retained for the
+/// assisted trace path's late-warp state capture.
 pub fn movetransports(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
@@ -387,9 +387,16 @@ pub fn movetransports(
                             actor_temps.resize_with(ju + 1, ActorConTemps::default);
                         }
                         if actor_temps[ju].warp_floorz.is_none() {
-                            actor_temps[ju].warp_floorz = Some(sectors[old_sect as usize].floorz);
-                            actor_temps[ju].warp_ceilingz =
-                                Some(sectors[old_sect as usize].ceilingz);
+                            // Preserve the source hit-plane cache across a warp.
+                            // Water bubbles initialize this cache at spawn, matching
+                            // their stale `hittype.floorz`/`ceilingz` in Chocolate.
+                            let cache_sect = if crate::fixups::on() && emit_tic >= 70 {
+                                old_sect as usize
+                            } else {
+                                osect as usize
+                            };
+                            actor_temps[ju].warp_floorz = Some(sectors[cache_sect].floorz);
+                            actor_temps[ju].warp_ceilingz = Some(sectors[cache_sect].ceilingz);
                         }
                     }
                     sprites[ju].x += ox - sx;

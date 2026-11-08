@@ -188,6 +188,60 @@ impl CvarStore {
             CvarFlags::ARCHIVE,
         );
         self.register(
+            "duke_autoaim",
+            CvarType::Int,
+            CvarValue::Int(2),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
+            "duke_sound",
+            CvarType::Bool,
+            CvarValue::Bool(true),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
+            "duke_lockout",
+            CvarType::Bool,
+            CvarValue::Bool(false),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
+            "duke_music",
+            CvarType::Bool,
+            CvarValue::Bool(true),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
+            "duke_talk",
+            CvarType::Bool,
+            CvarValue::Bool(true),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
+            "duke_ambience",
+            CvarType::Bool,
+            CvarValue::Bool(true),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
+            "duke_reverse_stereo",
+            CvarType::Bool,
+            CvarValue::Bool(false),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
+            "duke_sfx_volume",
+            CvarType::Int,
+            CvarValue::Int(255),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
+            "duke_music_volume",
+            CvarType::Int,
+            CvarValue::Int(255),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
             "snd_menuvolume",
             CvarType::Float,
             CvarValue::Float(1.0),

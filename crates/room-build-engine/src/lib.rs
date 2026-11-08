@@ -27,8 +27,9 @@ pub use geom::{
     updatesector,
 };
 pub use helpers::{
-    approx_sincos_q14, dragpoint, getangle, install_radarang, install_sintable, lastwall, length2d,
-    radarang_from_tables_dat, rotatepoint, sectorofwall, sincos_q14, sintable_from_tables_dat,
+    approx_sincos_q14, britable_from_tables_dat, dragpoint, getangle, install_radarang,
+    install_sintable, lastwall, length2d, radarang_from_tables_dat, rotatepoint, sectorofwall,
+    sincos_q14, sintable_from_tables_dat,
 };
 pub use load::LoadError;
 pub use numeric::{

@@ -414,7 +414,7 @@ pub fn convert_grp_with_maps(
         }
     }
     for sky in skies {
-        match compose_sky(&tiles, sky, &sky_offsets(&con, sky)) {
+        match compose_sky(&tiles, sky, &duke_sky_offsets(&con, sky)) {
             Ok(lump) => {
                 w.add(&sky_name(sky), lump);
             }
@@ -638,7 +638,12 @@ fn sky_name(pic: i32) -> String {
 }
 
 /// Duke's per-sky tile offsets (`pskyoff`, eight slots around 360°).
-fn sky_offsets(con: &ConData, pic: i32) -> [i32; 8] {
+/// Duke Build sky tile offsets for the eight 45-degree parallax slots.
+///
+/// Shared by the UDMF exporter and native renderer so both paths compose the
+/// same Atomic sky layers from ART tiles.
+#[must_use]
+pub fn duke_sky_offsets(con: &ConData, pic: i32) -> [i32; 8] {
     let is = |name: &str| con.value(name) == Some(pic);
     if is("MOONSKY1") {
         [0, 2, 3, 0, 2, 0, 1, 0]
@@ -730,6 +735,15 @@ mod tests {
             out.extend_from_slice(body);
         }
         out
+    }
+
+    #[test]
+    fn atomic_sky_offsets_follow_the_named_base_tile() {
+        let defs = ConData::parse("define MOONSKY1 100\ndefine BIGORBIT1 200\ndefine LA 300");
+        assert_eq!(duke_sky_offsets(&defs, 100), [0, 2, 3, 0, 2, 0, 1, 0]);
+        assert_eq!(duke_sky_offsets(&defs, 200), [0, 0, 4, 0, 0, 1, 2, 3]);
+        assert_eq!(duke_sky_offsets(&defs, 300), [1, 2, 1, 3, 4, 0, 2, 3]);
+        assert_eq!(duke_sky_offsets(&defs, 400), [0; 8]);
     }
 
     #[test]

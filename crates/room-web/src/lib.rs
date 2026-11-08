@@ -64,7 +64,7 @@ mod browser {
     use room_game::GameRuntime;
     use room_nodebuild::apply_nodes;
     use room_render::{
-        Camera, CanvasGpu, GpuContext, LightMode, ModZonePass, PostChain, PostChainInputs,
+        Camera, Canvas, CanvasGpu, GpuContext, LightMode, ModZonePass, PostChain, PostChainInputs,
         RenderSettings, SceneLists, UnlitPass, ZoneDraw, build_scene_with_sky,
         build_scene_with_sky_ex_sized, build_zone_meshes,
     };
@@ -73,6 +73,8 @@ mod browser {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
     use web_sys::{HtmlCanvasElement, window};
+
+    const DUKE_RTS_SOUND_BASE: u32 = 0x1_0000;
 
     enum Mode {
         Demo {
@@ -85,10 +87,26 @@ mod browser {
             iwad: Vec<u8>,
             /// Map prepared after v2 welcome (before Ready / Start).
             prepared: Option<Box<PlaySession>>,
+            /// Native GRP session prepared before the Duke Ready barrier.
+            prepared_duke: Option<Box<room_duke::DukeSession>>,
+            prepared_duke_renderer: Option<Box<room_duke::DukeSoftRenderer>>,
             demo: Box<room_map::MapGeometry>,
             start_ms: f64,
         },
         Play(Box<PlaySession>),
+        NativeDuke {
+            session: Box<room_duke::DukeSession>,
+            renderer: Box<room_duke::DukeSoftRenderer>,
+            grp: Vec<Vec<u8>>,
+            audio: Option<crate::web_audio::WebAudio>,
+            backdrop: Box<room_map::MapGeometry>,
+            last_ms: f64,
+            tic_accum: f32,
+            network: Option<crate::netplay::DukeNetPlay>,
+            network_tic: u32,
+            campaign_map: String,
+            duke_music_track: Option<String>,
+        },
     }
 
     struct FrameState {
@@ -136,13 +154,97 @@ mod browser {
     type Shared = Rc<RefCell<FrameState>>;
     type RafCallback = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
 
+    #[derive(Clone, Copy)]
+    struct DukeAudioOptions {
+        sound: bool,
+        music: bool,
+        talk: bool,
+        lockout: bool,
+        ambience: bool,
+        reverse_stereo: bool,
+        sfx_volume: u8,
+        music_volume: u8,
+    }
+
+    impl Default for DukeAudioOptions {
+        fn default() -> Self {
+            Self {
+                sound: true,
+                music: true,
+                talk: true,
+                lockout: false,
+                ambience: true,
+                reverse_stereo: false,
+                sfx_volume: u8::MAX,
+                music_volume: u8::MAX,
+            }
+        }
+    }
+
+    struct BrowserDukeIncludes(Vec<(String, Vec<u8>)>);
+
+    impl room_duke::con::IncludeResolver for BrowserDukeIncludes {
+        fn read_include(&mut self, name: &str) -> Option<Vec<u8>> {
+            self.0
+                .iter()
+                .rev()
+                .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+                .map(|(_, bytes)| bytes.clone())
+        }
+    }
+
+    fn load_duke_grp_map(
+        grp_layers: &[Vec<u8>],
+        map: &str,
+        skill: u8,
+    ) -> Result<room_duke::DukeSession, String> {
+        let layer_refs: Vec<&[u8]> = grp_layers.iter().map(Vec::as_slice).collect();
+        let override_con = DUKE_CON.with(|script| script.borrow().clone());
+        let includes = DUKE_CON_INCLUDES.with(|files| files.borrow().clone());
+        let mut resolver = BrowserDukeIncludes(includes);
+        room_duke::session_from_grp_layers_with_con_and_includes(
+            &layer_refs,
+            map,
+            skill,
+            override_con.as_deref(),
+            Some(&mut resolver),
+        )
+    }
+
+    fn duke_grp_layers(base: &[u8]) -> Vec<Vec<u8>> {
+        let mut layers = vec![base.to_vec()];
+        DUKE_ADDON_GRPS.with(|addons| layers.extend(addons.borrow().iter().cloned()));
+        layers
+    }
+
     thread_local! {
         static APP: RefCell<Option<Shared>> = const { RefCell::new(None) };
         /// IWAD bytes received before GPU init finished.
         static PENDING_IWAD: RefCell<Option<(Vec<u8>, Option<String>)>> =
             const { RefCell::new(None) };
+        /// Native Duke standalone map received before GPU init finished.
+        static PENDING_DUKE_MAP: RefCell<Option<(Vec<u8>, Vec<u8>, u8)>> =
+            const { RefCell::new(None) };
         /// PWADs (`roomAddPwad`) mounted by the next single-player start.
         static PWADS: RefCell<Vec<(String, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
+        /// Native Duke root CON override and external includes for GRP sessions.
+        static DUKE_CON: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+        static DUKE_CON_INCLUDES: RefCell<Vec<(String, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
+        /// Native Duke add-on GRPs, in increasing override priority.
+        static DUKE_ADDON_GRPS: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+        /// Browser host settings corresponding to Duke's native F4 audio controls.
+        static DUKE_AUDIO_OPTIONS: Cell<DukeAudioOptions> = const {
+            Cell::new(DukeAudioOptions {
+                sound: true,
+                music: true,
+                talk: true,
+                lockout: false,
+                ambience: true,
+                reverse_stereo: false,
+                sfx_volume: u8::MAX,
+                music_volume: u8::MAX,
+            })
+        };
         /// Lobby pump timer id (`setInterval`) — rAF is throttled in background tabs.
         static LOBBY_INTERVAL: RefCell<Option<i32>> = const { RefCell::new(None) };
         /// Play lockstep pump — keeps TIC_CMD flowing when rAF is throttled.
@@ -332,6 +434,12 @@ mod browser {
                 web_sys::console::error_1(&e);
             }
         }
+        let pending_duke = PENDING_DUKE_MAP.with(|p| p.borrow_mut().take());
+        if let Some((grp, map, skill)) = pending_duke
+            && let Err(error) = begin_duke_user_map(&state, &grp, &map, skill)
+        {
+            web_sys::console::error_1(&error);
+        }
         if let Some(win) = window() {
             if let Ok(ev) = web_sys::Event::new("room-ready") {
                 let _ = win.dispatch_event(&ev);
@@ -345,6 +453,84 @@ mod browser {
     #[wasm_bindgen(js_name = roomAddPwad)]
     pub fn room_add_pwad(name: &str, data: &[u8]) {
         PWADS.with(|p| p.borrow_mut().push((name.to_owned(), data.to_vec())));
+    }
+
+    /// Override the root CON script used by browser native Duke sessions.
+    #[wasm_bindgen(js_name = roomSetDukeCon)]
+    pub fn room_set_duke_con(data: &[u8]) {
+        DUKE_CON.with(|script| *script.borrow_mut() = Some(data.to_vec()));
+    }
+
+    /// Add or replace an include file resolved by browser native Duke CON.
+    #[wasm_bindgen(js_name = roomAddDukeConInclude)]
+    pub fn room_add_duke_con_include(name: &str, data: &[u8]) {
+        DUKE_CON_INCLUDES.with(|includes| {
+            let mut includes = includes.borrow_mut();
+            if let Some((_, bytes)) = includes
+                .iter_mut()
+                .find(|(existing, _)| existing.eq_ignore_ascii_case(name))
+            {
+                *bytes = data.to_vec();
+            } else {
+                includes.push((name.to_owned(), data.to_vec()));
+            }
+        });
+    }
+
+    /// Append an Atomic-compatible add-on GRP for native single-player Duke.
+    /// Later archives override duplicate maps, tiles, sounds, and CON entries.
+    #[wasm_bindgen(js_name = roomAddDukeGrp)]
+    pub fn room_add_duke_grp(data: &[u8]) -> Result<(), JsValue> {
+        if !room_build::is_grp(data) {
+            return Err(JsValue::from_str("Duke add-on must be a KenSilverman GRP"));
+        }
+        DUKE_ADDON_GRPS.with(|addons| addons.borrow_mut().push(data.to_vec()));
+        Ok(())
+    }
+
+    /// Start a native Duke session from a GRP resource archive and standalone
+    /// Build `.MAP` bytes. Skill follows the 1..=5 Atomic user-facing range.
+    #[wasm_bindgen(js_name = roomStartDukeMap)]
+    pub fn room_start_duke_map(grp: &[u8], map: &[u8], skill: u8) -> Result<(), JsValue> {
+        let skill = skill.clamp(1, 5).saturating_sub(1);
+        let ready = APP.with(|app| app.borrow().clone());
+        let Some(state) = ready else {
+            PENDING_DUKE_MAP.with(|pending| {
+                *pending.borrow_mut() = Some((grp.to_vec(), map.to_vec(), skill));
+            });
+            set_status("Duke map queued — waiting for GPU…");
+            return Ok(());
+        };
+        begin_duke_user_map(&state, grp, map, skill)
+    }
+
+    fn begin_duke_user_map(
+        state: &Shared,
+        grp: &[u8],
+        map: &[u8],
+        skill: u8,
+    ) -> Result<(), JsValue> {
+        if !room_build::is_grp(grp) {
+            return Err(JsValue::from_str(
+                "native Duke user map requires a GRP resource archive",
+            ));
+        }
+        let grp_layers = duke_grp_layers(grp);
+        let layer_refs: Vec<&[u8]> = grp_layers.iter().map(Vec::as_slice).collect();
+        let override_con = DUKE_CON.with(|script| script.borrow().clone());
+        let includes = DUKE_CON_INCLUDES.with(|files| files.borrow().clone());
+        let mut resolver = BrowserDukeIncludes(includes);
+        let session = room_duke::session_from_grp_map_bytes_with_con_and_includes(
+            &layer_refs,
+            map,
+            skill,
+            override_con.as_deref(),
+            Some(&mut resolver),
+        )
+        .map_err(|error| JsValue::from_str(&format!("Duke user map: {error}")))?;
+        let renderer = room_duke::DukeSoftRenderer::from_grp_layers(&layer_refs)
+            .map_err(|error| JsValue::from_str(&format!("Duke renderer: {error}")))?;
+        enter_native_duke_mode(state, session, renderer, grp_layers, "USER")
     }
 
     /// Start (or restart) a Doom/Freedoom play session from IWAD bytes.
@@ -364,6 +550,18 @@ mod browser {
 
     fn begin_play(state: &Shared, data: &[u8], map: Option<&str>) -> Result<(), JsValue> {
         if let Some(ws) = room_url_param("ws") {
+            if room_build::is_grp(data) && !ws.contains("/v2/") {
+                return Err(JsValue::from_str(
+                    "native Duke coop requires a room-server v2 (/v2/rooms/…) link",
+                ));
+            }
+            if room_build::is_grp(data)
+                && DUKE_ADDON_GRPS.with(|addons| !addons.borrow().is_empty())
+            {
+                return Err(JsValue::from_str(
+                    "native Duke coop cannot send local add-on GRPs to the room; remove them before joining",
+                ));
+            }
             return begin_net_lobby(state, data, map, &ws);
         }
         set_status("Loading IWAD…");
@@ -371,6 +569,21 @@ mod browser {
             .and_then(|s| s.parse::<u8>().ok())
             .unwrap_or(3)
             .clamp(1, 5);
+        if room_build::is_grp(data) {
+            let map_name = map.unwrap_or("E1L1");
+            let grp_layers = duke_grp_layers(data);
+            let layer_refs: Vec<&[u8]> = grp_layers.iter().map(Vec::as_slice).collect();
+            let renderer = room_duke::DukeSoftRenderer::from_grp_layers(&layer_refs)
+                .map_err(|e| JsValue::from_str(&format!("Duke renderer: {e}")))?;
+            let mut session = load_duke_grp_map(&grp_layers, map_name, skill - 1)
+                .map_err(|e| JsValue::from_str(&format!("Duke start: {e}")))?;
+            session.campaign = duke_campaign_progress(map_name);
+            enter_native_duke_mode(state, session, renderer, grp_layers, map_name)?;
+            web_sys::console::log_1(
+                &format!("room-web: entered native Duke {map_name} (skill {skill})").into(),
+            );
+            return Ok(());
+        }
         let play = PlaySession::start_with(
             data,
             PlayStartOpts {
@@ -382,6 +595,170 @@ mod browser {
         )
         .map_err(|e| JsValue::from_str(&e))?;
         enter_play_mode(state, play)
+    }
+
+    fn enter_native_duke_mode(
+        state: &Shared,
+        session: room_duke::DukeSession,
+        renderer: room_duke::DukeSoftRenderer,
+        grp_layers: Vec<Vec<u8>>,
+        map_name: &str,
+    ) -> Result<(), JsValue> {
+        let mut s = state.borrow_mut();
+        let width = s.config.width.max(1);
+        let height = s.config.height.max(1);
+        let mut backdrop = load_embedded_demo_map().map_err(|e| JsValue::from_str(&e))?;
+        apply_nodes(&mut backdrop);
+        s.canvas = Some(CanvasGpu::new(&s.gpu, s.config.format, width, height));
+        s.mode = Mode::NativeDuke {
+            session: Box::new(session),
+            renderer: Box::new(renderer),
+            grp: grp_layers,
+            audio: None,
+            backdrop: Box::new(backdrop),
+            last_ms: now_ms(),
+            tic_accum: 0.0,
+            network: None,
+            network_tic: 0,
+            campaign_map: map_name.to_owned(),
+            duke_music_track: None,
+        };
+        input_hub::reset();
+        input_hub::set_duke_mode(true);
+        set_status("Native Duke — WASD move, mouse/Q/arrows turn, Ctrl/click fire, Space jump");
+        hide_boot_overlay();
+        Ok(())
+    }
+
+    fn duke_campaign_progress(map: &str) -> Option<room_duke::DukeCampaignProgress> {
+        let normalized = map.to_ascii_uppercase();
+        let bytes = normalized.as_bytes();
+        if bytes.len() != 4 || bytes[0] != b'E' || bytes[2] != b'L' {
+            return None;
+        }
+        let volume = bytes[1].checked_sub(b'1')?;
+        let level = bytes[3].checked_sub(b'1')?;
+        room_duke::DukeCampaignProgress::new(volume, level)
+    }
+
+    /// Start/resume the browser mixer on a user gesture and load Duke VOCs
+    /// from the active GRP using the native CON sound-number table.
+    fn ensure_duke_audio(
+        audio_slot: &mut Option<crate::web_audio::WebAudio>,
+        music_track: &mut Option<String>,
+        session: &room_duke::DukeSession,
+        grp_layers: &[Vec<u8>],
+    ) {
+        if let Some(audio) = audio_slot.as_ref() {
+            audio.resume();
+            start_duke_map_music(audio, music_track, session, grp_layers);
+            return;
+        }
+        let audio = match crate::web_audio::WebAudio::start() {
+            Ok(audio) => audio,
+            Err(error) => {
+                web_sys::console::warn_1(&format!("room-web: Duke audio: {error:?}").into());
+                return;
+            }
+        };
+        let mut bank = room_audio::SampleBank::new();
+        let layer_refs: Vec<&[u8]> = grp_layers.iter().map(Vec::as_slice).collect();
+        if let Ok(grp) = room_build::grp::GrpStack::parse_layers(&layer_refs) {
+            if let Some(script) = session.script.as_ref() {
+                for (id, def) in script.sounds.iter().enumerate() {
+                    let Some(def) = def else { continue };
+                    let Some(bytes) = grp.get(&def.file) else {
+                        continue;
+                    };
+                    let Ok(decoded) = room_formats::decode_sound(bytes) else {
+                        continue;
+                    };
+                    let channels = usize::from(decoded.channels.max(1));
+                    let mono: Vec<f32> = decoded
+                        .samples
+                        .chunks_exact(channels)
+                        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+                        .collect();
+                    bank.insert_resampled(
+                        room_core::SoundId::from_raw(id as u32),
+                        &mono,
+                        decoded.rate.max(1),
+                        audio.sample_rate(),
+                    );
+                }
+            }
+            if let Some(bytes) = grp.get("DUKE.RTS")
+                && let Ok(rts) = room_build::DukeRts::parse(bytes)
+            {
+                for index in 0..rts.len() {
+                    let Some(bytes) = rts.sound(index) else {
+                        continue;
+                    };
+                    let Ok(decoded) = room_formats::decode_sound(bytes) else {
+                        continue;
+                    };
+                    let channels = usize::from(decoded.channels.max(1));
+                    let mono: Vec<f32> = decoded
+                        .samples
+                        .chunks_exact(channels)
+                        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+                        .collect();
+                    bank.insert_resampled(
+                        room_core::SoundId::from_raw(DUKE_RTS_SOUND_BASE + index as u32),
+                        &mono,
+                        decoded.rate.max(1),
+                        audio.sample_rate(),
+                    );
+                }
+            }
+        }
+        if let Ok(mut mixer) = audio.mixer.try_borrow_mut() {
+            mixer.bank.merge_missing(&bank);
+        }
+        start_duke_map_music(&audio, music_track, session, grp_layers);
+        *audio_slot = Some(audio);
+        web_sys::console::log_1(&"room-web: Duke weapon sounds ready".into());
+    }
+
+    /// Select Atomic's CON `music` entry for the active campaign map.
+    fn start_duke_map_music(
+        audio: &crate::web_audio::WebAudio,
+        current_track: &mut Option<String>,
+        session: &room_duke::DukeSession,
+        grp_layers: &[Vec<u8>],
+    ) {
+        let Some(progress) = session.campaign else {
+            return;
+        };
+        let Some(name) = session
+            .script
+            .as_ref()
+            .and_then(|script| {
+                script
+                    .music_tracks
+                    .get(usize::from(progress.volume) * 11 + usize::from(progress.level))
+            })
+            .filter(|name| !name.is_empty())
+        else {
+            return;
+        };
+        if current_track.as_deref() == Some(name.as_str()) {
+            return;
+        }
+        let layer_refs: Vec<&[u8]> = grp_layers.iter().map(Vec::as_slice).collect();
+        let Ok(grp) = room_build::grp::GrpStack::parse_layers(&layer_refs) else {
+            return;
+        };
+        let Some(midi) = grp.get(name) else {
+            web_sys::console::warn_1(
+                &format!("room-web: Duke music {name} missing from GRP").into(),
+            );
+            return;
+        };
+        if let Ok(mut music) = audio.music.try_borrow_mut() {
+            music.play_midi(name.clone(), midi.to_vec(), true);
+            *current_track = Some(name.clone());
+        }
     }
 
     fn begin_net_lobby(
@@ -411,7 +788,14 @@ mod browser {
         let map_name = map
             .map(str::to_owned)
             .or_else(|| room_url_param("map"))
-            .unwrap_or_else(|| "E1M1".into());
+            .unwrap_or_else(|| {
+                if room_build::is_grp(data) {
+                    "E1L1"
+                } else {
+                    "E1M1"
+                }
+                .into()
+            });
         let ticket = room_url_param("ticket");
         let spectate = room_url_param("spectate").is_some_and(|v| v != "0");
         let cfg = NetJoinConfig {
@@ -421,6 +805,8 @@ mod browser {
             fingerprint: iwad_fingerprint(data),
             map: map_name,
             skill,
+            duke_game_mode: 1,
+            duke_friendly_fire: false,
             rng_seed,
             ticket,
             spectate,
@@ -446,11 +832,18 @@ mod browser {
                 apply_nodes(&mut m);
                 (Box::new(m), now_ms())
             }
+            Mode::NativeDuke { .. } => {
+                let mut m = load_embedded_demo_map().map_err(|e| JsValue::from_str(&e))?;
+                apply_nodes(&mut m);
+                (Box::new(m), now_ms())
+            }
         };
         s.mode = Mode::Lobby {
             lobby: Box::new(lobby),
             iwad: data.to_vec(),
             prepared: None,
+            prepared_duke: None,
+            prepared_duke_renderer: None,
             demo,
             start_ms,
         };
@@ -556,6 +949,7 @@ mod browser {
     }
 
     fn enter_play_mode(state: &Shared, mut play: PlaySession) -> Result<(), JsValue> {
+        input_hub::set_duke_mode(false);
         {
             let mut s = state.borrow_mut();
             play.preload_materials(&s.gpu.device, &s.gpu.queue);
@@ -647,6 +1041,56 @@ mod browser {
     }
 
     fn prepare_lobby_map_if_needed(state: &Shared) -> Result<(), JsValue> {
+        // Native Duke rooms load a GRP rather than Doom IWAD + PWADs. Prepare
+        // the Build session and validate all requested APLAYER seats before
+        // entering the same Ready barrier as Doom rooms.
+        let is_duke = {
+            let s = state.borrow();
+            matches!(&s.mode, Mode::Lobby { iwad, .. } if room_build::is_grp(iwad))
+        };
+        if is_duke {
+            let (grp, map, skill, players, game_mode, friendly_fire) = {
+                let s = state.borrow();
+                let Mode::Lobby { lobby, iwad, .. } = &s.mode else {
+                    return Ok(());
+                };
+                if !lobby.needs_map_prepare() {
+                    return Ok(());
+                }
+                let Some((map, skill, _, players, _, game_mode, friendly_fire)) =
+                    lobby.prepare_opts()
+                else {
+                    return Ok(());
+                };
+                (iwad.clone(), map, skill, players, game_mode, friendly_fire)
+            };
+            let grp_layers = duke_grp_layers(&grp);
+            let layer_refs: Vec<&[u8]> = grp_layers.iter().map(Vec::as_slice).collect();
+            let mut session = load_duke_grp_map(&grp_layers, &map, skill.saturating_sub(1))
+                .map_err(|e| JsValue::from_str(&format!("Duke prepare: {e}")))?;
+            // Keep the Atomic episode/map cursor in networked sessions too;
+            // the deterministic exit request is then resolved by every peer
+            // from the same lockstep state.
+            session.campaign = duke_campaign_progress(&map);
+            session
+                .configure_multiplayer_mode(usize::from(players), game_mode, friendly_fire)
+                .map_err(|e| JsValue::from_str(&format!("Duke coop setup: {e}")))?;
+            let renderer = room_duke::DukeSoftRenderer::from_grp_layers(&layer_refs)
+                .map_err(|e| JsValue::from_str(&format!("Duke renderer: {e}")))?;
+            let mut s = state.borrow_mut();
+            if let Mode::Lobby {
+                lobby,
+                prepared_duke,
+                prepared_duke_renderer,
+                ..
+            } = &mut s.mode
+            {
+                *prepared_duke = Some(Box::new(session));
+                *prepared_duke_renderer = Some(Box::new(renderer));
+                lobby.send_v2_ready_after_prepare(Vec::new());
+            }
+            return Ok(());
+        }
         let needs = {
             let s = state.borrow();
             match &s.mode {
@@ -684,7 +1128,7 @@ mod browser {
             let Mode::Lobby { lobby, iwad, .. } = &s.mode else {
                 return Ok(());
             };
-            let Some((map, skill, rng_seed, players, seat)) = lobby.prepare_opts() else {
+            let Some((map, skill, rng_seed, players, seat, _, _)) = lobby.prepare_opts() else {
                 return Ok(());
             };
             (
@@ -1164,6 +1608,54 @@ mod browser {
     fn finish_lobby_start(state: &Shared, ready: crate::netplay::NetReady) -> Result<(), JsValue> {
         set_status("Starting coop…");
         set_lobby_html("<h2>Starting…</h2><p class=\"muted\">All players ready</p>");
+        let (native_grp, map, local, peers) = {
+            let s = state.borrow();
+            let Mode::Lobby { iwad, .. } = &s.mode else {
+                return Err(JsValue::from_str("lobby ended unexpectedly"));
+            };
+            (
+                room_build::is_grp(iwad),
+                ready.map.clone(),
+                ready.local.0,
+                ready.peer_count,
+            )
+        };
+        if native_grp {
+            let (grp, session, renderer) = {
+                let mut s = state.borrow_mut();
+                let Mode::Lobby {
+                    iwad,
+                    prepared_duke,
+                    prepared_duke_renderer,
+                    ..
+                } = &mut s.mode
+                else {
+                    return Err(JsValue::from_str("lobby ended unexpectedly"));
+                };
+                let grp_layers = duke_grp_layers(iwad);
+                // Move the prepared native state out of the lobby without
+                // cloning its loaded world or renderer material cache.
+                let session = prepared_duke
+                    .take()
+                    .ok_or_else(|| JsValue::from_str("Duke map was not prepared"))?;
+                let renderer = prepared_duke_renderer
+                    .take()
+                    .ok_or_else(|| JsValue::from_str("Duke renderer was not prepared"))?;
+                (grp_layers, *session, *renderer)
+            };
+            let network = crate::netplay::DukeNetPlay::from_ready(ready);
+            stop_lobby_pump();
+            hide_lobby_overlay();
+            enter_native_duke_mode(state, session, renderer, grp, &map)?;
+            if let Mode::NativeDuke { network: slot, .. } = &mut state.borrow_mut().mode {
+                *slot = Some(network);
+            }
+            web_sys::console::log_1(
+                &format!("room-web: entered native Duke coop map={map} seat={local}/{peers}")
+                    .into(),
+            );
+            return Ok(());
+        }
         let peer_count = ready.peer_count;
         let local = ready.local.0;
         let map = ready.map.clone();
@@ -1466,7 +1958,10 @@ mod browser {
             let state_kd = state.clone();
             let kd = Closure::wrap(Box::new(move |ev: web_sys::KeyboardEvent| {
                 let in_lobby = matches!(state_kd.borrow().mode, Mode::Lobby { .. });
-                let in_play = matches!(state_kd.borrow().mode, Mode::Play(_));
+                let in_play = matches!(
+                    state_kd.borrow().mode,
+                    Mode::Play(_) | Mode::NativeDuke { .. }
+                );
                 if let Some(doc) = window().and_then(|w| w.document()) {
                     if let Some(active) = doc.active_element() {
                         let tag = active.tag_name();
@@ -1501,6 +1996,10 @@ mod browser {
                     .and_then(|w| w.document())
                     .and_then(|d| d.active_element())
                     .is_some_and(|el| is_visible_typing_target(&el));
+                if !typing && input_hub::set_duke_rts_hotkey(&code, true, ev.alt_key()) {
+                    ev.prevent_default();
+                    return;
+                }
                 if matches!(
                     code.as_str(),
                     "Space" | "Tab" | "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight"
@@ -1519,7 +2018,9 @@ mod browser {
         }
         {
             let ku = Closure::wrap(Box::new(move |ev: web_sys::KeyboardEvent| {
-                input_hub::set_key(&ev.code(), false);
+                let code = ev.code();
+                input_hub::set_duke_rts_hotkey(&code, false, ev.alt_key());
+                input_hub::set_key(&code, false);
             }) as Box<dyn FnMut(_)>);
             let _ = win.add_event_listener_with_callback("keyup", ku.as_ref().unchecked_ref());
             ku.forget();
@@ -1583,12 +2084,26 @@ mod browser {
             let state_click = state.clone();
             let click = Closure::wrap(Box::new(move |_ev: web_sys::MouseEvent| {
                 // Pointer lock is play-only — lobby invite / waiting UI needs a free cursor.
-                let in_play = matches!(state_click.borrow().mode, Mode::Play(_));
+                let in_play = matches!(
+                    state_click.borrow().mode,
+                    Mode::Play(_) | Mode::NativeDuke { .. }
+                );
                 if !in_play {
                     return;
                 }
-                if let Mode::Play(play) = &mut state_click.borrow_mut().mode {
-                    play.ensure_audio();
+                {
+                    let mut frame = state_click.borrow_mut();
+                    match &mut frame.mode {
+                        Mode::Play(play) => play.ensure_audio(),
+                        Mode::NativeDuke {
+                            session,
+                            grp,
+                            audio,
+                            duke_music_track,
+                            ..
+                        } => ensure_duke_audio(audio, duke_music_track, session, grp),
+                        _ => {}
+                    }
                 }
                 // Editor fly camera: clicks pick, they don't grab the mouse.
                 if editor::flying() {
@@ -1619,6 +2134,15 @@ mod browser {
             if let Ok(mut s) = state.try_borrow_mut() {
                 if let Mode::Play(play) = &mut s.mode {
                     play.ensure_audio();
+                } else if let Mode::NativeDuke {
+                    session,
+                    grp,
+                    audio,
+                    duke_music_track,
+                    ..
+                } = &mut s.mode
+                {
+                    ensure_duke_audio(audio, duke_music_track, session, grp);
                 }
             }
         }) as Box<dyn FnMut(_)>);
@@ -1867,6 +2391,345 @@ mod browser {
                 }
                 play.view_pose().unwrap_or((s.camera.eye, s.camera.forward))
             }
+            Mode::NativeDuke {
+                session,
+                audio,
+                last_ms,
+                tic_accum,
+                network,
+                network_tic,
+                campaign_map,
+                duke_music_track,
+                grp,
+                ..
+            } => {
+                let dt = ((now - *last_ms) as f32 * 0.001).clamp(0.0, 0.1);
+                *last_ms = now;
+                *tic_accum += dt;
+                let mut sound_events = Vec::new();
+                let mut campaign_transition = None;
+                if let Some(net) = network.as_mut() {
+                    net.keepalive();
+                }
+                while *tic_accum >= 1.0 / 30.0 {
+                    *tic_accum -= 1.0 / 30.0;
+                    if let Some(net) = network.as_mut() {
+                        let input = input_hub::take_duke_network_input();
+                        net.submit(input);
+                        if let Some(inputs) = net.take_frame(*network_tic) {
+                            if let Some(audio) = audio.as_ref()
+                                && let Ok(mixer) = audio.mixer.try_borrow()
+                            {
+                                session.set_active_sound_owners(&mixer.duke_active_sound_owners());
+                            }
+                            session.tick_inputs(&inputs);
+                            *network_tic = network_tic.wrapping_add(1);
+                            sound_events.extend(session.drain_sound_events());
+                            campaign_transition = session.take_campaign_exit_request();
+                        }
+                    } else {
+                        if let Some(audio) = audio.as_ref()
+                            && let Ok(mixer) = audio.mixer.try_borrow()
+                        {
+                            session.set_active_sound_owners(&mixer.duke_active_sound_owners());
+                        }
+                        input_hub::apply_duke_weapon(&mut session.player);
+                        let input = input_hub::take_duke_input();
+                        session.tick(input);
+                        sound_events.extend(session.drain_sound_events());
+                        campaign_transition = session.take_campaign_exit_request();
+                    }
+                    if campaign_transition.is_some() {
+                        break;
+                    }
+                }
+                if let Some(transition) = campaign_transition {
+                    match transition {
+                        room_duke::DukeCampaignTransition::EndGame => {
+                            set_status("Duke campaign complete");
+                        }
+                        room_duke::DukeCampaignTransition::NextLevel { volume, level } => {
+                            let next_map = format!("E{}L{}", volume + 1, level + 1);
+                            match load_duke_grp_map(grp, &next_map, session.skill) {
+                                Ok(mut next) => match next.inherit_campaign_roster(session) {
+                                    Ok(()) => {
+                                        next.campaign = duke_campaign_progress(&next_map);
+                                        **session = next;
+                                        *campaign_map = next_map.clone();
+                                        if let Some(audio) = audio.as_ref() {
+                                            start_duke_map_music(
+                                                audio,
+                                                duke_music_track,
+                                                session,
+                                                grp,
+                                            );
+                                        }
+                                        set_status(&format!("Duke: entered {next_map}"));
+                                    }
+                                    Err(error) => {
+                                        set_status(&format!("Duke next level roster: {error}"));
+                                    }
+                                },
+                                Err(error) => {
+                                    set_status(&format!("Duke next level failed: {error}"))
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(audio) = audio.as_ref() {
+                    if audio.needs_resume() {
+                        audio.resume();
+                    }
+                    if let Ok(mut mixer) = audio.mixer.try_borrow_mut() {
+                        let audio_options = DUKE_AUDIO_OPTIONS.get();
+                        mixer.duke_sfx_gain = if audio_options.sound {
+                            f32::from(audio_options.sfx_volume) / 255.0
+                        } else {
+                            0.0
+                        };
+                        mixer.music_gain = if audio_options.music {
+                            f32::from(audio_options.music_volume) / 255.0
+                        } else {
+                            0.0
+                        };
+                        mixer.reverse_stereo = audio_options.reverse_stereo;
+                        if audio_options.sound && !audio_options.lockout {
+                            let mut rts_playing = mixer.voices.iter().any(|voice| {
+                                let raw = voice.sound.raw();
+                                (DUKE_RTS_SOUND_BASE..DUKE_RTS_SOUND_BASE + 10).contains(&raw)
+                            });
+                            for index in input_hub::take_duke_rts_requests() {
+                                if rts_playing {
+                                    break;
+                                }
+                                let sound = room_core::SoundId::from_raw(
+                                    DUKE_RTS_SOUND_BASE + index as u32,
+                                );
+                                if mixer.bank.get(sound).is_none() {
+                                    continue;
+                                }
+                                mixer.apply(&[room_audio::SoundEvent::Start {
+                                    origin: room_audio::SoundOrigin::None,
+                                    channel: -100 - index as i32,
+                                    sound,
+                                    check_sound: None,
+                                    start_time: 0.0,
+                                    volume: 1.0,
+                                    attenuation: 1.0,
+                                    pitch: 1.0,
+                                    flags: room_audio::SoundFlags::default(),
+                                    source_id: None,
+                                    no_restart: false,
+                                }]);
+                                rts_playing = true;
+                            }
+                        } else {
+                            let _ = input_hub::take_duke_rts_requests();
+                        }
+                        let listener = [
+                            session.player.posx,
+                            session.player.posy,
+                            session.player.posz,
+                        ];
+                        let to_audio_point = |position: [i32; 3]| {
+                            room_core::DVec3::new(
+                                f64::from(position[0]) / 16.0,
+                                f64::from(position[1]) / 16.0,
+                                f64::from(position[2]) / 256.0,
+                            )
+                        };
+                        let listener_angle = f64::from(session.player.ang.rem_euclid(2048))
+                            * (std::f64::consts::TAU / 2048.0);
+                        mixer.set_listener(to_audio_point(listener), listener_angle);
+                        mixer.set_reverb_level(i32::from(session.duke_reverb_level));
+                        let visibility_geometry = session.world.as_ref().map(|world| {
+                            let sectors = world
+                                .sectors
+                                .iter()
+                                .map(|sector| room_build_engine::geom::SectorZ {
+                                    wallptr: sector.wallptr,
+                                    wallnum: sector.wallnum,
+                                    ceilingz: sector.ceilingz,
+                                    floorz: sector.floorz,
+                                    ceilingstat: sector.ceilingstat,
+                                    floorstat: sector.floorstat,
+                                    ceilingheinum: sector.ceilingheinum,
+                                    floorheinum: sector.floorheinum,
+                                })
+                                .collect::<Vec<_>>();
+                            let walls = world
+                                .walls
+                                .iter()
+                                .map(|wall| room_build_engine::geom::WallXY {
+                                    x: wall.x,
+                                    y: wall.y,
+                                    point2: wall.point2,
+                                    nextsector: wall.nextsector,
+                                    cstat: wall.cstat,
+                                })
+                                .collect::<Vec<_>>();
+                            (sectors, walls)
+                        });
+                        for event in sound_events {
+                            let sound = room_core::SoundId::from_raw(u32::from(event.sound_id));
+                            if event.stop {
+                                mixer.apply(&[room_audio::SoundEvent::StopSound { sound }]);
+                                continue;
+                            }
+                            let origin = if event.global {
+                                room_audio::SoundOrigin::None
+                            } else {
+                                room_audio::SoundOrigin::Point(to_audio_point(event.position))
+                            };
+                            if event.stop_source_sound {
+                                mixer.apply(&[room_audio::SoundEvent::Stop {
+                                    origin,
+                                    channel: i32::from(event.sound_id),
+                                }]);
+                                continue;
+                            }
+                            if session.player.time_before_exit > 0
+                                && session.player.time_before_exit <= 26 * 3
+                            {
+                                // Chocolate rejects new `xyzsound` starts during
+                                // the final three seconds of a timed exit.
+                                continue;
+                            }
+                            let definition = session
+                                .script
+                                .as_ref()
+                                .and_then(|script| script.sounds.get(usize::from(event.sound_id)))
+                                .and_then(Option::as_ref);
+                            let lockout_only = definition.is_some_and(|sound| sound.m & 8 != 0);
+                            let talk_only = definition.is_some_and(|sound| sound.m & 4 != 0);
+                            if !audio_options.sound
+                                || (audio_options.lockout && lockout_only)
+                                || (!audio_options.talk && talk_only)
+                                || (!audio_options.ambience && event.ambience)
+                            {
+                                continue;
+                            }
+                            let distance_offset = if event.global || event.no_attenuation {
+                                0
+                            } else {
+                                definition.map_or(0, |sound| sound.vo / 16)
+                            };
+                            let underwater = session
+                                .world
+                                .as_ref()
+                                .and_then(|world| {
+                                    world.sectors.get(session.player.cursectnum.max(0) as usize)
+                                })
+                                .is_some_and(|sector| sector.lotag == 2);
+                            let pitch = room_duke::audio::pitch_scale(
+                                session.script.as_ref(),
+                                event.sound_id,
+                                session.tic,
+                                event.source_id,
+                                underwater,
+                                event.global,
+                            );
+                            let source_sector = event
+                                .source_id
+                                .and_then(|source| usize::try_from(source).ok())
+                                .and_then(|source| session.world.as_ref()?.sprites.get(source))
+                                .map_or(session.player.cursectnum, |sprite| sprite.sectnum);
+                            let line_of_sight = event.global
+                                || event.ambience
+                                || visibility_geometry.as_ref().is_none_or(|(sectors, walls)| {
+                                    !room_build_engine::geom::cansee(
+                                        listener[0],
+                                        listener[1],
+                                        listener[2].wrapping_sub(24 << 8),
+                                        session.player.cursectnum,
+                                        event.position[0],
+                                        event.position[1],
+                                        event.position[2].wrapping_sub(24 << 8),
+                                        source_sector,
+                                        sectors,
+                                        walls,
+                                    )
+                                });
+                            let xyzsound_actor_voice =
+                                !event.global && !event.ambience && !event.play_once;
+                            if xyzsound_actor_voice {
+                                let dead_badguy = event
+                                    .source_id
+                                    .and_then(|source| usize::try_from(source).ok())
+                                    .and_then(|source| {
+                                        let actor = session.world.as_ref()?.sprites.get(source)?;
+                                        Some(
+                                            actor.extra <= 0
+                                                && room_duke::badguy_pic(
+                                                    actor.picnum,
+                                                    session.script.as_ref().map_or(&[], |script| {
+                                                        script.actortype.as_slice()
+                                                    }),
+                                                ),
+                                        )
+                                    })
+                                    .unwrap_or(false);
+                                mixer.duke_xyzsound_stop_latest(
+                                    sound,
+                                    event.source_id,
+                                    dead_badguy,
+                                );
+                            }
+                            let flags = (if event.play_once {
+                                room_audio::SoundFlags::UNIQUE_SOUND
+                            } else {
+                                0
+                            }) | (if event.loop_sound {
+                                room_audio::SoundFlags::LOOP
+                            } else {
+                                0
+                            }) | match event.voice_limit {
+                                1 => room_audio::SoundFlags::DUKE_LIMIT_ONE,
+                                2..=4 => room_audio::SoundFlags::DUKE_LIMIT_FOUR,
+                                _ => 0,
+                            } | if event.exclusive {
+                                room_audio::SoundFlags::DUKE_EXCLUSIVE
+                            } else {
+                                0
+                            } | if event.global || event.no_attenuation {
+                                room_audio::SoundFlags::ATTN_NONE
+                            } else {
+                                0
+                            } | if event.ambience {
+                                room_audio::SoundFlags::DUKE_AMBIENCE
+                            } else {
+                                0
+                            } | room_audio::SoundFlags::with_duke_priority(i32::from(
+                                event.priority,
+                            ))
+                            .0 | room_audio::SoundFlags::with_duke_distance_offset(
+                                distance_offset,
+                            )
+                            .0 | if xyzsound_actor_voice {
+                                room_audio::SoundFlags::OVERLAP
+                            } else {
+                                0
+                            };
+                            mixer.apply(&[room_audio::SoundEvent::Start {
+                                origin,
+                                channel: i32::from(event.sound_id),
+                                sound,
+                                check_sound: None,
+                                start_time: 0.0,
+                                volume: 1.0,
+                                attenuation: if line_of_sight { 1.0 } else { 1.03125 },
+                                pitch,
+                                flags: room_audio::SoundFlags(flags),
+                                source_id: event.source_id,
+                                no_restart: false,
+                            }]);
+                        }
+                    }
+                    audio.feed_output();
+                }
+                (s.camera.eye, s.camera.forward)
+            }
         };
         s.camera.eye = eye;
         s.camera.forward = forward;
@@ -1885,6 +2748,8 @@ mod browser {
         // One full-frame view, or one viewport per player (spectator grid).
         let fb_w = s.config.width as f32;
         let fb_h = s.config.height as f32;
+        let native_fb_width = s.config.width;
+        let native_fb_height = s.config.height;
         let panes = match &s.mode {
             Mode::Play(play) => play.spectator_views(fb_w, fb_h),
             _ => None,
@@ -1966,11 +2831,26 @@ mod browser {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("hud") });
         // Weapon / HUD overlay (single colour target; Load the 3D result).
-        if matches!(s.mode, Mode::Play(_)) {
-            let hud_canvas = if let Mode::Play(play) = &mut s.mode {
-                Some(play.build_hud_canvas(fb_w, fb_h))
-            } else {
-                None
+        if matches!(s.mode, Mode::Play(_) | Mode::NativeDuke { .. }) {
+            let hud_canvas = match &mut s.mode {
+                Mode::Play(play) => Some(play.build_hud_canvas(fb_w, fb_h)),
+                Mode::NativeDuke {
+                    session, renderer, ..
+                } => session.world.as_ref().map(|world| {
+                    let pixels = renderer.render_rgba_at_with_quake_view(
+                        world,
+                        &session.player,
+                        native_fb_width,
+                        native_fb_height,
+                        session.tic,
+                        session.earthquake_time,
+                        input_hub::duke_shoulder_view(),
+                    );
+                    let mut canvas = Canvas::new();
+                    canvas.blit_rgba(0.0, 0.0, native_fb_width, native_fb_height, pixels);
+                    canvas
+                }),
+                _ => None,
             };
             if let Some(hud) = hud_canvas {
                 if let Some(canvas_gpu) = s.canvas.as_mut() {
@@ -2024,7 +2904,7 @@ mod browser {
                 Some(seat) => play.collect_live_sprites_for(cam, seat),
                 None => play.collect_live_sprites(cam),
             },
-            Mode::Demo { .. } | Mode::Lobby { .. } => Vec::new(),
+            Mode::Demo { .. } | Mode::Lobby { .. } | Mode::NativeDuke { .. } => Vec::new(),
         };
         let inverse_colormap = match &s.mode {
             Mode::Play(play)
@@ -2063,6 +2943,7 @@ mod browser {
                 lists
             }
             Mode::Lobby { demo, .. } => build_scene_with_sky(demo, cam, None, None),
+            Mode::NativeDuke { backdrop, .. } => build_scene_with_sky(backdrop, cam, None, None),
         };
         if !voxel_uploads.is_empty() {
             let FrameState { gpu, mode, .. } = &mut *s;
@@ -2437,6 +3318,31 @@ mod browser {
         crate::web_audio::set_muted(muted);
     }
 
+    /// Set native Duke audio options matching the desktop F4 controls.
+    /// Volumes are Atomic-style 0..=255 values; defaults are enabled/full.
+    #[wasm_bindgen(js_name = roomSetDukeAudioOptions)]
+    pub fn room_set_duke_audio_options(
+        sound: bool,
+        music: bool,
+        talk: bool,
+        lockout: bool,
+        ambience: bool,
+        reverse_stereo: bool,
+        sfx_volume: u8,
+        music_volume: u8,
+    ) {
+        DUKE_AUDIO_OPTIONS.set(DukeAudioOptions {
+            sound,
+            music,
+            talk,
+            lockout,
+            ambience,
+            reverse_stereo,
+            sfx_volume,
+            music_volume,
+        });
+    }
+
     /// Current [`room_set_muted`] state.
     #[wasm_bindgen(js_name = roomMuted)]
     #[must_use]
@@ -2640,6 +3546,10 @@ mod browser {
             };
             match &s.mode {
                 Mode::Demo { .. } => format!("mode=demo held={held}"),
+                Mode::NativeDuke { session, .. } => format!(
+                    "mode=duke tic={} weapon={} hp={} held={held}",
+                    session.tic, session.player.curr_weapon, session.player.extra
+                ),
                 Mode::Lobby { lobby, .. } => format!("mode=lobby {} held={held}", lobby.status()),
                 Mode::Play(play) => {
                     let net = if let Some(n) = play.net_debug() {
@@ -2749,6 +3659,7 @@ mod browser {
                     obj.into()
                 }
                 Mode::Demo { .. } => JsValue::NULL,
+                Mode::NativeDuke { .. } => JsValue::NULL,
             }
         })
     }

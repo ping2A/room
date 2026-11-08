@@ -3,8 +3,9 @@
 use js_sys::{ArrayBuffer, Uint8Array};
 use room_net::{NetTicCmd as NetNetTicCmd, PeerId, TimedCmd, Transport};
 use room_proto::{
-    BinaryMsg, ControlMsg, HelloMsg, NetTicCmd, RosterSeat, TicCmdMsg, TicFrameMsg, WelcomeMsg,
-    WelcomeRoom, encode_binary, encode_control, parse_binary, parse_control,
+    BinaryMsg, ControlMsg, DukeSyncCmdMsg, DukeSyncFrameMsg, DukeSyncInput, HelloMsg, NetTicCmd,
+    RosterSeat, TicCmdMsg, TicFrameMsg, WelcomeMsg, WelcomeRoom, encode_binary, encode_control,
+    parse_binary, parse_control,
 };
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -28,6 +29,7 @@ struct Shared {
     reject: Option<String>,
     /// Synthetic TimedCmds from TIC_FRAME (for LockstepSession).
     inbox: VecDeque<(PeerId, Vec<u8>)>,
+    duke_inbox: VecDeque<DukeSyncFrameMsg>,
     presence: VecDeque<PresenceEvent>,
     welcome: Option<WelcomeMsg>,
     started: Option<(u32, u32, bool, u8)>,
@@ -85,6 +87,7 @@ impl WsV2Transport {
             peer_count: max_players.max(2),
             reject: None,
             inbox: VecDeque::new(),
+            duke_inbox: VecDeque::new(),
             presence: VecDeque::new(),
             welcome: None,
             started: None,
@@ -370,6 +373,21 @@ impl WsV2Transport {
         self.send_bin(bytes);
     }
 
+    /// Send one native Build `input` record for the server's Duke lockstep.
+    pub fn send_duke_tic_cmd(&mut self, tic: u32, cmd: DukeSyncInput) {
+        self.send_bin(encode_binary(&BinaryMsg::DukeTicCmd(DukeSyncCmdMsg {
+            tic,
+            cmd,
+        })));
+        let mut s = self.shared.borrow_mut();
+        s.cmds_tx = s.cmds_tx.saturating_add(1);
+    }
+
+    /// Drain authoritative native Duke tic frames in server order.
+    pub fn poll_duke_frames(&mut self, out: &mut Vec<DukeSyncFrameMsg>) {
+        out.extend(self.shared.borrow_mut().duke_inbox.drain(..));
+    }
+
     fn send_control(&mut self, msg: &ControlMsg) {
         let Ok(s) = encode_control(msg) else {
             return;
@@ -511,6 +529,13 @@ fn on_binary(shared: &Rc<RefCell<Shared>>, bytes: &[u8]) {
         BinaryMsg::TicBatch(frames) => {
             for frame in frames {
                 ingest_frame(shared, frame);
+            }
+        }
+        BinaryMsg::DukeTicFrame(frame) => {
+            let mut s = shared.borrow_mut();
+            s.frames_rx = s.frames_rx.saturating_add(1);
+            if s.duke_inbox.len() < 64 {
+                s.duke_inbox.push_back(frame);
             }
         }
         BinaryMsg::Pong { nonce, .. } => {

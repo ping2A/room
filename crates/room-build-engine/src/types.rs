@@ -2,7 +2,7 @@
 //! Spec: `docs/build-engine-primitives/01-world.md`.
 
 /// Build sector (playsim copy).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SectorT {
     pub wallptr: i16,
     pub wallnum: i16,
@@ -29,7 +29,7 @@ pub struct SectorT {
 }
 
 /// Build wall (playsim copy).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WallT {
     pub x: i32,
     pub y: i32,
@@ -51,7 +51,7 @@ pub struct WallT {
 }
 
 /// Build sprite (playsim copy).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SpriteT {
     pub x: i32,
     pub y: i32,

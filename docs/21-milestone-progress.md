@@ -17,6 +17,87 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 
 ---
 
+- `2026-11-08` — **D6 APLAYER Shrinker afterimages**: the player pass now creates `FRAMEEFFECT1` at the shrinking APLAYER pose on each CON shrink tic, then the native misc-actor pass advances each effect for eight tics with Chocolate translucency stages and owner X/Y offsets. Static Chocolate `actors.c::moveactors` and Atomic `GAME.CON` review; formatting, targeted crate compile and diff check only, no tests or dynamic game/reference comparison.
+- `2026-11-08` — **D6 Atomic APLAYER Shrinker/Grower response**: statically inspected Atomic `GAME.CON` APLAYER hit branches and added player-specific shrink/grow flash + audio, `PSHRINKING` timer/repeat transition, steroid skip, sloped-gap crush and cstat restoration. NPC-specific CON transformations, APLAYER particles and general APLAYER script execution remain open. `cargo fmt -p room-duke`, `cargo check -q -p room-duke --lib`, and `git diff --check` pass with existing warnings; no tests, gameplay/demo or Chocolate comparison.
+- `2026-11-08` — **D10 dead-player camera progression**: the dead-player pass now follows the APLAYER body, turns halfway toward the last valid killer each tic, applies water-warp Z behavior, refreshes the Build sector and resolves `pushmove` before calculating floor-relative `rotscrnang`. This is per-seat and does not mutate render snapshots. Formatting, diff check and targeted `room-duke` compile only; no tests, gameplay, network or reference comparison. Spectator flow, full death animation, respawn marker edges and multiplayer validation remain open.
+- `2026-11-08` — **D10 dead-player input early return**: dead seats now bypass access-card interaction, quick-kick/knee continuation, floor-hazard/inventory timers, footprints, Holoduke and inventory-use effects after their neutral movement branch. Their body angle still follows the dead camera turn, while the body position remains separate. This follows Chocolate's `player.c::processinput` death return and `actors.c::moveplayers` body update. Formatting, targeted `cargo check -q -p room-duke --lib`, and diff check pass with existing warnings; no tests, gameplay, network or dynamic comparison.
+- `2026-11-08` — **D10 death jetpack cleanup**: the one-time death edge now always clears jetpack/Holoduke state and queues a stop for the active CON's `DUKE_JETPACK_IDLE` sound, including when the body palette is 1; only the normal palette death tilt/roll stays behind Chocolate's non-frozen palette check. Static review of Chocolate `player.c::processinput`; formatting, targeted crate compile and diff check pass with existing warnings. Voice-specific scream termination remains unmodeled; no tests or dynamic comparison.
+- `2026-11-08` — **D8 finale ANM sound cues**: E1/E2/E4 finale frame transitions now queue Chocolate's `endanimsounds` / `endanimvol41` CON sound labels through the native mixer. If rendering skips frames, crossed cue frames are still queued in order; the session cursor prevents repeated playback on a held frame. Other ANM types/cue tables and full cutscene flow remain open. Static review of Chocolate `menues.c::playanm` and its frame cue handlers; format, diff and targeted compile only, no tests or gameplay/reference comparison.
+- `2026-11-08` — **D9 Atomic lockclock overflow**: `save_atomic_sav` now rejects a native tic count that cannot be represented by Chocolate's signed 32-bit `lockclock`, instead of silently writing `i32::MAX` and changing the resumed timeline. Full SAV field/default coverage and load-save-load/reference validation remain open. Static ABI review; formatting, diff check and targeted compile only, no save replay or engine comparison.
+- `2026-11-08` — **D8/D9 bonus totals and SAV counters**: imported/exported Chocolate's `max_secret_rooms` and `max_actors_killed` player bytes, initialize per-level totals from Atomic's sector scan and eligible map-spawn rules, and draw those totals instead of reconstructing them from survivors. Dynamic CON-spawned kill totals and SAV load-save-load validation remain open. Static review of Chocolate `premap.c::prelevel`, `game.c::spawn` and `menues.c::dobonus`; formatting, diff check and targeted compile only, no gameplay or Chocolate comparison.
+- `2026-11-08` — **D7 mirror rendering**: map loading initializes masked `MIRROR` sectors and the soft renderer draws the nearest projected mirror from a reflected camera into the wall mask, without recursive passes. It detects the active CON's resolved mirror tile from the prepared destination sector, retaining tile 560 for unprepared Atomic maps, and ranks mirrors by Chocolate's Manhattan distance to the source wall's first vertex. Chocolate selects one nearest visible mirror per view; mirror-sector composition, visibility reduction and raster parity remain open. Static Chocolate `premap.c` / `game.c::displayrooms` review, formatting, diff check and targeted crate compile only; no tests or gameplay/reference comparison.
+- `2026-11-08` — **D7 SE13 parallax sky restore**: the explosive-sector transition now copies the first prelevel parallax ceiling's tile and shade when Chocolate flips the restored sector's ceiling parallax flag. Static `premap.c::prelevel` / `actors.c::moveeffectors` review; format, diff and targeted `room-duke` compile only, no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D7 SE13 interpolation status audit**: corrected the stale “plane interpolation remains open” note. Room's desktop Duke renderer already blends every sector's floor/ceiling height between completed tics on a render-only world copy, so SE13 receives that generic visual smoothing. Chocolate's per-effector interpolation registration and exact rendering cadence remain unverified; static inspection of `DukeSoftRenderer::render_rgba_interpolated` and its desktop call site only, no runtime/reference comparison.
+- `2026-11-08` — **D6 radius ceiling-light status correction**: corrected stale D6/D7 text that said radius blasts did not hit ceiling lights. The current shared RPG/CON `hitradius` sector scan checks each visited ceiling before wall hits and invokes `check_hit_ceiling` using Chocolate's vertical-radius gate and first/third boundary-point test. Static review of Room's `apply_radius_wall_hits` against Chocolate `actors.c::hitradius` / `sector.c::checkhitceiling`; documentation diff check only, no tests or dynamic comparison.
+- `2026-11-08` — **D7 automatic activator respawns**: SE10 `activatebysector` now arms matching `RESPAWN` markers when it dispatches a tagged `ACTIVATOR`, including the `monsters_off` badguy gate. Static Chocolate `sector.c::operateactivators` / `operaterespawns` review; formatting, diff check and targeted `room-duke` compile only, no tests or dynamic comparison.
+- `2026-11-08` — **D6 pipebomb respawn marker motion/cadence**: red/yellow/green markers now use Chocolate's shifted half/quarter thresholds, retain their prior color in the threshold gap, and call the shared `makeitfall` path every live tic. Static `actors.c` marker branch review; formatting, diff check and targeted crate compile only; no tests or gameplay/reference comparison.
+- `2026-11-08` — **D5 shared `makeitfall` gravity**: the common falling primitive now applies Chocolate's outer-space floor/ceiling gravity, the water terminal-velocity reset, and the 6144 cap. This feeds map spawn, slope-sector carry and item respawn-marker motion. Static `gamedef.c::makeitfall` review; format, diff check and targeted compile only, no tests or dynamic comparison.
+- `2026-11-08` — **D6 wall-light hit RNG ordering**: direct `WALLLIGHT`/`TECHLIGHT` impacts now draw the randomized break cue before the 30-shard `lotsofglass` burst, matching Chocolate's `checkhitwall` call order and preserving subsequent RNG state. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass with existing warnings; no tests, runtime, or Chocolate comparison.
+- `2026-11-08` — **D6 tripbomb laser trace sector and range**: the temporary muzzle offset now resolves its Build sector before the trace, matching Chocolate's `setsprite` step, and hit range uses Build `FindDistance2D`. Ray collision still uses Room's `hitscan_full` substitute for `hitasprite`; static source review only, no runtime or Chocolate comparison.
+- `2026-11-08` — **D6 tripbomb blast flash movement**: the spawned `EXPLOSION2` now gets Chocolate's immediate `ssp(CLIPMASK0)` move with Build clipping and sector-list update at detonation. Static `actors.c::moveactors` / `ssp` review; formatting, diff check and targeted compile only; no tests or gameplay/reference comparison.
+- `2026-11-08` — **D6 `checkplayerhurt` collision paths**: retain `clipmove`'s sprite/wall hit code; port cactus damage and blocking `W_FORCEFIELD`/`BIGFORCE` responses, including their distinct cooldown/damage rules and `atwith=-1` ripple size. Static Chocolate `sector.c` review, format, diff check and targeted compile only; no tests or gameplay/reference comparison.
+- `2026-11-08` — **D8 desktop RTS feedback**: the HUD now displays `RTS PLAYING` while any local or peer-delivered RTS voice is active; it follows actual mixer voice lifetime. Static UI/audio path review, formatting, diff check and targeted desktop compile only; no gameplay, tests or reference comparison.
+- `2026-11-08` — **D5 APLAYER swim action edge**: the trailing WATERBUBBLE `ifrnd` now runs only while the swim action remains active; changing to another action skips the old branch's final RNG roll. This targets the documented tic-70 frontier from the previously measured trace. Static source/control-flow review, formatting, diff check and targeted compile only; the verified frontier is unchanged until a later comparison.
+- `2026-11-08` — **D7 SE20 bridge plane panning**: extended the directional eight-unit SE20 bridge translation to scroll both floor and ceiling X/Y panning by `dx>>3` / `dy>>3`, matching the separate Chocolate SE20 branch. Static `actors.c::moveeffectors` review, formatting, diff check and targeted compile only; no gameplay/demo comparison.
+- `2026-11-08` — **D7 SE20 bridge carry membership**: separated player-body handling from the generic sprite carry, matching Chocolate's dedicated player pass, and now refreshes Build sector membership for carried sprites and grounded players after `setsprite`-equivalent movement. This avoids duplicate traversal and stale sector lists when the moving bridge crosses sector boundaries. Static `actors.c::moveeffectors` review, formatting, diff check and `cargo check -q -p room-duke --lib`; no tests or gameplay/demo comparison.
+- `2026-11-08` — **D7 access-card first-person animation**: the native Duke renderer now resolves `HANDHOLDINGACCESS` / `HANDHOLDINGLASER` from CON, draws Chocolate's 1–20 `access_incs` pose with card palette, view sway, look/horizon and hard-landing offsets, and suppresses the weapon during a live insertion. Access-card status-bar icons were already emitted by `DukeStatusBar`. Static `player.c::animateaccess` / `displayweapon` review, formatting, diff check and `cargo check -q -p room-duke --lib`; no screenshot, game run, tests or Chocolate comparison.
+- `2026-11-08` — **D7 conveyor panning correction**: reinspection of the complete `actors.c::moveeffectors` branch showed that the directional floor/ceiling X/Y panning belongs to SE20; SE24/SE34 only add `SP >> 7` to floor X panning. Room now follows the conveyor branch exactly. The prior turn had applied the SE20 behavior to conveyors. Static source review, formatting, diff check and targeted compile only; no gameplay/demo comparison.
+- `2026-11-08` — **D7 conveyor bolt filter**: SE24/SE34 now skip only BOLT1 and SIDEBOLT1 families (four tiles each) as Chocolate does; the prior SIDEBOLT1 range accidentally excluded ordinary sprites through tile 4528, preventing them from riding conveyors. Static `actors.c::moveeffectors` review, formatting, diff check and targeted compile only; no tests or gameplay/demo comparison.
+- `2026-11-08` — **D6 archived auto-aim setting**: the Duke F4 Sound Setup now displays and cycles bullet-only/full auto-aim; left/right change the selected mode, which remains in the archived `duke_autoaim` CVar and is consumed by desktop input. Static UI/input review, formatting, diff check and targeted compile only; no gameplay/demo comparison.
+- `2026-11-08` — **D6 tripbomb laser re-arm baseline**: target-range-change detection now retains the initial `lastvx` baseline, as Chocolate does; repeated changes continue to arm the fuse instead of silently replacing the baseline after one tic. Static `actors.c` review, formatting, diff check and targeted compile only; no tests or gameplay/demo comparison.
+- `2026-11-08` — **D6 CON tile overrides in standable reactions**: SEENINE/OOZFILTER state transitions, linked targets, CRACK1/FIREEXT damage gates and blast-triggered hitag chains now resolve the active CON tile labels, retaining Atomic IDs as fallbacks. Static script/runtime source review, `cargo fmt --all`, `git diff --check`, and targeted `room-duke` compile pass with existing warnings; no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D6 scripted tripbomb actor dispatch**: `tick_tripbombs` now selects the active CON `TRIPBOMB` tile (Atomic 2566 fallback), matching placement, duplicate detection, radius targeting and the `STAT_STANDABLE` actor pass. Custom CON tile overrides therefore reach the native fuse/laser lifecycle after spawn. Static CON/Atomic path review, formatting, diff check and targeted compile only; no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D6 standable list ownership**: the standable phase now copies the session's current sprite links into `BuildWorld` before dispatch and copies the mutated links back afterward. BOLT spawns/deletes and detonation/tripbomb blast effects therefore share one list and survive the phase instead of one list overwriting the other. Formatting, diff check and targeted compile pass with existing warnings; no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D6 standable actor dispatch order**: Room now snapshots the linked `STAT_STANDABLE` traversal order and dispatches its implemented BOLT/water-maker, SEENINE/OOZFILTER and tripbomb handlers per actor, rather than running three whole-list passes. This preserves cross-actor mutation and RNG order within Chocolate's single `movestandables` pass. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass with existing warnings; no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D6 tripbomb hit arms without draining blast power**: tripbomb `IFHIT` now consumes the pending weapon hit only to set the 16-tic fuse, preserving `sprite.extra` as the explosion-strength value. This matches Chocolate's temporary-health probe and restore. Static `actors.c` review, formatting, diff check and targeted compile only; no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D6 radius actor damage ordering**: RPG and CON `hitradius` now queue actor/standable damage and knockback before the source's restricted civilian/statue/pool-ball `checkhitsprite` transitions; transition handling no longer cancels the queued blast damage or runs for unrelated actor tiles. Static `actors.c::hitradius` review, `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass with existing warnings; no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D8 title/finale animation clock**: desktop title splash/logo and finale frame selection now use accumulated monotonic elapsed milliseconds, not `rendered_frames × 16 ms`; entering the finale resets its animation origin. This fixes `TITLEDEF` frame cadence at variable refresh rates, while ANM sound cues and the broader front-end checklist remain open. `cargo fmt --all`, `git diff --check`, and targeted `room-app` compilation only; no tests or gameplay comparison.
+- `2026-11-08` — **D8 browser F7 camera**: native Duke web play now toggles the third-person shoulder view with F7. The browser keeps it in local input/render state and renders a copied player view, so cooperative simulation state and lockstep checksums are unaffected. Static call-path review and targeted compilation only; no browser session, gameplay, tests, or reference comparison.
+- `2026-11-08` — **D7 per-player camera release**: leaving a VIEWSCREEN now clears only the `CAMERA1` latch matching that player's stored remote-camera pose; it no longer disables every active camera, which could disrupt another multiplayer seat. Static `sector.c::checksectors` call-path review, formatting, `git diff --check`, and targeted compilation only; no gameplay, tests, or reference comparison.
+- `2026-11-08` — **D6 normal knee uses shared impact resolver**: the normal weapon now retains its `KneeHit` result and enters the same spawned-actor, prop, wall, and tagged-switch path as CON `pkick`; this prevents the impact work from being quick-kick-only. Static `player.c::shoot(KNEE)` review, formatting, diff check and `cargo check -q -p room-duke --lib` only; tests and gameplay/reference comparison were not run.
+- `2026-11-08` — **D6 knee impact sprites and transitions**: a connected knee hit now spawns Chocolate's zero-size `KNEE` actor plus offset `SMALLSMOKE`; sprite targets run the existing `checkhitsprite` prop transitions and wall targets run `checkhitwall` after the bottom-wall peer adjustment. The actor's impact strength excludes the later steroid bonus while the queued hit damage includes it. Static `player.c::shoot(KNEE)` review, formatting, diff check and targeted compilation only; no tests or gameplay/reference comparison.
+- `2026-11-08` — **D6 knee damage strength**: normal and quick knee hits now use the CON `KNEE` actor strength plus Chocolate's `TRAND&7`, with the `MAXPLAYERHEALTH/4` steroid bonus while the steroid timer is active. Atomic defaults to strength 10 / max health 100 when no script is supplied. Static `player.c::shoot(KNEE)` and Atomic `USER.CON` review, formatting and targeted compilation only; no tests or gameplay/reference comparison.
+- `2026-11-08` — **D6 quick-kick switch hits**: the knee hitscan now returns its actual wall/sprite target and routes tagged switch tiles through the existing switch interaction path for solo and local co-op. Ordinary actors and lotag `-1` exits are excluded, preventing unrelated hits from being treated as switches. Exact Chocolate wall-material response remains open. Static `player.c::shoot(KNEE)` / `sector.c::checkhitswitch` review, formatting, diff check and targeted compilation only; no tests, gameplay or dynamic/reference comparison.
+- `2026-11-08` — **D6 player quick kick**: CON `pkick`'s 14-tic countdown fires the player knee hit on the `doincrements` tic where it reaches 8, without requiring weapon fire or changing `kickback_pic`; frozen-palette players do not advance or fire it. The existing knee hitscan applies damage and queues `KICK_HIT` for solo and local co-op seats. Static Chocolate `player.c::doincrements` / `shoot(KNEE)` review, formatting, diff check and targeted compilation only; no tests, gameplay or dynamic/reference comparison.
+- `2026-11-08` — **D3 translucency table**: `PALETTE.DAT` parsing retains its optional 65,536-byte palette-index blend table. Face-, wall- and floor-aligned sprites composite for `cstat` bit 2 with bit 9 reversing the table inputs; wall surfaces composite for bit 7 / reverse bit 9. Missing tables preserve opaque rendering. Translucent sector planes and visual reference verification remain open. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-build -p room-build-engine -p room-duke --lib` pass. No tests, screenshots or game comparison were run.
+- `2026-11-08` — **D6/D11 scripted handbomb tile resolution**: handbomb throws now resolve `HEAVYHBOMB` from the active CON (`26` fallback), and the native actor dispatch/mover use that same tile for bounce and remote detonation. This is a custom-CON compatibility slice, not full pipebomb parity. Formatting, diff check and targeted crate compilation only; no tests, gameplay or dynamic/reference comparison.
+- `2026-11-08` — **D6/D11 scripted RPG tile resolution**: native RPG and Devastator shots now resolve projectile tile IDs from the active CON `RPG` label (Atomic 2605 fallback); projectile movement and radius-hit attribution use that same runtime tile. This closes a focused user-CON compatibility gap, not the D6/D11 acceptance criteria. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass with existing warnings. No tests, gameplay, or dynamic/reference comparison was run.
+- `2026-11-07` — **D8 pause/menu music**: added a native Duke Escape pause menu and F10 quit confirmation with resume/save/load/sound setup/quit actions. Pause and quit screens select CON `music 0` environment music, then restore the active level track on resume; Sound Setup keeps the correct track when music is re-enabled. Static Chocolate `menues.c` / `gamedef.c` review and targeted compile only; no dynamic comparison.
+- `2026-11-07` — **D8 listener `opos` phase**: desktop sound attenuation, panning and LOS now use Chocolate's player position snapshot from input-phase entry instead of the post-movement pose. Static `player.c`/`sounds.c` review, format/diff checks and targeted compile only; no audible/gameplay comparison.
+- `2026-11-07` — **D8 exit-countdown sound gate**: new `xyzsound` starts are suppressed for the final 78 tics before level exit, while stop events still run. Static `sounds.c::xyzsound` review, format/diff checks and targeted compile only; no audio/gameplay comparison.
+- `2026-11-07` — **D8 `xyzsound` owner arbitration**: the mixer now follows Chocolate's four-voice rejection and conditional stop-latest rule using first-owner identity, current voice count and dead-badguy source state; player-origin sounds carry their sprite owner. Static `sounds.c::xyzsound` review, format/diff checks and targeted compile only; no playback/gameplay comparison.
+- `2026-11-08` — **D7 VIEWSCREEN cache lifecycle**: invalidate the cached 64×48 camera image when changing campaign maps, replacing the session for Atomic demo playback, or restoring a native save. Prevents repeated camera indices/tics from showing the prior world's feed. Static call-path review, formatting, diff check and targeted compile only; no gameplay/reference comparison.
+- `2026-11-08` — **D7 VIEWSCREEN exit priority**: the use edge now exits the active remote camera before scanning for another screen, and releases active CAMERA1 latches. This prevents nearby monitors from consuming an intended exit. Static Chocolate control-path review, formatting, diff check and targeted compile only; no gameplay/reference comparison.
+- `2026-11-07` — **D7 VIEWSCREEN death return**: a dead APLAYER now exits remote camera view and releases the active CAMERA1 monitor latch, matching Chocolate's APLAYER death branch. Static `actors.c` review, format/diff checks and targeted compile only; no gameplay/screenshot comparison.
+- `2026-11-07` — **D5 badguy movesprite**: ported Chocolate's 1024-unit large-actor and 292-unit LIZMAN clip radii; candidate Z now respects cached actor ceiling/floor bounds and reports the sector-coded blocked-Z result. Existing stayput/boss/water rollback and random-turn branches retained. Static source review/compile only; no dynamic comparison.
+
+- `2026-11-07` — **D5 badguy sector links**: after CON `move()` passes stayput/boss/water rejection, Room now synchronizes `SpriteLists` when clipmove accepted a sector transition, matching Chocolate’s delayed `changespritesect`. Static source review and compile only; no gameplay/demo comparison.
+
+- `2026-11-07` — **D2/D5 clipmove wall sprites**: added Chocolate’s `cstat&16` rotated wall-sprite clip quad, visible-side rule, endpoint blockers and `49152+sprite` hit code to the shared Build clipmove. Floor-sprite clips remain open. `cargo fmt --check`, `git diff --check`, and targeted crate compile only; no gameplay/reference comparison.
+
+- `2026-11-07` — **D2/D5 clipmove floor sprites**: added Chocolate’s `cstat&32` oriented floor-quad construction, Z-side filtering, visible-edge tests and inflated edge clips with native sprite hit codes. All three Build sprite orientations now contribute to clipping. `cargo fmt`, `git diff --check`, and targeted crate compile only; no gameplay/reference comparison or golden fixture yet.
+
+- `2026-11-07` — **D2/D5 clipmove final sector**: ported Chocolate’s reverse-order all-sector fallback when the clipped point is outside the portal BFS; sector selection uses vertical clearance and sloped ceiling/floor planes. `cargo fmt`, `git diff --check`, targeted crate compile only; no runtime/reference comparison or golden fixture.
+
+- `2026-11-07` — **D2/D5 clipmove sprite ordering**: clipmove now consumes live `headspritesect` / `nextspritesect` order for candidate sprites in portal-BFS sectors. Hooked it to native player, badguy, faller, poolball, and pipebomb movement. Static source review, formatting, diff and targeted compile only; no runtime/reference comparison.
+
+- `2026-11-07` — **D6 RPG ceiling impacts**: `hitscan_full` plane hits now enter the RPG impact path, apply Chocolate’s sky/palette deletion guard, and call `checkhitceiling` for upward impacts; sector-list links update before detonation. The shared radius pass was subsequently extended to call the same effect when Chocolate's ceiling-radius gate succeeds. `cargo fmt`, `git diff --check`, targeted compile only; no gameplay/reference comparison.
+- `2026-11-07` — **D6 ceiling-light tile lookup**: the six breakable ceiling-light source/busted pairs and `GLASSPIECES` now resolve from active CON labels with Atomic ID fallbacks. Custom tile definitions therefore feed the hit effect and shards. Static Chocolate `checkhitceiling`/`ceilingglass` review, format/diff checks and targeted compile only; no runtime/reference comparison.
+- `2026-11-07` — **D6 frozen slime glass tiles**: GREENSLIME shattering now uses the active CON `GLASSPIECES` label, matching the ceiling-glass path, with Atomic fallback 1031. Static `actors.c` review, format/diff checks and targeted compile only; no gameplay/reference comparison.
+- `2026-11-07` — **D6 underwater air**: added Chocolate's 390-tic air reserve, surface refill, oxygen-free scuba check, Q8 drowning damage cadence and Atomic low-health pain cue; `airleft` / `extra_extra8` now round-trip through Atomic `.SAV` player records. Static `player.c`/`duke3d.h` review and compile only; no dynamic comparison.
+
+- `2026-11-07` — **D5 CON resetplayer**: opcode 42 now defers solo restarts to the host and implements multiplayer respawn pose selection from captured Chocolate-order `po[]` starts (seat index in co-op; `TRAND` selection in DukeMatch, with RNG consumed at opcode time), including baseline player/body reset. Static `gamedef.c`/`premap.c` review, format/diff checks and targeted compile only; no gameplay comparison.
+- `2026-11-07` — **D6 tripbomb placement filter**: duplicate-charge detection now resolves the active CON `TRIPBOMB` define instead of assuming Atomic tile 2566, so add-on CON scripts use the same tile for placement and exclusion radius. Static `player.c::shoot` review, format/diff checks and targeted compile only; no gameplay comparison.
+- `2026-11-07` — **D6 Shrinker target scan**: SHRINKSPARK radius pass now follows Chocolate's seven-stat order, separate blocking/shootable eligibility, badguy LOS, owner/small-target and SHARK rules, player feet-distance origin, and target/source LOS Z offsets; active CON `TRIPBOMB` tile is resolved. Build `dist()` is still approximated and transformations are still open. Static `actors.c::hitradius` review, formatting, diff check and targeted compile only; no runtime/reference comparison.
+- `2026-11-07` — **D6 Build 3D radius metric**: implemented Chocolate's integer `FindDistance3D` approximation in `room-build-engine` and replaced horizontal-plus-vertical estimates in Shrinker, RPG and shared radius target scans. Input Z is shifted by four bits as in `actors.c::dist`. Static `global.c`/`actors.c` review, formatting, diff check and targeted compile only; no gameplay/demo comparison.
+- `2026-11-07` — **D6 pistol cycle**: pistol ammo is now consumed when firing starts; the frame-1 hitscan runs that same tic, SHELL is ejected at frame 2, and empty/magazine reload timing follows the 12-round boundaries with EJECT_CLIP/INSERT_CLIP cues. Static `player.c::processinput` and `game.c` shell initialization review, format/diff check and targeted compile only; no gameplay/demo comparison. Muzzle visibility flash remains unmodeled.
+- `2026-11-07` — **D6 chaingun cadence/casings**: the first activation now advances into the same tic's kickback; each 3-tic fire frame consumes ammo, spawns the native SHELL with the chaingun's +32 velocity and +3<<8 height adjustment, queues CHAINGUN_FIRE before hitscan effects, and preserves held-fire loop cadence. Static `player.c::processinput`/`game.c` review, formatting, diff check and targeted compile only; no runtime comparison.
+- `2026-11-07` — **D6 shotgun activation timing**: the shotgun now advances kickback on its activation tic, matching Chocolate's increment-before-frame-switch order; the tic-4 volley therefore no longer starts one tic late. Pistol fire audio now queues after its frame-1 hitscan, matching `shoot()` then `spritesound()`. Static `player.c::processinput` ordering review, formatting, diff check and targeted compile only; no gameplay/demo comparison.
+- `2026-11-07` — **D6 Devastator activation**: Devastator now starts `kickback_pic`, toggles its barrel and queues CAT_FIRE on the input tic, then advances into Chocolate's frame-2 state immediately. Its first and second projectiles now arrive on frames 3 and 5 without the prior one-tic start delay. Static `player.c::processinput` review, format/diff check and targeted compile only; no runtime/demo comparison.
+- `2026-11-07` — **D5/D6 tiny Shrinker targets**: CON `ifhitbyweapon` now returns false for zero-damage SHRINKSPARK hits when target `xrepeat < 24`, preserving the queued marker as Chocolate's early return does. Static `actors.c::ifhitbyweapon`/Atomic tile review, format/diff check and targeted compile only; no gameplay/demo comparison.
+- `2026-11-07` — **D6 APLAYER Shrinker hit routing**: removed the non-player `xrepeat < 24` early-out from Room's player-hit consumer. Chocolate applies that threshold only in the non-APLAYER branch; player zero-damage hits now follow the ordinary player hit/metadata consumption path. Static `actors.c::ifhitbyweapon` review, formatting, diff check and targeted compile only; no runtime comparison.
+- `2026-11-07` — **D4/D5 CON presentation opcodes**: opcode 68 `print` now writes the operand as a decimal stdout line; opcode 14 `palfrom` applies the requested timed RGB flash to the actor's owning player in actor order. Static `gamedef.c` inspection and `cargo check -q -p room-duke --lib`; no runtime/reference comparison.
+
 ## 0. Dashboard
 
 | Milestone | Title | Status | Approx % | Active focus |
@@ -43,16 +124,16 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 | **S5** | room-server M5 | `done` | 100% | §6 relay + welcome budgets; daemon script |
 | **D0** | Duke ADR + scaffolding | `done` | 100% | — |
 | **D1** | Duke reference traces | `done` | 100% | — |
-| **D2** | Duke engine primitives | `done` | 100% | XOR inside + Chocolate clipmove (23 wall-only; `initspritelists`) |
-| **D3** | Duke world + static view | `done` | 100% | Soft path + CLI FreeFly; interactive desktop/web shell deferred |
+| **D2** | Duke engine primitives | `done` | 100% | XOR inside + Chocolate clipmove (23 wall-only; `initspritelists`); all three sprite orientations and live sector-list scan order are implemented; new paths still need golden vectors |
+| **D3** | Duke world + static view | `in_progress` | 75% | Native desktop/browser paths render Build walls, flat/sloped planes and sky, and face-, wall-, and floor-aligned sprites with ART animation, offsets/flips, per-pixel depth, `LOOKUP.DAT` palette remaps and `PALETTE.DAT` shade rows. Plane sampling now honors first-wall-relative alignment, XY swap, X/Y flip, double-smoosh, tile-size scaling and fractional panning. Atomic's optional 256×256 translucency table composites face-, wall- and floor-aligned sprites plus translucent wall surfaces, respecting each surface's forward/reverse `cstat` bits. Remaining: visibility shading, plane translucency, exact classic rasterization, overlapping-sector correctness, and E1L1–E4L11 golden coverage/reference captures. |
 | **D4** | Duke CON compiler | `done` | 100% | Atomic script SHA = Chocolate; runtime opcode corpus → D5 VM |
-| **D5** | Duke core sim loop | `in_progress` | 15% | **Real** frontier: DEMO1 **tic 0**. Map load now matches the vanilla seed (13 `spawn` rolls). Next: faithful CON VM (`parse()` with world access). The old 0–1050 relied on `// TEMP` fix-ups (now off) |
-| **D6** | Duke weapons + damage | `in_progress` | 5% | Blocked on D5. Legacy fix-up path stops at tic 788 (`players[0].horiz`) |
-| **D7** | Duke sectors + effectors | `not_started` | 0% | — |
-| **D8** | Duke audio + front end | `not_started` | 0% | — |
-| **D9** | Duke saves + demos | `not_started` | 0% | — |
-| **D10** | Duke multiplayer + server | `not_started` | 0% | — |
-| **D11** | Duke campaign + switch shells | `not_started` | 0% | Converter frozen as export |
+| **D5** | Duke core sim loop | `in_progress` | 81% | Native-only DEMO1 was last measured matching reference state and RNG through tic 134; tic 135 remains unverified after a static fix for Chocolate's omitted post-hitscan ricochet RNG roll (Atomic sound id 1), which shifts later shotgun spread and can change the extra `JIBS6` spawn. CON implements `wackplayer` with opcode-time TRAND and player view-roll state, `tossweapon` with Chocolate's weapon map/RNG/drop initialization, `resetactioncount`, `respawnhitag`, `mikesnd`, `sizeto`, `debris`, `guts`, `pstomp`'s visible-target trigger/knee cycle/impact and player quickkill/frag state, `operate`'s deferred sector near-tag activation, `ifawayfromwall`, `ifrespawn`, `ifbulletnear`, `ifnotmoving`, `ifcanshoottarget`, and `ifnosounds` using the mixer's first active owner per sound ID plus same-tic CON sound start/stop updates. A first native STAT_FALLER path now advances tagged hit-sprites through Chocolate's `cstat&48` routing (including its wall-switch/special-tile exclusions), startup health, accepted-hit damage filtering, linked-group fall state, activation delay, randomized launch, horizontal damping, sky-aware gravity and floor cleanup in native tic order. Floor cleanup now emits SCRAP6 with Chocolate's ordered seven RNG draws per piece. Room now sends `ssp` through a shared ordinary `movesprite` path: portal/wall/sprite clip result is retained, sector links change only on an actual transition, Z uses Chocolate's cached ceiling/floor bounds, and a clear XY result with blocked Z returns `16384 + sector`. The `movefallers` IFHIT probe now mirrors non-player `ifhitbyweapon` health gating, tiny SHRINKSPARK early return, active-owner propagation and non-trigger damage rollback. SE19 now uses Chocolate's STAT_MISC+exact-sector IFHITSECT probe. Badguy movement now applies Chocolate's stayput/boss/water rollback and random-turn branches, dedicated large-actor/LIZMAN/generic clip radii, cached vertical-bound checks, and updates Build sector lists only after the move is accepted. Clipmove’s no-BFS sector fallback now selects among overlapping sectors by vertical clearance and sloped planes; player, badguy, faller, poolball, and pipebomb clipping now consume Chocolate’s live per-sector sprite order. Other exact Build sector/sprite collision edges, remaining actor movement cases, plus opcode/demo/route coverage remain incomplete. Static compile check only; no runtime comparison was run. |
+| **D6** | Duke weapons + damage | `in_progress` | 74% | Pistol now consumes ammo at initiation, shoots at frame 1, ejects SHELL at frame 2 and implements magazine reload cues. Pistol/shotgun/chaingun wall hits now run Chocolate switch/material handling at every valid range and place source-aligned BULLETHOLE decals with the native suppression and duplicate-distance checks. Player clipmove now carries collision codes into Chocolate-style cactus and forcefield contact damage/feedback. Shotgun now begins its kickback on activation and fires its volley at frame 4; chaingun starts its 3-tic volley cadence on the activation tic, ejects SHELL casings and consumes each round before its shot. Empty weapons auto-select by Atomic's default order; RPG slot 4 consumes ammo and resolves its projectile tile from CON `RPG` (Atomic tile 2605 fallback), launches at speed 644 and preserves parsed CON strength; projectile wall/sprite collision spawns an animated impact flash and applies the three RPG radius-damage bands to visible targets. CON `hitradius` now scans Chocolate’s default/actor/standable/player/faller/dummy/misc status order, with the blocking-sprite LOS branch and APLAYER feet-origin/player-height LOS rules; SEENINE/OOZFILTER and BOX/TREE1/TREE2/TIRE/CONE target IDs resolve through active CON labels; radius eligibility and LOS preserve the separate AFLAMABLE branch; hitscan/radius object impacts share `checkhitsprite` transitions, debris, sound and deletion effects. Normal knee cadence, short-range badguy damage and `KICK_HIT` are implemented; both normal knee and `pkick` now use CON `KNEE` strength + `TRAND&7` and the active-steroid max-health bonus; `pkick` fires `shoot(KNEE)` at tic 8 for solo/local co-op and respects the frozen-player palette guard. Tagged switch tiles reached by the knee hitscan use the existing switch path, while its spawned KNEE sprite effects and exact wall-material response remain open. CON `tossweapon` now drops the current weapon sprite with Chocolate's `checkweapons()` random branch and RPG/handbomb `EXPLOSION2` fallback. Slots 6/11 have partial Shrinker/Grower paths; slot 8 tripbomb placement/arming/laser lifecycle; slot 9 Freezer firing, clipped flight, bounce/fizzle, hit metadata, `FREEZERHURTOWNER`, and direct forcefield/glass/screen/dispenser/ATM/technical-wall/light responses; pipebomb/remote behavior (including map-placed HEAVYHBOMB item respawn) and Devastator burst are partial. SHRINKSPARK target selection follows Chocolate's seven-stat scan, blocking-vs-shootable branch, LOS, owner/small-target/SHARK exception, player feet origin and script-defined TRIPBOMB. Player APLAYER Shrinker hits now start Atomic `PSHRINKING`, play the shrink cue/flash, shrink and restore sprite repeats on the `SHRUNKCOUNT`/`SHRUNKDONECOUNT` schedule, and kill the player if its sloped sector gap is below 24; Grower hits apply the CON flash and cue. NPC transformation scripts, additional APLAYER particle branches and full APLAYER CON execution remain open. Freezer `CAT_FIRE`, Shrinker `SHRINKER_FIRE`, and Grower `EXPANDERSHOOT` now queue at activation; Freezer activation advances on the same tic and its held-fire recovery branch is checked before incrementing the next cycle. Shrinker/Grower shots now account for Chocolate's activation tic storing frame 1 without entering that tic's increment arm. Chocolate `sync.bits` bit 6 carries full/bullet-only auto-aim mode through desktop and demo input; pistol/shotgun/chaingun hitscan uses any enabled mode, while RPG, Freezer, Shrinker, Grower and Devastator require full mode for projectile targeting. Desktop archived `duke_autoaim` selects mode 1/2; browser uses full mode. `moveplayers` consumes queued APLAYER hits for health and directional knockback, applies god-mode/Shrinker and default coop friendly-fire rules, initializes Atomic's `shield_amount` from `gamestartup[3]` (100 default), and absorbs 20–49% of health loss using Chocolate's conditional TRAND. Remaining: exact Build collision/target filters, Atomic actor-by-actor shrink/grow response beyond APLAYER, other direct wall/ceiling impacts, weapon view/HUD parity, and DEMO1 sync. Static Chocolate source review and crate compilation only; no dynamic comparison. Native `--give-all` provides the arsenal. Full-screen water and heat/slime palette selection now reads the five optional six-bit RGB tables at the tail of Atomic `LOOKUP.DAT`; palette-bank shade tables remain open.
+| **D7** | Duke sectors + effectors | `in_progress` | 82% | ART `picanm` cycles render on the deterministic 120 Hz clock. `animatewalls` tracks screen-break and force-field state; native 15 Hz `movecyclers` animates CYCLER shade ranges and GPSPEED sets sector speed. Player `Open` neartags and flips Atomic wall and sprite switches, toggles tagged force fields and `ACTIVATORLOCKED` sector bits, triggers tagged activators and shade-cycler toggles, and secret/exit sectors update player/session state. Touchplates trigger linked activators and move/carry their floor; master switches count down and operate the currently supported sector movers. Tagged `RESPAWN` markers count down, create a `TRANSPORTERSTAR`, and respawn their target sprite. `monsters_off` now culls badguy map sprites and prevents enemy-target respawn markers from arming. Sector 9 sliding walls, first-pass SE11 swing doors with the linked ACTIVATOR hitag gate and badguy/player obstruction handling, and SE15 translating sliding doors (T4 travel counter and T5 active mode), lotag 16–22 plane motion, lotag 27 / SE20 extend-o-bridge motion, SE17 paired elevator platform/actor transfer, partial SE18 Kroz room-over-room plane effects, partial SE5 boss elevator and laser attack, partial SE6/SE14 train route movement and SE30 locator-driven subway translation, SE19 explosion-triggered shield shutdown, SE2 quake and SE33 debris, timed SE130/SE131 explosion emitters, SE25 piston ceiling cycle, SE26 shade-directed cycling escalator (T4/T5 origin, actor gravity on sloped destination floors), SE29 sine-wave floor displacement plus aligned four-wall slope, SE28 tagged lightning storm/strike cycle, SE35 drilling ceiling, SE24/SE34 conveyor impulses with tagged switch toggles, SE31 true-drop-floor and SE32 true-drop-ceiling movers now run. CON `addinventory ACCESSCARD` grants palette-matched keys; the status bar shows them, and access switches enforce keys, animate for 12 tics, activate and consume the key. First-person `access_incs` now draws the palette-matched hand/card and laser phases while hiding the weapon. Tagged sprite switches are reachable through visible connected sectors. SE3/SE4 random lights, SE8/SE9 elevator shade transitions, SE10 automatic activation, SE12 switch lights, player hitscan ceiling-light breakage, and the SE16 reactor ceiling cycle now run. Lotag-30 SE0 rotators link to SE1 pivots, rotate shared wall vertices, carry grounded occupants, and raise/restore the floor over the native transition envelope. `Open` now selects matching tagged `CAMERA1` actors through `VIEWSCREEN` sprites and toggles a deterministic remote camera pose; active cameras are latched for the monitor animation, and the next use edge exits before another screen is selected. The selected monitor receives a 64×48 palette-quantized render of its linked camera, cached and refreshed at the Chocolate 12-tic cadence; mirror destination sectors initialize and the nearest projected mirror renders from a reflected camera; mirror-sector composition, visibility scaling, multiple mirrors and raster parity remain open. Death returns the player from camera view and releases the active latch; camera feed caches clear on campaign transitions and native save restore. Other transition state and exact tint remain incomplete. SEENINE/OOZFILTER hits now run their tagged delay and effector activation chain; visible blast hit tests now queue damage for CRACK1–4/FIREEXT; tagged sources arm matching SEENINE/OOZFILTER groups, CRACK consumes supported source types and emits `RANDOMSCRAP` debris/earthquake effects, and FIREEXT emits its explosion, scraps and hitradius before removal. SE36 toggles and fires `COOLEXPLOSION1`, `SPIT`, `FIRELASER`, `RPG`, `FREEZEBLAST` and `SHOTSPARK1`/`SHOTGUN`/`CHAINGUN` on its 130-tic cadence. `COOLEXPLOSION1` now collides with walls/planes/players, damages players, stops and fades after 40 tics, and queues `WIERDSHOT_FLY`; SPIT/FIRELASER flight and direct damage plus RPG/freezer launch parameters are ported. Exact CRACK/FIREEXT random-call and audio ordering, other impact edge cases, exact interpolation registration, train collision response, full obstruction/overlap handling and DEMO2/3 parity remain open |
+| **D8** | Duke audio + front end | `in_progress` | 53% | Desktop/browser native paths load CON `definesound` samples and positional actor sounds; `soundonce`, `stopsound`, single-player `globalsound`, loop flags, Chocolate's one/four per-sound voice caps, exclusive talk voices, and `definesound.pr` priority arbitration through the 32-voice pool are carried through the mixer. Same-ID owner arbitration now uses stable voice-start ordering, unaffected by `swap_remove`. `m&128` global and `m&16` non-attenuated positional modes are preserved. The mixer follows Chocolate's `FindDistance3D`/`xyzsound` distance floor, `MV_Play3D` gains and the `cansee` occlusion penalty. Ambient markers work. Browser native Duke now selects the active campaign map's MIDI from its compiled CON `music` table when audio unlocks and on map transitions. Desktop has native F4 controls; browser hosts can set sound/music/talk/lockout/ambience/stereo options and Atomic-range volumes through `roomSetDukeAudioOptions`. Both shells apply pitch ranges plus underwater pitch overrides and signed `definesound.vo` distance adjustments. The desktop F4 menu also includes archived bullet-only/full auto-aim selection and four-unit volume steps. Duke `MUSICANDSFX` reverb zones use Chocolate's sample-rate-scaled multi-tap/IIR feedback network; zone `T1` now follows Chocolate's per-marker enter/leave edges in STAT_FX order, with current `FX_SetReverb` level saved in `.fsave`. F7 third-person camera is available on desktop and web; the web toggle stays presentation-local for lockstep. Native quote text, an animated TIP tile, a progressive Build-wall Duke automap with sprite markers, Atomic F1 help, F11 BRITABLE brightness, and every vanilla `DN` solo command in Atomic `GAME.C::cheatquotes[]` now executes in the desktop shell, including `skill#`/`scotty###` routing, actor toggles, inventory, map reveal, and the intentional `time` no-op. Exact legacy quote presentation and the `debug` cache-lock diagnostic remain open. Title and finale animation selection uses monotonic elapsed milliseconds, so it follows authored rates at variable refresh rates; E1/E2/E4 finale frames now queue Chocolate sound cues through CON labels and the native mixer; entering a finale resets its animation origin. Atomic `music` tables select layered-GRP MIDI at campaign map start/transitions; F5 reports the current title and Shift-F5 cycles while that quote is active. Escape opens a native pause menu (resume/save/load/sound setup/quit), F10 opens quit confirmation, `music 0` supplies the menu track, and resume restores level music. Desktop and browser load `DUKE.RTS`, decode its ten VOC/WAV entries into reserved mixer IDs, and play them on Alt+F1..F10 while honoring sound/lockout options; the active RTS voice gates overlapping requests as Chocolate's `rtsplaying` latch does. Desktop Room sessions also broadcast bounded presentation-only RTS requests outside tic input. This auxiliary envelope is Room-specific, not Chocolate's network protocol; desktop shows `RTS PLAYING` for any active local or peer-delivered RTS voice. Browser peer replication and its latch indicator remain open. Device-specific pool sizes, libc-rand pitch parity, audible pan calibration, other ANM cue tables and most of the D8 front-end checklist remain open |
+| **D9** | Duke saves + demos | `in_progress` | 84% | Room-native `.fsave` and checksummed `.fdem` recording/playback are implemented; desktop `record` / `stop` capture Duke inputs, pre-tic weapon requests/cycles and post-tic hashes, and `playdemo` restores the embedded initial save before verified playback. Native Duke `record` / `stop` now also writes a matching Atomic v117 `.dmo` with seat-ordered inputs and recorded coop/fire, aim-mode and weapon-choice metadata. Atomic `.DMO` playback supports 1–8 seat-ordered input streams. Both Atomic demo session builders load map/CON from ordered GRP layers and build the recorded skill and roster. Desktop `playatomicdemo <path.dmo>` starts native playback from the recorded map and now follows native campaign exits while retaining the demo input cursor across loaded maps. `GAME#.SAV` parsing retains Atomic world tables, CON pointers, sprite flags, `weaponhit`, raw player record and opaque `po[MAXPLAYERS]`; encoding writes the modeled `saveplayer` payload. `DukeSession::save_atomic_sav` refreshes modeled live state into an imported SAV template, or creates a zero-initialized Atomic 1.5 model for a fresh supported session; F2/F3 write/read the `.sav` companion. Player-record tail parsing/export now follows the 932-byte 32-bit or 944-byte 64-bit C ABI stride (plus read compatibility for Room's earlier 936-byte draft), rather than applying 32-bit offsets to every target. Remaining: refresh unmodeled state, accurately initialize all default Atomic tables for game-compatible standalone loads, save/load byte round-trip, route playback sync and reference validation. Static ABI/source review, formatting, `git diff --check` and compile check only; no tests, gameplay or dynamic/reference comparison |
+| **D10** | Duke multiplayer + server | `in_progress` | 78% | Native ten-byte Duke input codec and server-side 30 Hz frame ring accept FTR2 inputs, release seat-ordered frames and fill missed commands by briefly repeating then neutralizing. The optional verifier can run a native `DukeSession` from the configured Atomic GRP and compare frame checksums. `DukeSession` supports 1–8 seat APLAYER starts in all three Atomic `ud.coop` modes, matching each start's `lotag` and assigning in STAT_PLAYER head order; its retained `po[]` table starts with the map header and filters markers by mode; DukeMatch/no-spawn multiplayer applies Chocolate's initial weapon/inventory reset, while co-op preserves the carried loadout. Lethal APLAYER damage initializes the one-shot death tilt/palette, freezes controls and credits self/player frags on the next processinput transition. Dead-player camera follows the body, turns toward its killer, updates Build sector/water state and runs `updatesector`/`pushmove` before deriving the floor-relative death roll. APLAYER water/angle movement and Holoduke lifecycles resolve against each actor’s owning seat. Dead seats keep movement and firing neutral; a rising `INPUT_OPEN` edge queues the existing multiplayer `resetplayer` respawn path in co-op/DukeMatch, while no-spawn mode stays disabled. Player frags are retained in an 8×8 session matrix saved in `.fsave`. Browser v2 rooms accept GRPs, validate and prepare native sessions before Ready, then consume authoritative seat-indexed Duke frames; weapon hotkeys/cycling are packed into `sync.bits`. Native desktop `--host`/`--join` applies explicit game mode/friendly fire, rejects setting mismatches through the lobby fingerprint, transports seat inputs, and piggybacks native checksums for desync detection. Marker edge cases, spectator flow, host-authoritative setting negotiation, remote-bomb selection, complete Atomic multiplayer save/load round-trip, desktop lockstep/mismatch runtime validation and cross-target checksums remain open |
+| **D11** | Duke campaign + switch shells | `in_progress` | 40% | `play-duke3d.sh` now defaults to `--runtime native`; `--runtime converter` remains explicit. Desktop and browser construct `DukeSession` directly from GRP maps and render the native soft frame. Desktop accepts standalone `--map path/to/user.map`, repeatable `--grp` add-on archives and a `--con` root script override; later GRPs override duplicate map, CON/include, ART and sound names. Native RPG/Devastator and handbomb projectile paths resolve `RPG` and `HEAVYHBOMB` from the active CON with Atomic fallbacks. Browser exposes `roomSetDukeCon` and `roomAddDukeConInclude` for the native GRP session loader; registered external includes take precedence over GRP includes. `roomStartDukeMap(grp, map, skill)` loads a standalone Build map in the browser with that same CON/include configuration. `roomAddDukeGrp` layers optional GRPs for browser single-player map/script/tile/sound lookup, with later entries overriding earlier ones; browser co-op currently rejects local add-on GRPs because the lobby protocol does not transfer or fingerprint them. `playatomicdemo <path.dmo>` starts Atomic input playback from the recorded map and keeps playing across campaign exits using the native route loader; each transition refreshes the restart snapshot and the active `--con` root/external include resolver now applies to the demo's initial map too. Browser single-player and lockstep lobby sessions now retain episode/map progress across map loads, so subsequent Atomic exit requests route correctly. Bonus presentation, complete HUD and reference parity remain open |
 | **F0** | Face-swap scaffold + front composite | `done` | 100% | — |
 | **F1** | Head anchors | `done` | 100% | HEADANCHORS + estimator + Freedoom coverage |
 | **F2** | Bake | `done` | 100% | `bake_class` + `room faceswap bake` PK3 |
@@ -166,7 +247,7 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 **Priority override (2026-10-12):** M7 + M10–M13 done. Active **M14** (1.0 hardening).
 **M8** when Heretic/Hexen IWADs available; M9 remains deferred.
 **Server track:** `docs/22-room-server.md` S1–S5 (parallel to M14).
-**Duke track:** **D1–D4** done. **D5/D6 reset to honest numbers (2026-11-03).** The native sim alone diverges at DEMO1 **tic 0**. The earlier "bit-exact to 1050" came from 1,750 `// TEMP` per-tic snaps / RNG pads, now behind `DukeSession::trace_fixups` (off by default). Work from per-call krand diffs (`docs/duke-trace-howto.md` § krand log). Spec: `docs/25`.
+**Duke track:** D3/D5–D8, D10 and D11 are in progress; D1/D2/D4 are recorded complete under their listed gates. Native-only DEMO1 now matches through tic 69 after correcting the APLAYER water-bubble spawn RNG and deferring the final PSWIMMING ifrnd to the first WAIT tic. First remaining mismatch is tic 70: the APLAYER trailing bubble ifrnd still runs when Chocolate changes action and skips it. Animated walls and WATERBUBBLE destination-plane checks remain implemented. The earlier "bit-exact to 1050" came from 1,750 `// TEMP` per-tic snaps / RNG pads, now behind `DukeSession::trace_fixups` (off by default). Spec: `docs/25`.
 **Face-swap track:** **F0–F7** done (`docs/26`).
 **Survival Director track:** **SV0**–**SV9** + **MH0**–**MH4** done (`docs/27`). **MH5** optional / deferred.
 **Battle Royale track:** **BR0**–**BR9** + **BE1**–**BE12** + **S-BR1** / **S-BR2** (MVP) / **S-BR4** done (`docs/28` §8–§10). Deferrals: **S-BR2** OpenSkill + weekly reset.
@@ -178,6 +259,81 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 **UZDoom parity track:** **UZ0** done. **UZ1** and **UZ2** code complete locally (not `done` until CI). **UZ3** in progress (1048 imports, 909 builtins, 139 stubs; SkinChanged(2) makes GetSkin return 2; before that change GetSkin is base; Chocolate DEMO1 diverges at tic 441). **UZ4** in progress (`PowerDoubleFiringSpeed` halves a 4-tic second layer; the gun stays at 4). **UZ5** in progress (`A_StopAllSounds` clears the pistol, the shotgun, and both playing voices). **UZ8–UZ11** deferred (out of scope).
 
 ### Log
+- `2026-11-08` — **D6 full-screen palettes**: `LOOKUP.DAT` parsing now retains the five trailing six-bit RGB palettes; the Duke view applies Chocolate `setpal` precedence (night vision/FLOORSLIME, then underwater) to the scene and weapon framebuffer. Renderer reads the current snapshot and does not mutate playsim. In-game ART overlays drawn by the desktop shell (TIP, loogies, and Atomic help tiles) use that same palette; the entire desktop canvas now remaps its draw-list and late shell commands, including fills, text, patches, debug/quote overlays, help, and palette-flash fills, through the active palette. Static review of Chocolate `player.c::setpal` and LOOKUP layout; formatting, diff check and `cargo check -p room-build -p room-duke` only; no tests, gameplay or reference comparison.
+- `2026-11-08` — **D6 palette propagation to desktop ART overlays**: the renderer exposes the active Chocolate screen palette to the desktop UI tile path; TIP, loogies, and Atomic help images now use the same palette as the scene/weapon. Selection uses the player’s current sector, matching `setpal` even when a remote camera is active. The desktop canvas remaps the complete draw list and later shell commands, including status bar, text, patches, help, debug/quotes and palette flashes. Exact palette-dependent `palookup` shade composition remains open. `cargo fmt --all`, `cargo check -q -p room-duke -p room-app` and `git diff --check` pass with existing warnings; no tests, gameplay or Chocolate comparison.
+- `2026-11-08` — **D6 full UI palette remap**: desktop Duke now sends every draw-list fill/text color and decoded patch pixel through the active `LOOKUP.DAT` screen palette before upload; duplicate RGB samples are cached per frame to keep patch conversion bounded by the number of unique colors. This covers the Duke status bar, menus and draw-list UI; a final canvas-command pass also converts later help tiles, debug/quote text and palette-flash fills. Exact palette-dependent `palookup` shade composition remains open. `cargo fmt --all`, `cargo check -q -p room-duke -p room-app`, and `git diff --check` pass with existing warnings; no tests or runtime/reference comparison.
+- `2026-11-08` — **D6 late canvas palette remap**: the desktop performs a second pass over canvas commands emitted after the ordinary draw list, so Atomic help art, TIP/loogie overlays, quote/debug text and palette flashes also use the current screen palette. ART overlays are produced in the base palette and transformed exactly once. `cargo fmt --all`, targeted Duke/desktop compilation and `git diff --check` pass with pre-existing warnings; no tests, gameplay or reference comparison.
+
+- `2026-11-07` — **D7 VIEWSCREEN camera selection**: native `Open` now finds a forward-facing VIEWSCREEN and matching live CAMERA1 by hitag, switches the local player render pose to the camera, and exits back to the player on the next use press. Camera yvel tracks monitor activation. Static Chocolate review of `sector.c::checksectors`, `actors.c::VIEWSCREEN`, `game.c::animatecamsprite`; `cargo fmt --all`, `cargo check -q -p room-duke --lib`, and `git diff --check` pass (existing warnings). No gameplay or reference comparison was run; monitor texture refresh, exact near-tag precedence, death/level reset and mirrors remain open.
+- `2026-11-07` — **D7 VIEWSCREEN monitor feed**: the native software renderer now renders the linked camera into a 64×48 palette-indexed STATIC tile for the matching VIEWSCREEN. It uses a render-only world copy, so gameplay state remains untouched, and restores the original ART tile data after drawing. `cargo fmt --all`, targeted room-duke compile and `git diff --check` pass; no screenshots, gameplay or Chocolate comparison were run. Exact vanilla camera update cadence, tint/scanline treatment and multiple simultaneous feeds remain unverified.
+- `2026-11-07` — **D7 SE28 lightning**: statically ported the 65-tic initial wait, near-player storm start, 64–575 tic duration, thunder/slap cues, hitag-linked NATURALLIGHTNING toggles, SMALLSMOKE strike, 3D player-distance damage and red pain flash; the post-effector player-sprite sync now commits those health changes to APLAYER so later tics cannot restore stale health. Compile/format and diff checks pass; post-effector APLAYER sync preserves the damage. No gameplay or Chocolate comparison was run. Global visibility flash remains approximated by palette tint, and coop visual/RNG ordering is unverified.
+- `2026-11-07` — **D8 reverb-zone edge state**: native `MUSICANDSFX` lotag 1000–1999 markers now update their active T1 on radius crossings in Chocolate STAT_FX order and set/reset the session reverb level only at those edges. The selected level is included in `.fsave`; the desktop mixer reads session state instead of selecting an in-range zone at draw time. Static `actors.c::MUSICANDSFX` review; `cargo fmt --all`, targeted room-duke/room-app compile and `git diff --check` pass. No audio or gameplay comparison was run; hardware reverberation/audible parity remains unverified.
+- `2026-11-07` — **D5 CON `ifrespawn`**: opcode 71 now selects Chocolate's `respawn_monsters`, `respawn_inventory`, or `respawn_items` option after the badguy/inventory classifier. The seven Atomic inventory tiles match `game.c::inventory`; imported Atomic `.SAV` globals feed the actor CON environment, with absent settings defaulting off. At this checkpoint, `ifcanshoottarget`, `ifbulletnear`, `ifnotmoving`, and `ifnosounds` remained VM stubs. Static review of Chocolate `gamedef.c` / `game.c`; formatting, diff check, and crate compilation only, no gameplay/demo comparison.
+- `2026-11-07` — **D5 CON `ifbulletnear`**: opcode 70 now scans the live `STAT_PROJECTILE` list and applies Chocolate `dodge()`'s sector, projectile-owner, forward/approach dot products, and lateral cross-product threshold. A detected threat consumes the angle TRAND and rotates the actor; the updated angle is visible within the same CON run and retained afterward. At this checkpoint, `ifcanshoottarget`, `ifnotmoving`, and `ifnosounds` remained VM stubs. Static `gamedef.c`/`duke3d.h` review; formatting, diff check and crate compilation only, no gameplay/demo comparison.
+- `2026-11-07` — **D5 CON `ifnotmoving`**: opcode 82 now evaluates the exact `hittype.movflag` collision-mask expression from `gamedef.c`. Actor movement stores the last `movesprite()` return and leaves it unchanged on early-return paths, preserving the one-tic-old value that CON reads. Static `gamedef.c` / `hittype` review; formatting, diff check and crate compilation only, no gameplay/demo comparison. Remaining VM stubs include `ifcanshoottarget` and `ifnosounds`.
+- `2026-11-07` — **D5 CON `ifcanshoottarget`**: opcode 45 now follows Chocolate's `g_x > 1024` behavior, CLIPMASK1 `hitasprite` distance, wide-enemy ±48 / normal ±16 side rays, 3084/768 primary range gates, same-picnum self-class suppression, and forcefield-wall exception for badguys. The per-actor hit snapshot is refreshed from current sprites and models ART-sized face sprites. Static review of `gamedef.c`, `player.c`, and `duke3d.h`; formatting, diff check and crate compilation only. `ifnosounds` remains stubbed; no gameplay/demo comparison was run.
+- `2026-11-07` — **D5 CON `ifnosounds`**: opcode 109 now checks Chocolate's first active `SoundOwner[id][0]` for each Atomic sound ID. The desktop mixer exports its first active voice owner by ID; the snapshot enters DukeSession before the tic, while CON `sound`, `soundonce`, `stopsound`, and `globalsound` update the shared table during actor execution. Global sounds retain the player sprite as their source so later snapshots preserve the correct owner. Static review of Chocolate `gamedef.c` / `sounds.c`; `cargo fmt --all`, `git diff --check`, and targeted compile checks only. No gameplay, demo, or Chocolate comparison was run.
+- `2026-11-07` — **D5 CON `pstomp` / misc blood pools / footprints / player quickkill**: opcode 38 starts the knee sequence only for a visible target when the player is not shrunk and no knee attack is active. The 15-tic cycle turns toward its locked target, restores weapon pose, checks Chocolate's 3D distance approximation, spawns seven `JIBS6` fragments in RNG order and a `BLOODPOOL` with floor/water/parallax handling, increments badguy kills, and arms matching civilian respawn markers. `BLOODPOOL`/`PUKE` follow the floor, expand for 32 tics with Chocolate's two ordered TRANDs per growth tic, then shrink; nearby players take periodic palette-0 damage or consume a boot charge, start the right footprint count/palette, and voice ID 211 follows the one-active-owner rule. Player movement suppresses nearby duplicate footprints, checks flat-sector/tag gates, chooses one of four variants with one TRAND, and applies spawn floor/cstat/palette rules. Shallow-water movement seeds six later dry-ground footprints and tracks a `PLAYERONWATER` dummy sprite through water exit/death. `pstomp` on APLAYER now applies the quickkill health/palette/cstat changes, emits eight reference-order guts when god mode is off, and records killer/victim seat frag or self-frag counters. Death animation/respawn, frag matrix/scoreboard integration, warping-sector ripple animation, and full multiplayer ownership attribution remain open. Static Chocolate source review; formatting, diff check and crate compilation only; no gameplay/demo comparison.
+- `2026-11-07` — **D5 CON `resetactioncount`**: opcode 36 now clears only `g_t[2]`, as Chocolate's `gamedef.c` does. Static source review; formatting, diff check, and targeted compile checks only; no runtime/demo comparison.
+- `2026-11-07` — **D5 CON `respawnhitag`**: opcode 83 now selects the actor's yvel for the Atomic civilian tile set and hitag for other actors, then activates same-lotag `RESPAWN` markers in `STAT_FX` unless `monsters_off` excludes a badguy. The existing marker tic handler continues with the transporter star and respawn sequence. Static review of Chocolate `gamedef.c` / `sector.c`; formatting, diff check, and targeted compile checks only; no gameplay/demo comparison.
+- `2026-11-07` — **D5 CON `mikesnd`**: opcode 97 now reads the actor yvel sound and queues it only if its sound ID has no active voice owner, consistent with Chocolate's `Sound[id].num == 0` condition. Static `gamedef.c` review; formatting, diff check, and targeted compile checks only; no gameplay/demo comparison.
+- `2026-11-07` — **D5 CON `wackplayer`**: opcode 61 now consumes Chocolate's `TRAND&255`, applies `forceplayerangle` to the nearest player, and terminates the actor parse. The player state now retains/damps screen roll and view yaw; the native software frame applies fixed-point indexed-pixel rotation. Static review of Chocolate `gamedef.c`, `player.c`, and renderer math; `cargo fmt --all`, `git diff --check`, and targeted compilation pass. No gameplay or Chocolate comparison was run.
+- `2026-11-07` — **D5/D6 CON `tossweapon`**: opcode 104 now performs Chocolate's `checkweapons()` branch in CON order, including TRAND selection, player sprite ownership, item initialization and the RPG/handbomb explosion fallback. Static review of Chocolate `gamedef.c`, `player.c`, and `game.c::spawn`/`EGS`; formatting, diff check and targeted compile only. No gameplay/demo comparison was run.
+- `2026-11-07` — **D5 CON `ifawayfromwall`**: opcode 90 now tests Chocolate's four diagonal offsets (±108 Build units) against the actor's current sector using the shared integer point-in-sector primitive. Static review of Chocolate `gamedef.c`; no runtime/demo comparison was run.
+- `2026-11-07` — **D7 SE29 wave floor**: ported Chocolate's per-effector sine displacement (`hitag += 64`, `mulscale12(SP, sintable[hitag])`) plus its post-effector four-wall floor slope alignment against wall 2's neighboring sector. Invalid/missing neighbor geometry is skipped safely. Source reviewed in Chocolate `actors.c::moveeffectors` and `engine.c::alignflorslope`; `cargo fmt --all`, `git diff --check`, and targeted wasm compile pass. No scenario, gameplay, or reference comparison was run; exact multi-effector ordering remains unverified.
+- `2026-11-07` — **D10 bounded lockstep inbox**: `DukeLockstepInbox` collects exactly one native input for each seat in a fixed roster, rejects stale/wrong tic, duplicate, and unseated commands, and returns a completed frame in ascending seat order. This adds a deterministic protocol barrier, not simulation/server integration. `cargo fmt --all`, `git diff --check`, and targeted `cargo check -q -p room-proto` pass; no tests or network/runtime comparison were run.
+- `2026-11-07` — **D10 browser native lockstep wiring**: the v2 WebSocket client now encodes Duke tic commands and queues authoritative Duke frames; the browser GRP lobby validates/prepares APLAYER seats before Ready and advances `DukeSession` only from received server frames. Seat-indexed holes are expanded with neutral inputs, and weapon hotkeys / wheel cycles travel through the native input bitfield. `cargo fmt --all`, `git diff --check` and `cargo check -q -p room-web --target wasm32-unknown-unknown --features browser` pass (existing Duke crate warnings). No gameplay, multi-client lockstep, or Chocolate comparison was run. Weapon slot 0/remote mapping, negotiated coop versus DukeMatch, and reconnection/save behavior remain open.
+- `2026-11-07` — **D11 browser Atomic campaign routing**: single-player native browser sessions now initialize an E#L# campaign cursor, consume the native level-exit request, load the next GRP map, preserve campaign state and carry persistent health/armor/weapons/ammo/inventory while resetting transient effects. Bonus-screen and end-game menu presentation remain open; coop campaign transitions are not enabled because the relay has no map-change barrier. Static compile/format checks only; no gameplay or reference comparison.
+- `2026-11-07` — **D9 Atomic SAV world tables**: `SavHeader` now retains the fixed animation-wall records, both 2048-entry animation target arrays, sprite deletion queue cursor/amount/entries, mirror count/tables, automap reveal bitset, saved board filename, and all three cloud tables after the sprite-list and cycler state. Lengths and order follow Chocolate `MENUES.C::loadplayer` / `duke3d.h`; the parser still does not mutate a `DukeSession` or encode `GAME#.SAV`. `cargo fmt --all`, `git diff --check`, and targeted `cargo check -q -p room-build -p room-duke -p room-app --bin room` pass with existing warnings. No tests, gameplay, or reference comparison were run.
+- `2026-11-07` — **D9 Atomic SAV multi-block state**: added Chocolate `kdfread` chunk iteration with element-wise delta reconstruction and applied fixed-array sizes to world, link, animation, queue, mirror, map-bit, script, actor-script, sprite-script and `weaponhit` payloads. The parser now advances across the script/actor-temp block before reading `lockclock`, and takes `randomseed` from its native position after frag state. `SavHeader::script_state` preserves serialized CON and actor-temp arrays for a future session restore. Source reviewed in Chocolate `filesystem.c::kdfread` and `MENUES.C::loadplayer`; formatting, diff check and targeted compile pass, with no tests/save replay/runtime comparison.
+- `2026-11-07` — **D9 SAV scalar layout correction**: corrected the native order and sizes for `animatecnt`, `animatesect`, animate pointers/goals/velocities, `ud` byte/short/long settings, and the byte-sized `numplayersprites`. This keeps subsequent lockclock, RNG and global fields aligned with the saved stream. Static review against Chocolate `duke3d.h` and `MENUES.C::loadplayer`; targeted compile passes; no save load or replay was run.
+- `2026-11-07` — **D9 Atomic SAV cyclers**: `SavHeader` now retains Chocolate's complete fixed-size 256 × 12-byte `cyclers` table after `numcyclers`, preserving inactive slots and record bytes for later native restoration. Source layout reviewed in [Chocolate Duke `MENUES.C::loadplayer`](https://github.com/fabiensanglard/chocolate_duke3D/blob/master/Game/src/menues.c#L307-L323). No tests or runtime/reference comparison were run; applying state and writing `GAME#.SAV` remain open.
+- `2026-11-07` — **D6 tripbomb laser lifecycle**: weapon slot 8's planting is now followed by the standable fuse state: initial arm delay, horizontal `hitscan_full` approximation of Chocolate `hitasprite`, linked LASERLINE generation with native perpendicular angles and `lasermode` cstats, hit/target-change countdown, five native RANDOMSCRAP spawns, tripbomb-radius hitradius, explosion creation and line cleanup. The exact Build hitasprite/laserline collision, heat-mode visibility and SSP movement remain open. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass with existing warnings. No tests or gameplay/demo comparison were run.
+- `2026-11-07` — **D6 hitradius wall impacts**: static Chocolate `checkhitwall`/`lotsofglass` port now gates mirror breaks by the source-tile allowlist; breaks common vending, screen, tech, ATM and wall-light textures; spawns wall-interpolated ordinary and palette-colored glass shards with the native vertical fallback and RNG draws; creates forcefield ripples and flags animated force walls; arms matching SE3 flicker markers from tagged wall lights; spawns ATM money with native count/position/cstat draws; and spawns the SE128 timer that animates/reblocks paired glass overlays. Wall visibility now resolves the sample sector with `updatesector` before `cansee`. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass with existing warnings. No tests or gameplay/demo comparison were run. Light side effects beyond linked SE3 and remaining `checkhitwall` materials remain open.
+- `2026-11-07` — **D7 extend-o-bridge (lotag 27 / SE20)**: sector activation now toggles the local SE20 direction; map setup caches its two closest wall vertices, and the effector advances eight Build units per tic along its angle, propagating `dragpoint`, floor panning, grounded sector sprites and players. Completion stops at Chocolate's quantized `SP` distance and emits the sector completion sound. Static review of Chocolate `sector.c::operatesectors`, `game.c::spawn` and `actors.c::moveeffectors`; `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass. No gameplay/demo comparison was run. Blocking/overlap behavior, unusual zero/short SP maps and broad SE coverage remain open.
+- `2026-11-07` — **D7 conveyors (SE24/SE34)**: implemented Chocolate's marker-angle/`SP` (`sprite.yvel`) vector and actor filtering: negative-Z-velocity sprites are skipped; status-5 bloodpools, puke, footprints, bullet holes and blood splats are hidden; laser lines, tripbombs, bolt sprites, switch sprites and cranes are not carried. Eligible grounded actors cache `bposx/bposy`; sprite displacement adds the quarter-vector directly, then updates sector membership to match Chocolate's `setsprite` call. Player force enters Room's fixed-point movement/friction path after the player-to-sloped-floor distance check, and sector floor panning advances. The loaded `TABLES.DAT` sine table drives direction. Static Chocolate `actors.c::moveeffectors` review; formatting, diff and targeted compile checks only. Exact input/effectors timing and scenario verification remain open; no gameplay/demo comparison was run.
+- `2026-11-07` — **D7 conveyor movement correction**: static inspection of Chocolate `actors.c::moveeffectors` (`SE24`/`SE34`) showed that sprite transport performs direct quarter-vector addition followed by `setsprite`, rather than wall `clipmove`. Reverted the extra clipping behavior to preserve reference semantics; the existing `updatesector` call models `setsprite`'s sector-list refresh. The same source pattern for SE26 uses direct displacement then `setsprite`. Format, diff and targeted compile checks only; no dynamic comparison.
+- `2026-11-08` — **D7 VIEWSCREEN camera activation correction**: static review of Chocolate `sector.c::checksectors` showed that a VIEWSCREEN's `lotag` selects an inactive `STAT_ACTOR` CAMERA1 by `hitag`; entry links the monitor's `owner` to the camera and sets the active `yvel` latch, and plays `MONITOR_ACTIVE`. Room now checks ART size/offset, portal visibility, the 1280-unit range and three vertical use-ray samples; activation and exit are distinguished so exit does not replay the cue. Broader `neartag` winner ordering remains approximate; `exact `xyzmirror`/`camsprite` texture contents and tint, level-change cleanup and mirrors remain open. Existing camera-to-texture rendering remains render-only. Static source inspection, formatting, diff check and targeted crate compile only; no gameplay or screenshot comparison.
+
+- `2026-11-08` — **D7 camera refresh cadence**: `DukeSoftRenderer` now retains the 64×48 palette-indexed camera feed per CAMERA1 actor and recomputes it at initial display, each 12-tic Chocolate `animatecamsprite` interval, or after tic reset/camera selection change. The renderer reinserts the cached image into its render-only tile set each frame; it does not alter the `BuildWorld` snapshot. Exact `xyzmirror`/`camsprite` texture contents and tint remain incomplete. Static review of Chocolate `sector.c::animatecamsprite`; format, diff and `cargo check -q -p room-duke --lib` only, no screenshot/gameplay/reference comparison.
+- `2026-11-08` — **D7 SE11 activator hitag filter**: lotag-23 swing doors now require their local SE11 hitag group to match the ACTIVATOR hitag before arming linked doors. Room previously used whichever local SE11 marker appeared first and ignored the activator tag, allowing unrelated switches to open the door. Static review of Chocolate `sector.c::operatesectors` and `operateactivators`; `cargo fmt --all`, `git diff --check`, and targeted `cargo check -q -p room-duke --lib` only. No gameplay or dynamic comparison.
+- `2026-11-08` — **D7 SE11 map direction initialization**: `spawn_sector_effectors` now initializes swing-door T4 rotation direction from marker angle (`ang > 1024` → `+2`, otherwise `-2`), as Chocolate `game.c::spawn` does. Lotag-23 activation reverses this seeded value; previously fresh SE11 temps left it zero, so rotation never advanced. Static source review and targeted compile/format checks only; no gameplay or dynamic comparison.
+- `2026-11-08` — **D7 SE15 temp-slot correction**: lotag-25 activation now writes Chocolate T5 (`temp_data[4]`) for opening/closing and checks that same active-mode slot for the conditional repeat sound. T4 (`temp_data[3]`) remains the `SP >> 3` travel counter used by `moveeffectors`; previously activation wrote the direction into T4, so the slider started at an incorrect travel offset and repeated sound gating was tied to its counter. The active mover now also writes the source's `xvel=16` before applying its `ms()` displacement. Verified against Chocolate `sector.c::operatesectors` and `actors.c::moveeffectors`; `cargo fmt --all`, `git diff --check`, and targeted `cargo check -q -p room-duke --lib` only. No tests, runtime play, or dynamic comparison.
+- `2026-11-07` — **D7 SE25 piston ceiling**: map setup caches the original ceiling in `T4`, activates `T5`, and places the ceiling at the marker Z; each native tic follows Chocolate's shade-directed cycle using marker `SP` (`yvel`) in 16-unit Z steps, clamped between the saved ceiling and sector floor. Static review of Chocolate `game.c::spawn` and `actors.c::moveeffectors`; format/compile checks only, with no scenario or demo comparison. Interpolation presentation and collision/blocking parity remain open.
+- `2026-11-07` — **D7 SE35 drill ceiling correction**: static audit found Chocolate sets the sector ceiling to marker Z but leaves SE35 `T5` zero-initialized; the return phase clamps to that value, not the original ceiling. Room initialization now matches that behavior. The earlier implementation note was corrected. Static source review only; no dynamic Chocolate/gameplay comparison.
+- `2026-11-07` — **D7 connected-sector sprite switches**: tagged switch sprites are now eligible through connected sectors only when the player's switch ray passes Room's Build `cansee` portal/floor/ceiling test; the existing forward-ray width, height and distance checks still select the nearest candidate, then `neartag` wall precedence is preserved. This closes the same-sector-only gap for visible portal-adjacent sprite switches. Static code inspection; `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass. No gameplay/demo comparison was run; parity of Build's multi-sector sprite-neartag traversal remains unverified.
+- `2026-11-07` — **D7 SE31 true-drop-floor**: map initialization stores the original floor height, applies the marker Z for non-1536 direction, and sets Chocolate's 9999 wall shade filters. Activation advances the floor at marker XVEL, handles the ANG 1536 versus alternate travel/return targets, observes the HITAG dwell counter, rides grounded players and stationary sprites, updates actor floor caches, and dispatches completion sounds. Static review of Chocolate `game.c::spawn`, `actors.c::moveeffectors`, `sector.c::operatesectors` and master-switch handling; `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass. No scenario or demo comparison was run.
+- `2026-11-07` — **D7 SE32 true-drop-ceiling**: shares map plane-target initialization with SE31, then moves the ceiling to/from the marker using Chocolate's doubled arrival threshold and toggled return state. It leaves actors uncarried and emits the completion sound on plane arrival. Static review of Chocolate `game.c::spawn` and `actors.c::moveeffectors`; `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass. No scenario/demo comparison was run.
+- `2026-11-06` — **D7 RESPAWN markers**: `operateactivators` arms matching `STAT_FX` markers at extra=54; `tick_respawns` mirrors Chocolate `movefx`'s 54→66 countdown, spawns a `TRANSPORTERSTAR` with the reference size/shade/offset, inserts the recorded hitag tile at marker position through native EGS/CON initialization, applies actor/badguy status and fall setup, then removes the marker. `monsters_off`, full native actor special-case initialization, and runtime comparison remain open. Static source review; `cargo fmt --all`, `cargo check -q -p room-duke --lib`, and `git diff --check` only.
+- `2026-11-06` — **D7 access cards**: CON `addinventory ACCESSCARD` grants the red/blue/yellow bit from the actor palette; `Open` checks wall-switch palette against inventory, reports quotes 70–72 when locked, then advances the 12-tic insertion, activates the switch and consumes that key. Player insertion state and the pending card grant are held in native player/CON state. Static Chocolate `gamedef.c`, `sector.c`, and `player.c` review; format, `cargo check -q -p room-duke --lib`, and diff check only; no gameplay comparison was run. Access sprites, hand/HUD visuals, and access-sprite switches remain open.
+- `2026-11-06` — **D7 sprite switches**: `Open` now considers tagged switch sprites in the current sector using Chocolate's forward-ray, width and height tests; access-card use records a sprite target, activates linked sprite/wall switch art at insertion tic 12 and consumes the matching card. Uses static Chocolate `engine.c::neartag` and `sector.c::checkhitswitch` review. `cargo fmt --all`, `cargo check -q -p room-duke --lib`, and `git diff --check` pass; no gameplay comparison was run. Connected-sector sprite traversal and hand/HUD card visuals remain open.
+- `2026-11-06` — **D7 forcefield activation**: player wall/sprite switches now route matching animated forcefield walls through Chocolate `operateforcefields`: clear or restore collision `cstat` and reset their `animatewalls` phase. Static `sector.c` review; `cargo fmt --all`, `cargo check -q -p room-duke --lib`, and `git diff --check` pass; no gameplay comparison was run. Effector-driven forcefields remain open.
+- `2026-11-06` — **D7 monster spawn policy**: `DukeSession::monsters_off` now feeds Chocolate's load-time roll rules, hides skill-gated/off badguys in `STAT_MISC`, and prevents tagged respawn markers from arming when their hitag target is a badguy. The setting persists in `.fsave` and defaults off for prior v1 saves. Static `game.c::spawn` / `sector.c::operaterespawns` review; `cargo fmt --all`, `cargo check -q -p room-duke --lib`, and `git diff --check` pass; no gameplay comparison was run. Native menu setting and special actor initialization remain open.
+- `2026-11-06` — **D9 Atomic `.DMO` writer**: `DukeAtomicDemoRecorder` captures native single-player inputs and emits Atomic revision 117 headers plus byte-delta records in raw Ken `strtot=0` chunks; `monsters_off` is carried into the demo header. Static Chocolate `game.c::opendemowrite` / `filesystem.c::dfwrite` review. `cargo fmt --all`, `cargo check -q -p room-duke --lib`, and `git diff --check` pass; no demo playback or Chocolate comparison was run. Multiplayer `.DMO` streams and reference synchronization remain open.
+- `2026-11-06` — **D9 session-bound recording**: `DukeAtomicDemoRecorder::tick_session` now advances `DukeSession` and records the same input atomically at the API level, preventing callers from accidentally recording a different input sequence from the one played. Static implementation only; no dynamic replay or reference comparison.
+- `2026-11-06` — **D9 DMO chunk sizing correction**: raw `strtot=0` chunks now cap at 16,380 bytes, matching Chocolate `dfwrite`'s 16,384-byte LZW buffer and ten-byte records. This avoids emitting chunks that overflow the reference reader's decompression buffer. Static `filesystem.c` review; no playback was run.
+- `2026-11-06` — **D10 native sync input codec**: added `DukeSyncInput` in `room-proto`, matching Chocolate's packed 10-byte `(avel, horz, fvel, svel, bits)` record with strict-size decoding. Static review of `duke3d.h`; no multiplayer session or network test was run. FTR2 tic/seat envelope and runtime integration remain open.
+- `2026-11-06` — **D8 `soundonce` / `stopsound`**: CON opcodes 87 and 89 now enqueue native actor-origin start-once and sound-ID stop events. The audio mixer enforces one active voice per logical sound ID for `soundonce`, and `stopsound` removes matching voices regardless of origin. Static `gamedef.c` review and compile/format checks only; no listening comparison was run. `globalsound`, `MUSICANDSFX`, ambient loops, and lock semantics remain open.
+- `2026-11-06` — **D8 `globalsound`**: CON opcode 92 now queues the defined sound ID at the local player's position in single-player, matching Chocolate's `spritesound(N, ps[screenpeek].i)` behavior. The coop routing condition remains unavailable until D10 player state is implemented. Static source review; no listening comparison.
+- `2026-11-06` — **D5 CON `sizeto`**: opcode 28 now steps sprite xrepeat toward its target every actor tic and steps yrepeat under Chocolate's player/minimum-size/vertical-clearance conditions. The operation uses current mutable repeats, allowing ordered `sizeat` + `sizeto` in one CON execution, and the ART tile height from the loaded metadata. Static `gamedef.c` comparison; `cargo fmt`, crate compilation, and diff check only; no gameplay/demo replay.
+- `2026-11-06` — **D5 CON `debris`**: opcode 37 now emits the requested EGS fragments with parent position/shade/palette, Build velocity fields, reverse loop order and Chocolate's TRAND sequence. BLIMP/SCRAP1 preserves the 14-entry global weapons/ammo remap table. Static `gamedef.c`/`actors.c`/`global.c` review; compile/format/diff checks only; no gameplay or demo replay.
+- `2026-11-06` — **D5 CON `guts`**: opcode 58 now computes the sloped-floor clamp, COMMANDER offset, small-badguy scaling, JIBS2 quarter-size rule and palette-6 gore, then inserts EGS fragments owned by the player sprite. All fragment random values are captured at opcode execution to preserve later CON RNG order. Static Chocolate `gamedef.c`/`actors.c` review; compile/format/diff checks only; no gameplay or demo replay.
+- `2026-11-06` — **D7 touchplates**: Room now evaluates stat-6 `TOUCHPLATE` actors against the grounded player sector, preserves the `g_t[0..5]` latch/direction/one-shot state, arms same-lotag masterswitches, triggers tagged activators, links matching plates, and moves/carries actors with the sector floor. The `check_activator_motion` gate accounts for active plane/wall motions and relevant SE temporary flags. Static Chocolate `actors.c`/`sector.c` review; format, crate check and diff check only; no scenario or demo comparisons were run.
+- `2026-11-06` — **D7 master-switch countdown**: implemented Chocolate `moveactors`' armed-switch timer (`hitag--`), delayed sector operation through the shared lotag 16–22/9 mover path, local SE/SEENINE/OOZFILTER marker updates, and switch deletion at expiry. Wall switches and touchplates arm matching markers; other `operatemasterswitches` callers and unsupported `operatesectors` families remain open. `cargo fmt --all`, `cargo check -q -p room-duke --lib`, and `git diff --check` pass; no gameplay or demo comparison was run.
+- `2026-11-06` — **D7 master-switch arming**: tagged wall switches and touchplates mirror Chocolate `operatemasterswitches(lotag)` by setting matching standable `MASTERSWITCH.yvel` from 0 to 1 once. Static source review and compile/format checks only; no gameplay comparison was run.
+- `2026-11-06` — **D5 swim RNG frontier**: direct Chocolate `execute()` traces confirm WATERBUBBLE #399 runs CON at tic55. Removed the synthetic WAIT catch-up rolls and an incorrect RNG draw from `spawn(player, WATERBUBBLE)`; Chocolate's generic `spawn()`→`EGS()` does not draw randomness. Added a deferred PSWIMMING roll on the first WAIT tic. Native-only DEMO1 now matches reference seed, pose, sprite count and hash through tic69. At tic70, Room's APLAYER trailing bubble `ifrnd` runs although Chocolate changes action and skips it; the remaining script/action transition is the next frontier.
+- `2026-11-06` — **D5 WATERBUBBLE cached planes**: Chocolate’s sprite 80 trace confirms `hittype.floorz=69632` remains cached after its tic-79 warp into a sector whose floor is 49152. Room had evaluated `iffloordistl` against the destination floor, switched to `BUBMOVEFAST`, and reset actioncount; initializing the CON hit-plane cache when the bubble spawns and preserving it across warps matches this stale-plane behavior without a tic-specific rule. Native-only DEMO1 now matches through tic 134; first full state divergence is tic 135 (503 vs 504 sprites, with one extra `JIBS6` in Room; player pose still matches). Moved WATERBUBBLE sprites also refresh their Build sector after movement. Next: attribute the tic-135 particle/shot difference before advancing the frontier.
+- `2026-11-06` — **D11 launcher default**: `scripts/play-duke3d.sh` now starts the native Room-Duke runtime by default; the converter remains selectable with `--runtime converter` or `ROOM_DUKE_RUNTIME=converter`. `bash -n`, `--help`, and `git diff --check` pass.
+- `2026-11-06` — **D5 APLAYER swim / native frontier**: reference sprite dumps showed player `temp_data[0]` was not incremented by Room's player mover, and the swim action's inner `PSWIMMING ifrnd 4` was suppressed for more than its entry tic. Room now advances the player counter in and out of water and enables the inner roll after that entry tic; a new `conlabels` frontier diagnostic prints Atomic swim action offsets. `duke_frontier real DEMO1 56` and `krand` agree through tic54; first mismatch moves to tic55 (`randomseed`), where several swim/actor calls are early. D5 remains incomplete.
+- `2026-11-06` — **D7/D11 switches + sector movers**: connected `gamefunc_Open` to Build `neartag_wall`, Atomic switch art and linked activators; added deterministic sector 16–22 plane interpolation, including ceiling-door, elevator and split-door transitions plus sprite/player carry when floors rise. Added lotag 9 sliding-wall vertex interpolation. Seven interaction tests cover switch cycles, tagged activation, sector20/22 round-trips, sector21 target selection, and a six-vertex lotag 9 door fixture. Sloped neighbor-Z search, blocked-door checks and other mover families remain open. `cargo test -p room-duke interactions::tests`, the native DEMO1 frontier test, app/web checks, fmt, script syntax and diff checks pass.
+- `2026-11-06` — **D5 tic39 trace refinement**: reran native-only `DEMO1` and compared the per-call Chocolate RNG journal with Room's call-site log. The flattened call stream still aligns, but Room spends 40 RNG calls in the compared frame where the reference reaches its frame boundary after 33; remaining calls align with later reference-frame entries. Sprite-level comparison at tic39 first shows drift in WATERBUBBLE sprites #74–77 and sprite #369 Z. This points the next investigation at per-tic actor/effect ordering and temporary actor state; the accepted first divergence remains tic39 and D5 is not complete.
+- `2026-11-06` — **D11 Duke use input mapping**: corrected native desktop and browser `E` input from bit 3 to Chocolate's `gamefunc_Open` bit 29 (`player.c`); added a regression test for the sync bit. That exposed the missing interaction handler, implemented in the following D7/D11 step.
+- `2026-11-06` — **D6/D11 controls**: corrected native desktop/browser weapon hotkeys to Duke's 1–9 plus 0 slot mapping (pistol through remote; knee is slot 0 and has no number key), shared availability checks, and added wheel next/previous cycling over owned weapons with ammo. Three focused weapon selection/cycle tests pass; `cargo check -p room-app -p room-web` passes.
+- `2026-11-06` — **D6 knee weapon**: added the Atomic kickback cadence (tic 7 strike, held repeat from tic 14), short-reach hitscan damage for badguy sprites, knee impact tile bookkeeping, and `KICK_HIT` sound dispatch; the view selects the knee's impact frame during the strike. `knee_weapon_hits_on_tic_seven_and_repeats_at_fourteen` and `cargo check -p room-app -p room-web` pass. Still partial: wall impacts and exact target filtering/effects are open; DEMO1 native sync remains at tic 30.
+- `2026-11-06` — **D6/D5 RNG correction**: inspected Chocolate Duke's `duke3d.h` (`TRAND` aliases `krand()`); rejected a separate C `rand()` stream because moving map-load rolls onto it regressed DEMO1 from first divergence tic31 to tic0. Restored shared Build RNG for map-load and RPG rolls. `barrels_eggs_and_splats_roll_like_chocolate_spawn`, `rpg_damage_uses_atomic_three_radius_bands` pass; frontier remains tic30 (first randomseed diff tic31).
+- `2026-11-06` — **D7 animated walls / D5 frontier**: implemented Atomic `premap` wall-list initialization and `animatewalls` for screen-break and force-field surfaces, called every other gameplay tic. On DEMO1's E3L11 map the four force-field walls consume the reference's five RNG calls at the 16th animation update; native seed, pose, sprite count and hash match through tic 38. Rebuilt the local instrumented Chocolate source in a temporary i386 container and generated a fresh gameplay trace through tic 295; it confirms the next native mismatch at tic 39 (`randomseed`). `demo1_frontier_logs_first_divergence` pins the same result. Dynamic sectors and other D7 systems remain open.
+- `2026-11-06` — **D5/D6 native frontier**: after a water-tunnel warp, WATERBUBBLE `iffloordistl` now uses destination-sector planes in the native runtime; bubbles #75/#77 enter `CRACKEDBUBBLE` at the surface as in Chocolate. Native-only DEMO1 sync extends through tic 40; first mismatch is tic 41. Added `demo1_native_tic40_bitexact` and made `duke_frontier krand` compare end-of-tic seeds, exposing the one missing RNG advance at tic 41. Native APLAYER bubble spawns now apply the shared spawn Z-offset TRAND; the assisted trace path keeps its calibrated calls. Assisted tic119 regression remains green.
+- `2026-11-06` — **D5 native CON state**: implemented actor `ifgapzl` using the cached `hittype.floorz` / `ceilingz` difference, shifted by 8 as Chocolate does; replaced the always-false stub and added below/above-threshold VM cases. `ifspawnedby` now reads the same mutable `hittype.picnum` as `ifwasweapon`, which damage overwrites; a VM test covers the replacement. Desktop and wasm builds pass. The trace still diverges at tics 40/41: Chocolate has a second `parse()` RNG call attributed to actor 160, while Room's actor 160 still has `hit_picnum=2311` and skips it. The next comparison needs the reference actor's mutable `hittype.picnum` or CON branch state at that tic.
 - `2026-11-05` — **UZ3**: bound ZScript `CheckIfSeen`, `CheckRange`, and `CheckSightOrRange` to deterministic playsim snapshots of player distance and sight. Actor `Tick`, spawn, revive, and action calls populate these from Room's existing BSP sight check and geometry; range uses the player's current `view_z` and target vertical bounds like UZDoom's camera-center calculation. Camera actors and `SF_IGNOREVISIBILITY` remain unsupported; `cargo fmt --all`, targeted `cargo check`, and `git diff --check` pass.
 - `2026-11-05` — **UZ3**: ZScript player handlers now receive `PlayerSpawned` at level start and `PlayerRespawned` after respawn, with a `PlayerEvent` carrying the player slot; pending actor operations/inventory changes are applied. Static/global registration and other event families remain open.
 - `2026-11-05` — **UZ3**: wired `PlayerDied` into the playsim death path before ACS death scripts, carrying player slot and applying queued actor/inventory changes. `PlayerSpawned`, `PlayerRespawned`, and `PlayerDied` are now dispatched with the correct timing distinction.
@@ -224,12 +380,56 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
   - **Client.** room-web downloads and fingerprint-checks the preset files, mounts them before the mod and packs, and swaps in the preset IWAD. This is type-checked only: the wasm build needs `play-web.sh` on the Mac.
   - **`play-doom.sh --file brutal22test6.pk3 --map BIKERACE` failed.** BD keeps its maps as `maps/bikerace.wad` inside the PK3, and only the web editor mounted those. `VfsBuilder` now mounts every `maps/NAME.wad` of an archive right after it, under the file's name as GZDoom does (`nested_map_wads`, on by default). The editor turns it off because it mounts them itself. Test `pk3_map_wads_mount_under_the_file_name`; BIKERACE loads headless with doom2 + BD.
 - `2026-11-03` — **Duke D5/D6: trace fix-ups off by default; honest frontier; per-call krand diffing**.
+- `2026-11-06` — **Duke D6 RPG impact/damage pass**: weapon slot 4 consumes ammo, spawns Atomic tile 2605 at speed 644 with actor-header strength, advances the projectile through wall/sprite hitscan, and changes impacts to an animated EXPLOSION2 flash. Atomic `hitradius` confirms the three strength-based damage bands, randomized per victim; the implementation now uses them for visible badguys and player self-damage. Random rolls still use Room's shared stream, and other status lists, exact knockback, auto-aim, RPG weapon view, and all other weapons remain open. Source and licensing record updated in `THIRD_PARTY.md`.
+- `2026-11-07` — **Duke D6 auto-aim and Freezer owner rules**: map Chocolate's `sync.bits` bit 6 to full/bullet-only auto-aim; wire desktop default and use the mode in RPG/Freezer/Shrinker/Grower/Shotgun/Devastator targeting. Freezer hits now preserve projectile damage metadata, obey the `FREEZERHURTOWNER` startup setting, and don't treat owner `-1` as sprite zero. Static source review and `cargo check` only; no gameplay/demo comparison.
+- `2026-11-07` — **Duke D6 Freezer wall impacts**: Freezer bolts now invoke direct wall responses for enabled forcefields, breakable glass, fan overlays, and stained glass before reflecting, including the glass restoration effector. Static Chocolate `checkhitwall` review; compile-checked only, no gameplay/demo comparison.
+- `2026-11-07` — **Duke D6 Freezer material impacts**: extend direct `checkhitwall` coverage to Atomic breakable screens, vending/cola machines, technical wall stages, milk shelf, ATM drops, and wall lights including SE3 flicker triggers. Static Chocolate source review; compile-checked only, no gameplay/demo comparison.
+- `2026-11-07` — **Duke D6 bullet-only auto-aim**: Chocolate's player hitscan calls `aim()` whenever `auto_aim != 0`, while projectile weapons require full mode 2. Correct the shared pistol/shotgun/chaingun hitscan path to keep target steering in mode 1; retain mode-2 gating for projectiles. Static `player.c` review and crate compile only; no demo/gameplay comparison.
+- `2026-11-07` — **Duke auto-aim setting**: add archived `duke_autoaim` CVar (1=bullet-only, 2=full) to the desktop input bit and set browser's Atomic default full mode. The F4 Sound Setup now shows the mode and cycles it with left/right or Enter. Static source review and compile only; no gameplay/demo comparison.
+- `2026-11-07` — **Duke D6 `aim()` target filters**: follow Chocolate `player.c::aim` by excluding palette-1 freeze-immune targets for Freezer fire, filtering Shrinker shots against small non-slime sprites, and skipping other APLAYER targets in coop. Static source comparison; compile only, no gameplay/demo comparison.
+- `2026-11-07` — **Duke D6 Devastator scripted strength**: preserve the RPG projectile's CON strength through Chocolate `EGS()` + `shoot(RPG)` (`TRAND&7`, then quarter for Devastator) and copy its actor `hitag`; static source review, `cargo check -p room-duke -p room-build-engine`, and `git diff --check` pass. No dynamic comparison.
+- `2026-11-07` — **Duke D6 fatal-hit camera response**: keep Chocolate's `wackedbyactor` on lethal non-Freezer hits; dead players now follow their body position and turn halfway toward a still-active attacker on each tic, following `actors.c`. Static source review, `cargo fmt`, `cargo check -p room-duke -p room-build-engine` (existing warnings only), and `git diff --check`; no gameplay/demo comparison.
+- `2026-11-07` — **Duke D6 special sprite debris**: port `sector.c::checkhitsprite` BOTTLE10's randomized MONEY spray and VASE/STATUE/STATUEFLASH 40-piece shard bursts, including statue palette rolls, sound order and the following common glass burst. Static `sector.c`/`game.c`/`actors.c` review; `cargo fmt`, `cargo check -p room-duke -p room-build-engine` (existing warnings only), and `git diff --check`; no dynamic comparison.
+- `2026-11-07` — **Duke D6 FETUSBROKE impact**: a second hit now runs 48 source-angle BLOODSPLAT1 hitscan attempts with Chocolate's extra angle TRAND per shot, then queues GLASS_HEAVYBREAK/SQUISHED/GLASS_BREAKING and the ten-piece common shard burst. Static `sector.c`/`player.c` review; `cargo fmt`, `cargo check -p room-duke -p room-build-engine` (existing warnings only), and `git diff --check`; no runtime comparison.
+- `2026-11-07` — **Duke D6 chair and decor impacts**: port CHAIR1/2's BROKENCHAIR nonblocking transition and the 16 ordered `RANDOMSCRAP` shards plus heavy-break cue/deletion for CHAIR3, MOVIECAMERA, SCALE, VACUUM, CAMERALIGHT, IVUNIT, POT1–POT3 and TRIPODCAMERA. Static `sector.c`/`duke3d.h` review; `cargo fmt`, `cargo check -p room-duke -p room-build-engine` (existing warnings only), and `git diff --check`; no dynamic comparison.
+- `2026-11-07` — **Duke D6 civilian checkhitsprite**: MONK/LUKE/INDY/JURYGUY now use their configured hit sound/spawn tile and direct projectile health subtraction; lethal hits run eight source-angle BLOODSPLAT shots, Chocolate's six `guts()` groups and global SQUISHED before deletion. SPACEMARINE uses the shared damage/death path. Static `sector.c`/`actors.c`/`player.c` review; `cargo fmt`, `cargo check -p room-duke -p room-build-engine` (existing warnings only), and `git diff --check`; no gameplay/demo comparison.
   - **Finding.** `room-duke/src/session.rs` (47k lines) held **1,750** `// TEMP` blocks. They hard-code DEMO1 tic numbers to overwrite sprite x/y/z/picnum and rewind or pad the RNG (`DEMO1_PAD_PRE` = 7 extra krands every tic by default), so the reference matched. They weren't limited to DEMO1: any Duke game was corrupted at those tics. A few more lived in free functions (`moveplayers`, `transports`, `explosions`, `shoot`, `con/vm`).
   - **Gated.** All of them now sit behind `DukeSession::trace_fixups` / `room_duke::fixups::on()`, **off by default**. Only the legacy per-tic DEMO1 tests turn them on (`align_rng_pre_tic0`). The legacy path stops at tic 788 (`players[0].horiz`), not 1051.
   - **Honest measure.** `demo_sync::demo1_frontier_real` + `examples/duke_frontier.rs` (`real` / `legacy` / `krand` / `sprites` / `seed` / `pics`). Real frontier: **tic 0**.
   - **Per-call RNG diff.** `room_build_engine::numeric::krand_log` (`#[track_caller]`) vs a Chocolate `krand()` log (`third_party/chocolate-duke3d-trace/apply_krand_log.py`, native i386 build `build_i386_native.sh`, no Docker; reproduces `DEMO1.trace` byte for byte). `duke_frontier krand DEMO1 <log>` prints the first call whose seed differs, with both call sites.
-  - **First real fixes.** (1) `spawn::spawn_load_rolls`: the 13 `spawn(-1,i)` TRANDs at map load (cans/barrels/eggs `cstat = 257|(TRAND&4)`, blood splat repeats, money/trash/drip/rat/bullethole/splash rules). The load seed now equals Chocolate's without adopting it (test `demo1_load_seed_matches_chocolate_without_fixups`). (2) `spawn` header `owner = i` for every map sprite. (3) FIRE/FIRE2 run their CON again (no C case in Chocolate `moveactors`). Tic 0 now has the right number of FIRE rolls in the right place. It still differs because the VM skips unknown opcodes one word at a time (`cstator`, `sleeptime`, `ifspawnedby` context …).
+  - **First real fixes.** (1) `spawn::spawn_load_rolls`: the 13 `spawn(-1,i)` TRANDs at map load (cans/barrels/eggs `cstat = 257|(TRAND&4)`, blood splat repeats, money/trash/drip/rat/bullethole/splash rules). The load seed now equals Chocolate's without adopting it (test `demo1_load_seed_matches_chocolate_without_fixups`). (2) `spawn` header `owner = i` for every map sprite. (3) FIRE/FIRE2 CON execution was enabled to restore script effects; per-call trace attribution now shows random-call parity is still unresolved for some FIRE/FIRE2 actors (see 2026-11-05).
   - **Next (D5 proper).** Port `gamedef.c` `parse()` faithfully, with mutable world access instead of the snapshot + `pending_*` env. Then step tic by tic with the krand diff. Delete the TEMP blocks once the real frontier passes them.
+- `2026-11-05` — **Duke D5 RNG attribution (superseded by 2026-11-06)**: added opt-in CON sprite/pic context to the krand logger. The initial per-marker comparison incorrectly treated Chocolate's mid-frame `endtic` marker as the Room tick boundary.
+- `2026-11-06` — **Duke D5 continuous RNG comparison**: `duke_frontier krand` now flattens Chocolate's per-call log because its `endtic` markers split phases within a frame. Room and Chocolate call-seed streams match through 300 Room tics. The authoritative state trace still diverges at DEMO1 tic 0 (`randomseed`); investigate trace/tic boundary and phase state before changing actor eligibility.
+- `2026-11-06` — **Duke D5 boundary diagnostics**: `duke_frontier states DEMO1 3` shows tic 0 player pose and sprite hash match despite the final RNG state mismatch; tic 1 seed matches but sprite hash diverges. The mismatch is therefore not fixed by the stream comparison alone; tick snapshot alignment and actor state still need native-only tracing.
+- `2026-11-06` — **Duke D5 tic1 sprite diff**: the 484-sprite dump narrows the native-only divergence to BOLT1 sprite #121 (pic 636 vs 635) and BLOODSPLAT3 #369 (Z −20442 vs −20431); all other traced sprite tuples match. Per-call logs show the random stream is present but calls are attributed to different actors/phases, so do not patch sprite values directly.
+- `2026-11-06` — **Duke D5 status clarified**: native-only comparison reports DEMO1 tic 0 `randomseed` as the first state mismatch (`duke_frontier real DEMO1 3`). The sprite-hash regressions through tic 134 are explicitly labelled assisted because they depend on reference seeding, RNG pads and/or `trace_fixups`; they do not demonstrate native-only demo sync.
+- `2026-11-06` — **Duke D5 free-game entry point**: added `room_duke::session_from_grp_map`, which loads a named Build map directly from Atomic GRP, compiles `GAME.CON`, initializes the map at skill 0–4, and no longer requires a `.DMO`. Shell integration and interactive-render support remain open.
+- `2026-11-06` — **Duke native runtime seam**: `room-game::GameRuntime` now accepts `GameCmd::Duke` and drives `DukeSession` at 30 Hz. The adapter intentionally reports no lockstep checksum until a full native-state checksum is implemented for D10; `room-app` still stores a concrete Doom `Headless` and is not switched yet.
+- `2026-11-06` — **Duke Build framebuffer**: added `DukeSoftRenderer` to load GRP `PALETTE.DAT` + `TILES*.ART` and render a world/player view to RGBA. `duke_frontier render-map E1L1 /tmp/duke.ppm 3` now writes an image from the native world without DMO or GRP→UDMF conversion; screenshot review confirms the pipe runs, but the bootstrap renderer is not yet suitable as the finished playable view and is not wired into `room-app`.
+- `2026-11-06` — **Duke soft projection correction**: fixed camera-up vs screen-down Y projection and separated horizontal/vertical focal lengths to respect framebuffer aspect ratio. E1L1 still renders mostly a near wall, so the flat horizon fill / wall visibility path needs further work before using it as the interactive view.
+- `2026-11-06` — **Duke desktop bootstrap**: `room-app --native-duke` now loads a named GRP map directly, advances `DukeSession` at 30 Hz, feeds movement/look/fire/use/jump/run inputs, renders the CPU Build framebuffer and overlays a minimal health/ammo readout. `scripts/play-duke3d.sh --runtime native|converter` selects this shell; the native path was launched through the script and reported entry into E1L1. `cargo check -p room-app` passes. Manual visual/gameplay verification could not be completed in this run; native audio, full HUD/weapon view, functional sector use, web integration and the D5–D11 acceptance criteria remain open.
+- `2026-11-06` — **Duke first-person pistol view**: the soft Build renderer now overlays the GRP `FIRSTGUN` tile (idle/fire frames) and a minimal status readout. `duke_frontier render-map E1L1 /private/tmp/duke-native-view.ppm 3` produced a 640×400 frame showing the map floor and pistol. Other weapon overlays, correct sky/ceiling rendering, audio, and hands-on input/gameplay verification remain open.
+- `2026-11-06` — **Duke native web runtime bootstrap**: browser GRPs now start a `DukeSession` + Build soft renderer directly instead of the converter/Doom `Headless`; Duke input mapping is enabled for WASD, mouse/arrows/Q turning, Space jump and weapon digits. The browser shell loads `duke3d.grp` and enters the native mode; wasm build passes. This is an integration milestone only: hands-on movement/fire verification, audio, multiplayer, campaign flow, complete HUD, saves and full D5–D11 parity remain open.
+- `2026-11-06` — **D8 native weapon audio bootstrap**: native desktop loads Atomic CON `definesound` entries from the GRP, decodes VOC samples into the Room mixer bank, and queues the CON IDs for supported pistol, shotgun and chaingun firing frames. `cargo check -p room-app -p room-duke` passes. Manual playback was not verifiable: `AudioOut::start()` reported a CoreAudio backend error in this environment. This does not cover ambient/actor audio, weapon-specific pitch/volume/priority, music or the browser audio path.
+- `2026-11-06` — **D8 browser weapon audio**: `NativeDuke` now starts/resumes the existing WebAudio graph on a user gesture, decodes the GRP's CON `definesound` VOCs at the actual browser sample rate, and sends native fire events to the shared mixer. `cargo check --target wasm32-unknown-unknown -p room-web --features browser` passes. Browser audio still needs hands-on listening; ambient/actor cues, pitch/volume/priority and MIDI music remain unimplemented.
+- `2026-11-06` — **D5/D6 native-only frontier at tic 135**: DEMO1 state and RNG match through tic 134. Tic 135 differs in randomseed and sprite count (503 vs 504; one extra `JIBS6`). A `duke_frontier states ... 135` diagnostic that substitutes neutral input at tic 135 gives the same Room seed and sprite count as the normal replay, so this tic's discrepancy is not caused by the immediate input's RNG or new input-driven sprites. Updated the shotgun `checkhitsprite` debris gate to match Chocolate's nested `FREEZEBLAST`/owner exclusions; this is a compatibility correction but does not move the frontier. A trial parity flip for `everyothertime` regressed earlier at tic 31 and was reverted. Next isolate world-step/animation timing and JIBS lifetime/order around tic 135. `D5` remains in progress.
+- `2026-11-06` — **D11 packaged native web smoke**: `scripts/package-web.sh --out target/room-web --iwad testdata/duke/duke3d.grp` completed (release wasm, 91 MiB site); localhost HEAD requests returned 200 for `index.html` and the 44,348,015-byte Duke GRP. Visual/gameplay verification could not run because the Mac was locked and CUA could not unlock it; package/HTTP success does not prove the wasm entered NativeDuke mode.
+- `2026-11-06` — **Duke desktop weapon selection**: number keys 1–0 now request the corresponding native weapon indices; selection only changes to a weapon the player owns and has ammunition for. `cargo check -p room-app` passes. Full weapon input/state/HUD and weapon pickup behavior remain D6 work.
+- `2026-11-06` — **Native Duke launcher guidance**: the runtime banner and `scripts/play-duke3d.sh --runtime native` now explicitly identify E/use, audio, level exits, and most weapons as unfinished. The input bit is transmitted, but no native `operate*`/`checksectors` implementation consumes it yet. This is a scope/status correction, not a gameplay completion.
+- `2026-11-06` — **Duke native pistol firing**: the starting pistol now routes through the native hitscan, uses the SHOTSPARK1 CON strength and consumes pistol ammo once per shot; the shotgun path remains separate. `cargo check -p room-app` passes. Runtime damage/animation still need reference gameplay verification; other weapon families and pickups remain open D6.
+- `2026-11-06` — **Native Duke launcher smoke**: fixed `set -u` handling when no extra app args are supplied; `scripts/play-duke3d.sh --runtime native` now builds and reaches `room: entered native Duke E1L1`. UI automation could not attach to the launched Room app, so no visual/input gameplay verification was obtained.
+- `2026-11-06` — **Duke D5 CON actor predicates and map `spawn(-1)` state**: `ifactor` reads the live tile; `ifspawnedby` reads `hittype[].picnum`. Chocolate initializes map actors' `hittype[].picnum` to their own tile, so Room now sets the corresponding `spawned_by` field at map load and initializes the cached floor/ceiling planes. Before D7 animated walls were implemented, the native trace matched through tic 30 and first differed at tic 31. Current trace frontier is tic 38; D5 remains in progress.
+- `2026-11-06` — **D5 frontier diagnosis (superseded by the D7 animated-wall implementation below)**: the first trace caller had been tentatively attributed to `animatewalls`, but that early note miscounted its RNG calls and marked D5 complete prematurely. The verified force-field path consumes five calls on E3L11; native-only DEMO1 now matches through tic 38, and D5 remains in progress with the next mismatch at tic 39.
+- `2026-11-06` — **D6 chaingun first shot path**: added Atomic's held-fire cadence (one hitscan every three kickback tics, continuing while held) and uses the CHAINGUN CON damage profile with the shared player hitscan. The casing effect and native cadence/reference gameplay parity remain open. `cargo check -p room-duke` passes; D6 remains in progress.
+- `2026-11-06` — **D6 exhausted weapon fallback**: pistol, shotgun, and chaingun now leave an empty weapon using Atomic's default `checkavailweapon` priority, switching through the existing owned/ammo inventory and landing on the knee if no loaded weapon remains. User-configured weapon preference is not yet wired to the native shell.
+- `2026-11-06` — **D6 native weapon overlay coverage**: `DukeSoftRenderer` now resolves the selected weapon's Atomic HUD tile from `DEFS.CON` and draws the supported ART frame at its weapon-specific screen center for all twelve inventory slots (including aliases for hand-held items and grow/shrink). Missing custom tiles fall back gracefully. The full multi-layer offsets, muzzle flashes, view bob, and exact per-tic `displayweapon` choreography remain open.
+- `2026-11-06` — **D7 ART tile animations in the native renderer**: `SoftTiles` now resolves ART `picanm` oscillating, forward, and backward cycles using the deterministic Build 120 Hz clock. Desktop and browser pass the Duke tic through to the renderer; floors, ceilings, walls, sky and face sprites sample the corresponding frame without modifying `BuildWorld`. A fixed-camera `render-map` comparison changed 125,773 RGB byte values on E1L4 between tics 0 and 30; a scan found visible frame changes on seven Atomic map start views. At that point simulation-side `animatewalls`, sector/effectors, and the DEMO1 RNG frontier were still open; the animated-wall work is recorded above. Desktop and wasm browser cargo checks pass.
+- `2026-11-06` — **D3/D7 portal rendering**: native soft rendering now draws upper/lower wall bands where adjacent sectors have different ceiling/floor heights, keeps the aperture open for the next sector, and depth-tests walls/sprites per pixel. `fp_textured_portal_renders_height_differences_and_keeps_opening` verifies both bands and the visible sector beyond. A new E1L1 frame shows mapped masonry and railing instead of only the floor to the horizon; the simplified renderer still lacks full sky composition and Build wall/sprite semantics. D3/D7 remain in progress.
+- `2026-11-06` — **D3 Atomic parallax sky slots**: native `SoftTiles` now picks the eight 45-degree sky tiles from the `DEFS.CON` `pskyoff[]` layout as the camera angle crosses slots, sharing the same Atomic offset table as the GRP-to-WAD converter. A new E1L1 render samples multiple night-sky ART tiles rather than repeating one black tile. Unit tests cover angular tile selection and all three configured Atomic offset sets. Golden comparison against the reference renderer and other sky groups remain open.
+- `2026-11-06` — **D6 weapon switching presentation**: native weapon overlays now move down during the outgoing weapon phase and rise from below during the incoming weapon phase, using the `weapon_pos` state already advanced by the simulation. Other exact `displayweapon` offsets, bob, and firing effects remain open.
+- `2026-11-06` — **Native weapon dispatch**: only pistol (1) and shotgun (2) enter implemented fire paths; other selected slots now advance their raise/lower state without silently firing a shotgun. `cargo check -p room-app` passes. Remaining weapons still need their own state/shoot implementations.
+- `2026-11-06` — **D11 wasm dependency path**: enabled optional `room-duke` as part of `room-web`'s `browser` feature so the browser build includes the native Build runtime and renderer crate. `cargo check --target wasm32-unknown-unknown -p room-web --features browser` passes. This is build plumbing only: browser GRPs still route through the converter and Doom `Headless`; browser controls, Build frame presentation, and sound/runtime integration remain to do.
 - `2026-11-03` — **Rust guest mods: `export_mod!` unresolved `room_script_abi`**. The 2026-11-01 `room_dispatch` arm named `room_script_abi::ActionPayload`, but the macro expands in the guest crate, which only depends on `room-script-sdk` (`mods/doom1-survival` broke). `room-script-sdk` now re-exports `ActionPayload`, and the macro uses `$crate::ActionPayload`. The survival mod builds, and the sdk tests pass.
 - `2026-11-03` — **AssemblyScript compiler crash (`./room start`)**. The 2026-11-01 `as/room.ts` additions declared a second `export namespace Prop` (class-property ids). It clashed with the existing actor `Prop` (`HEALTH` 0 vs 1, `DAMAGE` 8 vs 39). asc 0.28.20 crashes on that ("Whoops… no stack trace") instead of reporting it, for every mod. The new ids went into `ClassProp` and the new flags into `ClassFlag` (the values agree wherever the names overlap), and the duplicate `Prop` / `Flag` were removed. `mods/doom1-bounty` compiles again, byte-identical to the committed `bounty.wasm`.
 - `2026-11-03` — **Editor: ZScript from uploaded mods**.
@@ -804,6 +1004,19 @@ Living checklist for every roadmap milestone. Specs and acceptance tests live in
 
 - `2026-10-24` — **D5** CON `ifcansee` (TRAND Z + cansee; holoduke/`furthestcanseepoint` deferred) + `ai`→`sprite.hitag`. Pads retuned 121–123. DEMO1 0–123 bitexact; tic124 seed-ok/hash-fail (CON `move`/seekplayer).
 - `2026-10-24` — **D5** CON `ifai` (was always-false stub) — OCTABRAIN wake no longer false-`ifrnd`. DEMO1 0–123 bitexact. Frontier tic124.
+- `2026-11-06` — **D5** Tic55 trace clarification: Room and Chocolate bubble #399 both show `g_t[0]=4` after tic54. Room logs random-angle and `ifrnd` draws attributed to #399. Chocolate return addresses resolve to CON `parse` (`ifrnd` and random-angle `move`), but its logged `g_i`/`insptr` may be stale; the `execute()` probe did not capture #399, so actor attribution remains unverified. Next diagnostic: instrument actual Chocolate `moveexplosions` dispatch by sprite and compare execute entry/exit/seed. RNG padding remains off.
+- `2026-11-06` — **D5/D6** Static Chocolate `player.c::shoot()` comparison found the missing post-hitscan 1-in-64 `PISTOL_RICOCHET` TRAND roll. Room now consumes it for every resolved hitscan and queues sound id 1 when defined; removed experimental shotgun RNG pads and debug prints. `cargo fmt --check`, `cargo check -p room-duke`, and `git diff --check` pass. Per user request, no demo/gameplay run was made; tic135 remains to be remeasured.
+- `2026-11-06` — **D5 / CON VM** Implemented Chocolate `gamedef.c::parse()` actor health/palette/collision/score commands and predicates: `strength`, `addstrength`, `addkills`, non-player `spritepal` / `getlastpal`, `cstat`, `cstator`, `cactor`, `clipdist`, `count`, `sleeptime`, `ifstrength`, `ifphealthl`, knee `ifp pkicking`, `ifsquished` sector-gap/lotag test, `ifmultiplayer`, `ifspritepal`, `ifangdiffl`, `ifactornotstayput`, `ifhitspace`, `ifoutside`, `ifinspace`, and `ifinouterspace`. The actor loop now syncs `cactor`'s tile sidecar and credits the player's wrapping 8-bit kill counter from `addkills`. `ifmultiplayer` reads the supplied player slice size (the shell still supplies one player); player-clipping suppression/badguy recoil for `ifsquished`, player palette restoration and broader stateful predicates remain open. Static build only; behavior remains to be tuned against Atomic demos and the route corpus.
+- `2026-11-06` — **D5 / CON VM** Added Atomic `pkick` and player quick-kick state. `pkick` starts the 14-frame animation only when idle; `ifp pkicking` now recognizes this animation as well as knee-weapon kickback. Chocolate's multiplayer APLAYER/`otherp` target path remains deferred. Static compilation only; no gameplay or demo comparison was run.
+- `2026-11-06` — **D5 / CON VM** Implemented Atomic `endofgame N` state: marks the end-of-game request, sets the player exit timer and default exit sound, and decrements the timer while current player health is positive (Chocolate checks the previous-frame `last_extra`; Room has no such field yet). `ifp pcanseeeverything` now requires no active exit timer. MODE_EOL transition, countdown sound cues and campaign routing remain open. Static compile only; no gameplay/demo run.
+- `2026-11-06` — **D5 / CON VM** Implemented Chocolate `ifgotweaponce N`: co-op player state stores the 16-entry `weaprecs` table, supports reservation insertion and owner-matched lookup, and respects the coop/multiplayer gate. A caller must still select coop mode; `room-duke` has no multiplayer lobby/game-mode wiring yet. Static compilation only; no game/demo comparison.
+- `2026-11-06` — **D5 / CON VM** Ported `addphealth N`: reads Atomic max health from `gamestartup`, applies the ATOMICHEALTH 2× cap, clamps health at zero, honors god-mode suppression, updates player/body health and `last_extra`. Low-health `DUKE_GOTHEALTHATLOW` audio is now queued when healing crosses the 25% threshold; camera detach remains unimplemented. Static compilation only; no game/demo comparison.
+- `2026-11-06` — **D5 / CON VM/audio** Implemented actor `sound` command using the actor's `yvel` sound ID and route it through `DukeSession` when the CON defines that sound. The current bridge emits sound IDs without actor-relative spatialization. Static compile only; no gameplay/audio run.
+- `2026-11-06` — **D5 / CON actors** Implemented CON `money N` as Chocolate `lotsofmoney`: creates N MONEY sprites with the vanilla Z, angle, cstat random draws and misc stat. Static build only; random order and pickup behavior have not been dynamically compared.
+- `2026-11-06` — **D5 / CON actors** Extended the `lotsof*` spray path to CON `mail N` and `paper N`, using Chocolate MAIL/PAPER tile IDs and the same per-object random placement, angle, and cstat draws as `money`. Static build only; no gameplay/random-order comparison.
+- `2026-11-06` — **D5 / CON actors** Ported `lotsofglass N` / `spriteglass`: creates `GLASSPIECES` shard variants from the actor with randomized angle, Z offset, shade and velocity, retaining the actor palette. Static source translation only; RNG order and shard physics await later comparison.
+- `2026-11-06` — **D5 / D8 CON/UI seam** Ported CON `quote N` to Chocolate `FTA`: honors the FTA toggle and protected 115/116 quotes, stores a 100-frame timer, expires it in player input, and exposes `DukeSession::active_quote()` using `definequote`. Rendering that text in the HUD remains D8 work. Static build only; no UI/gameplay run.
+- `2026-11-06` — **D5 / D8 CON/UI seam** Implemented CON `tip`: starts Chocolate `tipincs=26`, counts down in player input, and exposes `DukeSession::tip_timer()` for the HUD animation. Sprite drawing remains D8. Static build only; no UI/gameplay run.
 - `2026-10-24` — **D5** Late WATERBUBBLE warp freezes `hittype.floorz` (`emit_tic≥70`); pads through tic119. DEMO1 0–119 bitexact (`demo1_tic119_bitexact`). Frontier tic120.
 - `2026-10-24` — **D5** Build-style `clipmove` (walldist clip lines + `raytrace`/`keepaway` + portal Z gates). DEMO1 0–82 bitexact. Frontier tic83 seed-ok/hash-fail.
 - `2026-10-24` — **D5** SHOTGUNSPRITE pickup: CON `g_t[0]++` after `move()`, `ifp`/`ifpdistl`/`ifcanseetarget`, player `extra` sync. DEMO1 0–65 bitexact. Frontier tic66 was player clipmove (thin-ray miss).
@@ -2504,6 +2717,12 @@ cargo run -p room-app -- --iwad testdata/freedoom/freedoom2.wad --map MAP01 --pl
 
 ### Log
 
+- `2026-11-07` — **D5 `movefta`** now selects the nearest player, honors that player's live body health, refreshes sleeping badguy shade from its sector, and routes visible Atomic barrel/can/fire-vase/wooden-horse/tripbomb actors to `STAT_STANDABLE` with sector-plane shade. Static Chocolate source review; fmt, diff check, and crate check pass with existing warnings; no dynamic comparison.
+- `2026-11-07` — **D5/D8 wake audio**: implemented Chocolate `check_fta_sounds` on dummy-actor promotion, including per-sprite enemy cues and the palette-dependent/global boss recognition cues. Static review of `game.c` and `soundefs.h`; compile/format checks only, no gameplay/demo comparison.
+- `2026-11-07` — **D6 hitscan wall impacts and decals**: Chocolate `player.c::shoot` confirms there is no 1024-unit cutoff around `checkhitswitch`, bullet-hole placement or `checkhitwall`; Room now processes all valid wall hits, preserves the original wall for switch/decal checks, and only then selects the peer wall for floor-aligned material response. Added Atomic `BULLETHOLE` size/cstat initialization, the one-unit wall-facing `ssp` nudge, SE13/door/forcefield/tag/sector suppression, and duplicate spacing with `FindDistance3D`/TRAND in STAT_MISC order. Static review of `player.c::shoot`, `sector.c::checkhitwall` and `sector.c::dist`; `cargo fmt --all`, `git diff --check` and `cargo check -q -p room-duke --lib` pass with existing warnings. No tests, gameplay or demo/reference comparison.
+- `2026-11-07` — **D6 tripbomb arming multiplayer target**: the standable mine's first 32-tic arm delay now uses Chocolate `findplayer` semantics: previous-tic Manhattan distance and nearest living seat in multiplayer, while retaining the single-player player even at zero health. This fixes reliance on seat 0 when another coop player is closer/alive. Static review of `sector.c::findplayer` and `actors.c` tripbomb state; formatting, diff and crate compile only, no dynamic comparison.
+- `2026-11-07` — **D6 projectile player-hit cue**: generic RPG/FREEZEBLAST/SHRINKSPARK hits on APLAYER now queue positional `PISTOL_BODYHIT` at the struck body after the freeze-immunity early return, matching Chocolate `moveweapons` after `checkhitsprite`; SPIT/FIRELASER route their specialized cues through the same actor-position path. Static `actors.c::moveweapons` review; fmt, diff and crate compile only, no dynamic comparison.
+- `2026-11-07` — **D6 direct projectile damage**: accepted projectile hits now accumulate `source.extra` in target hittype metadata for APLAYER and actors; RPG damage doubles against badguy actors before queueing, matching Chocolate `checkhitsprite`. Sleeping badguys wake into STAT_ACTOR with the exact `SLEEPTIME` (`24 * 64`) reset before an RPG blast scan. Direct and radius passes can both contribute within a tic. Static `sector.c::checkhitsprite` / `actors.c::moveweapons` review; fmt, diff and crate compile only, no dynamic comparison.
 - `2026-10-24` — **D6** Chocolate `ldist` = `FindDistance2D+1` (was manhattan) — first shotgun spark Z 58016≈choc 58019. Still nspr=504 with BLOODSPLAT (7 JIBS); need floor-miss pellet.
 - `2026-10-24` — **D6** shotgun knockback `pushmove` between pellets (Chocolate checkhitsprite). Still nspr=504 @ pad=13; face xr sweep 30→7 jibs / 28→5 jibs (no 6).
 - `2026-10-12` — M10 done: MAP01+32-lights fps floor; desktop matrix intentional deferral.
@@ -2820,7 +3039,9 @@ CLI args preferred over env for server and scripts (`--bind`, `--server`, `--roo
 
 ### Notes
 
-Play stays on GRP→UDMF until D11.
+The converter remains available as an export and compatibility path. Native
+play is wired in desktop and browser shells, but campaign, audio, saves, mods,
+multiplayer and the full acceptance matrix still gate D11.
 
 ---
 
@@ -2878,13 +3099,17 @@ Record on **linux/386** (Chocolate truncates pointers on 64-bit). See
 - [x] Chocolate per-MAP `inside` goldens (41 episode maps; `map` field loads GRP)
 - [x] `inside` Build XOR/sign (E2L8 parity)
 - [x] Chocolate clipmove probe (`initspritelists` + 23 wall-only `choc_clip_*`)
+- [x] `clipmove_xy_at_z_sprites` face L-clips, ART-sized wall quads, floor-sprite visible-edge clipping (`cstat&48==0/16/32`), Chocolate’s reverse-order Z-aware final sector fallback, and live `headspritesect` scan order
 
 ### Notes
 
 Clean-room only — no BUILDLIC translation. Harness ~300 fixtures (41 map-ref
-+ synthetics/L + clip) + GRP soak + `build_primitives` fuzz. Sprite/portal
-`clipmove` and bit-exact slide (beyond `pos_atol=1`) remain follow-ups under
-`05-clipmove.md`.
++ synthetics/L + clip) + GRP soak + `build_primitives` fuzz. Face, wall- and
+floor-aligned sprite clipmove plus the Z-aware final sector fallback landed
+2026-11-07 from static Chocolate source review and compile checks. Runtime
+players, badguys, fallers, poolballs and pipebombs now pass the live sector
+list ordering; clip probe/goldens are still needed. Bit-exact slide
+(beyond `pos_atol=1`) remains a follow-up under `05-clipmove.md`.
 
 ---
 
@@ -2894,38 +3119,107 @@ Clean-room only — no BUILDLIC translation. Harness ~300 fixtures (41 map-ref
 
 ### Acceptance
 
-- [x] CON VM bootstrap (`parse` / `parseifelse` / `ifrnd` / `state` / `action` / `killit` + stubs)
+- [x] CON VM bootstrap and actor/player state commands and predicates (`sound` event, `money`/`mail`/`paper` object sprays, `lotsofglass` shards, `quote` FTA state, `tip` animation state, `strength`/`addstrength`/`addkills`, non-player palette save/restore, `cstat`/`cstator`/`cactor`/`clipdist`, `count`, `sleeptime`, `pkick` + quick-kick countdown, `endofgame` + exit timer, `addphealth` health caps/god-mode guard, co-op `ifgotweaponce` reservation table, `ifstrength`, `ifphealthl`, `ifp pkicking`, `ifp pcanseeeverything`, `ifsquished` sector test, `ifmultiplayer`, `ifspritepal`, `ifangdiffl`, `ifactornotstayput`, `ifhitspace`, `ifoutside`, `ifinspace`, `ifinouterspace`; runtime co-op selection and remaining opcode coverage are open)
+- [x] CON `palfrom` timed player palette flash (applied in actor order) and `print` numeric console diagnostic
+- [x] Solo CON `resetplayer` requests host restart; native desktop restores initial session or offers the last save
+- [x] Multiplayer CON `resetplayer` selects Chocolate's `po[]` start pose (co-op uses seat index; DukeMatch uses deterministic `TRAND % numplayersprites`) and resets player/body spawn state
+- [x] Per-tic `tip`, `quote`/FTA and living-player `endofgame` countdowns; expose one-shot level-exit readiness to the host (campaign transition/routing remains open)
 - [x] `DukeSession` at 30 Hz + `SpriteLists` + `randomseed`
 - [x] `processinput` movement-only (`processinput_move`: avel/fvel/svel + friction + `clipmove_xy`)
 - [x] Coarse map sprite classify (`APLAYER`/`SE`/`actorscrptr` → stats); full `spawn` rules still open
 - [x] `moveactors` calling CON `execute` (header+4; `killit` → `deletesprite`)
-- [x] `movefta` (STAT_DUMMY → STAT_ACTOR on `cansee` / `timetosleep`)
+- [x] `movefta` (nearest living player, STAT_DUMMY wake test, Atomic standable classification/shade)
+- [x] `STAT_DEFAULT` QUEBALL/STRIPEBALL movement: wall/sprite clipping, wall bounce, pocket capture, speed decay, ball-to-ball impulse, proximity auto-kick and edge-triggered player-directed kick
 - [x] Sprites in soft view (`render_fp_sprites` face sprites + z-buffer; wall/floor align deferred)
-- [x] DEMO1 sync harness (`demo_sync`: GRP+DMO+trace)
-- [x] DEMO1 tic0 RNG aligned (`align_rng_pre_tic0` + `global_random=TRAND` + 12-krand pad)
+- [x] DEMO1 comparison harness (`demo_sync`: GRP+DMO+trace; assisted and native-only modes)
+- [x] Native `DukeSession` initialization from an Atomic GRP map (no demo dependency)
+- [x] `room-game::GameRuntime` adapter for native Duke commands and 30 Hz ticks
+- [x] DEMO1 tic0 RNG alignment helper (diagnostic only; native simulation does not yet derive the reference seed)
 - [x] DEMO1 tic0 `numsprites` match (484: GPSPEED + SP `pal` pickup soft-cull + `moveexplosions`)
 - [x] Coarse spawn status lists + `spawn_floor_snap` (dummy/actor floor rest)
 - [x] APLAYER EGS + GPSPEED delete order (player sprite index 69 matches Chocolate)
 - [x] DEMO1 tic0 player pose (XY + posz −24016 / sprite z −14288 via getzrange face-sprite ceiling + clamp)
 - [x] DEMO1 tic0 `sprite_hash` bitexact (SE 0/13, `nsqrtasm` slopes, sintable, crack `ssp`×TICSPERFRAME, bloodsplat TRAND#2, badguy flat-floor `makeitfall`)
-- [x] DEMO1 tic0–1 `sprite_hash` bitexact (`movestandables` BOLT1; spawn pic 634; pad_pre; `global_random` i16)
-- [x] DEMO1 tics 0–38 bitexact (portal `cansee`, CON `fall`, WATERSPLASH2, SHOTGUNSPRITE wake; pads stand in for moveplayers/fallers)
-- [x] DEMO1 tic39 bitexact (WATERBUBBLE ifcount TRAND; #75/#77 phase lag workaround; pads through tic39)
-- [x] DEMO1 tic40 bitexact (#75/#77 keep skipping ifcount; `pad_pre=2`)
-- [x] DEMO1 tics 41–44 bitexact (`pre_explode=2` / `pad_pre=2`)
-- [x] DEMO1 tics 45–59 bitexact (`moveplayers` water bubbles; `swim_ifrnd_budget`; pads)
-- [x] DEMO1 tics 60–82 bitexact (clipmove walldist; SHOTGUNSPRITE CON; pads)
-- [x] DEMO1 tics 83–119 bitexact (late warp_floorz freeze; pads through 119)
-- [x] DEMO1 tics 120–123 bitexact (CON `ifai` + `ifcansee`; pads 121–123)
-- [x] DEMO1 tics 124–134 bitexact (seekplayer wiggle; sloped `hitscan` for `hits()` undo; pads)
-- [x] DEMO1 through tic134 = movement-only ceiling (tic135 first weapon fire → D6)
-- [ ] Opcode coverage over DEMO1–3 / route corpus (from D4 deferral) — continues under D5/D6
+- [x] Assisted DEMO1 tic0–1 sprite hash regression (`trace_fixups` + RNG pads; not native-only parity)
+- [x] Assisted DEMO1 tics 0–38 regression (portal `cansee`, CON `fall`, WATERSPLASH2, SHOTGUNSPRITE wake; pads stand in for unimplemented TRAND sites)
+- [x] Assisted DEMO1 tic39 regression (WATERBUBBLE ifcount TRAND; #75/#77 phase lag workaround; pads through tic39)
+- [x] Assisted DEMO1 tic40 regression (#75/#77 keep skipping ifcount; `pad_pre=2`)
+- [x] Assisted DEMO1 tics 41–44 regression (`pre_explode=2` / `pad_pre=2`)
+- [x] Assisted DEMO1 tics 45–59 regression (`moveplayers` water bubbles; `swim_ifrnd_budget`; pads)
+- [x] Assisted DEMO1 tics 60–82 regression (clipmove walldist; SHOTGUNSPRITE CON; pads)
+- [x] Assisted DEMO1 tics 83–119 regression (late warp_floorz freeze; pads through 119)
+- [x] Assisted DEMO1 tics 120–123 regression (CON `ifai` + `ifcansee`; pads 121–123)
+- [x] Assisted DEMO1 tics 124–134 regression (seekplayer wiggle; sloped `hitscan` for `hits()` undo; pads)
+- [x] Native-only DEMO1 matches seed, player pose, sprite count and hash through tic134
+- [x] Player bullet hits on Atomic DIP/HAND switch tiles queue interaction and follow Chocolate's pre-ricochet early return
+- [ ] DEMO1 sync beyond tic134 (tic135 ricochet-roll correction is implemented but not dynamically remeasured; compare pellet angles, hit count, `JIBS6`, and end seed)
 - [ ] Opcode coverage over DEMO1–3 / route corpus (from D4 deferral)
 
 ### Notes
 
 Translate GPL game code (`actors.c` / `player.c` / …). Engine calls stay on
 `room-build-engine` clean-room primitives.
+
+**Frontier debug (2026-11-06):** `krand-map` identifies the live sprite ID for
+CON RNG calls, and `snapshot DEMO1 <tic>` prints actor temp counters, movement,
+owner and sector lotag. At tic39, warped bubbles #75/#77 reached the lotag-1
+surface but their `iffloordistl 8` check still saw the source floor; using the
+destination sector planes aligned native-only playback through tic40. The next
+gap came from the APLAYER swim action: Room suppressed the first live inner
+`PSWIMMING ifrnd 4` after entering that action and did not advance player
+`temp_data[0]` as Chocolate `move()` does. Room now suppresses only the entry
+tic, advances the player counter in and out of water, and matches native-only
+DEMO1 state and RNG through tic69. At tic70, Room consumes an APLAYER trailing
+bubble `ifrnd` that Chocolate skips after changing the swim action. The
+`krand` diagnostic compares call seeds and end-of-tic seeds. D5 remains
+incomplete. The CON VM also now implements Chocolate `strength` and
+`addstrength`, non-player `spritepal` / `getlastpal`, and the
+`ifstrength`/`ifphealthl`/`ifspritepal`/`ifangdiffl`/`ifactornotstayput`
+predicates. The player palette case of `getlastpal` and broader stateful
+predicates still need Room player/session data.
+
+**Player timer lifecycle (2026-11-06):** `DukeSession::tick` now decrements
+Chocolate `tipincs`, `fta`, and the living player's `timebeforeexit` counters.
+Expired FTA clears the active quote ID, and a completed end-of-level countdown
+is exposed as a consumable request for the outer game runtime. No campaign
+routing or countdown audio was added. Static `cargo check -p room-duke` only;
+no gameplay/demo comparison was run.
+
+**CON `operate` (2026-11-07):** the VM now defers `operate` from a CON actor
+until the session has the Build world and sprite lists. It traces the 768-unit
+horizontal `neartag` ray through connected sectors, testing tagged walls,
+sectors and sprites; sprite candidates use ART dimensions, repeat sizes,
+vertical position and picanm offsets. It applies Chocolate's near-operator,
+plane, lock-bit and ACTIVATOR checks, then dispatches the existing sector
+operation. Animated ART offset handling, exact ray/tag tie ordering, and
+same-actor-pass mutation ordering remain open. Static review of Chocolate
+`gamedef.c` / Build `neartag` and compile/format checks only
+(`cargo fmt --all`, `git diff --check`, `cargo check -q -p room-duke --lib`);
+no gameplay/demo comparison was run.
+
+**`movefta` player and standable routing (2026-11-07):** Room now selects the
+same nearest player returned by Chocolate `findplayer`, skips wake checks when
+that player's body sprite is dead, and moves visible barrel/can/fire-vase/
+wooden-horse/tripbomb types to `STAT_STANDABLE` with the sector-plane shade.
+Other visible dummy actors still promote to `STAT_ACTOR`. Static review of
+Chocolate `actors.c::movefta`; sleeping badguy shade now follows its sector
+plane shade each tic while its closest target is alive. `cargo fmt --all`,
+`git diff --check`, and `cargo check -q -p room-duke --lib` only; no
+gameplay/demo comparison.
+
+**Pool-ball input and movement (2026-11-07):** `STAT_DEFAULT` balls now advance
+in the native actor phase. Moving balls use Build `CLIPMASK1`, capture at
+nearby POCKET sprites, bounce by reflecting their angle on walls, exchange the
+native velocity/angle impulse on ball contact, lose one `xvel` per tic, and
+update STRIPEBALL's cstat animation bits. Stopped balls auto-kick when the
+nearest player is within 512 units; the use bit also kicks a ball inside the
+native 64-angle/1596-distance cone unless another ball is closer in that cone.
+`toggle_key_flag` prevents repeat kicks while held, clears on release, and
+round-trips from the Atomic player save field. The full near-tag/eye-height
+filter, exact `findplayer` tie ordering, POOLBALLHIT voice cap, and full Build
+clipmove parity remain open. Static review of `actors.c::moveactors`,
+`sector.c::checkhitsprite`, `game.c` and `duke3d.h`; formatting, diff and
+`cargo check -q -p room-duke --lib` only. No gameplay/demo comparison.
 
 ---
 
@@ -2949,6 +3243,13 @@ Translate GPL game code (`actors.c` / `player.c` / …). Engine calls stay on
 
 ### Notes
 
+**CON presentation opcodes (2026-11-07):** VM opcode 68 `print` emits its
+integer operand as a decimal stdout line, matching Chocolate's diagnostic.
+Opcode 14 `palfrom` now queues its duration/RGB values during CON execution
+and applies the resulting palette flash to the owning player in actor order.
+Static review of Chocolate `gamedef.c`, formatting and targeted compile only;
+no game comparison.
+
 GPL game-code translation from `GAMEDEF.C` is allowed. Pointers in the image
 are stored as word indices (relocatable), not absolute addresses. Label names
 keep file case (`strcmp`), matching Chocolate — do not fold to lowercase.
@@ -2962,7 +3263,7 @@ keep file case (`strcmp`), matching Chocolate — do not fold to lowercase.
 ### Acceptance
 
 - [x] `SectorT` / `WallT` / `SpriteT` + `BuildWorld::load_arrays` / `load_map_bytes`
-- [x] `BuildView` camera snapshot + portal visible-sector flood
+- [x] `BuildView` camera snapshot + camera-oriented portal flood (`scansector` front-facing bounds and one-way bit)
 - [x] Soft top-down wireframe bootstrap (`soft`)
 - [x] Soft FP wireframe bootstrap (`render_fp_wire`)
 - [x] Soft FP solid columns + z-buffer (`render_fp_solid`)
@@ -2974,8 +3275,1597 @@ keep file case (`strcmp`), matching Chocolate — do not fold to lowercase.
 - [x] ART soft-view path (`room duke soft-view` textured PGM)
 - [x] Synthetic soft goldens (`soft_goldens`: walls / flats+sky / textured)
 - [x] FreeFly CLI controls (`soft-view --forward/--strafe/--turn/--look/--up`; no windowed `--play`)
+- [x] Depth-tested face sprites with X/Y flips and transparent texels
+- [x] Depth-tested wall-aligned sprites with angle, repeats, centered origin and X/Y flips
+- [x] Depth-tested floor-aligned sprites with angle, repeats, X/Y flips and transparent texels
+- [x] `LOOKUP.DAT` palette remaps on opaque wall and face/wall/floor sprite texels
+- [x] `PALETTE.DAT` shade rows on flat/sky fill, walls and face/wall/floor sprites
+- [x] Wall texture panning bytes offset sampled ART texels by a fractional tile
+- [x] Wall cstat X-flip (8) and Y-flip (256) reverse sampled tile coordinates
+- [x] Wall cstat one-way masked bit (32) blocks adjacent-sector visibility in the static renderer
+- [x] One-sided cstat rejection for wall-aligned and floor-aligned sprites
+- [x] Sprite origin offsets from map `xoffset`/`yoffset` and ART `picanm` on all three sprite orientations
+- [x] Floor/ceiling raster rays intersect sloped planes using deterministic fixed-point `getzsofslope`
+- [x] Floor/ceiling plane XY swap, X/Y flip and double-smoosh texture flags
+- [x] Relative floor/ceiling texture alignment to the sector's first wall
+- [x] Floor/ceiling tile-size scaling and 1/256-tile panning
+- [ ] Visibility-based shade selection, translucency levels, exact wall/plane panning and perspective-correct mapping
 - [x] Portal / multi-sector soft golden (`golden_portal_two_sectors`)
 - [ ] Interactive desktop/web FreeFly shell — **intentional deferral** (CLI soft-view covers D3 accept; wire later with D8/D11 shells)
+
+---
+
+## D6 — Duke weapons + damage
+
+**Status:** `in_progress` · Spec: `25` §7 / §11 D6
+
+### Acceptance
+
+- [x] Knee cadence / short-range hitscan, impact actor and smoke, shared sprite/wall impact dispatch, pistol, shotgun, chaingun, and RPG firing paths
+- [x] Normal knee weapon and `pkick` both dispatch hits into the shared impact and tagged-switch handlers
+- [x] Devastator two-shot burst cadence, alternating launch offset, spread RNG and per-shot ammo use
+- [x] Freezer kickback firing cadence, cell consumption, FREEZEBLAST spawn and basic clipped flight/hit dispatch (partial weapon behavior)
+- [x] Shrinker bolt and Grower hitscan firing paths, ammo timing, impact metadata, and animated Grower impact cue (target transformations remain open)
+- [x] Player weapon kickback timing and native soft-view weapon frame selection
+- [x] Decode the Chocolate `sync.bits` weapon choice field, direct weapon hotkeys, previous/next cycle, and queued direct selection while a weapon fires
+- [x] Hitscan sprite damage, shotgun spread, player blood/jibs, and key firing sound IDs
+- [x] Pistol, shotgun and chaingun direct wall/sprite material impacts and tagged switch activation (DIPSWITCH solution counting/warning and exact Build motion filtering remain open)
+- [x] Direct explosive/projectile `checkhitwall` mirror impacts: source allowlist, mirror collision-bit clear, broken overlay, 70 wall shards, heavy-break cue
+- [x] `checkhitwall` receives Chocolate's explicit `atwith` tile from hitscan, knee and projectile call sites; chaingun forcefield ripple uses the shot's scaled repeats
+- [x] Auto-aim uses Chocolate's target-specific LOS source height for `ORGANTIC` and `ROTATEGUN`
+- [x] Owned `hitradius` damage exits an active APLAYER camera view and releases active `CAMERA1` monitor latches
+- [x] `checkhitswitch` accepts tagged `DOORTILE` operators as well as switch art; door art and ordinary switch cue are preserved
+- [x] `checkhitswitch` lotag `65535` / signed `-1` sets the native level-exit request for recognized wall/sprite operators
+- [x] Player quick-kick hitscan activates the tagged switch tile it reaches for solo/local co-op; ordinary hits cannot trigger lotag-special paths
+- [x] Pipebomb hold/strength throw, near-wall slowdown/reversal, automatic remote cycle, stopped-bomb pickup, underwater splash, actor fall/bounce and basic timed blast
+- [x] Map-placed `HEAVYHBOMB` pickup/detonation respawn with `ud.respawn_items`, CON `RESPAWNITEMTIME`, red/yellow/green markers and teleport reappearance cue/effect
+- [x] CON `hitradius` actor/player scan, line-of-sight damage bands and knockback
+- [x] CON/weapon radius damage reaches shootable SEENINE/OOZFILTER standables
+- [x] `hitradius` nearby-sector wall pass breaks mirror/glass and clears paired glass blocking
+- [x] `hitradius` nearby-ceiling test calls the Atomic ceiling-light/glass/SE3/SE12 path
+- [x] Direct projectile `checkhitsprite` transitions for ocean sprites, pool balls, fountains, fan, toilet/stall, hydrant, grate/panels, pipes, hydroplant, selected glass objects, FETUSBROKE blood-splat burst, BOTTLE10 money, VASE/STATUE glass bursts, chair/decor transitions and debris, MONK/LUKE/INDY/JURYGUY/SPACEMARINE damage/death, first-hit flammable props, cactus/hanglight/fragile-tech scrap bursts and force-sphere owner state (basic effects; remaining families/debris open)
+- [x] APLAYER consumes queued weapon hits for health and knockback; god mode and default coop friendly-fire rejection are applied
+- [x] Fatal non-Freezer hits retain Chocolate `wackedbyactor`; dead camera follows the body and turns halfway toward an active attacker each tic
+- [x] CON `ifpinventory` / `addinventory` player state for Atomic inventory IDs 0, 1, 2, 3, 4, 6, 7, 9 and 10
+- [x] Edge-triggered inventory use and left/right selection inputs; first aid, steroids, jetpack and heat toggles; jetpack flight, underwater scuba activation/depletion, air reserve and timed drowning damage
+- [x] Holoduke inventory toggle creates/removes a native APLAYER decoy with expansion/facing animation and timeout cleanup (partial fall, collision and tint behavior)
+- [x] Purple lava, hurtrail, slime and plasma floor damage with boot charge consumption (surface effects and exact spritebridge exceptions remain open)
+- [x] Timed Duke player palette flashes for the implemented toxic-floor damage cases (classic palette math and coop presentation remain incomplete)
+- [x] Freezer ceiling/floor ricochet reflects the full velocity vector against the selected Build slope normal, then applies Chocolate's bounce-count, damage, and size decay
+- [x] GREENSLIME Freezer transition, frozen gravity/palette/state, 280-tic thaw, quick-kick response, and non-Freezer glass-shard break
+- [x] Lethal `FREEZEBLAST` APLAYER hit enters timed palette-1 freeze, suppresses ordinary death/respawn processing, and thaws at 1 HP using active CON `THAWTIME` when defined (fallback 138)
+- [x] A non-Freezer hit on a frozen APLAYER restores its palette, emits the script-defined `GLASSPIECES` burst with ordered angle/x-velocity/z-velocity RNG draws, and queues `GLASS_BREAKING` before normal damage handling
+- [x] APLAYER Shrinker/Grower responses: shrink flash/cue, `PSHRINKING` timer and repeat recovery, tight-sector crush, Grower flash/cue
+- [x] `FRAMEEFFECT1` afterimage lifetime, translucency stages and owner sprite offsets in the native misc-actor tic
+- [x] APLAYER `PSHRINKING` spawns `FRAMEEFFECT1` at the shrinking body pose each tic
+- [ ] Full actor-specific shrink/grow CON transitions, player CON side effects/particles, and Freezer transformations beyond GREENSLIME
+- [ ] Full freeze transformations beyond GREENSLIME; exact Build movement/hit filters and remaining target transformations; exact Build `hitasprite` / laserline collision and movement, tripbomb damage/arming edge cases; target damage ordering/RNG, respawn, and full FX/parity
+- [ ] Full Build hit filtering, wall/ceiling impacts, radius damage, and damage reactions
+- [ ] DEMO1 sync to its end; the last reference frontier is still tic 135
+
+The current paths are a playable subset, not D6 parity. Full Holoduke
+fall/collision behavior, boots/floor effects, palette/HUD updates, exact inventory quote/sound/timer
+semantics, and projectile lifecycles remain open. No D6 gameplay comparison
+was run in this task.
+
+**Devastator firing (2026-11-06):** the native player path now starts the
+five-tic Devastator burst, launches two spread RPG projectiles at the Atomic
+kickback phases, uses Room's `aim` cone and tile height for target Z velocity,
+alternates barrel offset, decrements ammo per shot and queues the CAT/RPG
+firing cues. The projectile's complete impact/explosion behavior is still
+partial. Static
+source inspection and compilation only; no runtime test or parity comparison.
+
+**Devastator scripted projectile strength (2026-11-07):** static comparison
+with Chocolate `EGS()` + `shoot(RPG)` found that Room used a hard-coded base
+strength of 4 before the Devastator quartering step. The native spawn now starts
+from the RPG CON actor strength, adds the same `TRAND&7` roll, quarters the
+result, and carries the scripted actor `hitag`. `cargo fmt`, `cargo check -p
+room-duke -p room-build-engine`, and `git diff --check` pass; no gameplay/demo
+comparison was run.
+
+**Weapon selection (2026-11-06):** Room now decodes the Atomic `sync.bits`
+weapon field for direct slot selection and previous/next cycling. A direct
+selection requested during kickback is retained as `wantweaponfire` and applied
+when the firing animation completes, provided the player owns the weapon and
+has ammo. Empty guns remain directly selectable; pipebomb/tripbomb selection
+still requires ammo. Selection queues the weapon-specific Atomic cue. Static
+Chocolate source inspection and `cargo check -p room-duke` only; selection
+behavior was not dynamically compared.
+
+**Pipebomb/remote slice (2026-11-06):** static comparison with Chocolate
+`player.c::shoot()` and `actors.c` added the Atomic hold-strength throw at
+kickback tic 12, crouch toss, ammo consumption, automatic switch to
+`HANDREMOTE`, detonation latch and return to handbomb after the remote cycle.
+`HEAVYHBOMB` now has a native actor path for falling, floor bounce, XY clipping,
+owner remote detonation, `hit_extra` impact detonation, stopped-bomb pickup,
+underwater splash, and visible radius damage using the `gamestartup` radius
+when present (with a fallback). Radius targets include native CON badguys,
+shootable actors, and impact-damage SEENINE/OOZFILTER standables. The shared
+`hitradius` wall pass breaks mirror/glass and unblocks paired glass walls;
+ceiling effects, other wall materials, damage ordering/RNG edge cases,
+non-pipebomb item respawn, and complete explosion variants remain open. The `hits()` near-wall
+throw slowdown/reversal is also ported.
+`cargo check -p room-duke` passed;
+no game or demo comparison was run.
+
+**Map-placed pipebomb item respawn (2026-11-08):** map-owned
+`HEAVYHBOMB` items now honor `ud.respawn_items` and CON
+`RESPAWNITEMTIME`: pickup or detonation hides the item, creates the red
+respawn marker, advances it through yellow/green stages, then restores the
+item with Chocolate's teleport cue and transporter-star effect. Thrown
+player bombs still disappear instead of respawning. Static Chocolate
+`actors.c` / `names.h` review; `cargo fmt --all`, `cargo check -q -p
+room-duke --lib`, and `git diff --check` pass with existing workspace
+warnings. No tests or dynamic Chocolate/Room/game comparison were run.
+
+**CON `hitradius` slice (2026-11-06):** the CON opcode now captures its radius
+and four damage values and applies Chocolate's three distance bands to visible
+badguy/shootable actors and players, recording actor hit metadata and knockback.
+The RPG small-sprite early-out for the wall pass and randomized vertical
+visibility sample are included. Remaining ceiling/material cases, status-list
+targets, and exact deferred side-effect ordering remain open. Static source
+review only; no game, demo, or Chocolate comparison was run.
+
+**SEENINE blast targets (2026-11-07):** CON and weapon radius blasts now scan
+the native standable list in Chocolate's status order and queue visible
+SEENINE/OOZFILTER damage and impact knockback, allowing both direct explosives
+and pipebomb/RPG radius damage to enter the existing hit/delay state machine.
+Tagged pipebomb hitag propagation and the generic blast wall/sector hitradius
+pass are still incomplete. Format, diff and crate compile checks only; no
+gameplay/demo comparison.
+
+**D6 `hitradius` wall/ceiling-sector pass (2026-11-07):** CON, pipebomb, RPG and
+SEENINE/OOZFILTER radius paths now use a shared breadth-first adjacent-sector
+scan. It tests the cached ceiling plane and the first or two-linked-`point2` wall point,
+calls native `check_hit_ceiling` when inside the blast radius, then checks LOS
+from Chocolate's quarter-midpoint sample, breaks mirror/glass overlays, clears
+paired glass blocking, breaks paired fan overlays when the force-wall gate
+matches, clears paired stained-glass blocking under that gate, and queues the
+Atomic sounds on the blast source. Common vending machines, screens, tech
+walls/shelves, ATMs and wall lights now take Chocolate's broken-texture
+transitions; screen/light break cues are selected from the Atomic RNG. Mirror
+breaking now uses Chocolate's `atwith` allowlist, so ordinary CON radius sources
+do not shatter mirrors. Wall-positioned `GLASSPIECES` are spawned for mirror,
+glass, stained glass, screen, breakwall and light hits with Chocolate's line
+interpolation, vertical fallback, palette and per-shard random velocity draws.
+Eligible forcefields create `FORCERIPPLE` impacts and set the animated wall
+flag; these cues are queued with the blast source. Tagged wall lights also arm
+matching SE3 markers with Chocolate's randomized phase and darkest adjacent
+wall shade, after their shard RNG draws. ATM breakage emits the native random
+money count and pickup sprites. Broken overlay glass now creates SE 128, which
+advances both wall overlays and restores their collision flags after the native
+six-tic sequence. Wall LOS samples now resolve their midpoint sector with
+`updatesector` before `cansee`.
+The small-RPG and SHRINKSPARK early-outs skip only this wall/ceiling pass; the
+sprite damage scan still runs. Remaining `checkhitwall` cases remain open.
+`cargo fmt`, diff check and crate compile only; no gameplay/demo
+comparison.
+
+**D6 APLAYER hit processing (2026-11-07):** queued weapon/projectile hits are
+now consumed in `moveplayers`, updating player/body health and applying source-
+dependent directional knockback. God mode (except Shrinker), default coop
+friendly-fire rejection, and the Atomic strong-knockback source IDs are wired.
+Armor, HUD damage feedback, frag attribution, and full freeze/death semantics
+remain open. Static inspection and crate compilation only; no runtime or demo
+comparison.
+
+**D6 player shield absorption (2026-11-07):** `shield_amount` and native
+`incur_damage` behavior now absorb 20–49% of player health loss with one
+conditional Build `TRAND`, capped at the remaining armor pool; death clears
+armor. New players start with Atomic's `gamestartup[3]` maximum (100 fallback),
+as Chocolate `resetinventory` does. SHIELD pickup/respawn, `extra_extra8`, HUD
+palette feedback and complete player hit ordering remain open. `cargo fmt
+--all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass with
+existing warnings. No tests or gameplay/demo comparisons were run.
+
+**D6 direct projectile object impacts (2026-11-07):** RPG, Freezer/Shrinker,
+SPIT and FIRELASER collision paths now port the simple `checkhitsprite` arms
+for ocean sprites, pool balls, water fountains, fan sprites,
+toilets/stalls, hydrants, grates/panels, pipes, hydroplant and first-hit
+flammable props, selected bottles/decorations, broken hydroplants, satellites,
+fuel pods, solar panels and antennas, plus the force-sphere hit response:
+native tile/cstat changes, sprite-local `lotsofglass` shard creation, cactus
+(64 scraps) and hanglight/pole (6 scraps) bursts with ordered Build RNG draws,
+basic smoke/water/steam/burning/explosion and 15-piece fragile-tech scrap
+spawns, positional cues, and force-sphere owner temp-state updates.
+Fragile-tech scrap is gated by Chocolate's `SHOTSPARK1` actor damage header.
+Pool-ball hits apply Chocolate's three-in-four rolling impulse or its
+one-in-four three-shard glass break.
+Those switch arms suppress generic badguy damage
+metadata. BOTTLE10 money sprays, vases/statues' special shard variants,
+furniture, human NPC and other breakable branches, debris/RNG details, and
+weapon-family acceptance filters remain open. Source review of Chocolate
+`sector.c::checkhitsprite` and `game.c::lotsofglass`; `cargo fmt --all`, `git diff --check` and
+`cargo check -q -p room-duke --lib` only (existing warnings); no tests or
+dynamic comparison.
+
+**Freezer firing slice (2026-11-07):** static Chocolate `player.c::shoot()`
+review added slot 9's kickback-tic-3 projectile launch and ammo use, automatic
+repeat while fire is held, and the Atomic `CAT_FIRE` cue. `FREEZEBLAST` now
+uses a clipped projectile path, dispatches hit metadata, fizzes with a
+transporter star under the native low-lifetime conditions, skips freeze-immune
+paletted badguys/players, and reflects from walls. Ceiling/floor impacts now
+use Chocolate's `bounce()` slope normal to reflect horizontal and vertical
+velocity together, then halve damage, decrement bounce count, and shrink the
+visible bolt by two repeat units. The full 48-angle `aim()` target selection
+now sets its angle and Z velocity, gated by `player.auto_aim`. Exact Build
+slope/ssp collision movement and the actor freeze state machine remain open;
+the user setting menu/persistence still needs wiring. `cargo fmt --all`,
+`git diff --check`, and `cargo check -q -p room-duke --lib` pass with existing
+warnings. No tests, gameplay or Chocolate comparison were run.
+
+**GREENSLIME freeze lifecycle (2026-11-07):** `moveactors` now handles
+Chocolate's C-side Freezer state for all eight Atomic GREENSLIME frames, even
+when the tile has no CON actor body. A Freezer hit subtracts its queued damage,
+credits the nearest player as in `IFHIT`, and enters the `t[0] == -5` state
+with the native SLIM_DYING / SOMETHINGFROZE cues. Frozen tics apply
+`makeitfall`-style slope floor gravity, force the frozen frame/cstat/palette
+and one health point, thaw after 280 tics, and trigger the 14-tic quick kick
+when a nearby player faces the slime. A non-Freezer hit breaks it into the
+ordered 17 GLASSPIECES burst with Chocolate's angle/velocity RNG draws and
+GLASS_BREAKING cue; another Freezer hit is consumed without breaking it.
+Static review of Chocolate `actors.c::moveactors`, `gamedef.c::makeitfall`,
+`names.h` and `soundefs.h`; formatting, `git diff --check`, and
+`cargo check -q -p room-duke --lib` only. No tests, gameplay, or reference
+comparison were run. Non-frozen slime AI/attack and other actor freeze
+transformations remain open.
+
+**Shrinker/Grower firing slice (2026-11-07):** added slot 6's repeating
+SHRINKSPARK launch and slot 11's Grower hitscan, spread RNG, GROWSPARK impact
+animation, and `SHRINKER_FIRE` cues. SHRINKSPARK now advances with clipped
+movement; impacts apply the configured `SHRINKERBLASTRADIUS` with the native
+zero-damage SHRINKSPARK marker to visible eligible actors, without applying the
+wall blast pass. All three weapon paths now use the shared 48-angle `aim()`
+selection and native target Z velocity; Grower retains Chocolate's fallback
+spread RNG. The auto-aim mode now comes from sync bit 6, but the UI setting is
+not wired. Exact Build actor/player/status
+filtering and complete target CON shrink/grow state coverage remain open. Format,
+diff, and crate compile checks passed; no gameplay or reference comparison.
+
+**Chocolate auto-aim wiring (2026-11-07):** player input now carries bit 6
+into `player.auto_aim` (full mode 2 versus bullet-only mode 1); the desktop
+input emits the Atomic default full-autoaim bit, and saved player states
+deserialize with the Atomic default. RPG, Freezer, Shrinker, Grower, Shotgun,
+and Devastator now gate the shared target-cone scan on that state and solve
+projectile/hitscan Z against the selected target's ART height. The settings
+menu and user-configured mode selection are still open. Static Chocolate
+`getinput`/`shoot` inspection and crate compilation only; no game/demo run.
+
+**Tripbomb placement and lifecycle slice (2026-11-07):** weapon slot 8 validates
+Atomic's wall/sector/range/duplicate-charge/BIGFORCE restrictions, advances the
+kickback timing, and plants a wall-facing charge with the placement cue. The
+standable pass now advances the initial arm delay, uses horizontal hitscan for
+the `hitasprite` distance/target, creates linked `LASERLINE` segments with the
+Atomic perpendicular angle and `lasermode` blocking flags, reacts to queued
+weapon hits and target-distance changes with the countdown, then emits
+five scraps, configured radius damage, the explosion and line cleanup. As a
+partial port, the target ray uses Room's `hitscan_full` instead of Build's
+`hitasprite`; laserline collision and exact sprite movement/RNG ordering remain
+unverified. The placement also applies the native pre-angle SSP nudge toward
+the firing origin. Static `player.c`, `actors.c`, `game.c` and `hitasprite` review;
+`cargo fmt --all`, diff check and `cargo check -q -p room-duke --lib` pass with
+existing warnings. No tests or gameplay/demo comparison were run.
+
+---
+
+## D7 — Duke sectors + effectors
+
+**Status:** `in_progress` · Spec: `25` §7 / §11 D7
+
+### Acceptance
+
+- [x] `gamefunc_Open` wall-switch lookup and linked activator dispatch
+- [x] `operateactivators` toggles SE18/31/32/36 T1 in low-lotag activator sectors and queues each sector cue before operating the sector
+- [x] `operateactivators` performs Chocolate's once-per-call preliminary lotag-22 `MUSICANDSFX` cue before each lotag-22 operator's own cue
+- [x] All `operateactivators` callers arm matching RESPawn markers through its common `operaterespawns` tail, including train station activations
+- [x] `TRANSPORTERSTAR` is spawned when the marker is armed; the 54→66 `movefx` countdown retains a legacy-save fallback
+- [x] Switch families gated by Chocolate's `check_activator_motion` reject matching tags during plane/wall animation or active SE11/30/18/20/31/32 motion (dip, tech, alien and access switches retain their dedicated paths)
+- [x] Basic floor/ceiling motion for lotags 16–22 and floor carry
+- [x] Lotag 29 toothed ceiling door and linked `SE 22` plane-following mover
+- [x] Lotag 26 split door couples its vertical and sliding wall motions
+- [x] Lotag 28 activates linked `SE 21` cascading floor/ceiling movers
+- [x] Lotag 27 toggles the local `SE 20` extend-o-bridge effector; bridge geometry and grounded occupants move once along the marker angle, refresh sector membership, and scroll floor/ceiling X/Y panning
+- [x] SE30 activator toggles subway state but plays its switch sound only at settled animation endpoints (`tempang == 0 || 256`)
+- [x] `SE 31` true-drop-floor target initialization, activation delay, floor travel/return and floor rider carry
+- [x] `SE 32` true-drop-ceiling target initialization, activation/return thresholds and sound completion
+- [x] Basic `SE 24` / `SE 34` conveyor vector, sprite/player push and floor panning
+- [x] Tagged wall/sprite switches toggle matching SE24/SE34 T5 and show the on/off quote
+- [x] `SE 26` escalator floor cycle, wall/actor transport and delayed player push
+- [x] `SE 25` piston ceiling initialization and cyclic plane motion
+- [x] `SE 35` drill ceiling motion, smoke and intermittent explosion spawns
+- [x] Lotag 9 sliding-sector wall interpolation
+- [x] Existing transporter and animated-wall paths in the native tic
+- [x] `premap` GPSPEED/CYCLER capture and 15 Hz `movecyclers` sector/wall shade animation
+- [x] `checksectors` secret-room count, normal exit request and timed/custom-sound exit state
+- [x] `checkhitswitch` arms matching one-shot `MASTERSWITCH` markers
+- [x] `MASTERSWITCH` countdown, delayed supported sector motion and marker cleanup
+- [x] Touchplate pressure activation, linked-plate propagation and floor ride
+- [x] Tagged `RESPAWN` marker delay and target reinsertion through EGS/CON initialization (partial)
+- [x] `ACTIVATORLOCKED` sector-bit toggle and ordinary activator hitag filters
+- [ ] Vanilla `moveeffectors` SE families and blocking/overlap semantics
+- [x] Lotag-30 SE0/SE1 rotator linkage, shared wall rotation, grounded occupant carry, floor raise/restore and transition sound cues
+- [x] SE17 activation accepts Chocolate's in-flight elevator reversal gate; in-sector direction fallback and out-of-sector single-direction behavior match `operatesectors`
+- [x] SE17 carries `truefz`/`truecz` through vertical movement, refreshes them on paired-sector transfer, resets `bobcounter`, and advances the player bob phase from actual post-move speed
+- [x] SE5 boss `FIRELASER` attacks use the shared CON-backed effector `shoot()` path for scripted projectile speed/strength and native muzzle setup
+- [x] SE5 `ms()` rotates cached sector wall offsets around the moving marker using its accumulated T3 angle
+- [x] `SE 8` / `SE 9` one-shot elevator shade bounds, linked-sector updates and eight-tic marker cleanup
+- [x] `SE 10` timed automatic activator with player-occupancy and ceiling-motion gates
+- [x] `SE 16` reactor ceiling cycle and absent-reactor marker cleanup
+- [x] `SE 13` explosive-sector restoration, shade transition, debris and lifetime, using a stable prelevel sky-material cache across markers (generic render-only floor/ceiling interpolation applies; exact Chocolate registration remains open)
+- [x] Build `dragpoint` propagation across connected two-sided wall vertices
+- [x] Switch activators toggle matching shade cyclers and restore their base shade
+- [x] Wall access-card palette gating, insertion timing, switch activation and key consumption
+- [x] Access-sprite switches and card-key insertion path (local sector)
+- [x] Player switch toggles matching tagged animated forcefield walls
+- [x] `monsters_off` map culling and enemy-target respawn gate
+- [x] `SE 4` randomized flashing sector light with palette, wall and face-sprite updates
+- [x] `SE 12` switch-controlled light transition and player-hitscan ceiling-hit extinguish path (other ceiling-hit callers remain open)
+- [x] `SE 3` ceiling-light-hit-triggered flicker state and linked-wall shade updates (player hitscan path only)
+- [x] `SE 19` explosion-triggered shield shutdown, linked `BIGFORCE` removal, ceiling lowering and palette/shade restoration
+- [x] `SE 128` animated glass-wall overpic progression and native cstat masks
+- [x] `SE 2` armed quake countdown, 96-tic effector lifetime, slope recovery, actor/player impulse and Atomic cue cadence
+- [x] `SE 33` quake-time randomized scrap debris spawn
+- [x] `SE 130` / `SE 131` timed explosion emitters with Atomic lifetimes, random fire gates, ordered EXPLOSION2 fields, and immediate clipped `ssp`
+- [x] Sector activation toggles `SE 36`; active markers fire `COOLEXPLOSION1`, `SPIT`, `FIRELASER`, `RPG`, `FREEZEBLAST`, and `SHOTSPARK1` / `SHOTGUN` / `CHAINGUN` on Chocolate's 130-tic cadence (projectile launch and supported flight/direct damage are ported; exact impact side effects remain open)
+- [x] SE15 lotag-25 open/close state, correct T4 travel counter/T5 active mode, SP/8 travel limit, marker translation, Chocolate activation-sound gate and `ms()` wall translation
+- [x] SE11 lotag-23 swing-door group activation, marker-angle direction, badguy/player wall obstruction and player rollback (Chocolate does not carry occupants); interpolation and complete map-scenario coverage remain open
+- [x] Render-only interpolation of Build wall vertices and sector plane heights between Duke tics; exact Chocolate interpolation registration remains open
+- [x] Partial SE6/SE14/SE30 narrow-gap crushing: source-specific badguy `JIBS6` bursts, pre/post-movement player quickkill gates/48-tic flash/eight JIBS6, `SQUISHED`, and effector-sector relink (remaining `setsprite`/collision details open)
+- [x] Tagged sprite-switch use through visible connected sectors
+- [x] `VIEWSCREEN` selects an inactive matching `CAMERA1`, checks ART bounds/portal visibility and Chocolate's 1280-unit, three-height use ray, links the monitor owner to the camera, updates its latch, plays activation audio only on entry, and caches the render-only 64×48 feed at the 12-tic refresh cadence
+- [x] Access-card status-bar icons and first-person insertion animation with weapon suppression
+- [ ] Native menu/settings parity, mirror premap/render edge cases, camera lifecycle and full SE scenario coverage
+- [ ] DEMO2/DEMO3 sync and complete SE scenario coverage
+
+**Shade cyclers (2026-11-06):** static comparison with Chocolate
+`premap.c::CYCLER` and `actors.c::movecyclers` now captures sector, phase,
+shade range, hitag and active flag; GPSPEED writes `sector.extra`. The native
+30 Hz session advances cyclers on Chocolate's every-other-tic 15 Hz phase,
+using the installed Build sintable and mirroring shade to linked walls with
+`cstat&2`, except `hitag==1` walls. `operateactivators` also toggles `p[5]`
+for the matching `hitag` and restores its stored base shade. The cycler state
+is included in `.fsave` and validated against the saved sector count. Compile
+and format checks only; no visual/gameplay comparison was run.
+
+**Special sectors (2026-11-06):** native `checksectors` now consumes
+`lotag=32767` once and increments `secret_rooms` with the secret quote, signals
+normal `lotag=-1` exits, and starts the 208-tic timed exit for `lotag=-2`,
+preserving the sector hitag as custom exit sound. The countdown queues that
+sound and quote 102 at 130 tics, then requests transition at tic 1. It returns
+before Use-key handling like Chocolate. Campaign progression remains host
+integration work. Static compile/format only.
+
+**SE 4 flashing lights (2026-11-06):** the native post-`moveactors` effector
+pass now initializes Chocolate's baseline sector/wall shades and saved sector
+palettes, uses the tic's shared `global_random` value for its bright/dark
+decision without consuming a per-effector RNG roll, applies the sector and wall
+palette changes, mirrors shade to linked walls, and updates
+face-aligned sprites in the effector sector. This covers only the standalone
+SE 4 light behavior; remaining effector types and blocker/overlap movement are
+still open. Static source review of `game.c::spawn` and
+`actors.c::moveeffectors`; `cargo check` and format/diff checks only, no game or
+demo comparison.
+
+**SE 12 switch lights (2026-11-06):** matching tagged switches now advance
+SE12's Chocolate T1 state (`0→1` for on, `1→3` for off), clear the sector
+floor palette, and the native effector pass restores the saved floor/ceiling
+shades on shutoff or raises light/shade progressively on turn-on. Face-aligned
+sprites track the sector's active light shade, and extinguish-marked effectors
+are removed from the actor lists. Static review of `sector.c::checkhitswitch`,
+`game.c::spawn`, and `actors.c::moveeffectors`; `cargo check` and formatting
+only. Player hitscan now ports `checkhitceiling` for the six Atomic ceiling
+light tiles, creates ceiling glass using Chocolate's edge interpolation and
+angle/z/x-velocity RNG order, queues sound 19, marks linked SE12s to extinguish,
+and signals matching SE3 flicker state. Triggered SE3 now uses the shared tic
+`global_random` to choose ceiling/floor palettes and shade and mirrors linked
+wall shades. Other `checkhitceiling` caller paths and exact ceiling-glass EGS
+side effects remain to be statically audited.
+
+**Sliding-wall vertex propagation (2026-11-06):** animated sector-9 vertices
+now use Chocolate Build's `dragpoint` traversal across two-sided wall links,
+including the `lastwall` fallback around a polygon boundary. Static comparison
+with `Engine/src/engine.c`; compile-only validation, with no map/demo comparison.
+
+**SE 8 / SE 9 elevator shade transition (2026-11-06):** native effector
+processing now snapshots the sector floor/ceiling shades and maximum wall
+shade for each marker before applying its one-shot transition to all linked
+markers with the same SE lotag/hitag. It uses Chocolate's shade increments,
+per-sector clamping, two-sided wall shade propagation, SE 9 open-sector high
+bit, and removes the marker after the eight-tic T4 countdown. Static review of
+`game.c::spawn` and `actors.c::moveeffectors`; `cargo fmt` and
+`cargo check -p room-duke -p room-app --all-targets` passed. No tests,
+gameplay, or demo comparison was run.
+
+**SE 10 automatic activation (2026-11-07):** the native actor pass now
+implements Chocolate's trigger-sector predicates, `hitag + 1` delay, player
+occupancy suppression (with the lotag 27 exception), and ceiling-animation
+wait for sector types 20–22/26. At expiry it activates tagged `ACTIVATOR`
+sprites in the sector, or operates the sector itself when none are present.
+Static review of `actors.c::moveeffectors` and `sector.c::activatebysector`;
+format and compile checks only. No dynamic comparison was run.
+
+**SE 16 reactor ceiling (2026-11-07):** added the Atomic reactor ceiling
+cycle to the native effector pass. It advances the marker phase, switches
+between the 1024-unit rise and 512-unit return based on the sector planes,
+keeps rising while a `REACTOR`/`REACTOR2` sprite remains in the sector, and
+removes the marker once the threshold is crossed without a reactor. Tile IDs
+are Atomic data constants. Static implementation review only; no gameplay,
+demo, or Chocolate comparison was run.
+
+**SE 17 paired elevator (2026-11-07):** static port of Chocolate
+`game.c::spawn`, `sector.c::operatesectors`, and `actors.c::moveeffectors`
+initializes SE17 stop/adjacent-plane limits; sector-lotag 15 activation selects
+the travel direction and starts matching effectors. The native mover advances
+both planes, carries player Z and sector sprites, stops at the saved floor,
+matches adjacent sector hitags, and transfers the player/sprites while
+updating Build sector lists and actor plane caches. The start and stop cues now
+queue Chocolate's Atomic sound IDs 71 (`ELEVATOR_ON`) and 73
+(`ELEVATOR_OFF`) at the activating/arriving effector. Pair lookup now ignores
+out-of-range sector references rather than indexing them. Static source/data
+review only; no tests, gameplay, demo, or Chocolate comparison was run.
+Multiplayer behavior, crushing/overlap edge cases, and dynamic validation
+remain open.
+
+**SE17 activation correction (2026-11-07):** reinspection of
+`sector.c::activatewarpelevators` found that Chocolate accepts activation if
+any effector in the matching hitag group is already farther than its `SP`
+tolerance from its saved stop floor, even when a destination pair is not
+available in the requested direction. Room now preserves that in-flight
+reversal gate; a player inside the elevator sector retries the opposite
+direction, while a player outside only attempts the height-selected direction,
+matching `operatesectors`. Static source review, formatting, diff check and
+crate compilation only; no test, gameplay, demo, or reference comparison.
+
+**SE17 player-cache transfer (2026-11-08):** the elevator now carries the
+player's cached true floor/ceiling planes during vertical motion and refreshes
+them from the destination sector when transferring; it also resets the
+Chocolate bob counter at transfer. `processinput` now advances `bobcounter`
+from actual post-move player speed, refreshes `bobpos` afterward, and writes
+that speed to the APLAYER body; the caches are refreshed from sloped planes
+and restored/written at the Atomic SAV offsets. Static review of Chocolate
+`actors.c::moveeffectors` SE17, `player.c::processinput`, and
+`duke3d.h::player_struct`; formatting, diff and targeted compilation only,
+with no tests, gameplay or reference comparison.
+
+**Sector-motion actor cache (2026-11-07):** ordinary floor movers now refresh
+each carried sprite's previous Z and cached floor/ceiling planes as they ride
+the moving floor. This extends the existing floor-carry path so the following
+CON/actor pass sees the current Build sector bounds. Static implementation;
+no tests, gameplay, or reference comparison was run.
+
+**Lotag 21 moving-door reversal (2026-11-07):** activating a floor door while
+it is already interpolating now replaces its target with the opposite open or
+closed plane goal, matching Chocolate's `operatesectors` in-flight reversal
+instead of silently ignoring the input. The goal is calculated from the
+current sector planes and adjacent floor. Static source review; not dynamically
+compared.
+
+**Lotag 29 / SE 22 toothed door (2026-11-07):** sector lotag 29 now selects
+the adjacent floor/ceiling target from its open bit, toggles the door state,
+and starts or redirects its ceiling animation. Matching SE22 markers reverse
+their travel speed and follow the controlling sector's active ceiling movement
+using Chocolate's `extra * 9` step; they stop following once that animation
+ends. Static review of `sector.c::operatesectors` and `actors.c::moveeffectors`;
+format/diff/compile only, no game or demo comparison.
+
+**Lotag 26 split door (2026-11-07):** a stopped split door now starts the
+vertical lotag-22 plane pair and the lotag-9 sliding-wall interpolation as one
+sector operation, using the sector's vertical speed and `extra >> 4` wall
+speed. Re-activation is ignored while the plane animation is active, matching
+Chocolate's animation guard; the combined operation queues one sector sound
+cue. Static review of `sector.c::operatesectors`; compile/format only, no map
+or demo run.
+
+**Lotag 28 / SE 21 cascade (2026-11-07):** sector lotag 28 now finds the
+local SE21 marker, arms every matching hitag group member once, and queues the
+sector sound. Active markers wait out `sector.extra`, choose floor versus
+ceiling from angle 1536, then move by signed `hitag << 4` toward the marker Z;
+they snap and remove themselves within the vanilla 1024-unit threshold. Static
+review of Chocolate `sector.c::operatesectors` and
+`actors.c::moveeffectors`; no tests, gameplay, or demo comparison.
+
+**Remaining SE audit (2026-11-07):** static inventory of Chocolate
+`actors.c::moveeffectors` now has a first-pass `SE 5` boss elevator: it seeks
+the nearest player's locator route, emits Atomic FIRELASER projectiles inside
+8192 units, turns toward its locator, changes ceiling shade, moves its marker
+and sector walls, and advances the sector ceiling. Weapon hits consume queued
+damage; the fifth hit adds 1024 to vertical velocity and sets the boss quote.
+Map setup caches Chocolate's adjacent zero-hitag sector and the ceiling also
+advances there. The effector marker now runs a `setsprite`-equivalent sector
+lookup/list update after each move. Chocolate's SE5 branch does not transport
+sector occupants; collision rollback and edge-case geometry still need work.
+`SE 6` now initializes its speed ramp and linked SE14 wagons, follows the
+locator route, adjusts train speed from wagon spacing and carries/rotates
+players and sector actors with the train. `SE 14` now follows the matching
+locator route, steers and moves its sector geometry, carries/rotates its
+occupants, and starts/stops the SUBWAY loop on non-parallax sectors. SE6/SE14
+now also make the parallax-floor-pal-zero `rnd(8)` attack roll at cruise speed,
+select a player within 20,480 units, and launch an RPG with Chocolate's
+temporary player-facing source angle. Exact SE6 train ordering and spacing
+details, crushing/collision, and interpolation remain open. `SE 30` has first-pass
+locator-driven translation, acceleration/braking, and sector occupant carry;
+run-up/arrival activator calls and tagged force-field toggles; crushing,
+interpolation and exact initialization ordering remain open. `SE 18` now
+applies its map-load plane target, hitag-to-tic timer conversion,
+master-switch activation, one-shot travel, timer reset, and grounded floor
+occupant carry. Tagged SEENINE/OOZFILTER detonation now activates matching
+SE8/SE13/SE18/SE21; SE13 now restores its sector planes over 256 tics,
+switches its ceiling/shade state, and drops the vanilla seven debris pieces.
+Pipebomb/RPG radius damage reaches the destructibles, while the pipebomb's
+explicit remote hitag-trigger route remains open.
+`SE 11` has a first-pass
+lotag-23 activation and swing path; `SE 15` has initial lotag-25 open/close and
+pivot motion. SE2's caller for arming T5 and remaining train/door obstruction,
+interpolation, and occupant-carrying behavior still need porting. No dynamic
+gameplay or demo comparison is claimed.
+
+- `2026-11-07` — **D7 SE5 boss elevator first pass**: statically ported nearest-player/locator selection, route marker turn, FIRELASER spawning at Atomic range/speed, shade flicker, marker/wall translation and ceiling travel. Map initialization caches Chocolate's adjacent zero-hitag sector and updates its ceiling; queued weapon damage counts hits and applies the fifth-hit vertical impulse/quote. Exact `ms()` collision and occupant carry remain open. `cargo fmt --all`, `git diff --check`, and the latest `cargo check -q -p room-duke --lib` pass with existing documentation/unused-import warnings; no gameplay/demo comparison was run.
+
+- `2026-11-07` — **D7 SE6/SE14 train first pass**: statically ported Chocolate's route-sector initialization, SE6 speed ramp and linked SE14 wagon speed/spacing adjustment, locator steering and route wraparound, train-sector wall rotation/translation, and player/actor carry. Non-parallax trains start and stop the SUBWAY loop around cruise/braking. Exact linked-marker order, collision/crushing and interpolation remain open. `cargo fmt --all`, `git diff --check`, and crate checks only; no dynamic Chocolate or gameplay/demo comparison was run.
+- `2026-11-08` — **D7 SE6/SE14 parallax tunnel attack**: statically ported Chocolate's `rnd(8)` gate when the train reaches `sector.extra` speed in a parallax sector with floor palette zero, with the `monsters_off` gate, nearest-player 20,480-unit range, temporary source angle and shared RPG projectile setup. Static review of Chocolate `actors.c::moveeffectors` and existing `shoot(i, RPG)` path; formatting, diff and targeted compile only, no gameplay/demo or Chocolate comparison. Train crush handling and exact marker/list ordering remain open.
+- `2026-11-07` — **D7 SE18 Kroz map setup/timer**: statically ported the stored pre-move plane, pal-triggered alternate plane setup, hitag ×4 timer initialization, and Chocolate's timer-expiry reset (including zero timer). The mover transfers grounded floor riders and removes its marker at the selected plane threshold. SEENINE hitag detonation activation remains open. `cargo fmt --all`, `git diff --check`, crate check only; no gameplay/demo comparison was run.
+- `2026-11-07` — **D7 SEENINE/OOZFILTER chain and SE18 activation**: map spawn now sets the native shade/cstat/repeats/impact-health fields. Standable ticking consumes queued hits, propagates tag-chain delays, animates SEENINEDEAD frames, activates matching SE8/13/18/21 markers on detonation, spawns the explosion and scraps, applies configured hitradius damage and starts the earthquake timer. Generic blast hitradius now queues damage for SEENINE/OOZFILTER too. Remote pipebomb tag propagation and exact sound/RNG ordering remain open. `cargo fmt --all`, `git diff --check`, and crate checks only; no gameplay/demo comparison was run.
+- `2026-11-08` — **D7 SEENINE → SE18 reactivation guard**: tagged detonations now arm SE18 only while its activation state is zero, while SE21 retains unconditional arming. This preserves an already-running Kroz sequence instead of resetting it on another tagged blast, matching Chocolate's guard. Static source review only; format/diff and targeted crate compile, no runtime/reference comparison.
+- `2026-11-08` — **D7 Atomic SE inventory correction**: static inventory of Chocolate Atomic `actors.c::moveeffectors` confirms there is no SE23 or SE40–45 case; the one-way exit is sector lotag 23, not an effector. SE27 is a demo-camera marker, but its camera-control body is disabled in this Chocolate version. Corrected Appendix B in the Duke spec so remaining SE work tracks actual Atomic behavior. Static source inspection only; no runtime/reference comparison.
+- `2026-11-08` — **D7 SE36 Octabrain projectile impact**: `COOLEXPLOSION1` now uses the shared Build hit query, stops on walls, planes or APLAYER targets, applies the projectile's actor-header damage and body-hit cue to players, and passes through/gets blocked by ordinary actors without applying damage, matching the `moveweapons` branches. It ages its shade and is removed at 40, and queues the CON-defined `WIERDSHOT_FLY` voice through the once-audio path. Static Chocolate `actors.c::moveweapons` review; `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass with pre-existing warnings. No tests or gameplay/demo/reference comparison were run; exact `movesprite` collision/contact ordering and global sound voice gating remain unverified.
+- `2026-11-08` — **D7 pipebomb blast → tagged destructible chain**: RPG/pipebomb and CON radius-blast paths now test visible, in-radius tagged `CRACK1–4` and `FIREEXT` standables, then arm matching SEENINE/OOZFILTER sprites by setting their native delay shade. This follows Chocolate's `CRACK`/`FIREEXT` hitag activation path and feeds the existing standable detonation/effector chain. Static `actors.c::movestandables` / `hitradius` review; format, diff and targeted `room-duke` compile only. Breakable destruction/scrap/audio and exact collision ordering remain open; no gameplay/demo/reference comparison was run.
+- `2026-11-08` — **D7 CRACK/FIREEXT breakables**: the native standable tick now consumes queued direct/radius impacts on Atomic CRACK1–4 and FIREEXT. CRACK validates Chocolate’s accepted source tiles, arms tagged SEENINE/OOZFILTER and supported effectors, emits debris and starts the earthquake; FIREEXT emits palette-2 scraps/explosion, applies configured tagged or untagged hitradius, queues explosion/glass sounds and removes the prop. Static Chocolate `actors.c::movestandables` review only; `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib`. No tests, gameplay run, or dynamic Chocolate/Room comparison. Exact RNG/audio ordering and collision side effects remain open.
+- `2026-11-08` — **D6 shrink/grow ownership audit**: corrected the gap description after tracing the current weapon hit metadata and CON VM: general actor shrink/grow transitions are selected by target `ifwasweapon` script branches and action/size commands, rather than a generic hard-coded projectile mutation. Room has those VM operations; Atomic actor-specific branches and resultant collision/repeat behavior remain unaudited. Static local code inspection only; no tests or dynamic comparison.
+- `2026-11-08` — **D7 destructible RANDOMSCRAP fidelity**: static Chocolate review of the `RANDOMSCRAP` macro caught two deviations in CRACK/FIREEXT debris: shards must use the SCRAP6 base tile and the exploding standable itself as EGS owner; tagged FIREEXT also applies the common `z -= 32<<8` before its final eight shards. Room now follows those values and resolves SCRAP6 from CON. `cargo fmt --all`, `git diff --check`, `cargo check -q -p room-duke --lib`; no tests or gameplay/reference comparison.
+- `2026-11-08` — **D6 complete hitradius status traversal**: CON `hitradius` now scans the remaining Chocolate lists (`STAT_DEFAULT`, `STAT_FALLER`, `STAT_DUMMY`, `STAT_MISC`) around the existing actor/standable/player handling in native list order. Blocking-list targets require `cstat&257`, only badguys require LOS in those branches, and APLAYER distance/visibility now use feet origin and fixed player LOS Z offsets. Static Chocolate `actors.c::hitradius` review; `cargo fmt --all`, `git diff --check`, `cargo check -q -p room-duke --lib`; no tests or gameplay/demo comparison. Exact Build `dist()` and immediate CON ordering remain open.
+- `2026-11-07` — **D7 SE13 explosive-sector recovery**: map setup stores the original ceiling/floor targets and selects the near plane; tagged detonation starts Chocolate's restore motion, first-tick shade transition, 256-tic lifetime and seven `RANDOMSCRAP` spawns. The render path generically interpolates sector floor/ceiling heights between tics; exact Chocolate per-effector interpolation registration remains open. Static Chocolate `game.c::spawn` / `actors.c::moveeffectors` review; format/diff/crate compile only, no gameplay/demo comparison.
+- `2026-11-08` — **D7 SE13 stable sky source**: cache the original first map-order parallax ceiling material/shade before prelevel SE13 setup can flip its flag, then retain that cache per effector for runtime restore. This matches Chocolate's `one_parallax_sectnum` lifetime when multiple SE13 markers touch sky sectors. Static source comparison; `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` only; no tests or runtime/reference comparison.
+- `2026-11-07` — **D7 SE26 escalator**: statically ported Chocolate's map-load origin/direction setup, eight-tic floor cycle, moving marker/walls, and sector actor/player vertical transport. Grounded riders receive the escalator's delayed horizontal force through the next deterministic input sample; the force is stored in player state and cleared on campaign carry. Static review of Chocolate `game.c::spawn` and `actors.c::moveeffectors`; `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` only. Exact clipping/collision, maps with overlapping effectors, and gameplay/demo comparison remain open.
+- `2026-11-07` — **D7 SE26 rider sector check**: aligned both the escalator's horizontal-force and vertical-carry gates with Chocolate's `sprite[ps.i].sectnum` test instead of the cached `cursectnum`, which may lag during portal/effector updates. Static review of Chocolate `actors.c::moveeffectors` SE26; formatting, diff and targeted compile checks only, with no dynamic comparison.
+- `2026-11-08` — **D7 SE26 spawn and slope transport**: corrected map setup to cache the escalator's T4/T5 map-load origin, derive zvel from marker versus floor shade, and reset the shade cycle exactly as Chocolate `game.c::spawn` does. After horizontal actor transport and sector reassignment, active actors entering a sloped-floor sector now run the existing `makeitfall` path, matching the SE26 `actors.c::moveeffectors` branch. This was a static source port; formatting, diff and `room-duke` library compile checks only, with no dynamic Chocolate/Room or gameplay comparison.
+- `2026-11-08` — **D7 render-only geometry interpolation**: the desktop Duke render path now blends previous/current wall vertices and sector floor/ceiling heights using the fraction of the 30 Hz tic. It renders a cloned `BuildWorld`, leaving simulation state and checksums untouched; this supplies moving-sector visual smoothing while exact Chocolate interpolation registration is still open. `cargo fmt --all`, `cargo check -q -p room-duke --lib -p room-app`, and documentation diff checks passed with existing warnings. No tests, gameplay or demo/reference comparison were run.
+- `2026-11-08` — **D7 tagged conveyor controls**: Chocolate `sector.c::checkhitswitch` confirms tagged switches toggle T5 on every matching SE24/SE34 before operating linked activators, then issue quote 15/2 for on/off. Room now performs that state transition in its common switch path; `move_conveyor_effectors` already honors nonzero T5 as paused. `cargo fmt --all`, `cargo check -q -p room-duke --lib`, and `git diff --check` passed with existing warnings. No tests, gameplay or demo/reference comparison were run.
+- `2026-11-08` — **D7 SE11 obstruction parity audit**: statically rechecked Chocolate `actors.c::moveeffectors` and `game.c::spawn`. Confirmed the SE11 branch blocks against badguy/player overlap and rolls the angle back on player obstruction, but does not carry sector occupants; corrected the implementation spec and marked this narrow SE11 behavior covered. Interpolation (`setsectinterpolate`), global effector ordering and full map scenarios remain open. No dynamic comparison or tests were run.
+- `2026-11-08` — **D7 SE5 marker sector refresh**: after the boss controller advances its marker and sector walls, it now performs the `setsprite`-equivalent `updatesector` and sprite-list reassignment from Chocolate `actors.c::moveeffectors`. Static source review shows SE5 does not carry sector occupants, so the prior “occupant carry” open item was removed; collision rollback and unusual geometry remain open. Formatting, diff and targeted crate compile only; no gameplay or demo comparison.
+- `2026-11-07` — **D7 SE15 correction**: after comparing the implementation against Chocolate's `actors.c::moveeffectors`, replaced the incorrect pivot rotation and invented actor/player obstruction checks with the native `T4/T5` travel state and `ms()`-style 16-unit wall/marker translation along the marker angle. Static review of Chocolate `game.c::spawn`, `sector.c::operatesectors`, and `actors.c::moveeffectors`; `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass. No gameplay/demo comparison was run.
+- `2026-11-07` — **D7 SE128 glass detail**: static audit corrected the progressive glass-wall flag mask to Chocolate's `cstat &= 223; cstat |= 16` on both paired walls (rather than preserving all high bits), retaining the source's unconditional bitwise-OR branch behavior. Formatting, diff and crate compile checks only; no map/gameplay comparison.
+- `2026-11-07` — **D7 SE0 lotag-30 rotating sectors**: map setup links each SE0 to its SE1 pivot, initializes SE1 T1 off like Chocolate, installs the sector hitag reference, stores the original floor height and applies the palette-selected rotation direction; the linked SE19 event arms normal pivot rotation. The tic path preserves map-load wall offsets for Build `ms()`, accumulates angle in T3, orbits the marker from the SE1 pivot and updates shared vertices through `dragpoint`; it also turns/carries eligible occupants, applies floor rise/return in 512-unit steps, uses `tempang` for Chocolate's 256-unit transition and queues endpoint sounds. Static review of Chocolate `game.c::spawn`, `actors.c::moveeffectors` and `sector.c::operatesectors`; `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` only. The reference `ms()` path performs direct wall updates without a collision rollback; ordering with overlapping movers and gameplay parity remain unverified.
+- `2026-11-07` — **D7 SE36 RPG/freezer launch**: statically ported the non-player `RPG` and `FREEZEBLAST` branch of Chocolate `player.c::shoot`: source-height offset, target/opos aim, 644 velocity, muzzle offset, `EGS` repeats/shade, script-driven strength variation, RPG target sentinel/clip distance, and Freezer bounce count/repeat scaling/vertical adjustment. Existing projectile movement owns subsequent flight and collision; exact SE36 impact behavior is still open. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` only; no dynamic comparison or gameplay run.
+- `2026-11-07` — **D7 SE36 shooter attacks**: sector operation toggles `temp_data[0]` per Chocolate; active SE36 markers run the 130-tic cadence for `COOLEXPLOSION1`, `SPIT`, `FIRELASER`, `RPG`, `FREEZEBLAST`, and the `SHOTSPARK1` / `SHOTGUN` / `CHAINGUN` enemy hitscan paths. Hitscan damage is queued through the existing player/CON damage path and uses Chocolate's actor-header strength, aim height, jitter and RNG rolls. `SPIT` launch height/angle/velocity/strength, gravity, portal-sector update and direct hit damage are ported. `FIRELASER` launch/muzzle position/targeting/speed, five-sprite trail, portal-sector flight and direct hit damage are ported. Player SPIT hits now queue body-hit/pain audio, apply the horizon kick and generate/count down loogies; the desktop HUD draws those tiles on its 320×200 virtual plane. RPG/freezer launch parameters are now ported; exact wall/sector impact behavior, ricochet sound, exact sprite filtering, loogie alpha/zoom/resolution placement remain open. Static review of `sector.c::operatesectors`, `actors.c::moveeffectors`, `actors.c::moveweapons` and `player.c::shoot` / `displayloogie`; formatting, diff and Duke/app crate checks only. No gameplay/reference comparison was run.
+
+**SE 19 battle-star shield shutdown (2026-11-07):** native `SE 1` pivot
+initialization now arms its matching SE19 marker, and an `EXPLOSION2` in an
+SE19 sector activates the matching SE0/SE1/SE12/SE19 group. The active SE19
+clears matching `BIGFORCE` overlay walls and their peers, lowers the shield
+ceiling at the marker's `SP`, restores palettes/shades on linked SE0 sectors,
+and removes itself. Static review of Chocolate `game.c::spawn` and
+`actors.c::moveeffectors`; compile/format only. Boss explosion placement,
+`IFHITSECT` timing, visual interpolation and map scenarios remain dynamically
+unverified.
+
+**SE 2 quake core (2026-11-07):** native `SE 2` now saves the sector's
+baseline floor heinum, advances Chocolate's T5/HITAG countdown when armed,
+applies its 96-tic run/cleanup, restores the slope, nudges grounded players and
+sector sprites along the marker angle, and emits Atomic sound 81 on the
+`(T1 & 31) == 8` cadence while setting the 48-tic quake timer. The timer is
+included in `.fsave`; desktop and web rendering now apply Chocolate's
+grounded camera Z/angle shake offsets. Coop players, exact `ms` clipping, and
+the caller that arms `T5` remain open. Static source review of Chocolate
+`game.c::spawn`, `actors.c::moveeffectors`, and game-tic timer update; compile/
+format only, no gameplay or demo comparison.
+
+**SE 33 quake debris (2026-11-07):** `SE 33` now checks the shared quake
+timer, performs Chocolate's one-in-eight random gate, and spawns `SCRAP6`
+fragments with the ordered seven `TRAND`-backed positions, tile, angle,
+velocity and owner values used by `RANDOMSCRAP`. Static source review of
+`duke3d.h::RANDOMSCRAP` and `actors.c::moveeffectors`; compile/format only, no
+gameplay or demo comparison.
+
+**SE 130/131 timed explosions (2026-11-07):** the native effector pass now
+ages each marker to Chocolate's `T1 > 80` / `T1 > 40` expiry thresholds and uses the per-tic
+`TRAND` `rnd(64)` / `rnd(32)` gate. Successful tics spawn `EXPLOSION2`, draw
+the original repeat, vertical position, angle and velocity fields in order,
+then immediately apply a clipped horizontal `ssp` step and update the sector
+sprite list if it crosses a portal. The seed draws are retained even if the
+sprite pool cannot allocate the effect. Static review of Chocolate
+`actors.c::moveeffectors`, `duke3d.h::rnd` and `gamedef.c::spawn`; `cargo fmt
+--all`, `git diff --check` and `cargo check -q -p room-duke --lib` only. No
+tests or gameplay/demo comparison were run; exact Build `ssp` collision
+parity remains open.
+
+**SE 15 sliding-door correction (2026-11-07):** lotag-25 activators find the
+local matching SE15 hitag and toggle marker sectors. Static reinspection of
+Chocolate `actors.c::moveeffectors` showed SE15 is not a pivoting door and has
+no actor/player obstruction test: `T5` selects open/close, `T4` advances up to
+`SP >> 3`, and `ms()` translates the marker and sector walls 16 Build units per
+tic along its angle. Room now follows that state and translation path and
+queues the completion sound at both ends. The saved geometry uses map-load wall
+offsets. Exact marker ordering, `setsprite` collision/sector effects and
+runtime scenarios remain unverified. Static source review only; no gameplay
+or demo comparison.
+
+**D6 SHIELD inventory bridge (2026-11-07):** CON `ifpinventory 1` now tests
+the player's shield against Atomic's max-health cap, and `addinventory 1 N`
+adds shield with the same cap then commits the deferred value to the player.
+This allows existing CON pickup scripts to grant SHIELD. Other inventory kinds
+and pickup respawn/presentation remain open. `cargo fmt --all`,
+`git diff --check`, and `cargo check -q -p room-duke --lib` pass with existing
+warnings; no tests or gameplay/demo comparisons were run.
+
+**D6 Atomic inventory bridge (2026-11-07):** statically compared the full
+`gamedef.c` inventory switch and wired `ifpinventory` / `addinventory` state
+for steroids, shield, scuba, holoduke, jetpack, access cards, heat, first aid
+and boots. Player inventory counters and HUD icon IDs now survive CON actor
+execution through deferred writes. Inventory use/timers, non-CON pickup cases,
+respawning and HUD presentation remain open. `cargo fmt --all`,
+`git diff --check`, and `cargo check -q -p room-duke --lib`; no tests or
+gameplay/demo comparisons.
+
+**D6 player inventory actions (2026-11-07):** added first-aid healing,
+steroid activation/depletion and movement boost, jetpack toggle/flight and
+depletion, heat toggle/timer, underwater scuba activation/depletion, and
+inventory cycling. Inventory action bits are edge-triggered so holding a key
+does not repeatedly consume/use items. Desktop `'` now emits inventory-use;
+browser defaults add `,`/`.` for previous/next inventory and `'` for use.
+Remaining gaps include Holoduke fall/collision and palette behavior, boot
+hazard presentation/bridge exceptions, HUD presentation, plus exact vanilla feedback timing. Static Chocolate
+source review and compile checks only; no tests or runtime comparisons were
+run.
+
+**D6 Holoduke decoy (2026-11-07):** the selected Holoduke item now creates a
+second APLAYER in the native player sprite list with Chocolate's start pose,
+owner/player linkage and expansion/facing animation. Reuse toggles the actor
+off; timer expiry and explicit deactivation are cleaned from the sprite list
+on the next player-mover pass. It remains a first pass: no full fall/collision,
+player palette tint or multiplayer targeting parity. Static `actors.c`,
+`sector.c` and `player.c` inspection plus compile checks; no tests or dynamic
+gameplay/demo comparisons.
+
+**D6 player floor hazards (2026-11-07):** added Chocolate tile checks for
+purple lava (floor or ceiling), hurt rail, slime and plasma; charges are
+consumed at the vanilla rates, hazards use the vanilla RNG chances/damage
+range, and absorbed hits emit the boots quote. Pain and short-circuit cues are
+queued through Atomic sound names. Floor damage now goes through Chocolate's
+20–49% shield absorption and consumes one TRAND only when armor is present.
+Player RGB flash state now decays over 32
+tics and is composited in the desktop Duke shell. Exact classic-palette math,
+sound overlap rules, spritebridge exclusions and coop/web presentation still
+need work. Static `player.c` review
+and compile checks only; no tests or runtime comparisons.
+
+**D6 hitscan wall switches (2026-11-07):** pistol, shotgun and chaingun
+impacts queue the exact wall-switch target and invoke the native tagged switch
+transition after weapon processing. Access switches preserve missing-card
+quotes and start the access animation; ordinary switches operate linked
+activators and queue the switch cue. Tagged sectors already in a Room motion
+are ignored. Wall and sprite hits target the exact switch; directional
+DIPSWITCH, TECHSWITCH and ALIENSWITCH advance only the struck frame. Tagged
+door textures accepted by Chocolate `isadoorwall` operate their linked sectors
+without switch art changes or the ordinary switch cue. Recognized switches
+and door operators tagged `65535` now set Room's level-exit-ready state.
+Precise Build motion
+filtering and correct-combination counting/warning remain open. Static source
+review and `cargo check -p room-duke --lib` only; no runtime/reference
+comparison was run.
+
+**D6 door-tile switch operators (2026-11-07):** ported Chocolate's
+`isadoorwall` ART ID table into the shared use-key / hitscan switch gate.
+Tagged door textures now run linked activators without being cycled as switch
+art or receiving the ordinary switch sound. Static `sector.c::isadoorwall` and
+`checkhitswitch` / `names.h` review; compile-only validation, no gameplay or
+reference comparison.
+
+**SE 11 swing-door first pass (2026-11-07):** lotag-23 activation arms the
+matching SE11 markers in sectors with the same high-bit state, reverses their
+rotation direction, and queues the sector sound once. Door motion uses the
+map-load wall offsets around the marker pivot, Chocolate's T3/T5 angle steps,
+badguy and player `clipinsidebox` checks, and the eight-tic player obstruction
+delay/rollback. Static review of Chocolate `game.c::spawn`,
+`sector.c::operatesectors`,
+and `actors.c::moveeffectors`; compile/format only, with no gameplay or demo
+comparison. Interpolation and full moving-sector actor/player carrying remain
+open.
+
+**SE11 native `ms` / `setsprite` sequence (2026-11-08):** each swing-door
+rotation and player-obstruction rollback now advances the marker using its
+map `xvel` and angle before rotating cached sector-wall offsets, then resolves
+and relinks the marker's Build sector like Chocolate's `setsprite`. When the
+door reaches an endpoint, Room performs the second `ms` update after snapping
+T3 to the endpoint angle. Static review of Chocolate `actors.c::ms` and the
+SE11 `moveeffectors` branch; `cargo fmt --all`, `git diff --check` and
+`cargo check -q -p room-duke --lib` pass. No tests or dynamic comparisons.
+
+**SE 18 Kroz plane first pass (2026-11-07):** map spawn saves the original
+ceiling/floor plane, applies the palette-controlled marker plane, and scales
+the marker's runtime hitag interval by four. Master switches in the same
+sector now arm SE18. The effect moves the selected plane toward the stored or
+marker Z, carries grounded floor occupants, and removes the marker on arrival.
+Static review of Chocolate `game.c::spawn`, `actors.c::moveeffectors`, and
+`moveactors`; compile/format only, no gameplay/demo comparison. SEENINE now
+arms an SE18 only when its activation state is clear, matching Chocolate's
+guard; exact Kroz timer/removal semantics still need review.
+
+**SE 30 nonrotating subway first pass (2026-11-07):** map initialization links
+the SE30 marker to the first adjacent untagged sub-3 sector containing its
+route locators, caches moving-sector wall offsets, and stores the marker index
+in the sector's runtime hitag. Lotag-30 operation arms the car; the runtime
+chooses alternating locator lotags 1/0 in that sector, accelerates by 16 to
+256, brakes inside Chocolate's 1920-unit approach threshold, stops within 128,
+reverses heading, and carries sector sprites and players while translating the
+walls. Static review of Chocolate `game.c::spawn`, `sector.c::operatesectors`,
+and `actors.c::moveeffectors`; compile/format only, no gameplay/demo comparison.
+The car calls matching activators before departure and on arrival and toggles
+matching forcefield walls after arrival. Tight-gap crushing, collision,
+map-order edge cases and interpolation remain open.
+
+**SE 5 CON-backed boss weapon (2026-11-07):** the boss now temporarily aims
+its marker at the selected nearby player, invokes Room's shared
+Chocolate-shaped `shoot(FIRELASER)` effector path, and restores the route angle.
+The projectile's CON-configured speed, strength, source-height muzzle offset,
+`cstat` and `clipdist` now come from that common implementation instead of a
+second hard-coded projectile constructor. The boss `ms()` wall pass now rotates
+the cached map-load wall offsets by its accumulated T3 angle around the moving
+effector, instead of translating walls without the source rotation. Static
+`actors.c::moveeffectors` / `ms()` and existing effector-shot path review;
+formatting, diff check and
+`cargo check -p room-duke --lib` only. No tests, gameplay, demo, or
+Chocolate comparison were run.
+
+**SE6/SE14 train crushing (2026-11-08):** static review of Chocolate
+`actors.c::moveeffectors` and `gutsdir` corrected the first pass: moving trains
+crush badguys under the <108-unit clearance gate regardless of `monsters_off`,
+with 72 JIBS6 for SE6 and 24 for SE14 plus `SQUISHED`; player quickkill is gated
+by clipping off and uses speed ≥192 for SE6 / >0 for SE14. Guts use Chocolate's
+floor clamp, COMMANDER offset, and ordered angle/velocity TRAND draws. Players
+pushed outside the train sector enter Room's death path with Chocolate's
+48-tic palette flash and eight-piece JIBS6 burst (gibs omitted in god mode).
+The player sector test now runs both before and after moving the train, matching
+Chocolate's two checks; the post-move path uses the controller's refreshed
+sector and pose. Full `setsprite` collision effects and train interpolation
+remain open. `cargo fmt --all`, `git diff --check` and targeted compile only;
+no tests, gameplay/demo or Chocolate comparison were run.
+
+**SE30 narrow-gap crushing (2026-11-08):** the two-way subway now resolves
+and relinks the moving controller's Build sector after translating the walls,
+then checks the <108-unit clearance gate. Players pushed outside the car sector
+are quickkilled when clipping is off; badguys receive Chocolate's 24-piece
+`JIBS6` burst and `SQUISHED` cue. Player quickkill applies the 48-tic palette
+flash and eight JIBS6 fragments unless god mode is active. Player sector
+membership is checked on both sides of the moving-car update, with the final
+test using the controller's refreshed sector and pose. Static review of
+`actors.c::moveeffectors` and `player.c::quickkill`
+around the SE30 branch; formatting, diff check and targeted compile only. No
+tests, gameplay/demo, or Chocolate comparison were run.
+
+---
+
+## D8 — Duke audio + front end
+
+**Status:** `in_progress` · Spec: `25` §7 / §11 D8
+
+### Acceptance
+
+- [x] Queue selected Atomic CON sound IDs from actor/player gameplay paths
+- [x] Expose `quote` text and `tip` timer; advance quote/tip timers per tic
+- [x] Preserve actor/player sound origins and feed Duke listener/source positions to the mixer for attenuation and stereo panning
+- [x] `MUSICANDSFX` distance-gated ambient loops and randomized sector ambience (source-owned loop stops; full-pool loop stealing follows Chocolate's priority and distance gate)
+- [x] `definesound` loop flag and Atomic one/four-voice per-sound caps
+- [x] Carry `definesound.pr` into audio events and apply priority eviction against a 32-voice pool
+- [x] Preserve global (`m&128`) and non-attenuated positional (`m&16`) sound modes
+- [x] Native desktop `SoundToggle` / `ud.lockout` filtering for Atomic `m&8` sound starts, via archived `duke_sound` and `duke_lockout` CVars
+- [x] Apply Atomic `definesound ps/pe` pitch ranges at playback without consuming playsim RNG (presentation sampling is stable-hash based, so libc-rand parity remains open)
+- [x] Apply Chocolate `FindDistance3D`, `xyzsound` minimum distance and `MV_Play3D` 32-bin pan-table volume gains to native Duke SFX, sampling the desktop listener at the input-phase `opos` snapshot (audible calibration remains open)
+- [x] Add the `xyzsound` 1/32 distance penalty for blocked actor sounds via Build `cansee` (the exact Chocolate `opos` sampling phase remains unmeasured)
+- [x] Parse Atomic `music` tables and play the selected layered-GRP MIDI on campaign map start/transition
+- [x] F5 current-track quote and Shift-F5 track cycling while the quote is active
+- [x] Desktop F7 shoulder-view toggle, weapon hiding, 120 Hz-equivalent camera-distance ramp and rear-wall hitscan/retraction; preserve the toggle in Room/Atomic player saves
+- [x] Native desktop F4 Sound Setup for sound/music toggles, Duke Talk, ambience, stereo flip and 0–255 sound/music volume sliders (four-unit steps)
+- [x] Native Duke F2/F3 ten-slot menus plus F6 last-slot save and F9 confirmed last-slot load for Room `.fsave` snapshots; imported Atomic saves also use a D9 `.sav` companion sidecar
+- [x] Native Duke F8 toggles ordinary FTA quotes and leaves forced status notifications visible
+- [x] In-game Duke F10 opens the quit-confirmation menu; yes exits the native app and no returns to play
+- [x] Native Duke F1 help cycles the Atomic TEXTSTORY / F1HELP ART pages, pauses the sim, and closes with Escape
+- [x] Native Duke F11 brightness cycle uses `TABLES.DAT` BRITABLE rows and Shift-reverse, with Atomic 0..56 wrap
+- [x] Expose bonus-screen inputs: killed/total actor counters, found/total secret counters, elapsed tics, CON par and designer time
+- [x] Native solo campaign transition shows a timed bonus-stat panel before loading the destination and freezes the outgoing playsim while it is visible
+- [x] Reset `actors_killed` and `secret_rooms` at campaign level boundaries like Chocolate `resetprestat`, preserving per-level bonus counters
+- [x] Duke `MUSICANDSFX` reverb-zone activation by the player's distance to a tag-1000 marker, with Chocolate sample-rate-scaled multi-tap/IIR reverb and 0–255 level mapping (runtime delay changes and multi-zone ordering remain open)
+- [x] Chocolate audiolib multi-tap/IIR reverb DSP and sample-rate-scaled room-marker level application
+- [x] Browser native Duke audio consumes source-positioned sound events, listener orientation, reverb-zone state, pitch variation, stop commands, actor voice replacement, timed-exit cutoff, line-of-sight penalty, loop/voice caps, exclusivity, priority and distance-offset metadata
+- [x] Browser native Duke audio exposes sound/music/talk/lockout/ambience/stereo toggles and Atomic-range volume controls to the host page
+- [ ] Complete remaining sound-lock/priority semantics, environment/menu music, exact F4 device behavior and audible calibration (same-ID owner arbitration and desktop `opos` sampling phase are implemented)
+- [x] E1/E2/E4 finale sound cues follow Chocolate frame tables and use the active CON sound-label/mixer path
+- [x] Native desktop Atomic `DN` cheat parser covers every `GAME.C::cheatquotes[]` command and its primary player/world effect (`time` is a no-op; `cosmo` is not in the source table)
+- [ ] Remaining Duke HUD, menus, bonus screen, ANM playback/cues and F-key details (basic solo bonus panel exists; Atomic bonus art/count-up/audio, help pages, quote/TIP and progressive native automap are implemented; full portal-visibility and color parity remain open)
+- [ ] UI checklist and golden screenshots (T1.6/T1.7)
+
+**Native Duke save/load keys (2026-11-07):** Chocolate's F2/F3 save/load
+entry points now open ten-slot menus in the native desktop session. F2 rejects
+dead-player saves; slot saves encode versioned Room `.fsave` data under the
+Room saves directory, and F3 restores that native snapshot before restarting
+the level music. Empty load slots are identified in the menu. F6 opens the
+last-used save slot preselected (or the save menu when none exists), and F9
+opens a confirmation for that last-used slot (or the load menu before the first
+save); changing campaign levels clears the last-slot latch as Chocolate does.
+When the session came from an imported Atomic save, F2 also writes an Atomic
+`.sav` companion next to the `.fsave`; F3 loads the `.fsave`, then applies that
+companion's Build/Atomic state. Ordinary native sessions continue to save only
+`.fsave`. This does not make Atomic saves standalone or close D9 round-trip
+acceptance; per-slot naming/preview tiles and the full pause/options front end
+remain open. Static
+`game.c` key-flow and `menues.c::saveplayer` inspection; formatting, diff check
+and targeted `cargo check -p room-app --bin room` only. No gameplay or
+reference comparison.
+
+**Native Duke F8 messages toggle (2026-11-07):** F8 now toggles the saved
+`Player::fta_enabled` state and reports the change through the app message
+overlay. Static review of Chocolate `game.c` F8 / `FTA()` showed that ordinary
+quotes use mode 0 while the F8 status message uses forced mode 1; Room's CON,
+secret, locked-switch, SE5 boss and timed-exit quote paths now all honor the
+toggle. Formatting, diff check and targeted crate/app compilation only; no
+gameplay or reference comparison.
+
+**Native Duke F10 quit confirmation (2026-11-07):** the in-game F10 key now
+opens Room's two-choice quit-confirmation menu while a native Duke session is
+active. Confirming exits the desktop app and cancelling closes the modal and
+resumes play. This ports the gameplay key path from Chocolate `game.c`; the
+full title/quit UI, random quit quotes, and front-end flow remain open. Static
+source inspection, formatting, diff check and targeted `cargo check -p
+room-app --bin room` only; no gameplay or reference comparison.
+
+**Native Duke F1 help pages (2026-11-07):** the F1 key now displays Atomic's
+`TEXTSTORY` ART tile, then `F1HELP`, and closes after the second page or Escape.
+The page overlays the Duke HUD and freezes the 30 Hz native sim while open;
+movement keys are cleared on entry. Static `game.c::displayrest` / F1 input
+review; formatting, diff check and targeted `cargo check -p room-app --bin
+room` only. No gameplay or screenshot comparison.
+
+**Native Duke F11 brightness (2026-11-07):** added a checked parser for the
+`BRITABLE[16][64]` block in `TABLES.DAT` and apply the selected row to the
+native RGBA scene and ART UI conversion. F11 cycles Atomic `ud.brightness`
+0..56 by eight (rows 0, 2, …, 14); Shift-F11 reverses and wraps. GRPs without
+`TABLES.DAT` retain identity brightness. Static `game.c` / `engine.c`
+inspection, formatting, diff check and `cargo check -p room-duke -p room-app
+--bin room` pass with existing warnings; no visual/gameplay comparison.
+
+**Native Duke player cheats (2026-11-07):** Chocolate's keyboard
+`D` → `N` prefix recognizes `cornholio`/`kroz`, `stuff`, `weapons`, `items`,
+`inventory`, `keys`, `showmap`, `view`, `coords`, `unlock`, `cashman`, `clip`,
+`hyper`, `beta`, `todd`, `allen`, `rate`, `scotty###`, `skill#`, `monsters`, `debug`, and `time` in solo
+games below skill 5. These update player, campaign, view and FTA state.
+Multiplayer, demo recording/playback, and skill 5 suppress cheat entry.
+The `showmap` cheat reveals all native Duke automap sectors; `view` toggles
+the existing shoulder camera; `coords` toggles the native player pose overlay.
+`unlock` clears sector locks, invokes ordinary sector operations, and toggles
+all animated forcefields in Chocolate's traversal order. `cashman` toggles a
+serialized Atomic flag and spawns two MONEY sprites per held Use tic with the
+ordered Z/angle/cstat TRAND rolls. `clip` toggles serialized `ud.clipping`:
+player XY movement bypasses `clipmove` and `pushmove`, updating its sector
+directly, while normal collision remains active when disabled. `monsters`
+cycles Chocolate's `actor_tog` modes: mode 1 hides badguys and skips their CON
+execution, mode 2 sets their collision flags and runs CON, and mode 3 preserves
+the mode's vanilla fallthrough. The toggle is saved in `.fsave` and carried
+across campaign transitions. The `debug` cheat shows Room playsim counters, while Chocolate’s cache-lock-byte list remains unsupported. `time` is accepted as Chocolate’s no-op cheat. The current command parser and effect paths cover every Atomic cheat table entry; exact legacy quote presentation remains a UI detail.
+Static `game.c::cheats` review, formatting, diff check and `cargo check -q -p
+room-duke -p room-app --bin room` pass with existing warnings; no gameplay
+comparison or tests were run.
+
+**D8 vanilla cheat table reconciliation (2026-11-08):** compared the native
+`D`→`N` parser and `DukeSession::apply_player_cheat` dispatch against the
+Atomic `GAME.C::cheatquotes[]` inventory already recorded in docs/25. The
+parser includes all table entries, including `skill#` and `scotty###`; screen
+overlays and campaign transitions are handled in the desktop input path, and
+`time` intentionally clears as a no-op. Corrected the spec and progress checklist
+to record vanilla command coverage; Chocolate's cache-lock diagnostic and exact
+quote presentation are still open. Static source/table and call-path inspection
+only; no tests, game run, or demo comparison.
+
+**D8 bonus-stat snapshot (2026-11-08):** added the public
+`DukeSession::level_bonus_stats` snapshot consumed by a future Atomic
+`dobonus` presentation. It reports elapsed 30 Hz tics, the current CON
+`definelevelname` par/designer times, per-level kill/secret counters, and the
+Atomic prelevel totals once those fields were added. The complete Atomic
+screen, step sounds, dynamic CON-spawned enemy accounting and multiplayer
+intermission remain open. Static inspection of the CON level table and
+Chocolate's `premap.c` / `game.c` counters; formatting, diff check and
+targeted compilation only. No gameplay or Chocolate comparison.
+
+**D8 native bonus panel (2026-11-08):** the desktop solo campaign path now
+captures the outgoing level's bonus stats before campaign routing, defers the
+map transition, freezes the outgoing level for 150 tics, and draws a native
+panel that counts kills, secrets and all three time rows up from zero during
+the first 30 tics. The destination map is loaded after the panel expires.
+Networked play
+and demo playback skip this presentation so their authoritative input/tic
+streams are not paused. This is a static first pass, not Atomic `dobonus` parity:
+the native art/animation, stepping sounds, input advance, dynamic
+CON-spawned enemy accounting and multiplayer intermission flow remain open.
+Static Chocolate `premap.c`
+`resetprestat` review also corrected campaign transitions to reset `actors_killed`
+and `secret_rooms` instead of carrying them with inventory, making the found
+bonus counts level-local. Formatting, diff check and targeted compile only; no
+gameplay or Chocolate comparison.
+
+**Native Duke `dnscotty###` level cheat (2026-11-07):** the desktop cheat
+buffer accepts Chocolate's `scotty###` suffix, validates the one-based Atomic
+volume/map coordinates, and requests the native campaign transition directly.
+The existing campaign loader keeps the current level intact and reports an
+unavailable map if the selected resource is absent. Static `game.c::cheats`
+review, formatting, diff check, and targeted compilation only; no gameplay or
+Chocolate comparison.
+
+**Native Duke utility cheats (2026-11-07):** added `dnhyper`'s Atomic
+steroids/heat values and the forced `dnbeta`, `dntodd`, and `dnallen` FTA
+quotes to the native single-player cheat parser. Static `game.c::cheats`
+review, formatting, diff check and targeted compilation only; no runtime or
+Chocolate comparison.
+
+**Native Duke `dnrate` overlay (2026-11-07):** the cheat now toggles the
+campaign map label and live FPS display, using the desktop frame counter while
+keeping all wall-clock sampling in the presentation shell. Static
+`game.c::display_boardfilename_FPS_weapon` / `tics` review, formatting, diff
+check and targeted compilation only; no game comparison.
+
+**Native Duke `dnskill#` restart (2026-11-07):** the parser accepts Atomic
+skill values 1–5, reloads the current campaign map at the requested skill, and
+uses the fresh spawn/player state from `MODE_RESTART`; failed map loads retain
+the current session. Campaign map loads now take the session's active skill
+instead of a fixed startup value. Static `GAME.C::cheats` and
+`premap.c::enterlevel` / `resetpspritevars` inspection, formatting, diff check
+and targeted compilation only; no gameplay comparison.
+
+**Native Duke `dndebug` overlay (2026-11-07):** added a toggleable native
+playsim overlay for tic, live sprite, actor, projectile, FX, sector, wall and
+effector counts. Chocolate's `caches()` prints cache lock-byte entries; Room
+has no equivalent Build lump lock table, so that exact cache diagnostic remains
+open. Static `GAME.C::cheats` / `caches` inspection, formatting, diff check and
+targeted compilation only; no gameplay comparison.
+
+**Native Duke `dntime` parser entry (2026-11-07):** the no-op cheat now
+matches Chocolate's `case 5`: Room consumes the completed sequence and leaves
+playsim and presentation state untouched. The spec's cheat inventory was
+reconciled against the current `GAME.C::cheatquotes[]` table (`dncosmo` is not
+present). Static inspection, formatting, diff check and targeted compilation
+only; no gameplay comparison.
+
+**Positional sound bridge (2026-11-06):** native sound events now retain their
+Build source coordinates. CON actor sounds use the emitting sprite; weapon and
+player-action cues use the player. The desktop adapter updates the mixer
+listener from Duke's pose and converts Build XY/Z scales at the audio boundary,
+enabling existing mixer attenuation and panning. Static Chocolate `xyzsound`
+inspection and compilation only; audible balance and range have not been
+compared or tuned against Chocolate.
+
+**Ambient `MUSICANDSFX` slice (2026-11-06):** native actor movement now reads
+Atomic `definesound` flags and performs distance-gated loop starts, source-owned
+stops at the marker's source when the listener leaves range, and randomized
+sector sound playback when the player is in the marker's sector. The mixer
+bridge now carries loop and source/sound-specific stop events. Reverb markers,
+sound-toggle behavior, and music playback remain open. Voice-priority eviction
+was implemented in the later D8 slice below.
+Static review of Chocolate
+`actors.c::moveactors` / `sector.c::callsound`; compile/format only, no audible
+or gameplay comparison.
+
+**Duke sound voice limits (2026-11-06):** sound events now retain Atomic
+`definesound` loop metadata and route its loop flag to the mixer. The mixer
+enforces Chocolate's one-voice restriction for looped sound definitions and
+four simultaneous voices for ordinary sound IDs (`xyzsound` allows `num == 3`);
+`m&4` talk sounds use an exclusive voice class. Sound locks/lockout toggles and
+pitch/volume variation remained open at that checkpoint. Static review of
+Chocolate `sounds.c::xyzsound`; compile-only validation. A follow-up audit
+corrected the ordinary cap from three to four after checking the strict
+`Sound[num].num > 3` guard.
+
+**Duke sound priority slice (2026-11-06):** `definesound.pr` now survives in
+native Duke sound events and the audio adapter. At the Chocolate Sound Blaster
+default pool size (32 voices), a new Duke voice replaces the lowest-priority
+active voice only when its priority is at least as high; otherwise the start is
+dropped. This does not yet reproduce device-specific voice counts, lockout and
+sound toggles, or per-sound lock/owner lifecycle. Static inspection of
+Chocolate `sounds.c::xyzsound`, `fx_man.c` and `multivoc.c`; formatting and
+`cargo check -p room-audio -p room-duke -p room-app --all-targets` passed. No
+gameplay, audio, or Chocolate comparison was run.
+
+**Duke sound placement flags (2026-11-06):** `definesound m&128` events now
+play centered at full volume, matching `xyzsound`'s delegation to `sound()`;
+`m&16` keeps its source position for stereo panning while bypassing distance
+falloff. Ordinary spatial cues continue through the existing attenuation path.
+Static comparison with Chocolate `sounds.c::xyzsound` / `sound`; formatting and
+`cargo fmt --all -- --check`, `git diff --check`, and
+`cargo check -p room-audio -p room-duke -p room-app --all-targets` passed.
+No audio or gameplay comparison was run.
+
+**Sector animation sound cues (2026-11-07):** the native sector-motion path now
+uses the first local `MUSICANDSFX` marker to queue its configured start/stop
+sound IDs when supported sector animations begin and finish; sliding-wall
+sector activation also queues the start cue when it successfully creates wall
+motions. This ports the basic `callsound` toggle and global sound-stop flow.
+The `soundm` flags that affect this path are retained on the marker and applied:
+`m&16` suppresses the start cue, and `m&1` stops the active sound when the
+marker has no distinct off cue. Other sound-lock interactions remain open.
+Sound events are collected after plane and wall animations, so animation-end
+cues enter the same tic's output queue. Static Chocolate `sector.c::callsound`
+review; formatting/diff/compile checks only, with no gameplay or audio
+comparison.
+
+**Duke sound toggle and lockout (2026-11-07):** the desktop adapter now honors
+archived `duke_sound` and `duke_lockout` CVars when dispatching native starts;
+events whose Atomic `definesound.m` has `m&8` are suppressed under lockout,
+while stop events still pass through. Static `sounds.c::xyzsound` review and
+compile checks only; no audible or runtime comparison.
+
+**Atomic campaign music (2026-11-07):** CON `music` declarations now retain
+the four 11-track Atomic volume tables plus the environment table. The native
+desktop selects the corresponding campaign MIDI from the layered Duke GRP at
+map startup and after campaign transitions, and configures the shared music
+sequencer using the supplied/discovered SoundFont or a GRP `GENMIDI` bank when
+available. Map coordinate parsing now includes secret levels 10 and 11. Static
+Chocolate `gamedef.c::music`, `premap.c` and app-load review; formatting,
+diff-check and `cargo check -p room-duke -p room-app --bin room` only. No audio,
+gameplay or reference comparison; menu/environment playback and music controls
+remain open.
+
+**Duke F5 music controls (2026-11-07):** native desktop F5 shows the current
+Atomic track and advertises Shift-F5 for the 100-tic quote window; Shift-F5
+cycles the 44-entry campaign table and starts the selected layered-GRP MIDI.
+Campaign transitions reset the selected track to that map's vanilla slot.
+Static Chocolate `game.c` F5 handling review; `cargo fmt --all`, diff check and
+`cargo check -p room-app --bin room` only. No UI/audio/runtime comparison.
+
+**Duke F4 sound setup (2026-11-07):** added a native desktop Sound Setup modal
+with sound and music toggles, Duke Talk, ambience and flip-stereo toggles, and
+sound/music volume controls using Chocolate's 0–255 scale and four-unit
+arrow-key adjustments (labels display normalized percentages).
+Disabling sound clears active mixer voices; disabling music stops playback, and
+reenabling it restarts the selected campaign track. Archived `duke_music`,
+`duke_talk`, `duke_sfx_volume` and `duke_music_volume` CVars preserve these
+settings. Duke Talk filters CON sounds with `definesound.m&4` and clears active
+exclusive talk voices when disabled. Ambience events carry an explicit marker
+origin through the sound bridge, so its toggle filters ambient starts and
+clears active ambience voices without muting gameplay sounds that reuse the
+same sound ID; toggling it on re-arms marker playback. Flip Stereo swaps the
+left/right gains in the mixer. Raw volume steps are now four units on
+Chocolate's 0–255 range; pointer-drag sliders and device-specific `FX_SetVolume`
+behavior remain open, along with environment/menu music. Static review of
+Chocolate `menues.c` Sound Setup and Room's native menu/audio bridge; `cargo
+fmt --check` and `cargo check -q -p room-app --bin room` passed with existing
+warnings. No gameplay, UI or Chocolate comparison was run.
+
+**Duke reverb zones (2026-11-07):** the desktop audio bridge scans the
+Chocolate `STAT_FX` sprite list for `MUSICANDSFX` markers with lotag 1000–1999,
+applies their hitag distance radius using Build's integer `FindDistance2D`, and
+selects the marker's 0–255 `FX_SetReverb` level. The mixer now ports
+`mvreverb.c`'s sample-rate-scaled taps, IIR coefficients, four accumulators,
+feedback paths and stereo output; disabling the zone clears its delay buffer.
+Multi-zone state ordering and `FX_SetReverbDelay` changes remain open. Static
+inspection of `actors.c::moveactors`,
+`sector.c::ldist`, `audiolib/mvreverb.c` and `multivoc.c`; formatting/diff/
+desktop compile checks only, no game/audio comparison.
+
+**Duke spatial sound gain (2026-11-07):** the mixer now applies Chocolate's
+`FindDistance3D` approximation to raw Build-scaled source/listener positions,
+adds `definesound.vo`, applies `xyzsound`'s `sndist` floor, and maps distance
+through the integer `MV_Play3D` pan table. `m&16` positional
+starts keep their source pan at zero distance; `m&128` global starts are full
+volume and centered. Duke SFX volume
+is a separate mixer gain and updates already active voices. Actor sound starts
+now use Chocolate's eye-offset `cansee` test and add `sndist >> 5` when blocked;
+`MUSICANDSFX` and global sounds bypass the check. The mixer quantizes relative
+angle to Chocolate's 32-bin pan table and applies its integer channel gains,
+without multiplying its falloff by the separate `mid` volume a second time.
+Listener `opos` timing and audible calibration remain open. Static review of Chocolate
+`sounds.c::xyzsound`, `global.c::FindDistance3D` and `multivoc.c::MV_Play3D` /
+`MV_CalcPanTable`; `cargo fmt --check`, `git diff --check` and app compile only,
+no sound, gameplay or reference comparison.
+
+**Duke reverb DSP (2026-11-07):** replaced the provisional feedback delay with
+the Chocolate audiolib `mvreverb.c` stereo network: sample-rate-scaled taps,
+IIR filters, four accumulator paths, feedback taps and output mixing. The
+`FX_SetReverb` 0–255 value maps through Chocolate's 0–63 volume conversion;
+the delay buffer clears when the zone disables. `FX_SetReverbDelay` runtime
+changes and reverb-zone state ordering still need work. Source attribution is
+recorded in `THIRD_PARTY.md`. Static source review and app compile only; no
+audio/gameplay/reference comparison.
+
+**Duke sound pitch ranges (2026-11-07):** native sound playback now maps the
+Atomic `definesound ps/pe` range (1200 units per octave) to the audio mixer
+pitch ratio. A stable per-tic/source hash chooses the half-open offset range,
+keeping audio variation outside the deterministic playsim RNG. Chocolate's
+libc `rand()` sequence remains open. Static `sounds.c` / `pitch.c` inspection
+and compile checks only; no audible or runtime comparison.
+
+**Duke underwater sound pitch (2026-11-07):** positional starts now apply
+Chocolate's underwater pitch overrides using the listener's current sector:
+−768 for non-talk sounds, and −1024 for PIPEBOMB_EXPLODE, LASERTRIP_EXPLODE
+and RPG_EXPLODE. Global `m&128` sounds bypass the underwater adjustment, as
+Chocolate's early `sound()` path does. Static `sounds.c::xyzsound` / `soundefs.h`
+review and compile checks only; no audio or gameplay comparison.
+
+**Duke sound distance offset (2026-11-07):** native sound starts now carry
+CON `definesound.vo` as a signed mixer-distance offset, applied before the
+linear attenuation curve and clamped to nonnegative distance. `m&16` and
+`m&128` skip this positional attenuation path as in Chocolate. The Build to
+mixer offset scale is provisional; exact attenuation/visibility curves remain
+open. Static `gamedef.c::definesound`, `sounds.c::xyzsound` review and compile
+checks only; no audio or runtime comparison.
+
+**Duke quote and TIP HUD (2026-11-07):** the desktop native HUD draws active
+CON `definequote` text with a dark shadow near the bottom center. It also
+loads Atomic ART tiles `TIP`/`TIP+1` (2576/2577) as palette-indexed sprites,
+scales them with nearest-neighbor sampling, applies Chocolate's countdown
+frame and vertical tip pose, and suppresses the weapon while the tip is shown.
+The pose follows the player's horizon. Palette/shade translation, look-angle
+and sway offsets, original font/layout, wrapping, menus and broader HUD remain
+open. Formatting and desktop compile checks only; no screenshot or gameplay
+comparison.
+
+**Native Duke automap slice (2026-11-07):** Tab now draws the loaded
+`DukeSession` Build wall loops and player direction in the automap overlay,
+instead of showing the Doom `MapGeometry` belonging to the other runtime.
+Room performs Chocolate's `scansector` portal-sector flood from the current
+sector using the 32-bit cross-product facing gate and `cstat&32` portal block,
+remembers reached sectors while the map is open, and limits wall rendering to
+those sectors. Active, non-invisible sprites in sectors reached during the
+current flood receive markers; sprites in merely remembered sectors do not.
+Wall portals and solid walls use separate colors, and the existing zoom
+control scales the map around Duke's native player position. This ports sector
+discovery but not the renderer's full view-frustum clipping: sectors reached
+through eligible facing portals can still be marked outside the final screen
+span. Build secret/door colors and Chocolate's rotate/scale behavior remain
+open. Formatting and desktop compile checks only; no runtime or reference
+comparison.
+
+- `2026-11-07` — **D8 quote/TIP presentation**: implemented basic native quote
+  text and animated TIP ART tile presentation in the desktop HUD; tip poses
+  hide the weapon and follow the horizon. Chocolate's 21-entry `tip_y` array
+  is safely clamped for the larger countdown values. Static source inspection,
+  formatting and compile checks only; no runtime or Chocolate comparison.
+- `2026-11-07` — **D8 native automap**: Tab renders sectors reached through
+  Chocolate's facing-portal cross-product gate, active sprites from the current
+  sector flood, and Duke's position/heading, so the native runtime no longer
+  displays the shell's unrelated Doom map. Full projected view-span clipping,
+  native line colors and exact zoom behavior remain. Static compile only; no
+  in-game test.
+- `2026-11-08` — **D8 ambience voice-pool arbitration**: when all 32 active
+  voices are `MUSICANDSFX` ambience loops, a new loop first passes Chocolate's
+  priority availability gate, then replaces a farther active loop only if the
+  entering source is closer; otherwise the new loop is rejected. Selection
+  runs in the native mixer without consuming playsim RNG. Static review of
+  Chocolate `actors.c::movefx` and Room's Duke event/mixer path; formatting,
+  diff and crate compile only, no audio/gameplay comparison. Device-specific
+  maximum voice counts remain open.
+- `2026-11-08` — **D8 MUSICANDSFX cached randomness**: random ambience sound
+  selection now uses Chocolate's cached per-tic `global_random` for both the
+  sound offset and next interval instead of advancing Build `randomseed` two
+  extra times. This preserves map-sim RNG and the source's unsigned sound-range
+  modulo. Static review of Chocolate `actors.c::movefx`; formatting, diff and
+  targeted compile only, no gameplay/demo or audio comparison.
+- `2026-11-08` — **D8 stable sound-owner ordering**: Duke voices now carry a
+  mixer-local start sequence. `ifsound` reads the earliest active owner for
+  each sound ID and `xyzsound` stops the newest matching voice by that sequence,
+  unaffected by unrelated voice completion using `swap_remove`. Formatting,
+  `git diff --check` and `cargo check -q -p room-audio` passed; no tests,
+  playback, gameplay or reference comparison were run.
+
+**D8 browser Duke audio parity slice (2026-11-08):** the web shell now drains
+full `DukeSoundEvent`s instead of flattening them to centered IDs. It positions
+the listener and sources in Build coordinates, carries reverb-zone state,
+handles global and positional starts plus stop/stop-source events, and passes
+loop, uniqueness, one/four-voice limits, talk exclusivity, ambience, priority,
+and distance-offset metadata to the shared mixer. It also reports active sound
+owners back to the playsim for `ifsound` behavior. The `definesound ps/pe`
+sampling and underwater pitch transformation are shared with the desktop
+through `room-duke::audio::pitch_scale`; source voice replacement/dead-badguy
+handling, timed-exit cutoff, and the `cansee` occlusion penalty now follow the
+desktop path too. The actual wasm-target check exposed a missing direct
+`room-build-engine` dependency and a stale Doom lobby tuple after multiplayer
+options were extended; both were corrected. No browser run or audio/reference
+comparison was performed. Browser host/UI integration and environment-track
+selection remain open.
+
+**D8 browser audio options (2026-11-08):** `roomSetDukeAudioOptions` now
+exposes the desktop F4 sound, music, talk, lockout, ambience, stereo and 0–255
+volume settings to an embedding page. Runtime sound events honor each gate,
+and the shared mixer receives the selected SFX/music gains and stereo mode.
+Defaults preserve current behavior (sound/music/talk/ambience on, full volume,
+lockout/reverse stereo off). Documented in `crates/room-web/README.md`.
+Formatting, wasm-target compilation and diff checks only; no browser/UI or
+audio comparison was run.
+
+**D8 F7 shoulder view (2026-11-07):** native Duke now toggles the shoulder
+camera on F7 and hides the first-person weapon. Camera distance grows by 4096
+Q16 units per 30 Hz tic to Chocolate's 65536 maximum; a rearward `CLIPMASK1`
+hitscan clamps it against active face sprites, solid walls and sector planes,
+pulling the camera four map units off a hit surface. The player's own sprite is
+excluded from that ray and the camera sector is refreshed each render. The
+toggle/distance are serialized in Room saves; Atomic import restores
+`over_shoulder_on` (`ANG+92`). Sloped-plane camera occlusion, exact sprite
+offsets, camera roll/animation details and screenshot comparison remain open.
+Static `game.c::view` / ABI review, formatting and compile checks only; no
+runtime or visual comparison.
+
+---
+
+## D9 — Duke saves + demos
+
+**Status:** `in_progress` · Spec: `25` §7 / §11 D9
+
+### Acceptance
+
+- [x] Parse Atomic `.DMO` input streams and load existing reference trace files
+- [x] Serialize and restore the Room Duke world/session in a versioned `.fsave` (v1)
+- [x] Retain imported Chocolate save globals (`ud`, mirrors/clouds, parallax and clock domains) in `.fsave`
+- [x] Restore the Atomic player's `toggle_key_flag` used by edge-triggered pool-ball use input (field restore only; full Atomic SAV round-trip remains open)
+- [x] Construct and encode a standalone Atomic v119 `GAME#.SAV` from a supported native session
+- [x] Import and restore the currently modeled Atomic world, player, CON and global fields
+- [ ] Atomic `GAME#.SAV` full field/default coverage and load-save-load acceptance (writer rejects an unrepresentable `lockclock`; Chocolate/reference acceptance remains unverified)
+- [x] Room `.fdem` native `DukeInput` recording and per-tic checked playback
+- [x] Desktop shell `record` / `stop` integration for native Duke `.fdem` recording
+- [x] Atomic revision 117 single-player `.DMO` encoding (reference playback not verified)
+- [x] Multiplayer Atomic v117 `.DMO` input recording (reference playback not verified)
+- [x] Atomic `.DMO` capture and application of per-seat aim-mode / weapon-choice settings
+- [x] Atomic `.DMO` map/skill/roster bootstrap from ordered GRP layers
+- [ ] Reference-engine sync for a recorded demo
+
+**Atomic SAV state coverage (2026-11-07):** the bounded `SavHeader` parser
+consumes the 160×100 save-tile payload that Chocolate reads before the world,
+then consumes multi-block `kdfread` arrays and reconstructs Build's
+element-wise byte deltas. It retains sector plane panning, sprite offsets/velocities, six
+sprite-list tables, cyclers, animation walls/targets, sprite queue, mirrors,
+automap bits, `actortype` dispatch table, board filename, clouds, script
+pointer flags/code, actor script offsets, sprite script flags, and all
+`weaponhit` records. Field order and
+array counts follow Chocolate `loadplayer`/`kdfread`. The native restore path
+now applies saved Build geometry, exact sprite-link arrays, core player
+pose/weapons/inventory, clock/RNG fields, CON pointer relocation, and saved
+actor `weaponhit` records to an already loaded `DukeSession`; imported Atomic
+globals that do not yet have live simulation counterparts are now retained as
+`AtomicSaveGlobals` inside `.fsave` (including mirror/cloud tables, automap
+bits, animated-sector pointer/goal/velocity tables, `gotpic`, board name,
+parallax and the serialized `ud` fields), so an Atomic import
+followed by a Room save no longer discards them. They are persistence-only
+until their corresponding world/render/session behavior is implemented.
+Desktop Atomic
+SAV loading dispatches here instead of incorrectly starting a Doom map.
+Static inspection of `duke3d.h::player_struct` revealed that the raw player
+record starts with 532 bytes of zoom/loogie state before `posx`; the SAV
+decoder now uses the actual 32-bit Atomic offsets rather than interpreting
+the record prefix as a pose. The same source review confirmed `MAXTILES=9216`;
+the SAV `actortype` and `actorscrptr` arrays now use that Chocolate bound
+instead of 30720 and align with the loaded CON image. Restore carries saved
+player motion,
+look offsets, HUD/inventory timers, quote/access state, kill/secret counters,
+weapon reservations and auto-aim. It reconstructs the six-field shade cycler
+records too. Animated wall/mirror/cloud tables are retained even where Room
+does not yet have runtime counterparts; live mirror/cloud behavior, unparsed
+`ud` options and continuation equivalence remain open. A full modeled Atomic
+v119 writer now supports template-backed export and conservative standalone
+construction, but complete native-state coverage and load-save-load acceptance
+remain open. Saved animated-wall entries now restore by their saved wall index and
+phase instead of rerunning `premap`. `cargo fmt --all`,
+`git diff --check` and targeted `cargo check` pass; existing warnings remain.
+No save replay or runtime/reference comparison.
+
+**Atomic global retention follow-up (2026-11-07):** added versioned
+`AtomicSaveGlobals` to the native `.fsave` payload and populate it from the
+Atomic header on import. It retains save slot metadata, mirror/cloud and
+automap arrays, board name, sky/parallax values, multiplayer/frag globals and
+the parsed Atomic `ud` settings for later runtime integration. This preserves
+fields exposed by `SavHeader`; it does not implement their runtime effects.
+Standalone serialization was added in a later D9 step. `cargo fmt --all`,
+`git diff --check` and targeted `cargo check` pass; no tests or game/reference
+comparison were run.
+
+**Atomic player exit-state restore (2026-11-07):** extended the 32-bit raw
+`player_struct` decoder with `fist_incs` (`ANG+98`) and `buttonpalette`
+(`U8+40`), then applied them to `Player` during Atomic SAV restoration. These
+are the live values used by the nuke-button/secret-route transition, so a SAV
+captured during that sequence no longer loses those two fields. Offsets were
+checked against Chocolate `duke3d.h`; formatting and targeted compilation
+only, with no SAV replay or reference comparison.
+
+**Atomic pool-input latch restore (2026-11-07):** the Atomic `player_struct`
+decoder's `toggle_key_flag` now restores into the native `Player`, preserving
+the held-use edge state used by pool-ball kicks across imported saves. The
+versioned Room `.fsave` already serializes this player field. This covers one
+player field only; it does not close Atomic `GAME#.SAV` writing or round-trip
+acceptance. Static layout inspection and the prior targeted crate compile;
+no tests, save replay or reference comparison were run.
+
+**Atomic `dfwrite` primitive (2026-11-07):** implemented a bounded encoder for
+Chocolate's record-wise byte-delta format using the raw Ken block form
+(`strtot=0`) accepted by `uncompress`. It handles `LZWSIZE=16384` chunking and
+large byte arrays; compressed output size parity is intentionally not needed
+for compatibility. Atomic v117 `.DMO` encoding now uses this shared primitive
+instead of duplicating its own delta/chunk writer. This is a codec primitive
+only: there is still no complete `GAME#.SAV` serializer, as several runtime/
+header tables have no native model.
+Static review of `filesystem.c::dfwrite` and `uncompress`; formatting and
+targeted compilation only, with no tests or runtime/reference comparison.
+
+**Atomic v117 per-player header alignment (2026-11-07):** corrected the
+`.DMO` stream offset to account for Chocolate's one-byte aim mode plus ten
+weapon-choice bytes for every player after the fixed header. Previously Room
+skipped only one byte per player, so it began decoding compressed tic data in
+the middle of the player metadata. The parser now exposes all seats' tic
+streams, and the v117 encoder interleaves equally sized player streams into
+Chocolate's per-tic record layout and retains per-seat aim-mode and
+weapon-choice metadata for re-encoding. This is codec support only: the native
+session recorder remains single-player, and multiplayer playback/recording
+sync remains open.
+Static inspection of Chocolate `game.c::opendemowrite` / demo header loading,
+formatting and targeted compilation only; no tests or demo/reference comparison
+were run.
+
+**Room `.fsave` v1 (2026-11-06):** `DukeSession::save_fsave` and
+`load_fsave` serialize the Build map and sprite arrays, player, CON actor
+temps, tile metadata, RNG/tic state, animation/motion lists, sound queues and
+exit latch. The JSON envelope is versioned and SHA-256 binds it to the already
+loaded CON image; load validates dimensions, fixed-array lengths, sprite-list
+links, shade-cycler sector references and a 64 MiB input ceiling before
+mutating the session. Static `cargo check -p room-duke --lib` and formatting
+passed. This remains partial against Chocolate: GAME#.SAV, multiplayer Atomic
+DMO recording, reference sync and several native globals are still open; no
+gameplay or reference-engine checks were run.
+
+**Native `.fdem` v1 (2026-11-06/07):** `DukeDemoRecorder` stores the starting
+native `.fsave`, native `DukeInput` records, pre-tic desktop weapon
+requests/cycles, and SHA-256 digests of the resulting trace state, with a
+versioned, bounded envelope. Playback restores that initial save on the first
+tic, advances the native session and stops on the first state-digest mismatch.
+The desktop shell's existing `record [slot]`, `stop`, and `playdemo [slot]`
+commands now support native Duke. This is Room's native format, not Atomic's
+`.DMO`; single-player Atomic v117 encoding is now available through
+`DukeAtomicDemoRecorder`, but playback in Chocolate and end-to-end session
+recording reference parity remain unverified.
+
+**Desktop native `.fdem` recording (2026-11-07):** the existing shell
+`record [slot]` / `stop` commands now branch to the native Duke session when
+`--native-duke` is active. Each completed simulation tic stores its exact
+`DukeInput`, weapon-selection actions, and post-tic trace digest; the bounded
+`.fdem` also embeds the starting `.fsave`. `playdemo [slot]` restores that state
+on its first tic and halts on a digest mismatch or end of recording. Metadata
+is derived from `E#L#` campaign names and current session skill. Atomic `.DMO`
+reference parity remains open. Formatting and compile checks only; no demo
+playback or cross-engine comparison was run.
+
+---
+
+## D10 — Duke multiplayer + server
+
+**Status:** `in_progress` · Spec: `25` §7 / §11 D10
+
+### Acceptance
+
+- [x] Packed 10-byte Duke sync input codec (`avel`, `horz`, `fvel`, `svel`, `bits`)
+- [x] FTR2 Duke TIC_CMD / seat-masked TIC_FRAME envelopes with tic indices
+- [x] Full serialized native playsim checksum exposed through `GameRuntime`
+- [x] Bounded deterministic per-tic input barrier for up to eight seats
+- [x] Native `DukeSession` roster from APLAYER starts (up to eight), fsave persistence, per-seat movement, actions, weapon processing and shared actor/player-hit passes
+- [x] Three Atomic `ud.coop` mode values and APLAYER lotag selection (`configure_multiplayer_mode`)
+- [x] Native desktop exposes all three Duke network modes plus friendly-fire choice and folds them into the lobby fingerprint to reject mismatched peers
+- [x] Initial DukeMatch/no-spawn loadout reset versus co-op carry-over (`resetprestat` rules)
+- [x] `ud.ffire` is carried in the room settings and suppresses allied player damage when disabled
+- [x] Lethal-hit transition, player/self frag counters, corpse-following camera, killer-facing turn, palette flash, and floor-relative death roll
+- [x] CON `respawn` player reset path, RESPAWN actor marker ticking, and seat-specific spawn reset path
+- [x] Seat-associated APLAYER water/angle update and Holoduke ownership (no seat-zero fallback)
+- [x] Browser native Duke client sends seat commands and applies authoritative tic frames
+- [x] Native desktop Duke client sends packed per-seat sync inputs through the existing lockstep transport
+- [x] Native desktop piggybacks per-seat native session checksums and detects mismatches when every peer reports
+- [ ] End-to-end lockstep/desync validation, including mismatch recovery and cross-target checksums
+- [x] Multiplayer `INPUT_OPEN` rising edge requests seat-specific respawn; mode-specific co-op/DukeMatch start selection and reset state are implemented
+- [x] Dead-player camera/body following, killer-facing turn, sector/water updates, collision push and floor-relative death roll
+- [ ] Remaining full death animation/spectator behavior, marker edge cases, and end-to-end co-op/DukeMatch validation
+- [x] Server 30 Hz Duke frame relay and optional native Duke headless verifier integration
+- [ ] T1.9/T1.10 validation across supported targets
+
+**Native Duke packet codec (2026-11-06):** `room-proto` now provides a
+length-checked encoder/decoder for Chocolate's packed ten-byte Duke `input`
+record, plus FTR2 TIC_CMD and seat-masked TIC_FRAME envelopes carrying the
+simulation tic. The frame decoder enforces exact body length from the seat
+mask. Multiplayer lockstep/session integration remains open. Static code
+inspection and compile checks only; no network or runtime comparison was run.
+`GameRuntime::checksum` now returns the first 64 bits of SHA-256 over the
+versioned full native `.fsave` envelope, covering the mutable Build/session
+state and bound CON fingerprint. It is ready as a checksum primitive; no
+presentation sound queues are excluded, and no cross-target determinism or
+multiplayer exchange has been validated.
+
+**Duke input barrier (2026-11-07):** `DukeLockstepInbox` accepts at most one
+command per connected seat for one exact tic, rejects absent seats, duplicates
+and tic mismatches, and yields commands in ascending seat order only after the
+roster is complete. `DukeSession::tick_inputs` simulates per-seat movement,
+actions and implemented weapons, and `GameRuntime::tick_runtime` forwards all
+Duke commands. The room server now has its own 30 Hz Duke ring and optional
+native Duke verifier. The browser client sends seat inputs and applies
+authoritative frames; desktop client networking and end-to-end multiplayer
+validation remain open. Formatting and targeted compilation only; no network
+session or runtime comparison was run.
+
+**Native multi-seat simulation foundation (2026-11-07):** `DukeSession` can
+configure one to eight seats from retained APLAYER map starts, creates
+seat-indexed player bodies, applies per-seat `DukeInput` movement, and includes
+all seats in the existing `movefta`, `moveplayers`, actor damage, transport,
+explosion, effector, standable, SE2 quake and SE24/SE34 conveyor passes. Per-seat
+access-card sequences, inventory use/cycling and edge-triggered sector,
+nuke-button and wall-switch Use actions now run per player; each Player stores
+its own input-edge latches. Extra seats are persisted in `.fsave` and old saves
+decode with an empty roster. Multi-seat weapon selection and firing now reuse the session's
+implemented slot handlers, including ammunition, deferred switches, projectile
+creation, shared RNG and sound events. The pass follows Chocolate's
+`processinput(i)` then `checksectors(i)` order after the current movement pass.
+`GameRuntime::tick_runtime` now passes every Duke seat command through to
+`tick_inputs`. The server releases Duke frames at 30 Hz, repeats a missing
+seat's last command for three tics with one-shot weapon selection cleared, then
+fills neutral input. Its optional verifier consumes the same frames with a
+native `DukeSession` and reports checksums. Live Duke spectators receive frames
+only if present at match start because the replay log is Doom-specific. Client
+netplay, late spectator catch-up, coop/DukeMatch spawn/marker/respawn rules and
+Atomic SAV multiplayer state remain open. Static
+Chocolate `premap.c::resetpspritevars`,
+`player.c::processinput` and `game.c::domovethings` inspection,
+`cargo fmt --all`, `git diff --check` and `cargo check -q -p room-duke --lib`
+only; no tests, gameplay, network or reference comparisons.
+
+**Duke runtime multi-input seam (2026-11-07):** `GameRuntime for DukeSession`
+now collects all Duke commands in seat order and sends them to
+`DukeSession::tick_inputs`; previously it selected only the first command and
+called single-seat `tick`. `cargo fmt --all`, `git diff --check` and
+`cargo check -q -p room-game --lib` pass with existing Room warnings. No tests,
+network execution or gameplay/reference comparison was run.
+
+**D10 native desktop lockstep wiring (2026-11-07):** native Duke now accepts
+`--host` / `--join`; the desktop input path transports all five fields of the
+Atomic ten-byte `DukeInput` through the existing lockstep command fields,
+packs direct weapon choices/cycles into `sync.bits`, configures the same coop
+roster on every peer, and advances `DukeSession::tick_inputs` from the ordered
+frame. Weapon hotkeys 1–9 and cycling are encoded; the zero-key/remote-bomb
+selection still needs a native mapping. This is static transport/session
+integration only; no network session, checksum exchange, map-start capacity,
+disconnect recovery, or cross-engine comparison was run. Formatting and
+targeted compilation only.
+
+**D10 desktop checksum exchange (2026-11-07):** desktop Duke inputs now carry
+the sender's full native `DukeSession` checksum for the last completed playsim
+state in a backward-tolerant extension to the lockstep packet. The receiver
+collects reports by simulation tic, compares only after every peer has
+reported, and drops old reports as frames advance. Sessions with trace fixups
+omit reports. Static packet/call-path review, formatting, `git diff --check`
+and targeted `cargo check -p room-net -p room-app --bin room` pass; no network
+session, deliberate mismatch, or cross-target comparison was run.
+
+**D10 desktop match settings (2026-11-07):** native desktop multiplayer now
+accepts `--duke-game-mode 0|1|2` and `--duke-friendly-fire`, configures the
+same Atomic `ud.coop` mode and APLAYER start group on each peer, and includes
+both settings in the handshake fingerprint so mismatched launch options are
+rejected. The desktop lobby still does not negotiate host-authoritative Duke
+settings. Static parse/configuration review and targeted compile only; no
+multiplayer session was run.
+
+**Duke room relay and native verifier (2026-11-07):** added a separate 30 Hz
+server ring for Duke sync commands/frames, bounded future tic window, seat
+validation, and grace-based missing-input handling. Missing commands repeat for
+three tics with one-shot weapon selection cleared before becoming neutral. The
+optional verifier loads the configured Atomic GRP, starts a native
+`DukeSession`, configures the seat roster, consumes released frames and sends
+30-tic checksums into the existing desync comparison path. Live spectators
+receive Duke frames if connected from tic 0; late-join replay is rejected since
+the existing catch-up log only encodes Doom `TIC_BATCH`. Static validation:
+`cargo fmt --all`, `git diff --check` and
+`cargo check -q -p room-server --lib --features verifier`; no gameplay, network
+or reference comparison was run. Client lockstep, multiplayer rules and
+T1.9/T1.10 validation remain open.
+
+---
+
+## D11 — Duke campaign + user content
+
+**Status:** `in_progress` · Spec: `25` §7 / §11 D11
+
+### Acceptance
+
+- [ ] All Atomic maps load and every route, secret exit and nuke button can finish
+- [x] Standalone user `.MAP` loading with GRP-provided CON/assets
+- [x] Native desktop custom root CON (`-x` style), with sibling-file and GRP include resolution
+- [x] Native desktop `--grp` layering for ordered add-on archives and duplicate-name overrides
+- [ ] Verify complete add-on GRP semantics and load-order behavior against reference content
+- [x] Native Duke runtime wired into desktop and browser shells; lobby creates and joins native Duke rooms
+- [x] Dedicated `room-build::export` namespace for the compatibility converter; native `room-duke` owns Duke gameplay
+- [ ] T1.2/T1.3/T1.11 acceptance matrix
+
+**Atomic nuke-button path (2026-11-07):** `gamefunc_Open` now ray-selects a
+visible Atomic `NUKEBUTTON`, arms its one-shot actor temp, records its owner,
+and stores the button palette/secret destination on the player. The native tic
+advances its 8/16-tic button frames, starts and advances `fist_incs`, and raises
+the existing level-exit request at the end of the fist sequence. This follows
+Chocolate `sector.c::checksectors`, `actors.c`'s NUKEBUTTON mover, and
+`player.c`'s fist countdown; the tic-28 explosion cue and white palette flash
+are also emitted. Desktop and browser shells now consume the exit request and
+advance the campaign cursor, including the modeled secret-level and bonus
+return path. Exact routing on all Atomic maps and end-to-end validation remain
+open. Static source review and compile checks only; no game or reference
+comparison.
+
+**Atomic campaign cursor (2026-11-07):** introduced serializable
+`DukeCampaignProgress` and the Chocolate `buttonpalette` / `secretlevel` /
+`from_bonus` progression rules, including the end-of-game outcome. Atomic SAV
+restore seeds the cursor from its volume, level, and bonus-return fields;
+native startup seeds it for `E#L#` campaign maps, and `.fsave` preserves it.
+The desktop shell now retains the GRP/CON layers, consumes a `NextLevel`
+transition, loads the target `E#L#` map, rebuilds its session and sound bank,
+and carries player health, armor, weapons, ammo and inventory while using the
+new map's spawn. End-of-campaign currently posts a completion message; full
+bonus screens/title-menu flow and edge cases still need work. Static comparison
+with `player.c::fist_incs`/`premap.c::enterlevel`/`resetplayerstats` and
+compile checks only; no game/reference run.
+
+**Ordered Duke GRP overlays (2026-11-07):** `GrpStack` resolves duplicate
+names from the latest archive while preserving base-to-add-on archive order.
+The native desktop `--grp PATH` option is repeatable and its stack supplies the
+map (including map selection from Atomic DMO headers), `GAME.CON`/includes,
+ART and defined sound assets to the session, renderer and sound bank. This is
+the native desktop overlay path; standalone user maps and the custom `-x`
+root-compiler path are tracked in the adjacent entries. Complete Chocolate
+add-on semantics remain unverified. Static compile/format checks only; no
+map/demo gameplay or reference comparison was run.
+
+**Custom Duke CON root (`-x`) (2026-11-07):** the desktop native runtime now
+accepts `--con path/to/custom.con`, compiling that file in place of the
+`GAME.CON` root while retaining Atomic GRP/add-on resources. `include` first
+checks beside the custom file (exact, uppercase and lowercase name forms),
+then falls back to the ordered GRP stack. The session API stays filesystem
+agnostic through `IncludeResolver`. CON language/runtime completeness and
+reference compatibility of custom scripts remain unverified. Static
+compile/format checks only; no gameplay/demo comparison was run.
+
+**Standalone Duke maps (2026-11-07):** the native session loader can now load
+map bytes supplied separately while resolving `GAME.CON`, includes, ART and
+tables from the ordered GRP stack. The desktop `--map` option accepts a `.MAP`
+file path when it names an existing file; otherwise it keeps resolving a map
+lump from the GRP stack. The root CON can be replaced with `--con` in either
+path. Campaign progression is now wired through the desktop and browser native
+shells; route parity for standalone/custom maps remains unverified. Static
+compile/format checks only, with no gameplay or demo comparison.
+
+**D11 native runtime shell integration (2026-11-07):** desktop startup selects
+the native `DukeSession` path, the browser loads native Build maps and renders
+them through `DukeSoftRenderer`, and the lobby exposes Duke rooms with game
+mode/friendly-fire settings. Browser v2 receives authoritative Duke frames
+and advances the native session; campaign exits load the next GRP map and
+carry the supported roster. This closes shell wiring only. Atomic
+route/content coverage, full multiplayer lockstep validation, and moving the
+legacy converter under `room-build::export` remain open. Static code review
+and targeted compile checks only; no gameplay, network session, or Chocolate
+comparison was run.
+
+**D11 converter boundary (2026-11-07):** introduced `room_build::export` as
+the explicit public entry point for Build-to-PWAD conversion and routed the
+browser editor, compatibility play path, and GRP mount helper through it. The
+older crate-root re-exports remain for source compatibility; native Duke
+gameplay uses `room-duke`. Formatting, diff check, and targeted compilation
+only; no game or reference comparison.
+
+**D9/D10/D11 static parity pass (2026-11-07):** Atomic SAV export now reapplies
+the versioned live `AtomicSaveGlobals` from `.fsave` over the imported template
+before writing current player/world state, including retained sky, mirror,
+cloud, map-seen, animated-sector, campaign and multiplayer tables/settings.
+Progress checkboxes also reflect the browser client's existing authoritative
+Duke input/frame path and the desktop/web/lobby native runtime wiring. This
+does not make standalone Atomic saves or validate SAV round-trips, campaign
+routes, multiplayer sessions or cross-engine parity. `cargo fmt --all`,
+`git diff --check` and `cargo check -q -p room-duke -p room-build` pass with
+existing warnings; no tests or runtime/reference comparison were run.
+
+**D9/D11 current-map save metadata (2026-11-07):** Atomic export now writes
+the live `monsters_off` setting. Campaign roster inheritance also updates the
+retained Atomic `boardfilename` to the destination `E#L#.MAP` together with
+volume/level/from-bonus, so a save made after a campaign transition no longer
+identifies the prior map. Static call-path review, formatting, diff check and
+targeted crate compilation only; no Atomic save was loaded or compared.
+
+**D9 Atomic SAV tail completion (2026-11-07):** `SavHeader::encode_atomic`
+now emits the fixed `gotpic[MAXTILES / 8]` bitset and `playerswhenstarted`
+byte after `parallaxyscale`, matching Chocolate's remaining `saveplayer`
+fields. It rejects missing or incorrectly sized `gotpic` data instead of
+silently producing a truncated Atomic save. Static `menues.c::saveplayer`
+layout review, formatting, diff check and targeted compile only; no tests,
+Atomic load/save or reference comparison.
 
 ---
 
@@ -3518,3 +5408,113 @@ Update when jobs are added. Spec: `20` §4.
 | `golden-images` (via `render-smoke`) | [x] Present |
 | `web-browser-tests` | [x] Present |
 | `bench` (nightly) | [ ] Missing |
+
+- `2026-11-07` — **D5 partial `movefallers`**: added native STAT_FALLER classification for the Chocolate `cstat&48` condition and listed switch/special exclusions, plus `impact_damage`/`gc` initialization, accepted-hit damage, linked activation, delay, damped horizontal motion, sky-aware gravity, and ordered SCRAP6 generation/RNG in Chocolate's `moveplayers → movefallers → moveexplosions` order. This remains partial: exact Build `movesprite` return/rollback and sector/sprite collision behavior remain open; `IFHIT` / SE19 `IFHITSECT` are tracked in later D5 follow-ups. `cargo check -p room-duke` completed with existing warnings; no tests or game comparison run.
+
+- `2026-11-07` — **D10 APLAYER seat starts**: `configure_multiplayer` filters map APLAYER markers by coop/DukeMatch lotag and assigns seats in Chocolate STAT_PLAYER head order (reverse map-sprite insertion). The map-header position remains seat zero, matching `resetpspritevars` spawning its own APLAYER before traversing STAT_PLAYER.
+- `2026-11-07` — **D10 three Atomic game modes**: added `configure_multiplayer_mode` for `ud.coop` values 0/1/2 and exact APLAYER `lotag == ud.coop` grouping, while retaining the bool method as a compatibility wrapper for modes 0/1. The native Player carries the raw mode for DMO header fidelity and derives its coop-only combat behavior from mode 1. Static Chocolate `game.c`/`premap.c` review, formatting, diff check and targeted crate compile only; respawn markers, selection rules and runtime negotiation remain open.
+- `2026-11-07` — **D10 mode-specific initial loadout**: `configure_multiplayer_mode` now follows Chocolate `resetprestat`: DukeMatch and no-spawn multiplayer clear acquired weapons/inventory and restore the pistol, knee, remote, 48 bullets and configured max armor, while co-op retains the carried state. Static `premap.c::resetprestat` / `resetweapons` / `resetinventory` review; targeted compile only, no runtime comparison. Death, respawn-marker and item-respawn behavior remain open.
+- `2026-11-07` — **D10 lethal player-hit transition**: Room stores Atomic `dead_flag` and a death one-shot latch, attributes lethal player-owned damage through the APLAYER owner seat, then performs Chocolate's next-tic red palette/16-unit Z drop, two ordered TRAND draws for the death tilt, jetpack/holoduke shutdown, and self/player frag scoring. Dead seats receive neutral input and stop moving/firing. PSTOMP quickkills use the same next-tic path, and Atomic SAV restoration imports `dead_flag` and `frag_ps`. Static `player.c::processinput` / `quickkill` review, formatting/diff and targeted compile only; corpse tilt rendering, death animation, frag matrix, respawn and runtime validation remain open.
+- `2026-11-07` — **D10 frag matrix and death roll**: scored player kills now update the session's deterministic 8×8 `frags[killer][victim]` table, persisted in `.fsave`; Atomic SAV's 16×16 matrix imports its supported first eight seats. The soft view derives Chocolate's floor-relative death roll from `dead_flag`. Static `player.c` / view-path inspection, formatting, diff check and targeted compilation only; no gameplay or Chocolate comparison.
+- `2026-11-07` — **D5 movefallers IFHIT probe**: the STAT_FALLER damage gate now matches Chocolate `ifhitbyweapon`'s actor-health check, tiny zero-damage SHRINKSPARK early return, active-owner transfer and non-trigger health restore / zero-damage hit latch. IFHITSECT, sector collision and exact movesprite rollback remain open. Static `actors.c::ifhitbyweapon` / `movefallers` review, formatting, diff check and targeted compile only; no gameplay/demo comparison.
+- `2026-11-08` — **D6 radius object impacts**: RPG and CON radius scans now invoke the existing Atomic `checkhitsprite` object transition handler before queuing generic damage, so radius blasts can break the same props as direct projectiles. Threaded live `TileZMeta` into the blast paths for correctly placed blood/debris effects. Static `actors.c::hitradius` / `checkhitsprite` source review, `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass; no tests or runtime/reference comparison.
+- `2026-11-08` — **D6 Holoduke expiry edge**: active holograms now decrement their inventory timer every tic even if a loaded/CON-adjusted counter is already zero, then clear the active sprite reference, refresh the available inventory icon and queue `TELEPORTER` at expiry. This matches Chocolate `player.c::doincrements`, which gates the timer on `holoduke_on` and checks `<= 0`. `cargo fmt --all`, `git diff --check`, and targeted `cargo check -q -p room-duke --lib` only; no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D6 scuba expiry/air ordering**: when the final scuba tic expires underwater, Room now turns scuba off and then executes the same-tic air reserve/drowning branch. This follows Chocolate's `doincrements`: the scuba timer and off transition precede the underwater air check. Static `player.c` review; formatting, diff check and targeted crate compile only, with no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D6 jetpack loop shutdown**: when the jetpack timer expires, Room now queues global `stopsound` events for the CON-defined `DUKE_JETPACK_IDLE` and `DUKE_JETPACK_ON` IDs in addition to `DUKE_JETPACK_OFF`, matching Chocolate `doincrements`. Stops are attached to the player's actor sound queue and consumed by the existing deterministic sound-event collector. Static `player.c` review; formatting, diff check and targeted crate compile only, with no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D6 per-seat inventory sound sources**: sounds from inventory timers/activation, Holoduke toggles, floor hazards and underwater damage now enter the positioned actor-sound path using that seat's APLAYER source, rather than the session's seat-zero sound-ID queue. This preserves multiplayer source position and the standard Atomic sound-definition/voice policy. Static `player.c::doincrements` / input-path review, `cargo fmt --all`, `cargo check -q -p room-duke --lib`, and `git diff --check` only; no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D6 steroid heartbeat sound gate**: `DUKE_HARTBEAT` now queues only for seat zero outside co-op, or for all seats in co-op, matching Chocolate's `snum == screenpeek || ud.coop == 1` condition. Other player inventory and hazard sounds remain source-positioned per seat. Static `player.c::doincrements` review; formatting, diff check and targeted crate compile only, no tests or dynamic comparison.
+- `2026-11-08` — **D2/D6 Build distance overflow**: `FindDistance3D` now uses wrapping absolute value for signed coordinate deltas, preserving the original two's-complement `i32::MIN` edge instead of saturating it. Static integer semantics review; `cargo fmt --all`, `git diff --check`, and targeted crate compile only; no tests or runtime/reference comparison.
+- `2026-11-08` — **D6 radius target branches**: added Chocolate AFLAMABLE BOX/TREE1/TREE2/TIRE/CONE handling through active CON tile labels, preserving its blocking-sprite LOS rule across actor/standable/faller lists. Actor/faller/player candidates use their distinct fixed-height LOS path; default/dummy/misc badguys retain randomized-height LOS. Static `actors.c::hitradius` / `duke3d.h` review, `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` only; no tests or gameplay/reference comparison.
+- `2026-11-08` — **D6 radius traversal follow-up**: RPG and CON hitradius now scan the complete Chocolate status-list sequence through STAT_MISC, apply the distinct badguy and actor/player LOS paths, include scripted tripbomb/pool-ball/lying-dead actor candidates, and queue APLAYER damage for the ordinary player-hit pass after feet-origin distance and player-specific LOS. Remaining exact Build distance edge cases, eligibility exceptions and CON ordering stay open. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass; static review only, no tests, game run or Chocolate comparison.
+- `2026-11-08` — **D6 lethal player Freezer state and shatter**: lethal `FREEZEBLAST` hits now set the player palette to 1, queue `SOMETHINGFROZE`, suppress ordinary death and respawn handling for the `THAWTIME` window (Atomic fallback 138), then restore the saved palette and return the player at 1 HP. A subsequent non-Freezer hit restores the palette, emits 17 script-resolved `GLASSPIECES` shards with Chocolate's angle/x-velocity/z-velocity RNG order, queues `GLASS_BREAKING` (Atomic sound 19 fallback), then follows normal damage/death handling. Exact frozen-player hit semantics and full transformation parity remain open. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass; static Chocolate `GAME.CON`/`PLAYER.C` review only, no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D6 direct mirror impacts**: direct `checkhitwall` impacts now use Chocolate's source allowlist (`HEAVYHBOMB`, `RADIUSEXPLOSION`, `RPG`, `HYDRENT`, `SEENINE`, `OOZFILTER`, `EXPLODINGBARREL`) to break mirror overlays, clear only the mirror-blocking bit, set `MIRRORBROKE`, emit 70 wall shards and queue `GLASS_HEAVYBREAK`. Static Chocolate `sector.c::checkhitwall` review; `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass. No tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D6 `checkhitwall` attack-tile fidelity**: the shared wall handler now receives Chocolate's `atwith` separately from its source sprite: hitscan passes `SHOTSPARK1`, quick-kick passes `KNEE`, and projectile movement passes the projectile tile. Mirror source filtering now uses that value, while forcefield `CHAINGUN` ripples use the source repeats plus 16 instead of the default 32. Static `sector.c::checkhitwall` and call-site review; `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass. No tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D6 auto-aim visibility origin**: targets `ORGANTIC` and `ROTATEGUN` now use the unshifted source Z for Chocolate's `cansee`; other aim targets retain the source Z minus 32 units. Static `player.c::aim` review, formatting, diff check and targeted crate compile only; no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D6 radius damage exits player cameras**: when `hitradius` queues damage for an APLAYER and its source has a live owner, Room clears that player's remote camera and releases active `CAMERA1` actors' `yvel` monitor latch, matching Chocolate's owner-gated camera reset. Static `actors.c::hitradius` review, formatting, diff check and targeted compile only; no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D6 radius ceiling scan**: the shared RPG/CON nearby-sector traversal now checks each sector ceiling before its walls, using Chocolate's signed vertical-radius gate and first-vertex / third-vertex Manhattan proximity tests. Matching Atomic ceiling lights invoke `check_hit_ceiling` with the local player sound owner, emit glass and arm linked SE3/SE12 behavior before wall hits. Static `actors.c::hitradius` / `sector.c::checkhitceiling` review, `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass; no tests or dynamic gameplay/reference comparison.
+- `2026-11-08` — **D8 RTS archive reader**: added a bounded borrowed parser for the Atomic `DUKE.RTS` IWAD directory, validating the 12-entry `REMOSTRT`, `RTS1`…`RTS10`, `REMOSTOP` ordering and exposing each sound lump without copying it. This is only the data-loading prerequisite: no RTS bytes are yet connected to desktop/network input, audio decode/playback, lockout/toggle policy or the `rtsplaying` indicator. `cargo fmt --all`, `cargo check -q -p room-build`, and `git diff --check` pass (with an existing `dmo.rs` dead-code warning); no tests or runtime/reference comparison were run.
+- `2026-11-08` — **D8 desktop RTS playback + Room peer event**: the native desktop sound-bank loader now decodes the ten borrowed RTS VOC/WAV lumps at device rate into reserved sound IDs. Alt+F1…F10 plays the matching entry, honors `duke_sound` and `duke_lockout`, and broadcasts a bounded presentation-only event through the Room lockstep transport; peers queue it separately from `DukeInput` and play it on their own mixer. The packet envelope is Room-specific rather than Chocolate's packet format; browser hotkeys, original Chocolate wire compatibility and the `rtsplaying` feedback remain open. Formatting, targeted `cargo check` and diff check only; no tests or gameplay/demo/reference comparison.
+- `2026-11-08` — **D8 browser RTS playback**: browser native Duke now loads and decodes the same ten `DUKE.RTS` samples during the user-gesture audio startup. Alt+F1…F10 is edge-latched through `input_hub`, suppresses browser function-key actions, and plays locally unless sound or parental lock is disabled. Browser lockstep peer replication and the `rtsplaying` feedback remain open. Static input/audio-path review, formatting, and targeted wasm build only; no tests or gameplay/demo/reference comparison.
+- `2026-11-08` — **D8 RTS single-voice latch**: desktop and browser now refuse a new Alt+F request while one of the ten RTS voices is still active, and desktop broadcasts only when the local mixer accepted playback. This mirrors Chocolate's `rtsplaying` gate and local sound/lockout checks; only a visible UI indicator and browser peer delivery remain. Static source review of Chocolate `game.c` packet-7 receive and `duke3d.h` latch declaration, `cargo fmt --all`, targeted desktop/wasm compilation and `git diff --check`; no tests or gameplay/demo/reference comparison.
+- `2026-11-07` — **D5 IFHITSECT filter**: SE19 shield triggers now scan Chocolate's STAT_MISC list and require an EXPLOSION2 in the exact sector, matching `ifhitsectors(sectnum)` instead of accepting any matching sprite in the sector. Static `actors.c::ifhitsectors` / SE19 review, formatting, diff check and targeted compile only; no map/gameplay comparison.
+- `2026-11-07` — **D5 shared ordinary movesprite path**: added `movesprite_xy_at_z` to preserve Chocolate's clip hit code, portal sector update, cached ceiling/floor Z gate and `16384 + sect` return when XY is clear but Z is rejected; STAT_FALLER `ssp` now uses it with scaled tile height and clipdist. Badguy rollback/angle exceptions and unmodeled Build collision cases remain open. Static `actors.c::movesprite` / `ssp` review, formatting, diff check and targeted `cargo check` only; no game comparison.
+- `2026-11-07` — **D9 Atomic SAV opaque player records**: `SavPlayer` preserves the full raw 32-bit `player_struct`, and `SavHeader` now keeps the `po[MAXPLAYERS]` blob instead of skipping it. These are re-emission prerequisites only; Atomic `.SAV` writing and patching Room's changed runtime state remain open. Static `menues.c::saveplayer` layout review, `cargo fmt --all`, `git diff --check` and targeted `cargo check` only; no save round-trip or Chocolate comparison.
+- `2026-11-07` — **D10 seat-specific APLAYER/Holoduke processing**: `moveplayers` now finds each live APLAYER by `Player.sprite_i`, reads that seat's command bits, and retains each active seat's Holoduke instead of deleting every decoy except seat zero's. Static `player.c` owner mapping review, `cargo fmt --all`, `git diff --check` and targeted `cargo check` only; no gameplay or Chocolate comparison.
+- `2026-11-07` — **D10 death view roll**: `DukeSoftRenderer` now consumes `dead_flag` and current player/sector heights to derive Chocolate's floor-relative `rotscrnang` while keeping rendering read-only. Static `player.c` / native view inspection, `cargo fmt --all`, `git diff --check` and targeted `cargo check` only; no gameplay or Chocolate comparison.
+- `2026-11-07` — **D10 Duke network mode negotiation**: added room settings for Atomic `ud.coop` mode (DukeMatch/co-op/no-spawn) and `ud.ffire`, validated mode values at room creation, included both values in the v2 welcome, and applied them while each browser prepares its native `DukeSession` before sending Ready. The server's optional native verifier now uses the same room mode and friendly-fire settings for its deterministic replay. The room creation UI exposes the mode and toggle. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-proto -p room-web -p room-server --features room-server/verifier` pass; no protocol/gameplay tests or network match were run.
+- `2026-11-07` — **D10 Atomic player palette assignment**: new local player bodies use Chocolate's initial palette 9; additional seats receive the next 9–16 palette in connect order when their map APLAYER start uses palette 0, and preserve an explicit map-start palette otherwise. Atomic SAV export now writes each active seat's `player_struct::palookup` from its live APLAYER body. Sprite rendering parity is still incomplete under D3, so this lands the simulation/save state but does not claim reference screenshots. Static `premap.c` palette-loop review, `cargo fmt --all`, `git diff --check` and targeted compile only; no gameplay or visual comparison.
+
+- `2026-11-07` — **D9 multiplayer Atomic `.DMO` recording**: generalized `DukeAtomicDemoRecorder` to hold one input stream per native seat, write seat-interleaved inputs through the existing Atomic v117 encoder, and advance a configured `DukeSession` via `tick_session_inputs`. Frame and roster counts are validated before ticking/recording. Static review of Chocolate-compatible `DmoDemo::encode_atomic_15` and crate compile checks only; no `.DMO` playback or reference comparison.
+
+- `2026-11-07` — **D9 Atomic `.DMO` frame playback**: added `DukeAtomicDemoPlayer` to parse Atomic DMO streams, expose map/skill/seat metadata, validate equal seat-stream lengths and apply each exact frame to a preloaded `DukeSession`. Map loading and per-map route orchestration are deliberately external and remain outstanding. `cargo check -p room-duke`, formatting and diff checks pass; no demo playback or Chocolate comparison run.
+- `2026-11-07` — **D9 Atomic `.DMO` game-mode header**: Atomic DMO parsing/encoding now preserves `ud.m_coop` and `ud.m_ffire`; the native recorder sources both from the current session and the player exposes them as metadata. Multiplayer stream recording is now implemented, while aim mode/weapon preference capture, map/session bootstrap and reference-engine synchronization remain open. Static `game.c::opendemowrite` review only; no runtime/reference comparison.
+- `2026-11-07` — **D9 Atomic `.DMO` per-seat settings**: Room player state now retains Chocolate's one-byte `player_struct::aim_mode` separately from the `ud.auto_aim` preference and the ten-entry `ud.wchoice` order; auto-switch uses the saved preference order. Atomic recording writes those values for every seat and playback applies them to the matching native roster before the first recorded tic. Defaults match Chocolate `config.c` and its `actors.c::checkavailweapon` one-based/zero-remote mapping. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke -p room-build` pass with existing warnings; no tests, demo playback or Chocolate comparison run.
+- `2026-11-07` — **D9 Atomic `.DMO` session bootstrap**: `DukeAtomicDemoPlayer::load_session` loads the `E#L#` map and CON from the ordered GRP stack at the recorded skill, configures the exact 1–8 seat `ud.coop` roster and applies the saved friendly-fire, aim-mode and weapon-choice settings before returning the playable session. Static `demo_sync` loader review and compile only; no runtime demo playback, start-map comparison or Chocolate comparison.
+- `2026-11-07` — **D9 shared demo bootstrap path**: `session_from_grp_demo_layers` now also configures the DMO's recorded seat count, all three `ud.coop` modes, friendly fire, per-seat `aim_mode` and `wchoice` before returning the session. Both the DMO trace loader and `DukeAtomicDemoPlayer::load_session` therefore start from matching gameplay metadata. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke -p room-build` pass with existing warnings; no playback or reference comparison was run.
+- `2026-11-07` — **D6 Freezer/Shrinker/Grower activation**: activation now queues the weapon-specific Chocolate sound (`CAT_FIRE`, `SHRINKER_FIRE`, `EXPANDERSHOOT`) at state start instead of inferring it later from ammo consumption. Freezer advances its initial kickback on the activation tic and evaluates held-fire recovery before advancing the next firing cycle. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke --lib` pass; static source review only, no runtime or Chocolate comparison.
+- `2026-11-07` — **D6 Shrinker/Grower firing cadence**: corrected the post-increment fire edges to frames 12/5 so their activation tic stores frame 1 and then waits the same number of tics as Chocolate's pre-increment `>10` / `>3` checks. Freezer's low-xrepeat cancellation now runs only inside its active firing arm, matching the source branch. Static `player.c` review, formatting, diff check and targeted compile only; no gameplay/reference comparison.
+- `2026-11-07` — **D9 Atomic SAV prefix encoder through animation walls**: `SavHeader::encode_atomic_player_prefix` extends the fixed header/world/list/cycler prefix with opaque `ps[]` and `po[]`, `numanimwalls`, all fixed animation-wall records and `msx`/`msy` targets. Sector/sprite filler bytes survive parse/encode. Mirror/cloud tables, CON/script globals, late player settings and session save integration remain unimplemented, so this is not yet a full Atomic save writer. Static `menues.c::loadplayer` / `saveplayer` review, formatting, diff check and targeted compile only; no save round-trip or reference load was run.
+- `2026-11-07` — **D9 Atomic SAV full model encoder**: `SavHeader::encode_atomic` now continues from the fixed world/list/cycler/player/animation/script prefix through lockclock, sky offsets, animated-sector state, quake/settings, multiplayer connection/frag data, RNG and parallax scale—the complete ordered `saveplayer` payload modeled by `SavHeader`. It emits raw Ken blocks with `dfwrite` byte-delta semantics. Live `DukeSession` extraction remains partial and round-trip verification is open; native F2/F3 now bridge a template-backed `.sav` sidecar. Static `menues.c::saveplayer` / `loadplayer` order review, formatting, diff check and targeted compile only; no SAV round-trip or reference load.
+- `2026-11-07` — **D9 Atomic SAV live-state export foundation**: `DukeSession::save_atomic_sav` takes the Atomic template retained by `restore_atomic_sav`, replaces Build geometry, all sprite slots and intrusive lists from the live world, patches modeled local-player pose/momentum/weapons/ammo, inventory, camera, shield, movement/death and selected timer fields in the opaque Atomic record, and writes current skill, clocks and RNG through `SavHeader::encode_atomic`. The template is retained by `.fsave`. This template-assisted export requires an imported Atomic save and leaves remaining unmodeled player/CON/global arrays at template values. Desktop slots now use it as a companion to `.fsave`; standalone Atomic saves and full round-trip remain open. Static ABI/layout review, `cargo fmt --all`, `git diff --check` and targeted `cargo check -p room-duke -p room-build`; no tests or runtime/reference comparison.
+- `2026-11-07` — **D9 Atomic SAV live CON/actor export**: SAV serialization reads the current compiled CON words, relocation flags, actor-script offsets, actor-type table and modeled per-sprite `weaponhit` fields. The T2/T5/T6 pointer-kind mask is restored and updated for CON `action`, `ai`, `move` and actor-header pointer assignments. A subsequent ABI audit corrected `picnum` to byte offset 2 and modeled `dispicnum` separately at offset 16; this prevents an imported display-tile override from being written back as the actor spawn/weapon tile. Native helper paths that repurpose CON temp slots still need to keep the pointer mask synchronized. Formatting, diff check and targeted compilation only; no tests or save/reference comparison.
+- `2026-11-07` — **D9 Atomic SAV live world-side tables**: the export now patches active shade cyclers, animated-wall index/tag entries, and the saved original APLAYER pose array from the current Room session alongside the world/CON/player state. The original Room player-start roster supplies `po[]`, preserving its count/order as currently modeled. Animated-sector arrays, `msx`/`msy`, sprite queue and Atomic global options still come from the imported template. Chocolate ABI review, formatting/diff check and targeted crate compilation only; no dynamic save/load comparison.
+- `2026-11-07` — **D9 Atomic SAV native-slot bridge**: native F2 writes an Atomic `.sav` companion beside the `.fsave` when `save_atomic_sav` has an imported template; F3 loads the Room snapshot and reapplies its companion through `restore_atomic_sav`. Slots without a template remain `.fsave`-only and remove any stale Atomic companion, while parse/restore errors leave the successfully restored `.fsave` state in place and are reported. Atomic companion export updates single-player campaign/coop metadata and the modeled 8×8 frag scores, and declines multiplayer exports until each seat's player record is writable. `cargo fmt --all`, `git diff --check` and `cargo check -q -p room-app --bin room` pass with existing warnings; no test, slot round-trip, gameplay, or reference comparison was run.
+- `2026-11-07` — **D9 Atomic SAV active multiplayer player records**: removed the single-seat export refusal. For imported Atomic templates, `save_atomic_sav` now validates Chocolate's fixed 16-record `ps[]` blob and patches each active Room seat's modeled pose, momentum, sector, weapon, ammo, health snapshot, shield, oxygen, death, and camera fields while preserving each other byte from the template. It rejects malformed/truncated player arrays; several unmodeled player fields and multiplayer global metadata remain template-backed, so this is not yet a complete multiplayer save round-trip. `cargo fmt --all`, `git diff --check` and `cargo check -q -p room-duke -p room-build` pass with existing warnings; no tests or save/reference comparison were run.
+- `2026-11-07` — **D9 Atomic SAV live roster metadata**: exports the active one-to-eight seat count in the Atomic header and `playerswhenstarted`, and rebuilds `connecthead` / the 16-entry `connectpoint2` chain in seat order. This keeps the save's declared roster aligned with the active records and live actors. Other multiplayer/global settings still come from the imported template. Static `menues.c` layout review, formatting, diff check and targeted compile only; no Atomic save was loaded or compared.
+- `2026-11-07` — **D9 Atomic SAV fixed player-origin table**: corrected `po[]` export validation from eight to Chocolate's full `MAXPLAYERS == 16` records. The active Room roster still updates at most eight entries; remaining entries are kept from the imported Atomic template. Static `duke3d.h` / `menues.c` dimension review, `cargo fmt --all`, `git diff --check` and targeted compile only; no runtime/reference comparison.
+- `2026-11-07` — **D9 Atomic SAV fixed sprite array**: corrected the native save reader to consume `sprite[MAXSPRITES]` immediately after `sector[MAXSECTORS]`, matching `menues.c::loadplayer`; Chocolate writes no `numsprites` scalar there. Compact Room dump fixtures with a standalone two-byte count remain recognized. Static `menues.c` read/write order review, formatting, diff check and `cargo check -q -p room-build` only; no Atomic save was loaded or compared.
+- `2026-11-07` — **D9 status and room-duke docs refreshed**: progress now records live Atomic template export plus desktop F2/F3 sidecars, and explicitly retains standalone saves, multiplayer player-record writes, complete state refresh and round-trip validation as open work. The crate README now reflects native shell support and its remaining renderer/demo limitations instead of describing the runtime and shell bridge as stubs. Static documentation review and `git diff --check`; no game, demo or reference comparison.
+- `2026-11-07` — **D9/D11 Atomic demo shell playback and route continuation**: `playatomicdemo <path.dmo>` parses the revision-117 stream, loads the recorded map/skill/roster from ordered GRP layers and feeds seat inputs to the native session at 30 Hz. Exit requests now transition through the campaign cursor without resetting the demo cursor; each next map refreshes its restart snapshot. Stop/record and Room `.fdem` playback cancel Atomic playback. Custom `--con` application and reference sync remain open. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-console -p room-app --bin room` succeed with existing warnings; no gameplay or demo/reference comparison was run.
+- `2026-11-07` — **D10/D11 lockstep campaign transition and roster carry**: after applying an authoritative browser Duke frame, the native session now consumes the campaign exit and loads the next map. Shared `DukeSession::inherit_campaign_roster` configures the new map's matching APLAYER seats and carries every seat's persistent inventory/weapon/score state while keeping new spawn poses; it also preserves match mode, frag scores, actor toggle and campaign save globals. Desktop transitions use the same session path. This closes the prior seat-zero-only map-transition path but does not establish end-to-end multiplayer lockstep or route parity. `cargo fmt --all`, `git diff --check`, and targeted crate compile only; no game, network match, tests, or reference comparison.
+- `2026-11-07` — **D10 campaign-aware headless verifier**: the optional Duke server verifier now consumes the same campaign exit transition as web clients, loads the destination `E#L#` map from its configured Atomic GRP, and carries the full active roster before simulating the next authoritative frame. It stops with a warning if map loading or roster reconstruction fails rather than emitting checksums from stale map state. Formatting, diff check and verifier-feature compile only; no multiplayer session or checksum comparison was run.
+- `2026-11-07` — **D10 multiplayer `resetplayer` weaponhit state**: Chocolate's multiplayer reset opcode now also clears the represented `hittype[g_i]` queued damage, owner, fall throttle, movement result, saved palette and stayput sector fields, including the separate `dispicnum` override. Static `gamedef.c::resetplayer` / `duke3d.h::weaponhit` layout review and targeted compilation only; no runtime or reference comparison.
+- `2026-11-07` — **D9 Atomic player score fields**: SAV parsing/restoration and live Atomic export include `player_struct::frag`, `fraggedself`, and 32-bit `aim_mode` at Chocolate's ABI offsets, for the local record and each live Room seat. Signed score words preserve their 16-bit bit patterns. Remote records are restored by the follow-up multiplayer restore entry; unmodeled player fields and full SAV round-trip remain open. Static `duke3d.h` layout review, formatting, diff check and targeted compile only; no save replay or reference comparison.
+- `2026-11-07` — **D9 Atomic multiplayer SAV restore**: exposes a bounded parser for each of Chocolate's 16 fixed `ps[]` records and restores up to Room's eight supported active seats by following the saved `connecthead` / `connectpoint2` chain. Each restored remote record initializes the modeled player pose, health, weapons/ammo, inventory, timers, score/settings and must resolve to its own live APLAYER sprite; seat indices and shared coop/friendly-fire modes are reinstated. Unmodeled `ps[]` fields and complete SAV round-trip remain open. `cargo fmt --all`, `git diff --check`, and `cargo check -q -p room-duke -p room-build` pass with existing warnings; no tests, save replay, gameplay or Chocolate comparison were run.
+- `2026-11-07` — **D9 Atomic SAV transient player state**: restore now applies modeled jump counters/toggle, holster, knee frame, transporter lock, footprint state and active VIEWSCREEN camera (`newowner` resolves through the saved CAMERA1 sprite). Atomic export refreshes these fields, additional weapon/access/quote timers, reservations, inventory flags and camera owner for each active seat, rather than leaving those remote records template-backed. `cargo fmt --all`, `git diff --check` and targeted `cargo check -q -p room-duke -p room-build` pass with existing warnings; no tests, SAV round-trip or Chocolate comparison were run.
+- `2026-11-07` — **D9 Atomic SAV remaining modeled player fields**: extended `Player` with the decoded damage cooldown, fall counter, inventory redraw latch, weapon aim adjustment, last full weapon, empty-gun latch, hard landing and view/audio animation phases, plus prior horizon samples. Atomic import now restores those values, screen roll and player palette; export refreshes them for local and remote records at their existing `SavPlayer` offsets. Older `.fsave` snapshots use defaults through serde. `cargo fmt --all`, `git diff --check` and targeted `cargo check -q -p room-duke -p room-build` pass with existing warnings; no tests or save round-trip were run.
+- `2026-11-07` — **D9 Atomic SAV loogie overlay state**: `SavPlayer` now decodes `numloogs`, `loogcnt` and the six active X/Y positions from Chocolate's 64-entry `loogiex` / `loogiey` arrays preceding `posx`. Atomic restore and template export apply them to the local and remote Room players; untouched entries 6–63 remain byte-preserved. `cargo fmt --all`, `git diff --check` and targeted `cargo check -q -p room-duke -p room-build` pass with existing warnings; no tests or Atomic save round-trip were run.
+- `2026-11-07` — **D9 desktop Atomic DMO recording**: native Duke `record` now starts the Room `.fdem` recorder and a seat-ordered Atomic v117 recorder from the same map, skill and active roster. `stop` writes both `demos/<slot>.fdem` and `demos/<slot>.dmo`; direct weapon hotkeys for slots 0–9 and previous/next cycling are encoded into the Atomic `sync.bits` selector as part of each DMO tic. Playback paths remain separate (`playdemo` for `.fdem`, `playatomicdemo` for `.dmo`). The UI-only direct selector for the remote detonator slot is not representable in Atomic's idle selector field yet. No gameplay or reference comparison was run.
+- `2026-11-07` — **D9 standalone Atomic SAV construction**: fresh supported Room sessions can now construct a version-119 Atomic `SavHeader` without first importing `GAME#.SAV`, then populate it through the same live-world/player/script export path used for template-backed saves. Fixed arrays receive ABI-sized player records and conservative defaults; custom-map campaign metadata and unmodeled/default engine tables remain limitations, and no claim is made that Chocolate accepts the generated file until a future static/round-trip validation pass. `cargo fmt --all`, `git diff --check`, and targeted `cargo check -q -p room-build -p room-duke -p room-app --bin room` succeeded with existing warnings; no tests or runtime/reference comparison were run.
+- `2026-11-07` — **D9 spec state reconciliation**: refreshed §9.4 of `docs/25-duke3d-full-support.md` to reflect standalone Atomic v119 model construction, active multiplayer player-record export, live CON/actor state refresh and F2/F3 sidecars. Kept unmodeled state, fresh-save defaults, ABI coverage, round-trip and Chocolate load acceptance explicitly open. Documentation review plus `git diff --check`; no game, save replay, tests or reference comparison.
+- `2026-11-07` — **D9 Atomic player-record ABI tail offsets**: Chocolate's raw `player_struct` includes an aligned palette pointer before several byte fields and `auto_aim`. `SavPlayer` now selects those tail offsets from the 932-byte 32-bit or 944-byte 64-bit record stride, and live export uses that same layout for every active multiplayer seat. A private Rust `repr(C)` layout witness and compile-time size/offset assertions pin the current target ABI; the previous Room 936-byte draft layout remains readable, and unknown strides fail explicitly. Static `duke3d.h` field-order/ABI review, formatting, diff check and targeted compile only; no tests or Atomic save/reference load.
+- `2026-11-07` — **D11 Atomic demo custom CON bootstrap**: `DukeAtomicDemoPlayer::load_session_with_con` now accepts the same root CON bytes and external include resolver as regular native map loads. Desktop `playatomicdemo` passes the retained `--con` override and resolves external includes from its directory, so the demo starts with the selected user script rather than silently using the GRP root script. `cargo fmt --all`, `git diff --check` and targeted compile only; no demo playback or reference comparison.
+
+- `2026-11-07` — **D10 dead-player use input / respawn request**: dead multiplayer seats now detect a rising Chocolate `INPUT_OPEN` (use) edge and queue the existing `resetplayer` respawn path for co-op and DukeMatch; the no-spawn mode remains disabled, and movement/fire inputs stay neutral. Added a serialized per-player edge latch with a serde default and clear it on respawn. `cargo fmt --all`, `git diff --check`, and targeted `cargo check -p room-duke` only; no gameplay, tests or Chocolate comparison were run.
+
+- `2026-11-07` — **D10 Chocolate respawn start table**: retained the map-header position as `po[0]`, then stores selected-mode APLAYER starts in reverse map insertion order to match STAT_PLAYER head order. Co-op now selects `po[seat]`; DukeMatch selects `TRAND % po_count`, with the header included and unrelated `ud.coop` lotags excluded. Atomic `player_orig` export now supports all 16 fixed records. Statically reviewed Chocolate `premap.c::pickrandomspot` and Room's APLAYER construction; `cargo fmt --all`, `git diff --check` and targeted `cargo check -p room-duke` only, with no gameplay/demo comparison or tests.
+
+- `2026-11-07` — **D10 respawn player-state reset**: after static `premap.c::resetplayerstats` review, Room now restores modeled view/bob, movement/death, camera, holoduke, jetpack/heat, access-card, inventory-display and weapon-animation state on multiplayer respawn. Co-op keeps the current weapons and inventory; DukeMatch/no-spawn applies `resetweapons` / `resetinventory`. Formatting, diff check and targeted `cargo check -p room-duke` only; no tests, game run or Chocolate comparison. Fields Room does not model yet remain outside this reset pass.
+
+- `2026-11-07` — **D11 browser campaign cursor**: browser GRP sessions now initialize Atomic episode/map progress both on solo start and in the multiplayer lobby's ready preparation; each lockstep campaign transition assigns progress to the newly loaded map before resuming. This prevents the next map's exit from losing its campaign route context. Static session-transition review only; no tests, browser run or reference comparison.
+
+- `2026-11-07` — **D8 browser Atomic map music**: native Duke WebAudio now reads the active map's MIDI name from the compiled CON `music` table and loads that GRP track when audio is unlocked; the same selector runs immediately after campaign map transitions. Duplicate selections do not restart the current song. `cargo fmt --all -- --check`, `git diff --check`, and `cargo check -q -p room-web` passed; no browser/audio run, tests or Chocolate comparison.
+
+- `2026-11-07` — **D11 browser native CON overrides**: added `roomSetDukeCon` for the root script and `roomAddDukeConInclude` for external include files. Solo starts, multiplayer lobby preparation and subsequent campaign map loads all use the same override/include resolver, with explicit include files taking priority over GRP entries. Formatting, diff check and `cargo check -q -p room-web` passed; no browser session, tests or reference comparison.
+
+- `2026-11-07` — **D11 browser standalone Build maps**: added `roomStartDukeMap(grp, map, skill)` with pre-GPU queuing, native map parsing and GRP-backed rendering assets. It applies the configured browser root CON and external include resolver. Formatting, diff check and `cargo check -q -p room-web` passed; no map playthrough, tests or reference comparison.
+
+- `2026-11-07` — **D11 browser add-on GRP layering**: added `roomAddDukeGrp`; browser solo map, campaign-transition, resource-renderer, sound and MIDI lookups now use ordered GRP layers, with later archives winning. Co-op rejects local add-ons until lobby transfer/fingerprint support exists, preventing peers from silently simulating different content. Formatting, diff check and wasm-target `cargo check -q --target wasm32-unknown-unknown -p room-web` passed; no runtime or reference comparison.
+
+- `2026-11-07` — **D3 Build face-sprite flips**: the depth-tested face-sprite renderer now applies Atomic `cstat` X-flip (bit 2) and Y-flip (bit 3) while sampling ART. Updated the D3 state to distinguish existing basic face sprites from unimplemented wall/floor sprites and palette lookup. Formatting, diff check and targeted crate compilation only; no render screenshot or Chocolate comparison.
+
+- `2026-11-07` — **D3 wall-aligned sprite rendering**: the classic soft renderer now projects vertical Build sprite quads from `ang`, `xrepeat`/`yrepeat`, and `cstat` centered-origin state; it samples ART with X/Y flips and transparent texels against the wall z-buffer. The same pass now correctly skips transparent texels in face sprites instead of painting the fallback flat color. Floor-aligned sprites, palette remap, translucency and one-sided culling remain open. `cargo fmt --all -- --check`, `git diff --check`, and `cargo check -q -p room-build-engine` passed; no game or screenshot comparison.
+
+- `2026-11-07` — **D3 LOOKUP palette remaps**: native GRP renderer loading now parses optional `LOOKUP.DAT` and applies its per-pal remaps to opaque texels on face sprites, wall-aligned sprites, walls and floor/ceiling/sky fills; transparent index 255 is preserved. Visibility-adjusted shade selection and exact palette-bank shade composition are still open. Formatting, diff check, `cargo check -q -p room-build-engine -p room-duke`, and wasm `room-web` check passed; no render capture or game comparison.
+- `2026-11-07` — **D5 player hitscan switch exit ordering**: player shotgun hits on the Atomic DIPSWITCH/DIPSWITCH2/DIPSWITCH3/HANDSWITCH sprite and wall families now queue the switch interaction and return before consuming Chocolate’s trailing 1-in-64 PISTOL_RICOCHET `TRAND`. Other switch classes no longer enter this specific `shoot` branch. This preserves subsequent pellet spread/RNG ordering. Static review of `player.c::shoot()` around hitsprite/hitwall switch handling; `cargo fmt --all`, `git diff --check` and targeted compile only; no tests, gameplay or Chocolate comparison.
+- `2026-11-07` — **D3 floor-aligned sprite rasterization**: the classic soft renderer now projects horizontal Build sprite quads in world space, applies angle/repeat sizing and X/Y flips, interpolates texture coordinates/depth over two triangles, preserves transparent ART texels and uses the shared z-buffer and `LOOKUP.DAT` palette remap. One-sided culling, translucency, exact Build offsets/panning and perspective-correct texture interpolation remain incomplete. Sector floor/ceiling `LOOKUP.DAT` remaps are applied during flat/sky fill. `SoftTiles` now retains `PALETTE.DAT` shade rows, applying the nonnegative `shade` row after `LOOKUP.DAT` remapping to opaque sampled pixels on flat/sky fills, walls, and face/wall/floor sprites; negative shades use the brightest row. Visibility-distance shade selection and exact palette-bank shade composition remain open. `cargo fmt --all`, `git diff --check` and targeted compilation passed; no tests, gameplay or Chocolate comparison were run.
+- `2026-11-07` — **D3 wall texture panning**: the soft wall sampler now offsets ART coordinates by `xpanning`/`ypanning` as fractional tile offsets, scaled to the actual tile dimensions. This adds basic panning to the existing projected wall mapping; Build's exact `prepwall`/vertical mapping, cstat pan interactions, visibility shade and perspective-correct sampling remain open. Formatting, diff check and targeted compilation only; no tests, gameplay or Chocolate comparison.
+- `2026-11-07` — **D3 one-sided aligned sprites**: wall-aligned sprites with cstat bit 6 are culled from the reverse-facing side; floor-aligned sprites with bit 6 are culled from the hidden side, with bit 3 reversing the floor-facing side. Static review of Chocolate's visible sprite collection and Build cstat conventions; formatting, diff check and targeted compile only, no tests or runtime/reference comparison.
+- `2026-11-07` — **D3 sprite origin offsets**: the soft renderer now retains ART `picanm` origin offsets and combines them with map `xoffset`/`yoffset` for face-, wall- and floor-aligned sprite placement; X/Y flips reverse their corresponding offsets. The existing projected/screen-space approximation remains, so exact Build scaling and perspective are open. `cargo fmt --all`, `git diff --check` and targeted compile only; no tests, gameplay or Chocolate comparison.
+- `2026-11-07` — **D3 wall texture flips**: wall cstat bit 3 (8) reverses horizontal ART sampling and bit 8 (256) reverses vertical sampling after applying the fractional panning offset. Static port of the documented Build wall flags; `cargo fmt --all`, diff check and targeted compile only, no tests or reference rendering.
+- `2026-11-07` — **D3 one-way masked wall visibility**: Build wall cstat bit 5 (32) now prevents portal flood traversal and treats the span as a wall in the soft renderer, following Chocolate `scansector`'s portal eligibility condition. `cargo fmt --all`, `git diff --check` and targeted compile only; no tests or gameplay/reference rendering.
+- `2026-11-07` — **D3 camera-oriented portal flood**: `BuildView` now applies Chocolate `scansector`'s wrapping int32 cross-product window and squared-width test before adding adjacent sectors, in addition to the one-way-mask gate. This stops flooding through the reverse-facing portal sides. Static source review of `Engine/src/engine.c::scansector`; format, diff and crate compile only, no tests or view comparison.
+- `2026-11-08` — **D3 sloped plane rasterization**: floor/ceiling rays now iteratively intersect the sector's sloped plane with fixed-point arithmetic through `getzsofslope`, then sample ART at the resulting world position. This extends the existing camera-sector plane fill; per-pixel sector selection across overlapping rooms, sloped portal clipping, and reference screenshots remain open. `cargo fmt --all`, `cargo check -q -p room-build-engine -p room-duke`, and `git diff --check` passed. No tests, gameplay or Chocolate comparison were run.
+- `2026-11-08` — **D3 plane orientation flags**: floor/ceiling ART sampling now applies Build's XY swap, X/Y flip, and double-smoosh scaling bits from `floorstat`/`ceilingstat`, following Chocolate `ceilscan`/`florscan` orientation transforms. Relative wall alignment, visibility shading, plane translucency and render goldens remain open. Formatting, targeted crate compilation and diff check passed; no tests, gameplay or dynamic Chocolate comparison.
+- `2026-11-08` — **D3 first-wall-relative plane mapping**: sector floor/ceiling UV coordinates now rotate into an integer basis derived from the first wall when Build's relative-alignment bit 6 is set, before applying the plane swap/flip/scale flags. This covers the base alignment transform; exact Chocolate sampling scale/panning, distance visibility, translucent planes and renderer goldens remain open. `cargo fmt --all`, targeted `cargo check`, and `git diff --check` passed; no tests, gameplay or dynamic comparison.
+- `2026-11-08` — **D3 plane ART scale and panning**: floor/ceiling UVs now derive their world texel density independently from ART width/height, apply double-smoosh to that scale, and add `xpanning`/`ypanning` as 1/256-tile offsets in Q8 before sampling. First-wall length now uses wrapping 32-bit squares and Chocolate's integer square-root helper, while UV dot products use widened integer intermediates. Static `ceilscan`/`florscan` source review; formatting, targeted crate compilation and diff check passed. No tests, screenshots, gameplay or Chocolate comparison.
+- `2026-11-08` — **D7 SE30 activation sound gate**: Chocolate `sector.c::operatesectors` toggles subway travel on every activation but calls its cue only at settled `tempang` endpoints 0/256. Room now matches this endpoint gate. Static source review; formatting, diff check and targeted compile only, no tests or gameplay/reference comparison.
+- `2026-11-08` — **D7 switch busy-state parity**: implemented Chocolate `check_activator_motion` for tagged activator sectors and use it from both `Open` and hitscan paths for the exact gated switch families. It rejects matching switches during plane/wall animations and while SE11/30 T5 or SE18/20/31/32 T1 is active; dip/tech/alien and access-card families preserve their separate Chocolate paths. Static `sector.c` review; formatting, diff check and targeted compile only; no gameplay or demo/reference comparison.
+- `2026-11-08` — **D7 activator-linked effector toggle**: Chocolate `operateactivators` toggles T1 on local SE18/31/32/36 markers when the activator sector lotag is below 3, calling the sector sound path for each marker before `operatesectors`. Room now follows that order and list traversal. Static `sector.c` review; formatting, diff check and targeted compile only; no gameplay or demo/reference comparison.
+- `2026-11-08` — **D7 shared respawn activation tail**: moved tagged `RESPAWN` arming into Room's common `operate_activators` tail, matching Chocolate's `operaterespawns(low)` call and covering subway/train station and future activation callers. Existing switch, SE10, and touchplate duplicate calls were removed; monsters-off target filtering remains centralized. Static `sector.c` review; formatting, diff check and targeted compile only; no gameplay or demo/reference comparison.
+- `2026-11-08` — **D7 lotag-22 activator sound ordering**: ported Chocolate `operateactivators`' per-call `k` gate for its preliminary sound call, while preserving the separate `operatesectors` sound call on every lotag-22 operator. The `-1` return retains Chocolate's retry behavior. Static `sector.c` review; formatting, diff check and targeted compile only; no tests or gameplay/demo comparison.
+- `2026-11-08` — **D7 respawn transporter-star timing**: statically aligned `RESPAWN` arming with Chocolate `operaterespawns`: create the `TRANSPORTERSTAR` immediately when a marker is armed, before its 54→66 movement-effect countdown, preserving the reference actor insertion order. A serde-default temp flag prevents a duplicate star, while snapshots saved during the older Room countdown still create one at the legacy point. Static `sector.c`/`actors.c` review; `cargo fmt --all`, `cargo check -q -p room-duke --lib`, and `git diff --check` pass (existing warnings); no tests, gameplay, demo, or dynamic comparison.

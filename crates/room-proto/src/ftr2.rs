@@ -1,6 +1,10 @@
 //! `FTR2` binary framing.
 
 use crate::ProtoError;
+use crate::duke::{
+    DukeSyncCmdMsg, DukeSyncFrameMsg, decode_duke_sync_cmd, decode_duke_sync_frame,
+    encode_duke_sync_cmd, encode_duke_sync_frame,
+};
 use crate::tic::{
     TicChecksum, TicCmdMsg, TicFrameMsg, encode_tic_checksum, encode_tic_cmd, encode_tic_frame,
     parse_tic_checksum, parse_tic_cmd, parse_tic_frame,
@@ -25,6 +29,10 @@ pub const MSG_PONG: u8 = 0x14;
 pub const MSG_TIC_BATCH: u8 = 0x15;
 /// Legacy PCM voice (off by default).
 pub const MSG_VOICE_LEGACY: u8 = 0x1F;
+/// Client → server native Duke input command.
+pub const MSG_DUKE_TIC_CMD: u8 = 0x20;
+/// Server → client native Duke lockstep frame.
+pub const MSG_DUKE_TIC_FRAME: u8 = 0x21;
 /// Max TIC_BATCH payload (server → client only).
 pub const MAX_TIC_BATCH_PAYLOAD: usize = 65_536;
 /// Max frames per TIC_BATCH.
@@ -41,6 +49,10 @@ pub enum BinaryMsg {
     TicBatch(Vec<TicFrameMsg>),
     /// CHECKSUM.
     Checksum(TicChecksum),
+    /// Duke TIC_CMD.
+    DukeTicCmd(DukeSyncCmdMsg),
+    /// Duke TIC_FRAME.
+    DukeTicFrame(DukeSyncFrameMsg),
     /// PING / PONG body: nonce + server_time_us.
     Ping {
         /// Client or server nonce.
@@ -75,6 +87,8 @@ pub fn encode_binary(msg: &BinaryMsg) -> Vec<u8> {
             (MSG_TIC_BATCH, body)
         }
         BinaryMsg::Checksum(c) => (MSG_CHECKSUM, encode_tic_checksum(c)),
+        BinaryMsg::DukeTicCmd(m) => (MSG_DUKE_TIC_CMD, encode_duke_sync_cmd(m)),
+        BinaryMsg::DukeTicFrame(m) => (MSG_DUKE_TIC_FRAME, encode_duke_sync_frame(m)),
         BinaryMsg::Ping {
             nonce,
             server_time_us,
@@ -131,6 +145,8 @@ pub fn parse_binary(bytes: &[u8]) -> Result<BinaryMsg, ProtoError> {
         MSG_TIC_CMD => Ok(BinaryMsg::TicCmd(parse_tic_cmd(rest)?)),
         MSG_TIC_FRAME => Ok(BinaryMsg::TicFrame(parse_tic_frame(rest)?)),
         MSG_CHECKSUM => Ok(BinaryMsg::Checksum(parse_tic_checksum(rest)?)),
+        MSG_DUKE_TIC_CMD => Ok(BinaryMsg::DukeTicCmd(decode_duke_sync_cmd(rest)?)),
+        MSG_DUKE_TIC_FRAME => Ok(BinaryMsg::DukeTicFrame(decode_duke_sync_frame(rest)?)),
         MSG_PING => {
             let (nonce, server_time_us) = parse_ping_body(rest)?;
             Ok(BinaryMsg::Ping {

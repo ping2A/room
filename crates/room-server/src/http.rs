@@ -371,6 +371,7 @@ async fn create_room(
             }
             RegistryError::UnknownMod
             | RegistryError::UnknownGame
+            | RegistryError::InvalidDukeGameMode
             | RegistryError::UnknownPack
             | RegistryError::Preset(_)
             | RegistryError::PresetRequired => StatusCode::BAD_REQUEST,

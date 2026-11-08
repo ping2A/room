@@ -16,6 +16,7 @@ pub use keywords::{KEYWORDS, NUM_KEYWORDS, keyword_index};
 pub use lex::{Lexer, is_altok, is_special};
 pub(crate) use vm::tick_action_frames;
 pub use vm::{
-    ActorConTemps, ConSpriteEnv, ConStop, ConVm, actor_header_hitag, execute, execute_actor,
-    execute_with_sprite, init_actor_temps_from_script,
+    ActorConTemps, ConProjectile, ConSpriteEnv, ConStop, ConVm, PendingDebris, PendingGuts,
+    PendingHitRadius, actor_header_hitag, execute, execute_actor, execute_with_sprite,
+    execute_with_sprite_id, init_actor_temps_from_script,
 };

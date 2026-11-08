@@ -3,31 +3,492 @@
 //! Does **not** depend on `room-game` / `room-sim` (ADR 0004). Shells will wrap
 //! this in `GameRuntime` at D11. Full `domovethings` order lands across D5–D7.
 
+use room_build_engine::helpers::sincos_q14;
 use room_build_engine::numeric::{krand_step, krand_unstep};
-use room_build_engine::world::{BuildWorld, SpriteLists};
+use room_build_engine::world::{
+    BuildWorld, MAXSECTORS, MAXSPRITES, MAXSTATUS, MAXWALLS, SpriteLists,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::actors::moveactors;
 use crate::con::{ActorConTemps, ScriptImage};
+use crate::effectors::{
+    init_true_drop_planes, init_warp_elevator_effectors, move_cascade_effectors,
+    move_elevator_shade_effectors, move_light_effectors, move_reactor_effectors,
+    move_true_drop_planes, move_warp_elevator_effectors,
+};
 use crate::explosions::moveexplosions;
 use crate::fta::movefta;
-use crate::moveplayers::moveplayers;
+use crate::moveplayers::{moveplayers, process_player_deaths};
 use crate::player::{
-    DUKE_FRICTION, DUKE_GC, DukeInput, Player, TileZMeta, processinput_move, sync_player_sprite,
+    DUKE_FRICTION, DUKE_GC, DukeInput, INPUT_INVENTORY_LEFT, INPUT_INVENTORY_RIGHT,
+    INPUT_INVENTORY_USE, INPUT_OPEN, PHEIGHT, Player, TileZMeta, check_available_inventory,
+    cycle_inventory, processinput_move_with_lists, processinput_move_with_lists_clipping,
+    sync_player_sprite,
 };
-use crate::prelevel::prelevel_sprites;
-use crate::shoot::process_weapons_shotgun;
+use crate::prelevel::{ShadeCycler, prelevel_sprites_with_state};
+use crate::shoot::{
+    process_unimplemented_weapon, process_weapons_chaingun, process_weapons_devastator,
+    process_weapons_freezer, process_weapons_knee, process_weapons_pipebomb,
+    process_weapons_pistol, process_weapons_rpg, process_weapons_shotgun,
+    process_weapons_shrink_grow, process_weapons_tripbomb,
+};
 use crate::spawn::{
     classify_map_sprites, init_transport_temps, spawn_makeitfall_dummy, spawn_player_body,
     spawn_sector_effectors, ssp_cracks_after_classify,
 };
+use crate::stat::STAT_ACTOR;
 use crate::transports::movetransports;
+use crate::wall_animations::{AnimWall, animate_walls, init_animated_walls, restore_anim_walls};
+use crate::weapons::{apply_pending_weapon, apply_weapon_input};
 use crate::weapons_move::moveweapons;
+
+/// Chocolate `checkplayerhurt` response for a sprite or wall returned by `clipmove`.
+#[allow(clippy::too_many_arguments)]
+fn check_player_wall_hurt(
+    player: &mut Player,
+    hit_code: i32,
+    lists: &mut SpriteLists,
+    sprites: &mut [room_build_engine::types::SpriteT],
+    sectors: &[room_build_engine::types::SectorT],
+    walls: &mut [room_build_engine::types::WallT],
+    picnum: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    randomseed: &mut i32,
+    script: Option<&ScriptImage>,
+    pending_sound_ids: &mut Vec<u16>,
+) {
+    let tile = |name: &str| {
+        script.and_then(|image| {
+            image
+                .labels
+                .get(name)
+                .filter(|label| !label.is_ptr)
+                .map(|label| label.value as i16)
+        })
+    };
+    if hit_code & 49152 == 49152 {
+        let sprite_index = (hit_code & (MAXSPRITES as i32 - 1)) as usize;
+        let cactus = tile("CACTUS").is_some_and(|cactus| {
+            sprites
+                .get(sprite_index)
+                .is_some_and(|sprite| sprite.picnum == cactus)
+        });
+        if cactus && player.hurt_delay < 8 {
+            player.extra = player.extra.saturating_sub(5);
+            player.hurt_delay = 16;
+            player.palette_flash = [32, 0, 0];
+            player.palette_flash_tics = 32;
+            if let Some(sound) =
+                tile("DUKE_LONGTERM_PAIN").and_then(|sound| u16::try_from(sound).ok())
+            {
+                pending_sound_ids.push(sound);
+            }
+        }
+        return;
+    }
+    if hit_code & 49152 != 32768 {
+        return;
+    }
+    let wall_index = (hit_code & 16383) as usize;
+    let Some(wall) = walls.get(wall_index).copied() else {
+        return;
+    };
+    if player.hurt_delay > 0 {
+        player.hurt_delay -= 1;
+        return;
+    }
+    let forcefield = tile("W_FORCEFIELD")
+        .is_some_and(|base| (base..=base.saturating_add(2)).contains(&wall.overpicnum));
+    let bigforce = tile("BIGFORCE") == Some(wall.overpicnum);
+    if wall.cstat & 85 == 0 || (!forcefield && !bigforce) {
+        return;
+    }
+
+    player.hurt_delay = if bigforce { 26 } else { 16 };
+    if forcefield {
+        player.extra = player.extra.saturating_sub(5);
+        player.palette_flash = [32, 0, 0];
+        player.palette_flash_tics = 32;
+        if let Some(sound) = script
+            .and_then(|image| image.labels.get("DUKE_LONGTERM_PAIN"))
+            .and_then(|label| u16::try_from(label.value).ok())
+        {
+            pending_sound_ids.push(sound);
+        }
+    }
+    let (sin, _) = sincos_q14(i32::from(player.ang));
+    let (sin_side, _) = sincos_q14((i32::from(player.ang) + 512) & 2047);
+    if forcefield {
+        player.posxv = sin_side.wrapping_neg() << 8;
+        player.posyv = sin.wrapping_neg() << 8;
+    }
+
+    let Some(source) = usize::try_from(player.sprite_i)
+        .ok()
+        .and_then(|index| sprites.get(index).copied())
+    else {
+        return;
+    };
+    let hit_x = player.posx.wrapping_add(sin_side >> 9);
+    let hit_y = player.posy.wrapping_add(sin >> 9);
+    let impact_sounds = crate::weapons_move::apply_checkhitwall(
+        lists,
+        sprites,
+        sectors,
+        walls,
+        picnum,
+        actor_temps,
+        randomseed,
+        source,
+        player.sprite_i,
+        -1,
+        wall_index,
+        hit_x,
+        hit_y,
+        player.posz,
+        player.cursectnum,
+        script,
+    );
+    pending_sound_ids.extend(
+        impact_sounds
+            .into_iter()
+            .filter_map(|id| u16::try_from(id).ok()),
+    );
+}
 
 /// Vanilla `premap` / `resetpsprite` initial Build seed.
 pub const ENTERLEVEL_RANDOMSEED: i32 = 17;
 
 /// Fixed Duke playsim rate (Chocolate / DOS).
 pub const DUKE_TIC_RATE: u32 = 30;
+
+/// A sound emitted by the native Duke playsim, with its Build-world source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DukeSoundEvent {
+    /// Atomic `definesound` index.
+    pub sound_id: u16,
+    /// Build-space source position `(x, y, z)` in native fixed units.
+    pub position: [i32; 3],
+    /// Sprite index for actor-owned sounds; `None` for player actions.
+    pub source_id: Option<u64>,
+    /// Suppress this start when any voice with the same Atomic sound ID exists.
+    #[serde(default)]
+    pub play_once: bool,
+    /// Loop the voice until stopped or its owning actor leaves range.
+    #[serde(default)]
+    pub loop_sound: bool,
+    /// Maximum simultaneous voices for this Atomic sound (`0` = unspecified).
+    #[serde(default)]
+    pub voice_limit: u8,
+    /// Atomic talk voice (`definesound m&4`), exclusive across sound IDs.
+    #[serde(default)]
+    pub exclusive: bool,
+    /// Sound belongs to a `MUSICANDSFX` ambience marker rather than direct gameplay.
+    #[serde(default)]
+    pub ambience: bool,
+    /// Atomic `definesound` playback priority (higher values win a full pool).
+    #[serde(default)]
+    pub priority: u8,
+    /// Atomic `definesound m&128`: play centred at full volume through `sound()`.
+    #[serde(default)]
+    pub global: bool,
+    /// Atomic `definesound m&16`: keep positional panning but disable distance falloff.
+    #[serde(default)]
+    pub no_attenuation: bool,
+    /// Stop every active voice with this Atomic sound ID instead of starting it.
+    #[serde(default)]
+    pub stop: bool,
+    /// Stop this sound at its source instead of starting it.
+    #[serde(default)]
+    pub stop_source_sound: bool,
+}
+
+const DUKE_FSAVE_MAGIC: &str = "ROOM-DUKE-FSAVE";
+const DUKE_FSAVE_VERSION: u32 = 1;
+const MAX_DUKE_FSAVE_BYTES: usize = 64 * 1024 * 1024;
+
+fn duke_sound_voice_policy(
+    script: Option<&ScriptImage>,
+    sound_id: u16,
+) -> (u8, bool, bool, u8, bool, bool) {
+    let definition = script
+        .and_then(|image| image.sounds.get(usize::from(sound_id)))
+        .and_then(Option::as_ref);
+    let flags = definition.map_or(0, |sound| sound.m);
+    let global = flags & 128 != 0;
+    (
+        if flags & 1 != 0 {
+            1
+        } else if global {
+            0
+        } else {
+            4
+        },
+        flags & 1 != 0,
+        flags & 4 != 0,
+        definition.map_or(0, |sound| sound.pr.clamp(0, 255) as u8),
+        global,
+        flags & 16 != 0,
+    )
+}
+
+/// A malformed, incompatible, or content-mismatched native Duke save.
+#[derive(Debug, thiserror::Error)]
+pub enum DukeSaveError {
+    /// The save bytes are not valid JSON or do not match the save schema.
+    #[error("invalid Duke fsave data: {0}")]
+    Decode(#[from] serde_json::Error),
+    /// The session is not ready to save because a world or CON image is absent.
+    #[error("Duke save requires a loaded world and CON image")]
+    MissingRuntime,
+    /// The file's magic header is not a Room Duke native save.
+    #[error("not a Room Duke native save")]
+    BadMagic,
+    /// The save version is not supported by this runtime.
+    #[error("unsupported Duke fsave version {0}")]
+    UnsupportedVersion(u32),
+    /// The save exceeds the decoder's bounded input size.
+    #[error("Duke fsave exceeds the 64 MiB size limit")]
+    TooLarge,
+    /// The currently loaded CON script differs from the save's script.
+    #[error("Duke fsave was created with a different CON script")]
+    ScriptMismatch,
+    /// The saved world contains dimensions or sprite links outside limits.
+    #[error("Duke fsave contains invalid world dimensions or sprite lists")]
+    InvalidWorld,
+    /// No parsed Atomic save template is available to supply the unmodeled tables.
+    #[error("Atomic Duke save requires a loaded GAME#.SAV template")]
+    MissingAtomicTemplate,
+    /// The current Room state could not be represented by the Atomic save model.
+    #[error("could not encode Atomic Duke save: {0}")]
+    AtomicEncode(String),
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DukeFsave {
+    magic: String,
+    version: u32,
+    script_sha256: [u8; 32],
+    state: DukeFsaveState,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DukeFsaveState {
+    tic: u32,
+    randomseed: i32,
+    global_random: i32,
+    #[serde(default)]
+    earthquake_time: u8,
+    #[serde(default)]
+    duke_reverb_level: i16,
+    rng_pad_per_tic: u32,
+    lists: DukeSpriteListsSave,
+    actor_temps: Vec<ActorConTemps>,
+    picnum: Vec<i16>,
+    player: Player,
+    #[serde(default)]
+    coop_players: Vec<Player>,
+    /// Original STAT_PLAYER APLAYER poses in Chocolate `po[]` order.
+    #[serde(default)]
+    player_starts: Vec<DukePlayerStart>,
+    #[serde(default)]
+    frag_matrix: Vec<i16>,
+    world: DukeBuildWorldSave,
+    tile_meta: Vec<TileZMeta>,
+    skill: u8,
+    #[serde(default)]
+    monsters_off: bool,
+    #[serde(default)]
+    cashman: bool,
+    #[serde(default)]
+    clipping: bool,
+    #[serde(default)]
+    actor_toggle: u8,
+    everyothertime: u8,
+    anim_wall_tags: Vec<AnimWall>,
+    cyclers: Vec<ShadeCycler>,
+    sector_motions: Vec<crate::interactions::SectorMotion>,
+    wall_motions: Vec<crate::interactions::WallMotion>,
+    #[serde(default)]
+    effector_wall_offsets: Vec<crate::effectors::EffectorWallOffsets>,
+    open_was_down: bool,
+    pending_sound_ids: Vec<u16>,
+    pending_actor_sound_events: Vec<DukeSoundEvent>,
+    level_exit_ready: bool,
+    /// Atomic `GAME#.SAV` globals which are not part of the live mover model.
+    #[serde(default)]
+    atomic_globals: Option<AtomicSaveGlobals>,
+    /// Parsed Atomic save template retained so live sessions can export the
+    /// original fixed tables and opaque player fields without discarding them.
+    #[serde(default)]
+    atomic_sav_template: Option<Vec<u8>>,
+    #[serde(default)]
+    campaign: Option<crate::campaign::DukeCampaignProgress>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+struct DukePlayerStart {
+    x: i32,
+    y: i32,
+    z: i32,
+    angle: i16,
+    sector: i16,
+}
+
+/// Retained Atomic save globals so an import followed by `.fsave` does not
+/// silently discard state that the current simulation does not yet consume.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AtomicSaveGlobals {
+    pub players: Option<i32>,
+    pub name: String,
+    pub volume: Option<i32>,
+    pub level: Option<i32>,
+    pub mirror_count: Option<i32>,
+    pub mirror_walls: Vec<i16>,
+    pub mirror_sectors: Vec<i16>,
+    pub show2dsector: Vec<u8>,
+    pub boardfilename: Vec<u8>,
+    pub numclouds: Option<i32>,
+    pub clouds: Vec<i16>,
+    pub cloudx: Vec<i16>,
+    pub cloudy: Vec<i16>,
+    pub pskybits: Option<i32>,
+    pub pskyoff: Vec<i16>,
+    pub animatecnt: Option<i32>,
+    pub animatesect: Vec<i16>,
+    pub animateptr: Vec<i32>,
+    pub animategoal: Vec<i32>,
+    pub animatevel: Vec<i32>,
+    pub gotpic: Vec<u8>,
+    pub playerswhenstarted: Option<i32>,
+    pub from_bonus: Option<i32>,
+    pub secretlevel: Option<i32>,
+    pub respawn_monsters: Option<i32>,
+    pub respawn_items: Option<i32>,
+    pub respawn_inventory: Option<i32>,
+    pub god: Option<i32>,
+    pub auto_run: Option<i32>,
+    pub crosshair: Option<i32>,
+    pub last_level: Option<i32>,
+    pub eog: Option<i32>,
+    pub coop: Option<i32>,
+    pub marker: Option<i32>,
+    pub ffire: Option<i32>,
+    pub camsprite: Option<i32>,
+    pub connecthead: Option<i32>,
+    pub connectpoint2: Vec<i16>,
+    pub numplayersprites: Option<i32>,
+    pub frags: Vec<i16>,
+    pub parallaxyscale: Option<i32>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DukeSpriteListsSave {
+    headspritesect: Vec<i16>,
+    headspritestat: Vec<i16>,
+    prevspritesect: Vec<i16>,
+    nextspritesect: Vec<i16>,
+    prevspritestat: Vec<i16>,
+    nextspritestat: Vec<i16>,
+    sprite_sect: Vec<i16>,
+    sprite_stat: Vec<i16>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DukeBuildWorldSave {
+    numsectors: i16,
+    numwalls: i16,
+    sectors: Vec<room_build_engine::types::SectorT>,
+    walls: Vec<room_build_engine::types::WallT>,
+    sprites: Vec<room_build_engine::types::SpriteT>,
+    randomseed: i32,
+    start: [i32; 3],
+    start_ang: i16,
+    start_sector: i16,
+}
+
+impl From<&SpriteLists> for DukeSpriteListsSave {
+    fn from(lists: &SpriteLists) -> Self {
+        Self {
+            headspritesect: lists.headspritesect.to_vec(),
+            headspritestat: lists.headspritestat.to_vec(),
+            prevspritesect: lists.prevspritesect.to_vec(),
+            nextspritesect: lists.nextspritesect.to_vec(),
+            prevspritestat: lists.prevspritestat.to_vec(),
+            nextspritestat: lists.nextspritestat.to_vec(),
+            sprite_sect: lists.sprite_sect.to_vec(),
+            sprite_stat: lists.sprite_stat.to_vec(),
+        }
+    }
+}
+
+impl DukeSpriteListsSave {
+    fn to_runtime(&self) -> Option<SpriteLists> {
+        if self.headspritesect.len() != MAXSECTORS + 1
+            || self.headspritestat.len() != MAXSTATUS + 1
+            || self.prevspritesect.len() != MAXSPRITES
+            || self.nextspritesect.len() != MAXSPRITES
+            || self.prevspritestat.len() != MAXSPRITES
+            || self.nextspritestat.len() != MAXSPRITES
+            || self.sprite_sect.len() != MAXSPRITES
+            || self.sprite_stat.len() != MAXSPRITES
+        {
+            return None;
+        }
+        let mut lists = SpriteLists::new();
+        lists.headspritesect.copy_from_slice(&self.headspritesect);
+        lists.headspritestat.copy_from_slice(&self.headspritestat);
+        lists.prevspritesect.copy_from_slice(&self.prevspritesect);
+        lists.nextspritesect.copy_from_slice(&self.nextspritesect);
+        lists.prevspritestat.copy_from_slice(&self.prevspritestat);
+        lists.nextspritestat.copy_from_slice(&self.nextspritestat);
+        lists.sprite_sect.copy_from_slice(&self.sprite_sect);
+        lists.sprite_stat.copy_from_slice(&self.sprite_stat);
+        Some(lists)
+    }
+}
+
+impl From<&BuildWorld> for DukeBuildWorldSave {
+    fn from(world: &BuildWorld) -> Self {
+        Self {
+            numsectors: world.numsectors,
+            numwalls: world.numwalls,
+            sectors: world.sectors.clone(),
+            walls: world.walls.clone(),
+            sprites: world.sprites.to_vec(),
+            randomseed: world.randomseed,
+            start: world.start,
+            start_ang: world.start_ang,
+            start_sector: world.start_sector,
+        }
+    }
+}
+
+impl DukeBuildWorldSave {
+    fn to_runtime(&self, lists: SpriteLists) -> Option<BuildWorld> {
+        if self.sprites.len() != MAXSPRITES {
+            return None;
+        }
+        let mut world = BuildWorld::new();
+        world.numsectors = self.numsectors;
+        world.numwalls = self.numwalls;
+        world.sectors.clone_from(&self.sectors);
+        world.walls.clone_from(&self.walls);
+        world.sprites.copy_from_slice(&self.sprites);
+        world.randomseed = self.randomseed;
+        world.start = self.start;
+        world.start_ang = self.start_ang;
+        world.start_sector = self.start_sector;
+        world.lists = lists;
+        Some(world)
+    }
+}
 
 /// DEMO1 `pad_pre` (unimplemented TRAND sites before `movestandables`) per emit tic.
 /// Tic0 uses `rng_pad_per_tic - 4` when this table's `[0]` is unused — prefer this table.
@@ -2264,6 +2725,12 @@ pub struct DukeSession {
     pub randomseed: i32,
     /// Duke `global_random` (separate from Build `randomseed`).
     pub global_random: i32,
+    /// Atomic campaign cursor used to route completed level exits.
+    pub campaign: Option<crate::campaign::DukeCampaignProgress>,
+    /// Chocolate `earthquaketime`, the shared screen-shake duration.
+    pub earthquake_time: u8,
+    /// Current Chocolate `FX_SetReverb` level selected by MUSICANDSFX zones.
+    pub duke_reverb_level: i16,
     /// Extra `krand` calls per tic until movers issue the Chocolate count.
     pub rng_pad_per_tic: u32,
     /// When set, overrides the DEMO1 `pad_pre` table for the next `tick` (tests).
@@ -2277,11 +2744,43 @@ pub struct DukeSession {
     /// `sprite[].picnum` mirror (indexed by sprite id).
     pub picnum: Vec<i16>,
     pub player: Player,
+    /// Players on seats 1..N-1; seat zero remains `player` for API compatibility.
+    pub coop_players: Vec<Player>,
+    /// Map `APLAYER` origins captured in Chocolate's STAT_PLAYER traversal order.
+    player_starts: Vec<DukePlayerStart>,
+    /// Chocolate `frags[killer][victim]`, stored in an 8×8 row-major table.
+    pub frag_matrix: Vec<i16>,
     pub world: Option<BuildWorld>,
     /// ART height + picanm y-offset per picnum (for `getzrange` sprite ceilings).
     pub tile_meta: Vec<TileZMeta>,
     /// Duke skill 0..=4 (DEMO1 odd-frame actor `move` skip when `< 2`).
     pub skill: u8,
+    /// Chocolate `ud.monsters_off`; configure before loading a level.
+    pub monsters_off: bool,
+    /// Chocolate `ud.cashman`; holding the normal Use action sprays money.
+    pub cashman: bool,
+    /// Chocolate `ud.clipping`; true moves the player through geometry.
+    pub clipping: bool,
+    /// Chocolate `actor_tog` cycle selected by the solo `dnmonsters` cheat.
+    pub actor_toggle: u8,
+    /// Chocolate `everyothertime`, used to tick `animatewalls` at 15 Hz.
+    everyothertime: u8,
+    /// Ordered `premap` list of mutable/animated wall records.
+    anim_wall_tags: Vec<AnimWall>,
+    /// Active `premap` shade cyclers (`movecyclers`, every other game tic).
+    cyclers: Vec<ShadeCycler>,
+    /// Active vanilla floor / ceiling animations (`doanimations`).
+    sector_motions: Vec<crate::interactions::SectorMotion>,
+    /// Active vanilla sliding-wall animations (`doanimations`, sector 9).
+    wall_motions: Vec<crate::interactions::WallMotion>,
+    /// Map-load `msx` / `msy` offsets for native sector effectors.
+    effector_wall_offsets: Vec<crate::effectors::EffectorWallOffsets>,
+    /// `checksectors` open action rising-edge latch (`toggle_key_flag`).
+    open_was_down: bool,
+    /// Inventory controls are edge-triggered by Chocolate's checksectors path.
+    inventory_use_was_down: bool,
+    inventory_left_was_down: bool,
+    inventory_right_was_down: bool,
     /// DEMO1 trace fix-ups (`// TEMP` blocks: per-tic sprite snaps, RNG
     /// rewinds and the `DEMO1_PAD_PRE*` krand pads) copied from the Chocolate
     /// dump. **Off by default**: they hard-code DEMO1 tic numbers and would
@@ -2289,6 +2788,20 @@ pub struct DukeSession {
     /// on; the honest sync frontier is measured with them off
     /// (`demo_sync::demo1_frontier_real`).
     pub trace_fixups: bool,
+    /// Sound ids queued by deterministic gameplay actions; presentation drains
+    /// these after each tic and resolves them through the GRP's CON sound table.
+    pending_sound_ids: Vec<u16>,
+    /// Actor-origin sounds collected from CON `spritesound` actions.
+    pending_actor_sound_events: Vec<DukeSoundEvent>,
+    /// Audio snapshot of `SoundOwner[id][0]`, indexed by Atomic sound ID.
+    active_sound_owners: Vec<Option<i16>>,
+    /// Set when Chocolate's `timebeforeexit` countdown reaches its final tic.
+    level_exit_ready: bool,
+    /// Solo CON `resetplayer` event consumed by the desktop/native host.
+    player_restart_ready: bool,
+    pub atomic_globals: Option<AtomicSaveGlobals>,
+    /// Full modeled Atomic save template from the loaded game save.
+    atomic_sav_template: Option<Vec<u8>>,
 }
 
 impl Default for DukeSession {
@@ -2304,6 +2817,9 @@ impl DukeSession {
             tic: 0,
             randomseed: ENTERLEVEL_RANDOMSEED,
             global_random: 0,
+            campaign: None,
+            earthquake_time: 0,
+            duke_reverb_level: 0,
             rng_pad_per_tic: 0,
             pad_pre_override: None,
             pad_pre_explode_override: None,
@@ -2312,11 +2828,1991 @@ impl DukeSession {
             actor_temps: Vec::new(),
             picnum: Vec::new(),
             player: Player::default(),
+            coop_players: Vec::new(),
+            player_starts: Vec::new(),
+            frag_matrix: vec![0; 64],
             world: None,
             tile_meta: Vec::new(),
             skill: 2,
+            monsters_off: false,
+            cashman: false,
+            clipping: false,
+            actor_toggle: 0,
+            everyothertime: 0,
+            anim_wall_tags: Vec::new(),
+            cyclers: Vec::new(),
+            sector_motions: Vec::new(),
+            wall_motions: Vec::new(),
+            effector_wall_offsets: Vec::new(),
+            open_was_down: false,
+            inventory_use_was_down: false,
+            inventory_left_was_down: false,
+            inventory_right_was_down: false,
             trace_fixups: false,
+            pending_sound_ids: Vec::new(),
+            pending_actor_sound_events: Vec::new(),
+            active_sound_owners: vec![None; 450],
+            level_exit_ready: false,
+            player_restart_ready: false,
+            atomic_globals: None,
+            atomic_sav_template: None,
         }
+    }
+
+    /// Encode the native Room Duke save format (`.fsave`, version 1).
+    ///
+    /// The save includes the complete Build world and mutable simulation
+    /// state. The compiled CON image remains content and must be loaded before
+    /// [`Self::load_fsave`] restores a save.
+    pub fn save_fsave(&self) -> Result<Vec<u8>, DukeSaveError> {
+        let (Some(world), Some(script)) = (&self.world, &self.script) else {
+            return Err(DukeSaveError::MissingRuntime);
+        };
+        let state = DukeFsaveState {
+            tic: self.tic,
+            randomseed: self.randomseed,
+            global_random: self.global_random,
+            campaign: self.campaign,
+            earthquake_time: self.earthquake_time,
+            duke_reverb_level: self.duke_reverb_level,
+            rng_pad_per_tic: self.rng_pad_per_tic,
+            lists: DukeSpriteListsSave::from(&self.lists),
+            actor_temps: self.actor_temps.clone(),
+            picnum: self.picnum.clone(),
+            player: self.player.clone(),
+            coop_players: self.coop_players.clone(),
+            player_starts: self.player_starts.clone(),
+            frag_matrix: self.frag_matrix.clone(),
+            world: DukeBuildWorldSave::from(world),
+            tile_meta: self.tile_meta.clone(),
+            skill: self.skill,
+            monsters_off: self.monsters_off,
+            cashman: self.cashman,
+            clipping: self.clipping,
+            actor_toggle: self.actor_toggle,
+            everyothertime: self.everyothertime,
+            anim_wall_tags: self.anim_wall_tags.clone(),
+            cyclers: self.cyclers.clone(),
+            sector_motions: self.sector_motions.clone(),
+            wall_motions: self.wall_motions.clone(),
+            effector_wall_offsets: self.effector_wall_offsets.clone(),
+            open_was_down: self.open_was_down,
+            pending_sound_ids: self.pending_sound_ids.clone(),
+            pending_actor_sound_events: self.pending_actor_sound_events.clone(),
+            level_exit_ready: self.level_exit_ready,
+            atomic_globals: self.atomic_globals.clone(),
+            atomic_sav_template: self.atomic_sav_template.clone(),
+        };
+        let bytes = serde_json::to_vec(&DukeFsave {
+            magic: DUKE_FSAVE_MAGIC.to_owned(),
+            version: DUKE_FSAVE_VERSION,
+            script_sha256: script_fingerprint(script),
+            state,
+        })
+        .map_err(DukeSaveError::from)?;
+        if bytes.len() > MAX_DUKE_FSAVE_BYTES {
+            return Err(DukeSaveError::TooLarge);
+        }
+        Ok(bytes)
+    }
+
+    /// Restore a versioned `.fsave` produced by [`Self::save_fsave`].
+    ///
+    /// The current session must already have the matching CON image loaded.
+    /// State is decoded and validated before any live session fields change.
+    pub fn load_fsave(&mut self, bytes: &[u8]) -> Result<(), DukeSaveError> {
+        if bytes.len() > MAX_DUKE_FSAVE_BYTES {
+            return Err(DukeSaveError::TooLarge);
+        }
+        let save: DukeFsave = serde_json::from_slice(bytes)?;
+        if save.magic != DUKE_FSAVE_MAGIC {
+            return Err(DukeSaveError::BadMagic);
+        }
+        if save.version != DUKE_FSAVE_VERSION {
+            return Err(DukeSaveError::UnsupportedVersion(save.version));
+        }
+        let Some(script) = &self.script else {
+            return Err(DukeSaveError::MissingRuntime);
+        };
+        if script_fingerprint(script) != save.script_sha256 {
+            return Err(DukeSaveError::ScriptMismatch);
+        }
+        if !valid_saved_world(&save.state.world, &save.state.lists, &save.state.cyclers)
+            || save.state.actor_temps.len() > MAXSPRITES
+            || save.state.picnum.len() > MAXSPRITES
+            || save.state.skill > 4
+        {
+            return Err(DukeSaveError::InvalidWorld);
+        }
+
+        let state = save.state;
+        let lists = state
+            .lists
+            .to_runtime()
+            .ok_or(DukeSaveError::InvalidWorld)?;
+        let world = state
+            .world
+            .to_runtime(lists.clone())
+            .ok_or(DukeSaveError::InvalidWorld)?;
+        self.tic = state.tic;
+        self.randomseed = state.randomseed;
+        self.global_random = state.global_random;
+        self.campaign = state.campaign;
+        self.earthquake_time = state.earthquake_time;
+        self.duke_reverb_level = state.duke_reverb_level;
+        self.rng_pad_per_tic = state.rng_pad_per_tic;
+        self.lists = lists;
+        self.actor_temps = state.actor_temps;
+        self.picnum = state.picnum;
+        self.player = state.player;
+        self.coop_players = state.coop_players;
+        self.player_starts = state.player_starts;
+        self.frag_matrix = if state.frag_matrix.len() == 64 {
+            state.frag_matrix
+        } else {
+            vec![0; 64]
+        };
+        self.world = Some(world);
+        self.tile_meta = state.tile_meta;
+        self.skill = state.skill;
+        self.monsters_off = state.monsters_off;
+        self.cashman = state.cashman;
+        self.clipping = state.clipping;
+        self.actor_toggle = state.actor_toggle.min(3);
+        self.everyothertime = state.everyothertime;
+        self.anim_wall_tags = state.anim_wall_tags;
+        self.cyclers = state.cyclers;
+        self.sector_motions = state.sector_motions;
+        self.wall_motions = state.wall_motions;
+        self.effector_wall_offsets = state.effector_wall_offsets;
+        self.open_was_down = state.open_was_down;
+        self.pending_sound_ids = state.pending_sound_ids;
+        self.pending_actor_sound_events = state.pending_actor_sound_events;
+        self.level_exit_ready = state.level_exit_ready;
+        self.atomic_globals = state.atomic_globals;
+        self.atomic_sav_template = state.atomic_sav_template;
+        self.pad_pre_override = None;
+        self.pad_pre_explode_override = None;
+        self.trace_fixups = false;
+        Ok(())
+    }
+
+    /// Encode the current native session into the loaded Atomic `GAME#.SAV`
+    /// layout. The template supplies Atomic tables not yet represented by
+    /// Room; mutable Build arrays, the local player record, and both RNGs are
+    /// replaced with the live session values before encoding. Fresh sessions
+    /// receive a complete zero-initialized Atomic 1.5 model instead of
+    /// requiring a save imported from Chocolate first.
+    pub fn save_atomic_sav(&self) -> Result<Vec<u8>, DukeSaveError> {
+        let Some(world) = &self.world else {
+            return Err(DukeSaveError::MissingRuntime);
+        };
+        if self.player_count() > 8 {
+            return Err(DukeSaveError::AtomicEncode(
+                "Atomic SAV supports at most eight connected players".into(),
+            ));
+        }
+        let mut save = if let Some(template) = &self.atomic_sav_template {
+            room_build::SavHeader::parse(template)
+                .map_err(|error| DukeSaveError::AtomicEncode(error.to_string()))?
+        } else {
+            let (volume, level) = self
+                .campaign
+                .map(|campaign| (i32::from(campaign.volume), i32::from(campaign.level)))
+                .unwrap_or((0, 0));
+            let boardfilename = format!("E{}L{}.MAP", volume + 1, level + 1);
+            room_build::SavHeader::blank_atomic(
+                volume,
+                level,
+                i32::from(self.skill),
+                self.player_count(),
+                usize::try_from(world.numwalls).map_err(|_| DukeSaveError::InvalidWorld)?,
+                usize::try_from(world.numsectors).map_err(|_| DukeSaveError::InvalidWorld)?,
+                boardfilename.as_bytes(),
+            )
+            .map_err(|error| DukeSaveError::AtomicEncode(error.to_string()))?
+        };
+        // The template is the import baseline, while `atomic_globals` is the
+        // versioned live copy stored in `.fsave`. Reapply that copy before
+        // overwriting fields modeled directly by the current session below.
+        // This keeps imported tables/settings coherent if the session has
+        // changed them since the original Atomic save was loaded.
+        if let Some(globals) = &self.atomic_globals {
+            save.players = globals.players.unwrap_or(save.players);
+            if !globals.name.is_empty() {
+                save.name.clone_from(&globals.name);
+            }
+            save.volume = globals.volume.unwrap_or(save.volume);
+            save.level = globals.level.unwrap_or(save.level);
+            save.mirror_count = globals.mirror_count.or(save.mirror_count);
+            if !globals.mirror_walls.is_empty() {
+                save.mirror_walls = Some(globals.mirror_walls.clone());
+            }
+            if !globals.mirror_sectors.is_empty() {
+                save.mirror_sectors = Some(globals.mirror_sectors.clone());
+            }
+            if !globals.show2dsector.is_empty() {
+                save.show2dsector = Some(globals.show2dsector.clone());
+            }
+            if !globals.boardfilename.is_empty() {
+                save.boardfilename = Some(globals.boardfilename.clone());
+            }
+            save.numclouds = globals.numclouds.or(save.numclouds);
+            if !globals.clouds.is_empty() {
+                save.clouds = Some(globals.clouds.clone());
+            }
+            if !globals.cloudx.is_empty() {
+                save.cloudx = Some(globals.cloudx.clone());
+            }
+            if !globals.cloudy.is_empty() {
+                save.cloudy = Some(globals.cloudy.clone());
+            }
+            save.pskybits = globals.pskybits.or(save.pskybits);
+            if globals.pskyoff.len() == 8 {
+                save.pskyoff = Some(globals.pskyoff.clone().try_into().map_err(|_| {
+                    DukeSaveError::AtomicEncode("invalid saved pskyoff table".into())
+                })?);
+            }
+            save.animatecnt = globals.animatecnt.or(save.animatecnt);
+            if !globals.animatesect.is_empty() {
+                save.animatesect = Some(globals.animatesect.clone());
+            }
+            if !globals.animateptr.is_empty() {
+                save.animateptr = Some(globals.animateptr.clone());
+            }
+            if !globals.animategoal.is_empty() {
+                save.animategoal = Some(globals.animategoal.clone());
+            }
+            if !globals.animatevel.is_empty() {
+                save.animatevel = Some(globals.animatevel.clone());
+            }
+            if !globals.gotpic.is_empty() {
+                save.gotpic = Some(globals.gotpic.clone());
+            }
+            save.playerswhenstarted = globals.playerswhenstarted.or(save.playerswhenstarted);
+            save.from_bonus = globals.from_bonus.or(save.from_bonus);
+            save.secretlevel = globals.secretlevel.or(save.secretlevel);
+            save.respawn_monsters = globals.respawn_monsters.or(save.respawn_monsters);
+            save.respawn_items = globals.respawn_items.or(save.respawn_items);
+            save.respawn_inventory = globals.respawn_inventory.or(save.respawn_inventory);
+            save.god = globals.god.or(save.god);
+            save.auto_run = globals.auto_run.or(save.auto_run);
+            save.crosshair = globals.crosshair.or(save.crosshair);
+            save.last_level = globals.last_level.or(save.last_level);
+            save.eog = globals.eog.or(save.eog);
+            save.coop = globals.coop.or(save.coop);
+            save.marker = globals.marker.or(save.marker);
+            save.ffire = globals.ffire.or(save.ffire);
+            save.camsprite = globals.camsprite.or(save.camsprite);
+            save.connecthead = globals.connecthead.or(save.connecthead);
+            if globals.connectpoint2.len() == room_build::SAV_MAXPLAYERS {
+                save.connectpoint2 =
+                    Some(globals.connectpoint2.clone().try_into().map_err(|_| {
+                        DukeSaveError::AtomicEncode("invalid saved connectpoint2 table".into())
+                    })?);
+            }
+            save.numplayersprites = globals.numplayersprites.or(save.numplayersprites);
+            if globals.frags.len() == room_build::SAV_MAXPLAYERS * room_build::SAV_MAXPLAYERS {
+                let mut frags = [[0; room_build::SAV_MAXPLAYERS]; room_build::SAV_MAXPLAYERS];
+                for (row, values) in frags
+                    .iter_mut()
+                    .zip(globals.frags.chunks_exact(room_build::SAV_MAXPLAYERS))
+                {
+                    row.copy_from_slice(values);
+                }
+                save.frags = Some(frags);
+            }
+            save.parallaxyscale = globals.parallaxyscale.or(save.parallaxyscale);
+        }
+        let (Some(mut walls), Some(mut sectors), Some(mut sprites), Some(mut lists)) = (
+            save.walls.take(),
+            save.sectors.take(),
+            save.sprites.take(),
+            save.sprite_lists.take(),
+        ) else {
+            return Err(DukeSaveError::AtomicEncode("missing Build arrays".into()));
+        };
+        let numwalls = usize::try_from(world.numwalls).map_err(|_| DukeSaveError::InvalidWorld)?;
+        let numsectors =
+            usize::try_from(world.numsectors).map_err(|_| DukeSaveError::InvalidWorld)?;
+        if numwalls != world.walls.len()
+            || numsectors != world.sectors.len()
+            || walls.len() != numwalls
+            || sectors.len() != numsectors
+            || sprites.len() != MAXSPRITES
+        {
+            return Err(DukeSaveError::InvalidWorld);
+        }
+        for (dst, src) in walls.iter_mut().zip(&world.walls) {
+            *dst = room_build::SavWall {
+                x: src.x,
+                y: src.y,
+                point2: src.point2,
+                nextwall: src.nextwall,
+                nextsector: src.nextsector,
+                cstat: src.cstat as i16,
+                picnum: src.picnum,
+                overpicnum: src.overpicnum,
+                shade: src.shade,
+                pal: src.pal,
+                xrepeat: src.xrepeat,
+                yrepeat: src.yrepeat,
+                xpanning: src.xpanning,
+                ypanning: src.ypanning,
+                lotag: src.lotag,
+                hitag: src.hitag,
+                extra: src.extra,
+            };
+        }
+        for (dst, src) in sectors.iter_mut().zip(&world.sectors) {
+            *dst = room_build::SavSector {
+                wallptr: src.wallptr,
+                wallnum: src.wallnum,
+                ceilingz: src.ceilingz,
+                floorz: src.floorz,
+                ceilingstat: src.ceilingstat as i16,
+                floorstat: src.floorstat as i16,
+                ceilingpicnum: src.ceilingpicnum,
+                ceilingheinum: src.ceilingheinum,
+                ceilingshade: src.ceilingshade,
+                ceilingpal: src.ceilingpal,
+                ceilingxpanning: src.ceilingxpanning,
+                ceilingypanning: src.ceilingypanning,
+                floorpicnum: src.floorpicnum,
+                floorheinum: src.floorheinum,
+                floorshade: src.floorshade,
+                floorpal: src.floorpal,
+                floorxpanning: src.floorxpanning,
+                floorypanning: src.floorypanning,
+                visibility: src.visibility,
+                filler: dst.filler,
+                lotag: src.lotag,
+                hitag: src.hitag,
+                extra: src.extra,
+            };
+        }
+        for (dst, src) in sprites.iter_mut().zip(world.sprites.iter()) {
+            *dst = room_build::SavSprite {
+                x: src.x,
+                y: src.y,
+                z: src.z,
+                cstat: src.cstat as i16,
+                picnum: src.picnum,
+                shade: src.shade,
+                pal: src.pal,
+                clipdist: src.clipdist,
+                filler: dst.filler,
+                xrepeat: src.xrepeat,
+                yrepeat: src.yrepeat,
+                xoffset: src.xoffset,
+                yoffset: src.yoffset,
+                sectnum: src.sectnum,
+                statnum: src.statnum,
+                ang: src.ang,
+                owner: src.owner,
+                xvel: src.xvel,
+                yvel: src.yvel,
+                zvel: src.zvel,
+                lotag: src.lotag,
+                hitag: src.hitag,
+                extra: src.extra,
+            };
+        }
+        lists.headspritesect = world.lists.headspritesect.to_vec();
+        lists.prevspritesect = world.lists.prevspritesect.to_vec();
+        lists.nextspritesect = world.lists.nextspritesect.to_vec();
+        lists.headspritestat = world.lists.headspritestat.to_vec();
+        lists.prevspritestat = world.lists.prevspritestat.to_vec();
+        lists.nextspritestat = world.lists.nextspritestat.to_vec();
+        save.numwalls = Some(world.numwalls.into());
+        save.numsectors = Some(world.numsectors.into());
+        save.walls = Some(walls);
+        save.sectors = Some(sectors);
+        save.sprites = Some(sprites);
+        save.sprite_lists = Some(lists);
+
+        if self.cyclers.len() > 256 {
+            return Err(DukeSaveError::InvalidWorld);
+        }
+        let cycler_table = save
+            .cyclers
+            .as_mut()
+            .ok_or_else(|| DukeSaveError::AtomicEncode("missing Atomic cycler table".into()))?;
+        if cycler_table.records.len() != 256 * 12 {
+            return Err(DukeSaveError::AtomicEncode(
+                "Atomic cycler table has an invalid size".into(),
+            ));
+        }
+        for (i, cycler) in self.cyclers.iter().enumerate() {
+            let record = &mut cycler_table.records[i * 12..(i + 1) * 12];
+            for (slot, value) in [
+                cycler.sector,
+                cycler.phase,
+                i16::from(cycler.min_shade),
+                i16::from(cycler.max_shade),
+                cycler.hitag,
+                i16::from(cycler.active),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                record[slot * 2..slot * 2 + 2].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        save.numcyclers = Some(i32::try_from(self.cyclers.len()).unwrap_or(256));
+
+        if self.anim_wall_tags.len() > 512 {
+            return Err(DukeSaveError::InvalidWorld);
+        }
+        let animwalls = save.animwalls.as_mut().ok_or_else(|| {
+            DukeSaveError::AtomicEncode("missing Atomic animated-wall table".into())
+        })?;
+        if animwalls.len() != 512 * 6 {
+            return Err(DukeSaveError::AtomicEncode(
+                "Atomic animated-wall table has an invalid size".into(),
+            ));
+        }
+        for (i, anim) in self.anim_wall_tags.iter().copied().enumerate() {
+            let (wall, tag) = anim.atomic_record();
+            let wall = i16::try_from(wall).map_err(|_| DukeSaveError::InvalidWorld)?;
+            let record = &mut animwalls[i * 6..(i + 1) * 6];
+            record[..2].copy_from_slice(&wall.to_le_bytes());
+            record[2..6].copy_from_slice(&tag.to_le_bytes());
+        }
+        save.numanimwalls = Some(i32::try_from(self.anim_wall_tags.len()).unwrap_or(512));
+
+        if let Some(player_orig) = save.player_orig.as_mut() {
+            // Chocolate declares `po[MAXPLAYERS]`, and Atomic's MAXPLAYERS is
+            // 16 even though Room currently simulates at most eight seats.
+            // Keep every map start that fits, and preserve unused records.
+            if player_orig.len() != 16 * 16 || self.player_starts.len() > 16 {
+                return Err(DukeSaveError::AtomicEncode(
+                    "Atomic player-start table has an invalid size".into(),
+                ));
+            }
+            for (i, start) in self.player_starts.iter().enumerate() {
+                let record = &mut player_orig[i * 16..(i + 1) * 16];
+                record[0..4].copy_from_slice(&start.x.to_le_bytes());
+                record[4..8].copy_from_slice(&start.y.to_le_bytes());
+                record[8..12].copy_from_slice(&start.z.to_le_bytes());
+                record[12..14].copy_from_slice(&start.angle.to_le_bytes());
+                record[14..16].copy_from_slice(&start.sector.to_le_bytes());
+            }
+            save.numplayersprites = Some(i32::try_from(self.player_starts.len()).unwrap_or(16));
+        }
+
+        let player = save
+            .player
+            .as_mut()
+            .ok_or_else(|| DukeSaveError::AtomicEncode("missing Atomic player record".into()))?;
+        const MAX_PLAYERS: usize = 16;
+        if player.raw_record.len() % MAX_PLAYERS != 0 {
+            return Err(DukeSaveError::AtomicEncode(
+                "Atomic ps[] blob is not a fixed 16-player array".into(),
+            ));
+        }
+        let player_stride = player.raw_record.len() / MAX_PLAYERS;
+        let tail = room_build::atomic_player_tail_offsets(player_stride).ok_or_else(|| {
+            DukeSaveError::AtomicEncode(format!(
+                "unsupported Atomic player record ABI size {player_stride}"
+            ))
+        })?;
+        // Fixed-prefix offsets follow Chocolate's player_struct; tail offsets
+        // are selected from the record's pointer-width ABI.
+        fn put_i16(raw: &mut [u8], offset: usize, value: i16) -> Result<(), DukeSaveError> {
+            let out = raw
+                .get_mut(offset..offset + 2)
+                .ok_or_else(|| DukeSaveError::AtomicEncode("player record is truncated".into()))?;
+            out.copy_from_slice(&value.to_le_bytes());
+            Ok(())
+        }
+        fn put_i32(raw: &mut [u8], offset: usize, value: i32) -> Result<(), DukeSaveError> {
+            let out = raw
+                .get_mut(offset..offset + 4)
+                .ok_or_else(|| DukeSaveError::AtomicEncode("player record is truncated".into()))?;
+            out.copy_from_slice(&value.to_le_bytes());
+            Ok(())
+        }
+        fn put_u8(raw: &mut [u8], offset: usize, value: u8) -> Result<(), DukeSaveError> {
+            let out = raw
+                .get_mut(offset)
+                .ok_or_else(|| DukeSaveError::AtomicEncode("player record is truncated".into()))?;
+            *out = value;
+            Ok(())
+        }
+        const POSX: usize = 532;
+        const ANG: usize = 644;
+        const AMMO: usize = 658;
+        const U8: usize = 836;
+        // Chocolate's raw prefix stores 64 int32 loogie X/Y entries before
+        // `posx`; Room models the six active overlays used by its hit path.
+        put_i32(
+            &mut player.raw_record,
+            524,
+            i32::from(self.player.num_loogies),
+        )?;
+        put_i32(
+            &mut player.raw_record,
+            528,
+            i32::from(self.player.loogie_tics),
+        )?;
+        for index in 0..6 {
+            put_i32(
+                &mut player.raw_record,
+                12 + index * 4,
+                i32::from(self.player.loogie_x[index]),
+            )?;
+            put_i32(
+                &mut player.raw_record,
+                268 + index * 4,
+                i32::from(self.player.loogie_y[index]),
+            )?;
+        }
+        let player_palette = usize::try_from(self.player.sprite_i)
+            .ok()
+            .and_then(|i| world.sprites.get(i))
+            .map_or(9, |sprite| sprite.pal);
+        put_i32(&mut player.raw_record, POSX, self.player.posx)?;
+        put_i32(&mut player.raw_record, POSX + 4, self.player.posy)?;
+        put_i32(&mut player.raw_record, POSX + 8, self.player.posz)?;
+        put_i32(
+            &mut player.raw_record,
+            POSX + 12,
+            i32::from(self.player.horiz),
+        )?;
+        put_i32(
+            &mut player.raw_record,
+            POSX + 16,
+            i32::from(self.player.previous_horiz),
+        )?;
+        put_i32(
+            &mut player.raw_record,
+            POSX + 20,
+            i32::from(self.player.previous_horizoff),
+        )?;
+        put_i32(
+            &mut player.raw_record,
+            POSX + 24,
+            i32::from(self.player.inventory_display_timer),
+        )?;
+        put_i32(&mut player.raw_record, POSX + 28, self.player.bobposx)?;
+        put_i32(&mut player.raw_record, POSX + 32, self.player.bobposy)?;
+        put_i32(&mut player.raw_record, POSX + 36, self.player.oposx)?;
+        put_i32(&mut player.raw_record, POSX + 40, self.player.oposy)?;
+        put_i32(&mut player.raw_record, POSX + 44, self.player.oposz)?;
+        put_i32(&mut player.raw_record, POSX + 48, self.player.pyoff)?;
+        put_i32(&mut player.raw_record, POSX + 56, self.player.posxv)?;
+        put_i32(&mut player.raw_record, POSX + 60, self.player.posyv)?;
+        put_i32(&mut player.raw_record, POSX + 64, self.player.poszv)?;
+        put_i32(&mut player.raw_record, POSX + 72, self.player.true_floor_z)?;
+        put_i32(
+            &mut player.raw_record,
+            POSX + 76,
+            self.player.true_ceiling_z,
+        )?;
+        put_i32(&mut player.raw_record, POSX + 88, self.player.bob_counter)?;
+        put_i32(
+            &mut player.raw_record,
+            POSX + 96,
+            i32::from(self.player.palette_flash_tics),
+        )?;
+        put_i32(
+            &mut player.raw_record,
+            POSX + 108,
+            i32::from(self.player.aim_mode),
+        )?;
+        put_i16(&mut player.raw_record, ANG, self.player.ang)?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 40,
+            i16::from_le_bytes(self.player.frag_count.to_le_bytes()),
+        )?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 42,
+            i16::from_le_bytes(self.player.fragged_self.to_le_bytes()),
+        )?;
+        put_i16(&mut player.raw_record, ANG + 6, self.player.cursectnum)?;
+        put_i16(&mut player.raw_record, ANG + 8, self.player.look_ang)?;
+        put_i16(&mut player.raw_record, ANG + 10, self.player.last_extra)?;
+        put_i16(&mut player.raw_record, ANG + 44, self.player.curr_weapon)?;
+        put_i16(&mut player.raw_record, ANG + 46, self.player.last_weapon)?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 48,
+            i16::from(self.player.tip_timer),
+        )?;
+        put_i16(&mut player.raw_record, ANG + 50, self.player.horizoff)?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 52,
+            self.player.want_weapon_fire,
+        )?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 54,
+            self.player.holoduke_amount,
+        )?;
+        put_i16(&mut player.raw_record, ANG + 58, self.player.hurt_delay)?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 60,
+            self.player.hbomb_hold_delay,
+        )?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 62,
+            self.player.jumping_counter,
+        )?;
+        put_i16(&mut player.raw_record, ANG + 66, self.player.knee_incs)?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 68,
+            i16::from(self.player.access_incs),
+        )?;
+        put_i16(&mut player.raw_record, ANG + 70, self.player.quote_timer)?;
+        put_i16(&mut player.raw_record, ANG + 72, self.player.quote_id)?;
+        put_i16(&mut player.raw_record, ANG + 74, self.player.access_wallnum)?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 76,
+            self.player.access_spritenum,
+        )?;
+        put_i16(&mut player.raw_record, ANG + 78, self.player.kickback_pic)?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 80,
+            i16::from(self.player.got_access),
+        )?;
+        put_i16(&mut player.raw_record, ANG + 82, self.player.weapon_ang)?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 84,
+            self.player.firstaid_amount,
+        )?;
+        put_i16(&mut player.raw_record, ANG + 90, self.player.sprite_i)?;
+        let camera_owner = self
+            .player
+            .remote_camera
+            .and_then(|pose| {
+                world
+                    .sprites
+                    .iter()
+                    .position(|sprite| {
+                        sprite.picnum == crate::spawn::CAMERA1
+                            && (sprite.x, sprite.y, sprite.z, sprite.ang, sprite.sectnum) == pose
+                    })
+                    .and_then(|index| i16::try_from(index).ok())
+            })
+            .unwrap_or(-1);
+        put_i16(&mut player.raw_record, ANG + 56, camera_owner)?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 92,
+            i16::from(self.player.over_shoulder_on),
+        )?;
+        put_i16(&mut player.raw_record, ANG + 98, self.player.fist_incs)?;
+        put_i16(&mut player.raw_record, ANG + 108, self.player.quick_kick)?;
+        put_i16(&mut player.raw_record, ANG + 110, self.player.heat_amount)?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 114,
+            self.player.time_before_exit,
+        )?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 150,
+            i16::from(self.player.weapon_reservation_count),
+        )?;
+        put_i16(&mut player.raw_record, ANG + 156, self.player.rotscrnang)?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 158,
+            self.player.dead_flag as i16,
+        )?;
+        put_i16(&mut player.raw_record, ANG + 162, self.player.scuba_amount)?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 164,
+            self.player.jetpack_amount,
+        )?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 166,
+            self.player.steroids_amount,
+        )?;
+        put_i16(&mut player.raw_record, ANG + 168, self.player.shield_amount)?;
+        put_i16(&mut player.raw_record, ANG + 170, self.player.holoduke_on)?;
+        put_i16(&mut player.raw_record, ANG + 172, self.player.pycount)?;
+        put_i16(&mut player.raw_record, ANG + 174, self.player.weapon_pos)?;
+        put_i16(&mut player.raw_record, ANG + 176, self.player.frag_ps)?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 178,
+            self.player.transporter_hold,
+        )?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 160,
+            i16::from(self.player.show_empty_weapon),
+        )?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 180,
+            self.player.last_full_weapon,
+        )?;
+        put_i16(
+            &mut player.raw_record,
+            ANG + 182,
+            i16::from(self.player.footprint_shade),
+        )?;
+        put_i16(&mut player.raw_record, ANG + 184, self.player.boot_amount)?;
+        put_i16(&mut player.raw_record, ANG + 64, self.player.airleft)?;
+        put_i16(&mut player.raw_record, ANG + 106, self.player.extra_extra8)?;
+        for (i, reservation) in self.player.weapon_reservations.iter().enumerate() {
+            put_i16(&mut player.raw_record, ANG + 118 + i * 2, *reservation)?;
+        }
+        for (i, ammo) in self.player.ammo.iter().enumerate() {
+            put_i16(&mut player.raw_record, AMMO + i * 2, *ammo)?;
+        }
+        for (i, has_weapon) in self.player.gotweapon.iter().enumerate() {
+            put_u8(&mut player.raw_record, U8 + 49 + i, u8::from(*has_weapon))?;
+        }
+        put_u8(&mut player.raw_record, U8 + 2, self.player.footprint_count)?;
+        put_u8(
+            &mut player.raw_record,
+            U8 + 3,
+            u8::from(self.player.hbomb_on),
+        )?;
+        put_u8(
+            &mut player.raw_record,
+            U8 + 4,
+            self.player.jumping_toggle as u8,
+        )?;
+        put_u8(
+            &mut player.raw_record,
+            U8 + 5,
+            u8::from(self.player.rapid_fire_hold),
+        )?;
+        put_u8(
+            &mut player.raw_record,
+            U8 + 6,
+            u8::from(self.player.on_ground),
+        )?;
+        put_u8(&mut player.raw_record, U8 + 39, self.player.inventory_icon)?;
+        put_u8(&mut player.raw_record, U8 + 40, self.player.button_palette)?;
+        put_u8(
+            &mut player.raw_record,
+            U8 + 41,
+            self.player.jetpack_on as u8,
+        )?;
+        put_u8(&mut player.raw_record, U8 + 44, self.player.scuba_on as u8)?;
+        put_u8(&mut player.raw_record, U8 + 45, self.player.footprint_pal)?;
+        put_u8(
+            &mut player.raw_record,
+            U8 + 46,
+            u8::from(self.player.heat_on),
+        )?;
+        put_u8(
+            &mut player.raw_record,
+            U8 + 47,
+            self.player.holster_weapon as u8,
+        )?;
+        put_u8(
+            &mut player.raw_record,
+            tail.toggle_key_flag,
+            self.player.toggle_key_flag,
+        )?;
+        put_u8(&mut player.raw_record, U8 + 48, self.player.falling_counter)?;
+        put_u8(
+            &mut player.raw_record,
+            U8 + 61,
+            self.player.refresh_inventory,
+        )?;
+        put_u8(
+            &mut player.raw_record,
+            tail.knuckle_incs,
+            self.player.knuckle_incs,
+        )?;
+        put_u8(
+            &mut player.raw_record,
+            tail.walking_snd_toggle,
+            self.player.walking_snd_toggle,
+        )?;
+        put_u8(
+            &mut player.raw_record,
+            tail.hard_landing,
+            self.player.hard_landing,
+        )?;
+        put_u8(&mut player.raw_record, tail.palookup, player_palette)?;
+        put_u8(
+            &mut player.raw_record,
+            tail.max_secret_rooms,
+            self.player.max_secret_rooms,
+        )?;
+        put_u8(
+            &mut player.raw_record,
+            tail.secret_rooms,
+            self.player.secret_rooms.clamp(0, 255) as u8,
+        )?;
+        put_u8(
+            &mut player.raw_record,
+            tail.max_actors_killed,
+            self.player.max_actors_killed,
+        )?;
+        player.raw_record[tail.pals..tail.pals + 3].copy_from_slice(&self.player.palette_flash);
+        put_u8(
+            &mut player.raw_record,
+            tail.actors_killed,
+            self.player.actors_killed,
+        )?;
+        put_u8(
+            &mut player.raw_record,
+            tail.return_to_center,
+            self.player.return_to_center.clamp(0, 255) as u8,
+        )?;
+        put_i32(
+            &mut player.raw_record,
+            tail.auto_aim,
+            i32::from(self.player.auto_aim),
+        )?;
+
+        // Chocolate writes the entire fixed `ps[MAXPLAYERS]` array, not just
+        // `ps[myconnectindex]`. Keep non-local records template-backed, while
+        // refreshing every live Room seat's deterministic movement/combat
+        // fields. The 16-record bound and byte stride come from the native
+        // save ABI; reject malformed templates rather than overwriting an
+        // adjacent field when its player record size is unexpected.
+        if !self.coop_players.is_empty() {
+            let bytes = &mut player.raw_record;
+            let stride = player_stride;
+            if tail.auto_aim + 4 > stride {
+                return Err(DukeSaveError::AtomicEncode(
+                    "Atomic player record is shorter than the modeled fields".into(),
+                ));
+            }
+            for (seat, live) in self.coop_players.iter().enumerate() {
+                let base = (seat + 1) * stride;
+                let end = base + stride;
+                let raw = &mut bytes[base..end];
+                put_i32(raw, 524, i32::from(live.num_loogies))?;
+                put_i32(raw, 528, i32::from(live.loogie_tics))?;
+                for index in 0..6 {
+                    put_i32(raw, 12 + index * 4, i32::from(live.loogie_x[index]))?;
+                    put_i32(raw, 268 + index * 4, i32::from(live.loogie_y[index]))?;
+                }
+                put_i32(raw, POSX, live.posx)?;
+                put_i32(raw, POSX + 4, live.posy)?;
+                put_i32(raw, POSX + 8, live.posz)?;
+                put_i32(raw, POSX + 12, i32::from(live.horiz))?;
+                put_i32(raw, POSX + 16, i32::from(live.previous_horiz))?;
+                put_i32(raw, POSX + 20, i32::from(live.previous_horizoff))?;
+                put_i32(raw, POSX + 24, i32::from(live.inventory_display_timer))?;
+                put_i32(raw, POSX + 28, live.bobposx)?;
+                put_i32(raw, POSX + 32, live.bobposy)?;
+                put_i32(raw, POSX + 36, live.oposx)?;
+                put_i32(raw, POSX + 40, live.oposy)?;
+                put_i32(raw, POSX + 44, live.oposz)?;
+                put_i32(raw, POSX + 48, live.pyoff)?;
+                put_i32(raw, POSX + 56, live.posxv)?;
+                put_i32(raw, POSX + 60, live.posyv)?;
+                put_i32(raw, POSX + 64, live.poszv)?;
+                put_i32(raw, POSX + 72, live.true_floor_z)?;
+                put_i32(raw, POSX + 76, live.true_ceiling_z)?;
+                put_i32(raw, POSX + 88, live.bob_counter)?;
+                put_i32(raw, POSX + 96, i32::from(live.palette_flash_tics))?;
+                put_i32(raw, POSX + 108, i32::from(live.aim_mode))?;
+                put_i16(raw, ANG, live.ang)?;
+                put_i16(
+                    raw,
+                    ANG + 40,
+                    i16::from_le_bytes(live.frag_count.to_le_bytes()),
+                )?;
+                put_i16(
+                    raw,
+                    ANG + 42,
+                    i16::from_le_bytes(live.fragged_self.to_le_bytes()),
+                )?;
+                put_i16(raw, ANG + 6, live.cursectnum)?;
+                put_i16(raw, ANG + 8, live.look_ang)?;
+                put_i16(raw, ANG + 10, live.last_extra)?;
+                put_i16(raw, ANG + 48, i16::from(live.tip_timer))?;
+                put_i16(raw, ANG + 50, live.horizoff)?;
+                put_i16(raw, ANG + 52, live.want_weapon_fire)?;
+                put_i16(raw, ANG + 54, live.holoduke_amount)?;
+                put_i16(raw, ANG + 58, live.hurt_delay)?;
+                put_i16(raw, ANG + 60, live.hbomb_hold_delay)?;
+                put_i16(raw, ANG + 62, live.jumping_counter)?;
+                put_i16(raw, ANG + 66, live.knee_incs)?;
+                put_i16(raw, ANG + 68, i16::from(live.access_incs))?;
+                put_i16(raw, ANG + 70, live.quote_timer)?;
+                put_i16(raw, ANG + 72, live.quote_id)?;
+                put_i16(raw, ANG + 74, live.access_wallnum)?;
+                put_i16(raw, ANG + 76, live.access_spritenum)?;
+                put_i16(raw, ANG + 78, live.kickback_pic)?;
+                put_i16(raw, ANG + 80, i16::from(live.got_access))?;
+                put_i16(raw, ANG + 82, live.weapon_ang)?;
+                put_i16(raw, ANG + 84, live.firstaid_amount)?;
+                put_i16(raw, ANG + 44, live.curr_weapon)?;
+                put_i16(raw, ANG + 46, live.last_weapon)?;
+                put_i16(raw, ANG + 90, live.sprite_i)?;
+                let camera_owner = live
+                    .remote_camera
+                    .and_then(|pose| {
+                        world
+                            .sprites
+                            .iter()
+                            .position(|sprite| {
+                                sprite.picnum == crate::spawn::CAMERA1
+                                    && (sprite.x, sprite.y, sprite.z, sprite.ang, sprite.sectnum)
+                                        == pose
+                            })
+                            .and_then(|index| i16::try_from(index).ok())
+                    })
+                    .unwrap_or(-1);
+                put_i16(raw, ANG + 56, camera_owner)?;
+                put_i16(raw, ANG + 92, i16::from(live.over_shoulder_on))?;
+                put_i16(raw, ANG + 98, live.fist_incs)?;
+                put_i16(raw, ANG + 108, live.quick_kick)?;
+                put_i16(raw, ANG + 110, live.heat_amount)?;
+                put_i16(raw, ANG + 114, live.time_before_exit)?;
+                put_i16(raw, ANG + 150, i16::from(live.weapon_reservation_count))?;
+                put_i16(raw, ANG + 156, live.rotscrnang)?;
+                put_i16(raw, ANG + 158, live.dead_flag as i16)?;
+                put_i16(raw, ANG + 162, live.scuba_amount)?;
+                put_i16(raw, ANG + 164, live.jetpack_amount)?;
+                put_i16(raw, ANG + 166, live.steroids_amount)?;
+                put_i16(raw, ANG + 168, live.shield_amount)?;
+                put_i16(raw, ANG + 170, live.holoduke_on)?;
+                put_i16(raw, ANG + 172, live.pycount)?;
+                put_i16(raw, ANG + 174, live.weapon_pos)?;
+                put_i16(raw, ANG + 176, live.frag_ps)?;
+                put_i16(raw, ANG + 178, live.transporter_hold)?;
+                put_i16(raw, ANG + 160, i16::from(live.show_empty_weapon))?;
+                put_i16(raw, ANG + 180, live.last_full_weapon)?;
+                put_i16(raw, ANG + 182, i16::from(live.footprint_shade))?;
+                put_i16(raw, ANG + 184, live.boot_amount)?;
+                put_i16(raw, ANG + 64, live.airleft)?;
+                put_i16(raw, ANG + 106, live.extra_extra8)?;
+                for (i, reservation) in live.weapon_reservations.iter().enumerate() {
+                    put_i16(raw, ANG + 118 + i * 2, *reservation)?;
+                }
+                put_u8(raw, U8 + 2, live.footprint_count)?;
+                put_u8(raw, U8 + 3, u8::from(live.hbomb_on))?;
+                put_u8(raw, U8 + 4, live.jumping_toggle as u8)?;
+                put_u8(raw, U8 + 5, u8::from(live.rapid_fire_hold))?;
+                put_u8(raw, U8 + 6, u8::from(live.on_ground))?;
+                put_u8(raw, U8 + 39, live.inventory_icon)?;
+                put_u8(raw, U8 + 40, live.button_palette)?;
+                put_u8(raw, U8 + 41, live.jetpack_on as u8)?;
+                put_u8(raw, U8 + 44, live.scuba_on as u8)?;
+                put_u8(raw, U8 + 45, live.footprint_pal)?;
+                put_u8(raw, U8 + 46, u8::from(live.heat_on))?;
+                put_u8(raw, U8 + 47, live.holster_weapon as u8)?;
+                put_u8(raw, tail.toggle_key_flag, live.toggle_key_flag)?;
+                put_u8(raw, U8 + 48, live.falling_counter)?;
+                put_u8(raw, U8 + 61, live.refresh_inventory)?;
+                put_u8(raw, tail.knuckle_incs, live.knuckle_incs)?;
+                put_u8(raw, tail.walking_snd_toggle, live.walking_snd_toggle)?;
+                put_u8(raw, tail.hard_landing, live.hard_landing)?;
+                put_u8(raw, tail.max_secret_rooms, live.max_secret_rooms)?;
+                put_u8(
+                    raw,
+                    tail.secret_rooms,
+                    live.secret_rooms.clamp(0, 255) as u8,
+                )?;
+                raw[tail.pals..tail.pals + 3].copy_from_slice(&live.palette_flash);
+                put_u8(raw, tail.max_actors_killed, live.max_actors_killed)?;
+                put_u8(raw, tail.actors_killed, live.actors_killed)?;
+                put_u8(
+                    raw,
+                    tail.return_to_center,
+                    live.return_to_center.clamp(0, 255) as u8,
+                )?;
+                for (i, has_weapon) in live.gotweapon.iter().enumerate() {
+                    put_u8(raw, U8 + 49 + i, u8::from(*has_weapon))?;
+                }
+                let palette = usize::try_from(live.sprite_i)
+                    .ok()
+                    .and_then(|i| world.sprites.get(i))
+                    .map_or(9, |sprite| sprite.pal);
+                put_u8(raw, tail.palookup, palette)?;
+                for (i, ammo) in live.ammo.iter().enumerate() {
+                    put_i16(raw, AMMO + i * 2, *ammo)?;
+                }
+                put_i32(raw, tail.auto_aim, i32::from(live.auto_aim))?;
+            }
+        }
+
+        let script = self.script.as_ref().ok_or(DukeSaveError::MissingRuntime)?;
+        let script_state = save.script_state.as_mut().ok_or_else(|| {
+            DukeSaveError::AtomicEncode("missing Atomic CON runtime tables".into())
+        })?;
+        if script_state.script_words.len() < script.script.len()
+            || script_state.script_pointer_flags.len() < script.script.len()
+            || script_state.actor_script_offsets.len() < script.actorscrptr.len()
+            || script_state.sprite_script_flags.len() != MAXSPRITES
+            || script_state.weapon_hits.len() != MAXSPRITES * 72
+            || script.actortype.len() != save.actor_types.as_ref().map_or(0, Vec::len)
+        {
+            return Err(DukeSaveError::AtomicEncode(
+                "Atomic CON runtime tables do not match the loaded script".into(),
+            ));
+        }
+        for i in 0..script.script.len() {
+            let is_pointer = script.script_ptr.get(i).copied().unwrap_or(false);
+            script_state.script_pointer_flags[i] = u8::from(is_pointer);
+            script_state.script_words[i] = if is_pointer {
+                script.script[i]
+                    .checked_mul(4)
+                    .ok_or_else(|| DukeSaveError::AtomicEncode("CON pointer overflow".into()))?
+            } else {
+                script.script[i]
+            };
+        }
+        for (saved, pointer) in script_state
+            .actor_script_offsets
+            .iter_mut()
+            .zip(&script.actorscrptr)
+        {
+            *saved = pointer
+                .checked_mul(4)
+                .ok_or_else(|| DukeSaveError::AtomicEncode("actor pointer overflow".into()))?;
+        }
+        save.actor_types = Some(script.actortype.clone());
+
+        for (i, temp) in self.actor_temps.iter().take(MAXSPRITES).enumerate() {
+            let flags = &mut script_state.sprite_script_flags[i];
+            *flags = temp.script_pointer_mask & 7;
+            let base = i * 72;
+            let record = &mut script_state.weapon_hits[base..base + 72];
+            record[0] = temp.cgg as i8 as u8;
+            for (offset, value) in [
+                (2, temp.hit_picnum),
+                (4, temp.hit_ang),
+                (6, temp.hit_extra),
+                (8, temp.hit_owner),
+                (10, temp.movflag),
+                (12, temp.tempang),
+                (14, temp.actorstayput),
+                (18, temp.timetosleep),
+                (16, temp.dispicnum),
+            ] {
+                record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+            }
+            for (offset, value) in [
+                (20, temp.hit_floorz),
+                (24, temp.hit_ceilingz),
+                (28, temp.lastvx),
+                (32, temp.lastvy),
+                (36, temp.bposx),
+                (40, temp.bposy),
+                (44, temp.bposz),
+            ] {
+                record[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            for n in 0..6 {
+                let mask = match n {
+                    1 => 1,
+                    4 => 2,
+                    5 => 4,
+                    _ => 0,
+                };
+                let value = if mask != 0 && *flags & mask != 0 {
+                    temp.g_t[n].checked_mul(4).ok_or_else(|| {
+                        DukeSaveError::AtomicEncode("actor pointer overflow".into())
+                    })?
+                } else {
+                    temp.g_t[n]
+                };
+                record[48 + n * 4..52 + n * 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        save.randomseed = Some(self.randomseed);
+        save.global_random = Some(self.global_random as i16 as i32);
+        save.lockclock = Some(i32::try_from(self.tic).map_err(|_| {
+            DukeSaveError::AtomicEncode("Atomic lockclock exceeds signed 32-bit range".into())
+        })?);
+        save.skill = i32::from(self.skill);
+        save.earthquaketime = Some(i32::from(self.earthquake_time));
+        if let Some(campaign) = self.campaign {
+            save.volume = i32::from(campaign.volume);
+            save.level = i32::from(campaign.level);
+            save.from_bonus = Some(i32::from(campaign.from_bonus));
+        }
+        save.secretlevel = Some(i32::from(self.player.secret_level));
+        save.eog = Some(i32::from(self.player.end_of_game));
+        save.god = Some(i32::from(self.player.god_mode));
+        save.monsters_off = Some(i32::from(self.monsters_off));
+        let active_players = i32::try_from(self.player_count())
+            .map_err(|_| DukeSaveError::AtomicEncode("player count overflow".into()))?;
+        save.players = active_players;
+        save.playerswhenstarted = Some(active_players);
+        save.coop = Some(i32::from(self.player.game_mode));
+        save.ffire = Some(i32::from(self.player.friendly_fire));
+        save.connecthead = Some(0);
+        let mut connectpoint2 = [-1; 16];
+        for (seat, next) in connectpoint2
+            .iter_mut()
+            .enumerate()
+            .take(self.player_count())
+        {
+            if seat + 1 < self.player_count() {
+                *next = i16::try_from(seat + 1)
+                    .map_err(|_| DukeSaveError::AtomicEncode("seat index overflow".into()))?;
+            }
+        }
+        save.connectpoint2 = Some(connectpoint2);
+        if self.frag_matrix.len() != 64 {
+            return Err(DukeSaveError::InvalidWorld);
+        }
+        let mut frags = save
+            .frags
+            .ok_or_else(|| DukeSaveError::AtomicEncode("missing Atomic frag matrix".into()))?;
+        for killer in 0..8 {
+            for victim in 0..8 {
+                frags[killer][victim] = self.frag_matrix[killer * 8 + victim];
+            }
+        }
+        save.frags = Some(frags);
+        save.encode_atomic()
+            .map_err(|error| DukeSaveError::AtomicEncode(error.to_string()))
+    }
+
+    /// Restore the native Build geometry, sprite slots, player pose and clocks
+    /// decoded from an Atomic `GAME#.SAV`. The caller must have loaded the
+    /// matching CON image first. Atomic-only runtime tables that Room does not
+    /// yet model are rejected rather than silently replaced by a fresh level.
+    pub fn restore_atomic_sav(&mut self, save: &room_build::SavHeader) -> Result<(), String> {
+        let (Some(saved_walls), Some(saved_sectors), Some(saved_sprites), Some(saved_lists)) = (
+            save.walls.as_ref(),
+            save.sectors.as_ref(),
+            save.sprites.as_ref(),
+            save.sprite_lists.as_ref(),
+        ) else {
+            return Err("Atomic save is missing native map or sprite arrays".into());
+        };
+        let (Some(numwalls), Some(numsectors), Some(numsprites), Some(saved_player)) = (
+            save.numwalls,
+            save.numsectors,
+            save.numsprites,
+            save.player.as_ref(),
+        ) else {
+            return Err("Atomic save is missing map counts or player state".into());
+        };
+        let (Ok(numwalls), Ok(numsectors), Ok(numsprites)) = (
+            usize::try_from(numwalls),
+            usize::try_from(numsectors),
+            usize::try_from(numsprites),
+        ) else {
+            return Err("Atomic save has negative map counts".into());
+        };
+        use room_build_engine::world::{MAXSECTORS, MAXSPRITES, MAXSTATUS, MAXWALLS};
+        if numwalls > MAXWALLS
+            || numsectors > MAXSECTORS
+            || numsprites > MAXSPRITES
+            || saved_walls.len() != numwalls
+            || saved_sectors.len() != numsectors
+            || saved_sprites.len() != numsprites
+            || saved_lists.headspritesect.len() != MAXSECTORS + 1
+            || saved_lists.headspritestat.len() != MAXSTATUS + 1
+            || saved_lists.prevspritesect.len() != MAXSPRITES
+            || saved_lists.nextspritesect.len() != MAXSPRITES
+            || saved_lists.prevspritestat.len() != MAXSPRITES
+            || saved_lists.nextspritestat.len() != MAXSPRITES
+        {
+            return Err("Atomic save has inconsistent Build array sizes".into());
+        }
+        if saved_sectors.iter().any(|s| {
+            s.wallptr < 0
+                || s.wallnum < 0
+                || usize::try_from(s.wallptr).unwrap_or(usize::MAX)
+                    + usize::try_from(s.wallnum).unwrap_or(usize::MAX)
+                    > numwalls
+        }) || saved_walls.iter().any(|w| {
+            w.point2 < 0
+                || usize::try_from(w.point2).unwrap_or(usize::MAX) >= numwalls
+                || (w.nextwall >= 0
+                    && usize::try_from(w.nextwall).unwrap_or(usize::MAX) >= numwalls)
+                || (w.nextsector >= 0
+                    && usize::try_from(w.nextsector).unwrap_or(usize::MAX) >= numsectors)
+        }) || saved_sprites.iter().any(|s| {
+            s.statnum < 0
+                || s.statnum > MAXSTATUS as i16
+                || (s.statnum != MAXSTATUS as i16
+                    && (s.sectnum < 0
+                        || usize::try_from(s.sectnum).unwrap_or(usize::MAX) >= numsectors))
+        }) {
+            return Err("Atomic save has invalid Build references".into());
+        }
+
+        let mut world = BuildWorld::new();
+        world.numwalls = i16::try_from(numwalls).map_err(|_| "too many walls")?;
+        world.numsectors = i16::try_from(numsectors).map_err(|_| "too many sectors")?;
+        world.walls = saved_walls
+            .iter()
+            .map(|w| room_build_engine::types::WallT {
+                x: w.x,
+                y: w.y,
+                point2: w.point2,
+                nextwall: w.nextwall,
+                nextsector: w.nextsector,
+                cstat: w.cstat as u16,
+                picnum: w.picnum,
+                overpicnum: w.overpicnum,
+                shade: w.shade,
+                pal: w.pal,
+                xrepeat: w.xrepeat,
+                yrepeat: w.yrepeat,
+                xpanning: w.xpanning,
+                ypanning: w.ypanning,
+                lotag: w.lotag,
+                hitag: w.hitag,
+                extra: w.extra,
+            })
+            .collect();
+        world.sectors = saved_sectors
+            .iter()
+            .map(|s| room_build_engine::types::SectorT {
+                wallptr: s.wallptr,
+                wallnum: s.wallnum,
+                ceilingz: s.ceilingz,
+                floorz: s.floorz,
+                ceilingstat: s.ceilingstat as u16,
+                floorstat: s.floorstat as u16,
+                ceilingpicnum: s.ceilingpicnum,
+                ceilingheinum: s.ceilingheinum,
+                ceilingshade: s.ceilingshade,
+                ceilingpal: s.ceilingpal,
+                ceilingxpanning: s.ceilingxpanning,
+                ceilingypanning: s.ceilingypanning,
+                floorpicnum: s.floorpicnum,
+                floorheinum: s.floorheinum,
+                floorshade: s.floorshade,
+                floorpal: s.floorpal,
+                floorxpanning: s.floorxpanning,
+                floorypanning: s.floorypanning,
+                visibility: s.visibility,
+                lotag: s.lotag,
+                hitag: s.hitag,
+                extra: s.extra,
+            })
+            .collect();
+        for (i, s) in saved_sprites.iter().enumerate() {
+            world.sprites[i] = room_build_engine::types::SpriteT {
+                x: s.x,
+                y: s.y,
+                z: s.z,
+                cstat: s.cstat as u16,
+                picnum: s.picnum,
+                shade: s.shade,
+                pal: s.pal,
+                clipdist: s.clipdist,
+                xrepeat: s.xrepeat,
+                yrepeat: s.yrepeat,
+                xoffset: s.xoffset,
+                yoffset: s.yoffset,
+                sectnum: s.sectnum,
+                statnum: s.statnum,
+                ang: s.ang,
+                owner: s.owner,
+                xvel: s.xvel,
+                yvel: s.yvel,
+                zvel: s.zvel,
+                lotag: s.lotag,
+                hitag: s.hitag,
+                extra: s.extra,
+            };
+        }
+        world
+            .lists
+            .headspritesect
+            .copy_from_slice(&saved_lists.headspritesect);
+        world
+            .lists
+            .headspritestat
+            .copy_from_slice(&saved_lists.headspritestat);
+        world
+            .lists
+            .prevspritesect
+            .copy_from_slice(&saved_lists.prevspritesect);
+        world
+            .lists
+            .nextspritesect
+            .copy_from_slice(&saved_lists.nextspritesect);
+        world
+            .lists
+            .prevspritestat
+            .copy_from_slice(&saved_lists.prevspritestat);
+        world
+            .lists
+            .nextspritestat
+            .copy_from_slice(&saved_lists.nextspritestat);
+        for (i, s) in world.sprites.iter().enumerate() {
+            let active = i < numsprites && s.statnum >= 0 && s.statnum < MAXSTATUS as i16;
+            world.lists.sprite_sect[i] = if active { s.sectnum } else { -1 };
+            world.lists.sprite_stat[i] = if active { s.statnum } else { MAXSTATUS as i16 };
+        }
+        if let Some(start) = save.player.as_ref() {
+            world.start = [start.posx, start.posy, start.posz];
+            world.start_ang = start.ang;
+        }
+        let restore_player =
+            |record: &room_build::SavPlayer, allow_body_fallback: bool| -> Result<Player, String> {
+                let mut player = Player::default();
+                player.posx = record.posx;
+                player.posy = record.posy;
+                player.posz = record.posz;
+                player.oposx = record.oposx.unwrap_or(record.posx);
+                player.oposy = record.oposy.unwrap_or(record.posy);
+                player.oposz = record.oposz.unwrap_or(record.posz);
+                player.bobposx = record.bobposx.unwrap_or(record.posx);
+                player.bobposy = record.bobposy.unwrap_or(record.posy);
+                player.pyoff = record.pyoff.unwrap_or_default();
+                player.posxv = record.posxv.unwrap_or_default();
+                player.posyv = record.posyv.unwrap_or_default();
+                player.poszv = record.poszv.unwrap_or_default();
+                player.true_floor_z = record.true_floor_z.unwrap_or_default();
+                player.true_ceiling_z = record.true_ceiling_z.unwrap_or_default();
+                player.bob_counter = record.bob_counter.unwrap_or_default();
+                if let Some(n) = record.num_loogs {
+                    player.num_loogies = n.clamp(0, 6) as u8;
+                }
+                if let Some(n) = record.loogie_tics {
+                    player.loogie_tics = n.clamp(0, i32::from(u8::MAX)) as u8;
+                }
+                if let Some(x) = record.loogie_x {
+                    player.loogie_x =
+                        x.map(|value| value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16);
+                }
+                if let Some(y) = record.loogie_y {
+                    player.loogie_y =
+                        y.map(|value| value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16);
+                }
+                let body = record
+                    .sprite_i
+                    .and_then(|i| usize::try_from(i).ok())
+                    .and_then(|i| saved_sprites.get(i))
+                    .filter(|s| {
+                        s.statnum == crate::stat::STAT_PLAYER && s.picnum == crate::spawn::APLAYER
+                    })
+                    .or_else(|| {
+                        if allow_body_fallback {
+                            saved_sprites.iter().find(|s| {
+                                s.statnum == crate::stat::STAT_PLAYER
+                                    && s.picnum == crate::spawn::APLAYER
+                            })
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(body) = body {
+                    player.sprite_i = record.sprite_i.unwrap_or_else(|| {
+                        saved_sprites
+                            .iter()
+                            .position(|s| std::ptr::eq(s, body))
+                            .and_then(|i| i16::try_from(i).ok())
+                            .unwrap_or(-1)
+                    });
+                    player.cursectnum = body.sectnum;
+                    player.extra = body.extra;
+                }
+                if let Some(camera_i) = record.newowner {
+                    if camera_i >= 0 {
+                        let camera = saved_sprites
+                            .get(usize::try_from(camera_i).unwrap_or(usize::MAX))
+                            .ok_or("Atomic player camera sprite is out of range")?;
+                        if camera.sectnum < 0
+                            || usize::try_from(camera.sectnum).unwrap_or(usize::MAX) >= numsectors
+                        {
+                            return Err("Atomic player camera sector is out of range".into());
+                        }
+                        player.remote_camera =
+                            Some((camera.x, camera.y, camera.z, camera.ang, camera.sectnum));
+                    }
+                }
+                if let Some(n) = record.cursectnum {
+                    if n < 0 || usize::try_from(n).unwrap_or(usize::MAX) >= numsectors {
+                        return Err("Atomic save player sector is out of range".into());
+                    }
+                    player.cursectnum = n;
+                }
+                player.last_extra = record.last_extra.unwrap_or(player.extra);
+                if let Some(n) = record.airleft {
+                    player.airleft = n.max(0);
+                }
+                if let Some(n) = record.extra_extra8 {
+                    player.extra_extra8 = n.max(0);
+                }
+                player.ang = record.ang;
+                player.rotscrnang = record.rotscrnang.unwrap_or_default();
+                player.over_shoulder_on = record.over_shoulder_on.unwrap_or(false);
+                player.look_ang = record.look_ang.unwrap_or_default();
+                player.horiz = i16::try_from(record.horiz).unwrap_or(100);
+                if let Some(n) = record.ohoriz {
+                    player.previous_horiz = i16::try_from(n).unwrap_or(100);
+                }
+                if let Some(n) = record.horizoff {
+                    player.horizoff = n;
+                }
+                if let Some(n) = record.ohorizoff {
+                    player.previous_horizoff = i16::try_from(n).unwrap_or_default();
+                }
+                if let Some(n) = record.pycount {
+                    player.pycount = n;
+                }
+                if let Some(n) = record.return_to_center {
+                    player.return_to_center = n;
+                }
+                if let Some(n) = record.invdisptime {
+                    player.inventory_display_timer = n.clamp(0, i32::from(i16::MAX)) as i16;
+                }
+                if let Some(n) = record.inven_icon {
+                    player.inventory_icon = n;
+                }
+                if let Some(n) = record.ftq {
+                    player.quote_id = n;
+                }
+                if let Some(n) = record.fta {
+                    player.quote_timer = n;
+                }
+                if let Some(n) = record.curr_weapon {
+                    player.curr_weapon = n;
+                }
+                if let Some(n) = record.last_weapon {
+                    player.last_weapon = n;
+                }
+                if let Some(n) = record.dead_flag {
+                    player.dead_flag = n.rem_euclid(2048) as u16;
+                    player.death_processed = n != 0 || player.extra <= 0;
+                }
+                if let Some(n) = record.wantweaponfire {
+                    player.want_weapon_fire = n;
+                }
+                if let Some(n) = record.holster_weapon {
+                    player.holster_weapon = i16::from(n);
+                }
+                if let Some(n) = record.jumping_counter {
+                    player.jumping_counter = n;
+                }
+                if let Some(n) = record.jumping_toggle {
+                    player.jumping_toggle = i16::from(n);
+                }
+                if let Some(n) = record.transporter_hold {
+                    player.transporter_hold = n;
+                }
+                if let Some(n) = record.footprintcount {
+                    player.footprint_count = n;
+                }
+                if let Some(n) = record.footprintpal {
+                    player.footprint_pal = n;
+                }
+                if let Some(n) = record.footprintshade {
+                    player.footprint_shade =
+                        i8::try_from(n.clamp(i16::from(i8::MIN), i16::from(i8::MAX)))
+                            .unwrap_or_default();
+                }
+                if let Some(n) = record.falling_counter {
+                    player.falling_counter = n;
+                }
+                if let Some(n) = record.hurt_delay {
+                    player.hurt_delay = n;
+                }
+                if let Some(n) = record.weapon_ang {
+                    player.weapon_ang = n;
+                }
+                if let Some(n) = record.last_full_weapon {
+                    player.last_full_weapon = n;
+                }
+                if let Some(n) = record.refresh_inventory {
+                    player.refresh_inventory = n;
+                }
+                if let Some(n) = record.show_empty_weapon {
+                    player.show_empty_weapon = n != 0;
+                }
+                if let Some(n) = record.hard_landing {
+                    player.hard_landing = n;
+                }
+                if let Some(n) = record.knuckle_incs {
+                    player.knuckle_incs = n;
+                }
+                if let Some(n) = record.walking_snd_toggle {
+                    player.walking_snd_toggle = n;
+                }
+                if let Some(n) = record.weapon_reservations {
+                    player.weapon_reservations = n;
+                }
+                if let Some(n) = record.frag_ps {
+                    player.frag_ps = n;
+                }
+                if let Some(n) = record.frag {
+                    player.frag_count = u16::from_le_bytes(n.to_le_bytes());
+                }
+                if let Some(n) = record.fraggedself {
+                    player.fragged_self = u16::from_le_bytes(n.to_le_bytes());
+                }
+                if let Some(n) = record.aim_mode {
+                    player.aim_mode = n.clamp(0, i32::from(u8::MAX)) as u8;
+                }
+                if let Some(n) = record.weapon_reservation_count {
+                    player.weapon_reservation_count = n.clamp(0, 16) as u8;
+                }
+                if let Some(n) = record.time_before_exit {
+                    player.time_before_exit = n;
+                }
+                if let Some(n) = record.tipincs {
+                    player.tip_timer = n.clamp(0, 255) as u8;
+                }
+                if let Some(n) = record.auto_aim {
+                    player.auto_aim = n.clamp(0, 2) as i16;
+                }
+                if let Some(a) = record.ammo_amount {
+                    player.ammo = a;
+                }
+                if let Some(a) = record.gotweapon {
+                    player.gotweapon = a.map(|v| v != 0);
+                }
+                if let Some(n) = record.shield_amount {
+                    player.shield_amount = n;
+                }
+                if let Some(n) = record.firstaid_amount {
+                    player.firstaid_amount = n;
+                }
+                if let Some(n) = record.steroids_amount {
+                    player.steroids_amount = n;
+                }
+                if let Some(n) = record.jetpack_amount {
+                    player.jetpack_amount = n;
+                }
+                if let Some(n) = record.scuba_amount {
+                    player.scuba_amount = n;
+                }
+                if let Some(n) = record.holoduke_amount {
+                    player.holoduke_amount = n;
+                }
+                if let Some(n) = record.heat_amount {
+                    player.heat_amount = n;
+                }
+                if let Some(n) = record.boot_amount {
+                    player.boot_amount = n;
+                }
+                if let Some(n) = record.holoduke_on {
+                    player.holoduke_on = n;
+                }
+                if let Some(n) = record.jetpack_on {
+                    player.jetpack_on = i16::from(n);
+                }
+                if let Some(n) = record.scuba_on {
+                    player.scuba_on = i16::from(n);
+                }
+                if let Some(n) = record.heat_on {
+                    player.heat_on = n != 0;
+                }
+                if let Some(n) = record.hbomb_hold_delay {
+                    player.hbomb_hold_delay = n;
+                }
+                if let Some(n) = record.hbomb_on {
+                    player.hbomb_on = n != 0;
+                }
+                if let Some(n) = record.rapid_fire_hold {
+                    player.rapid_fire_hold = n != 0;
+                }
+                if let Some(n) = record.got_access {
+                    player.got_access = n.clamp(0, 7) as u8;
+                }
+                if let Some(n) = record.access_incs {
+                    player.access_incs = n.clamp(0, 255) as u8;
+                }
+                if let Some(n) = record.access_wallnum {
+                    player.access_wallnum = n;
+                }
+                if let Some(n) = record.access_spritenum {
+                    player.access_spritenum = n;
+                }
+                if let Some(n) = record.secret_rooms {
+                    player.secret_rooms = i16::from(n);
+                }
+                if let Some(n) = record.max_secret_rooms {
+                    player.max_secret_rooms = n;
+                }
+                if let Some(n) = record.actors_killed {
+                    player.actors_killed = n;
+                }
+                if let Some(n) = record.max_actors_killed {
+                    player.max_actors_killed = n;
+                }
+                if let Some(n) = record.kickback_pic {
+                    player.kickback_pic = n;
+                }
+                if let Some(n) = record.fist_incs {
+                    player.fist_incs = n.clamp(0, 42);
+                }
+                if let Some(palette) = record.button_palette {
+                    player.button_palette = palette;
+                }
+                player.secret_level =
+                    save.secretlevel
+                        .unwrap_or(0)
+                        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+                player.end_of_game = save.eog.unwrap_or(0) != 0;
+                if let Some(n) = record.weapon_pos {
+                    player.weapon_pos = n;
+                }
+                if let Some(n) = record.quick_kick {
+                    player.quick_kick = n;
+                }
+                if let Some(n) = record.knee_incs {
+                    player.knee_incs = n;
+                }
+                if let Some(n) = record.on_ground {
+                    player.on_ground = n != 0;
+                }
+                if let Some(pals) = record.pals {
+                    player.palette_flash = pals;
+                }
+                if let Some(n) = record.pals_time {
+                    player.palette_flash_tics = n.clamp(0, 255) as u8;
+                }
+                if let Some(n) = record.toggle_key_flag {
+                    player.toggle_key_flag = n;
+                }
+                if player.extra <= 0 {
+                    player.death_processed = true;
+                }
+                player.god_mode = save.room_god().unwrap_or(false);
+                Ok(player)
+            };
+        let active_players =
+            usize::try_from(save.players).map_err(|_| "Atomic save has a negative player count")?;
+        if !(1..=8).contains(&active_players) {
+            return Err("Atomic save player count is outside Room's supported 1–8 seats".into());
+        }
+        let mut connected_slots = Vec::with_capacity(active_players);
+        if let (Some(head), Some(next)) = (save.connecthead, save.connectpoint2.as_ref()) {
+            let mut slot = i16::try_from(head).map_err(|_| "invalid Atomic connecthead")?;
+            while slot >= 0 {
+                let seat = usize::try_from(slot).map_err(|_| "invalid Atomic player slot")?;
+                if seat >= room_build::SAV_MAXPLAYERS
+                    || connected_slots.contains(&seat)
+                    || connected_slots.len() >= active_players
+                {
+                    return Err("Atomic save has an invalid multiplayer connect chain".into());
+                }
+                connected_slots.push(seat);
+                slot = *next.get(seat).ok_or("Atomic connect chain is truncated")?;
+            }
+            if connected_slots.len() != active_players {
+                return Err("Atomic connect chain disagrees with its player count".into());
+            }
+        } else {
+            connected_slots.extend(0..active_players);
+        }
+        if connected_slots.first() != Some(&0) {
+            return Err("Atomic save's local player is not first in its connect chain".into());
+        }
+        let mut player = restore_player(saved_player, true)?;
+        if let Some(body) = world
+            .sprites
+            .get_mut(usize::try_from(player.sprite_i).unwrap_or(usize::MAX))
+        {
+            body.yvel = 0;
+            if let Some(palette) = saved_player.palookup {
+                body.pal = palette;
+            }
+        }
+        let coop_mode = save.coop.unwrap_or(0) == 1;
+        let friendly_fire = save.ffire.unwrap_or(0) != 0;
+        player.coop_mode = coop_mode;
+        player.game_mode = save.coop.unwrap_or(0).clamp(0, 2) as u8;
+        player.friendly_fire = friendly_fire;
+        let mut restored_coop_players = Vec::with_capacity(active_players.saturating_sub(1));
+        let mut player_body_indices = vec![player.sprite_i];
+        for slot in connected_slots.iter().copied().skip(1) {
+            let record = save
+                .player_record(slot)
+                .ok_or("Atomic save has a malformed remote player record")?;
+            let mut remote = restore_player(&record, false)?;
+            if remote.sprite_i < 0
+                || saved_sprites
+                    .get(usize::try_from(remote.sprite_i).unwrap_or(usize::MAX))
+                    .is_none_or(|s| {
+                        s.statnum != crate::stat::STAT_PLAYER || s.picnum != crate::spawn::APLAYER
+                    })
+            {
+                return Err("Atomic remote player record has no valid APLAYER body".into());
+            }
+            if player_body_indices.contains(&remote.sprite_i) {
+                return Err("Atomic player records share an APLAYER body".into());
+            }
+            player_body_indices.push(remote.sprite_i);
+            remote.coop_mode = coop_mode;
+            remote.game_mode = player.game_mode;
+            remote.friendly_fire = friendly_fire;
+            if let Some(body) = world
+                .sprites
+                .get_mut(usize::try_from(remote.sprite_i).unwrap_or(usize::MAX))
+            {
+                body.yvel = i16::try_from(restored_coop_players.len() + 1)
+                    .map_err(|_| "Atomic player seat is out of range")?;
+                if let Some(palette) = record.palookup {
+                    body.pal = palette;
+                }
+            }
+            restored_coop_players.push(remote);
+        }
+        world.start_sector = player.cursectnum;
+
+        let (Some(script), Some(script_state)) = (self.script.as_ref(), save.script_state.as_ref())
+        else {
+            return Err("Atomic save requires the matching loaded CON runtime".into());
+        };
+        let Some(actor_types) = save.actor_types.as_ref() else {
+            return Err("Atomic save is missing its actor dispatch table".into());
+        };
+        if script_state.script_words.len() < script.script.len()
+            || script_state.script_pointer_flags.len() < script.script.len()
+            || script_state.actor_script_offsets.len() < script.actorscrptr.len()
+            || actor_types.len() != script.actortype.len()
+        {
+            return Err("Atomic save CON tables do not match the loaded script".into());
+        }
+        let mut restored_script = script.clone();
+        for (i, word) in script_state.script_words.iter().copied().enumerate() {
+            restored_script.script[i] = if script_state.script_pointer_flags[i] != 0 {
+                if word < 0
+                    || word % 4 != 0
+                    || usize::try_from(word / 4).unwrap_or(usize::MAX) > script.script.len()
+                {
+                    return Err("invalid saved CON pointer".into());
+                }
+                word / 4
+            } else {
+                word
+            };
+            restored_script.script_ptr[i] = script_state.script_pointer_flags[i] != 0;
+        }
+        for (i, offset) in script_state
+            .actor_script_offsets
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            if i >= restored_script.actorscrptr.len() {
+                break;
+            }
+            if offset < 0 || offset % 4 != 0 {
+                return Err("invalid saved actor script pointer".into());
+            }
+            if usize::try_from(offset / 4).unwrap_or(usize::MAX) > script.script.len() {
+                return Err("saved actor script pointer is outside the CON image".into());
+            }
+            restored_script.actorscrptr[i] = offset / 4;
+        }
+        restored_script.actortype.copy_from_slice(actor_types);
+        let raw = save
+            .script_state
+            .as_ref()
+            .ok_or("missing Atomic actor runtime")?;
+        let record_bytes = 72;
+        if raw.weapon_hits.len() != MAXSPRITES * record_bytes
+            || raw.sprite_script_flags.len() != MAXSPRITES
+        {
+            return Err("Atomic save has an incomplete actor runtime table".into());
+        }
+        let mut actor_temps = vec![ActorConTemps::default(); MAXSPRITES];
+        for (i, t) in actor_temps.iter_mut().enumerate() {
+            let b = &raw.weapon_hits[i * record_bytes..(i + 1) * record_bytes];
+            let i16_at = |o: usize| i16::from_le_bytes([b[o], b[o + 1]]);
+            let i32_at = |o: usize| i32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+            t.cgg = i16::from(b[0] as i8);
+            t.script_pointer_mask = raw.sprite_script_flags[i] & 7;
+            t.hit_picnum = i16_at(2);
+            t.dispicnum = i16_at(16);
+            t.hit_ang = i16_at(4);
+            t.hit_extra = i16_at(6);
+            t.hit_owner = i16_at(8);
+            t.tempang = i16_at(12);
+            t.actorstayput = i16_at(14);
+            t.timetosleep = i16_at(18);
+            t.hit_floorz = i32_at(20);
+            t.hit_ceilingz = i32_at(24);
+            t.lastvx = i32_at(28);
+            t.lastvy = i32_at(32);
+            t.bposx = i32_at(36);
+            t.bposy = i32_at(40);
+            t.bposz = i32_at(44);
+            for n in 0..6 {
+                t.g_t[n] = i32_at(48 + n * 4);
+                let is_script_ptr = match n {
+                    1 => raw.sprite_script_flags[i] & 1 != 0, // T2
+                    4 => raw.sprite_script_flags[i] & 2 != 0, // T5
+                    5 => raw.sprite_script_flags[i] & 4 != 0, // T6
+                    _ => false,
+                };
+                if is_script_ptr {
+                    let offset = t.g_t[n];
+                    if offset < 0
+                        || offset % 4 != 0
+                        || usize::try_from(offset / 4).unwrap_or(usize::MAX) > script.script.len()
+                    {
+                        return Err("invalid saved actor-temp CON pointer".into());
+                    }
+                    t.g_t[n] = offset / 4;
+                }
+            }
+        }
+        let saved_cycler_count = usize::try_from(save.numcyclers.unwrap_or(0))
+            .map_err(|_| "negative Atomic shade-cycler count")?;
+        let Some(cycler_table) = save.cyclers.as_ref() else {
+            return Err("Atomic save is missing the shade-cycler table".into());
+        };
+        if saved_cycler_count > 256 || cycler_table.records.len() != 256 * 12 {
+            return Err("Atomic save has an invalid shade-cycler table".into());
+        }
+        let mut restored_cyclers = Vec::with_capacity(saved_cycler_count);
+        for i in 0..saved_cycler_count {
+            let record = &cycler_table.records[i * 12..(i + 1) * 12];
+            let short = |slot: usize| i16::from_le_bytes([record[slot * 2], record[slot * 2 + 1]]);
+            let sector = short(0);
+            if sector < 0 || usize::try_from(sector).unwrap_or(usize::MAX) >= numsectors {
+                return Err("Atomic shade cycler references an invalid sector".into());
+            }
+            restored_cyclers.push(ShadeCycler {
+                sector,
+                phase: short(1),
+                min_shade: i8::try_from(short(2))
+                    .map_err(|_| "Atomic shade cycler minimum is out of range")?,
+                max_shade: i8::try_from(short(3))
+                    .map_err(|_| "Atomic shade cycler baseline is out of range")?,
+                hitag: short(4),
+                active: short(5) != 0,
+            });
+        }
+        let saved_anim_wall_count = usize::try_from(save.numanimwalls.unwrap_or(0))
+            .map_err(|_| "negative Atomic animated-wall count")?;
+        let Some(anim_wall_records) = save.animwalls.as_deref() else {
+            return Err("Atomic save is missing its animated-wall table".into());
+        };
+        let restored_anim_walls =
+            restore_anim_walls(anim_wall_records, saved_anim_wall_count, numwalls)
+                .ok_or("Atomic save has invalid animated-wall records")?;
+        let picnum = world.sprites.iter().map(|s| s.picnum).collect();
+        self.script = Some(restored_script);
+        self.world = Some(world);
+        self.duke_reverb_level = 0;
+        self.lists = self
+            .world
+            .as_ref()
+            .map_or_else(SpriteLists::new, |w| w.lists.clone());
+        self.player = player;
+        self.coop_players = restored_coop_players;
+        self.picnum = picnum;
+        self.actor_temps = actor_temps;
+        self.randomseed = save.randomseed.unwrap_or(1);
+        self.global_random = save.room_global_random().unwrap_or(0);
+        self.earthquake_time = save.earthquaketime.unwrap_or(0).clamp(0, 255) as u8;
+        self.tic = save.lockclock.unwrap_or(0).max(0) as u32;
+        self.skill = save.skill.clamp(0, 4) as u8;
+        self.monsters_off = save.room_monsters_off().unwrap_or(false);
+        self.everyothertime = 0;
+        self.anim_wall_tags = restored_anim_walls;
+        self.cyclers = restored_cyclers;
+        self.sector_motions.clear();
+        self.wall_motions.clear();
+        self.effector_wall_offsets.clear();
+        self.open_was_down = false;
+        self.pending_sound_ids.clear();
+        self.pending_actor_sound_events.clear();
+        self.level_exit_ready = false;
+        self.campaign = crate::campaign::DukeCampaignProgress::new(
+            u8::try_from(save.volume).unwrap_or(u8::MAX),
+            u8::try_from(save.level).unwrap_or(u8::MAX),
+        );
+        if let Some(progress) = &mut self.campaign {
+            progress.from_bonus = save.from_bonus.unwrap_or(0).clamp(0, i32::from(u8::MAX)) as u8;
+        }
+        self.atomic_globals = Some(AtomicSaveGlobals {
+            players: Some(save.players),
+            name: save.name.clone(),
+            volume: Some(save.volume),
+            level: Some(save.level),
+            mirror_count: save.mirror_count,
+            mirror_walls: save.mirror_walls.clone().unwrap_or_default(),
+            mirror_sectors: save.mirror_sectors.clone().unwrap_or_default(),
+            show2dsector: save.show2dsector.clone().unwrap_or_default(),
+            boardfilename: save.boardfilename.clone().unwrap_or_default(),
+            numclouds: save.numclouds,
+            clouds: save.clouds.clone().unwrap_or_default(),
+            cloudx: save.cloudx.clone().unwrap_or_default(),
+            cloudy: save.cloudy.clone().unwrap_or_default(),
+            pskybits: save.pskybits,
+            pskyoff: save.pskyoff.map_or_else(Vec::new, |v| v.to_vec()),
+            animatecnt: save.animatecnt,
+            animatesect: save.animatesect.clone().unwrap_or_default(),
+            animateptr: save.animateptr.clone().unwrap_or_default(),
+            animategoal: save.animategoal.clone().unwrap_or_default(),
+            animatevel: save.animatevel.clone().unwrap_or_default(),
+            gotpic: save.gotpic.clone().unwrap_or_default(),
+            playerswhenstarted: save.playerswhenstarted,
+            from_bonus: save.from_bonus,
+            secretlevel: save.secretlevel,
+            respawn_monsters: save.respawn_monsters,
+            respawn_items: save.respawn_items,
+            respawn_inventory: save.respawn_inventory,
+            god: save.god,
+            auto_run: save.auto_run,
+            crosshair: save.crosshair,
+            last_level: save.last_level,
+            eog: save.eog,
+            coop: save.coop,
+            marker: save.marker,
+            ffire: save.ffire,
+            camsprite: save.camsprite,
+            connecthead: save.connecthead,
+            connectpoint2: save.connectpoint2.map_or_else(Vec::new, |v| v.to_vec()),
+            numplayersprites: save.numplayersprites,
+            frags: save
+                .frags
+                .map_or_else(Vec::new, |v| v.into_iter().flatten().collect()),
+            parallaxyscale: save.parallaxyscale,
+        });
+        self.atomic_sav_template = save.encode_atomic().ok();
+        if let Some(globals) = self.atomic_globals.as_ref()
+            && globals.frags.len() == 16 * 16
+        {
+            for killer in 0..8 {
+                for victim in 0..8 {
+                    self.frag_matrix[killer * 8 + victim] = globals.frags[killer * 16 + victim];
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Stable 64-bit checksum of the complete serialized native playsim state.
+    ///
+    /// The checksum uses the versioned `.fsave` state envelope, which includes
+    /// the Build world, sprite lists, actor temps, player, RNG streams, active
+    /// movers, cyclers, and loaded CON fingerprint. Presentation sound queues
+    /// are excluded. Returns `None` for an unloaded session or when demo-only
+    /// trace fixups are active. Cross-platform parity still needs validation.
+    #[must_use]
+    pub fn checksum(&self) -> Option<u64> {
+        if self.trace_fixups
+            || self.pad_pre_override.is_some()
+            || self.pad_pre_explode_override.is_some()
+        {
+            return None;
+        }
+        let bytes = self.save_fsave().ok()?;
+        let mut save: DukeFsave = serde_json::from_slice(&bytes).ok()?;
+        // Audio queues are presentation output; draining them must not alter
+        // the network playsim checksum.
+        save.state.pending_sound_ids.clear();
+        save.state.pending_actor_sound_events.clear();
+        let canonical = serde_json::to_vec(&save).ok()?;
+        let digest = Sha256::digest(canonical);
+        Some(u64::from_le_bytes(digest[..8].try_into().ok()?))
     }
 
     /// Install ART tile Z metadata (heights / picanm y-offsets).
@@ -2328,6 +4824,127 @@ impl DukeSession {
     #[must_use]
     pub fn tic_rate(&self) -> u32 {
         DUKE_TIC_RATE
+    }
+
+    /// Drain sound ids emitted by the preceding native gameplay tics.
+    #[must_use]
+    pub fn drain_sound_ids(&mut self) -> Vec<u16> {
+        self.drain_sound_events()
+            .into_iter()
+            .map(|event| event.sound_id)
+            .collect()
+    }
+
+    /// Queue a CON-named Atomic sound for a presentation-only cue such as an
+    /// episode finale. It enters the same event pipeline as gameplay sounds.
+    pub fn queue_frontend_sound_label(&mut self, name: &str) {
+        let Some(sound_id) = self
+            .script
+            .as_ref()
+            .and_then(|script| script.labels.get(name))
+            .and_then(|label| u16::try_from(label.value).ok())
+        else {
+            return;
+        };
+        let (voice_limit, definition_loop, exclusive, priority, _, no_attenuation) =
+            duke_sound_voice_policy(self.script.as_ref(), sound_id);
+        self.pending_actor_sound_events.push(DukeSoundEvent {
+            sound_id,
+            position: [self.player.posx, self.player.posy, self.player.posz],
+            source_id: None,
+            play_once: false,
+            loop_sound: definition_loop,
+            voice_limit,
+            exclusive,
+            ambience: false,
+            priority,
+            // Chocolate calls `sound()` from the ANM cue handlers, which is
+            // centered and unattenuated regardless of the CON sound flags.
+            global: true,
+            no_attenuation,
+            stop: false,
+            stop_source_sound: false,
+        });
+    }
+
+    /// Drain sounds with their source positions for the audio backend.
+    #[must_use]
+    pub fn drain_sound_events(&mut self) -> Vec<DukeSoundEvent> {
+        let player_position = [self.player.posx, self.player.posy, self.player.posz];
+        let mut events: Vec<_> = std::mem::take(&mut self.pending_sound_ids)
+            .into_iter()
+            .map(|sound_id| {
+                let (voice_limit, definition_loop, exclusive, priority, global, no_attenuation) =
+                    duke_sound_voice_policy(self.script.as_ref(), sound_id);
+                DukeSoundEvent {
+                    sound_id,
+                    position: player_position,
+                    source_id: u64::try_from(self.player.sprite_i).ok(),
+                    play_once: sound_id == 211,
+                    loop_sound: definition_loop,
+                    voice_limit,
+                    exclusive,
+                    ambience: false,
+                    priority,
+                    global,
+                    no_attenuation,
+                    stop: false,
+                    stop_source_sound: false,
+                }
+            })
+            .collect();
+        events.append(&mut self.pending_actor_sound_events);
+        events
+    }
+
+    /// Supply the current audio backend's first active owner for each Duke
+    /// sound ID. This is presentation state sampled before the next playsim tic.
+    pub fn set_active_sound_owners(&mut self, owners: &[(u32, Option<u64>)]) {
+        self.active_sound_owners.fill(None);
+        for &(sound_id, owner) in owners {
+            if let Ok(index) = usize::try_from(sound_id)
+                && let Some(slot) = self.active_sound_owners.get_mut(index)
+            {
+                *slot = owner.and_then(|source| i16::try_from(source).ok());
+            }
+        }
+    }
+
+    /// Re-arm ambient marker playback after the desktop ambience toggle changes.
+    /// This only resets the marker's sound scheduler; it does not alter map or
+    /// actor simulation state.
+    pub fn reset_ambient_sound_markers(&mut self) {
+        self.duke_reverb_level = 0;
+        let Some(world) = self.world.as_ref() else {
+            return;
+        };
+        for (index, sprite) in world.sprites.iter().enumerate() {
+            if sprite.picnum == crate::spawn::MUSICANDSFX {
+                if let Some(temps) = self.actor_temps.get_mut(index) {
+                    temps.g_t[0] = 0;
+                }
+            }
+        }
+    }
+
+    /// Active Atomic `definequote` text requested by CON `quote`.
+    #[must_use]
+    pub fn active_quote(&self) -> Option<&str> {
+        if self.player.quote_timer <= 0 || self.player.quote_id < 0 {
+            return None;
+        }
+        self.script
+            .as_ref()?
+            .quotes
+            .get(self.player.quote_id as usize)
+            .map(String::as_str)
+            .filter(|text| !text.is_empty())
+    }
+
+    /// Remaining frames of Chocolate's animated `TIP` sprite.
+    #[must_use]
+    pub const fn tip_timer(&self) -> u8 {
+        self.player.tip_timer
     }
 
     /// Install a compiled CON image for later `moveactors` / `execute`.
@@ -2342,11 +4959,74 @@ impl DukeSession {
 
     /// Like [`Self::set_world`] with an explicit Duke skill (0..=4).
     pub fn set_world_with_skill(&mut self, mut world: BuildWorld, skill: u8) {
+        // Chocolate prelevel caches `one_parallax_sectnum` before any SE13
+        // setup flips a ceiling's parallax bit. Keep the original material and
+        // shade so later SE13 markers never select a different sky sector.
+        let se13_parallax_sky = world
+            .sectors
+            .iter()
+            .take(world.numsectors.max(0) as usize)
+            .find(|sector| sector.ceilingstat & 1 != 0)
+            .map(|sector| (sector.ceilingpicnum, sector.ceilingshade));
+        // Chocolate's `po[0]` is the map-header player start created by
+        // `resetpspritevars`; map APLAYER markers follow in STAT_PLAYER order.
+        // Keep this table 0-based so `pickrandomspot(snum)` can index it
+        // directly in co-op and `TRAND % numplayersprites` can use the same
+        // complete roster in DukeMatch.
+        self.player_starts = vec![DukePlayerStart {
+            x: world.start[0],
+            y: world.start[1],
+            z: world.start[2],
+            angle: world.start_ang,
+            sector: world.start_sector,
+        }];
+        self.player_starts.extend(
+            world
+                .sprites
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, sprite)| {
+                    sprite.picnum == crate::spawn::APLAYER
+                        && sprite.xrepeat == 0
+                        && sprite.yrepeat == 0
+                        && sprite.lotag == 0
+                })
+                .map(|(_, sprite)| DukePlayerStart {
+                    x: sprite.x,
+                    y: sprite.y,
+                    z: sprite.z,
+                    angle: sprite.ang,
+                    sector: sprite.sectnum,
+                }),
+        );
         // Match Chocolate `premap`: seed 17 before prelevel TRAND traffic.
         self.randomseed = ENTERLEVEL_RANDOMSEED;
         self.global_random = 0;
+        self.earthquake_time = 0;
         self.skill = skill;
-        prelevel_sprites(&mut world.lists, world.sprites.as_mut(), skill);
+        self.everyothertime = 0;
+        let mirror_tile = self
+            .script
+            .as_ref()
+            .and_then(|script| script.labels.get("MIRROR"))
+            .filter(|label| !label.is_ptr)
+            .and_then(|label| i16::try_from(label.value).ok())
+            .unwrap_or(crate::prelevel::MIRROR);
+        let mirror_walls = crate::prelevel::init_mirrors(&mut world, mirror_tile);
+        self.anim_wall_tags =
+            init_animated_walls(&mut world.walls[..world.numwalls as usize], &mirror_walls);
+        self.cyclers.clear();
+        self.sector_motions.clear();
+        self.wall_motions.clear();
+        self.effector_wall_offsets.clear();
+        self.open_was_down = false;
+        self.cyclers = prelevel_sprites_with_state(
+            &mut world.lists,
+            world.sprites.as_mut(),
+            &mut world.sectors[..world.numsectors as usize],
+            skill,
+        );
         // Chocolate `prelevel` → `spawn(-1, i)` TRAND rolls (index order).
         {
             let stat = world.lists.sprite_stat.clone();
@@ -2360,7 +5040,7 @@ impl DukeSession {
                 &mut self.actor_temps,
                 &mut self.randomseed,
                 skill,
-                false,
+                self.monsters_off,
             );
         }
         let (actorscrptr, actortype): (&[i32], &[u8]) = self
@@ -2375,6 +5055,70 @@ impl DukeSession {
             actortype,
             &mut self.picnum,
             skill,
+        );
+        // Chocolate resets these counters in `resetprestat`, then increments
+        // `max_secret_rooms` while scanning sectors and `max_actors_killed`
+        // from the eligible `spawn()` branches. Keep the level totals on the
+        // player record so the bonus screen and Atomic SAV use the same data.
+        self.player.secret_rooms = 0;
+        self.player.actors_killed = 0;
+        self.player.max_secret_rooms = world
+            .sectors
+            .iter()
+            .take(world.numsectors.max(0) as usize)
+            .filter(|sector| sector.lotag == 32767)
+            .count() as u8;
+        let max_actors_killed = crate::spawn::count_prelevel_kills(
+            &world.lists,
+            &world.sprites[..],
+            actorscrptr,
+            actortype,
+            skill,
+            self.monsters_off,
+        );
+        self.player.max_actors_killed = max_actors_killed;
+        for player in &mut self.coop_players {
+            player.secret_rooms = 0;
+            player.actors_killed = 0;
+            player.max_secret_rooms = self.player.max_secret_rooms;
+            player.max_actors_killed = max_actors_killed;
+        }
+        if let Some(sky) = se13_parallax_sky {
+            for (i, sprite) in world.sprites.iter().enumerate() {
+                if sprite.lotag == 13
+                    && world.lists.sprite_stat.get(i).copied() == Some(crate::stat::STAT_EFFECTOR)
+                {
+                    if self.actor_temps.len() <= i {
+                        self.actor_temps.resize_with(i + 1, ActorConTemps::default);
+                    }
+                    self.actor_temps[i].se13_parallax_sky = Some(sky);
+                }
+            }
+        }
+        crate::spawn::init_faller_sprites(
+            &world.lists,
+            world.sprites.as_mut(),
+            &world.sectors[..world.numsectors as usize],
+            &mut self.actor_temps,
+            self.script
+                .as_ref()
+                .and_then(|script| script.gamestartup.get(1).copied())
+                .unwrap_or(10),
+        );
+        crate::spawn::apply_monster_spawn_rules(
+            &mut world.lists,
+            world.sprites.as_mut(),
+            actortype,
+            skill,
+            self.monsters_off,
+        );
+        crate::spawn::init_destructible_explosives(
+            &world.lists,
+            world.sprites.as_mut(),
+            self.script
+                .as_ref()
+                .and_then(|script| script.gamestartup.get(1).copied())
+                .unwrap_or(0),
         );
         // Chocolate enemy `spawn()`: `cstat |= 257`, x/yrepeat=40, clipdist=80,
         // + strength from actor header. (SHARK keeps 60/60/40 — not DEMO1.)
@@ -2394,13 +5138,45 @@ impl DukeSession {
             self.actor_temps
                 .resize_with(world.sprites.len(), ActorConTemps::default);
         }
+        // Map-loaded hittype floor/ceiling cache starts at the sector planes;
+        // `iffloordistl` consumes this cached state until an actor path calls
+        // `getglobalz` (CON `fall` does so on its own six-tic cadence).
+        for (i, sprite) in world.sprites.iter().enumerate() {
+            // Chocolate's initial `spawn(-1, sprite_id)` stores the sprite's
+            // own tile in `hittype[].picnum`. Both `ifspawnedby` and
+            // `ifwasweapon` read this field until damage overwrites it.
+            self.actor_temps[i].hit_picnum = sprite.picnum;
+            if let Some(sector) = world.sectors.get(sprite.sectnum.max(0) as usize) {
+                self.actor_temps[i].hit_floorz = sector.floorz;
+                self.actor_temps[i].hit_ceilingz = sector.ceilingz;
+            }
+        }
         if let Some(script) = self.script.as_ref() {
             for i in 0..world.sprites.len() {
                 let pic = world.sprites[i].picnum;
+                if pic == crate::spawn::MUSICANDSFX {
+                    let sound_id = usize::try_from(world.sprites[i].lotag).unwrap_or(usize::MAX);
+                    self.actor_temps[i].g_t[3] = script
+                        .sounds
+                        .get(sound_id)
+                        .and_then(Option::as_ref)
+                        .map_or(0, |sound| sound.m);
+                }
                 if STAYPUT_PICS.contains(&pic) {
                     self.actor_temps[i].actorstayput = world.sprites[i].sectnum;
                 }
                 if !crate::badguy::badguy_pic(pic, script.actortype.as_slice()) {
+                    // Map-placed non-enemy actors still receive Chocolate's
+                    // EGS CON header state (action/move pointers and flags).
+                    // Without this, useractors such as FIRE start with
+                    // `g_t[4] == 0`, changing `ifaction` branches and RNG use.
+                    if world.lists.sprite_stat.get(i).copied() == Some(STAT_ACTOR) {
+                        let (_, actor_temps) =
+                            crate::con::init_actor_temps_from_script(script, pic);
+                        self.actor_temps[i].g_t[4] = actor_temps.g_t[4];
+                        self.actor_temps[i].g_t[1] = actor_temps.g_t[1];
+                        world.sprites[i].hitag = crate::con::actor_header_hitag(script, pic) as i16;
+                    }
                     continue;
                 }
                 world.sprites[i].cstat |= 257;
@@ -2433,6 +5209,26 @@ impl DukeSession {
         spawn_sector_effectors(
             world.sprites.as_mut(),
             &mut world.sectors[..world.numsectors as usize],
+            &mut self.actor_temps,
+        );
+        crate::effectors::init_nonrotating_subways(&mut world, &mut self.actor_temps);
+        crate::effectors::init_boss_effectors(&mut world);
+        crate::effectors::init_kroz_effectors(&mut world, &mut self.actor_temps);
+        self.effector_wall_offsets = crate::effectors::init_sliding_door_offsets(&world);
+        init_true_drop_planes(
+            world.sprites.as_ref(),
+            &mut world.sectors[..world.numsectors as usize],
+            &mut world.walls[..world.numwalls as usize],
+            &world.lists,
+            &mut self.actor_temps,
+        );
+        crate::interactions::init_bridge_effectors(&world, &mut self.actor_temps);
+        init_warp_elevator_effectors(
+            &world.lists,
+            world.sprites.as_ref(),
+            &world.sectors[..world.numsectors as usize],
+            &world.walls[..world.numwalls as usize],
+            &mut self.actor_temps,
         );
         init_transport_temps(
             world.sprites.as_ref(),
@@ -2486,6 +5282,7 @@ impl DukeSession {
             // +4 vs 58 aligns underwater pyoff at shell eject (tic153/181 ±2 Z).
             pycount: 63,
             ang,
+            look_ang: 0,
             horiz: 140, // Chocolate `resetplayerstats`
             cursectnum: sect,
             posxv: 0,
@@ -2493,53 +5290,1532 @@ impl DukeSession {
             poszv: 0,
             return_to_center: 9,
             sprite_i: player_i,
+            // Chocolate `resetinventory` starts a new single-player campaign
+            // at `max_armour_amount` (Atomic gamestartup parameter 3).
+            shield_amount: self
+                .script
+                .as_ref()
+                .and_then(|script| script.gamestartup.get(3).copied())
+                .unwrap_or(100)
+                .clamp(0, i32::from(i16::MAX)) as i16,
             ..Player::default()
         };
+        if let Some(sector) = world.sectors.get(sect.max(0) as usize) {
+            self.player.true_floor_z = sector.floorz;
+            self.player.true_ceiling_z = sector.ceilingz;
+        }
+        self.player.frag_ps = 0;
         self.world = Some(world);
+        self.duke_reverb_level = 0;
+    }
+
+    /// Configure a deterministic local Duke roster from the map's APLAYER
+    /// starts. Seat zero remains the desktop camera player. This is the
+    /// native playsim entry point used by lockstep hosts after map loading.
+    pub fn configure_multiplayer(
+        &mut self,
+        seat_count: usize,
+        coop: bool,
+        friendly_fire: bool,
+    ) -> Result<(), String> {
+        self.configure_multiplayer_mode(seat_count, u8::from(coop), friendly_fire)
+    }
+
+    /// Configure a deterministic native roster using Atomic's three `ud.coop`
+    /// modes and matching APLAYER lotags.
+    pub fn configure_multiplayer_mode(
+        &mut self,
+        seat_count: usize,
+        game_mode: u8,
+        friendly_fire: bool,
+    ) -> Result<(), String> {
+        if !(1..=8).contains(&seat_count) {
+            return Err("Duke multiplayer supports 1..=8 seats".into());
+        }
+        if game_mode > 2 {
+            return Err("Atomic Duke game mode must be 0, 1, or 2".into());
+        }
+        let Some(world) = self.world.as_mut() else {
+            return Err("Duke multiplayer requires a loaded map".into());
+        };
+        let coop_start_tag = i16::from(game_mode);
+        let coop = game_mode == 1;
+        let mut starts = Vec::new();
+        // `changespritestat()` inserts each map APLAYER at the head of
+        // STAT_PLAYER, so Chocolate's `headspritestat[10]` order is reverse
+        // map-sprite order. Keep that order when assigning connect seats.
+        for (index, sprite) in world.sprites.iter().enumerate().rev() {
+            if sprite.picnum != crate::spawn::APLAYER
+                || sprite.xrepeat != 0
+                || sprite.yrepeat != 0
+                || sprite.lotag != coop_start_tag
+                || world.lists.sprite_stat.get(index).copied() != Some(crate::stat::STAT_MISC)
+            {
+                continue;
+            }
+            let start = (
+                sprite.x,
+                sprite.y,
+                sprite.z,
+                sprite.ang,
+                sprite.sectnum,
+                sprite.pal,
+            );
+            starts.push(start);
+        }
+        if starts.len() < seat_count - 1 {
+            return Err(format!(
+                "Duke map has {} additional player start(s), but {seat_count} seats were requested",
+                starts.len()
+            ));
+        }
+        // Atomic `po[]` always begins with the map-header start; the
+        // remaining entries are only the APLAYER markers for the selected
+        // `ud.coop` lotag, in the same head-insertion order as STAT_PLAYER.
+        self.player_starts = vec![DukePlayerStart {
+            x: world.start[0],
+            y: world.start[1],
+            z: world.start[2],
+            angle: world.start_ang,
+            sector: world.start_sector,
+        }];
+        self.player_starts
+            .extend(
+                starts
+                    .iter()
+                    .map(|&(x, y, z, angle, sector, _)| DukePlayerStart {
+                        x,
+                        y,
+                        z,
+                        angle,
+                        sector,
+                    }),
+            );
+
+        for player in &self.coop_players {
+            if player.sprite_i >= 0 {
+                let _ = world.lists.deletesprite(player.sprite_i);
+            }
+        }
+        self.coop_players.clear();
+        self.player.coop_mode = coop;
+        self.player.game_mode = game_mode;
+        self.player.friendly_fire = friendly_fire;
+        self.player.frag_ps = 0;
+        // Chocolate `resetprestat` resets loadout and inventory in DukeMatch
+        // (including no-spawn mode), but keeps them across co-op transitions.
+        if seat_count > 1 && game_mode != 1 {
+            let max_armour = self
+                .script
+                .as_ref()
+                .and_then(|script| script.gamestartup.get(3).copied())
+                .unwrap_or(100)
+                .clamp(0, i32::from(i16::MAX)) as i16;
+            reset_multiplayer_loadout(&mut self.player, max_armour);
+        }
+        let mut next_player_palette = 10_u8;
+        for (seat, &(x, y, z, angle, sector, map_palette)) in
+            starts.iter().take(seat_count - 1).enumerate()
+        {
+            let seat_number = u8::try_from(seat + 1).map_err(|_| "invalid Duke seat index")?;
+            let body = crate::spawn::spawn_player_body(
+                &mut world.lists,
+                world.sprites.as_mut(),
+                &mut self.picnum,
+                [x, y, z],
+                angle,
+                sector,
+            );
+            if body < 0 {
+                for player in &self.coop_players {
+                    if player.sprite_i >= 0 {
+                        let _ = world.lists.deletesprite(player.sprite_i);
+                    }
+                }
+                self.coop_players.clear();
+                self.lists = world.lists.clone();
+                return Err("Duke map has no free sprite slot for a player body".into());
+            }
+            world.sprites[body as usize].yvel = i16::from(seat_number);
+            if map_palette != 0 {
+                // Chocolate preserves a map-authored player palette.
+                world.sprites[body as usize].pal = map_palette;
+            } else {
+                // The map-header body takes palette 9; `premap()` assigns the
+                // next zero-palette players 10..16 in connect order.
+                world.sprites[body as usize].pal = next_player_palette;
+                next_player_palette = if next_player_palette >= 16 {
+                    9
+                } else {
+                    next_player_palette + 1
+                };
+            }
+            let mut player = self.player.clone();
+            player.posx = x;
+            player.posy = y;
+            player.posz = z;
+            player.oposx = x;
+            player.oposy = y;
+            player.oposz = z;
+            player.bobposx = x;
+            player.bobposy = y;
+            player.ang = angle;
+            player.cursectnum = sector;
+            if let Some(sector) = world.sectors.get(sector.max(0) as usize) {
+                player.true_floor_z = sector.floorz;
+                player.true_ceiling_z = sector.ceilingz;
+            }
+            player.sprite_i = body;
+            player.extra = 100;
+            player.last_extra = 100;
+            player.coop_mode = coop;
+            player.game_mode = game_mode;
+            player.friendly_fire = friendly_fire;
+            player.frag_ps = i16::from(seat_number);
+            self.coop_players.push(player);
+        }
+        for player in &self.coop_players {
+            sync_player_sprite(player, world.sprites.as_mut());
+        }
+        self.lists = world.lists.clone();
+        self.actor_temps
+            .resize_with(world.sprites.len(), ActorConTemps::default);
+        Ok(())
+    }
+
+    /// Number of active native player seats, including seat zero.
+    #[must_use]
+    pub fn player_count(&self) -> usize {
+        1 + self.coop_players.len()
+    }
+
+    /// Carry the complete active roster and match settings into a newly loaded
+    /// campaign map. Spawn poses and sprite handles come from the new map.
+    pub fn inherit_campaign_roster(&mut self, previous: &Self) -> Result<(), String> {
+        let prior_players: Vec<Player> = (0..previous.player_count())
+            .filter_map(|seat| previous.player_for_seat(seat).cloned())
+            .collect();
+        if prior_players.is_empty() {
+            return Err("Duke campaign source has no player seats".into());
+        }
+        self.configure_multiplayer_mode(
+            prior_players.len(),
+            previous.player.game_mode,
+            previous.player.friendly_fire,
+        )?;
+        for (seat, prior) in prior_players.iter().enumerate() {
+            let next = if seat == 0 {
+                &mut self.player
+            } else {
+                self.coop_players
+                    .get_mut(seat - 1)
+                    .ok_or_else(|| "Duke campaign roster construction failed".to_owned())?
+            };
+            crate::campaign::carry_player_state(prior, next);
+        }
+        self.frag_matrix.clone_from(&previous.frag_matrix);
+        self.campaign = previous.campaign;
+        self.actor_toggle = previous.actor_toggle;
+        self.atomic_globals.clone_from(&previous.atomic_globals);
+        if let (Some(progress), Some(globals)) = (self.campaign, &mut self.atomic_globals) {
+            globals.volume = Some(i32::from(progress.volume));
+            globals.level = Some(i32::from(progress.level));
+            globals.from_bonus = Some(i32::from(progress.from_bonus));
+            let board_name = format!("E{}L{}.MAP", progress.volume + 1, progress.level + 1);
+            globals.boardfilename = vec![0; 128];
+            let board_bytes = board_name.as_bytes();
+            globals.boardfilename[..board_bytes.len()].copy_from_slice(board_bytes);
+        }
+        if let Some(world) = self.world.as_mut() {
+            sync_player_sprite(&self.player, world.sprites.as_mut());
+            for player in &self.coop_players {
+                sync_player_sprite(player, world.sprites.as_mut());
+            }
+        }
+        Ok(())
+    }
+
+    /// Read the native player state for a seat in Atomic connect order.
+    #[must_use]
+    pub fn player_for_seat(&self, seat: usize) -> Option<&Player> {
+        if seat == 0 {
+            Some(&self.player)
+        } else {
+            self.coop_players.get(seat - 1)
+        }
+    }
+
+    /// Mutably access native player state for a seat in Atomic connect order.
+    pub fn player_for_seat_mut(&mut self, seat: usize) -> Option<&mut Player> {
+        if seat == 0 {
+            Some(&mut self.player)
+        } else {
+            self.coop_players.get_mut(seat - 1)
+        }
+    }
+
+    /// Apply the Atomic single-player cheats that modify the local player.
+    /// Returns a user-facing quote ID when Chocolate would display one.
+    pub fn apply_player_cheat(&mut self, code: &str) -> Option<i16> {
+        if self.player_count() != 1 {
+            return None;
+        }
+        let quote = match code {
+            "cornholio" | "kroz" => {
+                self.player.god_mode = !self.player.god_mode;
+                if self.player.god_mode {
+                    if let Ok(sprite_index) = usize::try_from(self.player.sprite_i) {
+                        if let Some(sprite) = self
+                            .world
+                            .as_mut()
+                            .and_then(|world| world.sprites.get_mut(sprite_index))
+                        {
+                            sprite.cstat = 257;
+                            sprite.hitag = 0;
+                            sprite.lotag = 0;
+                            sprite.pal = 0;
+                        }
+                        if let Some(temps) = self.actor_temps.get_mut(sprite_index) {
+                            temps.g_t = [0; 6];
+                        }
+                    }
+                }
+                self.player.extra = 100;
+                self.player.last_extra = 100;
+                Some(if self.player.god_mode { 17 } else { 18 })
+            }
+            "stuff" | "weapons" => {
+                for weapon in 1..self.player.gotweapon.len() {
+                    self.player.gotweapon[weapon] = true;
+                    crate::weapons::addammo(&mut self.player, weapon as i16, i16::MAX);
+                }
+                self.player.ammo[11] = self.player.ammo[11].max(50);
+                if code == "stuff" {
+                    self.apply_player_inventory_cheat(true);
+                    Some(5)
+                } else {
+                    Some(119)
+                }
+            }
+            "items" => {
+                self.apply_player_inventory_cheat(true);
+                Some(5)
+            }
+            "inventory" => {
+                self.apply_player_inventory_cheat(false);
+                Some(120)
+            }
+            "keys" => {
+                self.player.got_access = 7;
+                Some(121)
+            }
+            "hyper" => {
+                self.player.steroids_amount = 399;
+                self.player.heat_amount = 1200;
+                Some(37)
+            }
+            "beta" => Some(105),
+            "todd" => Some(99),
+            "allen" => Some(79),
+            "monsters" => {
+                self.actor_toggle = if self.actor_toggle == 3 {
+                    1
+                } else {
+                    self.actor_toggle.saturating_add(1).max(1)
+                };
+                Some(0)
+            }
+            "view" => {
+                self.player.over_shoulder_on = !self.player.over_shoulder_on;
+                self.player.shoulder_camera_distance = 0;
+                Some(0)
+            }
+            "unlock" => {
+                self.unlock_all_sectors();
+                Some(100)
+            }
+            "cashman" => {
+                self.cashman = !self.cashman;
+                Some(0)
+            }
+            "clip" => {
+                self.clipping = !self.clipping;
+                Some(112 + i16::from(self.clipping))
+            }
+            _ => None,
+        };
+        if let Some(quote) = quote.filter(|quote| *quote > 0) {
+            self.player.quote_id = quote;
+            self.player.quote_timer = 100;
+        }
+        quote
+    }
+
+    /// Apply Chocolate's single-player `dnunlock` sector and force-field pass.
+    pub fn unlock_all_sectors(&mut self) {
+        if let Some(world) = self.world.as_mut() {
+            crate::interactions::cheat_unlock_all(
+                world,
+                &mut self.sector_motions,
+                &mut self.wall_motions,
+                &mut self.anim_wall_tags,
+                &mut self.actor_temps,
+                &self.player,
+            );
+        }
+    }
+
+    fn apply_player_inventory_cheat(&mut self, include_keys: bool) {
+        self.player.steroids_amount = 400;
+        self.player.heat_amount = 1200;
+        self.player.boot_amount = 200;
+        self.player.shield_amount = 100;
+        self.player.scuba_amount = 6400;
+        self.player.holoduke_amount = 2400;
+        self.player.jetpack_amount = 1600;
+        self.player.firstaid_amount = 100;
+        if include_keys {
+            self.player.got_access = 7;
+        }
+        self.player.inventory_icon = 1;
     }
 
     /// Advance one game tic.
     pub fn tick(&mut self, input: DukeInput) {
+        self.tick_inputs(std::slice::from_ref(&input));
+    }
+
+    /// Advance one 30 Hz tic with one command per active player seat. Missing
+    /// seat commands are treated as neutral, matching a timed-out lockstep
+    /// input frame; excess commands are ignored because the roster is fixed.
+    pub fn tick_inputs(&mut self, inputs: &[DukeInput]) {
+        let mut sync_inputs: Vec<DukeInput> = (0..=self.coop_players.len())
+            .map(|seat| inputs.get(seat).copied().unwrap_or_default())
+            .collect();
+        for (seat, input) in sync_inputs.iter_mut().enumerate() {
+            let player = if seat == 0 {
+                &mut self.player
+            } else {
+                let Some(player) = self.coop_players.get_mut(seat - 1) else {
+                    continue;
+                };
+                player
+            };
+            input.fvel = input.fvel.saturating_add(
+                player
+                    .effector_force_x
+                    .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+            );
+            input.svel = input.svel.saturating_add(
+                player
+                    .effector_force_y
+                    .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+            );
+            player.effector_force_x = 0;
+            player.effector_force_y = 0;
+        }
+        let mut input = sync_inputs.first().copied().unwrap_or_default();
         crate::fixups::set(self.trace_fixups);
         self.tic = self.tic.wrapping_add(1);
+        self.everyothertime = self.everyothertime.wrapping_add(1);
+        if self.player.over_shoulder_on {
+            // Chocolate advances `cameradist` by (totalclock - cameraclock)
+            // << 10. Its renderer clock runs at 120 Hz; Room's deterministic
+            // playsim advances four such frames per 30 Hz Duke tic.
+            self.player.shoulder_camera_distance = self
+                .player
+                .shoulder_camera_distance
+                .saturating_add(4 << 10)
+                .min(1 << 16);
+        } else {
+            self.player.shoulder_camera_distance = 0;
+        }
+        // Chocolate `doincrements()` advances these player presentation timers
+        // once per game tic, independently of actor simulation order.
+        if self.player.tip_timer > 0 {
+            self.player.tip_timer -= 1;
+        }
+        if self.player.quote_timer > 0 {
+            self.player.quote_timer -= 1;
+            if self.player.quote_timer == 0 {
+                self.player.quote_id = 0;
+            }
+        }
+        if self.player.palette_flash_tics > 0 {
+            self.player.palette_flash_tics -= 1;
+            if self.player.palette_flash_tics == 0 {
+                self.player.palette_flash = [0; 3];
+            }
+        }
+        // Chocolate `processinput()` only advances end-of-level countdowns for
+        // a living player. Campaign routing is owned by the outer game runtime.
+        if self.player.time_before_exit > 1 && self.player.last_extra > 0 {
+            self.player.time_before_exit -= 1;
+            match self.player.time_before_exit {
+                130 => {
+                    if self.player.custom_exit_sound >= 0 {
+                        self.pending_sound_ids
+                            .push(self.player.custom_exit_sound as u16);
+                        if self.player.fta_enabled {
+                            self.player.quote_id = 102;
+                            self.player.quote_timer = 100;
+                        }
+                    }
+                }
+                1 => self.level_exit_ready = true,
+                _ => {}
+            }
+        }
         // Chocolate `domovethings` order (subset): global_random → processinput →
         // movefta → moveexplosions → moveactors. Bloodsplat TRAND must follow
         // whatever `movefta` burns that tic.
         // Chocolate `short global_random` — truncate like a 16-bit store.
         self.global_random = krand_step(&mut self.randomseed) as i16 as i32;
         if let Some(world) = self.world.as_mut() {
-            processinput_move(
-                &mut self.player,
-                input,
-                &world.sectors[..world.numsectors as usize],
-                &world.walls[..world.numwalls as usize],
-                world.sprites.as_ref(),
-                &self.tile_meta,
-                DUKE_FRICTION,
+            let mut death_players = Vec::with_capacity(1 + self.coop_players.len());
+            death_players.push(self.player.clone());
+            death_players.extend(self.coop_players.iter().cloned());
+            process_player_deaths(
+                &mut death_players,
+                world.sprites.as_mut(),
+                &mut self.actor_temps,
+                &mut self.randomseed,
+                &mut self.frag_matrix,
+                self.script.as_ref(),
             );
-            // Chocolate `processinput`: `setsprite(pi, pos…)` before SHOOTINCODE
-            // so `aim` / `ldist(&sprite[ps.i], …)` use the post-move body.
-            sync_player_sprite(&self.player, world.sprites.as_mut());
-            {
-                let actortype: &[u8] = self
-                    .script
-                    .as_ref()
-                    .map(|s| s.actortype.as_slice())
-                    .unwrap_or(&[]);
-                process_weapons_shotgun(
-                    &mut self.player,
-                    input.bits,
-                    &mut self.lists,
+            for player in &mut death_players {
+                crate::moveplayers::tick_dead_player_view(
+                    player,
                     world.sprites.as_mut(),
                     &world.sectors[..world.numsectors as usize],
                     &world.walls[..world.numwalls as usize],
+                    &self.tile_meta,
+                );
+            }
+            let mut death_players = death_players.into_iter();
+            if let Some(player) = death_players.next() {
+                self.player = player;
+            }
+            self.coop_players = death_players.collect();
+            let local_open = input.bits & INPUT_OPEN != 0;
+            let local_open_edge = local_open && !self.player.respawn_use_was_down;
+            self.player.respawn_use_was_down = local_open;
+            if self.player.extra <= 0
+                && !self.player.freezer_frozen
+                && local_open_edge
+                && self.coop_players.len() > 0
+                && self.player.game_mode != 2
+                && let Ok(actor_index) = usize::try_from(self.player.sprite_i)
+            {
+                if self.actor_temps.len() <= actor_index {
+                    self.actor_temps
+                        .resize_with(actor_index + 1, ActorConTemps::default);
+                }
+                let random_start = if self.player.coop_mode {
+                    0
+                } else {
+                    krand_step(&mut self.randomseed)
+                };
+                self.actor_temps[actor_index].pending_player_respawn =
+                    Some((0, self.player.coop_mode, random_start));
+            }
+            if self.player.extra <= 0 {
+                input = DukeInput::default();
+            }
+            if let Some(seat_input) = sync_inputs.first_mut() {
+                *seat_input = input;
+            }
+            for (seat, player) in self.coop_players.iter_mut().enumerate() {
+                let seat_input = sync_inputs.get(seat + 1).copied().unwrap_or_default();
+                let open_down = seat_input.bits & INPUT_OPEN != 0;
+                let open_edge = open_down && !player.respawn_use_was_down;
+                player.respawn_use_was_down = open_down;
+                if player.extra <= 0 {
+                    if open_edge
+                        && !player.freezer_frozen
+                        && self.player.game_mode != 2
+                        && let Ok(actor_index) = usize::try_from(player.sprite_i)
+                    {
+                        if self.actor_temps.len() <= actor_index {
+                            self.actor_temps
+                                .resize_with(actor_index + 1, ActorConTemps::default);
+                        }
+                        let random_start = if player.coop_mode {
+                            0
+                        } else {
+                            krand_step(&mut self.randomseed)
+                        };
+                        self.actor_temps[actor_index].pending_player_respawn = Some((
+                            u8::try_from(seat + 1).unwrap_or(u8::MAX),
+                            player.coop_mode,
+                            random_start,
+                        ));
+                    }
+                    if let Some(seat_input) = sync_inputs.get_mut(seat + 1) {
+                        *seat_input = DukeInput::default();
+                    }
+                }
+            }
+            if self.player.extra > 0
+                && crate::interactions::tick_access_switch(
+                    world,
+                    &mut self.player,
+                    &mut self.sector_motions,
+                    &mut self.wall_motions,
+                    &mut self.cyclers,
+                    &mut self.anim_wall_tags,
+                    self.monsters_off,
+                    self.script
+                        .as_ref()
+                        .map_or(&[], |script| script.actortype.as_slice()),
+                    &mut self.actor_temps,
                     &mut self.picnum,
+                    self.script.as_ref(),
+                )
+                && let Some(id) = self
+                    .script
+                    .as_ref()
+                    .and_then(|script| script.labels.get("SWITCH_ON"))
+                    .and_then(|label| u16::try_from(label.value).ok())
+            {
+                self.pending_sound_ids.push(id);
+            }
+            let access_switch_sound = self
+                .script
+                .as_ref()
+                .and_then(|script| script.labels.get("SWITCH_ON"))
+                .and_then(|label| u16::try_from(label.value).ok());
+            for player in &mut self.coop_players {
+                if player.extra > 0
+                    && crate::interactions::tick_access_switch(
+                        world,
+                        player,
+                        &mut self.sector_motions,
+                        &mut self.wall_motions,
+                        &mut self.cyclers,
+                        &mut self.anim_wall_tags,
+                        self.monsters_off,
+                        self.script
+                            .as_ref()
+                            .map_or(&[], |script| script.actortype.as_slice()),
+                        &mut self.actor_temps,
+                        &mut self.picnum,
+                        self.script.as_ref(),
+                    )
+                    && let Some(id) = access_switch_sound
+                {
+                    self.pending_sound_ids.push(id);
+                }
+            }
+            let mut pstomp_kills = Vec::new();
+            let quick_kick_before = self.player.quick_kick;
+            let player_move_hit = if self.player.extra > 0 {
+                processinput_move_with_lists_clipping(
+                    &mut self.player,
+                    input,
+                    &world.sectors[..world.numsectors as usize],
+                    &world.walls[..world.numwalls as usize],
+                    world.sprites.as_ref(),
+                    &self.tile_meta,
+                    DUKE_FRICTION,
+                    Some(&self.lists),
+                    self.clipping,
+                )
+            } else {
+                0
+            };
+            check_player_wall_hurt(
+                &mut self.player,
+                player_move_hit,
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &world.sectors[..world.numsectors as usize],
+                &mut world.walls[..world.numwalls as usize],
+                &mut self.picnum,
+                &mut self.actor_temps,
+                &mut self.randomseed,
+                self.script.as_ref(),
+                &mut self.pending_sound_ids,
+            );
+            if self.player.extra > 0 && quick_kick_before > 0 && self.player.quick_kick == 8 {
+                let actortype: &[u8] = self
+                    .script
+                    .as_ref()
+                    .map_or(&[], |script| script.actortype.as_slice());
+                if let Some(knee_hit) = crate::shoot::process_quick_kick(
+                    &self.player,
+                    world.sprites.as_mut(),
+                    &world.sectors[..world.numsectors as usize],
+                    &world.walls[..world.numwalls as usize],
                     &mut self.actor_temps,
                     &self.tile_meta,
-                    self.script.as_ref(),
                     actortype,
+                    self.script.as_ref(),
                     &mut self.randomseed,
+                ) {
+                    let (knee_sounds, adjusted_wall) = crate::weapons_move::apply_knee_hit_effects(
+                        &mut self.lists,
+                        world.sprites.as_mut(),
+                        &mut world.sectors[..world.numsectors as usize],
+                        &mut world.walls[..world.numwalls as usize],
+                        &mut self.picnum,
+                        &mut self.actor_temps,
+                        &mut self.randomseed,
+                        self.script.as_ref(),
+                        &self.tile_meta,
+                        std::slice::from_ref(&self.player),
+                        knee_hit,
+                        self.player.sprite_i,
+                        self.player.ang,
+                    );
+                    self.pending_sound_ids.extend(
+                        knee_sounds
+                            .into_iter()
+                            .filter_map(|sound| u16::try_from(sound).ok()),
+                    );
+                    let activated = crate::interactions::knee_hit_is_switch(
+                        world,
+                        adjusted_wall.or(knee_hit.wall),
+                        knee_hit.sprite,
+                    ) && crate::interactions::hit_switch_target(
+                        world,
+                        &mut self.sector_motions,
+                        &mut self.wall_motions,
+                        &mut self.cyclers,
+                        adjusted_wall.or(knee_hit.wall),
+                        knee_hit.sprite,
+                        &mut self.level_exit_ready,
+                        &mut self.player,
+                        &mut self.anim_wall_tags,
+                        self.monsters_off,
+                        self.script
+                            .as_ref()
+                            .map_or(&[], |script| script.actortype.as_slice()),
+                        &mut self.actor_temps,
+                        &mut self.picnum,
+                        self.script.as_ref(),
+                    )
+                    .is_some();
+                    let switch_sound = activated
+                        .then(|| {
+                            self.script
+                                .as_ref()
+                                .and_then(|script| script.labels.get("SWITCH_ON"))
+                                .and_then(|label| u16::try_from(label.value).ok())
+                        })
+                        .flatten();
+                    if let Some(sound) = switch_sound {
+                        self.pending_sound_ids.push(sound);
+                    }
+                    if let Some(sound) = self
+                        .script
+                        .as_ref()
+                        .and_then(|script| script.labels.get("KICK_HIT"))
+                        .and_then(|label| u16::try_from(label.value).ok())
+                    {
+                        self.pending_sound_ids.push(sound);
+                    }
+                }
+            }
+            if self.player.extra > 0
+                && let Some(target) = self.player.pending_knee_target.take()
+            {
+                if let Some(kill) = apply_pstomp_impact(
+                    &mut self.lists,
+                    world,
+                    &mut self.picnum,
+                    &mut self.actor_temps,
+                    &mut self.player,
+                    target,
+                    &mut self.randomseed,
+                    self.script.as_ref(),
+                    &mut self.pending_sound_ids,
+                    0,
+                ) {
+                    pstomp_kills.push(kill);
+                }
+            }
+            if self.player.extra > 0
+                && let Some(sector) = world.sectors.get(self.player.cursectnum.max(0) as usize)
+            {
+                tick_player_floor_hazards(
+                    &mut self.player,
+                    sector,
+                    &mut self.randomseed,
+                    self.script.as_ref(),
+                    &mut self.actor_temps,
                 );
+            }
+            if self.player.extra > 0 {
+                tick_player_footprints(
+                    &mut self.player,
+                    &mut self.lists,
+                    world,
+                    &mut self.picnum,
+                    &mut self.actor_temps,
+                    &mut self.randomseed,
+                    self.script.as_ref(),
+                );
+            }
+            let player_lotag = world
+                .sectors
+                .get(self.player.cursectnum.max(0) as usize)
+                .map(|sector| sector.lotag);
+            if self.player.extra > 0 {
+                tick_player_inventory(
+                    &mut self.player,
+                    player_lotag,
+                    self.script.as_ref(),
+                    true,
+                    &mut self.actor_temps,
+                );
+            }
+            let inventory_edges = edge_inventory_bits(
+                &mut self.inventory_use_was_down,
+                &mut self.inventory_left_was_down,
+                &mut self.inventory_right_was_down,
+                input.bits,
+            );
+            if self.player.extra > 0 {
+                apply_holoduke_input(
+                    &mut self.player,
+                    inventory_edges,
+                    &mut self.lists,
+                    world.sprites.as_mut(),
+                    &mut self.picnum,
+                    self.script.as_ref(),
+                    &mut self.actor_temps,
+                );
+                apply_player_inventory_input(
+                    &mut self.player,
+                    inventory_edges,
+                    self.script.as_ref(),
+                    &mut self.actor_temps,
+                );
+            }
+            // Chocolate sets each APLAYER before later seats process their
+            // input, so portal/collision queries see already-updated bodies.
+            if self.player.extra > 0 || self.player.freezer_frozen {
+                sync_player_sprite(&self.player, world.sprites.as_mut());
+            } else if let Ok(index) = usize::try_from(self.player.sprite_i)
+                && let Some(body) = world.sprites.get_mut(index)
+            {
+                // Chocolate's dead `processinput` returns before `setsprite`;
+                // `moveplayers` updates only the body's angle afterward.
+                body.ang = self.player.ang;
+            }
+            for (seat, player) in self.coop_players.iter_mut().enumerate() {
+                let seat_input = if player.extra > 0 {
+                    sync_inputs.get(seat + 1).copied().unwrap_or_default()
+                } else {
+                    DukeInput::default()
+                };
+                let quick_kick_before = player.quick_kick;
+                let player_move_hit = if player.extra > 0 {
+                    processinput_move_with_lists(
+                        player,
+                        seat_input,
+                        &world.sectors[..world.numsectors as usize],
+                        &world.walls[..world.numwalls as usize],
+                        world.sprites.as_ref(),
+                        &self.tile_meta,
+                        DUKE_FRICTION,
+                        Some(&self.lists),
+                    )
+                } else {
+                    0
+                };
+                check_player_wall_hurt(
+                    player,
+                    player_move_hit,
+                    &mut self.lists,
+                    world.sprites.as_mut(),
+                    &world.sectors[..world.numsectors as usize],
+                    &mut world.walls[..world.numwalls as usize],
+                    &mut self.picnum,
+                    &mut self.actor_temps,
+                    &mut self.randomseed,
+                    self.script.as_ref(),
+                    &mut self.pending_sound_ids,
+                );
+                if player.extra > 0 && quick_kick_before > 0 && player.quick_kick == 8 {
+                    let actortype: &[u8] = self
+                        .script
+                        .as_ref()
+                        .map_or(&[], |script| script.actortype.as_slice());
+                    if let Some(knee_hit) = crate::shoot::process_quick_kick(
+                        player,
+                        world.sprites.as_mut(),
+                        &world.sectors[..world.numsectors as usize],
+                        &world.walls[..world.numwalls as usize],
+                        &mut self.actor_temps,
+                        &self.tile_meta,
+                        actortype,
+                        self.script.as_ref(),
+                        &mut self.randomseed,
+                    ) {
+                        let (knee_sounds, adjusted_wall) =
+                            crate::weapons_move::apply_knee_hit_effects(
+                                &mut self.lists,
+                                world.sprites.as_mut(),
+                                &mut world.sectors[..world.numsectors as usize],
+                                &mut world.walls[..world.numwalls as usize],
+                                &mut self.picnum,
+                                &mut self.actor_temps,
+                                &mut self.randomseed,
+                                self.script.as_ref(),
+                                &self.tile_meta,
+                                std::slice::from_ref(&*player),
+                                knee_hit,
+                                player.sprite_i,
+                                player.ang,
+                            );
+                        self.pending_sound_ids.extend(
+                            knee_sounds
+                                .into_iter()
+                                .filter_map(|sound| u16::try_from(sound).ok()),
+                        );
+                        let activated = crate::interactions::knee_hit_is_switch(
+                            world,
+                            adjusted_wall.or(knee_hit.wall),
+                            knee_hit.sprite,
+                        ) && crate::interactions::hit_switch_target(
+                            world,
+                            &mut self.sector_motions,
+                            &mut self.wall_motions,
+                            &mut self.cyclers,
+                            adjusted_wall.or(knee_hit.wall),
+                            knee_hit.sprite,
+                            &mut self.level_exit_ready,
+                            player,
+                            &mut self.anim_wall_tags,
+                            self.monsters_off,
+                            self.script
+                                .as_ref()
+                                .map_or(&[], |script| script.actortype.as_slice()),
+                            &mut self.actor_temps,
+                            &mut self.picnum,
+                            self.script.as_ref(),
+                        )
+                        .is_some();
+                        let switch_sound = activated
+                            .then(|| {
+                                self.script
+                                    .as_ref()
+                                    .and_then(|script| script.labels.get("SWITCH_ON"))
+                                    .and_then(|label| u16::try_from(label.value).ok())
+                            })
+                            .flatten();
+                        if let Some(sound) = switch_sound {
+                            self.pending_sound_ids.push(sound);
+                        }
+                        if let Some(sound) = self
+                            .script
+                            .as_ref()
+                            .and_then(|script| script.labels.get("KICK_HIT"))
+                            .and_then(|label| u16::try_from(label.value).ok())
+                        {
+                            self.pending_sound_ids.push(sound);
+                        }
+                    }
+                }
+                if player.extra > 0
+                    && let Some(target) = player.pending_knee_target.take()
+                {
+                    if let Some(kill) = apply_pstomp_impact(
+                        &mut self.lists,
+                        world,
+                        &mut self.picnum,
+                        &mut self.actor_temps,
+                        player,
+                        target,
+                        &mut self.randomseed,
+                        self.script.as_ref(),
+                        &mut self.pending_sound_ids,
+                        (seat + 1) as i16,
+                    ) {
+                        pstomp_kills.push(kill);
+                    }
+                }
+                if player.extra > 0
+                    && let Some(sector) = world.sectors.get(player.cursectnum.max(0) as usize)
+                {
+                    tick_player_floor_hazards(
+                        player,
+                        sector,
+                        &mut self.randomseed,
+                        self.script.as_ref(),
+                        &mut self.actor_temps,
+                    );
+                }
+                if player.extra > 0 {
+                    tick_player_footprints(
+                        player,
+                        &mut self.lists,
+                        world,
+                        &mut self.picnum,
+                        &mut self.actor_temps,
+                        &mut self.randomseed,
+                        self.script.as_ref(),
+                    );
+                }
+                let player_lotag = world
+                    .sectors
+                    .get(player.cursectnum.max(0) as usize)
+                    .map(|sector| sector.lotag);
+                let heartbeat_audible = player.coop_mode;
+                if player.extra > 0 {
+                    tick_player_inventory(
+                        player,
+                        player_lotag,
+                        self.script.as_ref(),
+                        heartbeat_audible,
+                        &mut self.actor_temps,
+                    );
+                }
+                let inventory_edges = edge_inventory_bits(
+                    &mut player.inventory_use_was_down,
+                    &mut player.inventory_left_was_down,
+                    &mut player.inventory_right_was_down,
+                    seat_input.bits,
+                );
+                if player.extra > 0 {
+                    apply_holoduke_input(
+                        player,
+                        inventory_edges,
+                        &mut self.lists,
+                        world.sprites.as_mut(),
+                        &mut self.picnum,
+                        self.script.as_ref(),
+                        &mut self.actor_temps,
+                    );
+                    apply_player_inventory_input(
+                        player,
+                        inventory_edges,
+                        self.script.as_ref(),
+                        &mut self.actor_temps,
+                    );
+                }
+                if player.extra > 0 || player.freezer_frozen {
+                    sync_player_sprite(player, world.sprites.as_mut());
+                } else if let Ok(index) = usize::try_from(player.sprite_i)
+                    && let Some(body) = world.sprites.get_mut(index)
+                {
+                    body.ang = player.ang;
+                }
+            }
+            for (victim_seat, killer_seat) in pstomp_kills {
+                let victim = if victim_seat == 0 {
+                    Some(&mut self.player)
+                } else {
+                    self.coop_players.get_mut(victim_seat - 1)
+                };
+                if let Some(victim) = victim {
+                    victim.extra = 0;
+                    victim.last_extra = 0;
+                    victim.frag_ps = killer_seat as i16;
+                    if let Ok(sprite_index) = usize::try_from(victim.sprite_i)
+                        && let Some(body) = world.sprites.get_mut(sprite_index)
+                    {
+                        body.extra = 0;
+                    }
+                }
+            }
+            let mut pending_switch_hits = Vec::<(i16, Option<i16>, Option<i16>)>::new();
+            macro_rules! tick_weapon_input {
+                ($player:expr, $seat_input:expr) => {{
+                    let player: &mut Player = $player;
+                    let input: DukeInput = $seat_input;
+                    let selected_by_input = apply_weapon_input(player, input.bits);
+                    if selected_by_input {
+                        let sound_name = match player.curr_weapon {
+                            0 | 5 | 8 | 10 => None,
+                            1 => Some("INSERT_CLIP"),
+                            2 => Some("SHOTGUN_COCK"),
+                            _ => Some("SELECT_WEAPON"),
+                        };
+                        if let Some(id) = sound_name
+                            .and_then(|name| self.script.as_ref()?.labels.get(name))
+                            .and_then(|label| u16::try_from(label.value).ok())
+                        {
+                            self.pending_sound_ids.push(id);
+                        }
+                    }
+                    let weapon_before = player.curr_weapon;
+                    let kickback_before = player.kickback_pic;
+                    let devastator_ammo_before = player.ammo[7];
+                    let pipebomb_ammo_before = player.ammo[5];
+                    let actortype: &[u8] = self
+                        .script
+                        .as_ref()
+                        .map(|s| s.actortype.as_slice())
+                        .unwrap_or(&[]);
+                    let mut knee_hit = None;
+                    match player.curr_weapon {
+                        0 => {
+                            knee_hit = process_weapons_knee(
+                                player,
+                                input.bits,
+                                world.sprites.as_mut(),
+                                &world.sectors[..world.numsectors as usize],
+                                &world.walls[..world.numwalls as usize],
+                                &mut self.actor_temps,
+                                &self.tile_meta,
+                                actortype,
+                                self.script.as_ref(),
+                                &mut self.randomseed,
+                            );
+                        }
+                        1 => process_weapons_pistol(
+                            player,
+                            input.bits,
+                            &mut self.lists,
+                            world.sprites.as_mut(),
+                            &mut world.sectors[..world.numsectors as usize],
+                            &mut world.walls[..world.numwalls as usize],
+                            &mut self.picnum,
+                            &mut self.actor_temps,
+                            &self.tile_meta,
+                            self.script.as_ref(),
+                            actortype,
+                            &mut self.randomseed,
+                            &mut self.pending_sound_ids,
+                            &mut pending_switch_hits,
+                        ),
+                        2 => process_weapons_shotgun(
+                            player,
+                            input.bits,
+                            &mut self.lists,
+                            world.sprites.as_mut(),
+                            &mut world.sectors[..world.numsectors as usize],
+                            &mut world.walls[..world.numwalls as usize],
+                            &mut self.picnum,
+                            &mut self.actor_temps,
+                            &self.tile_meta,
+                            self.script.as_ref(),
+                            actortype,
+                            &mut self.randomseed,
+                            &mut self.pending_sound_ids,
+                            &mut pending_switch_hits,
+                        ),
+                        3 => process_weapons_chaingun(
+                            player,
+                            input.bits,
+                            &mut self.lists,
+                            world.sprites.as_mut(),
+                            &mut world.sectors[..world.numsectors as usize],
+                            &mut world.walls[..world.numwalls as usize],
+                            &mut self.picnum,
+                            &mut self.actor_temps,
+                            &self.tile_meta,
+                            self.script.as_ref(),
+                            actortype,
+                            &mut self.randomseed,
+                            &mut self.pending_sound_ids,
+                            &mut pending_switch_hits,
+                        ),
+                        4 => process_weapons_rpg(
+                            player,
+                            input.bits,
+                            &mut self.lists,
+                            world.sprites.as_mut(),
+                            &world.sectors[..world.numsectors as usize],
+                            &world.walls[..world.numwalls as usize],
+                            &mut self.actor_temps,
+                            &mut self.picnum,
+                            &self.tile_meta,
+                            self.script.as_ref(),
+                            actortype,
+                            &mut self.randomseed,
+                        ),
+                        5 | 10 => process_weapons_pipebomb(
+                            player,
+                            input.bits,
+                            &mut self.lists,
+                            world.sprites.as_mut(),
+                            &world.sectors[..world.numsectors as usize],
+                            &world.walls[..world.numwalls as usize],
+                            &mut self.actor_temps,
+                            &mut self.picnum,
+                            self.script.as_ref(),
+                        ),
+                        7 => process_weapons_devastator(
+                            player,
+                            input.bits,
+                            &mut self.lists,
+                            world.sprites.as_mut(),
+                            &world.sectors[..world.numsectors as usize],
+                            &world.walls[..world.numwalls as usize],
+                            &mut self.actor_temps,
+                            &mut self.picnum,
+                            &self.tile_meta,
+                            self.script.as_ref(),
+                            actortype,
+                            &mut self.randomseed,
+                            &mut self.pending_sound_ids,
+                        ),
+                        8 => process_weapons_tripbomb(
+                            player,
+                            input.bits,
+                            &mut self.lists,
+                            world.sprites.as_mut(),
+                            &world.sectors[..world.numsectors as usize],
+                            &world.walls[..world.numwalls as usize],
+                            &mut self.picnum,
+                            &mut self.actor_temps,
+                            &self.tile_meta,
+                            self.script.as_ref(),
+                            &mut self.pending_sound_ids,
+                        ),
+                        9 => process_weapons_freezer(
+                            player,
+                            input.bits,
+                            &mut self.lists,
+                            world.sprites.as_mut(),
+                            &world.sectors[..world.numsectors as usize],
+                            &world.walls[..world.numwalls as usize],
+                            &self.tile_meta,
+                            actortype,
+                            &mut self.actor_temps,
+                            &mut self.picnum,
+                            self.script.as_ref(),
+                            &mut self.randomseed,
+                            &mut self.pending_sound_ids,
+                        ),
+                        6 | 11 => process_weapons_shrink_grow(
+                            player,
+                            input.bits,
+                            &mut self.lists,
+                            world.sprites.as_mut(),
+                            &world.sectors[..world.numsectors as usize],
+                            &world.walls[..world.numwalls as usize],
+                            &mut self.actor_temps,
+                            &mut self.picnum,
+                            &self.tile_meta,
+                            self.script.as_ref(),
+                            actortype,
+                            &mut self.randomseed,
+                            &mut self.pending_sound_ids,
+                        ),
+                        _ => process_unimplemented_weapon(player),
+                    }
+                    if let Some(knee_hit) = knee_hit {
+                        let (knee_sounds, adjusted_wall) =
+                            crate::weapons_move::apply_knee_hit_effects(
+                            &mut self.lists,
+                            world.sprites.as_mut(),
+                            &mut world.sectors[..world.numsectors as usize],
+                            &mut world.walls[..world.numwalls as usize],
+                            &mut self.picnum,
+                            &mut self.actor_temps,
+                            &mut self.randomseed,
+                            self.script.as_ref(),
+                            &self.tile_meta,
+                            std::slice::from_ref(&*player),
+                            knee_hit,
+                            player.sprite_i,
+                            player.ang,
+                            );
+                        self.pending_sound_ids.extend(
+                            knee_sounds
+                                .into_iter()
+                                .filter_map(|sound| u16::try_from(sound).ok()),
+                        );
+                        let activated = crate::interactions::knee_hit_is_switch(
+                            world,
+                            adjusted_wall.or(knee_hit.wall),
+                            knee_hit.sprite,
+                        ) && crate::interactions::hit_switch_target(
+                            world,
+                            &mut self.sector_motions,
+                            &mut self.wall_motions,
+                            &mut self.cyclers,
+                            adjusted_wall.or(knee_hit.wall),
+                            knee_hit.sprite,
+                            &mut self.level_exit_ready,
+                            player,
+                            &mut self.anim_wall_tags,
+                            self.monsters_off,
+                            self.script
+                                .as_ref()
+                                .map_or(&[], |script| script.actortype.as_slice()),
+                            &mut self.actor_temps,
+                            &mut self.picnum,
+                            self.script.as_ref(),
+                        )
+                        .is_some();
+                        if activated
+                            && let Some(sound) = self
+                                .script
+                                .as_ref()
+                                .and_then(|script| script.labels.get("SWITCH_ON"))
+                                .and_then(|label| u16::try_from(label.value).ok())
+                        {
+                            self.pending_sound_ids.push(sound);
+                        }
+                    }
+                    if kickback_before > 0 && player.kickback_pic == 0 {
+                        let _ = apply_pending_weapon(player);
+                    }
+                    let fired = match weapon_before {
+                        0 => knee_hit.is_some(),
+                        1 | 3 => false, // pistol/chaingun enqueue sound before their hitscan
+                        2 => kickback_before != 4 && player.kickback_pic == 4,
+                        4 => kickback_before != 2 && player.kickback_pic == 2,
+                        7 => devastator_ammo_before > player.ammo[7],
+                        5 => pipebomb_ammo_before > player.ammo[5],
+                        6 | 9 | 11 => false, // activation cues are queued by the weapon state handlers
+                        _ => false,
+                    };
+                    if fired {
+                        let name = match weapon_before {
+                            0 => "KICK_HIT",
+                            1 => "PISTOL_FIRE",
+                            2 => "SHOTGUN_FIRE",
+                            3 => "CHAINGUN_FIRE",
+                            4 => "RPG_SHOOT",
+                            _ => "",
+                        };
+                        if let Some(id) = self
+                            .script
+                            .as_ref()
+                            .and_then(|script| script.labels.get(name))
+                            .and_then(|label| u16::try_from(label.value).ok())
+                        {
+                            self.pending_sound_ids.push(id);
+                        }
+                    }
+                }};
+            }
+            macro_rules! activate_bullet_switches {
+                ($player:expr) => {{
+                    let player: &mut Player = $player;
+                    let pending = std::mem::take(&mut pending_switch_hits);
+                    for (body_i, wall_i, sprite_i) in pending {
+                        if body_i != player.sprite_i {
+                            pending_switch_hits.push((body_i, wall_i, sprite_i));
+                            continue;
+                        }
+                        if crate::interactions::hit_switch_target(
+                            world,
+                            &mut self.sector_motions,
+                            &mut self.wall_motions,
+                            &mut self.cyclers,
+                            wall_i,
+                            sprite_i,
+                            &mut self.level_exit_ready,
+                            player,
+                            &mut self.anim_wall_tags,
+                            self.monsters_off,
+                            self.script
+                                .as_ref()
+                                .map_or(&[], |script| script.actortype.as_slice()),
+                            &mut self.actor_temps,
+                            &mut self.picnum,
+                            self.script.as_ref(),
+                        )
+                        .is_some()
+                            && let Some(id) = self
+                                .script
+                                .as_ref()
+                                .and_then(|script| script.labels.get("SWITCH_ON"))
+                                .and_then(|label| u16::try_from(label.value).ok())
+                        {
+                            self.pending_sound_ids.push(id);
+                        }
+                    }
+                }};
+            }
+            tick_weapon_input!(&mut self.player, input);
+            activate_bullet_switches!(&mut self.player);
+            let open_down = input.bits & INPUT_OPEN != 0;
+            if input.bits & (INPUT_OPEN | (1 << 31)) == 0 {
+                self.player.toggle_key_flag = 0;
+            } else if self.player.toggle_key_flag == 0 {
+                self.player.toggle_key_flag = 1;
+            }
+            let special_sector = crate::interactions::handle_sector_special(
+                world,
+                &mut self.player,
+                &mut self.level_exit_ready,
+            );
+            if self.cashman && open_down && self.player.extra > 0 && self.player.cursectnum >= 0 {
+                let money = self
+                    .script
+                    .as_ref()
+                    .and_then(|script| script.labels.get("MONEY"))
+                    .and_then(|label| i16::try_from(label.value).ok())
+                    .unwrap_or(1233);
+                for _ in 0..2 {
+                    let z = self
+                        .player
+                        .posz
+                        .wrapping_sub(krand_step(&mut self.randomseed) % (47 << 8));
+                    let angle = (krand_step(&mut self.randomseed) & 2047) as i16;
+                    let coin = crate::shoot::egs(
+                        &mut self.lists,
+                        world.sprites.as_mut(),
+                        &mut self.picnum,
+                        &mut self.actor_temps,
+                        self.script.as_ref(),
+                        self.player.cursectnum,
+                        self.player.posx,
+                        self.player.posy,
+                        z,
+                        money,
+                        -32,
+                        8,
+                        8,
+                        angle,
+                        0,
+                        0,
+                        0,
+                        crate::stat::STAT_MISC,
+                    );
+                    let cstat = (krand_step(&mut self.randomseed) & 12) as u16;
+                    if coin >= 0 {
+                        world.sprites[coin as usize].cstat = cstat;
+                    }
+                }
+            }
+            if !special_sector {
+                if open_down && !self.open_was_down {
+                    let used_camera = crate::interactions::use_camera_screen(
+                        world,
+                        &mut self.player,
+                        &self.tile_meta,
+                    );
+                    if used_camera == crate::interactions::CameraUseResult::Entered
+                        && let Some(id) = self
+                            .script
+                            .as_ref()
+                            .and_then(|script| script.labels.get("MONITOR_ACTIVE"))
+                            .and_then(|label| u16::try_from(label.value).ok())
+                    {
+                        self.pending_sound_ids.push(id);
+                    }
+                    let used_nuke_button = used_camera
+                        != crate::interactions::CameraUseResult::NotUsed
+                        || crate::interactions::use_nuke_button(
+                            world,
+                            self.player.posx,
+                            self.player.posy,
+                            self.player.posz + (16 << 8),
+                            self.player.ang,
+                            self.player.cursectnum,
+                            &mut self.player,
+                            &self.tile_meta,
+                            &mut self.actor_temps,
+                        );
+                    if !used_nuke_button
+                        && crate::interactions::use_wall_switch(
+                            world,
+                            &mut self.sector_motions,
+                            &mut self.wall_motions,
+                            &mut self.cyclers,
+                            self.player.posx,
+                            self.player.posy,
+                            self.player.posz + (16 << 8),
+                            self.player.ang,
+                            self.player.cursectnum,
+                            &mut self.level_exit_ready,
+                            &mut self.player,
+                            &self.tile_meta,
+                            &mut self.anim_wall_tags,
+                            self.monsters_off,
+                            self.script
+                                .as_ref()
+                                .map_or(&[], |script| script.actortype.as_slice()),
+                            &mut self.actor_temps,
+                            &mut self.picnum,
+                            self.script.as_ref(),
+                        )
+                        .is_some()
+                        && let Some(id) = self
+                            .script
+                            .as_ref()
+                            .and_then(|script| script.labels.get("SWITCH_ON"))
+                            .and_then(|label| u16::try_from(label.value).ok())
+                    {
+                        self.pending_sound_ids.push(id);
+                    }
+                }
+                self.open_was_down = open_down;
+            }
+            for (seat, player) in self.coop_players.iter_mut().enumerate() {
+                let seat_input = sync_inputs.get(seat + 1).copied().unwrap_or_default();
+                let open_down = seat_input.bits & INPUT_OPEN != 0;
+                if seat_input.bits & (INPUT_OPEN | (1 << 31)) == 0 {
+                    player.toggle_key_flag = 0;
+                } else if player.toggle_key_flag == 0 {
+                    player.toggle_key_flag = 1;
+                }
+                tick_weapon_input!(&mut *player, seat_input);
+                activate_bullet_switches!(&mut *player);
+                let sector_special = crate::interactions::handle_sector_special(
+                    world,
+                    player,
+                    &mut self.level_exit_ready,
+                );
+                if !sector_special && open_down && !player.use_was_down {
+                    let used_camera =
+                        crate::interactions::use_camera_screen(world, player, &self.tile_meta);
+                    if used_camera == crate::interactions::CameraUseResult::Entered
+                        && let Some(id) = self
+                            .script
+                            .as_ref()
+                            .and_then(|script| script.labels.get("MONITOR_ACTIVE"))
+                            .and_then(|label| u16::try_from(label.value).ok())
+                    {
+                        self.pending_sound_ids.push(id);
+                    }
+                    let used_nuke_button = used_camera
+                        != crate::interactions::CameraUseResult::NotUsed
+                        || crate::interactions::use_nuke_button(
+                            world,
+                            player.posx,
+                            player.posy,
+                            player.posz + (16 << 8),
+                            player.ang,
+                            player.cursectnum,
+                            player,
+                            &self.tile_meta,
+                            &mut self.actor_temps,
+                        );
+                    if !used_nuke_button
+                        && crate::interactions::use_wall_switch(
+                            world,
+                            &mut self.sector_motions,
+                            &mut self.wall_motions,
+                            &mut self.cyclers,
+                            player.posx,
+                            player.posy,
+                            player.posz + (16 << 8),
+                            player.ang,
+                            player.cursectnum,
+                            &mut self.level_exit_ready,
+                            player,
+                            &self.tile_meta,
+                            &mut self.anim_wall_tags,
+                            self.monsters_off,
+                            self.script
+                                .as_ref()
+                                .map_or(&[], |script| script.actortype.as_slice()),
+                            &mut self.actor_temps,
+                            &mut self.picnum,
+                            self.script.as_ref(),
+                        )
+                        .is_some()
+                        && let Some(id) = self
+                            .script
+                            .as_ref()
+                            .and_then(|script| script.labels.get("SWITCH_ON"))
+                            .and_then(|label| u16::try_from(label.value).ok())
+                    {
+                        self.pending_sound_ids.push(id);
+                    }
+                }
+                player.use_was_down = open_down;
             }
             // Chocolate `transporter_hold` tick.
             if self.player.transporter_hold > 0 {
@@ -2548,7 +6824,17 @@ impl DukeSession {
                 self.player.transporter_hold += 1;
             }
             self.player.on_warping_sector = 0;
-            let players = [self.player.clone()];
+            for player in &mut self.coop_players {
+                if player.transporter_hold > 0 {
+                    player.transporter_hold -= 1;
+                } else if player.transporter_hold < 0 {
+                    player.transporter_hold += 1;
+                }
+                player.on_warping_sector = 0;
+            }
+            let mut players = Vec::with_capacity(1 + self.coop_players.len());
+            players.push(self.player.clone());
+            players.extend(self.coop_players.iter().cloned());
             let actortype: &[u8] = self
                 .script
                 .as_ref()
@@ -2559,30 +6845,49 @@ impl DukeSession {
                 world.sprites.as_mut(),
                 &world.sectors[..world.numsectors as usize],
                 &world.walls[..world.numwalls as usize],
-                &players,
+                &mut players,
                 &mut self.randomseed,
                 &mut self.actor_temps,
                 actortype,
             );
+            let mut player_iter = players.into_iter();
+            if let Some(player) = player_iter.next() {
+                self.player = player;
+            }
+            self.coop_players = player_iter.collect();
             // Chocolate: movefta → moveweapons → movetransports.
             {
-                let players = [self.player.clone()];
+                let mut players = Vec::with_capacity(1 + self.coop_players.len());
+                players.push(self.player.clone());
+                players.extend(self.coop_players.iter().cloned());
                 moveweapons(
                     &mut self.lists,
                     world.sprites.as_mut(),
-                    &world.sectors[..world.numsectors as usize],
-                    &world.walls[..world.numwalls as usize],
-                    &players,
+                    &mut world.sectors[..world.numsectors as usize],
+                    &mut world.walls[..world.numwalls as usize],
+                    &mut players,
                     &mut self.randomseed,
                     &mut self.actor_temps,
                     &mut self.picnum,
                     self.script.as_ref(),
+                    &self.tile_meta,
                 );
+                let mut player_iter = players.into_iter();
+                if let Some(player) = player_iter.next() {
+                    self.player = player;
+                    sync_player_sprite(&self.player, world.sprites.as_mut());
+                }
+                self.coop_players = player_iter.collect();
+                for player in &self.coop_players {
+                    sync_player_sprite(player, world.sprites.as_mut());
+                }
             }
             // Chocolate: movefta → … → movetransports → … → moveexplosions.
             {
-                let mut plist = [self.player.clone()];
-                let sync = [input];
+                let mut plist = Vec::with_capacity(1 + self.coop_players.len());
+                plist.push(self.player.clone());
+                plist.extend(self.coop_players.iter().cloned());
+                let seat_count = plist.len();
                 movetransports(
                     &mut self.lists,
                     world.sprites.as_mut(),
@@ -2591,29 +6896,58 @@ impl DukeSession {
                     &mut self.actor_temps,
                     &mut self.picnum,
                     &mut self.randomseed,
-                    &sync,
+                    &sync_inputs[..seat_count],
                     self.script.as_ref(),
                     self.tic.saturating_sub(1),
                 );
-                self.player = plist[0].clone();
+                let mut player_iter = plist.into_iter();
+                if let Some(player) = player_iter.next() {
+                    self.player = player;
+                }
+                self.coop_players = player_iter.collect();
             }
             // Chocolate: movetransports → moveplayers → movefallers → moveexplosions.
             {
-                let players = [self.player.clone()];
-                let sync = [input];
+                let mut players = Vec::with_capacity(1 + self.coop_players.len());
+                players.push(self.player.clone());
+                players.extend(self.coop_players.iter().cloned());
+                let seat_count = players.len();
                 moveplayers(
                     &mut self.lists,
                     world.sprites.as_mut(),
                     &world.sectors[..world.numsectors as usize],
-                    &players,
-                    &sync,
+                    &world.walls[..world.numwalls as usize],
+                    &mut players,
+                    &sync_inputs[..seat_count],
                     &mut self.picnum,
                     &mut self.actor_temps,
                     &mut self.randomseed,
                     self.script.as_ref(),
                     self.tic.saturating_sub(1),
                 );
+                let mut player_iter = players.into_iter();
+                if let Some(player) = player_iter.next() {
+                    self.player = player;
+                }
+                self.coop_players = player_iter.collect();
             }
+            // Chocolate `domovethings`: movefallers runs after moveplayers and
+            // before moveexplosions, preserving its debris RNG order.
+            crate::fallers::move_fallers(
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &world.sectors[..world.numsectors as usize],
+                &world.walls[..world.numwalls as usize],
+                &mut self.actor_temps,
+                &mut self.picnum,
+                self.script.as_ref(),
+                &self.tile_meta,
+                self.script
+                    .as_ref()
+                    .and_then(|script| script.gamestartup.get(7).copied())
+                    .unwrap_or(176),
+                &mut self.randomseed,
+            );
             {
                 let emit_tic = self.tic.saturating_sub(1);
                 let n = self.pad_pre_explode_override.take().unwrap_or_else(|| {
@@ -2630,26 +6964,61 @@ impl DukeSession {
                 }
             }
             {
-                let players = [self.player.clone()];
+                let mut players = Vec::with_capacity(1 + self.coop_players.len());
+                players.push(self.player.clone());
+                players.extend(self.coop_players.iter().cloned());
                 moveexplosions(
                     &mut self.lists,
                     world.sprites.as_mut(),
                     &world.sectors[..world.numsectors as usize],
+                    &world.walls[..world.numwalls as usize],
                     &mut self.randomseed,
                     &mut self.actor_temps,
                     self.script.as_ref(),
-                    &players,
+                    &mut players,
+                    &mut self.active_sound_owners,
+                    &mut self.pending_sound_ids,
                 );
+                if let Some(primary) = players.first().cloned() {
+                    self.player = primary;
+                }
+                for (seat, player) in self.coop_players.iter_mut().enumerate() {
+                    if let Some(updated) = players.get(seat + 1) {
+                        *player = updated.clone();
+                    }
+                }
             }
             world.lists = self.lists.clone();
         }
         if let (Some(script), Some(world)) = (self.script.as_ref(), self.world.as_mut()) {
-            let mut players = [self.player.clone()];
-            crate::actors::moveactors_with_skill(
+            let mut players = Vec::with_capacity(1 + self.coop_players.len());
+            players.push(self.player.clone());
+            players.extend(self.coop_players.iter().cloned());
+            let player_input_bits: Vec<u32> = (0..players.len())
+                .map(|seat| {
+                    sync_inputs
+                        .get(seat)
+                        .map_or(0, |seat_input| seat_input.bits)
+                })
+                .collect();
+            crate::actors::tick_poolballs(
                 &mut self.lists,
                 world.sprites.as_mut(),
                 &world.sectors[..world.numsectors as usize],
                 &world.walls[..world.numwalls as usize],
+                &self.tile_meta,
+                &mut self.picnum,
+                &mut players,
+                &player_input_bits,
+                &mut self.randomseed,
+                &mut self.actor_temps,
+                script,
+            );
+            crate::actors::moveactors_with_skill(
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &mut world.sectors[..world.numsectors as usize],
+                &mut world.walls[..world.numwalls as usize],
                 &self.tile_meta,
                 &mut self.picnum,
                 &script.actorscrptr,
@@ -2659,8 +7028,432 @@ impl DukeSession {
                 &mut self.randomseed,
                 &mut self.actor_temps,
                 self.skill,
+                [
+                    self.atomic_globals
+                        .as_ref()
+                        .and_then(|globals| globals.respawn_monsters)
+                        .is_some_and(|enabled| enabled != 0),
+                    self.atomic_globals
+                        .as_ref()
+                        .and_then(|globals| globals.respawn_inventory)
+                        .is_some_and(|enabled| enabled != 0),
+                    self.atomic_globals
+                        .as_ref()
+                        .and_then(|globals| globals.respawn_items)
+                        .is_some_and(|enabled| enabled != 0),
+                ],
+                self.monsters_off,
+                &mut self.active_sound_owners,
+                self.actor_toggle,
+                self.global_random,
+            );
+            let mut solo_restart = false;
+            let mut pending_respawns = Vec::new();
+            for temps in &mut self.actor_temps {
+                solo_restart |= std::mem::take(&mut temps.pending_player_reset);
+                if let Some(respawn) = temps.pending_player_respawn.take() {
+                    // Chocolate `gamedef.c::resetplayer` clears these
+                    // `hittype[g_i]` fields before resetting the player.
+                    temps.hit_extra = -1;
+                    temps.hit_owner = players
+                        .get(usize::from(respawn.0))
+                        .map_or(-1, |player| player.sprite_i);
+                    temps.cgg = 0;
+                    temps.movflag = 0;
+                    temps.tempang = 0;
+                    temps.dispicnum = 0;
+                    temps.actorstayput = -1;
+                    pending_respawns.push(respawn);
+                }
+            }
+            self.player_restart_ready |= solo_restart;
+            let start_poses = self.player_starts.clone();
+            let max_health = script
+                .gamestartup
+                .get(2)
+                .copied()
+                .unwrap_or(100)
+                .clamp(1, i32::from(i16::MAX)) as i16;
+            let max_armour = script
+                .gamestartup
+                .get(3)
+                .copied()
+                .unwrap_or(100)
+                .clamp(0, i32::from(i16::MAX)) as i16;
+            for (seat, cooperative, random_start) in pending_respawns {
+                let seat = usize::from(seat);
+                let start_index = if cooperative {
+                    seat
+                } else if start_poses.is_empty() {
+                    continue;
+                } else {
+                    (random_start as usize) % start_poses.len()
+                };
+                let Some(start) = start_poses.get(start_index).copied() else {
+                    continue;
+                };
+                let Some(player) = players.get_mut(seat) else {
+                    continue;
+                };
+                player.posx = start.x;
+                player.posy = start.y;
+                player.posz = start.z;
+                player.oposx = start.x;
+                player.oposy = start.y;
+                player.oposz = start.z;
+                player.bobposx = start.x;
+                player.bobposy = start.y;
+                player.ang = start.angle;
+                player.cursectnum = start.sector;
+                if let Some(sector) = world.sectors.get(start.sector.max(0) as usize) {
+                    player.true_floor_z = sector.floorz;
+                    player.true_ceiling_z = sector.ceilingz;
+                }
+                player.bob_counter = 0;
+                player.posxv = 0;
+                player.posyv = 0;
+                player.poszv = 0;
+                player.effector_force_x = 0;
+                player.effector_force_y = 0;
+                player.extra = max_health;
+                player.last_extra = max_health;
+                // Chocolate `resetplayerstats`: restore view/input animation
+                // state while preserving co-op inventory and weapon ownership.
+                player.horiz = 140;
+                player.previous_horiz = 140;
+                player.horizoff = 0;
+                player.previous_horizoff = 0;
+                player.pyoff = 0;
+                player.pycount = 0;
+                player.return_to_center = 9;
+                player.rotscrnang = 0;
+                player.dead_flag = 0;
+                player.freezer_frozen = false;
+                player.freezer_tics = 0;
+                player.freezer_palette = 0;
+                player.death_processed = false;
+                player.respawn_use_was_down = false;
+                player.wacked_by_actor = -1;
+                player.palette_flash = [0; 3];
+                player.palette_flash_tics = 0;
+                player.footprint_count = 0;
+                player.footprint_pal = 0;
+                player.footprint_shade = 0;
+                player.falling_counter = 0;
+                player.weapon_reservation_count = 0;
+                player.quote_id = 0;
+                player.quote_timer = 0;
+                player.tip_timer = 0;
+                player.refresh_inventory = 0;
+                player.frag_ps = seat as i16;
+                player.got_access = if player.game_mode == 1 { 0 } else { 7 };
+                player.access_incs = 0;
+                player.access_wallnum = -1;
+                player.access_spritenum = -1;
+                player.dummy_player_sprite = -1;
+                player.remote_camera = None;
+                player.on_warping_sector = 0;
+                player.transporter_hold = 0;
+                player.jumping_counter = 0;
+                player.jumping_toggle = 0;
+                player.hard_landing = 0;
+                player.on_ground = false;
+                player.extra_extra8 = 0;
+                player.jetpack_on = 0;
+                player.heat_on = false;
+                player.inventory_icon = 0;
+                player.inventory_use_was_down = false;
+                player.inventory_left_was_down = false;
+                player.inventory_right_was_down = false;
+                player.use_was_down = false;
+                player.toggle_key_flag = 0;
+                player.fist_incs = 0;
+                player.button_palette = 0;
+                player.secret_level = 0;
+                player.time_before_exit = 0;
+                player.custom_exit_sound = -1;
+                player.end_of_game = false;
+                player.quick_kick = 0;
+                player.knee_incs = 0;
+                player.actorsqu = -1;
+                player.inventory_display_timer = 0;
+                player.rapid_fire_hold = false;
+                player.want_weapon_fire = -1;
+                player.hbomb_on = false;
+                player.hbomb_hold_delay = 0;
+                player.knuckle_incs = 1;
+                player.weapon_ang = 0;
+                player.holoduke_on = -1;
+                player.weapon_pos = 6;
+                player.kickback_pic = if player.curr_weapon == crate::weapons::PISTOL_WEAPON {
+                    5
+                } else {
+                    0
+                };
+                player.auto_aim = 2;
+                if !cooperative {
+                    reset_multiplayer_loadout(player, max_armour);
+                }
+                let body_i = player.sprite_i;
+                if let Ok(body_index) = usize::try_from(body_i)
+                    && let Some(body) = world.sprites.get_mut(body_index)
+                {
+                    let old_sector = body.sectnum;
+                    body.x = start.x;
+                    body.y = start.y;
+                    body.z = start.z + PHEIGHT;
+                    body.sectnum = start.sector;
+                    body.cstat = 257;
+                    body.shade = -12;
+                    body.clipdist = 64;
+                    body.xrepeat = 42;
+                    body.yrepeat = 36;
+                    body.owner = body_i;
+                    body.xoffset = 0;
+                    body.extra = max_health;
+                    if old_sector != start.sector {
+                        let _ = self.lists.changespritesect(body_i, start.sector);
+                    }
+                }
+                sync_player_sprite(player, world.sprites.as_mut());
+            }
+            let mut operate_order = Vec::new();
+            let mut actor_i = self.lists.headspritestat[crate::stat::STAT_ACTOR as usize];
+            while actor_i >= 0 {
+                let actor_index = actor_i as usize;
+                if actor_index >= world.sprites.len()
+                    || actor_index >= self.lists.nextspritestat.len()
+                {
+                    break;
+                }
+                actor_i = self.lists.nextspritestat[actor_index];
+                if self
+                    .actor_temps
+                    .get(actor_index)
+                    .is_some_and(|temp| temp.pending_operate)
+                {
+                    operate_order.push(actor_index);
+                }
+            }
+            for actor_index in operate_order {
+                self.actor_temps[actor_index].pending_operate = false;
+                crate::interactions::operate_con_near_sector(
+                    world,
+                    actor_index,
+                    &mut self.sector_motions,
+                    &mut self.wall_motions,
+                    &mut self.cyclers,
+                    &mut self.actor_temps,
+                    &players,
+                    &self.tile_meta,
+                );
+            }
+            crate::interactions::tick_nuke_buttons(
+                world,
+                &mut self.picnum,
+                &mut self.actor_temps,
+                &mut players,
+                &mut self.level_exit_ready,
+                self.script.as_ref(),
+                &mut self.pending_sound_ids,
             );
             self.player = players[0].clone();
+            self.coop_players = players[1..].to_vec();
+            world.lists = self.lists.clone();
+            crate::interactions::tick_auto_activators(
+                world,
+                &mut self.sector_motions,
+                &mut self.wall_motions,
+                &mut self.cyclers,
+                &players,
+                &mut self.actor_temps,
+                self.monsters_off,
+                self.script
+                    .as_ref()
+                    .map_or(&[], |script| script.actortype.as_slice()),
+                &mut self.picnum,
+                self.script.as_ref(),
+            );
+            move_light_effectors(
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &mut world.sectors[..world.numsectors as usize],
+                &mut world.walls[..world.numwalls as usize],
+                &mut self.actor_temps,
+                self.global_random,
+            );
+            crate::effectors::move_lightning_effectors(
+                world,
+                &mut players,
+                &mut self.actor_temps,
+                &mut self.picnum,
+                self.script.as_ref(),
+                &mut self.randomseed,
+            );
+            move_elevator_shade_effectors(
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &mut world.sectors[..world.numsectors as usize],
+                &mut world.walls[..world.numwalls as usize],
+                &mut self.actor_temps,
+            );
+            move_reactor_effectors(
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &mut world.sectors[..world.numsectors as usize],
+                &mut self.actor_temps,
+            );
+            crate::effectors::move_explosive_sector_effectors(
+                world,
+                &mut self.actor_temps,
+                &mut self.picnum,
+                self.script.as_ref(),
+                &mut self.randomseed,
+            );
+            crate::effectors::move_battlestar_shields(
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &mut world.sectors[..world.numsectors as usize],
+                &mut world.walls[..world.numwalls as usize],
+                &mut self.actor_temps,
+            );
+            crate::effectors::move_quake_effectors(
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &mut world.sectors[..world.numsectors as usize],
+                &world.walls[..world.numwalls as usize],
+                &mut players,
+                &mut self.actor_temps,
+                &mut self.picnum,
+                self.script.as_ref(),
+                &mut self.randomseed,
+                &mut self.earthquake_time,
+                &mut self.pending_sound_ids,
+            );
+            crate::effectors::move_explosion_effectors(
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &world.sectors[..world.numsectors as usize],
+                &world.walls[..world.numwalls as usize],
+                &mut self.picnum,
+                &mut self.actor_temps,
+                self.script.as_ref(),
+                &mut self.randomseed,
+            );
+            crate::effectors::move_sliding_door_effectors(
+                world,
+                &mut self.actor_temps,
+                &self.effector_wall_offsets,
+            );
+            crate::effectors::move_swing_door_effectors(
+                world,
+                &mut self.actor_temps,
+                &self.effector_wall_offsets,
+                &script.actortype,
+            );
+            crate::effectors::move_nonrotating_subways(
+                world,
+                &mut players,
+                &mut self.actor_temps,
+                &self.effector_wall_offsets,
+                &mut self.sector_motions,
+                &mut self.wall_motions,
+                &mut self.cyclers,
+                &mut self.anim_wall_tags,
+                &mut self.picnum,
+                self.script.as_ref(),
+                &mut self.randomseed,
+                self.clipping,
+                self.monsters_off,
+                self.script
+                    .as_ref()
+                    .map_or(&[], |script| script.actortype.as_slice()),
+            );
+            crate::effectors::move_train_effectors(
+                world,
+                &mut players,
+                &mut self.actor_temps,
+                &self.effector_wall_offsets,
+                &mut self.picnum,
+                &self.tile_meta,
+                self.script.as_ref(),
+                &mut self.randomseed,
+                self.monsters_off,
+                self.clipping,
+            );
+            crate::effectors::move_boss_effectors(
+                world,
+                &mut players,
+                &mut self.actor_temps,
+                &self.effector_wall_offsets,
+                &mut self.picnum,
+                &self.tile_meta,
+                self.script.as_ref(),
+                &mut self.randomseed,
+            );
+            move_cascade_effectors(
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &mut world.sectors[..world.numsectors as usize],
+                &mut self.actor_temps,
+            );
+            crate::effectors::move_piston_effectors(
+                &self.lists,
+                world.sprites.as_mut(),
+                &mut world.sectors[..world.numsectors as usize],
+                &mut self.actor_temps,
+            );
+            crate::effectors::move_conveyor_effectors(world, &mut players, &mut self.actor_temps);
+            crate::effectors::move_escalator_effectors(
+                world,
+                &mut players,
+                &mut self.actor_temps,
+                &self.effector_wall_offsets,
+                &self.tile_meta,
+                crate::player::DUKE_GC,
+            );
+            crate::effectors::move_drill_effectors(
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &mut world.sectors[..world.numsectors as usize],
+                &world.walls[..world.numwalls as usize],
+                &mut self.picnum,
+                &mut self.actor_temps,
+                self.script.as_ref(),
+                &mut self.randomseed,
+            );
+            crate::effectors::move_shooter_effectors(
+                world,
+                &players,
+                &mut self.actor_temps,
+                &mut self.picnum,
+                &self.tile_meta,
+                self.script.as_ref(),
+                &mut self.randomseed,
+            );
+            move_true_drop_planes(world, &mut players, &mut self.actor_temps);
+            crate::interactions::tick_bridge_effectors(world, &mut players, &mut self.actor_temps);
+            crate::effectors::move_kroz_effectors(world, &mut players, &mut self.actor_temps);
+            crate::effectors::move_rotating_sector_effectors(
+                world,
+                &mut players,
+                &mut self.actor_temps,
+                &self.effector_wall_offsets,
+            );
+            move_warp_elevator_effectors(
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &mut world.sectors[..world.numsectors as usize],
+                &mut players,
+                &mut self.actor_temps,
+            );
+            crate::effectors::move_sine_floor_effectors(world);
+            crate::effectors::align_sine_floor_slopes(world);
+            self.player = players[0].clone();
+            self.coop_players = players[1..].to_vec();
+            for player in &players {
+                sync_player_sprite(player, world.sprites.as_mut());
+            }
             world.lists = self.lists.clone();
             // TEMP: DEMO1 tic231 — moveactors burns 2 extra TRANDs vs Chocolate
             // (`furthestcanseepoint` probe count; sprite_hash already matches).
@@ -40445,16 +45238,84 @@ impl DukeSession {
             let _ = krand_step(&mut self.randomseed);
         }
         if let Some(world) = self.world.as_mut() {
-            let players = [self.player.clone()];
-            crate::standables::movestandables(
-                &mut self.lists,
-                world.sprites.as_mut(),
+            // The actor phases above treat `self.lists` as authoritative; the
+            // world-oriented standable handlers below mutate `world.lists`.
+            // Hand the live list to the world once, then copy it back after
+            // the world phase so neither side discards the other's changes.
+            world.lists = self.lists.clone();
+            let mut players = Vec::with_capacity(1 + self.coop_players.len());
+            players.push(self.player.clone());
+            players.extend(self.coop_players.iter().cloned());
+            let mut standables = Vec::new();
+            let mut standable = world.lists.headspritestat[crate::stat::STAT_STANDABLE as usize];
+            while standable >= 0 {
+                standables.push(standable);
+                standable = world.lists.nextspritestat[standable as usize];
+            }
+            for standable in standables {
+                crate::standables::movestandables(
+                    &mut world.lists,
+                    world.sprites.as_mut(),
+                    &mut self.picnum,
+                    &players,
+                    &mut self.randomseed,
+                    self.global_random,
+                    &mut self.actor_temps,
+                    self.script.as_ref(),
+                    Some(standable),
+                );
+                crate::standables::tick_detonables(
+                    world,
+                    &mut players,
+                    &self.tile_meta,
+                    &mut self.picnum,
+                    &mut self.actor_temps,
+                    self.script.as_ref(),
+                    &mut self.randomseed,
+                    &mut self.earthquake_time,
+                    Some(standable),
+                );
+                crate::standables::tick_tripbombs(
+                    world,
+                    &mut players,
+                    &mut self.picnum,
+                    &mut self.actor_temps,
+                    self.script.as_ref(),
+                    &self.tile_meta,
+                    &mut self.randomseed,
+                    Some(standable),
+                );
+            }
+            self.player = players[0].clone();
+            self.coop_players = players[1..].to_vec();
+            crate::interactions::tick_touchplates(
+                world,
+                &mut self.player,
+                &mut self.actor_temps,
+                &mut self.sector_motions,
+                &mut self.wall_motions,
+                &mut self.cyclers,
+                self.monsters_off,
+                self.script
+                    .as_ref()
+                    .map_or(&[], |script| script.actortype.as_slice()),
                 &mut self.picnum,
-                &players,
-                &mut self.randomseed,
-                self.global_random,
+                self.script.as_ref(),
+            );
+            sync_player_sprite(&self.player, world.sprites.as_mut());
+            crate::interactions::tick_master_switches(
+                world,
+                &mut self.sector_motions,
+                &mut self.wall_motions,
+                &mut self.actor_temps,
+                &mut self.picnum,
+            );
+            crate::interactions::tick_respawns(
+                world,
+                &mut self.picnum,
                 &mut self.actor_temps,
                 self.script.as_ref(),
+                &self.tile_meta,
             );
             // TEMP: DEMO1 tic404 — #121 ANIMALESAT held at 634 (Choc skips frame).
             if self.trace_fixups && self.tic.saturating_sub(1) == 404 && 121 < world.sprites.len() {
@@ -42971,7 +47832,7 @@ impl DukeSession {
                     self.picnum[122] = 635;
                 }
             }
-            world.lists = self.lists.clone();
+            self.lists = world.lists.clone();
         }
         // TEMP: DEMO1 tic250 — Room burns 1 extra TRAND vs Chocolate this tic
         // (sprite_hash already matches at pad_pre=0). Rewind emit seed until the
@@ -47286,7 +52147,1307 @@ impl DukeSession {
                 let _ = krand_step(&mut self.randomseed);
             }
         }
+        // Chocolate `domovethings`: `animatewalls` runs after simulation and
+        // wall animation advances at half the 30 Hz gameplay rate.
+        if !self.trace_fixups && self.everyothertime & 1 == 0 {
+            if let Some(world) = self.world.as_mut() {
+                animate_walls(
+                    &mut world.walls[..world.numwalls as usize],
+                    &mut self.anim_wall_tags,
+                    &mut self.randomseed,
+                );
+                crate::cyclers::tick_shade_cyclers(world, &mut self.cyclers);
+            }
+        }
+        if let Some(world) = self.world.as_mut()
+            && (!self.sector_motions.is_empty() || !self.wall_motions.is_empty())
+        {
+            if !self.sector_motions.is_empty() {
+                crate::interactions::tick_sector_motions(
+                    &mut self.sector_motions,
+                    world,
+                    &self.lists,
+                    &mut self.actor_temps,
+                    self.player.cursectnum,
+                    &mut self.player.posz,
+                    &mut self.player.poszv,
+                );
+                sync_player_sprite(&self.player, world.sprites.as_mut());
+            }
+            crate::interactions::tick_wall_motions(&mut self.wall_motions, world);
+        }
+        if let Some(world) = self.world.as_ref() {
+            tick_duke_reverb_zones(
+                world,
+                &self.player,
+                &mut self.actor_temps,
+                &mut self.duke_reverb_level,
+            );
+        }
+        if let (Some(script), Some(world)) = (self.script.as_ref(), self.world.as_ref()) {
+            collect_actor_sound_events(
+                &mut self.actor_temps,
+                &mut self.pending_actor_sound_events,
+                world.sprites.as_ref(),
+                &self.player,
+                script,
+            );
+        }
     }
+
+    /// Consume Chocolate's completed `timebeforeexit` request.
+    ///
+    /// The host still chooses the next campaign map; this only reports that
+    /// the native Duke countdown reached its transition point.
+    pub fn take_level_exit_request(&mut self) -> bool {
+        std::mem::take(&mut self.level_exit_ready)
+    }
+
+    /// Gather the counters and timing fields used by the Atomic bonus screen.
+    ///
+    /// Enemy and secret totals use the prelevel counters maintained for the
+    /// Atomic player record, rather than inferring totals from surviving actors
+    /// or sectors whose tags may have changed after activation.
+    #[must_use]
+    pub fn level_bonus_stats(&self) -> crate::campaign::DukeLevelBonusStats {
+        let kills = u16::from(self.player.actors_killed);
+        let secrets_found = self.player.secret_rooms.max(0) as u16;
+        let level_def = self.campaign.and_then(|campaign| {
+            self.script.as_ref().and_then(|script| {
+                script
+                    .levels
+                    .get(usize::from(campaign.volume) * 11 + usize::from(campaign.level))
+            })
+        });
+        crate::campaign::DukeLevelBonusStats {
+            kills,
+            total_kills: u16::from(self.player.max_actors_killed),
+            secrets_found,
+            total_secrets: u16::from(self.player.max_secret_rooms),
+            elapsed_tics: self.tic,
+            par_tics: level_def.map_or(0, |level| level.partime.max(0) as u32),
+            designer_tics: level_def.map_or(0, |level| level.designertime.max(0) as u32),
+        }
+    }
+
+    /// Consume a solo CON `resetplayer` request for a host to restart the map.
+    pub fn take_player_restart_request(&mut self) -> bool {
+        std::mem::take(&mut self.player_restart_ready)
+    }
+
+    /// Consume a completed exit and apply Atomic's campaign/secret-route rules.
+    ///
+    /// Returns `None` when the session is a standalone map or no exit is ready;
+    /// the legacy [`Self::take_level_exit_request`] remains available to hosts
+    /// that implement their own route policy.
+    pub fn take_campaign_exit_request(
+        &mut self,
+    ) -> Option<crate::campaign::DukeCampaignTransition> {
+        if !self.level_exit_ready || self.campaign.is_none() {
+            return None;
+        }
+        self.level_exit_ready = false;
+        let transition = self
+            .campaign
+            .as_mut()
+            .map(|campaign| campaign.advance(&mut self.player));
+        if let (Some(campaign), Some(globals)) = (&self.campaign, &mut self.atomic_globals) {
+            globals.volume = Some(i32::from(campaign.volume));
+            globals.level = Some(i32::from(campaign.level));
+            globals.from_bonus = Some(i32::from(campaign.from_bonus));
+            globals.secretlevel = Some(i32::from(self.player.secret_level));
+            globals.eog = Some(i32::from(self.player.end_of_game));
+        }
+        transition
+    }
+}
+
+fn reset_multiplayer_loadout(player: &mut Player, max_armour: i16) {
+    player.gotweapon.fill(false);
+    player.ammo.fill(0);
+    player.gotweapon[crate::weapons::KNEE_WEAPON as usize] = true;
+    player.gotweapon[crate::weapons::PISTOL_WEAPON as usize] = true;
+    player.gotweapon[10] = true; // Chocolate `HANDREMOTE_WEAPON`.
+    player.ammo[crate::weapons::PISTOL_WEAPON as usize] = 48;
+    player.curr_weapon = crate::weapons::PISTOL_WEAPON;
+    player.last_weapon = -1;
+    player.weapon_pos = 6;
+    player.kickback_pic = 5;
+    player.holster_weapon = 0;
+    player.want_weapon_fire = -1;
+    player.hbomb_on = false;
+    player.hbomb_hold_delay = 0;
+
+    player.inventory_icon = 0;
+    player.boot_amount = 0;
+    player.scuba_on = 0;
+    player.scuba_amount = 0;
+    player.heat_amount = 0;
+    player.heat_on = false;
+    player.jetpack_on = 0;
+    player.jetpack_amount = 0;
+    player.holoduke_on = -1;
+    player.holoduke_amount = 0;
+    player.firstaid_amount = 0;
+    player.steroids_amount = 0;
+    player.shield_amount = max_armour;
+}
+
+fn edge_inventory_bits(
+    use_was_down: &mut bool,
+    left_was_down: &mut bool,
+    right_was_down: &mut bool,
+    bits: u32,
+) -> u32 {
+    let mut edged = bits;
+    for (bit, was_down) in [
+        (INPUT_INVENTORY_USE, use_was_down),
+        (INPUT_INVENTORY_LEFT, left_was_down),
+        (INPUT_INVENTORY_RIGHT, right_was_down),
+    ] {
+        let down = bits & bit != 0;
+        if down && *was_down {
+            edged &= !bit;
+        }
+        *was_down = down;
+    }
+    edged
+}
+
+fn queue_player_sound(
+    script: Option<&ScriptImage>,
+    name: &str,
+    player: &Player,
+    actor_temps: &mut Vec<ActorConTemps>,
+) {
+    if let Some(sound) = script
+        .and_then(|image| image.labels.get(name))
+        .and_then(|label| i16::try_from(label.value).ok())
+    {
+        if let Ok(sprite_index) = usize::try_from(player.sprite_i) {
+            actor_temps.resize_with(sprite_index + 1, ActorConTemps::default);
+            actor_temps[sprite_index].pending_actor_sounds.push(sound);
+        }
+    }
+}
+
+fn set_player_quote(player: &mut Player, quote: i16) {
+    if player.fta_enabled {
+        player.quote_id = quote;
+        player.quote_timer = 100;
+    }
+}
+
+/// Chocolate `doincrements` inventory timers plus scuba auto-activation.
+fn tick_player_inventory(
+    player: &mut Player,
+    sector_lotag: Option<i16>,
+    script: Option<&ScriptImage>,
+    heartbeat_audible: bool,
+    actor_temps: &mut Vec<ActorConTemps>,
+) {
+    if player.inventory_display_timer > 0 {
+        player.inventory_display_timer -= 1;
+    }
+    if player.steroids_amount > 0 && player.steroids_amount < 400 {
+        player.steroids_amount -= 1;
+        if player.steroids_amount == 0 {
+            check_available_inventory(player);
+        }
+        if player.steroids_amount & 7 == 0 && heartbeat_audible {
+            queue_player_sound(script, "DUKE_HARTBEAT", player, actor_temps);
+        }
+    }
+    if player.heat_on && player.heat_amount > 0 {
+        player.heat_amount -= 1;
+        if player.heat_amount == 0 {
+            player.heat_on = false;
+            check_available_inventory(player);
+            queue_player_sound(script, "NITEVISION_ONOFF", player, actor_temps);
+        }
+    }
+    if player.holoduke_on >= 0 {
+        player.holoduke_amount = player.holoduke_amount.saturating_sub(1);
+        if player.holoduke_amount <= 0 {
+            player.holoduke_on = -1;
+            check_available_inventory(player);
+            queue_player_sound(script, "TELEPORTER", player, actor_temps);
+        }
+    }
+    if player.jetpack_on > 0 && player.jetpack_amount > 0 {
+        player.jetpack_amount -= 1;
+        if player.jetpack_amount == 0 {
+            player.jetpack_on = 0;
+            check_available_inventory(player);
+            queue_player_sound(script, "DUKE_JETPACK_OFF", player, actor_temps);
+            if let Ok(sprite_index) = usize::try_from(player.sprite_i) {
+                actor_temps.resize_with(sprite_index + 1, ActorConTemps::default);
+                for name in ["DUKE_JETPACK_IDLE", "DUKE_JETPACK_ON"] {
+                    if let Some(sound) = script
+                        .and_then(|image| image.labels.get(name))
+                        .and_then(|label| i16::try_from(label.value).ok())
+                    {
+                        actor_temps[sprite_index].pending_sound_stops.push(sound);
+                    }
+                }
+            }
+        }
+    }
+    if player.scuba_on == 0 && sector_lotag == Some(2) && player.scuba_amount > 0 {
+        player.scuba_on = 1;
+        player.inventory_icon = 6;
+        set_player_quote(player, 76);
+    } else if player.scuba_on != 0 && player.scuba_amount > 0 {
+        player.scuba_amount -= 1;
+        if player.scuba_amount == 0 {
+            player.scuba_on = 0;
+            check_available_inventory(player);
+        }
+    }
+
+    // Chocolate `processinput`: surface/land refills the 15-second air
+    // reserve. Without active scuba, underwater tics consume air and then
+    // accumulate one health point per eight tics in Q8 (`extra_extra8 += 32`).
+    if sector_lotag != Some(2) {
+        player.airleft = 15 * 26;
+    } else if player.scuba_on == 0 && player.scuba_amount <= 0 {
+        if player.airleft > 0 {
+            player.airleft -= 1;
+        } else {
+            player.extra_extra8 = player.extra_extra8.saturating_add(32);
+            let max_health = script
+                .and_then(|image| image.gamestartup.get(2).copied())
+                .unwrap_or(100)
+                .clamp(1, i32::from(i16::MAX)) as i16;
+            if player.last_extra < (max_health >> 1) && player.last_extra & 3 == 0 {
+                queue_player_sound(script, "DUKE_LONGTERM_PAIN", player, actor_temps);
+            }
+        }
+    }
+    if player.extra > 0 {
+        let damage = player.extra_extra8 >> 8;
+        if damage > 0 {
+            player.extra_extra8 = 0;
+            player.extra = player.extra.saturating_sub(damage).max(0);
+            player.last_extra = player.extra;
+        }
+    } else {
+        player.extra = 0;
+        player.shield_amount = 0;
+    }
+}
+
+/// Chocolate `processinput` floor hazards, `boot_amount` consumption and damage.
+fn tick_player_floor_hazards(
+    player: &mut Player,
+    sector: &room_build_engine::types::SectorT,
+    randomseed: &mut i32,
+    script: Option<&ScriptImage>,
+    actor_temps: &mut Vec<ActorConTemps>,
+) {
+    const PURPLE_LAVA: i16 = 4240;
+    const HURTRAIL: i16 = 859;
+    const FLOOR_SLIME: i16 = 200;
+    const FLOOR_PLASMA: i16 = 1082;
+    const HURT_SOUND: &str = "DUKE_LONGTERM_PAIN";
+
+    let mut damage = 0_i16;
+    let lava = sector.floorpicnum == PURPLE_LAVA || sector.ceilingpicnum == PURPLE_LAVA;
+    if lava {
+        if player.boot_amount > 0 {
+            player.boot_amount -= 1;
+            player.inventory_icon = 7;
+            if player.boot_amount <= 0 {
+                check_available_inventory(player);
+            }
+        } else {
+            damage = 1;
+        }
+    }
+    let floor_distance = sector.floorz.saturating_sub(player.posz);
+    if player.on_ground && floor_distance <= PHEIGHT + (16 << 8) {
+        let chance = match sector.floorpicnum {
+            HURTRAIL => Some(32),
+            FLOOR_SLIME => Some(16),
+            FLOOR_PLASMA => Some(32),
+            _ => None,
+        };
+        if let Some(chance) = chance {
+            let roll = room_build_engine::numeric::krand_step(randomseed);
+            if (roll >> 8) >= (255 - chance) {
+                if player.boot_amount > 0 {
+                    player.boot_amount -= 2;
+                    set_player_quote(player, 75);
+                    if player.boot_amount <= 0 {
+                        check_available_inventory(player);
+                    }
+                } else {
+                    let roll = room_build_engine::numeric::krand_step(randomseed);
+                    damage = damage.saturating_add(1 + ((roll & 3) as i16));
+                    if sector.floorpicnum == HURTRAIL {
+                        queue_player_sound(script, "SHORT_CIRCUIT", player, actor_temps);
+                    }
+                }
+            }
+        }
+    }
+    if damage > 0 {
+        let mut remaining = damage;
+        if player.shield_amount > 0 {
+            let shield_percent = 20 + room_build_engine::numeric::krand_step(randomseed) % 30;
+            let absorbed =
+                i16::try_from(i32::from(remaining) * shield_percent / 100).unwrap_or_default();
+            player.shield_amount = player.shield_amount.saturating_sub(absorbed);
+            remaining = remaining.saturating_sub(absorbed);
+            if player.shield_amount < 0 {
+                remaining = remaining.saturating_add(player.shield_amount);
+                player.shield_amount = 0;
+            }
+        }
+        player.extra = player.extra.saturating_sub(remaining).max(0);
+        player.last_extra = player.extra;
+        player.palette_flash = match sector.floorpicnum {
+            HURTRAIL => [64, 64, 64],
+            FLOOR_PLASMA => [8, 0, 0],
+            _ => [0, 8, 0],
+        };
+        player.palette_flash_tics = 32;
+        queue_player_sound(script, HURT_SOUND, player, actor_temps);
+    }
+}
+
+/// Chocolate `checksectors` Holoduke toggle and APLAYER EGS fields.
+fn apply_holoduke_input(
+    player: &mut Player,
+    input_bits: u32,
+    lists: &mut SpriteLists,
+    sprites: &mut [room_build_engine::types::SpriteT],
+    picnum: &mut Vec<i16>,
+    script: Option<&ScriptImage>,
+    actor_temps: &mut Vec<ActorConTemps>,
+) {
+    if input_bits & INPUT_INVENTORY_USE == 0 || player.inventory_icon != 3 {
+        return;
+    }
+    if player.holoduke_on >= 0 {
+        player.holoduke_on = -1;
+        queue_player_sound(script, "TELEPORTER", player, actor_temps);
+        set_player_quote(player, 48);
+        return;
+    }
+    if player.holoduke_amount <= 0 || player.cursectnum < 0 {
+        set_player_quote(player, 49);
+        return;
+    }
+    let index = lists.insertsprite(player.cursectnum, crate::stat::STAT_PLAYER);
+    let Ok(iu) = usize::try_from(index) else {
+        return;
+    };
+    let Some(sprite) = sprites.get_mut(iu) else {
+        let _ = lists.deletesprite(index);
+        return;
+    };
+    *sprite = room_build_engine::types::SpriteT {
+        x: player.posx,
+        y: player.posy,
+        z: player.posz + (30 << 8),
+        ang: player.ang,
+        sectnum: player.cursectnum,
+        picnum: crate::spawn::APLAYER,
+        shade: -64,
+        xrepeat: 0,
+        yrepeat: 10,
+        extra: 0,
+        owner: -1,
+        yvel: 0,
+        ..Default::default()
+    };
+    if picnum.len() <= iu {
+        picnum.resize(iu + 1, 0);
+    }
+    picnum[iu] = crate::spawn::APLAYER;
+    player.holoduke_on = index;
+    queue_player_sound(script, "TELEPORTER", player, actor_temps);
+    set_player_quote(player, 47);
+}
+
+/// Chocolate `checksectors` inventory selection and direct-use actions.
+fn apply_player_inventory_input(
+    player: &mut Player,
+    input_bits: u32,
+    script: Option<&ScriptImage>,
+    actor_temps: &mut Vec<ActorConTemps>,
+) {
+    if input_bits & INPUT_INVENTORY_USE != 0 {
+        match player.inventory_icon {
+            1 if player.firstaid_amount > 0 => {
+                let max_health = script
+                    .and_then(|image| image.gamestartup.get(2).copied())
+                    .unwrap_or(100)
+                    .clamp(1, i32::from(i16::MAX)) as i16;
+                if player.extra < max_health {
+                    let needed = max_health - player.extra;
+                    if player.firstaid_amount > needed {
+                        player.firstaid_amount -= needed;
+                        player.extra = max_health;
+                    } else {
+                        player.extra += player.firstaid_amount;
+                        player.firstaid_amount = 0;
+                        check_available_inventory(player);
+                    }
+                    player.last_extra = player.extra;
+                    queue_player_sound(script, "DUKE_USEMEDKIT", player, actor_temps);
+                }
+            }
+            2 if player.steroids_amount == 400 => {
+                player.steroids_amount -= 1;
+                player.inventory_icon = 2;
+                set_player_quote(player, 12);
+                queue_player_sound(script, "DUKE_TAKEPILLS", player, actor_temps);
+            }
+            4 if player.jetpack_amount > 0 => {
+                if player.jetpack_on == 0 {
+                    player.jetpack_on = 1;
+                    player.inventory_icon = 4;
+                    set_player_quote(player, 52);
+                    queue_player_sound(script, "DUKE_JETPACK_ON", player, actor_temps);
+                } else {
+                    player.jetpack_on = 0;
+                    player.poszv = 0;
+                    check_available_inventory(player);
+                    queue_player_sound(script, "DUKE_JETPACK_OFF", player, actor_temps);
+                }
+            }
+            5 if player.heat_amount > 0 => {
+                player.heat_on = !player.heat_on;
+                player.inventory_icon = 5;
+                set_player_quote(player, if player.heat_on { 106 } else { 107 });
+                queue_player_sound(script, "NITEVISION_ONOFF", player, actor_temps);
+            }
+            // Holoduke is handled with STAT_PLAYER list access by the session.
+            // Scuba and boots activate from their native sector/floor rules.
+            _ => {}
+        }
+    }
+    if input_bits & (INPUT_INVENTORY_LEFT | INPUT_INVENTORY_RIGHT) != 0 {
+        player.inventory_display_timer = 52;
+        if let Some(quote) = cycle_inventory(player, input_bits & INPUT_INVENTORY_RIGHT != 0) {
+            set_player_quote(player, quote);
+        }
+    }
+}
+
+/// Chocolate `MUSICANDSFX` reverb zones: process status-11 markers in native
+/// actor order and apply `FX_SetReverb` only on each marker's distance edge.
+fn tick_duke_reverb_zones(
+    world: &BuildWorld,
+    player: &Player,
+    actor_temps: &mut Vec<ActorConTemps>,
+    current_level: &mut i16,
+) {
+    let player_sprite = usize::try_from(player.sprite_i)
+        .ok()
+        .and_then(|index| world.sprites.get(index).copied())
+        .unwrap_or(room_build_engine::types::SpriteT {
+            x: player.posx,
+            y: player.posy,
+            z: player.posz,
+            ..Default::default()
+        });
+    let mut index = world.lists.headspritestat[crate::stat::STAT_FX as usize];
+    while index >= 0 {
+        let sprite_index = index as usize;
+        index = world.lists.nextspritestat[sprite_index];
+        let Some(marker) = world.sprites.get(sprite_index) else {
+            continue;
+        };
+        if marker.picnum != crate::spawn::MUSICANDSFX || !(1000..2000).contains(&marker.lotag) {
+            continue;
+        }
+        if actor_temps.len() <= sprite_index {
+            actor_temps.resize_with(sprite_index + 1, ActorConTemps::default);
+        }
+        let inside = crate::shoot::ldist(&player_sprite, marker) < i32::from(marker.hitag);
+        let active = actor_temps[sprite_index].g_t[0] != 0;
+        if inside && !active {
+            *current_level = marker.lotag - 1000;
+            actor_temps[sprite_index].g_t[0] = 1;
+        } else if !inside && active {
+            *current_level = 0;
+            actor_temps[sprite_index].g_t[0] = 0;
+        }
+    }
+}
+
+fn collect_actor_sound_events(
+    actor_temps: &mut [ActorConTemps],
+    pending_actor_sound_events: &mut Vec<DukeSoundEvent>,
+    sprites: &[room_build_engine::types::SpriteT],
+    player: &Player,
+    script: &ScriptImage,
+) {
+    // CON `sound` queues the actor's yvel sound only when that ID has
+    // an Atomic definesound entry; preserve `spritesound`'s source.
+    for (actor_i, temps) in actor_temps.iter_mut().enumerate() {
+        let Some(actor) = sprites.get(actor_i) else {
+            temps.pending_actor_sounds.clear();
+            temps.pending_actor_sounds_loop.clear();
+            temps.pending_actor_sounds_once.clear();
+            temps.pending_sound_stops.clear();
+            temps.pending_global_sounds.clear();
+            continue;
+        };
+        let position = [actor.x, actor.y, actor.z];
+        for sound in temps.pending_actor_sounds.drain(..) {
+            let Some(id) = u16::try_from(sound).ok() else {
+                continue;
+            };
+            if script
+                .sounds
+                .get(usize::from(id))
+                .is_some_and(Option::is_some)
+            {
+                let (voice_limit, definition_loop, exclusive, priority, global, no_attenuation) =
+                    duke_sound_voice_policy(Some(script), id);
+                pending_actor_sound_events.push(DukeSoundEvent {
+                    sound_id: id,
+                    position,
+                    source_id: u64::try_from(actor_i).ok(),
+                    play_once: false,
+                    loop_sound: definition_loop,
+                    voice_limit,
+                    exclusive,
+                    ambience: actor.picnum == crate::spawn::MUSICANDSFX,
+                    priority,
+                    global,
+                    no_attenuation,
+                    stop: false,
+                    stop_source_sound: false,
+                });
+            }
+        }
+        for sound in temps.pending_actor_sounds_once.drain(..) {
+            let Some(id) = u16::try_from(sound).ok() else {
+                continue;
+            };
+            if script
+                .sounds
+                .get(usize::from(id))
+                .is_some_and(Option::is_some)
+            {
+                let (voice_limit, definition_loop, exclusive, priority, global, no_attenuation) =
+                    duke_sound_voice_policy(Some(script), id);
+                pending_actor_sound_events.push(DukeSoundEvent {
+                    sound_id: id,
+                    position,
+                    source_id: u64::try_from(actor_i).ok(),
+                    play_once: true,
+                    loop_sound: definition_loop,
+                    voice_limit,
+                    exclusive,
+                    ambience: actor.picnum == crate::spawn::MUSICANDSFX,
+                    priority,
+                    global,
+                    no_attenuation,
+                    stop: false,
+                    stop_source_sound: false,
+                });
+            }
+        }
+        for sound in temps.pending_actor_sounds_loop.drain(..) {
+            let Some(id) = u16::try_from(sound).ok() else {
+                continue;
+            };
+            if script
+                .sounds
+                .get(usize::from(id))
+                .is_some_and(Option::is_some)
+            {
+                let (voice_limit, _, exclusive, priority, global, no_attenuation) =
+                    duke_sound_voice_policy(Some(script), id);
+                pending_actor_sound_events.push(DukeSoundEvent {
+                    sound_id: id,
+                    position,
+                    source_id: u64::try_from(actor_i).ok(),
+                    play_once: false,
+                    loop_sound: true,
+                    voice_limit,
+                    exclusive,
+                    ambience: actor.picnum == crate::spawn::MUSICANDSFX,
+                    priority,
+                    global,
+                    no_attenuation,
+                    stop: false,
+                    stop_source_sound: false,
+                });
+            }
+        }
+        if std::mem::take(&mut temps.pending_stop_source_sound) {
+            let sound_id = u16::try_from(actor.lotag).unwrap_or_default();
+            let (voice_limit, definition_loop, exclusive, priority, global, no_attenuation) =
+                duke_sound_voice_policy(Some(script), sound_id);
+            pending_actor_sound_events.push(DukeSoundEvent {
+                sound_id,
+                position,
+                source_id: u64::try_from(actor_i).ok(),
+                play_once: false,
+                loop_sound: definition_loop,
+                voice_limit,
+                exclusive,
+                ambience: actor.picnum == crate::spawn::MUSICANDSFX,
+                priority,
+                global,
+                no_attenuation,
+                stop: false,
+                stop_source_sound: true,
+            });
+        }
+        for sound in temps.pending_sound_stops.drain(..) {
+            let Ok(id) = u16::try_from(sound) else {
+                continue;
+            };
+            let (voice_limit, definition_loop, exclusive, priority, global, no_attenuation) =
+                duke_sound_voice_policy(Some(script), id);
+            pending_actor_sound_events.push(DukeSoundEvent {
+                sound_id: id,
+                position,
+                source_id: None,
+                play_once: false,
+                loop_sound: definition_loop,
+                voice_limit,
+                exclusive,
+                ambience: actor.picnum == crate::spawn::MUSICANDSFX,
+                priority,
+                global,
+                no_attenuation,
+                stop: true,
+                stop_source_sound: false,
+            });
+        }
+        for sound in temps.pending_global_sounds.drain(..) {
+            let Some(id) = u16::try_from(sound).ok() else {
+                continue;
+            };
+            if script
+                .sounds
+                .get(usize::from(id))
+                .is_some_and(Option::is_some)
+            {
+                let (voice_limit, definition_loop, exclusive, priority, global, no_attenuation) =
+                    duke_sound_voice_policy(Some(script), id);
+                pending_actor_sound_events.push(DukeSoundEvent {
+                    sound_id: id,
+                    position: [player.posx, player.posy, player.posz],
+                    source_id: u64::try_from(player.sprite_i).ok(),
+                    play_once: false,
+                    loop_sound: definition_loop,
+                    voice_limit,
+                    exclusive,
+                    ambience: actor.picnum == crate::spawn::MUSICANDSFX,
+                    priority,
+                    global,
+                    no_attenuation,
+                    stop: false,
+                    stop_source_sound: false,
+                });
+            }
+        }
+    }
+}
+
+fn tick_player_footprints(
+    player: &mut Player,
+    lists: &mut SpriteLists,
+    world: &mut BuildWorld,
+    picnum: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    randomseed: &mut i32,
+    script: Option<&ScriptImage>,
+) {
+    if player.cursectnum < 0 {
+        if player.dummy_player_sprite >= 0 {
+            let _ = lists.deletesprite(player.dummy_player_sprite);
+            player.dummy_player_sprite = -1;
+        }
+        return;
+    }
+    let Ok(sector_index) = usize::try_from(player.cursectnum) else {
+        return;
+    };
+    let Some(sector) = world.sectors.get(sector_index).copied() else {
+        if player.dummy_player_sprite >= 0 {
+            let _ = lists.deletesprite(player.dummy_player_sprite);
+            player.dummy_player_sprite = -1;
+        }
+        return;
+    };
+    if sector.lotag == 1 {
+        let player_body = usize::try_from(player.sprite_i)
+            .ok()
+            .and_then(|index| world.sprites.get(index).copied());
+        if player_body.is_none_or(|body| body.extra <= 0) && player.dummy_player_sprite >= 0 {
+            let _ = lists.deletesprite(player.dummy_player_sprite);
+            player.dummy_player_sprite = -1;
+        }
+        if player.on_ground
+            && player_body.is_some_and(|sprite| sprite.yrepeat >= 32)
+            && (player.posz - sector.floorz).saturating_abs() <= crate::player::PHEIGHT
+        {
+            player.footprint_count = 6;
+            player.footprint_pal = if sector.floorpicnum == 200 { 8 } else { 0 };
+            player.footprint_shade = 0;
+            if player.dummy_player_sprite < 0
+                && let Some(parent) = player_body
+            {
+                let dummy = crate::shoot::egs(
+                    lists,
+                    world.sprites.as_mut(),
+                    picnum,
+                    actor_temps,
+                    script,
+                    parent.sectnum,
+                    parent.x,
+                    parent.y,
+                    parent.z,
+                    1420, // PLAYERONWATER
+                    0,
+                    parent.xrepeat,
+                    parent.yrepeat,
+                    parent.ang,
+                    0,
+                    128,
+                    player.sprite_i,
+                    crate::stat::STAT_DUMMYPLAYER,
+                );
+                if dummy >= 0 {
+                    player.dummy_player_sprite = dummy;
+                    let sprite = &mut world.sprites[dummy as usize];
+                    sprite.cstat |= 32768;
+                }
+            }
+        }
+        if let Ok(dummy_index) = usize::try_from(player.dummy_player_sprite)
+            && let Some(dummy) = world.sprites.get_mut(dummy_index)
+        {
+            let _ = lists.changespritesect(player.dummy_player_sprite, player.cursectnum);
+            dummy.x = player.posx;
+            dummy.y = player.posy;
+            dummy.z = sector.floorz;
+            dummy.sectnum = player.cursectnum;
+            dummy.cstat |= 32768;
+        }
+        return;
+    }
+    if player.dummy_player_sprite >= 0 {
+        let _ = lists.deletesprite(player.dummy_player_sprite);
+        player.dummy_player_sprite = -1;
+    }
+    if !player.on_ground {
+        return;
+    }
+    if sector.lotag == 2 {
+        return;
+    }
+    if player.footprint_count == 0 {
+        return;
+    }
+    if sector.floorstat & 2 != 0 {
+        return;
+    }
+
+    const FOOTPRINT_TILES: [i16; 4] = [550, 672, 673, 674];
+    let mut nearby = lists.headspritesect[sector_index];
+    let mut already_near = false;
+    while nearby >= 0 {
+        let index = nearby as usize;
+        if index >= world.sprites.len() || index >= lists.nextspritesect.len() {
+            break;
+        }
+        let sprite = world.sprites[index];
+        if FOOTPRINT_TILES.contains(&sprite.picnum)
+            && (sprite.x - player.posx).saturating_abs() < 384
+            && (sprite.y - player.posy).saturating_abs() < 384
+        {
+            already_near = true;
+            break;
+        }
+        nearby = lists.nextspritesect[index];
+    }
+    if already_near {
+        return;
+    }
+
+    player.footprint_count -= 1;
+    if sector.lotag != 0 || sector.hitag != 0 || player.sprite_i < 0 {
+        return;
+    }
+    let tile = FOOTPRINT_TILES[(room_build_engine::numeric::krand_step(randomseed) & 3) as usize];
+    let Some(parent) = world.sprites.get(player.sprite_i as usize).copied() else {
+        return;
+    };
+    let index = crate::shoot::egs(
+        lists,
+        world.sprites.as_mut(),
+        picnum,
+        actor_temps,
+        script,
+        parent.sectnum,
+        parent.x,
+        parent.y,
+        parent.z,
+        tile,
+        0,
+        0,
+        0,
+        parent.ang,
+        0,
+        0,
+        player.sprite_i,
+        crate::stat::STAT_MISC,
+    );
+    let Ok(index) = usize::try_from(index) else {
+        return;
+    };
+    let sector_walls: Vec<_> = world
+        .sectors
+        .iter()
+        .take(world.numsectors as usize)
+        .map(|sector| room_build_engine::geom::SectorWalls {
+            wallptr: sector.wallptr,
+            wallnum: sector.wallnum,
+        })
+        .collect();
+    let wall_xy: Vec<_> = world
+        .walls
+        .iter()
+        .take(world.numwalls as usize)
+        .map(room_build_engine::types::WallT::xy)
+        .collect();
+    let valid_floor = [(84, 84), (-84, -84), (84, -84), (-84, 84)]
+        .into_iter()
+        .all(|(dx, dy)| {
+            let mut sect = parent.sectnum;
+            room_build_engine::geom::updatesector(
+                parent.x + dx,
+                parent.y + dy,
+                &mut sect,
+                &sector_walls,
+                &wall_xy,
+            ) >= 0
+                && usize::try_from(sect)
+                    .ok()
+                    .and_then(|sect| world.sectors.get(sect))
+                    .is_some_and(|candidate| candidate.floorz == sector.floorz)
+        });
+    if !valid_floor {
+        world.sprites[index].xrepeat = 0;
+        world.sprites[index].yrepeat = 0;
+        return;
+    }
+
+    let footprint = &mut world.sprites[index];
+    footprint.pal = player.footprint_pal;
+    footprint.shade = player.footprint_shade;
+    footprint.cstat = 32 | (u16::from(player.footprint_count & 1) << 2);
+    footprint.ang = parent.ang;
+    footprint.z = sector.floorz;
+    if sector.lotag != 1 && sector.lotag != 2 {
+        footprint.xrepeat = 32;
+        footprint.yrepeat = 32;
+    }
+}
+
+fn apply_pstomp_impact(
+    lists: &mut SpriteLists,
+    world: &mut BuildWorld,
+    picnum: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    player: &mut Player,
+    target_i: i16,
+    randomseed: &mut i32,
+    script: Option<&ScriptImage>,
+    pending_sound_ids: &mut Vec<u16>,
+    killer_seat: i16,
+) -> Option<(usize, usize)> {
+    let Ok(target_index) = usize::try_from(target_i) else {
+        return None;
+    };
+    let Some(target) = world.sprites.get(target_index).copied() else {
+        return None;
+    };
+    if target.sectnum < 0 || target.sectnum as usize >= world.numsectors as usize {
+        return None;
+    }
+    const APLAYER: i16 = 1405;
+    const COMMANDER: i16 = 1920;
+    const JIBS6: i16 = crate::shoot::JIBS6;
+    const BLOODPOOL: i16 = 1226;
+    let actortype = script.map_or(&[][..], |image| image.actortype.as_slice());
+    let is_badguy = crate::badguy::badguy_pic(target.picnum, actortype);
+    let repeats = if is_badguy && target.xrepeat < 16 {
+        8
+    } else {
+        32
+    };
+    let sectors: Vec<_> = world
+        .sectors
+        .iter()
+        .take(world.numsectors as usize)
+        .map(room_build_engine::types::SectorT::z)
+        .collect();
+    let sector_walls: Vec<_> = sectors
+        .iter()
+        .map(|sector| room_build_engine::geom::SectorWalls {
+            wallptr: sector.wallptr,
+            wallnum: sector.wallnum,
+        })
+        .collect();
+    let walls: Vec<_> = world.walls[..world.numwalls as usize]
+        .iter()
+        .map(room_build_engine::types::WallT::xy)
+        .collect();
+    let (_, floorz) =
+        room_build_engine::geom::getzsofslope(target.sectnum, target.x, target.y, &sectors, &walls);
+    let mut guts_z = target.z.wrapping_sub(8 << 8);
+    if guts_z > floorz.wrapping_sub(8 << 8) {
+        guts_z = floorz.wrapping_sub(8 << 8);
+    }
+    if target.picnum == COMMANDER {
+        guts_z = guts_z.wrapping_sub(24 << 8);
+    }
+    for _ in 0..7 {
+        let angle = (room_build_engine::numeric::krand_step(randomseed) & 2047) as i16;
+        let x = target
+            .x
+            .wrapping_add(room_build_engine::numeric::krand_step(randomseed) & 255)
+            .wrapping_sub(128);
+        let y = target
+            .y
+            .wrapping_add(room_build_engine::numeric::krand_step(randomseed) & 255)
+            .wrapping_sub(128);
+        let z = guts_z.wrapping_sub(room_build_engine::numeric::krand_step(randomseed) & 8191);
+        let xvel = (48 + (room_build_engine::numeric::krand_step(randomseed) & 31)) as i16;
+        let zvel = (-512 - (room_build_engine::numeric::krand_step(randomseed) & 2047)) as i16;
+        let shard = crate::shoot::egs(
+            lists,
+            world.sprites.as_mut(),
+            picnum,
+            actor_temps,
+            script,
+            target.sectnum,
+            x,
+            y,
+            z,
+            JIBS6,
+            -32,
+            repeats,
+            repeats,
+            angle,
+            xvel,
+            zvel,
+            player.sprite_i,
+            crate::stat::STAT_MISC,
+        );
+        if shard >= 0 && is_badguy && target.pal == 6 {
+            world.sprites[shard as usize].pal = 6;
+        }
+    }
+    // Chocolate `spawn(target, BLOODPOOL)` initializes a 1×1 misc actor;
+    // `actors.c` grows it over subsequent tics. `game.c::spawn` rejects pools
+    // whose four ±108 corner probes do not remain on the same floor. Water
+    // sectors keep a 1×1, unpaletted/untranslucent pool; parallax floors remove
+    // the pool. Growth begins in the later misc-actor pass.
+    let pool = crate::shoot::egs(
+        lists,
+        world.sprites.as_mut(),
+        picnum,
+        actor_temps,
+        script,
+        target.sectnum,
+        target.x,
+        target.y,
+        target.z,
+        BLOODPOOL,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        target_i,
+        crate::stat::STAT_MISC,
+    );
+    if pool >= 0 {
+        let pool_index = pool as usize;
+        let base_floor = world.sectors[target.sectnum as usize].floorz;
+        let valid_floor = [(108, 108), (-108, -108), (108, -108), (-108, 108)]
+            .into_iter()
+            .all(|(dx, dy)| {
+                let mut sector = target.sectnum;
+                room_build_engine::geom::updatesector(
+                    target.x + dx,
+                    target.y + dy,
+                    &mut sector,
+                    &sector_walls,
+                    &walls,
+                ) >= 0
+                    && usize::try_from(sector)
+                        .ok()
+                        .and_then(|sector| world.sectors.get(sector))
+                        .is_some_and(|sector| sector.floorz == base_floor)
+            });
+        let sector = world.sectors[target.sectnum as usize];
+        if !valid_floor || sector.floorstat & 2 != 0 {
+            world.sprites[pool_index].xrepeat = 0;
+            world.sprites[pool_index].yrepeat = 0;
+        } else {
+            world.sprites[pool_index].xrepeat = 1;
+            world.sprites[pool_index].yrepeat = 1;
+            if sector.lotag == 1 {
+                // Chocolate changes stat to 5 then exits before palette and
+                // translucency setup when the owning sector is underwater.
+            } else {
+                let blood_pal = if target.pal == 1 {
+                    1
+                } else if target.pal == 6 || matches!(target.picnum, 1227 | 990)
+                // NUKEBARREL / TIRE
+                {
+                    0
+                } else if target.picnum == 2200 {
+                    // FECES
+                    7
+                } else {
+                    2
+                };
+                world.sprites[pool_index].pal = blood_pal;
+                world.sprites[pool_index].cstat |= 32;
+            }
+        }
+    }
+    if let Some(sound) = script
+        .and_then(|image| image.labels.get("SQUISHED"))
+        .and_then(|label| u16::try_from(label.value).ok())
+    {
+        pending_sound_ids.push(sound);
+    }
+    if matches!(
+        target.picnum,
+        603 | 753 | 1294 | 1312 | 1317 | 1321 | 1323 | 1325 | 1334 | 1336 | 1395 | 3450 | 4864
+    ) && target.yvel > 0
+    {
+        let mut marker_i = lists.headspritestat[crate::stat::STAT_FX as usize];
+        while marker_i >= 0 {
+            let index = marker_i as usize;
+            if index >= world.sprites.len() || index >= lists.nextspritestat.len() {
+                break;
+            }
+            marker_i = lists.nextspritestat[index];
+            let marker = world.sprites[index];
+            if marker.picnum == crate::spawn::RESPAWN && marker.lotag == target.yvel {
+                world.sprites[index].extra = 54;
+            }
+        }
+    }
+    if target.picnum == APLAYER {
+        if !player.god_mode {
+            for _ in 0..8 {
+                let angle = (room_build_engine::numeric::krand_step(randomseed) & 2047) as i16;
+                let x = target
+                    .x
+                    .wrapping_add(room_build_engine::numeric::krand_step(randomseed) & 255)
+                    .wrapping_sub(128);
+                let y = target
+                    .y
+                    .wrapping_add(room_build_engine::numeric::krand_step(randomseed) & 255)
+                    .wrapping_sub(128);
+                let z =
+                    guts_z.wrapping_sub(room_build_engine::numeric::krand_step(randomseed) & 8191);
+                let xvel = (48 + (room_build_engine::numeric::krand_step(randomseed) & 31)) as i16;
+                let zvel =
+                    (-512 - (room_build_engine::numeric::krand_step(randomseed) & 2047)) as i16;
+                let _ = crate::shoot::egs(
+                    lists,
+                    world.sprites.as_mut(),
+                    picnum,
+                    actor_temps,
+                    script,
+                    target.sectnum,
+                    x,
+                    y,
+                    z,
+                    JIBS6,
+                    -32,
+                    32,
+                    32,
+                    angle,
+                    xvel,
+                    zvel,
+                    player.sprite_i,
+                    crate::stat::STAT_MISC,
+                );
+            }
+        }
+        if let Some(body) = world.sprites.get_mut(target_index) {
+            body.extra = 0;
+            body.cstat |= 32768;
+        }
+        let victim_seat = usize::try_from(target.yvel).ok()?;
+        let killer_seat = usize::try_from(killer_seat).ok()?;
+        Some((victim_seat, killer_seat))
+    } else {
+        if is_badguy {
+            player.actors_killed = player.actors_killed.wrapping_add(1);
+        }
+        let _ = lists.deletesprite(target_i);
+        if let Some(body) = world.sprites.get_mut(target_index) {
+            body.xrepeat = 0;
+            body.yrepeat = 0;
+        }
+        None
+    }
+}
+
+fn script_fingerprint(script: &ScriptImage) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"ROOM-DUKE-CON-IMAGE-v1\0");
+    for word in &script.script {
+        hash.update(word.to_le_bytes());
+    }
+    for pointer in &script.script_ptr {
+        hash.update([u8::from(*pointer)]);
+    }
+    for pointer in &script.actorscrptr {
+        hash.update(pointer.to_le_bytes());
+    }
+    hash.update(&script.actortype);
+    for value in &script.gamestartup {
+        hash.update(value.to_le_bytes());
+    }
+    for (name, label) in &script.labels {
+        hash.update((name.len() as u64).to_le_bytes());
+        hash.update(name.as_bytes());
+        hash.update(label.value.to_le_bytes());
+        hash.update([u8::from(label.is_ptr)]);
+    }
+    for quote in &script.quotes {
+        hash.update((quote.len() as u64).to_le_bytes());
+        hash.update(quote.as_bytes());
+    }
+    hash.finalize().into()
+}
+
+fn valid_saved_world(
+    world: &DukeBuildWorldSave,
+    lists: &DukeSpriteListsSave,
+    cyclers: &[ShadeCycler],
+) -> bool {
+    let numsectors = usize::try_from(world.numsectors).unwrap_or(usize::MAX);
+    let numwalls = usize::try_from(world.numwalls).unwrap_or(usize::MAX);
+    if numsectors > MAXSECTORS
+        || numwalls > MAXWALLS
+        || numsectors > world.sectors.len()
+        || numwalls > world.walls.len()
+        || world.sectors.len() > MAXSECTORS
+        || world.walls.len() > MAXWALLS
+        || world.sprites.len() != MAXSPRITES
+        || cyclers.iter().any(|cycler| {
+            cycler.sector < 0 || usize::try_from(cycler.sector).unwrap_or(usize::MAX) >= numsectors
+        })
+        || lists.headspritesect.len() != MAXSECTORS + 1
+        || lists.headspritestat.len() != MAXSTATUS + 1
+        || lists.prevspritesect.len() != MAXSPRITES
+        || lists.nextspritesect.len() != MAXSPRITES
+        || lists.prevspritestat.len() != MAXSPRITES
+        || lists.nextspritestat.len() != MAXSPRITES
+        || lists.sprite_sect.len() != MAXSPRITES
+        || lists.sprite_stat.len() != MAXSPRITES
+    {
+        return false;
+    }
+    let valid_id = |id: i16| id == -1 || (0..MAXSPRITES as i16).contains(&id);
+    if lists
+        .headspritesect
+        .iter()
+        .chain(lists.headspritestat.iter())
+        .chain(lists.prevspritesect.iter())
+        .chain(lists.nextspritesect.iter())
+        .chain(lists.prevspritestat.iter())
+        .chain(lists.nextspritestat.iter())
+        .any(|&id| !valid_id(id))
+    {
+        return false;
+    }
+    if lists
+        .sprite_stat
+        .iter()
+        .any(|&status| status < 0 || usize::try_from(status).unwrap_or(usize::MAX) > MAXSTATUS)
+        || lists
+            .sprite_sect
+            .iter()
+            .enumerate()
+            .any(|(index, &sector)| {
+                let status = lists.sprite_stat[index];
+                if status == MAXSTATUS as i16 {
+                    sector != -1
+                } else {
+                    sector < 0 || usize::try_from(sector).unwrap_or(usize::MAX) >= numsectors
+                }
+            })
+    {
+        return false;
+    }
+
+    let mut seen_status = [false; MAXSPRITES];
+    for (status, &head) in lists.headspritestat.iter().enumerate() {
+        let mut id = head;
+        while id >= 0 {
+            let index = id as usize;
+            if index >= MAXSPRITES
+                || seen_status[index]
+                || lists.sprite_stat[index] != status as i16
+            {
+                return false;
+            }
+            seen_status[index] = true;
+            id = lists.nextspritestat[index];
+        }
+    }
+    let mut seen_sector = [false; MAXSPRITES];
+    for (sector, &head) in lists.headspritesect.iter().enumerate() {
+        let mut id = head;
+        while id >= 0 {
+            let index = id as usize;
+            if index >= MAXSPRITES
+                || seen_sector[index]
+                || lists.sprite_sect[index] != sector as i16
+                || lists.sprite_stat[index] == MAXSTATUS as i16
+            {
+                return false;
+            }
+            seen_sector[index] = true;
+            id = lists.nextspritesect[index];
+        }
+    }
+    for index in 0..MAXSPRITES {
+        if !seen_status[index] {
+            return false;
+        }
+        if lists.sprite_stat[index] == MAXSTATUS as i16 {
+            if seen_sector[index] || lists.sprite_sect[index] != -1 {
+                return false;
+            }
+        } else {
+            let sect = lists.sprite_sect[index];
+            if !seen_sector[index]
+                || sect < 0
+                || usize::try_from(sect).unwrap_or(usize::MAX) >= numsectors
+                || world.sprites[index].sectnum != sect
+            {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 #[cfg(test)]

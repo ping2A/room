@@ -47,6 +47,15 @@ pub struct WelcomeRoom {
     pub skill: u8,
     /// Max seats.
     pub max_players: u8,
+    /// Atomic Duke `ud.coop` mode (0 = DukeMatch, 1 = co-op, 2 = no spawn).
+    #[serde(
+        default = "default_duke_game_mode",
+        skip_serializing_if = "is_default_duke_game_mode"
+    )]
+    pub duke_game_mode: u8,
+    /// Atomic Duke `ud.ffire`; ignored for Doom rooms.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub duke_friendly_fire: bool,
     /// RNG seed.
     pub rng_seed: u32,
     /// Input delay tics.
@@ -117,6 +126,14 @@ fn is_zero(v: &u32) -> bool {
 
 fn is_false(v: &bool) -> bool {
     !*v
+}
+
+fn default_duke_game_mode() -> u8 {
+    1
+}
+
+fn is_default_duke_game_mode(v: &u8) -> bool {
+    *v == 1
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -437,6 +454,8 @@ mod tests {
             map: "E1M1".into(),
             skill: 3,
             max_players: 2,
+            duke_game_mode: 1,
+            duke_friendly_fire: false,
             rng_seed: 7,
             delay: 0,
             game_mod: None,

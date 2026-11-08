@@ -11,11 +11,12 @@ use room_build_engine::geom::{
 use room_build_engine::types::{SectorT, SpriteT, WallT};
 use room_build_engine::world::SpriteLists;
 
+use crate::con::ActorConTemps;
 use crate::player::{CLIPMASK0, TileZMeta, sprite_z_clip};
 
 use crate::stat::{
-    STAT_ACTIVATOR, STAT_ACTOR, STAT_DEFAULT, STAT_DUMMY, STAT_EFFECTOR, STAT_FX, STAT_LOCATOR,
-    STAT_MISC, STAT_PLAYER, STAT_STANDABLE, STAT_TRANSPORT,
+    STAT_ACTIVATOR, STAT_ACTOR, STAT_DEFAULT, STAT_DUMMY, STAT_EFFECTOR, STAT_FALLER, STAT_FX,
+    STAT_LOCATOR, STAT_MISC, STAT_PLAYER, STAT_STANDABLE, STAT_TRANSPORT,
 };
 
 /// Chocolate `FOURSLEIGHT` — sprite rests this many Build Z units above the floor.
@@ -26,6 +27,10 @@ pub const APLAYER: i16 = 1405;
 
 /// Sector effector sprite picnum.
 pub const SECTOREFFECTOR: i16 = 1;
+/// Atomic `REACTOR2` tile referenced by `actors.c::moveeffectors` SE16.
+pub const REACTOR2: i16 = 578;
+/// Atomic `REACTOR` tile referenced by `actors.c::moveeffectors` SE16.
+pub const REACTOR: i16 = 1088;
 
 /// `names.h` markers / standables used in status classify.
 pub const ACTIVATOR: i16 = 2;
@@ -35,6 +40,12 @@ pub const MUSICANDSFX: i16 = 5;
 pub const LOCATORS: i16 = 6;
 pub const MASTERSWITCH: i16 = 8;
 pub const RESPAWN: i16 = 9;
+/// Atomic red/yellow/green item-respawn marker tiles (`names.h`).
+pub const RESPAWNMARKERRED: i16 = 3190;
+pub const RESPAWNMARKERYELLOW: i16 = 3200;
+pub const RESPAWNMARKERGREEN: i16 = 3210;
+/// Atomic `TRANSPORTERSTAR` tile.
+pub const TRANSPORTERSTAR: i16 = 1630;
 pub const BOLT1: i16 = 634;
 pub const WATERBUBBLE: i16 = 661;
 pub const WATERBUBBLEMAKER: i16 = 662;
@@ -43,6 +54,10 @@ pub const SEENINE: i16 = 1247;
 pub const OOZFILTER: i16 = 1079;
 pub const CRACK1: i16 = 546;
 pub const VIEWSCREEN: i16 = 502;
+/// Duke Atomic alternate monitor tile.
+pub const VIEWSCREEN2: i16 = 499;
+/// Duke Atomic live-camera monitor texture.
+pub const STATIC: i16 = 351;
 pub const CONE: i16 = 978;
 pub const CAMERA1: i16 = 621;
 pub const NUKEBUTTON: i16 = 142;
@@ -138,6 +153,23 @@ pub fn classify_map_sprites(
             continue;
         }
 
+        // Chocolate `spawn()`'s early tagged-hit-sprite dispatch. Its
+        // exceptions precede the normal tile-specific STAT setup below.
+        let pic = sprites[i].picnum;
+        let excluded_faller_tile = matches!(pic, 4397 | 4502 | 4361 | 4359 | 2566 | 499 | 502)
+            || (CRACK1..=CRACK1 + 3).contains(&pic);
+        let switch_tile = is_wall_switch_tile(pic);
+        if !excluded_faller_tile
+            && sprites[i].cstat & 48 != 0
+            && !(switch_tile && sprites[i].cstat & 16 != 0)
+            && sprites[i].hitag != 0
+        {
+            picnum_out[i] = pic;
+            sprites[i].cstat |= 257;
+            let _ = lists.changespritestat(i as i16, STAT_FALLER);
+            continue;
+        }
+
         // BOLT1…BOLT1+3 → standable (Chocolate: T1/T2 = repeats, no pic++).
         if (BOLT1..=BOLT1 + 3).contains(&sprites[i].picnum) {
             picnum_out[i] = sprites[i].picnum;
@@ -216,6 +248,171 @@ pub fn classify_map_sprites(
     }
 }
 
+/// Initialize Chocolate `spawn()` health for tagged sprites on STAT_FALLER.
+pub(crate) fn init_faller_sprites(
+    lists: &SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    temps: &mut Vec<ActorConTemps>,
+    impact_damage: i32,
+) {
+    for (index, sprite) in sprites.iter_mut().enumerate() {
+        if lists.sprite_stat.get(index).copied() == Some(STAT_FALLER) {
+            sprite.extra = impact_damage as i16;
+            if temps.len() <= index {
+                temps.resize_with(index + 1, ActorConTemps::default);
+            }
+            if let Some(sector) = usize::try_from(sprite.sectnum)
+                .ok()
+                .and_then(|sector| sectors.get(sector))
+            {
+                // Chocolate map `spawn()` seeds these un-slope-adjusted bounds.
+                temps[index].hit_floorz = sector.floorz;
+                temps[index].hit_ceilingz = sector.ceilingz;
+            }
+        }
+    }
+}
+
+/// Chocolate `wallswitchcheck()` tile set, used by the early `spawn()` path.
+fn is_wall_switch_tile(pic: i16) -> bool {
+    matches!(
+        pic,
+        1155 | 1156 // HANDPRINTSWITCH
+            | 1142 | 1143 // ALIENSWITCH
+            | 146
+            ..=149 // MULTISWITCH
+            | 130 | 170 // ACCESS SWITCHES
+            | 1122 | 1123 // PULLSWITCH
+            | 1111 | 1112 // HANDSWITCH
+            | 132 | 133 // SLOTDOOR
+            | 134 | 135 // LIGHTSWITCH
+            | 138 | 139 // SPACELIGHTSWITCH
+            | 136 | 137 // SPACEDOORSWITCH
+            | 140 | 141 // FRANKENSTINESWITCH
+            | 712 | 713 // LIGHTSWITCH2
+            | 860 | 861 // POWERSWITCH1
+            | 862 | 863 // LOCKSWITCH1
+            | 864 | 865 // POWERSWITCH2
+            | 162 | 163 // DIPSWITCH
+            | 164 | 165 // DIPSWITCH2
+            | 166 | 167 // TECHSWITCH
+            | 168 | 169 // DIPSWITCH3
+    )
+}
+
+/// Chocolate `spawn()` initialization for tagged destructible explosive
+/// sprites (`SEENINE`, `OOZFILTER`).
+pub(crate) fn init_destructible_explosives(
+    lists: &SpriteLists,
+    sprites: &mut [SpriteT],
+    impact_damage: i32,
+) {
+    for (index, sprite) in sprites.iter_mut().enumerate() {
+        if lists.sprite_stat.get(index).copied() != Some(STAT_STANDABLE)
+            || !matches!(sprite.picnum, SEENINE | OOZFILTER)
+        {
+            continue;
+        }
+        sprite.shade = -16;
+        if sprite.xrepeat <= 8 {
+            sprite.cstat = 32768;
+            sprite.xrepeat = 0;
+            sprite.yrepeat = 0;
+        } else {
+            sprite.cstat = 1 + 256;
+        }
+        sprite.extra = impact_damage.wrapping_shl(2) as i16;
+        sprite.owner = index as i16;
+    }
+}
+
+/// Apply Chocolate `spawn()`'s skill and `ud.monsters_off` gates after map
+/// actors have been classified and their CON actor type is available.
+pub fn apply_monster_spawn_rules(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    actortype: &[u8],
+    skill: u8,
+    monsters_off: bool,
+) {
+    for (index, sprite) in sprites.iter_mut().enumerate() {
+        if lists
+            .sprite_stat
+            .get(index)
+            .copied()
+            .unwrap_or(room_build_engine::world::MAXSTATUS as i16)
+            == room_build_engine::world::MAXSTATUS as i16
+            || !crate::badguy::badguy_pic(sprite.picnum, actortype)
+        {
+            continue;
+        }
+        let is_egg = sprite.picnum == 675;
+        let above_skill = !is_egg && sprite.lotag > i16::from(skill);
+        if !monsters_off && !above_skill {
+            continue;
+        }
+        sprite.xrepeat = 0;
+        sprite.yrepeat = 0;
+        let _ = lists.changespritestat(index as i16, crate::stat::STAT_MISC);
+    }
+}
+
+/// Count map enemies Chocolate adds to `ps[myconnectindex].max_actors_killed`
+/// while processing `spawn()` during prelevel.
+#[must_use]
+pub(crate) fn count_prelevel_kills(
+    lists: &SpriteLists,
+    sprites: &[SpriteT],
+    actorscrptr: &[i32],
+    actortype: &[u8],
+    skill: u8,
+    monsters_off: bool,
+) -> u8 {
+    let mut count = 0_u8;
+    for (index, sprite) in sprites.iter().enumerate() {
+        if lists
+            .sprite_stat
+            .get(index)
+            .copied()
+            .unwrap_or(room_build_engine::world::MAXSTATUS as i16)
+            == room_build_engine::world::MAXSTATUS as i16
+            || sprite.sectnum < 0
+            || sprite.lotag > i16::from(skill)
+        {
+            continue;
+        }
+        let pic = sprite.picnum;
+        let vanilla_enemy = matches!(
+            pic,
+            RECON
+                | 1880 // DRONE
+                | 1680..=1682 // LIZTROOP / RUNNING / STAYPUT
+                | 1715 | 1725 | 1741 | 1742 | 1744
+                | 1820..=1821 // OCTABRAIN
+                | 1920..=1921 // COMMANDER
+                | 2000..=2001 | 2045 // PIGCOP variants
+                | 2120 | 2121 | 2150 | 2160 | 2165 // LIZMAN variants
+                | 2420 // ORGANTIC
+                | 2630..=2631 // BOSS1
+                | 2710 | 2760 | 4740 | 4741 // BOSS2-4
+                | 2360 // ROTATEGUN
+                | 2370..=2377 // GREENSLIME
+        );
+        let scripted_sleeping_enemy = actorscrptr
+            .get(pic.max(0) as usize)
+            .is_some_and(|&entry| entry > 0)
+            && actortype
+                .get(pic.max(0) as usize)
+                .is_some_and(|actor_type| actor_type & 3 != 0);
+        let enabled = pic == RECON || !monsters_off;
+        if enabled && (vanilla_enemy || scripted_sleeping_enemy) {
+            count = count.wrapping_add(1);
+        }
+    }
+    count
+}
+
 /// Chocolate `resetpspritevars` EGS: insert one `APLAYER` at the map start pose.
 pub fn spawn_player_body(
     lists: &mut SpriteLists,
@@ -240,6 +437,9 @@ pub fn spawn_player_body(
         ang: start_ang,
         sectnum: start_sector,
         picnum: APLAYER,
+        // Chocolate `premap()` assigns the first zero-palette APLAYER the
+        // first player lookup palette (9) before rendering the world.
+        pal: 9,
         xrepeat: 42,
         yrepeat: 36,
         cstat: 1 + 256,
@@ -297,12 +497,16 @@ pub fn spawn_floor_snap(
 /// Chocolate `spawn` SECTORFFECTOR init (subset): lotag 0 snaps to lotag-1
 /// pivot XY when `ang == 512`; lotag 13/18/25/35 rewrite sector Z before
 /// pickup `makeitfall`.
-pub fn spawn_sector_effectors(sprites: &mut [SpriteT], sectors: &mut [SectorT]) {
+pub fn spawn_sector_effectors(
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    temps: &mut Vec<ActorConTemps>,
+) {
     // Collect lotag-1 pivots by hitag (first match wins, sprite index order).
-    let mut pivots: Vec<(i16, i32, i32)> = Vec::new();
-    for s in sprites.iter() {
+    let mut pivots: Vec<(i16, usize, i32, i32)> = Vec::new();
+    for (index, s) in sprites.iter().enumerate() {
         if s.picnum == SECTOREFFECTOR && s.lotag == 1 {
-            pivots.push((s.hitag, s.x, s.y));
+            pivots.push((s.hitag, index, s.x, s.y));
         }
     }
 
@@ -314,13 +518,47 @@ pub fn spawn_sector_effectors(sprites: &mut [SpriteT], sectors: &mut [SectorT]) 
         let ang = sprites[i].ang;
         let z = sprites[i].z;
         let pal = sprites[i].pal;
+        let shade = sprites[i].shade;
         let hitag = sprites[i].hitag;
         let sect = sprites[i].sectnum;
         if sect < 0 || sect as usize >= sectors.len() {
             continue;
         }
+        // Chocolate `spawn` assigns `SP = sector[sect].extra` for every SE.
+        sprites[i].yvel = sectors[sect as usize].extra;
 
         match lotag {
+            // Chocolate game.c `spawn()` initializes the swing-door turn
+            // direction before the common invisible-effector setup.
+            11 => {
+                if temps.len() <= i {
+                    temps.resize_with(i + 1, ActorConTemps::default);
+                }
+                temps[i].g_t[3] = if ang > 1024 { 2 } else { -2 };
+            }
+            // Chocolate game.c `spawn()` stores the escalator's map-load
+            // origin in T4/T5 and derives its vertical travel direction from
+            // the sector floor shade before the runtime shade cycle begins.
+            26 => {
+                if temps.len() <= i {
+                    temps.resize_with(i + 1, ActorConTemps::default);
+                }
+                temps[i].g_t[3] = sprites[i].x;
+                temps[i].g_t[4] = sprites[i].y;
+                sprites[i].zvel = if shade == sectors[sect as usize].floorshade {
+                    -256
+                } else {
+                    256
+                };
+                sprites[i].shade = 0;
+            }
+            // Chocolate gives SE28 its initial 65-tic lightning delay.
+            28 => {
+                if temps.len() <= i {
+                    temps.resize_with(i + 1, ActorConTemps::default);
+                }
+                temps[i].g_t[5] = 65;
+            }
             // SE7/23 transporters: pair by hitag, T5 = on-floor, STAT_TRANSPORT.
             7 | 23 => {
                 sprites[i].cstat = 0;
@@ -357,15 +595,30 @@ pub fn spawn_sector_effectors(sprites: &mut [SpriteT], sectors: &mut [SectorT]) 
 
         match lotag {
             0 => {
-                if let Some((_, px, py)) = pivots.iter().find(|(h, _, _)| *h == hitag) {
+                sprites[i].owner = -1;
+                if let Some((_, pivot, px, py)) = pivots.iter().find(|(h, _, _, _)| *h == hitag) {
+                    sprites[i].owner = *pivot as i16;
                     if ang == 512 {
                         sprites[i].x = *px;
                         sprites[i].y = *py;
                     }
                 }
+                if sectors[sect as usize].lotag & 0x3fff == 30 {
+                    sectors[sect as usize].hitag = i as i16;
+                    sprites[i].clipdist = u8::from(pal != 0);
+                    if temps.len() <= i {
+                        temps.resize_with(i + 1, ActorConTemps::default);
+                    }
+                    temps[i].g_t[4] = sectors[sect as usize].floorz;
+                }
             }
             13 => {
+                if temps.len() <= i {
+                    temps.resize_with(i + 1, ActorConTemps::default);
+                }
                 let sec = &mut sectors[sect as usize];
+                temps[i].g_t[0] = sec.ceilingz;
+                temps[i].g_t[1] = sec.floorz;
                 let d_ceil = (sec.ceilingz - z).abs();
                 let d_flor = (sec.floorz - z).abs();
                 let owner_ceil = d_ceil < d_flor;
@@ -382,24 +635,87 @@ pub fn spawn_sector_effectors(sprites: &mut [SpriteT], sectors: &mut [SectorT]) 
                 }
                 if sec.ceilingstat & 1 != 0 {
                     sec.ceilingstat ^= 1;
+                    temps[i].g_t[3] = 1;
                     if !owner_ceil && ang == 512 {
                         sec.ceilingstat ^= 1;
+                        temps[i].g_t[3] = 0;
                     }
                     sec.ceilingshade = sec.floorshade;
                 }
             }
             18 => {
-                let sec = &mut sectors[sect as usize];
-                if ang == 512 {
-                    if pal != 0 {
-                        sec.ceilingz = z;
-                    }
-                } else if pal != 0 {
-                    sec.floorz = z;
+                if temps.len() <= i {
+                    temps.resize_with(i + 1, ActorConTemps::default);
                 }
-                // Chocolate `hitag <<= 2` (runtime only; keep map hitag for now).
+                let sector = &mut sectors[sect as usize];
+                temps[i].g_t[1] = if ang == 512 {
+                    sector.ceilingz
+                } else {
+                    sector.floorz
+                };
+                if pal != 0 {
+                    if ang == 512 {
+                        sector.ceilingz = z;
+                    } else {
+                        sector.floorz = z;
+                    }
+                }
+                // Chocolate scales the runtime countdown interval in spawn.
+                sprites[i].hitag = hitag.wrapping_mul(4);
             }
-            25 | 35 => {
+            1 => {
+                if temps.len() <= i {
+                    temps.resize_with(i + 1, ActorConTemps::default);
+                }
+                sprites[i].owner = -1;
+                // Chocolate initializes SE1 T1 to zero; a linked SE19 later
+                // arms the pivot group when its shield is activated.
+                temps[i].g_t[0] = 0;
+            }
+            2 => {
+                if temps.len() <= i {
+                    temps.resize_with(i + 1, ActorConTemps::default);
+                }
+                temps[i].g_t[5] = i32::from(sectors[sect as usize].floorheinum);
+            }
+            11 => {
+                if temps.len() <= i {
+                    temps.resize_with(i + 1, ActorConTemps::default);
+                }
+                // Chocolate map `spawn`: SE11 T4 sets its swing direction.
+                temps[i].g_t[3] = if ang > 1024 { 2 } else { -2 };
+            }
+            19 => {
+                sprites[i].owner = -1;
+            }
+            26 => {
+                if temps.len() <= i {
+                    temps.resize_with(i + 1, ActorConTemps::default);
+                }
+                temps[i].g_t[3] = sprites[i].x;
+                temps[i].g_t[4] = sprites[i].y;
+                sprites[i].zvel = if sprites[i].shade == sectors[sect as usize].floorshade {
+                    -256
+                } else {
+                    256
+                };
+                sprites[i].shade = 0;
+            }
+            25 => {
+                if temps.len() <= i {
+                    temps.resize_with(i + 1, ActorConTemps::default);
+                }
+                temps[i].g_t[3] = sectors[sect as usize].ceilingz;
+                temps[i].g_t[4] = 1;
+                sectors[sect as usize].ceilingz = z;
+            }
+            35 => {
+                if temps.len() <= i {
+                    temps.resize_with(i + 1, ActorConTemps::default);
+                }
+                // Chocolate only moves the ceiling to the SE marker here;
+                // it leaves T5 (temp_data[4]) at its zero-initialized value.
+                // moveeffectors uses that value as the return clamp.
                 sectors[sect as usize].ceilingz = z;
             }
             _ => {}
@@ -499,7 +815,7 @@ fn soft_cull_pickup(s: &SpriteT, skill: u8) -> bool {
     (s.pal != 0) || (s.lotag as u8 > skill)
 }
 
-fn classify_stat(s: &SpriteT, actorscrptr: &[i32], actortype: &[u8]) -> i16 {
+pub(crate) fn classify_stat(s: &SpriteT, actorscrptr: &[i32], actortype: &[u8]) -> i16 {
     match s.picnum {
         SECTOREFFECTOR => {
             if s.lotag == 7 || s.lotag == 23 {
@@ -556,7 +872,21 @@ pub fn makeitfall(
         return;
     }
     let sec = &sectors[s.sectnum as usize];
-    let c = if sec.lotag == 2 { gc / 6 } else { gc };
+    // Chocolate `floorspace` / `ceilingspace` use the two outer-space sky
+    // textures only when the ceiling palette is the base palette.
+    const MOONSKY1: i16 = 80;
+    const BIGORBIT1: i16 = 84;
+    let outer_sky = |picnum| picnum == MOONSKY1 || picnum == BIGORBIT1;
+    let floor_space = sec.floorstat & 1 != 0 && sec.ceilingpal == 0 && outer_sky(sec.floorpicnum);
+    let ceiling_space =
+        sec.ceilingstat & 1 != 0 && sec.ceilingpal == 0 && outer_sky(sec.ceilingpicnum);
+    let c = if floor_space {
+        0
+    } else if ceiling_space || sec.lotag == 2 {
+        gc / 6
+    } else {
+        gc
+    };
 
     let floorz = if use_getzrange {
         let secs: Vec<SectorZ> = sectors
@@ -595,6 +925,9 @@ pub fn makeitfall(
     let rest = floorz - FOURSLEIGHT;
     if s.z < rest {
         let mut zvel = i32::from(s.zvel);
+        if sec.lotag == 2 && zvel > 3122 {
+            zvel = 3144;
+        }
         if zvel < 6144 {
             zvel += c;
         } else {
@@ -864,7 +1197,6 @@ pub fn spawn_load_rolls(
     skill: u8,
     monsters_off: bool,
 ) {
-    use room_build_engine::numeric::krand_step;
     const WATERDRIP: i16 = 660;
     const EGG: i16 = 675;
     const WOODENHORSE: i16 = 904;
@@ -885,7 +1217,7 @@ pub fn spawn_load_rolls(
     const PAPER: i16 = 4460;
     const CANWITHSOMETHING2: i16 = 4580;
     const CANWITHSOMETHING4: i16 = 4582;
-    let roll = |seed: &mut i32| -> i32 { krand_step(seed) };
+    let roll = |seed: &mut i32| room_build_engine::numeric::krand_step(seed);
     for i in 0..sprites.len() {
         if !alive(i) {
             continue;
@@ -988,9 +1320,9 @@ mod load_roll_tests {
             }, // no roll
         ];
         let mut temps = Vec::new();
-        let mut seed = 17;
+        let mut seed = 17_i32;
         spawn_load_rolls(&mut sprites, &|_| true, &mut temps, &mut seed, 2, false);
-        let mut expect = 17;
+        let mut expect = 17_i32;
         for _ in 0..4 {
             let _ = room_build_engine::numeric::krand_step(&mut expect);
         }

@@ -1,8 +1,8 @@
 //! Mount helpers: a Duke Nukem 3D `.GRP` mounts as its converted PWAD, any
 //! other path or blob mounts unchanged.
 
+use crate::export::grp_to_wad;
 use crate::grp::is_grp;
-use crate::wad::grp_to_wad;
 use room_vfs::VfsBuilder;
 use std::io::Read as _;
 use std::path::Path;

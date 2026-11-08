@@ -582,13 +582,31 @@ impl NetPlay {
 
     /// Submit local cmd; wait for all peers; return seat-ordered [`TicCmd`]s.
     pub fn advance_tic(&mut self, local_cmd: NetTicCmd) -> Result<Vec<TicCmd>, String> {
+        self.advance_tic_with_checksum(local_cmd, None)
+    }
+
+    fn advance_tic_with_checksum(
+        &mut self,
+        local_cmd: NetTicCmd,
+        checksum: Option<(u32, u64)>,
+    ) -> Result<Vec<TicCmd>, String> {
         let msg = self.session.submit_local(local_cmd);
-        self.session.broadcast(&mut *self.transport, &msg);
+        if let Some((tic, value)) = checksum {
+            self.session.report_checksum(tic, self.local, value);
+        }
+        self.session
+            .broadcast_with_checksum(&mut *self.transport, &msg, checksum);
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut last_rebroadcast = Instant::now();
         loop {
             self.session.recv(&mut *self.transport);
             if let Some(frame) = self.session.try_advance() {
+                let completed_tic = self.session.next_tic().saturating_sub(1);
+                if self.session.checksums_complete(completed_tic) {
+                    self.session
+                        .check_desync(completed_tic)
+                        .map_err(|error| error.to_string())?;
+                }
                 let mut cmds = vec![TicCmd::default(); usize::from(self.peer_count)];
                 for (peer, net) in frame {
                     let i = usize::from(peer.0);
@@ -599,7 +617,12 @@ impl NetPlay {
                 return Ok(cmds);
             }
             if last_rebroadcast.elapsed() > Duration::from_millis(50) {
-                self.session.broadcast(&mut *self.transport, &msg);
+                if checksum.is_some() {
+                    self.session
+                        .broadcast_with_checksum(&mut *self.transport, &msg, checksum);
+                } else {
+                    self.session.broadcast(&mut *self.transport, &msg);
+                }
                 last_rebroadcast = Instant::now();
             }
             if Instant::now() > deadline {
@@ -607,6 +630,63 @@ impl NetPlay {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    /// Submit a native Duke sync input and return the seat-ordered inputs for
+    /// the same lockstep tic. The existing transport record has fields with
+    /// matching widths, so this mapping preserves all ten bytes of Duke input.
+    pub fn advance_duke_tic(
+        &mut self,
+        input: room_duke::DukeInput,
+        checksum: Option<(u32, u64)>,
+    ) -> Result<Vec<room_duke::DukeInput>, String> {
+        let frame = self.advance_tic_with_checksum(
+            NetTicCmd {
+                buttons: input.bits,
+                pitch: i16::from(input.horz),
+                yaw: i16::from(input.avel),
+                roll: 0,
+                forward_move: input.fvel,
+                side_move: input.svel,
+                up_move: 0,
+                weapon_select: 0,
+            },
+            checksum,
+        )?;
+        Ok(frame
+            .into_iter()
+            .map(|cmd| room_duke::DukeInput {
+                fvel: cmd.forward_move,
+                svel: cmd.side_move,
+                avel: cmd.yaw.clamp(i16::from(i8::MIN), i16::from(i8::MAX)) as i8,
+                horz: cmd.pitch.clamp(i16::from(i8::MIN), i16::from(i8::MAX)) as i8,
+                bits: cmd.buttons.0,
+            })
+            .collect())
+    }
+
+    /// Broadcast one presentation-only Atomic remote-ridicule sound request.
+    pub fn broadcast_duke_rts(&mut self, index: usize) -> Result<(), String> {
+        if index >= 10 {
+            return Err("Duke RTS index must be 0..=9".to_owned());
+        }
+        self.session
+            .broadcast_auxiliary(&mut *self.transport, &[b'R', index as u8])
+            .map_err(|error| error.to_string())
+    }
+
+    /// Drain validated native Duke RTS requests from connected peers.
+    pub fn drain_duke_rts(&mut self) -> Vec<(PeerId, usize)> {
+        self.session
+            .drain_auxiliary()
+            .into_iter()
+            .filter_map(|(peer, payload)| {
+                if payload.len() != 2 || payload[0] != b'R' || !(1..=10).contains(&payload[1]) {
+                    return None;
+                }
+                Some((peer, usize::from(payload[1] - 1)))
+            })
+            .collect()
     }
 }
 

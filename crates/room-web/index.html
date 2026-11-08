@@ -750,8 +750,8 @@
         const vx = gamebar.querySelector("#game-voxel");
         if (vx) vx.closest("label").hidden = true;
       }
-      // Duke Nukem 3D UI — kept behind ROOM_UI_SHOW_DUKE (Doom-only surface by default).
-      const ROOM_UI_SHOW_DUKE = false;
+      // Duke GRPs use the native Build runtime; Doom IWADs keep the Doom path.
+      const ROOM_UI_SHOW_DUKE = true;
       const DUKE_SKILLS = ["Piece Of Cake (easy)", "Piece Of Cake", "Let's Rock", "Come Get Some", "Damn I'm Good"];
       const useDukeUi = () => {
         if (!ROOM_UI_SHOW_DUKE) return;

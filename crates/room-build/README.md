@@ -1,8 +1,10 @@
 # room-build
 
 Build engine (Duke Nukem 3D) content for Room: GRP, ART, `PALETTE.DAT`,
-`.MAP` and the `USER.CON` level table, converted into a UDMF PWAD that the
-rest of the engine loads unchanged. See `docs/23-build-engine.md`.
+`.MAP` and the `USER.CON` level table. Native gameplay belongs to `room-duke`;
+this crate parses Build data and keeps a compatibility exporter that converts
+content into UDMF PWADs for editors and legacy paths. See
+`docs/23-build-engine.md`.
 
 Public API:
 
@@ -11,7 +13,7 @@ Public API:
 - `Palette` — palette and shade tables → `PLAYPAL` / `COLORMAP`.
 - `parse_map`, `BuildMap` — Build maps v7/v8.
 - `parse_user_con`, `LevelInfo` — level names, par times, music.
-- `convert_map` — one Build map → `TEXTMAP`; `convert_map_with` adds game
+- `export::{convert_map, convert_map_with}` — one Build map → `TEXTMAP`; `convert_map_with` adds game
   tiles (`GameTiles`: switches, activators, hurt floors, charges, the fan) and a
   `SpriteMapper` that turns sprites into things (`MapThing`; monsters
   with a `size` are moved off blocking walls and solid decorations;
@@ -27,7 +29,7 @@ Public API:
   `SNDSEQ`, sounds) and the `SpriteMapper` for Duke maps.
 - `SpriteSet`, `SpriteLump`, `Origin` — ART tiles as Doom sprite/HUD lumps.
 - `Lookups` — `LOOKUP.DAT` palette swaps.
-- `grp_to_wad` — a whole GRP → PWAD bytes (maps, textures, sprites, HUD,
+- `export::{grp_to_wad, convert_grp_with_maps}` — a whole GRP → PWAD bytes (maps, textures, sprites, HUD,
   sounds, composed skies, `MAPINFO`).
 - `mount::mount_path`, `mount::mount_bytes` — mount a Doom IWAD or a GRP on a
   `VfsBuilder`.

@@ -25,6 +25,147 @@ const CHAN_WEAPON: i32 = 1;
 const STEREO_SWING: f64 = 96.0;
 /// Sources closer than this to the listener play centred (own weapon, pain, …).
 const PAN_MIN_DIST: f64 = 1.0;
+/// Chocolate Duke's default Sound Blaster voice pool (`fx_man.c`).
+const DUKE_VOICE_POOL: usize = 32;
+
+const RVB_FB_SRC_A: usize = 0;
+const RVB_FB_SRC_B: usize = 1;
+const RVB_IIR_DEST_A0: usize = 2;
+const RVB_IIR_DEST_A1: usize = 3;
+const RVB_ACC_SRC_A0: usize = 4;
+const RVB_ACC_SRC_A1: usize = 5;
+const RVB_ACC_SRC_B0: usize = 6;
+const RVB_ACC_SRC_B1: usize = 7;
+const RVB_IIR_SRC_A0: usize = 8;
+const RVB_IIR_SRC_A1: usize = 9;
+const RVB_IIR_DEST_B0: usize = 10;
+const RVB_IIR_DEST_B1: usize = 11;
+const RVB_ACC_SRC_C0: usize = 12;
+const RVB_ACC_SRC_C1: usize = 13;
+const RVB_ACC_SRC_D0: usize = 14;
+const RVB_ACC_SRC_D1: usize = 15;
+const RVB_IIR_SRC_B1: usize = 16;
+const RVB_IIR_SRC_B0: usize = 17;
+const RVB_MIX_DEST_A0: usize = 18;
+const RVB_MIX_DEST_A1: usize = 19;
+const RVB_MIX_DEST_B0: usize = 20;
+const RVB_MIX_DEST_B1: usize = 21;
+
+/// Rust port of Chocolate's audiolib `mvreverb.c` stereo IIR/feedback network.
+#[derive(Clone, Debug)]
+struct DukeReverb {
+    /// Interleaved internal delay samples; the algorithm addresses byte offsets
+    /// in its original 16-bit stereo buffer, hence the four-sample tap stride.
+    buffer: Vec<f64>,
+    cursor: usize,
+    offsets: [i32; 22],
+}
+
+impl DukeReverb {
+    fn new(sample_rate: u32) -> Self {
+        const BASE_OFFSETS: [i32; 22] = [
+            0xE3, 0xA9, 0xDFB, 0xB58, 0xD09, 0xA3C, 0xBD9, 0x973, 0xB59, 0x8DA, 0x8D9, 0x5E9,
+            0x7EC, 0x4B0, 0x6EF, 0x3D2, 0x5EA, 0x31D, 0x31C, 0x238, 0x154, 0xAA,
+        ];
+        let rate = i64::from(sample_rate.max(1));
+        let offsets = BASE_OFFSETS
+            .map(|offset| i32::try_from(i64::from(offset) * rate / 22_050).unwrap_or(i32::MAX));
+        let delay = usize::try_from(14_320_i64 * rate / 22_050)
+            .unwrap_or(1)
+            .max(1);
+        Self {
+            buffer: vec![0.0; delay],
+            cursor: 0,
+            offsets,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.buffer.fill(0.0);
+        self.cursor = 0;
+    }
+
+    fn index(&self, offset: i32, advance: usize) -> usize {
+        let length = self.buffer.len() as i64;
+        let byte_offset = i64::from(offset) * 4 + self.cursor as i64 + advance as i64;
+        usize::try_from(byte_offset.rem_euclid(length)).unwrap_or_default()
+    }
+
+    fn read(&self, offset: usize) -> f64 {
+        self.buffer[self.index(self.offsets[offset], 0)]
+    }
+
+    fn write(&mut self, offset: usize, value: f64, advance: usize) {
+        let index = self.index(self.offsets[offset], advance);
+        self.buffer[index] = value;
+    }
+
+    fn process_frame(&mut self, input_l: f64, input_r: f64) -> (f64, f64) {
+        const IIR_ALPHA: f64 = 0.870_117_187_5;
+        const ACC_COEF_A: f64 = 0.622_314_453_125;
+        const ACC_COEF_B: f64 = -0.524_414_062_5;
+        const ACC_COEF_C: f64 = 0.539_550_781_25;
+        const ACC_COEF_D: f64 = -0.508_300_781_25;
+        const IIR_COEF: f64 = -0.699_218_75;
+        const FB_ALPHA: f64 = 0.675_781_25;
+        const FB_X: f64 = 0.646_484_375;
+        const IN_COEF_L: f64 = -2.0;
+        const IN_COEF_R: f64 = -2.0;
+
+        let iir_input_a0 = self.read(RVB_IIR_SRC_A0) * IIR_COEF + input_l * IN_COEF_L;
+        let iir_input_a1 = self.read(RVB_IIR_SRC_A1) * IIR_COEF + input_r * IN_COEF_R;
+        let iir_input_b0 = self.read(RVB_IIR_SRC_B0) * IIR_COEF + input_l * IN_COEF_L;
+        let iir_input_b1 = self.read(RVB_IIR_SRC_B1) * IIR_COEF + input_r * IN_COEF_R;
+
+        let iir_a0 = iir_input_a0 * IIR_ALPHA + self.read(RVB_IIR_DEST_A0) * (1.0 - IIR_ALPHA);
+        let iir_a1 = iir_input_a1 * IIR_ALPHA + self.read(RVB_IIR_DEST_A1) * (1.0 - IIR_ALPHA);
+        let iir_b0 = iir_input_b0 * IIR_ALPHA + self.read(RVB_IIR_DEST_B0) * (1.0 - IIR_ALPHA);
+        let iir_b1 = iir_input_b1 * IIR_ALPHA + self.read(RVB_IIR_DEST_B1) * (1.0 - IIR_ALPHA);
+        self.write(RVB_IIR_DEST_A0, iir_a0, 1);
+        self.write(RVB_IIR_DEST_A1, iir_a1, 1);
+        self.write(RVB_IIR_DEST_B0, iir_b0, 1);
+        self.write(RVB_IIR_DEST_B1, iir_b1, 1);
+
+        let acc0 = self.read(RVB_ACC_SRC_A0) * ACC_COEF_A
+            + self.read(RVB_ACC_SRC_B0) * ACC_COEF_B
+            + self.read(RVB_ACC_SRC_C0) * ACC_COEF_C
+            + self.read(RVB_ACC_SRC_D0) * ACC_COEF_D;
+        let acc1 = self.read(RVB_ACC_SRC_A1) * ACC_COEF_A
+            + self.read(RVB_ACC_SRC_B1) * ACC_COEF_B
+            + self.read(RVB_ACC_SRC_C1) * ACC_COEF_C
+            + self.read(RVB_ACC_SRC_D1) * ACC_COEF_D;
+
+        let feedback_a0 = self.read_relative(RVB_MIX_DEST_A0, -self.offsets[RVB_FB_SRC_A]);
+        let feedback_a1 = self.read_relative(RVB_MIX_DEST_A1, -self.offsets[RVB_FB_SRC_A]);
+        let feedback_b0 = self.read_relative(RVB_MIX_DEST_B0, -self.offsets[RVB_FB_SRC_B]);
+        let feedback_b1 = self.read_relative(RVB_MIX_DEST_B1, -self.offsets[RVB_FB_SRC_B]);
+        self.write(RVB_MIX_DEST_A0, acc0 - feedback_a0 * FB_ALPHA, 0);
+        self.write(RVB_MIX_DEST_A1, acc1 - feedback_a1 * FB_ALPHA, 0);
+        self.write(
+            RVB_MIX_DEST_B0,
+            FB_ALPHA * acc0 - feedback_a0 * (FB_ALPHA - 1.0) - feedback_b0 * FB_X,
+            0,
+        );
+        self.write(
+            RVB_MIX_DEST_B1,
+            FB_ALPHA * acc1 - feedback_a1 * (FB_ALPHA - 1.0) - feedback_b1 * FB_X,
+            0,
+        );
+
+        let left = (self.read(RVB_MIX_DEST_A0) + self.read(RVB_MIX_DEST_B0)) / 3.0;
+        let right = (self.read(RVB_MIX_DEST_A1) + self.read(RVB_MIX_DEST_B1)) / 3.0;
+        self.cursor += 1;
+        if self.cursor == self.buffer.len() {
+            self.cursor = 0;
+        }
+        (left, right)
+    }
+
+    fn read_relative(&self, offset: usize, delta: i32) -> f64 {
+        let base = self.offsets[offset].saturating_add(delta);
+        self.buffer[self.index(base, 0)]
+    }
+}
 
 /// Linear-resample mono PCM from `src_rate` to `dst_rate`.
 #[must_use]
@@ -118,6 +259,11 @@ pub struct Voice {
     pub source_id: Option<u64>,
     /// Attenuation scale.
     pub attenuation: f32,
+    /// Start flags retained for game-specific voice arbitration.
+    pub flags: SoundFlags,
+    /// Monotonic mixer-local start order. Vector order is unstable because
+    /// finished voices are removed with `swap_remove`.
+    pub start_sequence: u64,
 }
 
 /// Soft mixer: apply events, render interleaved stereo f32.
@@ -135,8 +281,16 @@ pub struct Mixer {
     pub master: f32,
     /// Master music gain (applied by [`Self::mix_music`]).
     pub music_gain: f32,
+    /// Reverse left/right panning for sound effects (Duke `ReverseStereo`).
+    pub reverse_stereo: bool,
+    /// Gain for active and future Duke sound effects, independent of other games.
+    pub duke_sfx_gain: f32,
+    /// Duke `MUSICANDSFX` reverb level, clamped to Chocolate's 0–255 range.
+    pub reverb_level: u8,
     /// Output sample rate (Hz) — bank PCM and music must match.
     pub sample_rate: u32,
+    next_voice_sequence: u64,
+    reverb: DukeReverb,
 }
 
 impl Default for Mixer {
@@ -148,7 +302,12 @@ impl Default for Mixer {
             listener_facing: None,
             master: 1.0,
             music_gain: 1.0,
+            reverse_stereo: false,
+            duke_sfx_gain: 1.0,
+            reverb_level: 0,
             sample_rate: ENGINE_SAMPLE_RATE,
+            next_voice_sequence: 0,
+            reverb: DukeReverb::new(ENGINE_SAMPLE_RATE),
         }
     }
 }
@@ -165,6 +324,7 @@ impl Mixer {
     pub fn with_sample_rate(sample_rate: u32) -> Self {
         Self {
             sample_rate: sample_rate.max(1),
+            reverb: DukeReverb::new(sample_rate.max(1)),
             ..Self::default()
         }
     }
@@ -174,6 +334,86 @@ impl Mixer {
     pub fn set_listener(&mut self, pos: DVec3, angle: f64) {
         self.listener = pos;
         self.listener_facing = Some((room_core::dmath::cos(angle), room_core::dmath::sin(angle)));
+    }
+
+    /// Set the Duke ambience reverb level (0 disables; values clamp to 0–255).
+    pub fn set_reverb_level(&mut self, level: i32) {
+        let level = level.clamp(0, 255) as u8;
+        if self.reverb_level != level {
+            self.reverb_level = level;
+            if level == 0 {
+                self.reverb.reset();
+            }
+        }
+    }
+
+    /// Return the first live actor owner for each active Duke sound ID.
+    /// Chocolate's `ifnosounds` reads `SoundOwner[id][0]`, so later voices
+    /// with the same ID do not count when the first voice belongs elsewhere.
+    #[must_use]
+    pub fn duke_active_sound_owners(&self) -> Vec<(u32, Option<u64>)> {
+        let mut ordered: Vec<&Voice> = self
+            .voices
+            .iter()
+            .filter(|voice| voice.flags.0 & SoundFlags::DUKE_PRIORITY_PRESENT != 0)
+            .collect();
+        ordered.sort_by_key(|voice| voice.start_sequence);
+        let mut seen_sounds = Vec::new();
+        let mut owners = Vec::new();
+        for voice in ordered {
+            let sound_id = voice.sound.raw();
+            if sound_id == 0 || sound_id >= 450 || seen_sounds.contains(&sound_id) {
+                continue;
+            }
+            seen_sounds.push(sound_id);
+            owners.push((sound_id, voice.source_id));
+        }
+        owners
+    }
+
+    /// Apply Chocolate `xyzsound`'s same-ID voice replacement before a new
+    /// actor-owned Duke sound is started. It stops only the most recent voice
+    /// when the first owner repeats, when more than one voice already exists,
+    /// or when a dead badguy emits the sound. The four-voice ceiling is tested
+    /// first because `xyzsound` rejects a fifth voice without stopping one.
+    pub fn duke_xyzsound_stop_latest(
+        &mut self,
+        sound: SoundId,
+        source_id: Option<u64>,
+        dead_badguy: bool,
+    ) -> bool {
+        let active: Vec<usize> = self
+            .voices
+            .iter()
+            .enumerate()
+            .filter(|(_, voice)| {
+                voice.sound == sound && voice.flags.0 & SoundFlags::DUKE_PRIORITY_PRESENT != 0
+            })
+            .map(|(index, _)| index)
+            .collect();
+        if active.is_empty() || active.len() >= 4 {
+            return false;
+        }
+        let Some(first) = active
+            .iter()
+            .copied()
+            .min_by_key(|&index| self.voices[index].start_sequence)
+        else {
+            return false;
+        };
+        let Some(latest) = active
+            .iter()
+            .copied()
+            .max_by_key(|&index| self.voices[index].start_sequence)
+        else {
+            return false;
+        };
+        let first_owner = self.voices[first].source_id;
+        if first_owner == source_id || active.len() > 1 || dead_badguy {
+            self.voices.remove(latest);
+            return true;
+        }
+        false
     }
 
     /// Apply a batch of sound events.
@@ -193,6 +433,19 @@ impl Mixer {
                     source_id,
                     no_restart,
                 } => {
+                    if flags.0 & SoundFlags::DUKE_EXCLUSIVE != 0
+                        && self
+                            .voices
+                            .iter()
+                            .any(|voice| voice.flags.0 & SoundFlags::DUKE_EXCLUSIVE != 0)
+                    {
+                        continue;
+                    }
+                    if flags.0 & SoundFlags::UNIQUE_SOUND != 0
+                        && self.voices.iter().any(|voice| voice.sound == sound)
+                    {
+                        continue;
+                    }
                     if check_sound.is_some_and(|check| {
                         self.voices.iter().any(|voice| {
                             voice.channel == channel
@@ -244,6 +497,73 @@ impl Mixer {
                         self.voices
                             .retain(|v| !(v.channel == channel && origins_eq(v.origin, origin)));
                     }
+                    let duke_voice_limit = if flags.0 & SoundFlags::DUKE_LIMIT_ONE != 0 {
+                        Some(1)
+                    } else if flags.0 & SoundFlags::DUKE_LIMIT_FOUR != 0 {
+                        // Chocolate `xyzsound` rejects only once num > 3, so
+                        // the fourth ordinary voice is still admitted.
+                        Some(4)
+                    } else {
+                        None
+                    };
+                    if let Some(limit) = duke_voice_limit
+                        && self
+                            .voices
+                            .iter()
+                            .filter(|voice| voice.sound == sound)
+                            .count()
+                            >= limit
+                    {
+                        continue;
+                    }
+                    // Chocolate `movefx()` keeps ambience loops in a separate
+                    // voice count. When every FX voice is already an ambience
+                    // loop, a newly-entered, closer marker displaces the first
+                    // farther active environment loop; otherwise it is skipped.
+                    if flags.0 & SoundFlags::DUKE_AMBIENCE != 0
+                        && self
+                            .voices
+                            .iter()
+                            .filter(|voice| voice.flags.0 & SoundFlags::DUKE_AMBIENCE != 0)
+                            .count()
+                            >= DUKE_VOICE_POOL
+                    {
+                        let incoming_priority = flags.duke_priority().unwrap_or(0);
+                        if self.voices.iter().all(|voice| {
+                            incoming_priority < voice.flags.duke_priority().unwrap_or(0)
+                        }) {
+                            // Chocolate checks FX_VoiceAvailable before it
+                            // stops an already-playing environment loop.
+                            continue;
+                        }
+                        let incoming_distance = duke_ambience_distance(origin, self.listener);
+                        let farther_voice = self.voices.iter().position(|voice| {
+                            voice.flags.0 & SoundFlags::DUKE_AMBIENCE != 0
+                                && duke_ambience_distance(voice.origin, self.listener)
+                                    > incoming_distance
+                        });
+                        if let Some(index) = farther_voice {
+                            self.voices.remove(index);
+                        } else {
+                            continue;
+                        }
+                    }
+                    if let Some(priority) = flags.duke_priority()
+                        && self.voices.len() >= DUKE_VOICE_POOL
+                    {
+                        let quietest = self
+                            .voices
+                            .iter()
+                            .enumerate()
+                            .min_by_key(|(_, voice)| voice.flags.duke_priority().unwrap_or(0));
+                        let Some((index, voice)) = quietest else {
+                            continue;
+                        };
+                        if priority < voice.flags.duke_priority().unwrap_or(0) {
+                            continue;
+                        }
+                        self.voices.remove(index);
+                    }
                     // GZDoom `S_CheckSoundLimit`: a sound plays at most
                     // `NEAR_LIMIT` times within `NEAR_LIMIT_RANGE` units of each
                     // other (SNDINFO `$limit`, default 2). Without it a room of
@@ -271,6 +591,8 @@ impl Mixer {
                             }
                         }
                     }
+                    let start_sequence = self.next_voice_sequence;
+                    self.next_voice_sequence = self.next_voice_sequence.wrapping_add(1);
                     self.voices.push(Voice {
                         sound,
                         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
@@ -282,11 +604,16 @@ impl Mixer {
                         channel,
                         source_id,
                         attenuation,
+                        flags,
+                        start_sequence,
                     });
                 }
                 SoundEvent::Stop { origin, channel } => {
                     self.voices
                         .retain(|v| !(v.channel == channel && origins_eq(v.origin, origin)));
+                }
+                SoundEvent::StopSound { sound } => {
+                    self.voices.retain(|voice| voice.sound != sound);
                 }
                 SoundEvent::StopActor { source_id } => {
                     self.voices.retain(|v| v.source_id != Some(source_id));
@@ -333,15 +660,41 @@ impl Mixer {
                 finished.push(vi);
                 continue;
             }
-            let atten = attenuate(voice.origin, self.listener, voice.attenuation);
-            let gain = voice.volume * atten * self.master;
-            let (pan_l, pan_r) = stereo_gains(
-                voice.origin,
-                voice.attenuation,
-                self.listener,
-                self.listener_facing,
-            );
-            let (gain_l, gain_r) = (gain * pan_l, gain * pan_r);
+            let is_duke = voice.flags.0 & SoundFlags::DUKE_PRIORITY_PRESENT != 0;
+            let (gain_l, gain_r) = if is_duke {
+                duke_stereo_gains(
+                    voice.origin,
+                    self.listener,
+                    self.listener_facing,
+                    voice.flags,
+                    voice.attenuation,
+                    self.duke_sfx_gain * voice.volume * self.master,
+                )
+            } else {
+                let atten = if voice.flags.0 & SoundFlags::ATTN_NONE != 0 {
+                    1.0
+                } else {
+                    attenuate(
+                        voice.origin,
+                        self.listener,
+                        voice.attenuation,
+                        voice.flags.duke_distance_offset().map_or(0.0, f64::from),
+                    )
+                };
+                let gain = voice.volume * atten * self.master;
+                let (pan_l, pan_r) = stereo_gains(
+                    voice.origin,
+                    voice.attenuation,
+                    self.listener,
+                    self.listener_facing,
+                );
+                (gain * pan_l, gain * pan_r)
+            };
+            let (gain_l, gain_r) = if self.reverse_stereo && is_duke {
+                (gain_r, gain_l)
+            } else {
+                (gain_l, gain_r)
+            };
             let mut pos = voice.cursor as f32;
             for f in 0..frames {
                 let idx = pos as usize;
@@ -369,6 +722,17 @@ impl Mixer {
         for vi in finished.into_iter().rev() {
             if vi < self.voices.len() {
                 self.voices.swap_remove(vi);
+            }
+        }
+        if self.reverb_level > 0 {
+            let reverb_volume = ((i32::from(self.reverb_level) * 64) >> 8).min(63);
+            let wet_gain = f64::from(reverb_volume) / 63.0;
+            for frame in out.chunks_exact_mut(2) {
+                let (wet_l, wet_r) = self
+                    .reverb
+                    .process_frame(f64::from(frame[0]), f64::from(frame[1]));
+                frame[0] += (wet_l * wet_gain) as f32;
+                frame[1] += (wet_r * wet_gain) as f32;
             }
         }
     }
@@ -406,7 +770,7 @@ fn origins_eq(a: SoundOrigin, b: SoundOrigin) -> bool {
     }
 }
 
-fn attenuate(origin: SoundOrigin, listener: DVec3, scale: f32) -> f32 {
+fn attenuate(origin: SoundOrigin, listener: DVec3, scale: f32, distance_offset: f64) -> f32 {
     if scale <= 0.0 {
         return 1.0;
     }
@@ -416,7 +780,9 @@ fn attenuate(origin: SoundOrigin, listener: DVec3, scale: f32) -> f32 {
     let dx = p.x() - listener.x();
     let dy = p.y() - listener.y();
     let dz = p.z() - listener.z();
-    let dist = room_core::dmath::sqrt(dx * dx + dy * dy + dz * dz) * f64::from(scale);
+    let dist = (room_core::dmath::sqrt(dx * dx + dy * dy + dz * dz) * f64::from(scale)
+        + distance_offset)
+        .max(0.0);
     if dist <= CLOSE_DIST {
         return 1.0;
     }
@@ -427,6 +793,119 @@ fn attenuate(origin: SoundOrigin, listener: DVec3, scale: f32) -> f32 {
     {
         ((CLIP_DIST - dist) / (CLIP_DIST - CLOSE_DIST)) as f32
     }
+}
+
+/// Chocolate's `sounds.c::xyzsound` distance path and `MV_Play3D` gain tables.
+fn duke_stereo_gains(
+    origin: SoundOrigin,
+    listener: DVec3,
+    facing: Option<(f64, f64)>,
+    flags: SoundFlags,
+    attenuation: f32,
+    gain: f32,
+) -> (f32, f32) {
+    // Chocolate `m&128` takes `sound()` directly: centered and full volume.
+    if matches!(origin, SoundOrigin::None) {
+        return (gain, gain);
+    }
+    let non_attenuated_position = flags.0 & SoundFlags::ATTN_NONE != 0;
+    let raw_distance = if flags.0 & SoundFlags::ATTN_NONE != 0 {
+        0
+    } else if let SoundOrigin::Point(source) = origin {
+        let to_build = |delta: f64| {
+            let value = (delta * 16.0).round();
+            if value <= f64::from(i32::MIN) {
+                i32::MIN
+            } else if value >= f64::from(i32::MAX) {
+                i32::MAX
+            } else {
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    value as i32
+                }
+            }
+        };
+        duke_find_distance_3d(
+            to_build(source.x() - listener.x()),
+            to_build(source.y() - listener.y()),
+            to_build(source.z() - listener.z()),
+        )
+    } else {
+        0
+    };
+    let offset = if flags.0 & SoundFlags::ATTN_NONE != 0 {
+        0
+    } else {
+        i32::from(flags.duke_distance_offset().unwrap_or(0)).saturating_mul(16)
+    };
+    let distance = if non_attenuated_position {
+        // `xyzsound` zeroes sndist for `m&16` after minimum-distance handling.
+        0
+    } else {
+        let mut distance = raw_distance.saturating_add(offset).max(0);
+        if attenuation > 1.0 {
+            distance = distance.saturating_add(distance >> 5);
+        }
+        let sound_distance = distance.max((255 - 150) << 6) >> 6;
+        sound_distance.clamp(0, 255)
+    };
+    let pan_volume = ((distance * 64) >> 8).min(63);
+    let table_level = (255 * (63 - pan_volume)) / 63;
+    let pan_position = match (facing, origin) {
+        (Some((fx, fy)), SoundOrigin::Point(source)) => {
+            let source_angle = (source.y() - listener.y()).atan2(source.x() - listener.x());
+            let facing_angle = fy.atan2(fx);
+            // Chocolate: `sndang = 2048 + ca - getangle(cx-x, cy-y)`;
+            // front and back are the symmetric table positions 16 and 0.
+            let relative = (facing_angle - source_angle + std::f64::consts::PI)
+                .rem_euclid(std::f64::consts::TAU);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            {
+                ((relative * 32.0 / std::f64::consts::TAU).floor() as usize) & 31
+            }
+        }
+        _ => 16,
+    };
+    // Exact integer shape of Chocolate's 32-position `MV_PanTable` at the
+    // computed volume row (MV_CalcPanTable, multivoc.c).
+    let (left, right) = match pan_position {
+        0..=8 => (table_level * (8 - pan_position as i32) / 8, table_level),
+        9..=16 => (table_level * (pan_position as i32 - 8) / 8, table_level),
+        17..=24 => (table_level, table_level * (24 - pan_position as i32) / 8),
+        _ => (table_level, table_level * (pan_position as i32 - 24) / 8),
+    };
+    (gain * left as f32 / 255.0, gain * right as f32 / 255.0)
+}
+
+/// Chocolate `global.c::FindDistance3D` integer approximation.
+fn duke_find_distance_3d(mut x: i32, mut y: i32, mut z: i32) -> i32 {
+    x = x.saturating_abs();
+    y = y.saturating_abs();
+    z = z.saturating_abs();
+    if x < y {
+        std::mem::swap(&mut x, &mut y);
+    }
+    if x < z {
+        std::mem::swap(&mut x, &mut z);
+    }
+    let others = y.saturating_add(z);
+    x.saturating_sub(x >> 4)
+        .saturating_add(others >> 2)
+        .saturating_add(others >> 3)
+}
+
+/// Chocolate Build `dist()` approximation for choosing which positional
+/// ambience loop to retain. Audio positions store X/Y in 1/16 Build units.
+fn duke_ambience_distance(origin: SoundOrigin, listener: DVec3) -> f64 {
+    let SoundOrigin::Point(point) = origin else {
+        return f64::INFINITY;
+    };
+    let mut x = ((point.x() - listener.x()).abs() * 16.0).round();
+    let mut y = ((point.y() - listener.y()).abs() * 16.0).round();
+    if x < y {
+        std::mem::swap(&mut x, &mut y);
+    }
+    x - (x / 16.0).floor() + (y / 4.0).floor() + (y / 8.0).floor()
 }
 
 /// Left/right gains for a voice heard by a listener facing `facing`.

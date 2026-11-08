@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use room_build::DmoDemo;
-use room_build::grp::Grp;
+use room_build::grp::GrpStack;
 use room_build_engine::world::{BuildWorld, MAXSTATUS};
 
 use room_build::art::{MAX_TILES, TileSet};
@@ -26,12 +26,18 @@ pub fn duke_map_lump(demo: &DmoDemo) -> String {
     )
 }
 
-struct GrpIncludes<'a> {
-    grp: &'a Grp<'a>,
+struct GrpIncludes<'g, 'a, 'r> {
+    grp: &'g GrpStack<'a>,
+    additional: Option<&'r mut dyn IncludeResolver>,
 }
 
-impl IncludeResolver for GrpIncludes<'_> {
+impl IncludeResolver for GrpIncludes<'_, '_, '_> {
     fn read_include(&mut self, name: &str) -> Option<Vec<u8>> {
+        if let Some(additional) = self.additional.as_deref_mut()
+            && let Some(bytes) = additional.read_include(name)
+        {
+            return Some(bytes);
+        }
         self.grp
             .get(name)
             .or_else(|| self.grp.get(&name.to_ascii_uppercase()))
@@ -39,21 +45,120 @@ impl IncludeResolver for GrpIncludes<'_> {
     }
 }
 
-/// Load Atomic GRP + DEMO, compile CON, enter the demo map.
-pub fn session_from_grp_demo(
+/// Load an Atomic GRP and start a live game on `map_name` at skill 0..=4.
+/// `map_name` accepts either `E1L1` or the full `E1L1.MAP` lump name.
+pub fn session_from_grp_map(
     grp_bytes: &[u8],
-    dmo_bytes: &[u8],
-) -> Result<(DukeSession, DmoDemo), String> {
-    let grp = Grp::parse(grp_bytes).map_err(|e| format!("GRP: {e}"))?;
-    let demo = DmoDemo::parse(dmo_bytes).map_err(|e| format!("DMO: {e}"))?;
-    let map_name = duke_map_lump(&demo);
+    map_name: &str,
+    skill: u8,
+) -> Result<DukeSession, String> {
+    session_from_grp_layers(&[grp_bytes], map_name, skill)
+}
+
+/// Load a base Atomic GRP plus ordered add-on GRPs and start `map_name`.
+/// Later archives replace files with duplicate names, including maps and CON.
+pub fn session_from_grp_layers(
+    grp_layers: &[&[u8]],
+    map_name: &str,
+    skill: u8,
+) -> Result<DukeSession, String> {
+    session_from_grp_layers_with_con(grp_layers, map_name, skill, None)
+}
+
+/// Load a map while optionally overriding the root CON source (`-x` style).
+/// Includes referenced by the override are resolved through the GRP stack.
+pub fn session_from_grp_layers_with_con(
+    grp_layers: &[&[u8]],
+    map_name: &str,
+    skill: u8,
+    con_override: Option<&[u8]>,
+) -> Result<DukeSession, String> {
+    session_from_grp_layers_with_con_and_includes(grp_layers, map_name, skill, con_override, None)
+}
+
+/// Load a map with a root CON override and a fallback resolver for its includes.
+/// External includes are tried before assets in the GRP stack.
+pub fn session_from_grp_layers_with_con_and_includes(
+    grp_layers: &[&[u8]],
+    map_name: &str,
+    skill: u8,
+    con_override: Option<&[u8]>,
+    additional_includes: Option<&mut dyn IncludeResolver>,
+) -> Result<DukeSession, String> {
+    if skill > 4 {
+        return Err(format!("skill {skill} is outside the Duke range 0..=4"));
+    }
+    let map_name = map_name.trim().to_ascii_uppercase();
+    let base = map_name.strip_suffix(".MAP").unwrap_or(&map_name);
+    if base.is_empty()
+        || base.len() > 8
+        || !base.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return Err(format!("invalid Duke map lump name: {map_name}"));
+    }
+    let map_name = format!("{base}.MAP");
+    let grp = GrpStack::parse_layers(grp_layers).map_err(|e| format!("GRP: {e}"))?;
     let map = grp
         .get(&map_name)
         .ok_or_else(|| format!("missing map {map_name}"))?;
-    let world = BuildWorld::load_map_bytes(map).map_err(|e| format!("map: {e}"))?;
+    session_from_grp_map_data(&grp, map, skill, con_override, additional_includes)
+}
 
-    let game = grp.get("GAME.CON").ok_or("missing GAME.CON")?;
-    let mut inc = GrpIncludes { grp: &grp };
+/// Load a standalone Build `.MAP` file using content/resources from GRP layers.
+pub fn session_from_grp_map_bytes(
+    grp_layers: &[&[u8]],
+    map_bytes: &[u8],
+    skill: u8,
+) -> Result<DukeSession, String> {
+    session_from_grp_map_bytes_with_con(grp_layers, map_bytes, skill, None)
+}
+
+/// Load a standalone map and optional replacement root CON source.
+pub fn session_from_grp_map_bytes_with_con(
+    grp_layers: &[&[u8]],
+    map_bytes: &[u8],
+    skill: u8,
+    con_override: Option<&[u8]>,
+) -> Result<DukeSession, String> {
+    session_from_grp_map_bytes_with_con_and_includes(
+        grp_layers,
+        map_bytes,
+        skill,
+        con_override,
+        None,
+    )
+}
+
+/// Load a standalone map with a root CON override and extra include resolver.
+pub fn session_from_grp_map_bytes_with_con_and_includes(
+    grp_layers: &[&[u8]],
+    map_bytes: &[u8],
+    skill: u8,
+    con_override: Option<&[u8]>,
+    additional_includes: Option<&mut dyn IncludeResolver>,
+) -> Result<DukeSession, String> {
+    if skill > 4 {
+        return Err(format!("skill {skill} is outside the Duke range 0..=4"));
+    }
+    let grp = GrpStack::parse_layers(grp_layers).map_err(|e| format!("GRP: {e}"))?;
+    session_from_grp_map_data(&grp, map_bytes, skill, con_override, additional_includes)
+}
+
+fn session_from_grp_map_data<'g, 'a, 'r>(
+    grp: &'g GrpStack<'a>,
+    map_bytes: &[u8],
+    skill: u8,
+    con_override: Option<&[u8]>,
+    additional_includes: Option<&'r mut dyn IncludeResolver>,
+) -> Result<DukeSession, String> {
+    let world = BuildWorld::load_map_bytes(map_bytes).map_err(|e| format!("map: {e}"))?;
+    let game = con_override
+        .or_else(|| grp.get("GAME.CON"))
+        .ok_or("missing GAME.CON (or custom CON override)")?;
+    let mut inc = GrpIncludes {
+        grp,
+        additional: additional_includes,
+    };
     let script: ScriptImage = compile(game, &mut inc);
     if script.errors != 0 {
         return Err(format!("CON errors={}", script.errors));
@@ -69,16 +174,53 @@ pub fn session_from_grp_demo(
     }
     let mut session = DukeSession::new();
     session.load_script(script);
-    session.set_tile_meta(tile_z_meta_from_grp(&grp));
-    session.set_world_with_skill(world, demo.skill);
+    session.set_tile_meta(tile_z_meta_from_grp(grp));
+    session.set_world_with_skill(world, skill);
     session.player.extra = 100;
     session.player.curr_weapon = 1;
     session.player.ammo[1] = 48;
+    Ok(session)
+}
+
+/// Load Atomic GRP + DEMO, compile CON, enter the demo map.
+pub fn session_from_grp_demo(
+    grp_bytes: &[u8],
+    dmo_bytes: &[u8],
+) -> Result<(DukeSession, DmoDemo), String> {
+    session_from_grp_demo_layers(&[grp_bytes], dmo_bytes)
+}
+
+/// Load a DEMO through an ordered base/add-on GRP stack.
+pub fn session_from_grp_demo_layers(
+    grp_layers: &[&[u8]],
+    dmo_bytes: &[u8],
+) -> Result<(DukeSession, DmoDemo), String> {
+    let demo = DmoDemo::parse(dmo_bytes).map_err(|e| format!("DMO: {e}"))?;
+    let map_name = duke_map_lump(&demo);
+    let mut session = session_from_grp_layers(grp_layers, &map_name, demo.skill)?;
+    session.configure_multiplayer_mode(
+        usize::from(demo.players),
+        demo.coop,
+        demo.friendly_fire != 0,
+    )?;
+    for seat in 0..session.player_count() {
+        if let Some(player) = session.player_for_seat_mut(seat) {
+            player.game_mode = demo.coop;
+            player.coop_mode = demo.coop == 1;
+            player.friendly_fire = demo.friendly_fire != 0;
+            if let Some(&aim_mode) = demo.aim_modes.get(seat) {
+                player.aim_mode = aim_mode & 1;
+            }
+            if let Some(&weapon_choices) = demo.weapon_choices.get(seat) {
+                player.weapon_choices = weapon_choices;
+            }
+        }
+    }
     Ok((session, demo))
 }
 
 /// ART `ysize` + picanm y-offset table for sprite ceilings in `getzrange`.
-fn tile_z_meta_from_grp(grp: &Grp<'_>) -> Vec<TileZMeta> {
+fn tile_z_meta_from_grp(grp: &GrpStack<'_>) -> Vec<TileZMeta> {
     let mut set = TileSet::new();
     for name in grp.names() {
         let upper = name.to_ascii_uppercase();
@@ -309,6 +451,34 @@ mod tests {
         assert_eq!(
             tr.sprite_hash, choc.tics[40].sprite_hash,
             "tic40 sprite_hash"
+        );
+    }
+
+    #[test]
+    fn demo1_native_tic40_bitexact() {
+        use crate::player::DukeInput;
+        let root = duke_root();
+        let grp = root.join("duke3d.grp");
+        if !grp.is_file() {
+            return;
+        }
+        let grp_b = std::fs::read(&grp).unwrap();
+        let dmo_b = std::fs::read(root.join("demos/DEMO1.DMO")).unwrap();
+        let choc = load_trace(&root.join("traces/DEMO1.trace")).unwrap();
+        let (mut session, dmo) = session_from_grp_demo(&grp_b, &dmo_b).unwrap();
+        session.trace_fixups = false;
+        session.rng_pad_per_tic = 0;
+        for inp in dmo.tics.iter().take(41) {
+            session.tick(DukeInput::from_dmo(inp));
+        }
+        let tr = session.emit_trace_tic();
+        assert_eq!(
+            tr.randomseed, choc.tics[40].randomseed,
+            "native tic40 randomseed"
+        );
+        assert_eq!(
+            tr.sprite_hash, choc.tics[40].sprite_hash,
+            "native tic40 sprite_hash"
         );
     }
 
@@ -6322,13 +6492,12 @@ mod tests {
     fn demo1_tic135_smoke_xy() {
         use crate::player::DukeInput;
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
-        use crate::shoot::{JIBS6, SMALLSMOKE, set_shot_pads};
+        use crate::shoot::{JIBS6, SMALLSMOKE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
         if !grp.is_file() {
             return;
         }
-        set_shot_pads(-1, -1, -1, -1);
         let grp_b = std::fs::read(&grp).unwrap();
         let dmo_b = std::fs::read(root.join("demos/DEMO1.DMO")).unwrap();
         let choc = load_trace(&root.join("traces/DEMO1.trace")).unwrap();
@@ -6616,13 +6785,14 @@ mod tests {
             }
             eprintln!("after transports: seed={}", session.randomseed);
             {
-                let players = [session.player.clone()];
+                let mut players = [session.player.clone()];
                 let sync = [DukeInput::from_dmo(&inp)];
                 moveplayers(
                     &mut session.lists,
                     world.sprites.as_mut(),
                     &world.sectors[..world.numsectors as usize],
-                    &players,
+                    &world.walls[..world.numwalls as usize],
+                    &mut players,
                     &sync,
                     &mut session.picnum,
                     &mut session.actor_temps,
@@ -6630,6 +6800,7 @@ mod tests {
                     session.script.as_ref(),
                     session.tic.saturating_sub(1),
                 );
+                session.player = players[0].clone();
             }
             eprintln!(
                 "after moveplayers: seed={} vm={}",
@@ -6637,16 +6808,22 @@ mod tests {
                 VM_TRANDS.load(std::sync::atomic::Ordering::Relaxed)
             );
             {
-                let players = [session.player.clone()];
+                let mut players = [session.player.clone()];
+                let mut active_sound_owners = vec![None; 450];
+                let mut pending_sound_ids = Vec::new();
                 moveexplosions(
                     &mut session.lists,
                     world.sprites.as_mut(),
                     &world.sectors[..world.numsectors as usize],
+                    &world.walls[..world.numwalls as usize],
                     &mut session.randomseed,
                     &mut session.actor_temps,
                     session.script.as_ref(),
-                    &players,
+                    &mut players,
+                    &mut active_sound_owners,
+                    &mut pending_sound_ids,
                 );
+                session.player = players[0].clone();
             }
             eprintln!(
                 "after explosions: seed={} ex={}",
@@ -6725,6 +6902,9 @@ mod tests {
                             &sec_z,
                             &wxy,
                             &[],
+                            &[],
+                            &[],
+                            &mut [],
                         );
                         let after = VM_TRANDS.load(std::sync::atomic::Ordering::Relaxed);
                         if after != before {
@@ -7214,6 +7394,9 @@ mod tests {
             diff.is_some(),
             "expected early divergence until sim catches up"
         );
+        let diff = diff.expect("asserted above");
+        assert_eq!(diff.tic, 39, "first native-only divergence moved");
+        assert_eq!(diff.field, "randomseed");
     }
 
     /// Honest D5 check: with no trace fix-ups, entering E3L11 must leave the
@@ -7240,8 +7423,13 @@ mod tests {
             volume: 2,
             level: 10,
             skill: 0,
+            coop: 0,
+            friendly_fire: 0,
             players: 1,
             tics: vec![],
+            player_tics: vec![vec![]],
+            aim_modes: Vec::new(),
+            weapon_choices: Vec::new(),
         };
         assert_eq!(duke_map_lump(&d), "E3L11.MAP");
     }

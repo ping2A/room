@@ -34,6 +34,7 @@ verifier = [
   "dep:room-build",
   "dep:room-decorate",
   "dep:room-sim",
+  "dep:room-duke",
 ]
 
 [dependencies]
@@ -54,6 +55,7 @@ room-vfs = { path = "../room-vfs", optional = true }
 room-build = { path = "../room-build", optional = true }
 room-decorate = { path = "../room-decorate", optional = true }
 room-sim = { path = "../room-sim", optional = true }
+room-duke = { path = "../room-duke", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

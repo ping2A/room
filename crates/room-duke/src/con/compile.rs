@@ -87,6 +87,10 @@ pub struct ScriptImage {
     pub skill_names: [String; 5],
     /// Level table (`definelevelname`), length 4×11.
     pub levels: Vec<LevelDef>,
+    /// Level MIDI filenames from the four Atomic `music` tables (4×11).
+    pub music_tracks: Vec<String>,
+    /// Environment/menu MIDI filenames from the `music 0` table.
+    pub environment_music: Vec<String>,
     /// Raw `gamestartup` parameters (length depends on [`ConVersion`]).
     pub gamestartup: Vec<i32>,
     /// Dialect guessed while parsing `gamestartup`.
@@ -116,6 +120,8 @@ impl ScriptImage {
             volume_names: Default::default(),
             skill_names: Default::default(),
             levels: vec![LevelDef::default(); 4 * 11],
+            music_tracks: vec![String::new(); 4 * 11],
+            environment_music: vec![String::new(); 11],
             gamestartup: Vec::new(),
             con_version: ConVersion::V15,
             betaname: String::new(),
@@ -504,22 +510,9 @@ fn parse_command(cx: &mut Cx<'_>, lx: &mut Lexer<'_>, includes: &mut dyn Include
             cx.img.betaname = lx.rest_of_line();
             false
         }
-        // `music` — volume + filenames (may span lines) until next keyword
-        54 => {
-            cx.img.rewind();
-            let _ = take_num(cx, lx);
-            loop {
-                lx.skip_ws();
-                if peek_keyword(lx).is_some() || lx.eof() {
-                    break;
-                }
-                let t = lx.raw_token();
-                if t.is_empty() {
-                    break;
-                }
-            }
-            false
-        }
+        // `music` — Chocolate stores 11 entries per Atomic volume; volume 0
+        // names the environment/menu tracks used when no level is active.
+        54 => parse_music(cx, lx),
         _ => {
             cx.img.warnings += 1;
             cx.img.rewind();
@@ -553,6 +546,30 @@ fn take_num(cx: &mut Cx<'_>, lx: &mut Lexer<'_>) -> Option<i32> {
         return None;
     }
     cx.img.pop_word().map(|(v, _)| v)
+}
+
+fn parse_music(cx: &mut Cx<'_>, lx: &mut Lexer<'_>) -> bool {
+    cx.img.rewind();
+    let Some(volume) = take_num(cx, lx) else {
+        cx.img.errors += 1;
+        return false;
+    };
+    for slot in 0..11 {
+        lx.skip_ws();
+        if peek_keyword(lx).is_some() || lx.eof() {
+            break;
+        }
+        let name = lx.raw_token();
+        if name.is_empty() {
+            break;
+        }
+        match volume {
+            0 => cx.img.environment_music[slot] = name,
+            1..=4 => cx.img.music_tracks[((volume - 1) as usize) * 11 + slot] = name,
+            _ => cx.img.errors += 1,
+        }
+    }
+    false
 }
 
 fn parse_definesound(cx: &mut Cx<'_>, lx: &mut Lexer<'_>) -> bool {

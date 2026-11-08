@@ -660,6 +660,8 @@
       bodyHtml:
         presetPicker.html +
         '<label class="field" data-custom><span>Game</span><select name="game"><option value="doom">Doom</option><option value="duke3d">Duke Nukem 3D (no mods)</option></select></label>' +
+        '<label class="field" data-custom data-duke><span>Duke multiplayer mode</span><select name="duke_game_mode"><option value="1">Co-op</option><option value="0">DukeMatch</option><option value="2">DukeMatch (no spawn)</option></select></label>' +
+        '<label class="field" data-custom data-duke><span>Friendly fire</span><input name="duke_friendly_fire" type="checkbox"/></label>' +
         '<label class="field" data-custom data-free-map><span>Map</span><input name="map" value="E1M1"/></label>' +
         '<label class="field"><span>Skill</span><input name="skill" type="number" min="1" max="5" value="3"/></label>' +
         '<label class="field"><span>Max players</span><input name="max_players" type="number" min="2" max="8" value="2"/></label>' +
@@ -671,6 +673,13 @@
       onReady: (body) => {
         picker.wire(body);
         presetPicker.wire(body);
+        const game = body.querySelector('select[name="game"]');
+        const dukeFields = body.querySelectorAll("[data-duke]");
+        const updateDukeFields = () => {
+          for (const field of dukeFields) field.hidden = !game || game.value !== "duke3d";
+        };
+        if (game) game.addEventListener("change", updateDukeFields);
+        updateDukeFields();
       },
     });
     if (!data) return;
@@ -687,6 +696,8 @@
           visibility: data.visibility || "public",
           time_limit: Number(data.time_limit) || undefined,
           game: preset ? "doom" : data.game || "doom",
+          duke_game_mode: Number(data.duke_game_mode) || 0,
+          duke_friendly_fire: data.duke_friendly_fire === true,
           mod: doom && !preset ? data.mod || undefined : undefined,
           packs: doom && !preset && data.voxel ? ["voxel"] : [],
         }),

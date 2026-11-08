@@ -15,6 +15,7 @@ room-audio = { path = "../room-audio" }
 room-core = { path = "../room-core" }
 room-decorate = { path = "../room-decorate" }
 room-defs = { path = "../room-defs" }
+room-duke = { path = "../room-duke" }
 room-formats = { path = "../room-formats" }
 room-map = { path = "../room-map" }
 room-music = { path = "../room-music" }

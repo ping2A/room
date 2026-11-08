@@ -10,9 +10,10 @@ player / sector logic, 30 Hz tic, saves and demos.
 | Depends on | `room-core`, `room-build`, `room-build-engine` |
 | Must **not** depend on | `room-sim` |
 
-Shells keep using the GRP→UDMF converter until D11. Duke game sources
-(3D Realms, GPL-2.0+) may be translated; Build *engine* sources (BUILDLIC)
-must not.
+The desktop and browser shells now have native `DukeSession` paths; the
+GRP→UDMF converter remains available as an explicit export/tool path. Duke
+game sources (3D Realms, GPL-2.0+) may be translated; Build *engine* sources
+(BUILDLIC) must not.
 
 ## Modules
 
@@ -20,12 +21,25 @@ must not.
 |--------|--------|
 | `trace` | D1 — parse / format / diff / sprite SHA-256 (`docs/duke-trace-format.md`); CLI: `room duke trace-diff` |
 | `con` | D4 compiler (Atomic script SHA = Chocolate) + D5 VM bootstrap (`execute` / `ifrnd` / `state` / …) |
-| `session` | D5 — `DukeSession` 30 Hz stub + `SpriteLists` / RNG (no `room-sim`) |
+| `session` | Native 30 Hz session, Build sprite lists/RNG, Atomic SAV import/export bridge, multiplayer roster and campaign cursor |
 | `actors` / `stat` | D5 — `moveactors` + status-list constants |
-| `player` | D5 — `processinput_move` (avel/fvel/svel + friction + clipmove) |
-| `spawn` | D5 — coarse post-load sprite status classify |
-| `fta` | D5 — `movefta` (wake sleeping actors on cansee) |
-| `demo_sync` | D5 — DEMO1 GRP+DMO playback → Room traces; frontier vs Chocolate |
+| `player` | Native movement, weapons, inventory, damage and view state (parity remains incomplete) |
+| `audio` | Deterministic presentation-side `definesound` pitch mapping shared by desktop and browser shells |
+| `spawn` | Native map actor classification and Atomic prelevel setup |
+| `fta` | Native sleeping-actor wake/recognition path |
+| `demo_sync` | DEMO1 GRP+DMO playback → Room traces; last measured frontier tic 134; newer static correction remains unremeasured |
+| `demo` | D9 — versioned native `.fdem` recordings of Duke inputs with per-tic state verification; distinct from Atomic `.DMO` |
+| `view` | Bootstrap ART/palette-backed Build world → RGBA CPU frame (`DukeSoftRenderer`); shell integration exists, renderer parity remains open |
+
+## Starting a native session
+
+`session_from_grp_map(grp_bytes, map_name, skill)` loads a live map directly
+from an Atomic GRP, compiles `GAME.CON`, and initializes `DukeSession` without
+requiring a demo. Map names may be `E1L1`, `E1L1.MAP`, or another 1–8 character
+Build map lump name; skill is 0–4. `DukeSoftRenderer` renders the native world
+to a palette-correct RGBA frame. Desktop and browser shells can start this
+native session directly; the Build renderer is still a bootstrap and lacks
+several Atomic rendering rules.
 
 ## Test script
 
@@ -38,4 +52,5 @@ must not.
 ```
 
 Requires `testdata/duke/duke3d.grp` (and DEMO1 demo/trace for frontier). Interactive
-play still uses `./scripts/play-duke3d.sh` (converter) until D11.
+play defaults to the native runtime through `./scripts/play-duke3d.sh`; pass
+`--runtime converter` for the legacy path.

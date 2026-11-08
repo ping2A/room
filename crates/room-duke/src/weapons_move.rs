@@ -1,36 +1,1138 @@
 //! Chocolate `moveweapons` (STAT_PROJECTILE) — SHOTSPARK1 CON + COOLEXPLOSION1 fly (D6).
 
-use room_build_engine::geom::{SectorZ, WallXY};
-use room_build_engine::helpers::sincos_q14;
+use room_build_engine::geom::{
+    SectorWalls, SectorZ, SpriteHit, WallXY, cansee, getzsofslope, hitscan_full,
+};
+use room_build_engine::helpers::{getangle, sincos_q14};
+use room_build_engine::numeric::{divscale, dmulscale, klabs, krand_step, ksqrt, mulscale};
 use room_build_engine::types::{SectorT, SpriteT, WallT};
 use room_build_engine::world::SpriteLists;
 
 use crate::con::{ActorConTemps, ConSpriteEnv, ConStop, ScriptImage, execute_actor};
 use crate::fta::findplayer_dist;
-use crate::player::Player;
-use crate::shoot::{COOLEXPLOSION1, SHOTSPARK1};
-use crate::spawn::WATERBUBBLE;
+use crate::player::{Player, TileZMeta};
+use crate::shoot::{
+    COOLEXPLOSION1, FIRELASER, FREEZEBLAST, GROWSPARK, RPG_PROJECTILE, SHOTSPARK1, SHRINKSPARK,
+    SPIT, egs,
+};
+use crate::spawn::{CRACK1, FIREEXT, WATERBUBBLE};
 use crate::standables::spawn_maker_bubble;
-use crate::stat::STAT_PROJECTILE;
+use crate::stat::{STAT_ACTOR, STAT_DEFAULT, STAT_DUMMY, STAT_FALLER, STAT_MISC, STAT_PROJECTILE};
+
+fn script_tile(script: Option<&ScriptImage>, name: &str) -> Option<i16> {
+    script
+        .and_then(|image| image.labels.get(name))
+        .filter(|label| !label.is_ptr)
+        .map(|label| label.value as i16)
+}
+
+fn is_flammable_radius_target(script: Option<&ScriptImage>, picnum: i16) -> bool {
+    [
+        ("BOX", 951),
+        ("TREE1", 908),
+        ("TREE2", 910),
+        ("TIRE", 990),
+        ("CONE", 978),
+    ]
+    .iter()
+    .any(|(name, fallback)| script_tile(script, name).unwrap_or(*fallback) == picnum)
+}
+
+fn queue_radius_sprite_hit(
+    sprites: &mut [SpriteT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    target_i: usize,
+    target: SpriteT,
+    amount: i16,
+    hit_picnum: i16,
+    owner: i16,
+    hit_ang: i16,
+    knockback: i32,
+) {
+    if actor_temps.len() <= target_i {
+        actor_temps.resize_with(target_i + 1, ActorConTemps::default);
+    }
+    let temp = &mut actor_temps[target_i];
+    temp.hit_extra = if temp.hit_extra < 0 {
+        amount
+    } else {
+        temp.hit_extra.saturating_add(amount)
+    };
+    temp.hit_picnum = hit_picnum;
+    temp.hit_owner = owner;
+    temp.hit_ang = hit_ang;
+    if !matches!(
+        target.picnum,
+        1975 | 2360 | 1960 | 2630 | 2710 | 2760 | 4740
+    ) {
+        sprites[target_i].xvel = sprites[target_i].xvel.max(0).wrapping_add(knockback as i16);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_radius_target_object(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &mut [WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum: &mut Vec<i16>,
+    randomseed: &mut i32,
+    script: Option<&ScriptImage>,
+    tile_meta: &[TileZMeta],
+    players: &[Player],
+    target: usize,
+    source_i: i16,
+) -> bool {
+    checkhitsprite_object(
+        lists,
+        sprites,
+        sectors,
+        walls,
+        actor_temps,
+        picnum,
+        randomseed,
+        script,
+        tile_meta,
+        players,
+        target,
+        source_i,
+    )
+}
+
+/// Atomic `hitradius` only follows its actor/standable damage bookkeeping with
+/// `checkhitsprite` for this fixed set of civilian, statue, and pool-ball tiles.
+fn radius_actor_checkhit_target(script: Option<&ScriptImage>, picnum: i16) -> bool {
+    [
+        "PODFEM1",
+        "FEM1",
+        "FEM2",
+        "FEM3",
+        "FEM4",
+        "FEM5",
+        "FEM6",
+        "FEM7",
+        "FEM8",
+        "FEM9",
+        "FEM10",
+        "STATUE",
+        "STATUEFLASH",
+        "SPACEMARINE",
+        "QUEBALL",
+        "STRIPEBALL",
+    ]
+    .iter()
+    .filter_map(|name| script_tile(script, name))
+    .any(|tile| tile == picnum)
+}
+
+/// Chocolate `lotsofglass(i, -1, n)` for a sprite-local break.
+pub(crate) fn spawn_sprite_glass(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum: &mut Vec<i16>,
+    script: Option<&ScriptImage>,
+    randomseed: &mut i32,
+    parent: SpriteT,
+    parent_i: i16,
+    count: i16,
+) {
+    let glass = script.and_then(|image| {
+        image
+            .labels
+            .get("GLASSPIECES")
+            .filter(|label| !label.is_ptr)
+            .map(|label| label.value as i16)
+    });
+    for shard in (0..count.max(0)).rev() {
+        let angle = parent
+            .ang
+            .wrapping_sub(256)
+            .wrapping_add((krand_step(randomseed) & 511) as i16)
+            .wrapping_add(1024);
+        let xvel = (32 + (krand_step(randomseed) & 63)) as i16;
+        let zvel = (1024 - (krand_step(randomseed) & 1023)) as i16;
+        if let Some(glass) = glass {
+            crate::shoot::egs(
+                lists,
+                sprites,
+                picnum,
+                actor_temps,
+                script,
+                parent.sectnum,
+                parent.x,
+                parent.y,
+                parent.z,
+                glass + (shard % 3),
+                -32,
+                36,
+                36,
+                angle,
+                xvel,
+                zvel,
+                parent_i,
+                STAT_MISC,
+            );
+        }
+    }
+}
+
+/// Apply the simple, native `sector.c::checkhitsprite` object transitions
+/// shared by direct projectile impacts. `true` means the source's switch arm
+/// handled the hit and the generic badguy damage path must not run.
+fn checkhitsprite_object(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &[WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum: &mut Vec<i16>,
+    randomseed: &mut i32,
+    script: Option<&ScriptImage>,
+    tile_meta: &[TileZMeta],
+    players: &[Player],
+    target: usize,
+    source_i: i16,
+) -> bool {
+    let Some(target_sprite) = sprites.get(target).copied() else {
+        return false;
+    };
+    let mut glass_parent = target_sprite;
+    let tile = |name: &str| {
+        script.and_then(|image| {
+            image
+                .labels
+                .get(name)
+                .filter(|label| !label.is_ptr)
+                .map(|label| label.value as i16)
+        })
+    };
+    let is = |name: &str| tile(name) == Some(target_sprite.picnum);
+    let transition = |name: &str| tile(name);
+    let mut sounds: &[i16] = &[];
+    let mut global_sounds: &[i16] = &[];
+    let mut spawn_tile = None;
+    let mut delete_target = false;
+    let mut glass_count = 0_i16;
+
+    let source_pic = sprites
+        .get(source_i.max(0) as usize)
+        .map(|sprite| sprite.picnum);
+    let ignites_wood = [
+        "RADIUSEXPLOSION",
+        "RPG",
+        "FIRELASER",
+        "HYDRENT",
+        "HEAVYHBOMB",
+    ]
+    .iter()
+    .filter_map(|name| tile(name))
+    .any(|pic| Some(pic) == source_pic);
+    let flammable = ["TREE1", "TREE2", "TIRE", "CONE", "BOX"]
+        .iter()
+        .filter_map(|name| tile(name))
+        .any(|pic| pic == target_sprite.picnum);
+    let fragile_tech = ["SATELITE", "FUELPOD", "SOLARPANNEL", "ANTENNA"]
+        .iter()
+        .filter_map(|name| tile(name))
+        .any(|pic| pic == target_sprite.picnum);
+    let shot_damage = script.map_or(0, |image| {
+        crate::con::init_actor_temps_from_script(image, SHOTSPARK1).0
+    });
+    let heavy_projectile_hit = sprites
+        .get(source_i.max(0) as usize)
+        .is_some_and(|source| source.extra != shot_damage);
+
+    if is("QUEBALL") || is("STRIPEBALL") {
+        let source_ang = sprites
+            .get(source_i.max(0) as usize)
+            .map_or(target_sprite.ang, |source| source.ang);
+        if krand_step(randomseed) & 3 != 0 {
+            sprites[target].xvel = 164;
+            sprites[target].ang = source_ang;
+        } else {
+            spawn_sprite_glass(
+                lists,
+                sprites,
+                actor_temps,
+                picnum,
+                script,
+                randomseed,
+                target_sprite,
+                target as i16,
+                3,
+            );
+            delete_target = true;
+        }
+    } else if fragile_tech && heavy_projectile_hit {
+        if let Some(sector) = sectors.get(target_sprite.sectnum.max(0) as usize) {
+            for piece in 0..15_i32 {
+                let scrap_tile =
+                    tile("SCRAP1").unwrap_or(2400) + (krand_step(randomseed) & 15) as i16;
+                let angle = (krand_step(randomseed) & 2047) as i16;
+                let xvel = (krand_step(randomseed) & 127) as i16 + 64;
+                let zvel = -((krand_step(randomseed) & 511) as i16) - 256;
+                crate::shoot::egs(
+                    lists,
+                    sprites,
+                    picnum,
+                    actor_temps,
+                    script,
+                    target_sprite.sectnum,
+                    target_sprite.x,
+                    target_sprite.y,
+                    sector.floorz - (12 << 8) - (piece << 9),
+                    scrap_tile,
+                    -8,
+                    64,
+                    64,
+                    angle,
+                    xvel,
+                    zvel,
+                    target as i16,
+                    STAT_MISC,
+                );
+            }
+        }
+        spawn_tile = tile("EXPLOSION2");
+        delete_target = true;
+    } else if is("CACTUS") && ignites_wood {
+        for _ in 0..64 {
+            let z = target_sprite
+                .z
+                .wrapping_sub(krand_step(randomseed) % (48 << 8));
+            let scrap = tile("SCRAP3").unwrap_or(2402) + (krand_step(randomseed) & 3) as i16;
+            let angle = (krand_step(randomseed) & 2047) as i16;
+            let xvel = (krand_step(randomseed) & 63) as i16 + 64;
+            let zvel =
+                (-(krand_step(randomseed) & 4095) - (i32::from(target_sprite.zvel) >> 2)) as i16;
+            let shard = crate::shoot::egs(
+                lists,
+                sprites,
+                picnum,
+                actor_temps,
+                script,
+                target_sprite.sectnum,
+                target_sprite.x,
+                target_sprite.y,
+                z,
+                scrap,
+                -8,
+                48,
+                48,
+                angle,
+                xvel,
+                zvel,
+                target as i16,
+                STAT_MISC,
+            );
+            if shard >= 0 {
+                sprites[shard as usize].pal = 8;
+            }
+        }
+        if let Some(broken) = transition("CACTUSBROKE") {
+            sprites[target].picnum = broken;
+            if let Some(out) = picnum.get_mut(target) {
+                *out = broken;
+            }
+        }
+        sprites[target].cstat &= !257;
+    } else if is("HANGLIGHT") || is("GENERICPOLE2") {
+        for _ in 0..6 {
+            let scrap = tile("SCRAP1").unwrap_or(2400) + (krand_step(randomseed) & 15) as i16;
+            let angle = (krand_step(randomseed) & 2047) as i16;
+            let xvel = (krand_step(randomseed) & 63) as i16 + 64;
+            let zvel =
+                (-(krand_step(randomseed) & 4095) - (i32::from(target_sprite.zvel) >> 2)) as i16;
+            crate::shoot::egs(
+                lists,
+                sprites,
+                picnum,
+                actor_temps,
+                script,
+                target_sprite.sectnum,
+                target_sprite.x,
+                target_sprite.y,
+                target_sprite.z - (8 << 8),
+                scrap,
+                -8,
+                48,
+                48,
+                angle,
+                xvel,
+                zvel,
+                target as i16,
+                STAT_MISC,
+            );
+        }
+        sounds = &[20]; // GLASS_HEAVYBREAK
+        delete_target = true;
+    } else if flammable
+        && ignites_wood
+        && actor_temps.get(target).is_none_or(|temp| temp.g_t[0] == 0)
+    {
+        sprites[target].cstat &= !257;
+        if actor_temps.len() <= target {
+            actor_temps.resize_with(target + 1, ActorConTemps::default);
+        }
+        actor_temps[target].g_t[0] = 1;
+        spawn_tile = tile("BURNING");
+    } else if (0..=4).any(|n| is(&format!("OCEANSPRITE{}", n + 1))) {
+        spawn_tile = tile("SMALLSMOKE");
+        delete_target = true;
+    } else if (0..=3)
+        .any(|n| tile("WATERFOUNTAIN").is_some_and(|base| target_sprite.picnum == base + n))
+    {
+        if let Some(broken) = transition("WATERFOUNTAINBROKE") {
+            sprites[target].picnum = broken;
+            if let Some(out) = picnum.get_mut(target) {
+                *out = broken;
+            }
+        }
+        spawn_tile = tile("TOILETWATER");
+    } else if is("BOTTLE10") {
+        // Chocolate `lotsofmoney`: count roll, then Z/angle/cstat per coin.
+        let count = 4 + (krand_step(randomseed) & 3) as i16;
+        for _ in 0..count {
+            let z = target_sprite
+                .z
+                .wrapping_sub(krand_step(randomseed) % (47 << 8));
+            let angle = (krand_step(randomseed) & 2047) as i16;
+            let coin = crate::shoot::egs(
+                lists,
+                sprites,
+                picnum,
+                actor_temps,
+                script,
+                target_sprite.sectnum,
+                target_sprite.x,
+                target_sprite.y,
+                z,
+                tile("MONEY").unwrap_or(1233),
+                -32,
+                8,
+                8,
+                angle,
+                0,
+                0,
+                0,
+                STAT_MISC,
+            );
+            let cstat = (krand_step(randomseed) & 12) as u16;
+            if coin >= 0 {
+                sprites[coin as usize].cstat = cstat;
+            }
+        }
+        sounds = &[19]; // GLASS_BREAKING
+        glass_parent.ang = (krand_step(randomseed) & 2047) as i16;
+        glass_count = 8;
+        delete_target = true;
+    } else if is("VASE") || is("STATUE") || is("STATUEFLASH") {
+        let colored = is("STATUE") || is("STATUEFLASH");
+        for shard in (0..40_i16).rev() {
+            let angle;
+            let z;
+            let xvel;
+            let zvel;
+            let pal;
+            if colored {
+                angle = (krand_step(randomseed) & 2047) as i16;
+                z = target_sprite
+                    .z
+                    .wrapping_sub(krand_step(randomseed) & (63 << 8));
+                xvel = (32 + (krand_step(randomseed) & 63)) as i16;
+                zvel = (1024 - (krand_step(randomseed) & 2047)) as i16;
+                pal = (krand_step(randomseed) & 15) as u8;
+            } else {
+                angle = target_sprite
+                    .ang
+                    .wrapping_sub(256)
+                    .wrapping_add((krand_step(randomseed) & 511) as i16)
+                    .wrapping_add(1024);
+                z = target_sprite.z;
+                xvel = (32 + (krand_step(randomseed) & 63)) as i16;
+                zvel = (1024 - (krand_step(randomseed) & 1023)) as i16;
+                pal = 0;
+            }
+            if let Some(glass) = tile("GLASSPIECES") {
+                let shard_sprite = crate::shoot::egs(
+                    lists,
+                    sprites,
+                    picnum,
+                    actor_temps,
+                    script,
+                    target_sprite.sectnum,
+                    target_sprite.x,
+                    target_sprite.y,
+                    z,
+                    glass + shard % 3,
+                    -32,
+                    36,
+                    36,
+                    angle,
+                    xvel,
+                    zvel,
+                    target as i16,
+                    STAT_MISC,
+                );
+                if shard_sprite >= 0 && colored {
+                    sprites[shard_sprite as usize].pal = pal;
+                }
+            }
+        }
+        sounds = if colored { &[20, 19] } else { &[19] };
+        glass_parent.ang = (krand_step(randomseed) & 2047) as i16;
+        glass_count = 8;
+        delete_target = true;
+    } else if is("FETUSBROKE") {
+        // Chocolate falls through this case into BOTTLE7 after the eight
+        // BLOODSPLAT shots, sounds, and the common ten-piece glass burst.
+        for _ in 0..48 {
+            sprites[target].ang = (krand_step(randomseed) & 2047) as i16;
+            crate::shoot::shoot_bloodsplat_enemy(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                picnum,
+                actor_temps,
+                tile_meta,
+                script,
+                randomseed,
+                target as i16,
+                crate::shoot::BLOODSPLAT1,
+            );
+            sprites[target].ang = sprites[target].ang.wrapping_add(333);
+        }
+        sounds = &[20, 69, 19]; // GLASS_HEAVYBREAK, SQUISHED, GLASS_BREAKING
+        glass_parent.ang = sprites[target].ang;
+        glass_count = 10;
+        delete_target = true;
+    } else if ["MONK", "LUKE", "INDY", "JURYGUY", "SPACEMARINE"]
+        .iter()
+        .any(|name| is(name))
+    {
+        let civilian = ["MONK", "LUKE", "INDY", "JURYGUY"]
+            .iter()
+            .any(|name| is(name));
+        let source = sprites
+            .get(source_i.max(0) as usize)
+            .copied()
+            .unwrap_or_default();
+        if civilian {
+            if target_sprite.lotag > 0 {
+                if actor_temps.len() <= target {
+                    actor_temps.resize_with(target + 1, ActorConTemps::default);
+                }
+                actor_temps[target]
+                    .pending_actor_sounds
+                    .push(target_sprite.lotag);
+            }
+            if target_sprite.hitag != 0 {
+                let _ = crate::shoot::egs(
+                    lists,
+                    sprites,
+                    picnum,
+                    actor_temps,
+                    script,
+                    target_sprite.sectnum,
+                    target_sprite.x,
+                    target_sprite.y,
+                    target_sprite.z,
+                    target_sprite.hitag,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    target as i16,
+                    STAT_DEFAULT,
+                );
+            }
+        }
+        let health = target_sprite.extra.wrapping_sub(source.extra);
+        sprites[target].extra = health;
+        if health > 0 {
+            return true;
+        }
+        let blood_tiles = [
+            crate::shoot::BLOODSPLAT1,
+            crate::shoot::BLOODSPLAT2,
+            crate::shoot::BLOODSPLAT3,
+            crate::shoot::BLOODSPLAT4,
+            crate::shoot::BLOODSPLAT1,
+            crate::shoot::BLOODSPLAT2,
+            crate::shoot::BLOODSPLAT3,
+            crate::shoot::BLOODSPLAT4,
+        ];
+        for blood_tile in blood_tiles {
+            sprites[target].ang = (krand_step(randomseed) & 2047) as i16;
+            crate::shoot::shoot_bloodsplat_enemy(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                picnum,
+                actor_temps,
+                tile_meta,
+                script,
+                randomseed,
+                target as i16,
+                blood_tile,
+            );
+        }
+        spawn_civilian_guts(
+            lists,
+            sprites,
+            sectors,
+            walls,
+            actor_temps,
+            picnum,
+            script,
+            randomseed,
+            sprites[target],
+            players.first().map_or(-1, |player| player.sprite_i),
+        );
+        global_sounds = &[69]; // SQUISHED (Chocolate `sound`, not spritesound)
+        delete_target = true;
+    } else if is("CHAIR1") || is("CHAIR2") {
+        if let Some(broken) = transition("BROKENCHAIR") {
+            sprites[target].picnum = broken;
+            if let Some(out) = picnum.get_mut(target) {
+                *out = broken;
+            }
+        }
+        sprites[target].cstat = 0;
+    } else if [
+        "CHAIR3",
+        "MOVIECAMERA",
+        "SCALE",
+        "VACUUM",
+        "CAMERALIGHT",
+        "IVUNIT",
+        "POT1",
+        "POT2",
+        "POT3",
+        "TRIPODCAMERA",
+    ]
+    .iter()
+    .any(|name| is(name))
+    {
+        // Chocolate `RANDOMSCRAP`: seven ordered TRAND draws per shard.
+        for _ in 0..16 {
+            let x = target_sprite.x + (krand_step(randomseed) & 255) - 128;
+            let y = target_sprite.y + (krand_step(randomseed) & 255) - 128;
+            let z = target_sprite.z - (8 << 8) - (krand_step(randomseed) & 8191);
+            let scrap = tile("SCRAP6").unwrap_or(2390) + (krand_step(randomseed) & 15) as i16;
+            let angle = (krand_step(randomseed) & 2047) as i16;
+            let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
+            let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+            let _ = crate::shoot::egs(
+                lists,
+                sprites,
+                picnum,
+                actor_temps,
+                script,
+                target_sprite.sectnum,
+                x,
+                y,
+                z,
+                scrap,
+                -8,
+                48,
+                48,
+                angle,
+                xvel,
+                zvel,
+                target as i16,
+                STAT_MISC,
+            );
+        }
+        sounds = &[20]; // GLASS_HEAVYBREAK
+        delete_target = true;
+    } else if is("FANSPRITE") {
+        if let Some(broken) = transition("FANSPRITEBROKE") {
+            sprites[target].picnum = broken;
+            if let Some(out) = picnum.get_mut(target) {
+                *out = broken;
+            }
+            if sectors
+                .get(target_sprite.sectnum.max(0) as usize)
+                .is_some_and(|sector| Some(sector.floorpicnum) == tile("FANSHADOW"))
+            {
+                if let (Some(sector), Some(broken_shadow)) = (
+                    sectors.get_mut(target_sprite.sectnum.max(0) as usize),
+                    tile("FANSHADOWBROKE"),
+                ) {
+                    sector.floorpicnum = broken_shadow;
+                }
+            }
+        }
+        sprites[target].cstat &= !257;
+        sounds = &[20]; // GLASS_HEAVYBREAK
+    } else if is("TOILET") || is("STALL") {
+        let broken = if is("TOILET") {
+            "TOILETBROKE"
+        } else {
+            "STALLBROKE"
+        };
+        if let Some(pn) = transition(broken) {
+            sprites[target].picnum = pn;
+            if let Some(out) = picnum.get_mut(target) {
+                *out = pn;
+            }
+        }
+        sprites[target].cstat &= !257;
+        spawn_tile = tile("TOILETWATER");
+        sounds = if is("TOILET") { &[19] } else { &[20] };
+    } else if is("HYDRENT") {
+        if let Some(pn) = transition("BROKEFIREHYDRENT") {
+            sprites[target].picnum = pn;
+            if let Some(out) = picnum.get_mut(target) {
+                *out = pn;
+            }
+        }
+        spawn_tile = tile("TOILETWATER");
+        sounds = &[20];
+    } else if is("GRATE1") || is("CIRCLEPANNEL") || is("PANNEL1") || is("PANNEL2") || is("PANNEL3")
+    {
+        let broken = if is("GRATE1") {
+            "BGRATE1"
+        } else if is("CIRCLEPANNEL") {
+            "CIRCLEPANNELBROKE"
+        } else if is("PANNEL3") {
+            "BPANNEL3"
+        } else {
+            "BPANNEL1"
+        };
+        if let Some(pn) = transition(broken) {
+            sprites[target].picnum = pn;
+            if let Some(out) = picnum.get_mut(target) {
+                *out = pn;
+            }
+        }
+        sprites[target].cstat &= !257;
+        sounds = &[18]; // VENT_BUST
+    } else if (1..=6).any(|n| is(&format!("PIPE{}", n))) {
+        let broken = format!(
+            "PIPE{}B",
+            (1..=6).find(|n| is(&format!("PIPE{}", n))).unwrap_or(1)
+        );
+        if let Some(pn) = transition(&broken) {
+            sprites[target].picnum = pn;
+            if let Some(out) = picnum.get_mut(target) {
+                *out = pn;
+            }
+        }
+        spawn_tile = tile("STEAM");
+    } else if is("HYDROPLANT") {
+        if let Some(pn) = transition("BROKEHYDROPLANT") {
+            sprites[target].picnum = pn;
+            if let Some(out) = picnum.get_mut(target) {
+                *out = pn;
+            }
+        }
+        sounds = &[19];
+    } else if is("BROKEHYDROPLANT") && target_sprite.cstat & 1 != 0 {
+        sprites[target].z = sprites[target].z.wrapping_add(16 << 8);
+        sprites[target].cstat = 0;
+        glass_count = 5;
+        sounds = &[19];
+    } else if is("BOTTLE7") {
+        glass_count = 10;
+        delete_target = true;
+        sounds = &[19];
+    } else if is("FETUS") {
+        if let Some(pn) = transition("FETUSBROKE") {
+            sprites[target].picnum = pn;
+            if let Some(out) = picnum.get_mut(target) {
+                *out = pn;
+            }
+        }
+        glass_count = 10;
+        sounds = &[19];
+    } else if [
+        "BOTTLE1",
+        "BOTTLE2",
+        "BOTTLE3",
+        "BOTTLE4",
+        "BOTTLE5",
+        "BOTTLE6",
+        "BOTTLE8",
+        "BOTTLE11",
+        "BOTTLE12",
+        "BOTTLE13",
+        "BOTTLE14",
+        "BOTTLE15",
+        "BOTTLE16",
+        "BOTTLE17",
+        "BOTTLE18",
+        "BOTTLE19",
+        "WATERFOUNTAINBROKE",
+        "DOMELITE",
+        "SUSHIPLATE1",
+        "SUSHIPLATE2",
+        "SUSHIPLATE3",
+        "SUSHIPLATE4",
+        "SUSHIPLATE5",
+        "WAITTOBESEATED",
+    ]
+    .iter()
+    .any(|name| is(name))
+    {
+        glass_count = 8;
+        delete_target = true;
+        sounds = &[19];
+        glass_parent.ang = (krand_step(randomseed) & 2047) as i16;
+    } else if is("FORCESPHERE") {
+        sprites[target].xrepeat = 0;
+        let owner = sprites
+            .get(source_i.max(0) as usize)
+            .map_or(-1, |source| source.owner);
+        if owner >= 0 {
+            let owner = owner as usize;
+            if actor_temps.len() <= owner {
+                actor_temps.resize_with(owner + 1, ActorConTemps::default);
+            }
+            actor_temps[owner].g_t[0] = 32;
+            actor_temps[owner].g_t[1] = i32::from(actor_temps[owner].g_t[1] == 0);
+            actor_temps[owner].g_t[2] = actor_temps[owner].g_t[2].wrapping_add(1);
+        }
+        spawn_tile = tile("EXPLOSION2");
+    } else {
+        return false;
+    }
+
+    if glass_count > 0 {
+        spawn_sprite_glass(
+            lists,
+            sprites,
+            actor_temps,
+            picnum,
+            script,
+            randomseed,
+            glass_parent,
+            target as i16,
+            glass_count,
+        );
+    }
+
+    if let Some(pn) = spawn_tile {
+        let effect = crate::shoot::egs(
+            lists,
+            sprites,
+            picnum,
+            actor_temps,
+            script,
+            target_sprite.sectnum,
+            target_sprite.x,
+            target_sprite.y,
+            target_sprite.z,
+            pn,
+            0,
+            32,
+            32,
+            target_sprite.ang,
+            0,
+            0,
+            source_i,
+            STAT_MISC,
+        );
+        if pn == tile("STEAM").unwrap_or(-1) && effect >= 0 {
+            if let Some(sector) = sectors.get(target_sprite.sectnum.max(0) as usize) {
+                sprites[effect as usize].z = sector.floorz - (32 << 8);
+            }
+        }
+    }
+    if !sounds.is_empty() {
+        if actor_temps.len() <= target {
+            actor_temps.resize_with(target + 1, ActorConTemps::default);
+        }
+        actor_temps[target]
+            .pending_actor_sounds
+            .extend_from_slice(sounds);
+    }
+    if !global_sounds.is_empty() {
+        if actor_temps.len() <= target {
+            actor_temps.resize_with(target + 1, ActorConTemps::default);
+        }
+        actor_temps[target]
+            .pending_global_sounds
+            .extend_from_slice(global_sounds);
+    }
+    if delete_target {
+        let _ = lists.deletesprite(target as i16);
+    }
+    true
+}
+
+/// Resolve the spawned Atomic `KNEE` impact: emit its brief smoke sprite,
+/// run `checkhitsprite` for a struck sprite, or `checkhitwall` for a struck
+/// wall. Player damage was queued by the knee hitscan itself.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_knee_hit_effects(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &mut [WallT],
+    picnum: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    randomseed: &mut i32,
+    script: Option<&ScriptImage>,
+    tile_meta: &[TileZMeta],
+    players: &[Player],
+    hit: crate::shoot::KneeHit,
+    player_sprite: i16,
+    player_angle: i16,
+) -> (Vec<i16>, Option<i16>) {
+    let [x, y, z] = hit.position;
+    let knee = crate::shoot::egs(
+        lists,
+        sprites,
+        picnum,
+        actor_temps,
+        script,
+        hit.sector,
+        x,
+        y,
+        z,
+        crate::shoot::KNEE,
+        -15,
+        0,
+        0,
+        player_angle.wrapping_add(15),
+        32,
+        0,
+        player_sprite,
+        STAT_PROJECTILE,
+    );
+    let Ok(knee_index) = usize::try_from(knee) else {
+        return (Vec::new(), None);
+    };
+    let Some(knee_source) = sprites.get_mut(knee_index) else {
+        return (Vec::new(), None);
+    };
+    knee_source.extra = hit.impact_strength;
+    let knee_source = *knee_source;
+
+    let smoke = crate::shoot::spawn_smallsmoke(
+        lists,
+        sprites,
+        sectors,
+        walls,
+        picnum,
+        actor_temps,
+        script,
+        randomseed,
+        knee,
+    );
+    if let Ok(smoke_index) = usize::try_from(smoke)
+        && let Some(smoke) = sprites.get_mut(smoke_index)
+    {
+        smoke.z = smoke.z.wrapping_sub(8 << 8);
+    }
+
+    if let Some(target) = hit.sprite.and_then(|index| usize::try_from(index).ok())
+        && let Some(target_sprite) = sprites.get(target)
+    {
+        let access_switch = [
+            script_tile(script, "ACCESSSWITCH").unwrap_or(130),
+            script_tile(script, "ACCESSSWITCH2").unwrap_or(170),
+        ];
+        if !access_switch.contains(&target_sprite.picnum) {
+            let _ = checkhitsprite_object(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                actor_temps,
+                picnum,
+                randomseed,
+                script,
+                tile_meta,
+                players,
+                target,
+                knee,
+            );
+        }
+    }
+
+    let Some(mut wall_index) = hit.wall.and_then(|index| usize::try_from(index).ok()) else {
+        return (Vec::new(), None);
+    };
+    if walls
+        .get(wall_index)
+        .is_some_and(|wall| wall.cstat & 2 != 0)
+        && let Some(wall) = walls.get(wall_index)
+        && let Some(next_sector) = usize::try_from(wall.nextsector)
+            .ok()
+            .and_then(|index| sectors.get(index))
+        && z >= next_sector.floorz
+        && let Some(peer) = usize::try_from(wall.nextwall)
+            .ok()
+            .filter(|&index| index < walls.len())
+    {
+        wall_index = peer;
+    }
+    let access_wall = [
+        script_tile(script, "ACCESSSWITCH").unwrap_or(130),
+        script_tile(script, "ACCESSSWITCH2").unwrap_or(170),
+    ];
+    let wall_id = i16::try_from(wall_index).ok();
+    let sounds = if walls
+        .get(wall_index)
+        .is_some_and(|wall| !access_wall.contains(&wall.picnum))
+    {
+        crate::weapons_move::apply_checkhitwall(
+            lists,
+            sprites,
+            sectors,
+            walls,
+            picnum,
+            actor_temps,
+            randomseed,
+            knee_source,
+            knee,
+            crate::shoot::KNEE,
+            wall_index,
+            x,
+            y,
+            z,
+            hit.sector,
+            script,
+        )
+    } else {
+        Vec::new()
+    };
+    (sounds, wall_id)
+}
 
 /// Atomic `TICSPERFRAME` at 30 Hz.
 const TICSPERFRAME: i32 = 4;
+const EXPLOSION2: i16 = 1890;
+const TRANSPORTERSTAR: i16 = 1630;
+const APLAYER: i16 = 1405;
+const RPG_BLAST_RADIUS: i32 = 1780;
+const RADIUSEXPLOSION: i16 = 1670;
+const PISTOL_BODYHIT: u16 = 2;
+const DUKE_LONGTERM_PAIN: u16 = 211;
+
+/// Chocolate `checkhitsprite` wakes a damaged sleeping badguy into STAT_ACTOR.
+fn wake_hit_badguy(lists: &mut SpriteLists, actor_temps: &mut [ActorConTemps], target: usize) {
+    if lists.sprite_stat.get(target).copied() == Some(STAT_DUMMY) {
+        let _ = lists.changespritestat(target as i16, STAT_ACTOR);
+        if let Some(temps) = actor_temps.get_mut(target) {
+            temps.timetosleep = crate::fta::SLEEPTIME;
+        }
+    }
+}
+
+fn spawn_civilian_guts(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum: &mut Vec<i16>,
+    script: Option<&ScriptImage>,
+    randomseed: &mut i32,
+    body: SpriteT,
+    player_owner: i16,
+) {
+    let sector_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+    let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+    let floor_z = usize::try_from(body.sectnum)
+        .ok()
+        .filter(|&index| index < sectors.len())
+        .map(|_| getzsofslope(body.sectnum, body.x, body.y, &sector_z, &wall_xy).1)
+        .unwrap_or(body.z);
+    let gut_z = (body.z - (8 << 8)).min(floor_z - (8 << 8));
+    let is_badguy = crate::badguy::badguy_pic(
+        body.picnum,
+        script.map_or(&[], |image| image.actortype.as_slice()),
+    );
+    let repeats = if is_badguy && body.xrepeat < 16 {
+        8
+    } else {
+        32
+    };
+    let palette = if is_badguy && body.pal == 6 { 6 } else { 0 };
+    for (name, count) in [
+        ("JIBS1", 1),
+        ("JIBS2", 2),
+        ("JIBS3", 3),
+        ("JIBS4", 4),
+        ("JIBS5", 1),
+        ("JIBS3", 6),
+    ] {
+        let tile = script
+            .and_then(|image| image.labels.get(name))
+            .filter(|label| !label.is_ptr)
+            .map_or_else(
+                || match name {
+                    "JIBS1" => 2245,
+                    "JIBS2" => 2250,
+                    "JIBS3" => 2255,
+                    "JIBS4" => 2260,
+                    _ => 2265,
+                },
+                |label| label.value as i16,
+            );
+        for _ in 0..count {
+            let angle = (krand_step(randomseed) & 2047) as i16;
+            let x = body.x + (krand_step(randomseed) & 255) - 128;
+            let y = body.y + (krand_step(randomseed) & 255) - 128;
+            let z = gut_z - (krand_step(randomseed) & 8191);
+            let xvel = (48 + (krand_step(randomseed) & 31)) as i16;
+            let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+            let repeat = if name == "JIBS2" {
+                repeats >> 2
+            } else {
+                repeats
+            };
+            let shard = crate::shoot::egs(
+                lists,
+                sprites,
+                picnum,
+                actor_temps,
+                script,
+                body.sectnum,
+                x,
+                y,
+                z,
+                tile,
+                -32,
+                repeat,
+                repeat,
+                angle,
+                xvel,
+                zvel,
+                player_owner,
+                STAT_MISC,
+            );
+            if shard >= 0 && palette == 6 {
+                sprites[shard as usize].pal = palette;
+            }
+        }
+    }
+}
 
 /// Chocolate `moveweapons` subset: run CON on `SHOTSPARK1`.
 pub fn moveweapons(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
-    sectors: &[SectorT],
-    walls: &[WallT],
-    players: &[Player],
+    sectors: &mut [SectorT],
+    walls: &mut [WallT],
+    players: &mut [Player],
     randomseed: &mut i32,
     actor_temps: &mut Vec<ActorConTemps>,
     picnum: &mut Vec<i16>,
     script: Option<&ScriptImage>,
+    tile_meta: &[TileZMeta],
 ) {
-    let Some(script) = script else {
-        return;
-    };
+    let rpg_tile = crate::shoot::script_tile_or(script, "RPG", RPG_PROJECTILE);
     let mut order: Vec<i16> = Vec::new();
     let mut i = lists.headspritestat[STAT_PROJECTILE as usize];
     while i >= 0 {
@@ -39,6 +1141,13 @@ pub fn moveweapons(
     }
     let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
     let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+    let sec_w: Vec<SectorWalls> = sectors
+        .iter()
+        .map(|s| SectorWalls {
+            wallptr: s.wallptr,
+            wallnum: s.wallnum,
+        })
+        .collect();
 
     for &i in &order {
         if lists.sprite_stat.get(i as usize).copied().unwrap_or(1024) != STAT_PROJECTILE {
@@ -52,22 +1161,926 @@ pub fn moveweapons(
             let _ = lists.deletesprite(i);
             continue;
         }
-        // Chocolate `movesprite` for COOLEXPLOSION1: world Δ = (step*TIC)>>3
-        // with step = (xvel*sintable)>>14 (CLIPMASK1 path; open flight first).
+        if sprites[iu].picnum == SPIT {
+            let source = sprites[iu];
+            let xv = i32::from(source.xvel);
+            let (sin, cos) = sincos_q14(i32::from(source.ang) & 2047);
+            let dx = (((xv * cos) >> 14) * TICSPERFRAME) >> 3;
+            let dy = (((xv * sin) >> 14) * TICSPERFRAME) >> 3;
+            let dz = (i32::from(source.zvel) * TICSPERFRAME) >> 3;
+            let sprite_hits: Vec<SpriteHit> = sprites
+                .iter()
+                .enumerate()
+                .map(|(index, sprite)| {
+                    let mut hit = SpriteHit::cylinder(
+                        sprite.x,
+                        sprite.y,
+                        sprite.z,
+                        sprite.sectnum,
+                        i32::from(sprite.clipdist) << 2,
+                        sprite.cstat,
+                    );
+                    if index == iu {
+                        hit.cstat = 0;
+                    }
+                    hit
+                })
+                .collect();
+            let hit = hitscan_full(
+                source.x,
+                source.y,
+                source.z,
+                source.sectnum,
+                dx,
+                dy,
+                dz,
+                (256 << 16) + 64,
+                &sec_w,
+                &wxy,
+                &sprite_hits,
+                Some(&sec_z),
+            );
+            if hit.hitsect >= 0 {
+                sprites[iu].x = hit.hitx;
+                sprites[iu].y = hit.hity;
+                sprites[iu].z = hit.hitz;
+                sprites[iu].sectnum = hit.hitsect;
+                if hit.hitsprite >= 0 {
+                    let target = hit.hitsprite as usize;
+                    if target < sprites.len() && target != source.owner as usize {
+                        let object_handled = checkhitsprite_object(
+                            lists,
+                            sprites,
+                            sectors,
+                            walls,
+                            actor_temps,
+                            picnum,
+                            randomseed,
+                            script,
+                            tile_meta,
+                            players,
+                            target,
+                            i,
+                        );
+                        if !object_handled {
+                            if actor_temps.len() <= target {
+                                actor_temps.resize_with(target + 1, ActorConTemps::default);
+                            }
+                            let temp = &mut actor_temps[target];
+                            temp.hit_picnum = SPIT;
+                            temp.hit_extra = if temp.hit_extra < 0 {
+                                source.extra
+                            } else {
+                                temp.hit_extra.saturating_add(source.extra)
+                            };
+                            temp.hit_owner = source.owner;
+                            temp.hit_ang = source.ang;
+                            apply_spit_player_effects(
+                                players,
+                                actor_temps,
+                                hit.hitsprite,
+                                &mut *randomseed,
+                            );
+                        }
+                    }
+                }
+                if hit.hitsect != source.sectnum {
+                    let _ = lists.changespritesect(i, hit.hitsect);
+                }
+                let _ = lists.deletesprite(i);
+            } else {
+                sprites[iu].x = source.x.wrapping_add(dx);
+                sprites[iu].y = source.y.wrapping_add(dy);
+                sprites[iu].z = source.z.wrapping_add(dz);
+                let mut next_sector = source.sectnum;
+                room_build_engine::geom::updatesector(
+                    sprites[iu].x,
+                    sprites[iu].y,
+                    &mut next_sector,
+                    &sec_w,
+                    &wxy,
+                );
+                if next_sector >= 0 && next_sector != source.sectnum {
+                    let _ = lists.changespritesect(i, next_sector);
+                    sprites[iu].sectnum = next_sector;
+                }
+                if i32::from(sprites[iu].zvel) < 6144 {
+                    sprites[iu].zvel = sprites[iu].zvel.saturating_add(64);
+                }
+            }
+            continue;
+        }
+        if sprites[iu].picnum == FIRELASER {
+            let source = sprites[iu];
+            // Chocolate emits five short-lived, translucent trail sprites
+            // before moving the beam each actor tic.
+            let (sin, cos) = sincos_q14(i32::from(source.ang) & 2047);
+            for k in -3_i32..2 {
+                let trail = egs(
+                    lists,
+                    sprites,
+                    picnum,
+                    actor_temps,
+                    script,
+                    source.sectnum,
+                    source.x + ((k * cos) >> 9),
+                    source.y + ((k * sin) >> 9),
+                    source.z
+                        + ((k * i32::from(source.zvel).signum())
+                            * (i32::from(source.zvel) / 24).abs()),
+                    FIRELASER,
+                    (-40 + (k << 2)) as i8,
+                    source.xrepeat,
+                    source.yrepeat,
+                    0,
+                    0,
+                    0,
+                    source.owner,
+                    crate::stat::STAT_MISC,
+                );
+                if trail >= 0 {
+                    let trail = trail as usize;
+                    sprites[trail].cstat = 128;
+                    sprites[trail].pal = source.pal;
+                }
+            }
+            let xv = i32::from(source.xvel);
+            let (sin, cos) = sincos_q14(i32::from(source.ang) & 2047);
+            let dx = (((xv * cos) >> 14) * TICSPERFRAME) >> 3;
+            let dy = (((xv * sin) >> 14) * TICSPERFRAME) >> 3;
+            let dz = (i32::from(source.zvel) * TICSPERFRAME) >> 3;
+            let sprite_hits: Vec<SpriteHit> = sprites
+                .iter()
+                .enumerate()
+                .map(|(index, sprite)| {
+                    let mut hit = SpriteHit::cylinder(
+                        sprite.x,
+                        sprite.y,
+                        sprite.z,
+                        sprite.sectnum,
+                        i32::from(sprite.clipdist) << 2,
+                        sprite.cstat,
+                    );
+                    if index == iu || index == source.owner as usize {
+                        hit.cstat = 0;
+                    }
+                    hit
+                })
+                .collect();
+            let hit = hitscan_full(
+                source.x,
+                source.y,
+                source.z,
+                source.sectnum,
+                dx,
+                dy,
+                dz,
+                (256 << 16) + 64,
+                &sec_w,
+                &wxy,
+                &sprite_hits,
+                Some(&sec_z),
+            );
+            if hit.hitsect >= 0 {
+                sprites[iu].x = hit.hitx;
+                sprites[iu].y = hit.hity;
+                sprites[iu].z = hit.hitz;
+                if hit.hitsprite >= 0 {
+                    let target = hit.hitsprite as usize;
+                    if target < sprites.len() {
+                        let object_handled = checkhitsprite_object(
+                            lists,
+                            sprites,
+                            sectors,
+                            walls,
+                            actor_temps,
+                            picnum,
+                            randomseed,
+                            script,
+                            tile_meta,
+                            players,
+                            target,
+                            i,
+                        );
+                        if !object_handled {
+                            if actor_temps.len() <= target {
+                                actor_temps.resize_with(target + 1, ActorConTemps::default);
+                            }
+                            let temp = &mut actor_temps[target];
+                            temp.hit_picnum = FIRELASER;
+                            temp.hit_extra = if temp.hit_extra < 0 {
+                                source.extra
+                            } else {
+                                temp.hit_extra.saturating_add(source.extra)
+                            };
+                            temp.hit_owner = source.owner;
+                            temp.hit_ang = source.ang;
+                            if sprites[target].picnum == APLAYER {
+                                temp.pending_actor_sounds
+                                    .push(i16::try_from(PISTOL_BODYHIT).unwrap_or_default());
+                            }
+                        }
+                    }
+                }
+                if hit.hitsect != source.sectnum {
+                    let _ = lists.changespritesect(i, hit.hitsect);
+                }
+                let _ = lists.deletesprite(i);
+            } else {
+                sprites[iu].x = source.x.wrapping_add(dx);
+                sprites[iu].y = source.y.wrapping_add(dy);
+                sprites[iu].z = source.z.wrapping_add(dz);
+                let mut next_sector = source.sectnum;
+                room_build_engine::geom::updatesector(
+                    sprites[iu].x,
+                    sprites[iu].y,
+                    &mut next_sector,
+                    &sec_w,
+                    &wxy,
+                );
+                if next_sector >= 0 && next_sector != source.sectnum {
+                    let _ = lists.changespritesect(i, next_sector);
+                    sprites[iu].sectnum = next_sector;
+                }
+            }
+            continue;
+        }
+        // Atomic's Octabrain projectile flies until it hits a wall, plane, or
+        // player. It sticks to ordinary actors without damaging them, and
+        // fades after forty actor tics.
         if sprites[iu].picnum == COOLEXPLOSION1 {
-            let xv = i32::from(sprites[iu].xvel);
-            let zv = i32::from(sprites[iu].zvel);
+            let source = sprites[iu];
+            if let Some(sound) = script
+                .and_then(|image| image.labels.get("WIERDSHOT_FLY"))
+                .filter(|label| !label.is_ptr)
+                .map(|label| label.value as i16)
+            {
+                if actor_temps.len() <= iu {
+                    actor_temps.resize_with(iu + 1, ActorConTemps::default);
+                }
+                // Chocolate starts this sound only while no voice of that ID
+                // is active; the audio bridge's once queue applies that gate.
+                actor_temps[iu].pending_actor_sounds_once.push(sound);
+            }
+            let xv = i32::from(source.xvel);
+            let zv = i32::from(source.zvel);
             let (sin, cos) = sincos_q14(i32::from(sprites[iu].ang) & 2047);
-            let step_x = (xv * cos) >> 14;
-            let step_y = (xv * sin) >> 14;
-            sprites[iu].x += (step_x * TICSPERFRAME) >> 3;
-            sprites[iu].y += (step_y * TICSPERFRAME) >> 3;
-            sprites[iu].z += (zv * TICSPERFRAME) >> 3;
+            let dx = (((xv * cos) >> 14) * TICSPERFRAME) >> 3;
+            let dy = (((xv * sin) >> 14) * TICSPERFRAME) >> 3;
+            let dz = (zv * TICSPERFRAME) >> 3;
+            let sprite_hits: Vec<SpriteHit> = sprites
+                .iter()
+                .enumerate()
+                .map(|(index, sprite)| {
+                    let mut hit = SpriteHit::cylinder(
+                        sprite.x,
+                        sprite.y,
+                        sprite.z,
+                        sprite.sectnum,
+                        i32::from(sprite.clipdist) << 2,
+                        sprite.cstat,
+                    );
+                    if index == iu {
+                        hit.cstat = 0;
+                    }
+                    hit
+                })
+                .collect();
+            let hit = hitscan_full(
+                source.x,
+                source.y,
+                source.z,
+                source.sectnum,
+                dx,
+                dy,
+                dz,
+                (256 << 16) + 64,
+                &sec_w,
+                &wxy,
+                &sprite_hits,
+                Some(&sec_z),
+            );
+            if hit.hitsect >= 0 {
+                sprites[iu].x = hit.hitx;
+                sprites[iu].y = hit.hity;
+                sprites[iu].z = hit.hitz;
+                if hit.hitsect != source.sectnum {
+                    let _ = lists.changespritesect(i, hit.hitsect);
+                }
+                sprites[iu].sectnum = hit.hitsect;
+
+                let mut stop = hit.hitwall >= 0 || (hit.hitwall < 0 && hit.hitsprite < 0);
+                if hit.hitsprite >= 0 {
+                    let target = hit.hitsprite as usize;
+                    if target < sprites.len() && sprites[target].picnum == APLAYER {
+                        stop = true;
+                        if actor_temps.len() <= target {
+                            actor_temps.resize_with(target + 1, ActorConTemps::default);
+                        }
+                        let temp = &mut actor_temps[target];
+                        temp.hit_picnum = COOLEXPLOSION1;
+                        temp.hit_extra = if temp.hit_extra < 0 {
+                            source.extra
+                        } else {
+                            temp.hit_extra.saturating_add(source.extra)
+                        };
+                        temp.hit_owner = source.owner;
+                        temp.hit_ang = source.ang;
+                        temp.pending_actor_sounds
+                            .push(i16::try_from(PISTOL_BODYHIT).unwrap_or_default());
+                    }
+                    // `moveweapons` skips non-player sprite hits for this tile.
+                }
+
+                if hit.hitwall >= 0 {
+                    let wall_sounds = apply_checkhitwall(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        picnum,
+                        actor_temps,
+                        randomseed,
+                        source,
+                        i,
+                        source.picnum,
+                        hit.hitwall as usize,
+                        hit.hitx,
+                        hit.hity,
+                        hit.hitz,
+                        hit.hitsect,
+                        script,
+                    );
+                    if actor_temps.len() <= iu {
+                        actor_temps.resize_with(iu + 1, ActorConTemps::default);
+                    }
+                    actor_temps[iu].pending_actor_sounds.extend(wall_sounds);
+                } else if hit.hitsprite < 0 && source.zvel < 0 {
+                    let is_sky = sectors.get(hit.hitsect as usize).is_some_and(|sector| {
+                        sector.ceilingstat & 1 != 0 && sector.ceilingpal == 0
+                    });
+                    if is_sky {
+                        let _ = lists.deletesprite(i);
+                        continue;
+                    }
+                    let mut ceiling_sounds = Vec::new();
+                    crate::shoot::check_hit_ceiling(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        picnum,
+                        actor_temps,
+                        script,
+                        randomseed,
+                        hit.hitsect,
+                        source.owner,
+                        &mut ceiling_sounds,
+                    );
+                    if actor_temps.len() <= iu {
+                        actor_temps.resize_with(iu + 1, ActorConTemps::default);
+                    }
+                    actor_temps[iu].pending_actor_sounds.extend(
+                        ceiling_sounds
+                            .into_iter()
+                            .map(|sound| i16::try_from(sound).unwrap_or_default()),
+                    );
+                }
+
+                if stop {
+                    sprites[iu].xvel = 0;
+                    sprites[iu].zvel = 0;
+                }
+            } else {
+                sprites[iu].x = source.x.wrapping_add(dx);
+                sprites[iu].y = source.y.wrapping_add(dy);
+                sprites[iu].z = source.z.wrapping_add(dz);
+                let mut next_sector = source.sectnum;
+                room_build_engine::geom::updatesector(
+                    sprites[iu].x,
+                    sprites[iu].y,
+                    &mut next_sector,
+                    &sec_w,
+                    &wxy,
+                );
+                if next_sector >= 0 && next_sector != source.sectnum {
+                    let _ = lists.changespritesect(i, next_sector);
+                    sprites[iu].sectnum = next_sector;
+                }
+            }
+
+            sprites[iu].shade = sprites[iu].shade.saturating_add(1);
+            if sprites[iu].shade >= 40 {
+                let _ = lists.deletesprite(i);
+            }
+            continue;
+        }
+        if sprites[iu].picnum == rpg_tile {
+            let source_sect = sprites[iu].sectnum;
+            let xv = i32::from(sprites[iu].xvel);
+            let (sin, cos) = sincos_q14(i32::from(sprites[iu].ang) & 2047);
+            let dx = (((xv * cos) >> 14) * TICSPERFRAME) >> 3;
+            let dy = (((xv * sin) >> 14) * TICSPERFRAME) >> 3;
+            let dz = (i32::from(sprites[iu].zvel) * TICSPERFRAME) >> 3;
+            let spr_hits: Vec<SpriteHit> = sprites
+                .iter()
+                .map(|sp| {
+                    SpriteHit::cylinder(
+                        sp.x,
+                        sp.y,
+                        sp.z,
+                        sp.sectnum,
+                        i32::from(sp.clipdist) << 2,
+                        sp.cstat,
+                    )
+                })
+                .collect();
+            let hit = hitscan_full(
+                sprites[iu].x,
+                sprites[iu].y,
+                sprites[iu].z,
+                sprites[iu].sectnum,
+                dx,
+                dy,
+                dz,
+                (256 << 16) + 64,
+                &sec_w,
+                &wxy,
+                &spr_hits,
+                Some(&sec_z),
+            );
+            let plane_hit = hit.hitsect >= 0 && hit.hitwall < 0 && hit.hitsprite < 0;
+            if hit.hitwall >= 0 || hit.hitsprite >= 0 || plane_hit {
+                sprites[iu].x = hit.hitx;
+                sprites[iu].y = hit.hity;
+                sprites[iu].z = hit.hitz;
+                if hit.hitsect >= 0 {
+                    if hit.hitsect != source_sect {
+                        let _ = lists.changespritesect(i, hit.hitsect);
+                    }
+                    sprites[iu].sectnum = hit.hitsect;
+                }
+                if plane_hit && sprites[iu].zvel < 0 {
+                    if let Some(sector) = usize::try_from(hit.hitsect)
+                        .ok()
+                        .and_then(|index| sectors.get(index))
+                        && sector.ceilingstat & 1 != 0
+                        && sector.ceilingpal == 0
+                    {
+                        let _ = lists.deletesprite(i);
+                        continue;
+                    }
+                    let mut ceiling_sounds = Vec::new();
+                    crate::shoot::check_hit_ceiling(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        picnum,
+                        actor_temps,
+                        script,
+                        randomseed,
+                        hit.hitsect,
+                        sprites[iu].owner,
+                        &mut ceiling_sounds,
+                    );
+                    if actor_temps.len() <= iu {
+                        actor_temps.resize_with(iu + 1, ActorConTemps::default);
+                    }
+                    actor_temps[iu].pending_actor_sounds.extend(
+                        ceiling_sounds
+                            .into_iter()
+                            .map(|sound| i16::try_from(sound).unwrap_or_default()),
+                    );
+                }
+                if hit.hitsprite >= 0 {
+                    let target = hit.hitsprite as usize;
+                    let projectile = sprites[iu];
+                    if target < sprites.len()
+                        && projectile.owner != hit.hitsprite
+                        && lists.sprite_stat.get(target).copied().unwrap_or(0) != STAT_PROJECTILE
+                    {
+                        let object_handled = checkhitsprite_object(
+                            lists,
+                            sprites,
+                            sectors,
+                            walls,
+                            actor_temps,
+                            picnum,
+                            randomseed,
+                            script,
+                            tile_meta,
+                            players,
+                            target,
+                            i,
+                        );
+                        if actor_temps.len() <= target {
+                            actor_temps.resize_with(target + 1, ActorConTemps::default);
+                        }
+                        let is_badguy = crate::badguy::badguy_pic(
+                            sprites[target].picnum,
+                            script.map_or(&[], |image| image.actortype.as_slice()),
+                        );
+                        let direct_damage = if is_badguy {
+                            projectile.extra.saturating_mul(2)
+                        } else {
+                            projectile.extra
+                        };
+                        if !object_handled {
+                            actor_temps[target].hit_picnum = rpg_tile;
+                            actor_temps[target].hit_extra = if actor_temps[target].hit_extra < 0 {
+                                direct_damage
+                            } else {
+                                actor_temps[target].hit_extra.saturating_add(direct_damage)
+                            };
+                            actor_temps[target].hit_owner = projectile.owner;
+                            actor_temps[target].hit_ang = projectile.ang;
+                            if is_badguy {
+                                wake_hit_badguy(lists, actor_temps, target);
+                            }
+                        }
+                        if !object_handled && sprites[target].picnum == APLAYER {
+                            actor_temps[target]
+                                .pending_actor_sounds
+                                .push(i16::try_from(PISTOL_BODYHIT).unwrap_or_default());
+                        }
+                    }
+                }
+                let blast_strength = i32::from(sprites[iu].extra.max(1));
+                apply_rpg_blast(
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    actor_temps,
+                    players,
+                    randomseed,
+                    blast_strength,
+                    RPG_BLAST_RADIUS,
+                    rpg_tile,
+                    sprites[iu],
+                    i,
+                    picnum,
+                    script,
+                    tile_meta,
+                    script
+                        .map(|image| image.actortype.as_slice())
+                        .unwrap_or(&[]),
+                    sprites[iu].x,
+                    sprites[iu].y,
+                    sprites[iu].z,
+                    sprites[iu].sectnum,
+                    sprites[iu].owner,
+                );
+                let wall_sounds = if iu < actor_temps.len() {
+                    std::mem::take(&mut actor_temps[iu].pending_actor_sounds)
+                } else {
+                    Vec::new()
+                };
+                sprites[iu].picnum = EXPLOSION2;
+                sprites[iu].xrepeat = 32;
+                sprites[iu].yrepeat = 32;
+                sprites[iu].cstat = 0;
+                let _ = lists.changespritestat(i, crate::stat::STAT_MISC);
+                if iu < picnum.len() {
+                    picnum[iu] = EXPLOSION2;
+                }
+                if actor_temps.len() <= iu {
+                    actor_temps.resize_with(iu + 1, ActorConTemps::default);
+                }
+                actor_temps[iu] = ActorConTemps::default();
+                actor_temps[iu].pending_actor_sounds = wall_sounds;
+                actor_temps[iu].g_t[5] = 0;
+            } else {
+                sprites[iu].x += dx;
+                sprites[iu].y += dy;
+                sprites[iu].z += dz;
+            }
+            continue;
+        }
+        if matches!(sprites[iu].picnum, FREEZEBLAST | SHRINKSPARK) {
+            let source = sprites[iu];
+            if source.picnum == FREEZEBLAST
+                && (source.yvel < 1 || source.extra < 2 || (source.xvel | source.zvel) == 0)
+            {
+                let star = crate::shoot::egs(
+                    lists,
+                    sprites,
+                    picnum,
+                    actor_temps,
+                    script,
+                    source.sectnum,
+                    source.x,
+                    source.y,
+                    source.z,
+                    TRANSPORTERSTAR,
+                    0,
+                    32,
+                    32,
+                    source.ang,
+                    0,
+                    0,
+                    i,
+                    crate::stat::STAT_MISC,
+                );
+                if star >= 0 {
+                    sprites[star as usize].pal = 1;
+                }
+                let _ = lists.deletesprite(i);
+                continue;
+            }
+            let xv = i32::from(source.xvel);
+            let (sin, cos) = sincos_q14(i32::from(source.ang) & 2047);
+            let dx = (((xv * cos) >> 14) * TICSPERFRAME) >> 3;
+            let dy = (((xv * sin) >> 14) * TICSPERFRAME) >> 3;
+            let dz = (i32::from(source.zvel) * TICSPERFRAME) >> 3;
+            let freezer_hurts_owner = source.picnum == FREEZEBLAST
+                && script
+                    .and_then(|image| {
+                        let index = if image.con_version == crate::con::ConVersion::V15 {
+                            27
+                        } else {
+                            25
+                        };
+                        image.gamestartup.get(index).copied()
+                    })
+                    .unwrap_or(0)
+                    != 0;
+            let sprite_hits: Vec<SpriteHit> = sprites
+                .iter()
+                .enumerate()
+                .map(|(index, sp)| {
+                    let mut hit = SpriteHit::cylinder(
+                        sp.x,
+                        sp.y,
+                        sp.z,
+                        sp.sectnum,
+                        i32::from(sp.clipdist) << 2,
+                        sp.cstat,
+                    );
+                    let is_owner = source.owner >= 0 && index == source.owner as usize;
+                    if index == iu
+                        || (is_owner && (source.picnum == SHRINKSPARK || !freezer_hurts_owner))
+                        || source.picnum == SHRINKSPARK && sp.xrepeat < 24 && sp.picnum != 1550
+                    {
+                        hit.cstat = 0;
+                    }
+                    hit
+                })
+                .collect();
+            let hit = hitscan_full(
+                source.x,
+                source.y,
+                source.z,
+                source.sectnum,
+                dx,
+                dy,
+                dz,
+                (256 << 16) + 64,
+                &sec_w,
+                &wxy,
+                &sprite_hits,
+                Some(&sec_z),
+            );
+            if hit.hitsprite >= 0 {
+                let target = hit.hitsprite as usize;
+                let freeze_immune = source.picnum == FREEZEBLAST
+                    && target < sprites.len()
+                    && sprites[target].pal == 1
+                    && (sprites[target].picnum == APLAYER
+                        || crate::badguy::badguy_pic(
+                            sprites[target].picnum,
+                            script.map(|img| img.actortype.as_slice()).unwrap_or(&[]),
+                        ));
+                if freeze_immune {
+                    let star = crate::shoot::egs(
+                        lists,
+                        sprites,
+                        picnum,
+                        actor_temps,
+                        script,
+                        hit.hitsect,
+                        hit.hitx,
+                        hit.hity,
+                        hit.hitz,
+                        TRANSPORTERSTAR,
+                        0,
+                        32,
+                        32,
+                        source.ang,
+                        0,
+                        0,
+                        i,
+                        crate::stat::STAT_MISC,
+                    );
+                    if star >= 0 {
+                        sprites[star as usize].pal = 1;
+                    }
+                    let _ = lists.deletesprite(i);
+                    continue;
+                }
+                // Chocolate `moveweapons` plays the shared body-impact cue
+                // after `checkhitsprite` for every accepted projectile hit on
+                // APLAYER. SPIT and FIRELASER use their earlier specialized
+                // paths, so this covers RPG, FREEZEBLAST and SHRINKSPARK here.
+                let object_handled = target < sprites.len()
+                    && checkhitsprite_object(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        actor_temps,
+                        picnum,
+                        randomseed,
+                        script,
+                        tile_meta,
+                        players,
+                        target,
+                        i,
+                    );
+                if !object_handled && target < sprites.len() && sprites[target].picnum == APLAYER {
+                    if actor_temps.len() <= target {
+                        actor_temps.resize_with(target + 1, ActorConTemps::default);
+                    }
+                    actor_temps[target]
+                        .pending_actor_sounds
+                        .push(i16::try_from(PISTOL_BODYHIT).unwrap_or_default());
+                }
+                if source.picnum == SHRINKSPARK {
+                    let impact = SpriteT {
+                        x: hit.hitx,
+                        y: hit.hity,
+                        z: hit.hitz,
+                        sectnum: hit.hitsect,
+                        ..source
+                    };
+                    apply_shrinker_blast(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        actor_temps,
+                        randomseed,
+                        script,
+                        impact,
+                        source.owner,
+                    );
+                } else if !object_handled
+                    && target < sprites.len()
+                    && (target != source.owner as usize
+                        || (source.picnum == FREEZEBLAST && freezer_hurts_owner))
+                {
+                    if actor_temps.len() <= target {
+                        actor_temps.resize_with(target + 1, ActorConTemps::default);
+                    }
+                    let is_badguy = crate::badguy::badguy_pic(
+                        sprites[target].picnum,
+                        script.map_or(&[], |image| image.actortype.as_slice()),
+                    );
+                    // Chocolate `checkhitsprite` accumulates projectile extra
+                    // for every accepted target and doubles RPG damage against
+                    // badguy actors before writing hittype[].extra.
+                    let hit_damage = if source.picnum == rpg_tile && is_badguy {
+                        source.extra.saturating_mul(2)
+                    } else {
+                        source.extra
+                    };
+                    actor_temps[target].hit_picnum = source.picnum;
+                    actor_temps[target].hit_extra = if actor_temps[target].hit_extra < 0 {
+                        hit_damage
+                    } else {
+                        actor_temps[target].hit_extra.saturating_add(hit_damage)
+                    };
+                    actor_temps[target].hit_owner = source.owner;
+                    actor_temps[target].hit_ang = source.ang;
+                    if is_badguy {
+                        wake_hit_badguy(lists, actor_temps, target);
+                    }
+                }
+                let _ = lists.deletesprite(i);
+            } else if hit.hitwall >= 0 {
+                if source.picnum == FREEZEBLAST {
+                    let wi = hit.hitwall as usize;
+                    let wall_sounds = apply_checkhitwall(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        picnum,
+                        actor_temps,
+                        randomseed,
+                        source,
+                        i,
+                        source.picnum,
+                        wi,
+                        hit.hitx,
+                        hit.hity,
+                        hit.hitz,
+                        hit.hitsect,
+                        script,
+                    );
+                    if actor_temps.len() <= iu {
+                        actor_temps.resize_with(iu + 1, ActorConTemps::default);
+                    }
+                    actor_temps[iu].pending_actor_sounds.extend(wall_sounds);
+                    let mirror = walls
+                        .get(wi)
+                        .is_some_and(|w| w.picnum == 560 || w.overpicnum == 560);
+                    if let Some(wall) = walls.get(wi).copied() {
+                        if let Some(end) = walls.get(wall.point2.max(0) as usize) {
+                            let wall_angle = getangle(end.x - wall.x, end.y - wall.y);
+                            sprites[iu].ang =
+                                ((wall_angle * 2 - i32::from(source.ang)) & 2047) as i16;
+                        }
+                    }
+                    sprites[iu].x = hit.hitx;
+                    sprites[iu].y = hit.hity;
+                    sprites[iu].z = hit.hitz;
+                    sprites[iu].sectnum = hit.hitsect;
+                    if !mirror {
+                        sprites[iu].extra >>= 1;
+                        sprites[iu].yvel = sprites[iu].yvel.saturating_sub(1);
+                    }
+                } else {
+                    let impact = SpriteT {
+                        x: hit.hitx,
+                        y: hit.hity,
+                        z: hit.hitz,
+                        sectnum: hit.hitsect,
+                        ..source
+                    };
+                    apply_shrinker_blast(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        actor_temps,
+                        randomseed,
+                        script,
+                        impact,
+                        source.owner,
+                    );
+                    let _ = lists.deletesprite(i);
+                }
+            } else if hit.hitsect < 0 {
+                let _ = lists.deletesprite(i);
+            } else if hit.hitsprite < 0 && source.picnum == SHRINKSPARK {
+                let impact = SpriteT {
+                    x: hit.hitx,
+                    y: hit.hity,
+                    z: hit.hitz,
+                    sectnum: hit.hitsect,
+                    ..source
+                };
+                apply_shrinker_blast(
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    actor_temps,
+                    randomseed,
+                    script,
+                    impact,
+                    source.owner,
+                );
+                let _ = lists.deletesprite(i);
+            } else if hit.hitsprite < 0 && source.picnum == FREEZEBLAST {
+                sprites[iu].x = hit.hitx;
+                sprites[iu].y = hit.hity;
+                sprites[iu].z = hit.hitz;
+                sprites[iu].sectnum = hit.hitsect;
+                bounce_freezeblast(&mut sprites[iu], sectors, walls, &sec_z, &wxy);
+                sprites[iu].extra >>= 1;
+                sprites[iu].yvel = sprites[iu].yvel.saturating_sub(1);
+                sprites[iu].xrepeat = sprites[iu].xrepeat.saturating_sub(2).max(8);
+                sprites[iu].yrepeat = sprites[iu].yrepeat.saturating_sub(2).max(8);
+            } else {
+                sprites[iu].x = hit.hitx;
+                sprites[iu].y = hit.hity;
+                sprites[iu].z = hit.hitz;
+                sprites[iu].sectnum = hit.hitsect;
+            }
+            continue;
+        }
+        if (GROWSPARK..=GROWSPARK + 3).contains(&sprites[iu].picnum) {
+            if actor_temps.len() <= iu {
+                actor_temps.resize_with(iu + 1, ActorConTemps::default);
+            }
+            actor_temps[iu].g_t[0] = (actor_temps[iu].g_t[0] + 1) & 7;
+            let frame = i16::try_from(actor_temps[iu].g_t[0] / 2).unwrap_or(0);
+            sprites[iu].picnum = GROWSPARK + frame;
+            if picnum.len() <= iu {
+                picnum.resize(iu + 1, 0);
+            }
+            picnum[iu] = sprites[iu].picnum;
             continue;
         }
         if sprites[iu].picnum != SHOTSPARK1 {
             continue;
         }
+        let Some(script) = script else {
+            continue;
+        };
         let pn = SHOTSPARK1.max(0) as usize;
         if pn >= script.actorscrptr.len() || script.actorscrptr[pn] <= 0 {
             continue;
@@ -110,6 +2123,9 @@ pub fn moveweapons(
             &sec_z,
             &wxy,
             &[],
+            &[],
+            &[],
+            &mut [],
         );
         // CON `spawn WATERBUBBLE` (ifactioncount 3 + ifinwater on SHOTSPARK1).
         let spawns: Vec<i16> = actor_temps[iu].pending_spawns.drain(..).collect();
@@ -121,5 +2137,2328 @@ pub fn moveweapons(
         if stop == ConStop::KillIt {
             let _ = lists.deletesprite(i);
         }
+    }
+}
+
+/// Reflect a FREEZEBLAST from a Build ceiling/floor plane using Chocolate's
+/// `actors.c::bounce`. The plane is selected from the projectile's position
+/// relative to the sector's vertical midpoint, which also handles slopes.
+fn bounce_freezeblast(
+    sprite: &mut SpriteT,
+    sectors: &[SectorT],
+    walls: &[WallT],
+    sector_z: &[SectorZ],
+    wall_xy: &[WallXY],
+) {
+    let Some(sector) = usize::try_from(sprite.sectnum)
+        .ok()
+        .and_then(|index| sectors.get(index))
+    else {
+        sprite.zvel = sprite.zvel.saturating_neg();
+        return;
+    };
+    let Some(wall) = usize::try_from(sector.wallptr)
+        .ok()
+        .and_then(|index| walls.get(index))
+    else {
+        sprite.zvel = sprite.zvel.saturating_neg();
+        return;
+    };
+    let Some(edge) = usize::try_from(wall.point2)
+        .ok()
+        .and_then(|index| walls.get(index))
+    else {
+        sprite.zvel = sprite.zvel.saturating_neg();
+        return;
+    };
+
+    let wall_angle = getangle(edge.x.wrapping_sub(wall.x), edge.y.wrapping_sub(wall.y));
+    let (ceiling_z, floor_z) = getzsofslope(sprite.sectnum, sprite.x, sprite.y, sector_z, wall_xy);
+    let heinum = if sprite.z < ceiling_z.wrapping_add(floor_z) >> 1 {
+        i32::from(sector.ceilingheinum)
+    } else {
+        i32::from(sector.floorheinum)
+    };
+    let (sin_x, _) = room_build_engine::helpers::sincos_q14(wall_angle);
+    let (sin_y, _) = room_build_engine::helpers::sincos_q14(wall_angle + 1536);
+    let dax = mulscale(heinum, sin_x, 14);
+    let day = mulscale(heinum, sin_y, 14);
+    let daz = 4096;
+
+    let (sin_xv, _) = room_build_engine::helpers::sincos_q14(i32::from(sprite.ang) + 512);
+    let (sin_yv, _) = room_build_engine::helpers::sincos_q14(i32::from(sprite.ang));
+    let mut xvect = mulscale(i32::from(sprite.xvel), sin_xv, 10);
+    let mut yvect = mulscale(i32::from(sprite.xvel), sin_yv, 10);
+    let mut zvect = i32::from(sprite.zvel);
+    let projection = xvect
+        .wrapping_mul(dax)
+        .wrapping_add(yvect.wrapping_mul(day))
+        .wrapping_add(zvect.wrapping_mul(daz));
+    let norm2 = dax
+        .wrapping_mul(dax)
+        .wrapping_add(day.wrapping_mul(day))
+        .wrapping_add(daz.wrapping_mul(daz));
+    if (projection.unsigned_abs() >> 14) < norm2 as u32 {
+        let ratio = divscale(projection, norm2, 17);
+        xvect = xvect.wrapping_sub(mulscale(dax, ratio, 16));
+        yvect = yvect.wrapping_sub(mulscale(day, ratio, 16));
+        zvect = zvect.wrapping_sub(mulscale(daz, ratio, 16));
+    }
+
+    sprite.zvel = zvect.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    let speed = ksqrt(dmulscale(xvect, xvect, yvect, yvect, 8));
+    sprite.xvel = speed.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    sprite.ang = getangle(xvect, yvect) as i16;
+}
+
+/// Apply the player-facing portion of Chocolate's `checkhitsprite` for a
+/// `SPIT` hit, and its common body-hit cue for other hostile projectiles.
+fn apply_spit_player_effects(
+    players: &mut [Player],
+    actor_temps: &mut Vec<ActorConTemps>,
+    target_sprite: i16,
+    randomseed: &mut i32,
+) {
+    let Some(player) = players
+        .iter_mut()
+        .find(|player| player.sprite_i == target_sprite)
+    else {
+        return;
+    };
+    let Ok(target_index) = usize::try_from(target_sprite) else {
+        return;
+    };
+    if actor_temps.len() <= target_index {
+        actor_temps.resize_with(target_index + 1, ActorConTemps::default);
+    }
+    actor_temps[target_index]
+        .pending_actor_sounds
+        .push(i16::try_from(PISTOL_BODYHIT).unwrap_or_default());
+    player.horiz = player.horiz.wrapping_add(32);
+    player.return_to_center = 8;
+    if player.loogie_tics != 0 {
+        return;
+    }
+    actor_temps[target_index]
+        .pending_actor_sounds
+        .push(i16::try_from(DUKE_LONGTERM_PAIN).unwrap_or_default());
+    let count = 3 + (krand_step(randomseed) & 3) as u8;
+    player.num_loogies = count;
+    player.loogie_tics = 24 * 4;
+    for index in 0..usize::from(count) {
+        player.loogie_x[index] = (krand_step(randomseed) % 320) as i16;
+        player.loogie_y[index] = (krand_step(randomseed) % 200) as i16;
+    }
+}
+
+/// Apply the SHRINKSPARK part of Chocolate `hitradius`: no health damage, but
+/// visible eligible targets receive the shrink weapon marker for their CON.
+fn apply_shrinker_blast(
+    lists: &SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    randomseed: &mut i32,
+    script: Option<&ScriptImage>,
+    source: SpriteT,
+    owner: i16,
+) {
+    let radius_index = script.map(|image| {
+        if image.con_version == crate::con::ConVersion::V15 {
+            10
+        } else {
+            9
+        }
+    });
+    let radius = radius_index
+        .and_then(|index| script.and_then(|image| image.gamestartup.get(index).copied()))
+        .unwrap_or(0);
+    if radius <= 0 || source.sectnum < 0 {
+        return;
+    }
+    let q = -(16 << 8) + (krand_step(randomseed) & ((32 << 8) - 1));
+    let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+    let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+    let actortype = script
+        .map(|image| image.actortype.as_slice())
+        .unwrap_or(&[]);
+    let tripbomb_tile = script
+        .and_then(|image| image.labels.get("TRIPBOMB"))
+        .filter(|label| !label.is_ptr)
+        .map_or(2566, |label| label.value as i16);
+    // Chocolate `hitradius` scans its fixed STAT list in this order. SHRINKSPARK
+    // treats the first and last groups differently: simple blocking/flamable
+    // sprites go through checkhitsprite, while actors/players/standables use
+    // the shootable-target LOS and owner/size filters.
+    let stat_order = [
+        crate::stat::STAT_DEFAULT,
+        crate::stat::STAT_ACTOR,
+        crate::stat::STAT_STANDABLE,
+        crate::stat::STAT_PLAYER,
+        crate::stat::STAT_FALLER,
+        crate::stat::STAT_DUMMY,
+        crate::stat::STAT_MISC,
+    ];
+    for (group, stat) in stat_order.into_iter().enumerate() {
+        let mut target = lists.headspritestat[stat as usize];
+        while target >= 0 {
+            let next = lists.nextspritestat[target as usize];
+            let ti = target as usize;
+            if target != owner && ti < sprites.len() {
+                let target_sprite = sprites[ti];
+                let badguy = crate::badguy::badguy_pic(target_sprite.picnum, actortype);
+                let flammable = matches!(
+                    target_sprite.picnum,
+                    crate::spawn::BOX
+                        | crate::spawn::TREE1
+                        | crate::spawn::TREE2
+                        | crate::spawn::TIRE
+                        | crate::spawn::CONE
+                );
+                let mut qualifies = false;
+                if group == 0 || group >= 5 || flammable {
+                    // Chocolate's `x == 0 || x >= 5 || AFLAMABLE` branch only
+                    // offers SHRINKSPARK to blocking sprites. Badguys also
+                    // need line of sight; ordinary breakables do not.
+                    if target_sprite.cstat & 257 != 0 {
+                        let distance = room_build_engine::numeric::find_distance_3d(
+                            source.x.wrapping_sub(target_sprite.x),
+                            source.y.wrapping_sub(target_sprite.y),
+                            source.z.wrapping_sub(target_sprite.z) >> 4,
+                        );
+                        qualifies = distance < radius
+                            && (!badguy
+                                || cansee(
+                                    target_sprite.x,
+                                    target_sprite.y,
+                                    target_sprite.z + q,
+                                    target_sprite.sectnum,
+                                    source.x,
+                                    source.y,
+                                    source.z + q,
+                                    source.sectnum,
+                                    &sec_z,
+                                    &wall_xy,
+                                ));
+                    }
+                } else if target_sprite.extra >= 0
+                    && (target_sprite.picnum == tripbomb_tile
+                        || badguy
+                        || matches!(target_sprite.picnum, 901 | 902)
+                        || target_sprite.cstat & 257 != 0
+                        || target_sprite.picnum == 1518)
+                    && (target_sprite.picnum == 1550
+                        || (target != owner && target_sprite.xrepeat >= 24))
+                {
+                    // Chocolate's `dist()` measures APLAYER from its feet.
+                    let target_z = if target_sprite.picnum == crate::spawn::APLAYER {
+                        target_sprite.z.wrapping_sub(crate::player::PHEIGHT)
+                    } else {
+                        target_sprite.z
+                    };
+                    let distance = room_build_engine::numeric::find_distance_3d(
+                        source.x.wrapping_sub(target_sprite.x),
+                        source.y.wrapping_sub(target_sprite.y),
+                        source.z.wrapping_sub(target_z) >> 4,
+                    );
+                    qualifies = distance < radius
+                        && cansee(
+                            target_sprite.x,
+                            target_sprite.y,
+                            target_sprite.z - (8 << 8),
+                            target_sprite.sectnum,
+                            source.x,
+                            source.y,
+                            source.z - (12 << 8),
+                            source.sectnum,
+                            &sec_z,
+                            &wall_xy,
+                        );
+                }
+                if qualifies {
+                    if actor_temps.len() <= ti {
+                        actor_temps.resize_with(ti + 1, ActorConTemps::default);
+                    }
+                    actor_temps[ti].hit_picnum = SHRINKSPARK;
+                    actor_temps[ti].hit_extra = 0;
+                    actor_temps[ti].hit_owner = owner;
+                    actor_temps[ti].hit_ang = getangle(
+                        target_sprite.x.wrapping_sub(source.x),
+                        target_sprite.y.wrapping_sub(source.y),
+                    ) as i16;
+                }
+            }
+            target = next;
+        }
+    }
+}
+
+/// Arm hitag-linked SEENINE/OOZFILTER groups when a radius blast reaches a
+/// tagged Atomic crack or fire extinguisher standable.
+fn arm_tagged_detonables_from_blast(
+    lists: &SpriteLists,
+    sprites: &mut [SpriteT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    script: Option<&ScriptImage>,
+    x: i32,
+    y: i32,
+    z: i32,
+    radius: i32,
+) {
+    let crack1_tile = script_tile(script, "CRACK1").unwrap_or(546);
+    let fire_ext_tile = script_tile(script, "FIREEXT").unwrap_or(916);
+    let seenine_tile = script_tile(script, "SEENINE").unwrap_or(1247);
+    let oozfilter_tile = script_tile(script, "OOZFILTER").unwrap_or(1079);
+    let mut target = lists.headspritestat[crate::stat::STAT_STANDABLE as usize];
+    while target >= 0 {
+        let next = lists.nextspritestat[target as usize];
+        let index = target as usize;
+        let Some(sprite) = sprites.get(index).copied() else {
+            target = next;
+            continue;
+        };
+        let tagged_breakable = (crack1_tile..=crack1_tile.saturating_add(3))
+            .contains(&sprite.picnum)
+            || sprite.picnum == fire_ext_tile;
+        let dist = room_build_engine::numeric::find_distance_3d(
+            x.wrapping_sub(sprite.x),
+            y.wrapping_sub(sprite.y),
+            z.wrapping_sub(sprite.z) >> 4,
+        );
+        if tagged_breakable && sprite.extra >= 0 && (sprite.cstat & 257) != 0 && dist < radius {
+            if actor_temps.len() <= index {
+                actor_temps.resize_with(index + 1, ActorConTemps::default);
+            }
+            let temp = actor_temps.get_mut(index);
+            if sprite.picnum == fire_ext_tile || sprite.hitag > 0 {
+                if let Some(temp) = temp {
+                    if temp.hit_extra < 0 {
+                        temp.hit_extra = 1;
+                        temp.hit_picnum = if sprite.picnum == fire_ext_tile {
+                            fire_ext_tile
+                        } else {
+                            RADIUSEXPLOSION
+                        };
+                    }
+                }
+            }
+            let hitag = sprite.hitag;
+            if hitag > 0 {
+                let mut linked = lists.headspritestat[crate::stat::STAT_STANDABLE as usize];
+                while linked >= 0 {
+                    let next_linked = lists.nextspritestat[linked as usize];
+                    let linked_index = linked as usize;
+                    if sprites.get(linked_index).is_some_and(|candidate| {
+                        candidate.hitag == hitag
+                            && (candidate.picnum == seenine_tile
+                                || candidate.picnum == oozfilter_tile)
+                            && candidate.shade != -32
+                    }) {
+                        sprites[linked_index].shade = -32;
+                    }
+                    linked = next_linked;
+                }
+            }
+        }
+        target = next;
+    }
+}
+
+/// Queue RPG blast hits for eligible sprites. Atomic's RPG CON strength and
+/// RPGBLASTRADIUS are content data; damage is selected from the three vanilla
+/// distance bands.
+/// The target CON consumes `hit_extra` through its normal `ifhitweapon` path.
+pub(crate) fn apply_rpg_blast(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &mut [WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    players: &mut [Player],
+    randomseed: &mut i32,
+    strength: i32,
+    radius: i32,
+    damage_picnum: i16,
+    wall_source: SpriteT,
+    wall_source_i: i16,
+    picnum_out: &mut Vec<i16>,
+    script: Option<&ScriptImage>,
+    tile_meta: &[TileZMeta],
+    actortype: &[u8],
+    x: i32,
+    y: i32,
+    z: i32,
+    sect: i16,
+    owner: i16,
+) {
+    if radius <= 0 {
+        return;
+    }
+    let wall_sounds = apply_radius_wall_hits(
+        lists,
+        sprites,
+        sectors,
+        walls,
+        picnum_out,
+        actor_temps,
+        randomseed,
+        wall_source,
+        wall_source_i,
+        radius,
+        players.first().map_or(-1, |player| player.sprite_i),
+        script,
+    );
+    if !wall_sounds.is_empty() {
+        let source_index = wall_source_i.max(0) as usize;
+        if actor_temps.len() <= source_index {
+            actor_temps.resize_with(source_index + 1, ActorConTemps::default);
+        }
+        actor_temps[source_index]
+            .pending_actor_sounds
+            .extend(wall_sounds);
+    }
+    let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+    let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+    // `hitradius` consumes one random Z offset before scanning its stat lists.
+    let q = -(16 << 8) + (krand_step(randomseed) & ((32 << 8) - 1));
+    let standable_damage_tiles = [
+        script_tile(script, "SEENINE").unwrap_or(1247),
+        script_tile(script, "OOZFILTER").unwrap_or(1079),
+    ];
+    let mut target = lists.headspritestat[STAT_DEFAULT as usize];
+    while target >= 0 {
+        let next = lists.nextspritestat[target as usize];
+        let ti = target as usize;
+        if target != wall_source_i && ti < sprites.len() {
+            let t = sprites[ti];
+            let badguy = crate::badguy::badguy_pic(t.picnum, actortype);
+            let dist = room_build_engine::numeric::find_distance_3d(
+                x.wrapping_sub(t.x),
+                y.wrapping_sub(t.y),
+                z.wrapping_sub(t.z) >> 4,
+            );
+            if t.extra >= 0
+                && (t.cstat & 257) != 0
+                && dist < radius
+                && (!badguy
+                    || cansee(
+                        t.x,
+                        t.y,
+                        t.z + q,
+                        t.sectnum,
+                        x,
+                        y,
+                        z + q,
+                        sect,
+                        &sec_z,
+                        &wxy,
+                    ))
+                && !check_radius_target_object(
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    actor_temps,
+                    picnum_out,
+                    randomseed,
+                    script,
+                    tile_meta,
+                    players,
+                    ti,
+                    wall_source_i,
+                )
+            {
+                let amount = radius_damage(dist, radius, randomseed, strength);
+                queue_radius_sprite_hit(
+                    sprites,
+                    actor_temps,
+                    ti,
+                    t,
+                    amount,
+                    if damage_picnum == script_tile(script, "RPG").unwrap_or(RPG_PROJECTILE)
+                        && t.extra > 0
+                    {
+                        damage_picnum
+                    } else {
+                        RADIUSEXPLOSION
+                    },
+                    owner,
+                    getangle(t.x.wrapping_sub(x), t.y.wrapping_sub(y)) as i16,
+                    strength << 2,
+                );
+            }
+        }
+        target = next;
+    }
+    let mut target = lists.headspritestat[crate::stat::STAT_ACTOR as usize];
+    while target >= 0 {
+        let next = lists.nextspritestat[target as usize];
+        let ti = target as usize;
+        if target != wall_source_i && ti < sprites.len() {
+            let t = sprites[ti];
+            let badguy = crate::badguy::badguy_pic(t.picnum, actortype);
+            let special_target = ["TRIPBOMB", "QUEBALL", "STRIPEBALL", "DUKELYINGDEAD"]
+                .iter()
+                .filter_map(|name| script_tile(script, name))
+                .any(|tile| tile == t.picnum);
+            let flammable = is_flammable_radius_target(script, t.picnum);
+            let shootable_target =
+                t.extra >= 0 && (special_target || badguy || (t.cstat & 257) != 0 || flammable);
+            let dist = room_build_engine::numeric::find_distance_3d(
+                x.wrapping_sub(t.x),
+                y.wrapping_sub(t.y),
+                z.wrapping_sub(t.z) >> 4,
+            );
+            let visible = if flammable {
+                !badguy
+                    || cansee(
+                        t.x,
+                        t.y,
+                        t.z + q,
+                        t.sectnum,
+                        x,
+                        y,
+                        z + q,
+                        sect,
+                        &sec_z,
+                        &wxy,
+                    )
+            } else {
+                cansee(
+                    t.x,
+                    t.y,
+                    t.z - (8 << 8),
+                    t.sectnum,
+                    x,
+                    y,
+                    z - (12 << 8),
+                    sect,
+                    &sec_z,
+                    &wxy,
+                )
+            };
+            if shootable_target && dist < radius && visible {
+                let damage = radius_damage(dist, radius, randomseed, strength);
+                queue_radius_sprite_hit(
+                    sprites,
+                    actor_temps,
+                    ti,
+                    t,
+                    damage,
+                    if damage_picnum == script_tile(script, "RPG").unwrap_or(RPG_PROJECTILE)
+                        && t.extra > 0
+                    {
+                        damage_picnum
+                    } else {
+                        RADIUSEXPLOSION
+                    },
+                    owner,
+                    getangle(t.x.wrapping_sub(x), t.y.wrapping_sub(y)) as i16,
+                    strength << 2,
+                );
+                if radius_actor_checkhit_target(script, t.picnum) {
+                    let _ = check_radius_target_object(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        actor_temps,
+                        picnum_out,
+                        randomseed,
+                        script,
+                        tile_meta,
+                        players,
+                        ti,
+                        wall_source_i,
+                    );
+                }
+            }
+        }
+        target = next;
+    }
+    let mut target = lists.headspritestat[crate::stat::STAT_STANDABLE as usize];
+    while target >= 0 {
+        let next = lists.nextspritestat[target as usize];
+        let ti = target as usize;
+        if target != wall_source_i && ti < sprites.len() {
+            let t = sprites[ti];
+            let destructible =
+                standable_damage_tiles.contains(&t.picnum) && t.extra >= 0 && (t.cstat & 257) != 0;
+            let dist = room_build_engine::numeric::find_distance_3d(
+                x.wrapping_sub(t.x),
+                y.wrapping_sub(t.y),
+                z.wrapping_sub(t.z) >> 4,
+            );
+            if destructible
+                && dist < radius
+                && cansee(
+                    t.x,
+                    t.y,
+                    t.z - (8 << 8),
+                    t.sectnum,
+                    x,
+                    y,
+                    z - (12 << 8),
+                    sect,
+                    &sec_z,
+                    &wxy,
+                )
+            {
+                let amount = radius_damage(dist, radius, randomseed, strength);
+                if actor_temps.len() <= ti {
+                    actor_temps.resize_with(ti + 1, ActorConTemps::default);
+                }
+                let temp = &mut actor_temps[ti];
+                temp.hit_extra = if temp.hit_extra < 0 {
+                    amount
+                } else {
+                    temp.hit_extra.saturating_add(amount)
+                };
+                temp.hit_picnum = RADIUSEXPLOSION;
+                temp.hit_owner = owner;
+                temp.hit_ang = getangle(t.x.wrapping_sub(x), t.y.wrapping_sub(y)) as i16;
+                sprites[ti].xvel = sprites[ti].xvel.max(0).wrapping_add((strength << 2) as i16);
+                if radius_actor_checkhit_target(script, t.picnum) {
+                    let _ = check_radius_target_object(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        actor_temps,
+                        picnum_out,
+                        randomseed,
+                        script,
+                        tile_meta,
+                        players,
+                        ti,
+                        wall_source_i,
+                    );
+                }
+            }
+        }
+        target = next;
+    }
+    arm_tagged_detonables_from_blast(lists, sprites, actor_temps, script, x, y, z, radius);
+    let mut target = lists.headspritestat[crate::stat::STAT_PLAYER as usize];
+    while target >= 0 {
+        let next = lists.nextspritestat[target as usize];
+        let ti = target as usize;
+        if target != wall_source_i && ti < sprites.len() {
+            let body = sprites[ti];
+            let feet_z = body.z.wrapping_sub(crate::player::PHEIGHT);
+            let dist = room_build_engine::numeric::find_distance_3d(
+                x.wrapping_sub(body.x),
+                y.wrapping_sub(body.y),
+                z.wrapping_sub(feet_z) >> 4,
+            );
+            if body.extra >= 0
+                && dist < radius
+                && cansee(
+                    body.x,
+                    body.y,
+                    body.z - (8 << 8),
+                    body.sectnum,
+                    x,
+                    y,
+                    z - (12 << 8),
+                    sect,
+                    &sec_z,
+                    &wxy,
+                )
+            {
+                let amount = radius_damage(dist, radius, randomseed, strength);
+                if actor_temps.len() <= ti {
+                    actor_temps.resize_with(ti + 1, ActorConTemps::default);
+                }
+                let temp = &mut actor_temps[ti];
+                temp.hit_extra = if temp.hit_extra < 0 {
+                    amount
+                } else {
+                    temp.hit_extra.saturating_add(amount)
+                };
+                temp.hit_picnum = if damage_picnum
+                    == script_tile(script, "RPG").unwrap_or(RPG_PROJECTILE)
+                    && body.extra > 0
+                {
+                    damage_picnum
+                } else {
+                    RADIUSEXPLOSION
+                };
+                temp.hit_owner = owner;
+                temp.hit_ang = getangle(body.x.wrapping_sub(x), body.y.wrapping_sub(y)) as i16;
+            }
+        }
+        target = next;
+    }
+    for stat in [STAT_FALLER, STAT_DUMMY, STAT_MISC] {
+        let mut target = lists.headspritestat[stat as usize];
+        while target >= 0 {
+            let next = lists.nextspritestat[target as usize];
+            let ti = target as usize;
+            if target != wall_source_i && ti < sprites.len() {
+                let t = sprites[ti];
+                let badguy = crate::badguy::badguy_pic(t.picnum, actortype);
+                let flammable = is_flammable_radius_target(script, t.picnum);
+                let dist = room_build_engine::numeric::find_distance_3d(
+                    x.wrapping_sub(t.x),
+                    y.wrapping_sub(t.y),
+                    z.wrapping_sub(t.z) >> 4,
+                );
+                let visible = if stat == STAT_FALLER && !flammable {
+                    cansee(
+                        t.x,
+                        t.y,
+                        t.z - (8 << 8),
+                        t.sectnum,
+                        x,
+                        y,
+                        z - (12 << 8),
+                        sect,
+                        &sec_z,
+                        &wxy,
+                    )
+                } else {
+                    !badguy
+                        || cansee(
+                            t.x,
+                            t.y,
+                            t.z + q,
+                            t.sectnum,
+                            x,
+                            y,
+                            z + q,
+                            sect,
+                            &sec_z,
+                            &wxy,
+                        )
+                };
+                if t.extra >= 0 && ((t.cstat & 257) != 0 || flammable) && dist < radius && visible {
+                    let actor_branch = stat == STAT_FALLER && !flammable;
+                    let amount_before_object =
+                        actor_branch.then(|| radius_damage(dist, radius, randomseed, strength));
+                    if check_radius_target_object(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        actor_temps,
+                        picnum_out,
+                        randomseed,
+                        script,
+                        tile_meta,
+                        players,
+                        ti,
+                        wall_source_i,
+                    ) {
+                        target = next;
+                        continue;
+                    }
+                    let amount = amount_before_object
+                        .unwrap_or_else(|| radius_damage(dist, radius, randomseed, strength));
+                    queue_radius_sprite_hit(
+                        sprites,
+                        actor_temps,
+                        ti,
+                        t,
+                        amount,
+                        if damage_picnum == script_tile(script, "RPG").unwrap_or(RPG_PROJECTILE)
+                            && t.extra > 0
+                        {
+                            damage_picnum
+                        } else {
+                            RADIUSEXPLOSION
+                        },
+                        owner,
+                        getangle(t.x.wrapping_sub(x), t.y.wrapping_sub(y)) as i16,
+                        strength << 2,
+                    );
+                }
+            }
+            target = next;
+        }
+    }
+}
+
+/// Apply the wall side effects of a Freezer bolt's direct `checkhitwall` call.
+/// Chocolate does this before the FREEZEBLAST reflects from the wall.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_checkhitwall(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &mut [WallT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    randomseed: &mut i32,
+    source: SpriteT,
+    source_i: i16,
+    atwith: i16,
+    wall_index: usize,
+    hit_x: i32,
+    hit_y: i32,
+    hit_z: i32,
+    hit_sector: i16,
+    script: Option<&ScriptImage>,
+) -> Vec<i16> {
+    let tile = |name: &str| {
+        script.and_then(|image| {
+            image
+                .labels
+                .get(name)
+                .filter(|label| !label.is_ptr)
+                .map(|label| label.value as i16)
+        })
+    };
+    let Some(wall) = walls.get(wall_index).copied() else {
+        return Vec::new();
+    };
+    let mut sounds = Vec::new();
+    let overlay = wall.overpicnum;
+    let peer = wall.nextwall;
+    // Chocolate `checkhitwall` handles mirrors before forcefields and other
+    // overlay materials, and only explosive/projectile sources listed here
+    // can shatter them. This is a direct-impact path; radius explosions have
+    // their parallel mirror handling in `apply_radius_wall_hits`.
+    let mirror_breaker = [
+        "HEAVYHBOMB",
+        "RADIUSEXPLOSION",
+        "RPG",
+        "HYDRENT",
+        "SEENINE",
+        "OOZFILTER",
+        "EXPLODINGBARREL",
+    ]
+    .iter()
+    .any(|name| tile(name) == Some(atwith));
+    if tile("MIRROR") == Some(overlay) && mirror_breaker {
+        walls[wall_index].cstat &= !16;
+        if let Some(broken) = tile("MIRRORBROKE") {
+            walls[wall_index].overpicnum = broken;
+        }
+        spawn_radius_wall_glass(
+            lists,
+            sprites,
+            sectors,
+            walls,
+            picnum_out,
+            actor_temps,
+            randomseed,
+            SpriteT {
+                x: hit_x,
+                y: hit_y,
+                z: hit_z,
+                sectnum: hit_sector,
+                ..source
+            },
+            source_i,
+            wall_index,
+            70,
+            false,
+            script,
+        );
+        sounds.push(20); // GLASS_HEAVYBREAK.
+        return sounds;
+    }
+    let mut restore_glass = false;
+    let mut overlay_handled = false;
+    let forcefield = tile("W_FORCEFIELD").is_some_and(|base| (base..=base + 2).contains(&overlay));
+    let big_force = tile("BIGFORCE") == Some(overlay);
+    let force_wall_gate = (wall.cstat & 16 != 0 || big_force)
+        && usize::try_from(wall.nextsector)
+            .ok()
+            .and_then(|sector| sectors.get(sector))
+            .is_some_and(|next| next.floorz > hit_z && next.floorz != next.ceilingz);
+
+    if force_wall_gate && (forcefield || big_force) {
+        if forcefield {
+            walls[wall_index].extra = 1;
+        }
+        let chaingun_tile = tile("CHAINGUN").unwrap_or(crate::shoot::CHAINGUN);
+        let ripple_repeat = if atwith == -1 {
+            (8, 8)
+        } else if atwith == chaingun_tile {
+            (
+                source.xrepeat.saturating_add(16),
+                source.yrepeat.saturating_add(16),
+            )
+        } else {
+            (32, 32)
+        };
+        let ripple = crate::shoot::egs(
+            lists,
+            sprites,
+            picnum_out,
+            actor_temps,
+            script,
+            hit_sector,
+            hit_x,
+            hit_y,
+            hit_z,
+            tile("FORCERIPPLE").unwrap_or(1671),
+            -127,
+            ripple_repeat.0,
+            ripple_repeat.1,
+            0,
+            0,
+            0,
+            source_i,
+            crate::stat::STAT_MISC,
+        );
+        if let Ok(index) = usize::try_from(ripple)
+            && let Some(ripple) = sprites.get_mut(index)
+        {
+            ripple.cstat |= 18 + 128;
+            if let Some(end) = usize::try_from(wall.point2)
+                .ok()
+                .and_then(|point| walls.get(point))
+            {
+                ripple.ang = getangle(wall.x.wrapping_sub(end.x), wall.y.wrapping_sub(end.y))
+                    .wrapping_sub(512) as i16;
+            }
+        }
+        sounds.push(35); // SOMETHINGHITFORCE.
+        return sounds;
+    }
+
+    let mut glass_count = 0;
+    let mut colored_glass = false;
+    let mut screen_break = false;
+    let mut wall_light = false;
+    if tile("GLASS") == Some(overlay) {
+        if let Some(broken) = tile("GLASS2") {
+            walls[wall_index].overpicnum = broken;
+        }
+        walls[wall_index].cstat = 0;
+        if let Ok(index) = usize::try_from(peer)
+            && let Some(peer) = walls.get_mut(index)
+        {
+            peer.cstat = 0;
+        }
+        sounds.push(19); // GLASS_BREAKING.
+        glass_count = 10;
+        restore_glass = true;
+        overlay_handled = true;
+    } else if force_wall_gate && tile("FANSPRITE") == Some(overlay) {
+        if let Some(broken) = tile("FANSPRITEBROKE") {
+            walls[wall_index].overpicnum = broken;
+        }
+        walls[wall_index].cstat &= !65;
+        if let Ok(index) = usize::try_from(peer)
+            && let Some(peer) = walls.get_mut(index)
+        {
+            if let Some(broken) = tile("FANSPRITEBROKE") {
+                peer.overpicnum = broken;
+            }
+            peer.cstat &= !65;
+        }
+        sounds.extend([18, 19]); // VENT_BUST, GLASS_BREAKING.
+        overlay_handled = true;
+    } else if force_wall_gate && tile("STAINGLASS1") == Some(overlay) {
+        walls[wall_index].cstat = 0;
+        if let Ok(index) = usize::try_from(peer)
+            && let Some(peer) = walls.get_mut(index)
+        {
+            peer.cstat = 0;
+        }
+        sounds.extend([18, 19]); // VENT_BUST, GLASS_BREAKING.
+        glass_count = 80;
+        colored_glass = true;
+        overlay_handled = true;
+    }
+
+    let wall_pic = wall.picnum;
+    let screen_names = [
+        "OJ",
+        "FEMPIC2",
+        "FEMPIC3",
+        "SCREENBREAK1",
+        "SCREENBREAK2",
+        "SCREENBREAK3",
+        "SCREENBREAK4",
+        "SCREENBREAK5",
+        "SCREENBREAK6",
+        "SCREENBREAK7",
+        "SCREENBREAK8",
+        "SCREENBREAK9",
+        "SCREENBREAK10",
+        "SCREENBREAK11",
+        "SCREENBREAK12",
+        "SCREENBREAK13",
+        "SCREENBREAK14",
+        "SCREENBREAK15",
+        "SCREENBREAK16",
+        "SCREENBREAK17",
+        "SCREENBREAK18",
+        "SCREENBREAK19",
+        "BORNTOBEWILDSCREEN",
+    ];
+    if !overlay_handled && screen_names.iter().any(|name| tile(name) == Some(wall_pic)) {
+        sounds.push(20); // GLASS_HEAVYBREAK.
+        glass_count = 30;
+        screen_break = true;
+    } else if !overlay_handled
+        && let Some((_, replacement)) = [
+            ("COLAMACHINE", None),
+            ("VENDMACHINE", None),
+            ("W_TECHWALL5", Some("W_TECHWALL6")),
+            ("W_TECHWALL6", Some("W_TECHWALL7")),
+            ("W_TECHWALL7", Some("W_TECHWALL8")),
+            ("W_TECHWALL8", Some("W_TECHWALL9")),
+            ("W_TECHWALL9", Some("W_TECHWALL10")),
+            ("W_MILKSHELF", Some("W_MILKSHELFBROKE")),
+            ("W_TECHWALL10", Some("W_HITTECHWALL10")),
+            ("W_TECHWALL1", Some("W_HITTECHWALL1")),
+            ("W_TECHWALL11", Some("W_HITTECHWALL1")),
+            ("W_TECHWALL12", Some("W_HITTECHWALL1")),
+            ("W_TECHWALL13", Some("W_HITTECHWALL1")),
+            ("W_TECHWALL14", Some("W_HITTECHWALL1")),
+            ("W_TECHWALL15", Some("W_HITTECHWALL15")),
+            ("W_TECHWALL16", Some("W_HITTECHWALL16")),
+            ("W_TECHWALL2", Some("W_HITTECHWALL2")),
+            ("W_TECHWALL3", Some("W_HITTECHWALL3")),
+            ("W_TECHWALL4", Some("W_HITTECHWALL4")),
+        ]
+        .into_iter()
+        .find(|(name, _)| tile(name) == Some(wall_pic))
+    {
+        if let Some(replacement) = replacement {
+            if let Some(broken) = tile(replacement) {
+                walls[wall_index].picnum = broken;
+            }
+        } else {
+            walls[wall_index].picnum = wall_pic.saturating_add(2);
+        }
+        sounds.extend([18, 20]); // VENT_BUST, GLASS_HEAVYBREAK.
+        glass_count = 10;
+    } else if !overlay_handled && tile("ATM") == Some(wall_pic) {
+        if let Some(broken) = tile("ATMBROKE") {
+            walls[wall_index].picnum = broken;
+        }
+        spawn_radius_wall_money(
+            lists,
+            sprites,
+            picnum_out,
+            actor_temps,
+            randomseed,
+            SpriteT {
+                x: hit_x,
+                y: hit_y,
+                z: hit_z,
+                sectnum: hit_sector,
+                ..source
+            },
+            script,
+            tile("MONEY").unwrap_or(1233),
+        );
+        sounds.push(20); // GLASS_HEAVYBREAK.
+    } else if !overlay_handled
+        && let Some((_, busted)) = [
+            ("WALLLIGHT1", "WALLLIGHTBUST1"),
+            ("WALLLIGHT2", "WALLLIGHTBUST2"),
+            ("WALLLIGHT3", "WALLLIGHTBUST3"),
+            ("WALLLIGHT4", "WALLLIGHTBUST4"),
+            ("TECHLIGHT2", "TECHLIGHTBUST2"),
+            ("TECHLIGHT4", "TECHLIGHTBUST4"),
+        ]
+        .into_iter()
+        .find(|(lit, _)| tile(lit) == Some(wall_pic))
+    {
+        if let Some(busted) = tile(busted) {
+            walls[wall_index].picnum = busted;
+        }
+        sounds.push(if krand_step(randomseed) & 127 != 0 {
+            20
+        } else {
+            19
+        });
+        glass_count = 30;
+        wall_light = true;
+    }
+
+    // Chocolate chooses the wall-light break cue before `lotsofglass`; the
+    // shard spawner consumes RNG, so keep this draw ahead of the glass burst.
+    let wall_light_sound = wall_light.then(|| {
+        if krand_step(randomseed) & 127 != 0 {
+            20 // GLASS_HEAVYBREAK.
+        } else {
+            19 // GLASS_BREAKING.
+        }
+    });
+    if glass_count > 0 {
+        spawn_radius_wall_glass(
+            lists,
+            sprites,
+            sectors,
+            walls,
+            picnum_out,
+            actor_temps,
+            randomseed,
+            SpriteT {
+                x: hit_x,
+                y: hit_y,
+                z: hit_z,
+                ..source
+            },
+            source_i,
+            wall_index,
+            glass_count,
+            colored_glass,
+            script,
+        );
+    }
+    if screen_break && let Some(base) = tile("W_SCREENBREAK") {
+        // The screen shards consume their random draws before the cracked
+        // variant is selected in Chocolate's checkhitwall.
+        walls[wall_index].picnum = base + (krand_step(randomseed) % 3) as i16;
+    }
+    if let Some(sound) = wall_light_sound {
+        sounds.push(sound);
+    }
+    if wall_light
+        && wall.lotag != 0
+        && let Ok(next_sector) = usize::try_from(wall.nextsector)
+        && let Some(next_sector) = sectors.get(next_sector)
+    {
+        let start = usize::try_from(next_sector.wallptr).unwrap_or(usize::MAX);
+        let end = start
+            .saturating_add(usize::try_from(next_sector.wallnum).unwrap_or_default())
+            .min(walls.len());
+        let darkest = walls[start..end]
+            .iter()
+            .map(|wall| wall.shade)
+            .fold(0_i8, i8::max);
+        let phase = krand_step(randomseed) & 1;
+        let stat = crate::stat::STAT_EFFECTOR as usize;
+        let mut marker = lists.headspritestat.get(stat).copied().unwrap_or(-1);
+        while marker >= 0 {
+            let index = marker as usize;
+            let next = lists.nextspritestat.get(index).copied().unwrap_or(-1);
+            if let Some(effect) = sprites.get(index)
+                && effect.lotag == 3
+                && effect.hitag == wall.lotag
+            {
+                if actor_temps.len() <= index {
+                    actor_temps.resize_with(index + 1, ActorConTemps::default);
+                }
+                actor_temps[index].g_t[2] = phase;
+                actor_temps[index].g_t[3] = i32::from(darkest);
+                actor_temps[index].g_t[4] = 1;
+            }
+            marker = next;
+        }
+    }
+    if restore_glass {
+        let effector = crate::shoot::egs(
+            lists,
+            sprites,
+            picnum_out,
+            actor_temps,
+            script,
+            hit_sector,
+            wall.x,
+            wall.y,
+            hit_z,
+            tile("SECTOREFFECTOR").unwrap_or(1),
+            0,
+            0,
+            0,
+            source.ang,
+            0,
+            0,
+            source_i,
+            crate::stat::STAT_EFFECTOR,
+        );
+        if let Ok(index) = usize::try_from(effector)
+            && let Some(effector) = sprites.get_mut(index)
+        {
+            effector.lotag = 128;
+            if actor_temps.len() <= index {
+                actor_temps.resize_with(index + 1, ActorConTemps::default);
+            }
+            actor_temps[index].g_t[1] = 5;
+            actor_temps[index].g_t[2] = wall_index as i32;
+        }
+    }
+    sounds
+}
+
+/// Apply Chocolate's nearby-wall portion of `hitradius`, using a breadth-first
+/// adjacent-sector scan and LOS from each wall's quarter-midpoint.
+fn apply_radius_wall_hits(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &mut [WallT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    randomseed: &mut i32,
+    source: SpriteT,
+    source_i: i16,
+    radius: i32,
+    sound_owner: i16,
+    script: Option<&ScriptImage>,
+) -> Vec<i16> {
+    let tile = |name: &str| {
+        script.and_then(|script| {
+            script
+                .labels
+                .get(name)
+                .filter(|label| !label.is_ptr)
+                .map(|label| label.value as i16)
+        })
+    };
+    if radius <= 0 || source.sectnum < 0 {
+        return Vec::new();
+    }
+    let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+    let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+    let sec_walls: Vec<SectorWalls> = sectors
+        .iter()
+        .map(|sector| SectorWalls {
+            wallptr: sector.wallptr,
+            wallnum: sector.wallnum,
+        })
+        .collect();
+    let mut visited = vec![false; sectors.len()];
+    let mut queue = Vec::with_capacity(sectors.len());
+    let start = source.sectnum as usize;
+    if start >= sectors.len() {
+        return Vec::new();
+    }
+    if (source.picnum == script_tile(script, "RPG").unwrap_or(RPG_PROJECTILE)
+        && source.xrepeat < 11)
+        || tile("SHRINKSPARK") == Some(source.picnum)
+    {
+        return Vec::new();
+    }
+    visited[start] = true;
+    queue.push(start);
+    let mut sounds = Vec::new();
+    let mut cursor = 0;
+    while cursor < queue.len() {
+        let sector_index = queue[cursor];
+        cursor += 1;
+        let sector = sectors[sector_index];
+        // Chocolate checks the sector ceiling before its wall list. The first
+        // wall vertex is the fast path; only when it is outside the blast does
+        // Atomic test the vertex three walls along the sector boundary.
+        if (sector.ceilingz.wrapping_sub(source.z) >> 8) < radius {
+            let first_wall = usize::try_from(sector.wallptr).unwrap_or(usize::MAX);
+            let first_vertex = walls.get(first_wall).copied();
+            let first_dist = first_vertex.map(|wall| {
+                klabs(wall.x.wrapping_sub(source.x))
+                    .wrapping_add(klabs(wall.y.wrapping_sub(source.y)))
+            });
+            let ceiling_in_radius = first_dist.is_some_and(|dist| dist < radius)
+                || first_dist.is_some_and(|dist| dist >= radius)
+                    && walls
+                        .get(first_wall)
+                        .and_then(|wall| usize::try_from(wall.point2).ok())
+                        .and_then(|wall| walls.get(wall))
+                        .and_then(|wall| usize::try_from(wall.point2).ok())
+                        .and_then(|wall| walls.get(wall))
+                        .is_some_and(|wall| {
+                            klabs(wall.x.wrapping_sub(source.x))
+                                .wrapping_add(klabs(wall.y.wrapping_sub(source.y)))
+                                < radius
+                        });
+            if ceiling_in_radius {
+                let mut ceiling_sounds = Vec::new();
+                crate::shoot::check_hit_ceiling(
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    picnum_out,
+                    actor_temps,
+                    script,
+                    randomseed,
+                    sector_index as i16,
+                    sound_owner,
+                    &mut ceiling_sounds,
+                );
+                if sound_owner >= 0 && !ceiling_sounds.is_empty() {
+                    let owner_index = sound_owner as usize;
+                    if actor_temps.len() <= owner_index {
+                        actor_temps.resize_with(owner_index + 1, ActorConTemps::default);
+                    }
+                    actor_temps[owner_index].pending_actor_sounds.extend(
+                        ceiling_sounds
+                            .into_iter()
+                            .filter_map(|sound| i16::try_from(sound).ok()),
+                    );
+                }
+            }
+        }
+        let wall_start = sector.wallptr.max(0) as usize;
+        let wall_end = wall_start
+            .saturating_add(sector.wallnum.max(0) as usize)
+            .min(walls.len());
+        for wall_index in wall_start..wall_end {
+            let wall = walls[wall_index];
+            let distance = (wall.x.wrapping_sub(source.x))
+                .saturating_abs()
+                .saturating_add((wall.y.wrapping_sub(source.y)).saturating_abs());
+            if distance >= radius {
+                continue;
+            }
+            if let Ok(neighbor) = usize::try_from(wall.nextsector)
+                && neighbor < sectors.len()
+                && !visited[neighbor]
+            {
+                visited[neighbor] = true;
+                queue.push(neighbor);
+            }
+            let Ok(point2) = usize::try_from(wall.point2) else {
+                continue;
+            };
+            let Some(end_wall) = walls.get(point2).copied() else {
+                continue;
+            };
+            let midpoint_x = ((wall.x.wrapping_add(end_wall.x) >> 1).wrapping_add(source.x)) >> 1;
+            let midpoint_y = ((wall.y.wrapping_add(end_wall.y) >> 1).wrapping_add(source.y)) >> 1;
+            let mut midpoint_sector = sector_index as i16;
+            if room_build_engine::geom::updatesector(
+                midpoint_x,
+                midpoint_y,
+                &mut midpoint_sector,
+                &sec_walls,
+                &wall_xy,
+            ) < 0
+            {
+                continue;
+            }
+            if !cansee(
+                midpoint_x,
+                midpoint_y,
+                source.z,
+                midpoint_sector,
+                source.x,
+                source.y,
+                source.z,
+                source.sectnum,
+                &sec_z,
+                &wall_xy,
+            ) {
+                continue;
+            }
+            let next_sector = usize::try_from(wall.nextsector)
+                .ok()
+                .and_then(|index| sectors.get(index));
+            let force_wall_gate = (wall.cstat & 16 != 0
+                || Some(wall.overpicnum) == tile("BIGFORCE"))
+                && next_sector
+                    .is_some_and(|next| next.floorz > source.z && next.floorz != next.ceilingz);
+            let overlay = walls[wall_index].overpicnum;
+            let peer_wall = walls[wall_index].nextwall;
+            let forcefield_base = tile("W_FORCEFIELD");
+            let forcefield = forcefield_base
+                .is_some_and(|base| (base..=base.saturating_add(2)).contains(&overlay));
+            let big_force = Some(overlay) == tile("BIGFORCE");
+            let mirror_breaker = [
+                "HEAVYHBOMB",
+                "RADIUSEXPLOSION",
+                "RPG",
+                "HYDRENT",
+                "SEENINE",
+                "OOZFILTER",
+                "EXPLODINGBARREL",
+            ]
+            .iter()
+            .any(|name| Some(source.picnum) == tile(name));
+            let mut glass_count = 0;
+            let mut colored_glass = false;
+            let mut trigger_wall_light = false;
+            let mut screen_break = false;
+            let mut glass_restore = false;
+            if force_wall_gate && (forcefield || big_force) {
+                if forcefield {
+                    walls[wall_index].extra = 1;
+                }
+                let ripple_xrepeat = if Some(source.picnum) == tile("CHAINGUN") {
+                    source.xrepeat.saturating_add(16)
+                } else {
+                    32
+                };
+                let ripple_yrepeat = if Some(source.picnum) == tile("CHAINGUN") {
+                    source.yrepeat.saturating_add(16)
+                } else {
+                    32
+                };
+                let ripple = crate::shoot::egs(
+                    lists,
+                    sprites,
+                    picnum_out,
+                    actor_temps,
+                    script,
+                    sector_index as i16,
+                    wall.x,
+                    wall.y,
+                    source.z,
+                    tile("FORCERIPPLE").unwrap_or(1671),
+                    -127,
+                    ripple_xrepeat,
+                    ripple_yrepeat,
+                    0,
+                    0,
+                    0,
+                    source_i,
+                    crate::stat::STAT_MISC,
+                );
+                if let Ok(ripple_index) = usize::try_from(ripple)
+                    && let Some(ripple) = sprites.get_mut(ripple_index)
+                {
+                    ripple.cstat |= 18 + 128;
+                    if let Some(end) = usize::try_from(wall.point2)
+                        .ok()
+                        .and_then(|point| walls.get(point))
+                    {
+                        ripple.ang =
+                            getangle(wall.x.wrapping_sub(end.x), wall.y.wrapping_sub(end.y))
+                                .wrapping_sub(512) as i16;
+                    }
+                }
+                sounds.push(35); // SOMETHINGHITFORCE.
+            } else if mirror_breaker && Some(overlay) == tile("MIRROR") {
+                walls[wall_index].cstat &= !16;
+                if let Some(broken) = tile("MIRRORBROKE") {
+                    walls[wall_index].overpicnum = broken;
+                }
+                sounds.push(20); // GLASS_HEAVYBREAK
+                glass_count = 70;
+            } else if Some(overlay) == tile("GLASS") {
+                if let Some(broken) = tile("GLASS2") {
+                    walls[wall_index].overpicnum = broken;
+                }
+                walls[wall_index].cstat = 0;
+                if let Ok(peer) = usize::try_from(peer_wall)
+                    && let Some(peer_wall) = walls.get_mut(peer)
+                {
+                    peer_wall.cstat = 0;
+                }
+                sounds.push(19); // GLASS_BREAKING
+                glass_count = 10;
+                glass_restore = true;
+            } else if force_wall_gate && Some(overlay) == tile("FANSPRITE") {
+                if let Some(broken) = tile("FANSPRITEBROKE") {
+                    walls[wall_index].overpicnum = broken;
+                }
+                walls[wall_index].cstat &= !65;
+                if let Ok(peer) = usize::try_from(peer_wall)
+                    && let Some(peer_wall) = walls.get_mut(peer)
+                {
+                    if let Some(broken) = tile("FANSPRITEBROKE") {
+                        peer_wall.overpicnum = broken;
+                    }
+                    peer_wall.cstat &= !65;
+                }
+                sounds.extend([18, 19]); // VENT_BUST, GLASS_BREAKING
+            } else if force_wall_gate && Some(overlay) == tile("STAINGLASS1") {
+                walls[wall_index].cstat = 0;
+                if let Ok(peer) = usize::try_from(peer_wall)
+                    && let Some(peer_wall) = walls.get_mut(peer)
+                {
+                    peer_wall.cstat = 0;
+                }
+                sounds.extend([18, 19]); // VENT_BUST, GLASS_BREAKING
+                glass_count = 80;
+                colored_glass = true;
+            }
+            let pic = walls[wall_index].picnum;
+            let screen_names = [
+                "OJ",
+                "FEMPIC2",
+                "FEMPIC3",
+                "SCREENBREAK1",
+                "SCREENBREAK2",
+                "SCREENBREAK3",
+                "SCREENBREAK4",
+                "SCREENBREAK5",
+                "SCREENBREAK6",
+                "SCREENBREAK7",
+                "SCREENBREAK8",
+                "SCREENBREAK9",
+                "SCREENBREAK10",
+                "SCREENBREAK11",
+                "SCREENBREAK12",
+                "SCREENBREAK13",
+                "SCREENBREAK14",
+                "SCREENBREAK15",
+                "SCREENBREAK16",
+                "SCREENBREAK17",
+                "SCREENBREAK18",
+                "SCREENBREAK19",
+                "BORNTOBEWILDSCREEN",
+            ];
+            if screen_names.iter().any(|name| Some(pic) == tile(name)) {
+                sounds.push(20); // GLASS_HEAVYBREAK.
+                glass_count = 30;
+                screen_break = true;
+            }
+            let breakwall = [
+                ("COLAMACHINE", "+2"),
+                ("VENDMACHINE", "+2"),
+                ("W_TECHWALL5", "W_TECHWALL6"),
+                ("W_TECHWALL6", "W_TECHWALL7"),
+                ("W_TECHWALL7", "W_TECHWALL8"),
+                ("W_TECHWALL8", "W_TECHWALL9"),
+                ("W_TECHWALL9", "W_TECHWALL10"),
+                ("W_MILKSHELF", "W_MILKSHELFBROKE"),
+                ("W_TECHWALL10", "W_HITTECHWALL10"),
+                ("W_TECHWALL1", "W_HITTECHWALL1"),
+                ("W_TECHWALL11", "W_HITTECHWALL1"),
+                ("W_TECHWALL12", "W_HITTECHWALL1"),
+                ("W_TECHWALL13", "W_HITTECHWALL1"),
+                ("W_TECHWALL14", "W_HITTECHWALL1"),
+                ("W_TECHWALL15", "W_HITTECHWALL15"),
+                ("W_TECHWALL16", "W_HITTECHWALL16"),
+                ("W_TECHWALL2", "W_HITTECHWALL2"),
+                ("W_TECHWALL3", "W_HITTECHWALL3"),
+                ("W_TECHWALL4", "W_HITTECHWALL4"),
+            ];
+            for (from, to) in breakwall {
+                if Some(pic) != tile(from) {
+                    continue;
+                }
+                let replacement = if to == "+2" {
+                    pic.saturating_add(2)
+                } else {
+                    tile(to).unwrap_or(pic)
+                };
+                walls[wall_index].picnum = replacement;
+                sounds.extend([18, 20]); // breakwall: vent bust + heavy glass.
+                glass_count = 10;
+                break;
+            }
+            if Some(pic) == tile("ATM") {
+                if let Some(broken) = tile("ATMBROKE") {
+                    walls[wall_index].picnum = broken;
+                }
+                spawn_radius_wall_money(
+                    lists,
+                    sprites,
+                    picnum_out,
+                    actor_temps,
+                    randomseed,
+                    source,
+                    script,
+                    tile("MONEY").unwrap_or(1233),
+                );
+                sounds.push(20);
+            }
+            for (lit, busted) in [
+                ("WALLLIGHT1", "WALLLIGHTBUST1"),
+                ("WALLLIGHT2", "WALLLIGHTBUST2"),
+                ("WALLLIGHT3", "WALLLIGHTBUST3"),
+                ("WALLLIGHT4", "WALLLIGHTBUST4"),
+                ("TECHLIGHT2", "TECHLIGHTBUST2"),
+                ("TECHLIGHT4", "TECHLIGHTBUST4"),
+            ] {
+                if Some(pic) == tile(lit) {
+                    if let Some(busted) = tile(busted) {
+                        walls[wall_index].picnum = busted;
+                    }
+                    // Chocolate rolls once for the cue, then emits 30 shards.
+                    glass_count = 30;
+                    trigger_wall_light = true;
+                    break;
+                }
+            }
+            if glass_count > 0 {
+                spawn_radius_wall_glass(
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    picnum_out,
+                    actor_temps,
+                    randomseed,
+                    source,
+                    source_i,
+                    wall_index,
+                    glass_count,
+                    colored_glass,
+                    script,
+                );
+            }
+            if screen_break && let Some(base) = tile("W_SCREENBREAK") {
+                // Chocolate emits screen shards before choosing the cracked
+                // screen variant, so keep this TRAND after the shard draws.
+                walls[wall_index].picnum = base + (krand_step(randomseed) % 3) as i16;
+            }
+            if glass_restore {
+                let effector = crate::shoot::egs(
+                    lists,
+                    sprites,
+                    picnum_out,
+                    actor_temps,
+                    script,
+                    sector_index as i16,
+                    wall.x,
+                    wall.y,
+                    source.z,
+                    tile("SECTOREFFECTOR").unwrap_or(1),
+                    0,
+                    0,
+                    0,
+                    source.ang,
+                    0,
+                    0,
+                    source_i,
+                    crate::stat::STAT_EFFECTOR,
+                );
+                if let Ok(effector_index) = usize::try_from(effector)
+                    && let Some(effector) = sprites.get_mut(effector_index)
+                {
+                    effector.lotag = 128;
+                    if actor_temps.len() <= effector_index {
+                        actor_temps.resize_with(effector_index + 1, ActorConTemps::default);
+                    }
+                    actor_temps[effector_index].g_t[1] = 5;
+                    actor_temps[effector_index].g_t[2] = wall_index as i32;
+                }
+            }
+            if trigger_wall_light && wall.lotag != 0 {
+                if let Ok(next_sector) = usize::try_from(wall.nextsector)
+                    && let Some(next_sector) = sectors.get(next_sector).copied()
+                {
+                    let start = usize::try_from(next_sector.wallptr).unwrap_or(usize::MAX);
+                    let end = start
+                        .saturating_add(usize::try_from(next_sector.wallnum).unwrap_or_default())
+                        .min(walls.len());
+                    let darkest = walls[start..end]
+                        .iter()
+                        .map(|wall| wall.shade)
+                        .max()
+                        .unwrap_or(0)
+                        .max(0);
+                    let phase = krand_step(randomseed) & 1;
+                    let stat = crate::stat::STAT_EFFECTOR as usize;
+                    let mut marker = lists.headspritestat.get(stat).copied().unwrap_or(-1);
+                    while marker >= 0 {
+                        let marker_index = marker as usize;
+                        let next = lists
+                            .nextspritestat
+                            .get(marker_index)
+                            .copied()
+                            .unwrap_or(-1);
+                        if let Some(effect) = sprites.get(marker_index)
+                            && effect.lotag == 3
+                            && effect.hitag == wall.lotag
+                        {
+                            if actor_temps.len() <= marker_index {
+                                actor_temps.resize_with(marker_index + 1, ActorConTemps::default);
+                            }
+                            actor_temps[marker_index].g_t[2] = phase;
+                            actor_temps[marker_index].g_t[3] = i32::from(darkest);
+                            actor_temps[marker_index].g_t[4] = 1;
+                        }
+                        marker = next;
+                    }
+                }
+            }
+        }
+    }
+    sounds
+}
+
+fn spawn_radius_wall_money(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    randomseed: &mut i32,
+    source: SpriteT,
+    script: Option<&ScriptImage>,
+    money_tile: i16,
+) {
+    let count = 1 + (krand_step(randomseed) & 7);
+    for _ in 0..count {
+        let z_offset = krand_step(randomseed) % (47 << 8);
+        let angle = (krand_step(randomseed) & 2047) as i16;
+        let money = crate::shoot::egs(
+            lists,
+            sprites,
+            picnum_out,
+            actor_temps,
+            script,
+            source.sectnum,
+            source.x,
+            source.y,
+            source.z.wrapping_sub(z_offset),
+            money_tile,
+            -32,
+            8,
+            8,
+            angle,
+            0,
+            0,
+            0,
+            crate::stat::STAT_MISC,
+        );
+        if let Ok(money_index) = usize::try_from(money)
+            && let Some(money) = sprites.get_mut(money_index)
+        {
+            money.cstat = (krand_step(randomseed) & 12) as u16;
+        } else {
+            let _ = krand_step(randomseed);
+        }
+    }
+}
+
+fn spawn_radius_wall_glass(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    randomseed: &mut i32,
+    source: SpriteT,
+    source_i: i16,
+    wall_index: usize,
+    count: i32,
+    colored: bool,
+    script: Option<&ScriptImage>,
+) {
+    let tile = |name: &str| {
+        script.and_then(|script| {
+            script
+                .labels
+                .get(name)
+                .filter(|label| !label.is_ptr)
+                .map(|label| label.value as i16)
+        })
+    };
+    let Some(glass_tile) = tile("GLASSPIECES") else {
+        return;
+    };
+    let Some(wall) = walls.get(wall_index).copied() else {
+        return;
+    };
+    let Some(end) = usize::try_from(wall.point2)
+        .ok()
+        .and_then(|index| walls.get(index))
+        .copied()
+    else {
+        return;
+    };
+    let sec_walls: Vec<SectorWalls> = sectors
+        .iter()
+        .map(|sector| SectorWalls {
+            wallptr: sector.wallptr,
+            wallnum: sector.wallnum,
+        })
+        .collect();
+    let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+    let divisor = count.saturating_add(1).max(1);
+    let mut x = wall.x;
+    let mut y = wall.y;
+    if !colored {
+        x = x.wrapping_sub((end.y.wrapping_sub(wall.y)).signum());
+        y = y.wrapping_add((end.x.wrapping_sub(wall.x)).signum());
+    }
+    let dx = end.x.wrapping_sub(wall.x) / divisor;
+    let dy = end.y.wrapping_sub(wall.y) / divisor;
+    let mut sector_hint = -1;
+    for shard in (1..=count).rev() {
+        x = x.wrapping_add(dx);
+        y = y.wrapping_add(dy);
+        let sector_index =
+            room_build_engine::geom::updatesector(x, y, &mut sector_hint, &sec_walls, &wall_xy);
+        let Ok(sector_index) = usize::try_from(sector_index) else {
+            continue;
+        };
+        let Some(sector) = sectors.get(sector_index).copied() else {
+            continue;
+        };
+        let angle = if colored {
+            (krand_step(randomseed) & 2047) as i16
+        } else {
+            source.ang.wrapping_sub(1024)
+        };
+        let height = sector.floorz.wrapping_sub(sector.ceilingz).saturating_abs();
+        let mut z = sector.floorz.wrapping_sub(krand_step(randomseed) & height);
+        if !(-32 << 8..=32 << 8).contains(&z) {
+            z = source
+                .z
+                .wrapping_sub(32 << 8)
+                .wrapping_add(krand_step(randomseed) & (64 << 8) - 1);
+        }
+        let xvel = (32 + (krand_step(randomseed) & 63)) as i16;
+        let zvel = (-(krand_step(randomseed) & if colored { 2047 } else { 1023 })) as i16;
+        let shard = crate::shoot::egs(
+            lists,
+            sprites,
+            picnum_out,
+            actor_temps,
+            script,
+            sector_index as i16,
+            x,
+            y,
+            z,
+            glass_tile + (shard % 3) as i16,
+            -32,
+            36,
+            36,
+            angle,
+            xvel,
+            zvel,
+            source_i,
+            crate::stat::STAT_MISC,
+        );
+        if colored && shard >= 0 {
+            sprites[shard as usize].pal = (krand_step(randomseed) & 7) as u8;
+        }
+    }
+}
+
+/// Apply a CON `hitradius` request to live actors and players. The command's
+/// damage arguments are `[hp1, hp2, hp3, hp4]`, with progressively larger
+/// values toward the center, matching Chocolate's three distance bands.
+pub(crate) fn apply_con_hitradius(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &mut [WallT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    players: &mut [Player],
+    randomseed: &mut i32,
+    source_i: i16,
+    radius: i32,
+    damage: [i32; 4],
+    actortype: &[u8],
+    script: Option<&ScriptImage>,
+    tile_meta: &[TileZMeta],
+) {
+    let Some(source) = sprites.get(source_i.max(0) as usize).copied() else {
+        return;
+    };
+    if radius <= 0 {
+        return;
+    }
+    let wall_sounds = apply_radius_wall_hits(
+        lists,
+        sprites,
+        sectors,
+        walls,
+        picnum_out,
+        actor_temps,
+        randomseed,
+        source,
+        source_i,
+        radius,
+        players.first().map_or(-1, |player| player.sprite_i),
+        script,
+    );
+    if !wall_sounds.is_empty() {
+        let source_index = source_i as usize;
+        if actor_temps.len() <= source_index {
+            actor_temps.resize_with(source_index + 1, ActorConTemps::default);
+        }
+        actor_temps[source_index]
+            .pending_actor_sounds
+            .extend(wall_sounds);
+    }
+    let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+    let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+    let q = -(16 << 8) + (krand_step(randomseed) & ((32 << 8) - 1));
+    let standable_damage_tiles = [
+        script_tile(script, "SEENINE").unwrap_or(1247),
+        script_tile(script, "OOZFILTER").unwrap_or(1079),
+    ];
+    // Chocolate scans STAT_DEFAULT first. This group only hits blocking
+    // sprites; blocking badguys additionally require line of sight.
+    let mut target = lists.headspritestat[STAT_DEFAULT as usize];
+    while target >= 0 {
+        let next = lists.nextspritestat[target as usize];
+        let ti = target as usize;
+        if target != source_i && ti < sprites.len() {
+            let t = sprites[ti];
+            let badguy = crate::badguy::badguy_pic(t.picnum, actortype);
+            let dist = room_build_engine::numeric::find_distance_3d(
+                source.x.wrapping_sub(t.x),
+                source.y.wrapping_sub(t.y),
+                source.z.wrapping_sub(t.z) >> 4,
+            );
+            let visible = !badguy
+                || cansee(
+                    t.x,
+                    t.y,
+                    t.z + q,
+                    t.sectnum,
+                    source.x,
+                    source.y,
+                    source.z + q,
+                    source.sectnum,
+                    &sec_z,
+                    &wxy,
+                );
+            if t.extra >= 0
+                && (t.cstat & 257) != 0
+                && dist < radius
+                && visible
+                && !check_radius_target_object(
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    actor_temps,
+                    picnum_out,
+                    randomseed,
+                    script,
+                    tile_meta,
+                    players,
+                    ti,
+                    source_i,
+                )
+            {
+                let amount = con_radius_damage(dist, radius, damage, randomseed);
+                if actor_temps.len() <= ti {
+                    actor_temps.resize_with(ti + 1, ActorConTemps::default);
+                }
+                let temp = &mut actor_temps[ti];
+                temp.hit_extra = if temp.hit_extra < 0 {
+                    amount
+                } else {
+                    temp.hit_extra.saturating_add(amount)
+                };
+                temp.hit_picnum = if source.picnum
+                    == script_tile(script, "RPG").unwrap_or(RPG_PROJECTILE)
+                    && t.extra > 0
+                {
+                    source.picnum
+                } else {
+                    RADIUSEXPLOSION
+                };
+                temp.hit_owner = source.owner;
+                temp.hit_ang =
+                    getangle(t.x.wrapping_sub(source.x), t.y.wrapping_sub(source.y)) as i16;
+                if !matches!(t.picnum, 1975 | 2360 | 1960 | 2630 | 2710 | 2760 | 4740) {
+                    sprites[ti].xvel = sprites[ti]
+                        .xvel
+                        .max(0)
+                        .wrapping_add(source.extra.wrapping_shl(2) as i16);
+                }
+            }
+        }
+        target = next;
+    }
+    let mut target = lists.headspritestat[crate::stat::STAT_ACTOR as usize];
+    while target >= 0 {
+        let next = lists.nextspritestat[target as usize];
+        let ti = target as usize;
+        let t = sprites[ti];
+        let badguy = crate::badguy::badguy_pic(t.picnum, actortype);
+        let special_target = ["TRIPBOMB", "QUEBALL", "STRIPEBALL", "DUKELYINGDEAD"]
+            .iter()
+            .filter_map(|name| script_tile(script, name))
+            .any(|tile| tile == t.picnum);
+        let flammable = is_flammable_radius_target(script, t.picnum);
+        let eligible =
+            t.extra >= 0 && (special_target || badguy || (t.cstat & 257) != 0 || flammable);
+        let dist = room_build_engine::numeric::find_distance_3d(
+            source.x.wrapping_sub(t.x),
+            source.y.wrapping_sub(t.y),
+            source.z.wrapping_sub(t.z) >> 4,
+        );
+        let visible = if flammable {
+            !badguy
+                || cansee(
+                    t.x,
+                    t.y,
+                    t.z + q,
+                    t.sectnum,
+                    source.x,
+                    source.y,
+                    source.z + q,
+                    source.sectnum,
+                    &sec_z,
+                    &wxy,
+                )
+        } else {
+            cansee(
+                t.x,
+                t.y,
+                t.z - (8 << 8),
+                t.sectnum,
+                source.x,
+                source.y,
+                source.z - (12 << 8),
+                source.sectnum,
+                &sec_z,
+                &wxy,
+            )
+        };
+        if target != source_i && eligible && dist < radius && visible {
+            let amount = con_radius_damage(dist, radius, damage, randomseed);
+            if actor_temps.len() <= ti {
+                actor_temps.resize_with(ti + 1, ActorConTemps::default);
+            }
+            let temp = &mut actor_temps[ti];
+            temp.hit_extra = if temp.hit_extra < 0 {
+                amount
+            } else {
+                temp.hit_extra.saturating_add(amount)
+            };
+            temp.hit_picnum = if source.picnum
+                == script_tile(script, "RPG").unwrap_or(RPG_PROJECTILE)
+                && t.extra > 0
+            {
+                source.picnum
+            } else {
+                RADIUSEXPLOSION
+            };
+            temp.hit_owner = source.owner;
+            temp.hit_ang = getangle(t.x.wrapping_sub(source.x), t.y.wrapping_sub(source.y)) as i16;
+            if !matches!(t.picnum, 1975 | 2360 | 1960 | 2630 | 2710 | 2760 | 4740) {
+                sprites[ti].xvel = sprites[ti]
+                    .xvel
+                    .max(0)
+                    .wrapping_add(source.extra.wrapping_shl(2) as i16);
+            }
+            if radius_actor_checkhit_target(script, t.picnum) {
+                let _ = check_radius_target_object(
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    actor_temps,
+                    picnum_out,
+                    randomseed,
+                    script,
+                    tile_meta,
+                    players,
+                    ti,
+                    source_i,
+                );
+            }
+        }
+        target = next;
+    }
+    // Chocolate's hitradius stat order includes STAT_STANDABLE as its third
+    // list. SEENINE/OOZFILTER carry impact health in `extra`, so blast damage
+    // must be queued for their next standable tic just like a direct hit.
+    let mut target = lists.headspritestat[crate::stat::STAT_STANDABLE as usize];
+    while target >= 0 {
+        let next = lists.nextspritestat[target as usize];
+        let ti = target as usize;
+        if target != source_i && ti < sprites.len() {
+            let t = sprites[ti];
+            let destructible =
+                standable_damage_tiles.contains(&t.picnum) && t.extra >= 0 && (t.cstat & 257) != 0;
+            let dist = room_build_engine::numeric::find_distance_3d(
+                source.x.wrapping_sub(t.x),
+                source.y.wrapping_sub(t.y),
+                source.z.wrapping_sub(t.z) >> 4,
+            );
+            if destructible
+                && dist < radius
+                && cansee(
+                    t.x,
+                    t.y,
+                    t.z - (8 << 8),
+                    t.sectnum,
+                    source.x,
+                    source.y,
+                    source.z - (12 << 8),
+                    source.sectnum,
+                    &sec_z,
+                    &wxy,
+                )
+            {
+                let amount = con_radius_damage(dist, radius, damage, randomseed);
+                if actor_temps.len() <= ti {
+                    actor_temps.resize_with(ti + 1, ActorConTemps::default);
+                }
+                let temp = &mut actor_temps[ti];
+                temp.hit_extra = if temp.hit_extra < 0 {
+                    amount
+                } else {
+                    temp.hit_extra.saturating_add(amount)
+                };
+                temp.hit_picnum = RADIUSEXPLOSION;
+                temp.hit_owner = source.owner;
+                temp.hit_ang =
+                    getangle(t.x.wrapping_sub(source.x), t.y.wrapping_sub(source.y)) as i16;
+                sprites[ti].xvel = sprites[ti]
+                    .xvel
+                    .max(0)
+                    .wrapping_add(source.extra.wrapping_shl(2) as i16);
+                if radius_actor_checkhit_target(script, t.picnum) {
+                    let _ = check_radius_target_object(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        actor_temps,
+                        picnum_out,
+                        randomseed,
+                        script,
+                        tile_meta,
+                        players,
+                        ti,
+                        source_i,
+                    );
+                }
+            }
+        }
+        target = next;
+    }
+    let triggers_tagged_explosives = [
+        script_tile(script, "RPG").unwrap_or(RPG_PROJECTILE),
+        script_tile(script, "FIREEXT").unwrap_or(916),
+        script_tile(script, "RADIUSEXPLOSION").unwrap_or(RADIUSEXPLOSION),
+        script_tile(script, "SEENINE").unwrap_or(1247),
+        script_tile(script, "OOZFILTER").unwrap_or(1079),
+    ]
+    .contains(&source.picnum);
+    if triggers_tagged_explosives {
+        arm_tagged_detonables_from_blast(
+            lists,
+            sprites,
+            actor_temps,
+            script,
+            source.x,
+            source.y,
+            source.z,
+            radius,
+        );
+    }
+    let mut target = lists.headspritestat[crate::stat::STAT_PLAYER as usize];
+    while target >= 0 {
+        let next = lists.nextspritestat[target as usize];
+        let ti = target as usize;
+        if target != source_i
+            && let Some(body) = sprites.get(ti).copied()
+        {
+            // Chocolate temporarily moves APLAYER to its feet for `dist()`,
+            // then restores it before the player-specific visibility query.
+            let feet_z = body.z.wrapping_sub(crate::player::PHEIGHT);
+            let dist = room_build_engine::numeric::find_distance_3d(
+                source.x.wrapping_sub(body.x),
+                source.y.wrapping_sub(body.y),
+                source.z.wrapping_sub(feet_z) >> 4,
+            );
+            if body.extra >= 0
+                && dist < radius
+                && cansee(
+                    body.x,
+                    body.y,
+                    body.z - (8 << 8),
+                    body.sectnum,
+                    source.x,
+                    source.y,
+                    source.z - (12 << 8),
+                    source.sectnum,
+                    &sec_z,
+                    &wxy,
+                )
+            {
+                let amount = con_radius_damage(dist, radius, damage, randomseed);
+                if actor_temps.len() <= ti {
+                    actor_temps.resize_with(ti + 1, ActorConTemps::default);
+                }
+                let temp = &mut actor_temps[ti];
+                temp.hit_extra = if temp.hit_extra < 0 {
+                    amount
+                } else {
+                    temp.hit_extra.saturating_add(amount)
+                };
+                temp.hit_picnum = if source.picnum
+                    == script_tile(script, "RPG").unwrap_or(RPG_PROJECTILE)
+                    && body.extra > 0
+                {
+                    source.picnum
+                } else {
+                    RADIUSEXPLOSION
+                };
+                temp.hit_owner = source.owner;
+                temp.hit_ang =
+                    getangle(body.x.wrapping_sub(source.x), body.y.wrapping_sub(source.y)) as i16;
+                // Chocolate `hitradius` exits an active player camera when a
+                // live owned source damages APLAYER, then releases every
+                // active CAMERA1 actor's monitor latch.
+                let owner_is_active = usize::try_from(source.owner)
+                    .ok()
+                    .and_then(|owner| lists.sprite_stat.get(owner))
+                    .is_some_and(|status| *status < room_build_engine::world::MAXSTATUS as i16);
+                if owner_is_active {
+                    if let Some(player) =
+                        players.iter_mut().find(|player| player.sprite_i == target)
+                    {
+                        player.remote_camera = None;
+                    }
+                    let camera_tile =
+                        script_tile(script, "CAMERA1").unwrap_or(crate::spawn::CAMERA1);
+                    for (camera_index, camera) in sprites.iter_mut().enumerate() {
+                        if camera.picnum == camera_tile
+                            && lists.sprite_stat.get(camera_index).copied() == Some(STAT_ACTOR)
+                        {
+                            camera.yvel = 0;
+                        }
+                    }
+                }
+            }
+        }
+        target = next;
+    }
+    // Atomic stat traversal continues through STAT_FALLER, STAT_DUMMY, then
+    // STAT_MISC after STAT_PLAYER. Preserve that order for TRAND consumption.
+    for stat in [crate::stat::STAT_FALLER, STAT_DUMMY, STAT_MISC] {
+        let mut target = lists.headspritestat[stat as usize];
+        while target >= 0 {
+            let next = lists.nextspritestat[target as usize];
+            let ti = target as usize;
+            if target != source_i && ti < sprites.len() {
+                let t = sprites[ti];
+                let badguy = crate::badguy::badguy_pic(t.picnum, actortype);
+                let dist = room_build_engine::numeric::find_distance_3d(
+                    source.x.wrapping_sub(t.x),
+                    source.y.wrapping_sub(t.y),
+                    source.z.wrapping_sub(t.z) >> 4,
+                );
+                let flammable = is_flammable_radius_target(script, t.picnum);
+                let visible = if stat == crate::stat::STAT_FALLER && !flammable {
+                    cansee(
+                        t.x,
+                        t.y,
+                        t.z - (8 << 8),
+                        t.sectnum,
+                        source.x,
+                        source.y,
+                        source.z - (12 << 8),
+                        source.sectnum,
+                        &sec_z,
+                        &wxy,
+                    )
+                } else {
+                    !badguy
+                        || cansee(
+                            t.x,
+                            t.y,
+                            t.z + q,
+                            t.sectnum,
+                            source.x,
+                            source.y,
+                            source.z + q,
+                            source.sectnum,
+                            &sec_z,
+                            &wxy,
+                        )
+                };
+                if t.extra >= 0 && ((t.cstat & 257) != 0 || flammable) && dist < radius && visible {
+                    let actor_branch = stat == crate::stat::STAT_FALLER && !flammable;
+                    let amount_before_object =
+                        actor_branch.then(|| con_radius_damage(dist, radius, damage, randomseed));
+                    let object_handled = check_radius_target_object(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        actor_temps,
+                        picnum_out,
+                        randomseed,
+                        script,
+                        tile_meta,
+                        players,
+                        ti,
+                        source_i,
+                    );
+                    if object_handled {
+                        target = next;
+                        continue;
+                    }
+                    let amount = amount_before_object
+                        .unwrap_or_else(|| con_radius_damage(dist, radius, damage, randomseed));
+                    if actor_temps.len() <= ti {
+                        actor_temps.resize_with(ti + 1, ActorConTemps::default);
+                    }
+                    let temp = &mut actor_temps[ti];
+                    temp.hit_extra = if temp.hit_extra < 0 {
+                        amount
+                    } else {
+                        temp.hit_extra.saturating_add(amount)
+                    };
+                    temp.hit_picnum = if source.picnum
+                        == script_tile(script, "RPG").unwrap_or(RPG_PROJECTILE)
+                        && t.extra > 0
+                    {
+                        source.picnum
+                    } else {
+                        RADIUSEXPLOSION
+                    };
+                    temp.hit_owner = source.owner;
+                    temp.hit_ang =
+                        getangle(t.x.wrapping_sub(source.x), t.y.wrapping_sub(source.y)) as i16;
+                    if !matches!(t.picnum, 1975 | 2360 | 1960 | 2630 | 2710 | 2760 | 4740) {
+                        sprites[ti].xvel = sprites[ti]
+                            .xvel
+                            .max(0)
+                            .wrapping_add(source.extra.wrapping_shl(2) as i16);
+                    }
+                }
+            }
+            target = next;
+        }
+    }
+}
+
+fn con_radius_damage(dist: i32, radius: i32, mut hp: [i32; 4], randomseed: &mut i32) -> i16 {
+    let (low, high) = if dist < radius / 3 {
+        if hp[3] == hp[2] {
+            hp[3] = hp[3].saturating_add(1);
+        }
+        (hp[2], hp[3])
+    } else if dist < radius.saturating_mul(2) / 3 {
+        if hp[2] == hp[1] {
+            hp[2] = hp[2].saturating_add(1);
+        }
+        (hp[1], hp[2])
+    } else {
+        if hp[1] == hp[0] {
+            hp[1] = hp[1].saturating_add(1);
+        }
+        (hp[0], hp[1])
+    };
+    let width = high.saturating_sub(low).max(1);
+    low.saturating_add(krand_step(randomseed) % width)
+        .clamp(0, i32::from(i16::MAX)) as i16
+}
+
+/// Atomic RPG hitradius bands: hp1=x/4, hp2=x/2, hp3=3x/4, hp4=x;
+/// one random roll selects a value in the band for each visible victim.
+#[cfg(test)]
+fn rpg_radius_damage(dist: i32, randomseed: &mut i32, strength: i32) -> i16 {
+    radius_damage(dist, RPG_BLAST_RADIUS, randomseed, strength)
+}
+
+fn radius_damage(dist: i32, radius: i32, randomseed: &mut i32, strength: i32) -> i16 {
+    let (low, high) = if dist < radius / 3 {
+        (strength - (strength >> 2), strength)
+    } else if dist < radius * 2 / 3 {
+        (strength >> 1, strength - (strength >> 2))
+    } else {
+        (strength >> 2, strength >> 1)
+    };
+    let width = (high - low).max(1);
+    (low + krand_step(randomseed) % width) as i16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rpg_damage_uses_atomic_three_radius_bands() {
+        let mut seed = 17_i32;
+        let inner = rpg_radius_damage(0, &mut seed, 140);
+        assert!((105..140).contains(&inner));
+        let middle = rpg_radius_damage(RPG_BLAST_RADIUS / 3, &mut seed, 140);
+        assert!((70..105).contains(&middle));
+        let outer = rpg_radius_damage(RPG_BLAST_RADIUS * 2 / 3, &mut seed, 140);
+        assert!((35..70).contains(&outer));
     }
 }

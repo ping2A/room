@@ -42,6 +42,11 @@ The worklet reports its fill level every ~10 ms and the main thread tops it up t
 adaptive 25–160 ms target (grows on underrun, shrinks when stable); inspect it with
 `roomAudioStats()` in the console.
 
+Native Duke audio can be configured by the embedding page through
+`roomSetDukeAudioOptions(sound, music, talk, lockout, ambience, reverseStereo,
+sfxVolume, musicVolume)`. Volumes use the Atomic 0–255 range; all channels are
+enabled at full volume by default, with lockout and reverse stereo off.
+
 The play page's top-left bar picks the **skill** (`?skill=1..5`) and a **mod**
 (`?mod=survival` / `?mod=bounty` / `?mod=royale` mounts `mods/<name>.wad`;
 `?mod=voxel` mounts `mods/voxel.pk3`, the Voxel Doom pack, and you still

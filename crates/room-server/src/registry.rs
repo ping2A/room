@@ -43,6 +43,9 @@ pub enum RegistryError {
     /// Requested game is not one of [`GAMES`].
     #[error("unknown game")]
     UnknownGame,
+    /// Atomic Duke mode must be 0, 1, or 2.
+    #[error("Duke game mode must be 0 (DukeMatch), 1 (co-op), or 2 (no spawn)")]
+    InvalidDukeGameMode,
     /// Requested content pack is not supported (see `room_proto::KNOWN_PACKS`).
     #[error("unknown pack")]
     UnknownPack,
@@ -319,6 +322,9 @@ impl RoomRegistry {
         if self.rooms.len() >= self.cfg.max_rooms {
             return Err(RegistryError::Full);
         }
+        if req.duke_game_mode > 2 {
+            return Err(RegistryError::InvalidDukeGameMode);
+        }
         let game = match req.game.as_deref().map(str::trim) {
             None | Some("") => GAMES[0],
             Some(g) => GAMES
@@ -407,6 +413,8 @@ impl RoomRegistry {
             preset: preset_title,
             skill: req.skill.clamp(1, 5),
             max_players,
+            duke_game_mode: req.duke_game_mode,
+            duke_friendly_fire: req.duke_friendly_fire,
             visibility,
             enable_verifier: want_verifier,
             game_mod,

@@ -1,6 +1,7 @@
 //! Per-room actor and public create/join types.
 
 mod actor;
+mod duke_v2;
 mod legacy;
 mod spectate;
 mod v2;

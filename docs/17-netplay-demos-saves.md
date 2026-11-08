@@ -23,7 +23,9 @@ Deterministic **lockstep**, like GZDoom: every peer runs the full simulation; on
 2. **Arbitrator** (host) chooses game settings (map, skill, `dmflags`, server CVars), broadcasts them, and assigns player numbers. All peers start the game on the same tic with the same RNG seed (`rngseed` chosen by arbitrator).
 3. **Load gate (web coop)**: after `Start`, each peer loads the map then broadcasts `LobbyMsg::Ready`; lockstep tic 0 begins only when every seat is Ready (avoids host fill/advance while a joiner is still loading).
 4. **In game**: per tic, each peer sends `{tic, cmd, netcmds[]}` with redundancy (last K unacknowledged tics in every packet) over unreliable transport; acks piggyback.
+   The native Duke desktop lockstep also permits small bounded `FRAU` auxiliary packets for presentation-only events such as RTS sounds; they are delivered outside `DukeInput`, never affect the tic checksum, and are not compatible with Chocolate Duke's packet protocol.
 5. **Consistency**: every 35 tics, each peer sends `World::checksum()` of tic N−delay−1; mismatch → "Desync detected at tic N" message; optionally dump both peers' world states (`net_desync_dump`) for debugging (critical tooling for determinism bugs).
+   Native Duke desktop lockstep appends a `CS` extension to its existing input packet with the full `DukeSession` checksum and its playsim tic. Peers compare only when every connected peer reports that tic; older 23-byte input packets remain decodable and simply provide no checksum report.
 6. **Leave/drop**: peer timeout (`net_timeout`, default 10 s) → `PlayerDisconnected` event, player removed on all peers at an agreed tic (arbitrator broadcasts drop tic). Host migration: S.
 7. Pause (`pause` command broadcast as net command), chat, `kick`, `say`, `say_team`. Voting is out of scope (C).
 

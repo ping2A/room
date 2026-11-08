@@ -44,6 +44,29 @@ pub fn klabs(x: i32) -> i32 {
     if x == i32::MIN { i32::MIN } else { x.abs() }
 }
 
+/// Ken Silverman's Build `FindDistance3D` approximation used by Chocolate
+/// Duke for sprite-to-sprite radius checks. The vertical input is already
+/// scaled by the caller (Duke passes `dz >> 4`).
+#[inline]
+#[must_use]
+pub fn find_distance_3d(ix: i32, iy: i32, iz: i32) -> i32 {
+    // Build's signed `klabs` is a two's-complement negation; retain i32::MIN
+    // rather than saturating to MAX so wrapped coordinate deltas stay exact.
+    let mut ix = ix.wrapping_abs();
+    let mut iy = iy.wrapping_abs();
+    let mut iz = iz.wrapping_abs();
+    if ix < iy {
+        std::mem::swap(&mut ix, &mut iy);
+    }
+    if ix < iz {
+        std::mem::swap(&mut ix, &mut iz);
+    }
+    let t = iy.wrapping_add(iz);
+    ix.wrapping_sub(ix >> 4)
+        .wrapping_add(t >> 2)
+        .wrapping_add(t >> 3)
+}
+
 /// Integer square root of a non-negative value. Negative → `0`.
 #[inline]
 pub fn ksqrt(n: i32) -> i32 {
@@ -144,9 +167,10 @@ pub mod krand_log {
     use std::cell::RefCell;
     use std::panic::Location;
 
-    type Entry = (i32, &'static Location<'static>);
+    type Entry = (i32, &'static Location<'static>, Option<String>);
     thread_local! {
         static LOG: RefCell<Option<Vec<Entry>>> = const { RefCell::new(None) };
+        static CONTEXT: RefCell<Option<String>> = const { RefCell::new(None) };
     }
 
     /// Start recording on this thread (clears an earlier log).
@@ -162,7 +186,10 @@ pub mod krand_log {
                 .take()
                 .unwrap_or_default()
                 .into_iter()
-                .map(|(s, loc)| (s, format!("{}:{}", loc.file(), loc.line())))
+                .map(|(s, loc, context)| {
+                    let site = format!("{}:{}", loc.file(), loc.line());
+                    (s, context.map_or(site.clone(), |c| format!("{site} [{c}]")))
+                })
                 .collect()
         })
     }
@@ -175,19 +202,35 @@ pub mod krand_log {
                 .as_mut()
                 .map(|v| {
                     v.drain(..)
-                        .map(|(s, loc)| (s, format!("{}:{}", loc.file(), loc.line())))
+                        .map(|(s, loc, context)| {
+                            let site = format!("{}:{}", loc.file(), loc.line());
+                            (s, context.map_or(site.clone(), |c| format!("{site} [{c}]")))
+                        })
                         .collect()
                 })
                 .unwrap_or_default()
         })
     }
 
+    /// Add a caller-defined label to subsequently recorded calls. The label
+    /// is diagnostic only and is not part of the random stream.
+    pub fn set_context(context: Option<String>) {
+        CONTEXT.with(|c| *c.borrow_mut() = context);
+    }
+
+    /// Whether call-site recording is active on this thread.
+    #[must_use]
+    pub fn is_recording() -> bool {
+        LOG.with(|l| l.borrow().is_some())
+    }
+
     #[track_caller]
     pub(super) fn record(seed: i32) {
         let at = Location::caller();
+        let context = CONTEXT.with(|c| c.borrow().clone());
         LOG.with(|l| {
             if let Some(v) = l.borrow_mut().as_mut() {
-                v.push((seed, at));
+                v.push((seed, at, context));
             }
         });
     }

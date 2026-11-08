@@ -34,6 +34,67 @@ impl SoundFlags {
     pub const LISTENER_Z: u32 = 1 << 7;
     /// Transient sound that should not be saved/restarted.
     pub const TRANSIENT: u32 = 1 << 8;
+    /// At most one active voice with this logical sound ID.
+    pub const UNIQUE_SOUND: u32 = 1 << 9;
+    /// Duke Atomic: allow one simultaneous voice for this logical sound.
+    pub const DUKE_LIMIT_ONE: u32 = 1 << 10;
+    /// Duke Atomic: allow at most four simultaneous voices for this sound.
+    pub const DUKE_LIMIT_FOUR: u32 = 1 << 11;
+    /// Duke Atomic: at most one active voice whose sound definition has m&4.
+    pub const DUKE_EXCLUSIVE: u32 = 1 << 12;
+    /// Marks a Duke voice and stores its 8-bit priority in bits 16..=23.
+    pub const DUKE_PRIORITY_PRESENT: u32 = 1 << 13;
+    /// Mask for the encoded Duke priority value.
+    pub const DUKE_PRIORITY_MASK: u32 = 0xff << 16;
+    /// Marks a signed Duke `definesound.vo` distance adjustment.
+    pub const DUKE_DISTANCE_OFFSET_PRESENT: u32 = 1 << 14;
+    /// Marks an Atomic `MUSICANDSFX` ambience voice for the Duke ambience toggle.
+    pub const DUKE_AMBIENCE: u32 = 1 << 15;
+    /// Mask for the signed eight-bit mixer-space Duke distance adjustment.
+    pub const DUKE_DISTANCE_OFFSET_MASK: u32 = 0xff << 24;
+
+    /// Encode a Duke `definesound.pr` value into flags.
+    #[must_use]
+    pub const fn with_duke_priority(priority: i32) -> Self {
+        let value = if priority < 0 {
+            0
+        } else if priority > 255 {
+            255
+        } else {
+            priority as u32
+        };
+        Self(Self::DUKE_PRIORITY_PRESENT | (value << 16))
+    }
+
+    /// Return the encoded Duke priority, if this is a Duke voice.
+    #[must_use]
+    pub const fn duke_priority(self) -> Option<u8> {
+        if self.0 & Self::DUKE_PRIORITY_PRESENT == 0 {
+            None
+        } else {
+            Some(((self.0 & Self::DUKE_PRIORITY_MASK) >> 16) as u8)
+        }
+    }
+
+    /// Encode a Duke distance offset in mixer world units.
+    #[must_use]
+    pub fn with_duke_distance_offset(offset: i32) -> Self {
+        let bounded = offset.clamp(i32::from(i8::MIN), i32::from(i8::MAX));
+        let signed = i8::try_from(bounded).unwrap_or_default();
+        let encoded = u32::from(u8::from_ne_bytes(signed.to_ne_bytes()));
+        Self(Self::DUKE_DISTANCE_OFFSET_PRESENT | (encoded << 24))
+    }
+
+    /// Decode a Duke distance offset in mixer world units.
+    #[must_use]
+    pub fn duke_distance_offset(self) -> Option<i8> {
+        if self.0 & Self::DUKE_DISTANCE_OFFSET_PRESENT == 0 {
+            return None;
+        }
+        let encoded =
+            u8::try_from((self.0 & Self::DUKE_DISTANCE_OFFSET_MASK) >> 24).unwrap_or_default();
+        Some(i8::from_ne_bytes([encoded]))
+    }
 }
 
 /// One audio command from the game shell (drained from sim events).
@@ -70,6 +131,11 @@ pub enum SoundEvent {
         origin: SoundOrigin,
         /// Channel.
         channel: i32,
+    },
+    /// Stop every active voice using this logical sound, regardless of origin.
+    StopSound {
+        /// Logical sound to stop.
+        sound: SoundId,
     },
     /// Stop every sound owned by one actor.
     StopActor {

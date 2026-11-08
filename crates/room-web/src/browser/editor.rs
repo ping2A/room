@@ -279,7 +279,8 @@ fn duke_base(
     grp: &[u8],
     maps: &[(String, Vec<u8>)],
 ) -> Result<(String, Bytes), String> {
-    let out = room_build::convert_grp_with_maps(grp, maps).map_err(|e| format!("{name}: {e}"))?;
+    let out =
+        room_build::export::convert_grp_with_maps(grp, maps).map_err(|e| format!("{name}: {e}"))?;
     for w in &out.warnings {
         web_sys::console::warn_1(&format!("{name}: {w}").into());
     }
@@ -543,7 +544,7 @@ impl Editor {
         let duke = self.duke.as_ref().map(|(grp, _, user)| {
             let user: Vec<String> = user
                 .iter()
-                .filter_map(|(f, _)| room_build::doom_map_name(f))
+                .filter_map(|(f, _)| room_build::export::doom_map_name(f))
                 .collect();
             json!({ "grp": grp, "userMaps": user })
         });

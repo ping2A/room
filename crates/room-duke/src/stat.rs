@@ -20,3 +20,7 @@ pub const STAT_LOCATOR: i16 = 7;
 pub const STAT_ACTIVATOR: i16 = 8;
 pub const STAT_TRANSPORT: i16 = 9;
 pub const STAT_FX: i16 = 11;
+/// Tagged destructible map sprites in Chocolate `movefallers`.
+pub const STAT_FALLER: i16 = 12;
+/// `PLAYERONWATER` dummy body sprites moved by Chocolate `movedummyplayers`.
+pub const STAT_DUMMYPLAYER: i16 = 13;

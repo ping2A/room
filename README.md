@@ -34,8 +34,9 @@ wait on IWADs. Modern look FX stay **off by default** (faithful Doom look).
 ./scripts/play-doom1.sh                       # same as --game doom1
 
 # Duke Nukem 3D (needs testdata/duke/duke3d.grp)
-./scripts/play-duke3d.sh
-ROOM_MAP=E2M1 ./scripts/play-duke3d.sh
+./scripts/play-duke3d.sh --runtime native     # native Build simulation (E1L1)
+ROOM_MAP=E2L1 ./scripts/play-duke3d.sh --runtime native
+./scripts/play-duke3d.sh --runtime converter  # GRP→UDMF compatibility path
 
 # Force OPL (GENMIDI) instead of SoftFont
 cargo run -p room-app --release -- \
@@ -375,9 +376,13 @@ python -m room mods/doom1-python-hello/hello_mod.py
 ### Duke Nukem 3D
 
 Point `--iwad` at a `DUKE3D.GRP` (browser: `?iwad=duke3d.grp`, or lobby
-**Game: Duke Nukem 3D**). The GRP is converted on load into UDMF with maps,
-enemies, items, weapons, status bar, sounds, and sector effects. CON is data
-only — there is no CON VM.
+**Game: Duke Nukem 3D**). On desktop, `scripts/play-duke3d.sh --runtime native`
+runs the in-progress `room-duke` Build runtime directly; `--runtime converter`
+selects the GRP→UDMF compatibility path. The native runtime is playable on
+Atomic maps and has basic movement, rendering, enemy simulation, and pistol,
+shotgun, and chaingun paths, but weapon coverage, sector effects, audio, and
+campaign progression are incomplete. See `docs/25-duke3d-full-support.md` for
+the implementation plan and current acceptance state.
 
 ## Shaders & graphics CVars
 

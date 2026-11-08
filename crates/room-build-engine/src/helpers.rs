@@ -132,6 +132,19 @@ pub fn radarang_from_tables_dat(data: &[u8]) -> Option<[i16; 1280]> {
     Some(t)
 }
 
+/// Parse Chocolate `TABLES.DAT`'s `britable[16][64]` after its sine, angle,
+/// and two font tables (offset 7424, 1024 bytes).
+#[must_use]
+pub fn britable_from_tables_dat(data: &[u8]) -> Option<[[u8; 64]; 16]> {
+    const BRITABLE_OFFSET: usize = 4096 + 1280 + 1024 + 1024;
+    let bytes = data.get(BRITABLE_OFFSET..BRITABLE_OFFSET + 16 * 64)?;
+    let mut table = [[0; 64]; 16];
+    for (row, values) in table.iter_mut().enumerate() {
+        values.copy_from_slice(&bytes[row * 64..(row + 1) * 64]);
+    }
+    Some(table)
+}
+
 /// Install Chocolate `radarang[1280]` for [`getangle`].
 pub fn install_radarang(table: [i16; 1280]) {
     let _ = RADARANG.set(table);

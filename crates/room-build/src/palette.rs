@@ -1,5 +1,6 @@
 //! `PALETTE.DAT`: 256 six-bit RGB triples, `numshades: u16`, then
-//! `numshades` 256-byte shade (light) tables, brightest first.
+//! `numshades` 256-byte shade (light) tables, brightest first, optionally
+//! followed by Build's 65,536-byte indexed translucency lookup.
 
 use crate::error::BuildError;
 
@@ -12,6 +13,8 @@ pub struct Palette {
     pub shades: Vec<u8>,
     /// Number of shade tables.
     pub numshades: usize,
+    /// Optional Build translucency lookup (`background * 256 + foreground`).
+    pub translucency: Option<Vec<u8>>,
 }
 
 impl Palette {
@@ -33,10 +36,15 @@ impl Palette {
             .get(770..770 + numshades * 256)
             .ok_or(BuildError::Truncated("PALETTE.DAT shade tables"))?
             .to_vec();
+        let translucency_start = 770 + numshades * 256;
+        let translucency = data
+            .get(translucency_start..translucency_start + 65_536)
+            .map(<[u8]>::to_vec);
         Ok(Self {
             rgb,
             shades,
             numshades,
+            translucency,
         })
     }
 

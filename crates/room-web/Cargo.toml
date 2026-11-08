@@ -16,6 +16,8 @@ crate-type = ["cdylib", "rlib"]
 bytes = { workspace = true, optional = true }
 room-audio = { path = "../room-audio", optional = true }
 room-build = { path = "../room-build", optional = true }
+room-build-engine = { path = "../room-build-engine", optional = true }
+room-core = { path = "../room-core", optional = true }
 room-defs = { path = "../room-defs", optional = true }
 room-faceswap = { path = "../room-faceswap", optional = true }
 room-formats = { path = "../room-formats", optional = true }
@@ -26,6 +28,7 @@ room-music = { path = "../room-music", optional = true }
 room-net = { path = "../room-net", default-features = false, optional = true }
 room-proto = { path = "../room-proto", optional = true }
 room-nodebuild = { path = "../room-nodebuild", optional = true }
+room-duke = { path = "../room-duke", optional = true }
 room-render = { path = "../room-render", optional = true }
 room-script = { path = "../room-script", optional = true }
 room-sim = { path = "../room-sim", optional = true }
@@ -99,6 +102,8 @@ browser = [
     "dep:console_error_panic_hook",
     "dep:room-audio",
     "dep:room-build",
+    "dep:room-build-engine",
+    "dep:room-core",
     "dep:room-defs",
     "dep:room-faceswap",
     "dep:room-formats",
@@ -110,6 +115,7 @@ browser = [
     "dep:room-net",
     "dep:room-proto",
     "dep:room-nodebuild",
+    "dep:room-duke",
     "dep:room-render",
     "dep:room-script",
     "dep:room-sim",

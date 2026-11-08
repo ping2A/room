@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod control;
+mod duke;
 mod error;
 mod ftr2;
 mod tic;
@@ -15,11 +16,16 @@ pub use control::{
     content_fingerprint, encode_control, is_known_pack, is_valid_content_file, is_valid_mod_name,
     parse_control, parse_control_bytes,
 };
+pub use duke::{
+    DUKE_SYNC_INPUT_LEN, DukeLockstepInbox, DukeSyncCmdMsg, DukeSyncFrameMsg, DukeSyncInput,
+    decode_duke_sync_cmd, decode_duke_sync_frame, decode_duke_sync_input, encode_duke_sync_cmd,
+    encode_duke_sync_frame, encode_duke_sync_input,
+};
 pub use error::ProtoError;
 pub use ftr2::{
     BinaryMsg, FTR2_MAGIC, MAX_BINARY_PAYLOAD, MAX_TIC_BATCH_FRAMES, MAX_TIC_BATCH_PAYLOAD,
-    MSG_CHECKSUM, MSG_PING, MSG_PONG, MSG_TIC_BATCH, MSG_TIC_CMD, MSG_TIC_FRAME, MSG_VOICE_LEGACY,
-    encode_binary, parse_binary,
+    MSG_CHECKSUM, MSG_DUKE_TIC_CMD, MSG_DUKE_TIC_FRAME, MSG_PING, MSG_PONG, MSG_TIC_BATCH,
+    MSG_TIC_CMD, MSG_TIC_FRAME, MSG_VOICE_LEGACY, encode_binary, parse_binary,
 };
 pub use tic::{
     NetTicCmd, TicChecksum, TicCmdMsg, TicFrameMsg, decode_net_tic_cmd, encode_net_tic_cmd,

@@ -3,6 +3,7 @@
 use crate::config::ServerConfig;
 use crate::limits::TokenBucket;
 use crate::registry::RoomRegistry;
+use crate::room::duke_v2::DukeV2State;
 use crate::room::legacy::stamp_timed_cmd_peer;
 use crate::room::spectate::{FrameLog, MAX_SPECTATORS};
 use crate::room::v2::V2State;
@@ -236,6 +237,12 @@ pub struct RoomSettings {
     pub skill: u8,
     /// Max seats 2..=8.
     pub max_players: u8,
+    /// Atomic Duke `ud.coop`: 0 = DukeMatch, 1 = co-op, 2 = no spawn.
+    #[serde(default = "default_duke_game_mode")]
+    pub duke_game_mode: u8,
+    /// Atomic Duke `ud.ffire`; ignored for Doom rooms.
+    #[serde(default)]
+    pub duke_friendly_fire: bool,
     /// Public listing (unused in M1).
     #[serde(default)]
     pub visibility: String,
@@ -277,6 +284,8 @@ impl Default for RoomSettings {
             map: "E1M1".into(),
             skill: 3,
             max_players: 2,
+            duke_game_mode: 1,
+            duke_friendly_fire: false,
             visibility: "public".into(),
             enable_verifier: false,
             game_mod: None,
@@ -300,6 +309,10 @@ fn default_game() -> String {
     GAMES[0].into()
 }
 
+fn default_duke_game_mode() -> u8 {
+    1
+}
+
 /// Games a room can run; the first is the default.
 pub const GAMES: [&str; 2] = ["doom", "duke3d"];
 
@@ -315,6 +328,12 @@ pub struct CreateRoomRequest {
     /// Max players.
     #[serde(default = "default_max_players")]
     pub max_players: u8,
+    /// Atomic Duke `ud.coop`: 0 = DukeMatch, 1 = co-op, 2 = no spawn.
+    #[serde(default = "default_duke_game_mode")]
+    pub duke_game_mode: u8,
+    /// Atomic Duke `ud.ffire`; ignored for Doom rooms.
+    #[serde(default)]
+    pub duke_friendly_fire: bool,
     /// `public` (listed in lobby) or `private` (join by id only).
     #[serde(default = "default_visibility")]
     pub visibility: String,
@@ -351,6 +370,8 @@ impl Default for CreateRoomRequest {
             map: default_map(),
             skill: default_skill(),
             max_players: default_max_players(),
+            duke_game_mode: default_duke_game_mode(),
+            duke_friendly_fire: false,
             visibility: default_visibility(),
             enable_verifier: false,
             game_mod: None,
@@ -470,6 +491,7 @@ struct RoomState {
     /// Sparse automap outline from a client (admin minimap).
     map_outline: Vec<i16>,
     v2: V2State,
+    duke_v2: DukeV2State,
     started: bool,
     spectators: BTreeMap<ConnId, Spectator>,
     frame_log: FrameLog,
@@ -512,8 +534,14 @@ const TIME_LIMIT_SLACK: Duration = Duration::from_secs(30);
 
 #[cfg(feature = "verifier")]
 struct VerifierHandles {
-    frames: tokio::sync::mpsc::Sender<room_proto::TicFrameMsg>,
+    frames: VerifierFrameSink,
     checksums: tokio::sync::mpsc::Receiver<crate::verifier::VerifierChecksum>,
+}
+
+#[cfg(feature = "verifier")]
+enum VerifierFrameSink {
+    Doom(tokio::sync::mpsc::Sender<room_proto::TicFrameMsg>),
+    Duke(tokio::sync::mpsc::Sender<room_proto::DukeSyncFrameMsg>),
 }
 
 /// Spawn a room actor; returns its handle.
@@ -548,6 +576,7 @@ pub fn spawn_room(
             iwad_fingerprint: None,
             map_outline: Vec::new(),
             v2: V2State::new(),
+            duke_v2: DukeV2State::new(),
             started: false,
             spectators: BTreeMap::new(),
             frame_log: FrameLog::new(),
@@ -588,7 +617,11 @@ pub fn spawn_room(
 async fn room_loop(state: &mut RoomState, mut rx: mpsc::Receiver<RoomCmd>) {
     loop {
         let wake = if state.started {
-            state.v2.next_wake()
+            if state.settings.game == "duke3d" {
+                state.duke_v2.next_wake()
+            } else {
+                state.v2.next_wake()
+            }
         } else {
             None
         };
@@ -1062,6 +1095,14 @@ fn v2_watch(state: &mut RoomState, conn: ConnId, fingerprint: &str, name: Option
         send_reject_tx(&tx, "spectate_unavailable", "match too long to replay");
         return;
     }
+    if state.started && state.settings.game == "duke3d" {
+        send_reject_tx(
+            &tx,
+            "spectate_unavailable",
+            "late-join Duke spectator replay is not available",
+        );
+        return;
+    }
     let watching = ControlMsg::Watching {
         room: welcome_room(state),
         roster: roster_vec(state),
@@ -1148,6 +1189,8 @@ fn welcome_room(state: &RoomState) -> WelcomeRoom {
         map: state.settings.map.clone(),
         skill: state.settings.skill,
         max_players: state.settings.max_players,
+        duke_game_mode: state.settings.duke_game_mode,
+        duke_friendly_fire: state.settings.duke_friendly_fire,
         rng_seed: state.rng_seed,
         delay: 0,
         game_mod: state.settings.game_mod.clone(),
@@ -1551,6 +1594,11 @@ fn do_v2_start(state: &mut RoomState) {
         .v2
         .set_grace(Duration::from_millis(state.cfg.stall_fill_ms));
     state.v2.reset_for_start();
+    state.duke_v2.set_active_seats(state.settings.max_players);
+    state
+        .duke_v2
+        .set_grace(Duration::from_millis(state.cfg.stall_fill_ms));
+    state.duke_v2.reset_for_start();
     start_verifier_if_needed(state);
     // Watchers that joined before any player pinned the IWAD would desync.
     let pinned = state.iwad_fingerprint.clone().unwrap_or_default();
@@ -1584,6 +1632,28 @@ fn start_verifier_if_needed(state: &mut RoomState) {
             warn!(room_id = %state.id, "verifier enabled but --iwad empty");
             return;
         }
+        if state.settings.game == "duke3d" {
+            match crate::verifier::spawn_duke_verifier_with_output(
+                std::path::PathBuf::from(&state.cfg.iwad_path),
+                &state.settings.map,
+                state.settings.skill,
+                state.settings.max_players,
+                state.settings.duke_game_mode,
+                state.settings.duke_friendly_fire,
+            ) {
+                Ok((frames, checksums)) => {
+                    state.verifier = Some(VerifierHandles {
+                        frames: VerifierFrameSink::Duke(frames),
+                        checksums,
+                    });
+                    info!(room_id = %state.id, "native Duke verifier attached");
+                }
+                Err(error) => {
+                    warn!(room_id = %state.id, %error, "native Duke verifier failed to start")
+                }
+            }
+            return;
+        }
         let game_mod = state.settings.game_mod.as_ref().and_then(|m| {
             let entry = state.cfg.mods.get(&m.name)?;
             Some((m.name.clone(), entry.bytes.clone()))
@@ -1598,7 +1668,10 @@ fn start_verifier_if_needed(state: &mut RoomState) {
             u32::from(state.settings.time_limit) * 60 * 35,
         ) {
             Ok((frames, checksums)) => {
-                state.verifier = Some(VerifierHandles { frames, checksums });
+                state.verifier = Some(VerifierHandles {
+                    frames: VerifierFrameSink::Doom(frames),
+                    checksums,
+                });
                 info!(room_id = %state.id, "Headless verifier attached");
             }
             Err(e) => warn!(room_id = %state.id, %e, "verifier failed to start"),
@@ -1613,7 +1686,22 @@ fn start_verifier_if_needed(state: &mut RoomState) {
 fn feed_verifier(state: &mut RoomState, frame: &room_proto::TicFrameMsg) {
     #[cfg(feature = "verifier")]
     if let Some(v) = &state.verifier {
-        let _ = v.frames.try_send(frame.clone());
+        if let VerifierFrameSink::Doom(frames) = &v.frames {
+            let _ = frames.try_send(frame.clone());
+        }
+    }
+    #[cfg(not(feature = "verifier"))]
+    {
+        let _ = (state, frame);
+    }
+}
+
+fn feed_duke_verifier(state: &mut RoomState, frame: &room_proto::DukeSyncFrameMsg) {
+    #[cfg(feature = "verifier")]
+    if let Some(v) = &state.verifier {
+        if let VerifierFrameSink::Duke(frames) = &v.frames {
+            let _ = frames.try_send(frame.clone());
+        }
     }
     #[cfg(not(feature = "verifier"))]
     {
@@ -1659,7 +1747,23 @@ fn on_v2_binary(state: &mut RoomState, conn: ConnId, msg: BinaryMsg) {
         return;
     }
     match msg {
-        BinaryMsg::TicCmd(cmd) => {
+        BinaryMsg::DukeTicCmd(cmd) if state.settings.game == "duke3d" => {
+            match state.duke_v2.push_cmd_at(seat, cmd, Instant::now()) {
+                Ok(Some(frame)) => {
+                    feed_duke_verifier(state, &frame);
+                    broadcast_duke_tic_frame(state, frame);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    warn!(room_id = %state.id, seat, ?error, "Duke tic cmd rejected");
+                }
+            }
+            for frame in state.duke_v2.clock_emit(Instant::now()) {
+                feed_duke_verifier(state, &frame);
+                broadcast_duke_tic_frame(state, frame);
+            }
+        }
+        BinaryMsg::TicCmd(cmd) if state.settings.game != "duke3d" => {
             match state.v2.push_cmd(seat, cmd) {
                 Ok(Some(frame)) => {
                     feed_verifier(state, &frame);
@@ -1675,6 +1779,9 @@ fn on_v2_binary(state: &mut RoomState, conn: ConnId, msg: BinaryMsg) {
                 feed_verifier(state, &frame);
                 broadcast_tic_frame(state, frame);
             }
+        }
+        BinaryMsg::TicCmd(_) => {
+            warn!(room_id = %state.id, seat, "Doom tic command rejected in native Duke room");
         }
         BinaryMsg::Ping {
             nonce,
@@ -1790,10 +1897,25 @@ fn on_clock(state: &mut RoomState) {
     if !state.started {
         return;
     }
+    if state.settings.game == "duke3d" {
+        for frame in state.duke_v2.clock_emit(Instant::now()) {
+            feed_duke_verifier(state, &frame);
+            broadcast_duke_tic_frame(state, frame);
+        }
+        return;
+    }
     for frame in state.v2.clock_emit(Instant::now()) {
         feed_verifier(state, &frame);
         broadcast_tic_frame(state, frame);
     }
+}
+
+fn broadcast_duke_tic_frame(state: &mut RoomState, frame: room_proto::DukeSyncFrameMsg) {
+    let bin = Bytes::from(encode_binary(&BinaryMsg::DukeTicFrame(frame)));
+    broadcast_all(state, bin.clone());
+    // Duke frames use their own sync-input format; the Doom TIC_BATCH replay
+    // log cannot encode them. Live Duke spectators receive the stream directly.
+    broadcast_spectators(state, &bin);
 }
 
 fn broadcast_tic_frame(state: &mut RoomState, frame: room_proto::TicFrameMsg) {

@@ -37,12 +37,14 @@ pub enum HostCommand {
     Save(Option<String>),
     /// Restore a Room `.fsave` (`load` / `load <slot>`).
     Load(Option<String>),
-    /// Start a Room `.fdem` (`record` / `record <slot>`).
+    /// Start a Room `.fdem` recording and, for native Duke, an Atomic `.DMO` recording.
     Record(Option<String>),
     /// Finish the current Room demo (`stop` / `stopdemo`).
     StopDemo,
     /// Replay a Room `.fdem` (`playdemo` / `playdemo <slot>`).
     PlayDemo(Option<String>),
+    /// Play a native Duke Atomic `.DMO` file (`playatomicdemo <path>`).
+    PlayAtomicDemo(String),
     /// `puke <script> [arg1] [arg2] [arg3]` — start ACS by number (`docs/33` BD5).
     Puke {
         /// Script number.
@@ -335,6 +337,17 @@ impl Console {
                     self.print(&msg);
                     output.push(msg);
                 }
+                "playatomicdemo" => {
+                    let Some(path) = args.first().cloned() else {
+                        return Err(ConsoleError::Message(
+                            "usage: playatomicdemo <path/to/demo.dmo>".into(),
+                        ));
+                    };
+                    host.push(HostCommand::PlayAtomicDemo(path.clone()));
+                    let msg = format!("Play Atomic Duke demo {path}");
+                    self.print(&msg);
+                    output.push(msg);
+                }
                 "summon" => {
                     if args.is_empty() {
                         return Err(ConsoleError::Message("usage: summon <class>".into()));
@@ -496,6 +509,7 @@ impl Console {
                         "give",
                         "map",
                         "changemap",
+                        "playatomicdemo",
                         "kill",
                     ] {
                         self.print(name);

@@ -93,6 +93,10 @@ pub trait Transport {
     fn peers(&self) -> &[PeerId];
 }
 
+const AUX_PACKET_MAGIC: &[u8; 4] = b"FRAU";
+const MAX_AUX_PACKET_LEN: usize = 64;
+const MAX_QUEUED_AUX_PACKETS: usize = 128;
+
 /// In-process full-mesh transport (tests / single-process multi-seat).
 #[derive(Debug, Default)]
 pub struct LoopbackMesh {
@@ -220,6 +224,28 @@ pub fn encode_timed_cmd(t: &TimedCmd) -> Vec<u8> {
     v
 }
 
+/// Append an optional post-tic checksum report to a timed command. The
+/// 23-byte input prefix remains unchanged so older peers can still decode it.
+#[must_use]
+pub fn encode_timed_cmd_with_checksum(timed: &TimedCmd, checksum: Option<(u32, u64)>) -> Vec<u8> {
+    let mut bytes = encode_timed_cmd(timed);
+    if let Some((tic, value)) = checksum {
+        bytes.extend_from_slice(b"CS");
+        bytes.extend_from_slice(&tic.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+
+fn decode_checksum_extension(bytes: &[u8]) -> Option<(u32, u64)> {
+    if bytes.len() != 37 || bytes.get(23..25)? != b"CS" {
+        return None;
+    }
+    let tic = u32::from_le_bytes(bytes.get(25..29)?.try_into().ok()?);
+    let checksum = u64::from_le_bytes(bytes.get(29..37)?.try_into().ok()?);
+    Some((tic, checksum))
+}
+
 /// Decode wire bytes to [`TimedCmd`].
 ///
 /// # Errors
@@ -312,6 +338,8 @@ pub struct LockstepSession {
     buffer: BTreeMap<(u32, PeerId), NetTicCmd>,
     /// Last checksum reported per peer for a tic.
     checksums: BTreeMap<(u32, PeerId), u64>,
+    /// Bounded non-simulation packets received alongside lockstep commands.
+    auxiliary_packets: VecDeque<(PeerId, Vec<u8>)>,
 }
 
 impl LockstepSession {
@@ -330,6 +358,7 @@ impl LockstepSession {
             local_tic: 0,
             buffer: BTreeMap::new(),
             checksums: BTreeMap::new(),
+            auxiliary_packets: VecDeque::new(),
         }
     }
 
@@ -365,7 +394,17 @@ impl LockstepSession {
 
     /// Broadcast `timed` on `transport` to every other peer.
     pub fn broadcast<T: Transport + ?Sized>(&self, transport: &mut T, timed: &TimedCmd) {
-        let bytes = encode_timed_cmd(timed);
+        self.broadcast_with_checksum(transport, timed, None);
+    }
+
+    /// Broadcast a command with an optional checksummed playsim snapshot.
+    pub fn broadcast_with_checksum<T: Transport + ?Sized>(
+        &self,
+        transport: &mut T,
+        timed: &TimedCmd,
+        checksum: Option<(u32, u64)>,
+    ) {
+        let bytes = encode_timed_cmd_with_checksum(timed, checksum);
         let peers: Vec<PeerId> = transport.peers().to_vec();
         for p in peers {
             if p != self.local {
@@ -374,13 +413,54 @@ impl LockstepSession {
         }
     }
 
+    /// Broadcast a bounded presentation-only packet without placing it in
+    /// deterministic tic input. Payloads are queued by remote peers on receive.
+    pub fn broadcast_auxiliary<T: Transport + ?Sized>(
+        &self,
+        transport: &mut T,
+        payload: &[u8],
+    ) -> Result<(), NetError> {
+        if payload.is_empty() || payload.len() > MAX_AUX_PACKET_LEN {
+            return Err(NetError::BadPacket);
+        }
+        let mut bytes = Vec::with_capacity(AUX_PACKET_MAGIC.len() + payload.len());
+        bytes.extend_from_slice(AUX_PACKET_MAGIC);
+        bytes.extend_from_slice(payload);
+        let peers = transport.peers().to_vec();
+        for peer in peers {
+            if peer != self.local {
+                transport.send(peer, &bytes);
+            }
+        }
+        Ok(())
+    }
+
+    /// Drain bounded presentation-only packets received since the prior call.
+    pub fn drain_auxiliary(&mut self) -> Vec<(PeerId, Vec<u8>)> {
+        self.auxiliary_packets.drain(..).collect()
+    }
+
     /// Poll transport and decode into the buffer.
     pub fn recv<T: Transport + ?Sized>(&mut self, transport: &mut T) {
         let mut pkts = Vec::new();
         transport.poll(&mut pkts);
-        for (_from, bytes) in pkts {
+        for (from, bytes) in pkts {
             if let Ok(t) = decode_timed_cmd(&bytes) {
+                if let Some((tic, checksum)) = decode_checksum_extension(&bytes) {
+                    self.report_checksum(tic, t.peer, checksum);
+                }
                 self.push_remote(t);
+            } else if bytes.len() > AUX_PACKET_MAGIC.len()
+                && bytes.len() <= AUX_PACKET_MAGIC.len() + MAX_AUX_PACKET_LEN
+                && bytes.starts_with(AUX_PACKET_MAGIC)
+                && from != self.local
+                && self.peers.contains(&from)
+            {
+                if self.auxiliary_packets.len() == MAX_QUEUED_AUX_PACKETS {
+                    self.auxiliary_packets.pop_front();
+                }
+                self.auxiliary_packets
+                    .push_back((from, bytes[AUX_PACKET_MAGIC.len()..].to_vec()));
             }
         }
     }
@@ -400,6 +480,9 @@ impl LockstepSession {
             }
         }
         self.next_tic = self.next_tic.saturating_add(1);
+        let next_tic = self.next_tic;
+        self.checksums
+            .retain(|(tic, _), _| tic.saturating_add(1) >= next_tic);
         Some(frame)
     }
 
@@ -445,6 +528,14 @@ impl LockstepSession {
             }
         }
         Ok(())
+    }
+
+    /// Whether all peers reported a checksum for `tic`.
+    #[must_use]
+    pub fn checksums_complete(&self, tic: u32) -> bool {
+        self.peers
+            .iter()
+            .all(|peer| self.checksums.contains_key(&(tic, *peer)))
     }
 }
 
