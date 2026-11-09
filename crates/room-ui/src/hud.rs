@@ -97,6 +97,10 @@ pub struct HudState {
     pub weapon_angle: f32,
     /// Ready weapon class (`MODELDEF` `ViewModelFOV`).
     pub weapon_class: String,
+    /// Pawn display name (SBARINFO `PlayerClass`).
+    pub player_class: String,
+    /// Worn armor class (SBARINFO `ArmorType`).
+    pub armor_type: String,
     /// `A_SetCrosshair` index. 0 draws no mark.
     pub crosshair: i32,
     /// Weapon tint red. 1 until `A_OverlayTranslation`.
@@ -198,6 +202,8 @@ impl HudState {
             weapon_pivot_y: 0.5,
             weapon_angle: 0.0,
             weapon_class: String::new(),
+            player_class: String::new(),
+            armor_type: String::new(),
             crosshair: 0,
             weapon_tint_r: 1.0,
             weapon_tint_g: 1.0,
@@ -274,6 +280,8 @@ impl HudState {
             weapon_pivot_y: 0.5,
             weapon_angle: 0.0,
             weapon_class: String::new(),
+            player_class: String::new(),
+            armor_type: String::new(),
             crosshair: 0,
             weapon_tint_r: 1.0,
             weapon_tint_g: 1.0,

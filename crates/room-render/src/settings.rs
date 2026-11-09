@@ -157,6 +157,10 @@ pub struct RenderSettings {
     pub wounds: bool,
     pub gore: GoreLevel,
     pub reduce_flashing: bool,
+    /// Accessibility extra light, 0–4 (8 light levels per step).
+    pub extra_light: i32,
+    /// Anisotropic filtering samples for world textures (1 = off, up to 16).
+    pub anisotropy: u16,
 
     /// GPU pass profiler overlay (`r_gpuprofile`).
     pub gpu_profile: bool,
@@ -235,6 +239,8 @@ impl Default for RenderSettings {
             wounds: false,
             gore: GoreLevel::Vanilla,
             reduce_flashing: false,
+            extra_light: 0,
+            anisotropy: 1,
             gpu_profile: false,
         }
     }
@@ -787,6 +793,19 @@ impl RenderSettings {
                 }
                 true
             }
+            "r_extralight" => {
+                if let Some(v) = i {
+                    self.extra_light = v.clamp(0, 4);
+                } else if let Some(v) = b {
+                    self.extra_light = i32::from(v);
+                }
+                true
+            }
+            "gl_texture_filter_anisotropic" => {
+                let v = i.or(f.map(|f| f as i32)).unwrap_or(if b == Some(true) { 8 } else { 1 });
+                self.anisotropy = crate::materials::sampler_anisotropy(v.clamp(0, 16) as u16);
+                true
+            }
             "r_reduce_flashing" => {
                 self.reduce_flashing = b.or(i.map(|v| v != 0)).unwrap_or(self.reduce_flashing);
                 true
@@ -872,6 +891,8 @@ pub const SHADER_CVAR_NAMES: &[&str] = &[
     "r_wounds",
     "r_gore",
     "r_reduce_flashing",
+    "r_extralight",
+    "gl_texture_filter_anisotropic",
     "r_gpuprofile",
 ];
 

@@ -107,6 +107,8 @@ const COLOR_GRID: Rgba = Rgba {
 const ML_SECRET: i16 = 32;
 /// Doom `ML_MAPPED` — linedef has been seen / revealed on the automap.
 const ML_MAPPED: i16 = 0x0100;
+/// Doom `ML_DONTDRAW`.
+const ML_DONTDRAW: i16 = 0x0080;
 
 /// UDMF / `Line_SetAutomapStyle` `AML_*` (GZDoom `am_map.h` subset).
 const AML_ONE_SIDED: i32 = 1;
@@ -158,7 +160,7 @@ pub fn draw_automap_ex2(
         y1: view.screen_y + view.height + pad,
     };
 
-    for line in &map.lines {
+    for (li, line) in map.lines.iter().enumerate() {
         let Some(v1) = map.vertices.get(line.v1.raw() as usize) else {
             continue;
         };
@@ -172,12 +174,23 @@ pub fn draw_automap_ex2(
         if view.fog && !view.allmap && (line.flags & ML_MAPPED) == 0 {
             continue;
         }
+        // `ML_DONTDRAW` lines and lines bounded only by UDMF `hidden` sectors
+        // never show in play (the editor view, without fog, keeps them).
+        if view.fog && line_hidden(map, line) {
+            continue;
+        }
         let ml_secret = (line.flags & ML_SECRET) != 0;
         // Hidden secret walls stay off the map until Computer Area Map.
         if ml_secret && !view.allmap {
             continue;
         }
-        let color = line_color(map, line, ml_secret);
+        // UDMF `drawfullheight`: drawn like a solid wall.
+        let full = map.udmf_user.line_ext(li) & room_map::udmf::ext::LINE_DRAWFULLHEIGHT != 0;
+        let color = if full && !ml_secret {
+            COLOR_ONESIDED
+        } else {
+            line_color(map, line, ml_secret)
+        };
         let a = project(view, v1.pos.x(), v1.pos.y());
         let b = project(view, v2.pos.x(), v2.pos.y());
         if !clip.segment_visible(a, b) {
@@ -193,6 +206,53 @@ pub fn draw_automap_ex2(
 
     if draw_player {
         draw_player_arrow(view, list);
+    }
+}
+
+/// One thing for [`draw_automap_things`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AutomapThing {
+    /// Map X (already including the class `AutomapOffsets`).
+    pub x: f64,
+    /// Map Y.
+    pub y: f64,
+    /// Facing in degrees.
+    pub angle_deg: f32,
+    /// Radius in map units.
+    pub radius: f32,
+    /// Marker colour.
+    pub color: Rgba,
+}
+
+/// `AM_drawThings` (second `iddt`): a triangle per thing, pointing where it
+/// faces.
+pub fn draw_automap_things(view: &AutomapView, things: &[AutomapThing], list: &mut UiDrawList) {
+    for t in things {
+        let c = project(view, t.x, t.y);
+        if c.x < view.screen_x
+            || c.y < view.screen_y
+            || c.x > view.screen_x + view.width
+            || c.y > view.screen_y + view.height
+        {
+            continue;
+        }
+        let r = (t.radius * view.scale).clamp(2.0, 24.0);
+        // The automap is north-up; `arrow_offset` flips Y for the screen.
+        let a = t.angle_deg;
+        let tip = arrow_offset(a, r);
+        let left = arrow_offset(a + 140.0, r * 0.7);
+        let right = arrow_offset(a - 140.0, r * 0.7);
+        let tip_p = Vec2::new(c.x + tip.0, c.y + tip.1);
+        let left_p = Vec2::new(c.x + left.0, c.y + left.1);
+        let right_p = Vec2::new(c.x + right.0, c.y + right.1);
+        for (p0, p1) in [(left_p, tip_p), (tip_p, right_p), (right_p, left_p)] {
+            list.cmds.push(DrawCmd::Line {
+                a: p0,
+                b: p1,
+                color: t.color,
+                thickness: 1.0,
+            });
+        }
     }
 }
 
@@ -216,6 +276,19 @@ pub fn draw_player_arrow(view: &AutomapView, list: &mut UiDrawList) {
             thickness: 2.0,
         });
     }
+}
+
+/// `ML_DONTDRAW`, or every sector touching the line is UDMF `hidden`.
+fn line_hidden(map: &MapGeometry, line: &room_map::Line) -> bool {
+    if (line.flags & ML_DONTDRAW) != 0 {
+        return true;
+    }
+    let hidden = |s: Option<usize>| {
+        s.is_none_or(|s| map.udmf_user.sector_ext(s) & room_map::udmf::ext::SECTOR_HIDDEN != 0)
+    };
+    let front = line.front_sector.map(|s| s.raw() as usize);
+    let back = line.back_sector.map(|s| s.raw() as usize);
+    front.is_some() && hidden(front) && hidden(back)
 }
 
 fn line_color(map: &MapGeometry, line: &room_map::Line, ml_secret: bool) -> Rgba {

@@ -122,7 +122,27 @@ fn update_face(world: &mut World, pl: &mut Player) {
             ..MugShot::default()
         };
     }
-    let pain = pain_offset(health);
+    // `Player.MugshotMaxHealth` (else `Player.MaxHealth`, else 100) is the
+    // health that counts as the healthiest face.
+    let max_health = world
+        .actors
+        .get(mo)
+        .and_then(|a| world.classes.get(a.class))
+        .map_or(100, |c| {
+            c.ext
+                .stored_i32("player.mugshotmaxhealth")
+                .filter(|&m| m > 0)
+                .unwrap_or(if c.ext.player_max_health > 0 {
+                    c.ext.player_max_health
+                } else {
+                    100
+                })
+        });
+    let pain = if max_health == 100 {
+        pain_offset(health)
+    } else {
+        pain_offset(health.saturating_mul(100) / max_health.max(1))
+    };
     // GZDoom `st_oldouch false`: the ouch face is for a big *loss* (vanilla
     // compared the wrong way round and only showed it while healing).
     let ouch = ms.old_health - health > MUCH_PAIN;

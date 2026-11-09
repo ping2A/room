@@ -33,6 +33,126 @@ pub struct SaveInfo {
     pub checksum: u64,
 }
 
+/// A looping voice kept across save / load (`sounds.txt` in the save zip).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedSound {
+    /// Lump or logical sound name.
+    pub name: String,
+    /// Channel.
+    pub channel: i32,
+    /// Owning actor token.
+    pub source_id: Option<u64>,
+    /// Volume.
+    pub volume: f32,
+    /// Attenuation scale.
+    pub attenuation: f32,
+    /// Pitch.
+    pub pitch: f32,
+    /// `room_audio::SoundFlags` bits.
+    pub flags: u32,
+    /// World position (when `positional`).
+    pub pos: [f64; 3],
+    /// Positional (`SoundOrigin::Point`) or 2D.
+    pub positional: bool,
+}
+
+/// Encode saved voices as tab-separated lines.
+#[must_use]
+pub fn encode_sounds(sounds: &[SavedSound]) -> String {
+    let mut out = String::new();
+    for s in sounds {
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            s.name.replace(['\t', '\n'], " "),
+            s.channel,
+            s.source_id.map_or_else(|| "-".to_owned(), |v| v.to_string()),
+            s.volume,
+            s.attenuation,
+            s.pitch,
+            s.flags,
+            s.pos[0],
+            s.pos[1],
+            s.pos[2],
+            u8::from(s.positional)
+        ));
+    }
+    out
+}
+
+/// Decode [`encode_sounds`] output; malformed lines are skipped.
+#[must_use]
+pub fn decode_sounds(text: &str) -> Vec<SavedSound> {
+    text.lines()
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() != 11 {
+                return None;
+            }
+            Some(SavedSound {
+                name: f[0].to_owned(),
+                channel: f[1].parse().ok()?,
+                source_id: if f[2] == "-" { None } else { Some(f[2].parse().ok()?) },
+                volume: f[3].parse().ok()?,
+                attenuation: f[4].parse().ok()?,
+                pitch: f[5].parse().ok()?,
+                flags: f[6].parse().ok()?,
+                pos: [f[7].parse().ok()?, f[8].parse().ok()?, f[9].parse().ok()?],
+                positional: f[10] == "1",
+            })
+        })
+        .collect()
+}
+
+/// Looping sounds stored in a save (empty for older saves).
+#[must_use]
+pub fn read_saved_sounds(bytes: &[u8]) -> Vec<SavedSound> {
+    let Ok(mut zip) = ZipArchive::new(Cursor::new(bytes)) else {
+        return Vec::new();
+    };
+    let Ok(mut file) = zip.by_name("sounds.txt") else {
+        return Vec::new();
+    };
+    let mut s = String::new();
+    if file.read_to_string(&mut s).is_err() {
+        return Vec::new();
+    }
+    decode_sounds(&s)
+}
+
+/// [`save_world`] plus the looping voices to restart on load.
+pub fn save_world_with_sounds(
+    world: &mut World,
+    map: &str,
+    skill: u8,
+    sounds: &[SavedSound],
+) -> Result<Vec<u8>, SaveError> {
+    let base = save_world(world, map, skill)?;
+    if sounds.is_empty() {
+        return Ok(base);
+    }
+    // Re-pack: copy every entry, then append `sounds.txt`.
+    let mut src = ZipArchive::new(Cursor::new(base)).map_err(|e| SaveError::Message(e.to_string()))?;
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        let mut zip = ZipWriter::new(&mut cursor);
+        let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        for i in 0..src.len() {
+            let mut f = src.by_index(i).map_err(|e| SaveError::Message(e.to_string()))?;
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf).map_err(|e| SaveError::Message(e.to_string()))?;
+            zip.start_file(f.name().to_owned(), opts)
+                .map_err(|e| SaveError::Message(e.to_string()))?;
+            zip.write_all(&buf).map_err(|e| SaveError::Message(e.to_string()))?;
+        }
+        zip.start_file("sounds.txt", opts)
+            .map_err(|e| SaveError::Message(e.to_string()))?;
+        zip.write_all(encode_sounds(sounds).as_bytes())
+            .map_err(|e| SaveError::Message(e.to_string()))?;
+        zip.finish().map_err(|e| SaveError::Message(e.to_string()))?;
+    }
+    Ok(cursor.into_inner())
+}
+
 /// `2` = armor class, pitch, ready weapon, inventory stacks.
 const FORMAT_VERSION: u32 = 2;
 const WORLD_MAGIC: &[u8; 4] = b"FWLD";
@@ -629,9 +749,34 @@ fn read_i32(buf: &[u8], o: usize) -> Result<i32, SaveError> {
 
 #[cfg(test)]
 mod tests {
+
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn saved_sounds_round_trip() {
+        let a = SavedSound {
+            name: "DSSTNMOV".into(),
+            channel: 4,
+            source_id: Some(0x1_0000_0003),
+            volume: 0.5,
+            attenuation: 1.0,
+            pitch: 1.25,
+            flags: 1,
+            pos: [64.0, -32.5, 8.0],
+            positional: true,
+        };
+        let b = SavedSound {
+            source_id: None,
+            positional: false,
+            pos: [0.0; 3],
+            ..a.clone()
+        };
+        let text = encode_sounds(&[a.clone(), b.clone()]);
+        assert_eq!(decode_sounds(&text), vec![a, b]);
+        assert!(decode_sounds("garbage\tline").is_empty());
+    }
     use room_nodebuild::apply_nodes;
     use room_sim::World;
     use room_testkit::{MapBuilder, rect};

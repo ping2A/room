@@ -1287,7 +1287,11 @@ pub(crate) fn spawn_blood(
 
 /// Spawn a `BulletPuff` at `pos`.
 pub(crate) fn spawn_puff(world: &mut World, pos: DVec3) {
-    spawn_puff_class(world, pos, "BulletPuff");
+    let class = world
+        .puff_override
+        .clone()
+        .unwrap_or_else(|| "BulletPuff".to_owned());
+    spawn_puff_class(world, pos, &class);
 }
 
 fn spawn_puff_class(world: &mut World, pos: DVec3, class_name: &str) {

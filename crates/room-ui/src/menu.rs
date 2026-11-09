@@ -13,6 +13,9 @@ pub struct MenuItem {
     pub action: String,
     /// Optional Doom patch lump drawn instead of (or beside) text (`M_NGAME`, …).
     pub patch: Option<String>,
+    /// Picture shown beside the list while this row is selected
+    /// (`Player.Portrait` on the class menu).
+    pub portrait: Option<String>,
 }
 
 impl MenuItem {
@@ -23,6 +26,7 @@ impl MenuItem {
             label: label.into(),
             action: action.into(),
             patch: None,
+            portrait: None,
         }
     }
 
@@ -34,6 +38,7 @@ impl MenuItem {
             label: patch.clone(),
             action: action.into(),
             patch: Some(patch),
+            portrait: None,
         }
     }
 }
@@ -370,6 +375,11 @@ impl ListMenu {
                     Vec2::new(0.0, 0.0),
                 );
             }
+            if selected {
+                if let Some(portrait) = &item.portrait {
+                    list.patch(portrait, Vec2::new(220.0, list_y), Vec2::new(0.0, 0.0));
+                }
+            }
             if let Some(patch) = &item.patch {
                 list.patch(patch, Vec2::new(list_x, y), Vec2::new(0.0, 0.0));
             } else if item.action == "noop" {
@@ -429,6 +439,8 @@ pub enum MenuCommand {
     OpenMenu(String),
     /// Start a new game at skill 1..=5.
     StartSkill(u8),
+    /// Player class picked on the class menu (`playerclass <Class>`).
+    SelectPlayerClass(String),
     /// Select episode 1..=4 (Doom 1).
     SelectEpisode(u8),
     /// Quit request (show confirm, or confirmed).
@@ -487,6 +499,9 @@ pub fn parse_menu_action(action: &str) -> MenuCommand {
     if action == "menu_readthis" {
         return MenuCommand::ReadThis;
     }
+    if let Some(c) = action.strip_prefix("playerclass ") {
+        return MenuCommand::SelectPlayerClass(c.trim().to_owned());
+    }
     if let Some(n) = action.strip_prefix("skill ") {
         if let Ok(level) = n.trim().parse::<u8>() {
             return MenuCommand::StartSkill(level.clamp(1, 5));
@@ -515,6 +530,11 @@ pub struct MenuStack {
     pub episode_maps: Vec<String>,
     /// Last chosen episode (1-based).
     pub episode: u8,
+    /// Classes for the new-game class menu: (class, display name, portrait).
+    /// The menu shows when at least two are listed (KEYCONF `addplayerclass`).
+    pub player_classes: Vec<(String, String, Option<String>)>,
+    /// Class picked on the class menu for the game being started.
+    pub player_class: Option<String>,
 }
 
 impl MenuStack {
@@ -546,6 +566,32 @@ impl MenuStack {
             .collect();
         self.episode_maps = episodes.iter().map(|e| e.start_map.clone()).collect();
         self
+    }
+
+    /// Player classes for the class menu (see [`Self::player_classes`]).
+    #[must_use]
+    pub fn with_player_classes(mut self, classes: Vec<(String, String, Option<String>)>) -> Self {
+        self.player_classes = classes;
+        self
+    }
+
+    /// GZDoom `PlayerclassMenu`: one row per class with its portrait.
+    fn player_class_menu(&self) -> ListMenu {
+        let mut m = ListMenu::named_skill(&[]);
+        m.title = "Choose Class:".into();
+        m.items = self
+            .player_classes
+            .iter()
+            .map(|(class, name, portrait)| MenuItem {
+                label: name.clone(),
+                action: format!("playerclass {class}"),
+                patch: None,
+                portrait: portrait.clone(),
+            })
+            .collect();
+        m.selected = 0;
+        m.scroll = 0;
+        m
     }
 
     /// Start map for the last chosen episode.
@@ -627,6 +673,26 @@ impl MenuStack {
         };
         let cmd = parse_menu_action(&action);
         match &cmd {
+            // New game with several classes: class page first, then skill.
+            MenuCommand::OpenMenu(name)
+                if (name.eq_ignore_ascii_case("SkillMenu")
+                    || name.eq_ignore_ascii_case("PlayerclassMenu"))
+                    && self.player_classes.len() >= 2
+                    && !self
+                        .stack
+                        .last()
+                        .is_some_and(|m| m.title == "Choose Class:") =>
+            {
+                self.player_class = None;
+                let m = self.player_class_menu();
+                self.stack.push(m);
+                (None, Some(MenuSfx::Activate))
+            }
+            MenuCommand::SelectPlayerClass(class) => {
+                self.player_class = Some(class.clone());
+                self.stack.push(ListMenu::named_skill(&self.skill_names));
+                (Some(cmd), Some(MenuSfx::Activate))
+            }
             MenuCommand::OpenMenu(name) if name.eq_ignore_ascii_case("SkillMenu") => {
                 self.stack.push(ListMenu::named_skill(&self.skill_names));
                 (None, Some(MenuSfx::Activate))

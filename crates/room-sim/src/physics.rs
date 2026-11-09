@@ -231,7 +231,11 @@ fn line_blocks(
         return false;
     }
     let flags = world.line_flags(lid);
-    if line.back_sector.is_none() || (flags & crate::world::ML_BLOCKING) != 0 {
+    if line.back_sector.is_none() {
+        return true;
+    }
+    // A railing's `ML_BLOCKING` is the fence itself (handled below).
+    if (flags & crate::world::ML_BLOCKING) != 0 && (flags & crate::world::ML_RAILING) == 0 {
         return true;
     }
     if (flags & crate::world::ML_BLOCKEVERYTHING) != 0 {
@@ -251,6 +255,30 @@ fn line_blocks(
         && (actor.flags & crate::class::FLAG_COUNTKILL) != 0
     {
         return true;
+    }
+    let ext = world.map.udmf_user.line_ext(lid.raw() as usize);
+    // UDMF `blocklandmonsters` (ML2_BLOCKLANDMONSTERS): non-flying monsters.
+    if ext & room_map::udmf::ext::LINE_BLOCKLANDMONSTERS != 0
+        && !is_player
+        && (actor.flags & crate::class::FLAG_COUNTKILL) != 0
+        && (actor.flags & crate::class::FLAG_FLOAT) == 0
+    {
+        return true;
+    }
+    // Strife railing (`ML_RAILING` / UDMF `jumpover`): a 32-unit-high fence
+    // over the higher of the two floors; jumping or flying clears it.
+    if (flags & crate::world::ML_RAILING) != 0
+        || ext & room_map::udmf::ext::LINE_JUMPOVER != 0
+    {
+        let floor = |s: Option<room_core::SectorId>| {
+            s.and_then(|s| world.map.sectors.get(s.raw() as usize))
+                .map(|s| f64::from(s.floor_height))
+                .unwrap_or(f64::MIN)
+        };
+        let top = floor(line.front_sector).max(floor(line.back_sector)) + 32.0;
+        if actor.pos.z() < top {
+            return true;
+        }
     }
     // UDMF `blockfloaters` / ZDoom ML_BLOCK_FLOATERS.
     if line.block_floaters && (actor.flags & crate::class::FLAG_FLOAT) != 0 {
@@ -450,6 +478,17 @@ pub fn check_position(
             return result;
         }
     }
+    // `+ALLOWTHRUBITS`: actors sharing a `ThruBits` bit pass through each other.
+    let self_thru = actor
+        .extra_flags
+        .get_name("ALLOWTHRUBITS")
+        .then(|| {
+            world
+                .classes
+                .get(actor.class)
+                .map_or(0, |c| c.ext.thru_bits)
+        })
+        .filter(|b| *b != 0);
     // Thing-thing: block on solid actors whose XY disks overlap.
     for id in world.collision_candidates() {
         if self_id == Some(*id) {
@@ -458,6 +497,16 @@ pub fn check_position(
         let Some(other) = world.actors.get(*id) else {
             continue;
         };
+        if let Some(bits) = self_thru {
+            if other.extra_flags.get_name("ALLOWTHRUBITS")
+                && world
+                    .classes
+                    .get(other.class)
+                    .is_some_and(|c| c.ext.thru_bits & bits != 0)
+            {
+                continue;
+            }
+        }
         if other.destroyed
             || (other.flags & FLAG_SOLID) == 0
             || (other.flags & FLAG_NOBLOCKMAP) != 0
@@ -810,6 +859,13 @@ pub fn try_move_ex(world: &mut World, actor_id: ActorId, new_pos: DVec3) -> TryM
         };
         let delta = check.floor_z - actor.pos.z();
         if delta > max_step {
+            water_climb(world, actor_id, &actor, delta, max_step);
+            return TryMoveResult {
+                ok: false,
+                blocking_actor: None,
+            };
+        }
+        if too_steep(world, &actor, new_pos) {
             return TryMoveResult {
                 ok: false,
                 blocking_actor: None,
@@ -843,6 +899,66 @@ pub fn try_move_ex(world: &mut World, actor_id: ActorId, new_pos: DVec3) -> TryM
         ok: true,
         blocking_actor: None,
     }
+}
+
+/// `Player.WaterClimbSpeed` (default 3.5): a player wading (`waterlevel` 1 or
+/// 2) into a ledge up to 48 units above the step height is pushed up the wall.
+fn water_climb(world: &mut World, actor_id: ActorId, actor: &Actor, delta: f64, max_step: f64) {
+    if delta > max_step + 48.0
+        || !world
+            .players
+            .iter()
+            .flatten()
+            .any(|p| p.mo == Some(actor_id))
+    {
+        return;
+    }
+    let level = actor_waterlevel(world, actor);
+    if !(1..=2).contains(&level) {
+        return;
+    }
+    let speed = world
+        .classes
+        .get(actor.class)
+        .and_then(|c| c.ext.stored_f64("player.waterclimbspeed"))
+        .unwrap_or(3.5);
+    if let Some(a) = world.actors.get_mut(actor_id) {
+        if a.vel.z() < speed {
+            a.vel = DVec3::new(a.vel.x(), a.vel.y(), speed);
+        }
+    }
+}
+
+/// `MaxSlopeSteepness`: an actor that sets it cannot walk onto a floor slope
+/// whose normal's Z is below that value (UZDoom default 46342/65536 ≈ 45°,
+/// applied only to classes that declare it, so vanilla movement is unchanged).
+fn too_steep(world: &World, actor: &Actor, at: DVec3) -> bool {
+    let Some(limit) = world
+        .classes
+        .get(actor.class)
+        .and_then(|c| c.ext.stored_f64("maxslopesteepness"))
+    else {
+        return false;
+    };
+    if actor.flags & (crate::class::FLAG_NOGRAVITY | crate::class::FLAG_FLOAT) != 0 {
+        return false;
+    }
+    let Some(sid) = room_nodebuild::point_in_sector(&world.map, at.x(), at.y()) else {
+        return false;
+    };
+    let Some([a, b, c, _]) = world
+        .map
+        .sectors
+        .get(sid.raw() as usize)
+        .and_then(|s| s.floor_plane)
+    else {
+        return false;
+    };
+    let len = (a * a + b * b + c * c).sqrt();
+    if len < 1e-9 {
+        return false;
+    }
+    (c / len).abs() < limit
 }
 
 /// Max XY step before subdivision (`MAXMOVE` = 30 in Doom).
@@ -1053,9 +1169,27 @@ fn bounce_off_wall(world: &mut World, actor_id: ActorId, dest: DVec3) -> bool {
     true
 }
 
-/// Sector light for an actor, honouring 3D-floor control lights below/inside slabs.
+/// Light an actor is drawn with: the sector light (3D-floor aware), or the
+/// class `LightLevel` when set (`+ADDLIGHTLEVEL` adds it to the sector light).
 #[must_use]
 pub fn actor_light_level(world: &World, a: &Actor) -> i32 {
+    let own = world
+        .classes
+        .get(a.class)
+        .and_then(|c| c.ext.stored_i32("lightlevel"))
+        .filter(|&l| l >= 0);
+    match own {
+        Some(l) if a.extra_flags.get_name("ADDLIGHTLEVEL") => {
+            (sector_light_for_actor(world, a) + l).clamp(0, 255)
+        }
+        Some(l) => l.clamp(0, 255),
+        None => sector_light_for_actor(world, a),
+    }
+}
+
+/// Sector light for an actor, honouring 3D-floor control lights below/inside slabs.
+#[must_use]
+pub fn sector_light_for_actor(world: &World, a: &Actor) -> i32 {
     let Some(sid) = room_nodebuild::point_in_sector(&world.map, a.pos.x(), a.pos.y())
         .or_else(|| room_nodebuild::point_in_sector_vanilla(&world.map, a.pos.x(), a.pos.y()))
     else {
@@ -1354,7 +1488,12 @@ pub fn z_movement(world: &mut World, actor_id: ActorId) {
     }
     if z <= floor_z {
         // Doom `P_ZMovement`: hard land (`*oof*`) when momz < -8.
-        if actor.pos.z() > floor_z + 0.1 && vel_z < -8.0 {
+        // `LandingSpeed` (default −8) sets the threshold.
+        let landing = world
+            .classes
+            .get(actor.class)
+            .map_or(-8.0, |c| c.ext.landing_speed);
+        if actor.pos.z() > floor_z + 0.1 && vel_z < landing {
             hard_land = world
                 .players
                 .iter()
@@ -1640,6 +1779,15 @@ pub fn xy_movement(world: &mut World, actor_id: ActorId) {
                     };
                     if rip {
                         // Ripper: damage and continue through the victim.
+                        let rip_sound = world
+                            .actors
+                            .get(actor_id)
+                            .and_then(|a| world.classes.get(a.class))
+                            .map(|c| c.ext.rip_sound.clone())
+                            .unwrap_or_default();
+                        if !rip_sound.is_empty() {
+                            world.play_sound(&rip_sound, nx, ny, z, 1.0);
+                        }
                         if let Some(a) = world.actors.get_mut(actor_id) {
                             a.pos = DVec3::new(nx, ny, z);
                         }

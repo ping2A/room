@@ -75,6 +75,10 @@ pub struct MaterialRange {
 pub struct SceneLists {
     /// Opaque wall triangles (two tris per quad).
     pub opaque_walls: Vec<WallVertex>,
+    /// GZDoom "sky walls": depth-only quads from a sky ceiling's edge upward,
+    /// so geometry behind a sky-capped wall stays hidden (vanilla look).
+    /// UDMF `noskywalls` on the line or sector suppresses them.
+    pub sky_walls: Vec<WallVertex>,
     /// Wall material ranges (parallel to [`Self::opaque_walls`]).
     pub wall_ranges: Vec<MaterialRange>,
     /// Translucent mid walls (`TranslucentLine`).
@@ -539,6 +543,7 @@ pub fn append_sprites_in_map(
             crate::sprites::SpriteOrient::Flat { .. } => {
                 lift_sprite_off_surface(&mut quad, eye, Vec3::Z);
             }
+            crate::sprites::SpriteOrient::Facing { .. } => {}
         }
         lists.sprites.extend_from_slice(&quad);
         lists.sprite_ranges.push(MaterialRange {
@@ -865,6 +870,7 @@ fn emit_thing_sprites(map: &MapGeometry, camera: &Camera, lists: &mut SceneLists
             anchor_u: 0.5,
             orient: crate::sprites::SpriteOrient::Billboard,
             additive: false,
+            roll: 0.0,
         };
         #[allow(clippy::cast_possible_truncation)]
         let start = lists.sprites.len() as u32;
@@ -2452,6 +2458,7 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists, step_on_
     let (fc1, fc2) = (z_at(front_sec, x1, y1, true), z_at(front_sec, x2, y2, true));
     let mirror = line_is_mirror(map, line_id);
     let mirror_tex = mirror.then(|| mirror_tex_name(line_id.raw()));
+    emit_sky_wall(map, line_id.raw() as usize, line, side_i, front_sec, (x1, y1, x2, y2), (fc1, fc2), lists);
 
     if line.back_sector.is_none() {
         // One-sided: full mid wall (or mirror canvas).
@@ -2997,6 +3004,58 @@ fn push_sloped_wall_quad(lists: &mut SceneLists, tex: &str, q: WallQuad, ends: W
     push_range(ranges, tex, start, 6);
 }
 
+/// Height sky walls reach (GZDoom draws them to "infinity").
+const SKY_WALL_TOP: f64 = 32768.0;
+
+/// Sky wall above a seg whose front sector has a sky ceiling and whose back
+/// side (if any) does not: from the higher of the two ceilings up.
+#[allow(clippy::too_many_arguments)]
+fn emit_sky_wall(
+    map: &MapGeometry,
+    line_index: usize,
+    line: &room_map::Line,
+    side_i: usize,
+    front_sec: usize,
+    (x1, y1, x2, y2): (f64, f64, f64, f64),
+    (fc1, fc2): (f64, f64),
+    lists: &mut SceneLists,
+) {
+    use room_map::udmf::ext::{LINE_NOSKYWALLS, SECTOR_NOSKYWALLS};
+    let Some(front) = map.sectors.get(front_sec) else {
+        return;
+    };
+    if !is_sky_flat(&front.ceiling_pic)
+        || map.udmf_user.line_ext(line_index) & LINE_NOSKYWALLS != 0
+        || map.udmf_user.sector_ext(front_sec) & SECTOR_NOSKYWALLS != 0
+    {
+        return;
+    }
+    let other = if side_i == 0 {
+        line.back_sector
+    } else {
+        line.front_sector
+    };
+    let (mut z1, mut z2) = (fc1, fc2);
+    if let Some(o) = other {
+        let oi = o.raw() as usize;
+        let Some(back) = map.sectors.get(oi) else {
+            return;
+        };
+        // Sky on both sides: the sky continues, no wall (Doom sky hack).
+        if is_sky_flat(&back.ceiling_pic) {
+            return;
+        }
+        z1 = z1.max(sector_z_at(map, oi, x1, y1, true));
+        z2 = z2.max(sector_z_at(map, oi, x2, y2, true));
+    }
+    let v = |x: f64, y: f64, z: f64| {
+        WallVertex::new(Vec3::new(x as f32, y as f32, z as f32), Vec2::ZERO, 1.0)
+    };
+    let (a, b) = (v(x1, y1, z1), v(x2, y2, z2));
+    let (c, d) = (v(x2, y2, SKY_WALL_TOP), v(x1, y1, SKY_WALL_TOP));
+    lists.sky_walls.extend_from_slice(&[a, b, c, a, c, d]);
+}
+
 /// Doom / Hexen / Strife sky flat names (`MAPINFO skyflatname` default set).
 #[must_use]
 pub fn is_sky_flat(name: &str) -> bool {
@@ -3110,6 +3169,33 @@ mod tests {
         // Point on −Y (kept side) should be ≤ 0.
         let kept = p[0] * 5.0 + p[1] * (-10.0) + p[3];
         assert!(kept < 0.0, "kept={kept}");
+    }
+
+    #[test]
+    fn sky_ceiling_rooms_get_sky_walls_unless_noskywalls() {
+        let mk = || {
+            let mut map = MapBuilder::new()
+                .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+                .player_start(64.0, 64.0, 0)
+                .build_udmf("MAP01")
+                .unwrap();
+            apply_nodes(&mut map);
+            map.sectors[0].ceiling_pic = "F_SKY1".into();
+            map
+        };
+        let cam = Camera {
+            eye: Vec3::new(64.0, 64.0, 41.0),
+            ..Camera::default()
+        };
+        let scene = build_scene(&mk(), &cam, None);
+        assert!(!scene.sky_walls.is_empty());
+        assert!(scene.sky_walls.iter().all(|v| v.pos[2] >= 127.9));
+        let mut map = mk();
+        map.udmf_user.sector_ext = vec![room_map::udmf::ext::SECTOR_NOSKYWALLS];
+        assert!(build_scene(&map, &cam, None).sky_walls.is_empty());
+        let mut map = mk();
+        map.udmf_user.line_ext = vec![room_map::udmf::ext::LINE_NOSKYWALLS; map.lines.len()];
+        assert!(build_scene(&map, &cam, None).sky_walls.is_empty());
     }
 
     #[test]
@@ -3765,6 +3851,7 @@ mod tests {
             anchor_u: 0.5,
             orient: crate::sprites::SpriteOrient::Billboard,
             additive: false,
+            roll: 0.0,
         }];
         let with_live = build_scene(&map, &cam, Some(&live));
         assert_eq!(with_live.sprites.len(), 6);
@@ -3801,6 +3888,7 @@ mod tests {
             anchor_u: 0.5,
             orient: crate::sprites::SpriteOrient::Billboard,
             additive: false,
+            roll: 0.0,
         }
     }
 
@@ -3863,6 +3951,7 @@ mod tests {
             anchor_u: 0.5,
             orient: crate::sprites::SpriteOrient::Billboard,
             additive: false,
+            roll: 0.0,
         };
         let mut lists = SceneLists::default();
         // Actor order: near smoke, far monster, middle blood.
@@ -3956,6 +4045,7 @@ mod tests {
             anchor_u: 0.5,
             orient: crate::sprites::SpriteOrient::Wall { yaw: 0.0 },
             additive: false,
+            roll: 0.0,
         };
         let cam = Camera {
             eye: Vec3::new(140.0, 0.0, 16.0),

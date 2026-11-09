@@ -40,6 +40,12 @@ pub struct UnlitPass {
     /// Floors/ceilings with back-face cull so elevated floor *undersides* do not
     /// paint over outdoor sky (winding is normalized in `push_flat_tri_oriented`).
     flats_pipeline: wgpu::RenderPipeline,
+    /// Sky drawn as a background (no depth) when the scene has sky walls.
+    sky_bg_pipeline: wgpu::RenderPipeline,
+    /// Depth-only pipeline for [`SceneLists::sky_walls`].
+    sky_mask_pipeline: wgpu::RenderPipeline,
+    sky_wall_buf: wgpu::Buffer,
+    sky_wall_cap: u64,
     /// Alpha-blended pipeline (translucent walls/flats + fuzzy sprites).
     sprite_pipeline: wgpu::RenderPipeline,
     /// Opaque sprite billboards (Doom patches: opaque or discard holes).
@@ -273,6 +279,36 @@ impl UnlitPass {
                 slope_scale: 1.0,
                 clamp: 0.0,
             },
+        );
+        let sky_bg_pipeline = make_unlit_pipeline_bias(
+            device,
+            &shader,
+            &layout,
+            target_format,
+            "unlit-sky-bg-pipe",
+            wgpu::BlendState::REPLACE,
+            false,
+            None,
+            wgpu::ColorWrites::ALL,
+            wgpu::StencilState::default(),
+            wgpu::CompareFunction::Always,
+            crate::DEPTH_STENCIL_FORMAT,
+            wgpu::DepthBiasState::default(),
+        );
+        let sky_mask_pipeline = make_unlit_pipeline_bias(
+            device,
+            &shader,
+            &layout,
+            target_format,
+            "unlit-sky-wall-pipe",
+            wgpu::BlendState::REPLACE,
+            true,
+            None,
+            wgpu::ColorWrites::empty(),
+            wgpu::StencilState::default(),
+            wgpu::CompareFunction::LessEqual,
+            crate::DEPTH_STENCIL_FORMAT,
+            wgpu::DepthBiasState::default(),
         );
         // Flats: cull back faces so you never see the underside of a high floor
         // stretched across the sky (E1M1 courtyard).
@@ -683,11 +719,16 @@ impl UnlitPass {
         let wall_buf = empty_vb(device, "walls", 64 * 32);
         let flat_buf = empty_vb(device, "flats", 64 * 32);
         let sky_buf = empty_vb(device, "sky", 64 * 32);
+        let sky_wall_buf = empty_vb(device, "sky-walls", 64 * 32);
         let sprite_buf = empty_vb(device, "sprites", 64 * 32);
         Self {
             target_format,
             pipeline,
             flats_pipeline,
+            sky_bg_pipeline,
+            sky_mask_pipeline,
+            sky_wall_buf,
+            sky_wall_cap: 64 * 32,
             sprite_pipeline,
             opaque_sprite_pipeline,
             stencil_mask_pipeline,
@@ -1011,6 +1052,14 @@ impl UnlitPass {
             "sky",
             &scene.sky_parts,
         );
+        self.sky_wall_buf = ensure_vb(
+            &gpu.device,
+            &gpu.queue,
+            &self.sky_wall_buf,
+            &mut self.sky_wall_cap,
+            "sky-walls",
+            &scene.sky_walls,
+        );
         let (sorted_sprites, sorted_ranges) =
             crate::scene::sprites_back_to_front(&scene.sprites, &scene.sprite_ranges, camera.eye);
         // Ranges that did not cover the buffer (none emitted) keep the raw list.
@@ -1136,6 +1185,34 @@ impl UnlitPass {
         }
     }
 
+    /// Sky shell with its material(s); the caller sets the pipeline.
+    fn draw_sky(
+        &mut self,
+        gpu: &GpuContext,
+        pass: &mut wgpu::RenderPass<'_>,
+        scene: &SceneLists,
+        catalog: &mut MaterialCatalog,
+        vfs: &Vfs,
+    ) {
+        pass.set_vertex_buffer(0, self.sky_buf.slice(..));
+        if !scene.sky_ranges.is_empty() {
+            self.draw_ranges(gpu, pass, &scene.sky_ranges, catalog, vfs);
+        } else if scene.sky_texture.is_empty() {
+            pass.set_bind_group(1, &self.mat_bind, &[]);
+            #[allow(clippy::cast_possible_truncation)]
+            let n = scene.sky_parts.len() as u32;
+            pass.draw(0..n, 0..1);
+        } else {
+            #[allow(clippy::cast_possible_truncation)]
+            let range = [crate::scene::MaterialRange {
+                name: scene.sky_texture.clone(),
+                start: 0,
+                count: scene.sky_parts.len() as u32,
+            }];
+            self.draw_ranges(gpu, pass, &range, catalog, vfs);
+        }
+    }
+
     /// Draw walls/flats with per-range materials from `catalog` (uploads on demand).
     ///
     /// `__MIRROR*` / `__PORTAL*` wall ranges are stencil-masked then Equal-drawn so
@@ -1157,6 +1234,20 @@ impl UnlitPass {
         // Floors first, then walls: step risers must win z-order against any
         // convex-hull floor ears that poke past a linedef (transparent steps).
         pass.set_bind_group(0, &self.view_bind, &[]);
+        // Sky walls: paint the sky as a background first, then lay the sky
+        // walls into depth only, so world geometry behind them is rejected
+        // and the sky shows through (GZDoom `SkyTop`).
+        let sky_first = !scene.sky_walls.is_empty() && !scene.sky_parts.is_empty();
+        if sky_first {
+            pass.set_pipeline(&self.sky_bg_pipeline);
+            self.draw_sky(gpu, pass, scene, catalog, vfs);
+            pass.set_pipeline(&self.sky_mask_pipeline);
+            pass.set_bind_group(1, &self.mat_bind, &[]);
+            pass.set_vertex_buffer(0, self.sky_wall_buf.slice(..));
+            #[allow(clippy::cast_possible_truncation)]
+            let n = scene.sky_walls.len() as u32;
+            pass.draw(0..n, 0..1);
+        }
         if !scene.flats.is_empty() {
             pass.set_pipeline(&self.flats_pipeline);
             pass.set_vertex_buffer(0, self.flat_buf.slice(..));
@@ -1167,23 +1258,8 @@ impl UnlitPass {
             pass.set_vertex_buffer(0, self.wall_buf.slice(..));
             self.draw_ranges(gpu, pass, &solid_walls, catalog, vfs);
         }
-        if !scene.sky_parts.is_empty() {
-            pass.set_vertex_buffer(0, self.sky_buf.slice(..));
-            if !scene.sky_ranges.is_empty() {
-                self.draw_ranges(gpu, pass, &scene.sky_ranges, catalog, vfs);
-            } else if scene.sky_texture.is_empty() {
-                pass.set_bind_group(1, &self.mat_bind, &[]);
-                #[allow(clippy::cast_possible_truncation)]
-                let n = scene.sky_parts.len() as u32;
-                pass.draw(0..n, 0..1);
-            } else {
-                let range = [crate::scene::MaterialRange {
-                    name: scene.sky_texture.clone(),
-                    start: 0,
-                    count: scene.sky_parts.len() as u32,
-                }];
-                self.draw_ranges(gpu, pass, &range, catalog, vfs);
-            }
+        if !scene.sky_parts.is_empty() && !sky_first {
+            self.draw_sky(gpu, pass, scene, catalog, vfs);
         }
         if !scene.sprites.is_empty() {
             pass.set_pipeline(&self.opaque_sprite_pipeline);

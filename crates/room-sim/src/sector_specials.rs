@@ -359,14 +359,48 @@ pub fn player_in_special_sector(world: &mut World, mo: ActorId) {
         }
     }
     // UDMF `damageamount` / ACS `SetSectorDamage` — interval from `damageinterval`.
+    let ext = world.map.udmf_user.sector_ext(sid);
     if let Some(dyn_s) = world.sectors.get(sid) {
         let amt = dyn_s.damage_amount;
         let iv = dyn_s.damage_interval.max(1) as u32;
-        if amt > 0 && sector_damage_applies(world, mo, invul) && world.level.time % iv == 0 {
+        // ZDoom: no floor damage while airborne unless `harminair`.
+        let airborne = actor.pos.z() > dyn_s.floor_z + 0.5;
+        let grounded = !airborne || ext & room_map::udmf::ext::SECTOR_HARMINAIR != 0;
+        if amt > 0 && grounded && ext & room_map::udmf::ext::SECTOR_DAMAGEHAZARD != 0 {
+            // Strife hazard: standing here fills a meter; damage comes from
+            // `tick_hazard` while it drains (a radsuit only slows the fill).
+            if sector_damage_applies(world, mo, invul)
+                && let Some(p) = world.players.iter_mut().flatten().find(|p| p.mo == Some(mo))
+            {
+                let fill = if radsuit { 1 } else { amt.max(1) };
+                p.hazard_count = (p.hazard_count + fill).min(60 * 35);
+            }
+        } else if amt > 0
+            && grounded
+            && sector_damage_applies(world, mo, invul)
+            && world.level.time % iv == 0
+        {
             if sector_damage_leaks(world, sid, radsuit) {
                 damage_mobj(world, mo, None, None, amt);
             }
         }
+    }
+    tick_hazard(world, mo);
+}
+
+/// Strife `hazardcount`: once the meter passes 16 s, hurt every 32 tics.
+fn tick_hazard(world: &mut World, mo: ActorId) {
+    let time = world.level.time;
+    let Some(p) = world.players.iter_mut().flatten().find(|p| p.mo == Some(mo)) else {
+        return;
+    };
+    if p.hazard_count <= 0 {
+        return;
+    }
+    p.hazard_count -= 1;
+    // ZDoom `P_PlayerThink`: a flat 5 damage per hit once past 16 s.
+    if p.hazard_count > 16 * 35 && time % 32 == 0 {
+        damage_mobj(world, mo, None, None, 5);
     }
 }
 
@@ -427,6 +461,22 @@ pub fn monsters_in_special_sectors(world: &mut World) {
         // COMPAT(compat_nombf21)
         if (special & MBF21_KILL_MONSTERS) != 0 && world.compat.mbf21_enabled() {
             damage_mobj(world, id, None, None, 10_000);
+        }
+        // UDMF `hurtmonsters`: the sector's damage also hits monsters.
+        let ext = world.map.udmf_user.sector_ext(sid);
+        if ext & room_map::udmf::ext::SECTOR_HURTMONSTERS != 0
+            && let Some(dyn_s) = world.sectors.get(sid)
+        {
+            let amt = dyn_s.damage_amount;
+            let iv = dyn_s.damage_interval.max(1) as u32;
+            let airborne = a.pos.z() > dyn_s.floor_z + 0.5;
+            if amt > 0
+                && (!airborne || ext & room_map::udmf::ext::SECTOR_HARMINAIR != 0)
+                && world.level.time % iv == 0
+                && sector_damage_applies(world, id, false)
+            {
+                damage_mobj(world, id, None, None, amt);
+            }
         }
     }
 }
@@ -714,6 +764,83 @@ actor PlayerPawn : Actor 0
             hp0 - 5,
             "leakiness 256 always penetrates radsuit"
         );
+    }
+
+    fn hurt_room(ext: u32) -> (World, ActorId, ActorId) {
+        use crate::{ClassRegistry, StateTable};
+        use room_decorate::parse_decorate;
+        use std::sync::Arc;
+        let ir = parse_decorate(
+            r#"
+actor PlayerPawn : Actor 0
+{
+  Health 100
+  +SHOOTABLE
+  States { Spawn: PLAY A -1 Stop }
+}
+actor Grunt : Actor 9500
+{
+  Health 50
+  +SHOOTABLE +COUNTKILL
+  States { Spawn: POSS A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("hurt", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        map.sectors[0].damage_amount = 3;
+        map.sectors[0].damage_interval = 1;
+        map.udmf_user.sector_ext = vec![ext; map.sectors.len()];
+        apply_nodes(&mut map);
+        let grunt = classes.find_name("Grunt").unwrap();
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let g = w
+            .spawn_at(grunt, room_core::DVec3::new(160.0, 160.0, 0.0), room_core::Angle::ZERO)
+            .unwrap();
+        (w, mo, g)
+    }
+
+    #[test]
+    fn udmf_hurtmonsters_and_harminair() {
+        use room_map::udmf::ext::*;
+        // Plain damage sector: monsters are spared, airborne players too.
+        let (mut w, mo, g) = hurt_room(0);
+        w.actors.get_mut(mo).unwrap().pos = room_core::DVec3::new(64.0, 64.0, 40.0);
+        player_in_special_sector(&mut w, mo);
+        monsters_in_special_sectors(&mut w);
+        assert_eq!(w.actors.get(mo).unwrap().health, 100);
+        assert_eq!(w.actors.get(g).unwrap().health, 50);
+        // `hurtmonsters` + `harminair`.
+        let (mut w, mo, g) = hurt_room(SECTOR_HURTMONSTERS | SECTOR_HARMINAIR);
+        w.actors.get_mut(mo).unwrap().pos = room_core::DVec3::new(64.0, 64.0, 40.0);
+        player_in_special_sector(&mut w, mo);
+        monsters_in_special_sectors(&mut w);
+        assert_eq!(w.actors.get(mo).unwrap().health, 97);
+        assert_eq!(w.actors.get(g).unwrap().health, 47);
+    }
+
+    #[test]
+    fn udmf_damagehazard_fills_a_meter_before_hurting() {
+        use room_map::udmf::ext::*;
+        let (mut w, mo, _) = hurt_room(SECTOR_DAMAGEHAZARD);
+        for t in 0..150 {
+            w.level.time = t;
+            player_in_special_sector(&mut w, mo);
+        }
+        assert_eq!(w.actors.get(mo).unwrap().health, 100, "meter still filling");
+        assert!(w.players[0].as_ref().unwrap().hazard_count > 0);
+        for t in 150..400 {
+            w.level.time = t;
+            player_in_special_sector(&mut w, mo);
+        }
+        assert!(w.actors.get(mo).unwrap().health < 100);
     }
 
     #[test]

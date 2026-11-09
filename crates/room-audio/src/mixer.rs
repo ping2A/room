@@ -291,6 +291,14 @@ pub struct Mixer {
     pub sample_rate: u32,
     next_voice_sequence: u64,
     reverb: DukeReverb,
+    /// ZDoom sound-environment reverb for the listener's zone (`None` = off).
+    env_reverb: Option<crate::reverb::EnvReverb>,
+    /// "DSP Water" low-pass while the listener is under water.
+    water: Option<crate::reverb::WaterFilter>,
+    /// Game paused: voices without `NOPAUSE` / `UI` hold their place silently.
+    pub paused: bool,
+    /// Scratch send buffer for the environment reverb.
+    send: Vec<f32>,
 }
 
 impl Default for Mixer {
@@ -308,6 +316,10 @@ impl Default for Mixer {
             sample_rate: ENGINE_SAMPLE_RATE,
             next_voice_sequence: 0,
             reverb: DukeReverb::new(ENGINE_SAMPLE_RATE),
+            env_reverb: None,
+            water: None,
+            paused: false,
+            send: Vec::new(),
         }
     }
 }
@@ -345,6 +357,63 @@ impl Mixer {
                 self.reverb.reset();
             }
         }
+    }
+
+    /// Select the ZDoom sound environment heard by the listener (`None`, or
+    /// an inaudible one such as "Off", disables it). The tail carries over
+    /// when only the parameters change.
+    pub fn set_environment(&mut self, env: Option<&crate::reverb::ReverbEnv>) {
+        let env = env.filter(|e| e.software_water || e.props.room > -9000);
+        match env {
+            None => {
+                self.env_reverb = None;
+                self.water = None;
+            }
+            Some(e) if e.software_water => {
+                self.env_reverb = None;
+                if self.water.is_none() {
+                    self.water = Some(crate::reverb::WaterFilter::default());
+                }
+            }
+            Some(e) => {
+                self.water = None;
+                match self.env_reverb.as_mut() {
+                    Some(r) if r.props() == &e.props => {}
+                    Some(r) => r.set_props(&e.props),
+                    None => {
+                        self.env_reverb =
+                            Some(crate::reverb::EnvReverb::new(self.sample_rate, &e.props));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether an environment reverb (or the water filter) is active.
+    #[must_use]
+    pub fn environment_active(&self) -> bool {
+        self.env_reverb.is_some() || self.water.is_some()
+    }
+
+    /// Looping world voices worth restoring after a savegame load
+    /// (ZDoom `S_SerializeSounds` keeps looping channels).
+    #[must_use]
+    pub fn loops_for_save(&self) -> Vec<Voice> {
+        self.voices
+            .iter()
+            .filter(|v| v.loop_ && v.flags.0 & SoundFlags::UI == 0)
+            .cloned()
+            .collect()
+    }
+
+    /// Stop every world voice, keeping `UI` ones (menu sounds over a load).
+    pub fn stop_world_sounds(&mut self) {
+        self.voices.retain(|v| v.flags.0 & SoundFlags::UI != 0);
+    }
+
+    /// Pause or resume world sounds (`NOPAUSE` and `UI` voices keep playing).
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
     }
 
     /// Return the first live actor owner for each active Duke sound ID.
@@ -441,8 +510,22 @@ impl Mixer {
                     {
                         continue;
                     }
-                    if flags.0 & SoundFlags::UNIQUE_SOUND != 0
+                    // `CHANF_SINGULAR` (UZDoom `CheckSingular`) behaves like the
+                    // unique flag: one instance level-wide.
+                    if flags.0 & (SoundFlags::UNIQUE_SOUND | SoundFlags::SINGULAR) != 0
                         && self.voices.iter().any(|voice| voice.sound == sound)
+                    {
+                        continue;
+                    }
+                    // UZDoom: a one-shot started while paused is dropped (it would
+                    // play late on unpause), unless UI / NOPAUSE / FORCE.
+                    if self.paused
+                        && flags.0
+                            & (SoundFlags::LOOP
+                                | SoundFlags::UI
+                                | SoundFlags::NOPAUSE
+                                | SoundFlags::FORCE)
+                            == 0
                     {
                         continue;
                     }
@@ -458,7 +541,12 @@ impl Mixer {
                     }) {
                         continue;
                     }
-                    let overlap = flags.0 & SoundFlags::OVERLAP != 0;
+                    // UZDoom `StartSound`: CHAN_AUTO on an actor means "don't
+                    // replace" (it sets `CHANF_OVERLAP`). Duke keeps its own rules.
+                    let overlap = flags.0 & SoundFlags::OVERLAP != 0
+                        || (channel == 0
+                            && source_id.is_some()
+                            && flags.0 & SoundFlags::DUKE_PRIORITY_PRESENT == 0);
                     let nostop = flags.0 & SoundFlags::NOSTOP != 0;
                     if nostop
                         && self.voices.iter().any(|v| {
@@ -618,6 +706,17 @@ impl Mixer {
                 SoundEvent::StopActor { source_id } => {
                     self.voices.retain(|v| v.source_id != Some(source_id));
                 }
+                SoundEvent::StopActorChannels {
+                    source_id,
+                    min,
+                    max,
+                    all,
+                } => {
+                    self.voices.retain(|v| {
+                        v.source_id != Some(source_id)
+                            || !(all || (min..=max).contains(&v.channel))
+                    });
+                }
                 SoundEvent::StopAll => self.voices.clear(),
                 SoundEvent::SetPitch {
                     origin,
@@ -651,7 +750,25 @@ impl Mixer {
         out.fill(0.0);
         let frames = out.len() / 2;
         let mut finished = Vec::new();
+        let use_send = self.env_reverb.is_some() || self.water.is_some();
+        if use_send {
+            self.send.clear();
+            self.send.resize(out.len(), 0.0);
+        }
         for (vi, voice) in self.voices.iter_mut().enumerate() {
+            let held = voice.flags.0 & (SoundFlags::NOPAUSE | SoundFlags::UI) != 0;
+            if self.paused && !held {
+                // `S_PauseSound`: hold the cursor; nothing is mixed.
+                continue;
+            }
+            // `CHANF_LISTENERZ`: the source sits at the listener's height.
+            let origin = match voice.origin {
+                SoundOrigin::Point(p) if voice.flags.0 & SoundFlags::LISTENER_Z != 0 => {
+                    SoundOrigin::Point(DVec3::new(p.x(), p.y(), self.listener.z()))
+                }
+                o => o,
+            };
+            let to_send = use_send && voice.flags.0 & SoundFlags::UI == 0;
             let Some(pcm) = self.bank.get(voice.sound) else {
                 finished.push(vi);
                 continue;
@@ -663,7 +780,7 @@ impl Mixer {
             let is_duke = voice.flags.0 & SoundFlags::DUKE_PRIORITY_PRESENT != 0;
             let (gain_l, gain_r) = if is_duke {
                 duke_stereo_gains(
-                    voice.origin,
+                    origin,
                     self.listener,
                     self.listener_facing,
                     voice.flags,
@@ -675,7 +792,7 @@ impl Mixer {
                     1.0
                 } else {
                     attenuate(
-                        voice.origin,
+                        origin,
                         self.listener,
                         voice.attenuation,
                         voice.flags.duke_distance_offset().map_or(0.0, f64::from),
@@ -683,7 +800,7 @@ impl Mixer {
                 };
                 let gain = voice.volume * atten * self.master;
                 let (pan_l, pan_r) = stereo_gains(
-                    voice.origin,
+                    origin,
                     voice.attenuation,
                     self.listener,
                     self.listener_facing,
@@ -709,6 +826,10 @@ impl Mixer {
                 let s = pcm[idx];
                 out[f * 2] += s * gain_l;
                 out[f * 2 + 1] += s * gain_r;
+                if to_send {
+                    self.send[f * 2] += s * gain_l;
+                    self.send[f * 2 + 1] += s * gain_r;
+                }
                 pos += voice.pitch;
             }
             voice.cursor = pos as usize;
@@ -722,6 +843,22 @@ impl Mixer {
         for vi in finished.into_iter().rev() {
             if vi < self.voices.len() {
                 self.voices.swap_remove(vi);
+            }
+        }
+        if let Some(rv) = self.env_reverb.as_mut() {
+            for (frame, send) in out.chunks_exact_mut(2).zip(self.send.chunks_exact(2)) {
+                let (wl, wr) = rv.process_frame(send[0], send[1]);
+                frame[0] += wl;
+                frame[1] += wr;
+            }
+        }
+        if let Some(w) = self.water.as_mut() {
+            // Muffle world sounds only; UI voices stay dry.
+            for (frame, send) in out.chunks_exact_mut(2).zip(self.send.chunks_exact(2)) {
+                let mut wet = [send[0], send[1]];
+                w.process(&mut wet, self.sample_rate);
+                frame[0] += wet[0] - send[0];
+                frame[1] += wet[1] - send[1];
             }
         }
         if self.reverb_level > 0 {
@@ -1108,6 +1245,111 @@ mod tests {
         // Second render exhausts sample.
         mix.render(&mut out);
         assert!(mix.voices.is_empty());
+    }
+
+    fn start(mix: &mut Mixer, origin: SoundOrigin, flags: u32) {
+        mix.apply(&[SoundEvent::Start {
+            origin,
+            channel: 1,
+            sound: SoundId::from_raw(1),
+            check_sound: None,
+            start_time: 0.0,
+            source_id: None,
+            no_restart: false,
+            volume: 1.0,
+            attenuation: 1.0,
+            pitch: 1.0,
+            flags: SoundFlags(flags),
+        }]);
+    }
+
+    #[test]
+    fn chan_auto_on_an_actor_overlaps_and_channel_stops_are_scoped() {
+        let mut mix = Mixer::new();
+        mix.bank.insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 64]));
+        let ev = |channel: i32| SoundEvent::Start {
+            origin: SoundOrigin::None,
+            channel,
+            sound: SoundId::from_raw(1),
+            check_sound: None,
+            start_time: 0.0,
+            volume: 1.0,
+            attenuation: 0.0,
+            pitch: 1.0,
+            flags: SoundFlags::default(),
+            source_id: Some(5),
+            no_restart: false,
+        };
+        mix.apply(&[ev(0), ev(0), ev(2), ev(2)]);
+        assert_eq!(mix.voices.len(), 3, "CHAN_AUTO stacks, CHAN_VOICE replaces");
+        mix.apply(&[SoundEvent::StopActorChannels { source_id: 5, min: 2, max: 2, all: false }]);
+        assert_eq!(mix.voices.len(), 2);
+        mix.apply(&[SoundEvent::StopActorChannels { source_id: 6, min: 0, max: 0, all: true }]);
+        assert_eq!(mix.voices.len(), 2, "other actor");
+        mix.apply(&[SoundEvent::StopActorChannels { source_id: 5, min: 0, max: 0, all: true }]);
+        assert!(mix.voices.is_empty());
+        // A one-shot started while paused is dropped.
+        mix.set_paused(true);
+        mix.apply(&[ev(1)]);
+        assert!(mix.voices.is_empty());
+    }
+
+    #[test]
+    fn pause_holds_world_voices_but_not_nopause_ones() {
+        let mut mix = Mixer::new();
+        mix.bank.insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 64]));
+        start(&mut mix, SoundOrigin::None, 0);
+        mix.set_paused(true);
+        let mut out = vec![0.0f32; 16];
+        mix.render(&mut out);
+        assert!(out.iter().all(|s| *s == 0.0));
+        assert_eq!(mix.voices[0].cursor, 0, "paused voice holds its place");
+        mix.voices.clear();
+        start(&mut mix, SoundOrigin::None, SoundFlags::NOPAUSE);
+        mix.render(&mut out);
+        assert!(out.iter().any(|s| *s > 0.0));
+        mix.set_paused(false);
+    }
+
+    #[test]
+    fn listener_z_ignores_height_difference() {
+        let mut mix = Mixer::new();
+        mix.bank.insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 64]));
+        mix.set_listener(DVec3::ZERO, 0.0);
+        let high = SoundOrigin::Point(DVec3::new(0.0, 0.0, 1100.0));
+        start(&mut mix, high, 0);
+        let mut out = vec![0.0f32; 8];
+        mix.render(&mut out);
+        let far = out[0];
+        mix.voices.clear();
+        start(&mut mix, high, SoundFlags::LISTENER_Z);
+        mix.render(&mut out);
+        assert!(out[0] > far * 2.0, "listener-z {} vs 3d {}", out[0], far);
+    }
+
+    #[test]
+    fn environment_reverb_adds_a_tail_and_skips_ui() {
+        let table = crate::reverb::EnvironmentTable::builtin_only();
+        let mut mix = Mixer::new();
+        mix.bank.insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 32]));
+        mix.set_environment(table.find(0x0A00)); // Hangar
+        assert!(mix.environment_active());
+        start(&mut mix, SoundOrigin::None, 0);
+        let mut out = vec![0.0f32; 44_100];
+        mix.render(&mut out);
+        let tail: f32 = out[20_000..].iter().map(|s| s.abs()).sum();
+        assert!(tail > 0.0, "reverb tail");
+        // UI voices stay dry.
+        let mut mix = Mixer::new();
+        mix.bank.insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 32]));
+        mix.set_environment(table.find(0x0A00));
+        start(&mut mix, SoundOrigin::None, SoundFlags::UI);
+        let mut out = vec![0.0f32; 44_100];
+        mix.render(&mut out);
+        assert!(out[20_000..].iter().all(|s| *s == 0.0));
+        // "Off" disables it.
+        mix.set_environment(table.find(crate::reverb::ENV_OFF));
+        assert!(!mix.environment_active());
     }
 
     fn render_point(mix: &mut Mixer, at: DVec3) -> (f32, f32) {

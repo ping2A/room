@@ -13,8 +13,25 @@ pub enum HostCommand {
     Noclip,
     /// Give inventory class or keyword (`give all`, `give shotgun`, …).
     Give(String),
-    /// Change map (`map MAP01`).
+    /// Change map (`map MAP01`), fresh start.
     Map(String),
+    /// `changemap [map] [position]`: exit to `map` (`None` = next map)
+    /// keeping inventory; position `-1` resets it (pistol start).
+    ChangeMap {
+        /// Target map; `None` = the level's next map.
+        map: Option<String>,
+        /// `false` when the position argument is `-1`.
+        keep_inventory: bool,
+    },
+    /// `changeepisode <n>`: start episode `n` (1-based).
+    ChangeEpisode(usize),
+    /// `doublebind <key> [command]` (no command: show it; `""` clears).
+    DoubleBind {
+        /// Key name (`w`, `mouse1`, `pad_a`…).
+        key: String,
+        /// New command, or `None` to query.
+        command: Option<String>,
+    },
     /// Kill all monsters (`kill monsters`) or self (`kill`).
     Kill(Option<String>),
     /// Toggle level freeze (`freeze`) — holds maptime / movers.
@@ -368,7 +385,58 @@ impl Console {
                     self.print(&msg);
                     output.push(msg);
                 }
-                "map" | "changemap" => {
+                "changemap" => {
+                    if args.len() > 2 {
+                        return Err(ConsoleError::Message(
+                            "usage: changemap [MAPNAME] [-1]".into(),
+                        ));
+                    }
+                    // `changemap -1` = next map, pistol start.
+                    let (map, pos) = match args {
+                        [] => (None, None),
+                        [a] if a.parse::<i32>().is_ok() => (None, Some(&a[..])),
+                        [a] => (Some(a.clone()), None),
+                        [a, b] => (Some(a.clone()), Some(&b[..])),
+                        _ => (None, None),
+                    };
+                    let keep_inventory = pos.is_none_or(|p| p.trim() != "-1");
+                    let msg = format!(
+                        "ChangeMap {}{}",
+                        map.as_deref().unwrap_or("(next)"),
+                        if keep_inventory { "" } else { " (pistol start)" }
+                    );
+                    host.push(HostCommand::ChangeMap {
+                        map,
+                        keep_inventory,
+                    });
+                    self.print(&msg);
+                    output.push(msg);
+                }
+                "doublebind" | "undoublebind" => {
+                    let Some(key) = args.first().cloned() else {
+                        return Err(ConsoleError::Message("usage: doublebind <key> [command]".into()));
+                    };
+                    let command = if cmd_key == "undoublebind" {
+                        Some(String::new())
+                    } else if args.len() > 1 {
+                        Some(args[1..].join(" "))
+                    } else {
+                        None
+                    };
+                    host.push(HostCommand::DoubleBind { key, command });
+                }
+                "changeepisode" => {
+                    let n = args
+                        .first()
+                        .and_then(|a| a.parse::<usize>().ok())
+                        .filter(|n| *n >= 1)
+                        .ok_or_else(|| ConsoleError::Message("usage: changeepisode <n>".into()))?;
+                    host.push(HostCommand::ChangeEpisode(n));
+                    let msg = format!("ChangeEpisode {n}");
+                    self.print(&msg);
+                    output.push(msg);
+                }
+                "map" => {
                     if args.len() != 1 {
                         return Err(ConsoleError::Message("usage: map <MAPNAME>".into()));
                     }
@@ -509,6 +577,8 @@ impl Console {
                         "give",
                         "map",
                         "changemap",
+                        "changeepisode",
+                        "doublebind",
                         "playatomicdemo",
                         "kill",
                     ] {
@@ -778,6 +848,34 @@ mod tests {
                 HostCommand::Give("idchoppers".into()),
                 HostCommand::Give("idbeholdv".into()),
                 HostCommand::Give("idbeholds".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn changemap_and_changeepisode_emit_host() {
+        let mut con = Console::with_defaults();
+        let r = con
+            .exec("changemap; changemap MAP05; changemap MAP05 -1; changemap -1; changeepisode 2")
+            .unwrap();
+        assert_eq!(
+            r.host,
+            vec![
+                HostCommand::ChangeMap { map: None, keep_inventory: true },
+                HostCommand::ChangeMap { map: Some("MAP05".into()), keep_inventory: true },
+                HostCommand::ChangeMap { map: Some("MAP05".into()), keep_inventory: false },
+                HostCommand::ChangeMap { map: None, keep_inventory: false },
+                HostCommand::ChangeEpisode(2),
+            ]
+        );
+        assert!(con.exec("changeepisode 0").is_err());
+        let r = con.exec("doublebind w +speed; doublebind w; undoublebind w").unwrap();
+        assert_eq!(
+            r.host,
+            vec![
+                HostCommand::DoubleBind { key: "w".into(), command: Some("+speed".into()) },
+                HostCommand::DoubleBind { key: "w".into(), command: None },
+                HostCommand::DoubleBind { key: "w".into(), command: Some(String::new()) },
             ]
         );
     }

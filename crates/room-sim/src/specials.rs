@@ -2339,7 +2339,8 @@ pub fn activate_line(
     if activation == ActivationType::Use {
         let is_player =
             activator.is_some_and(|id| world.players.iter().flatten().any(|p| p.mo == Some(id)));
-        if !is_player && !monster_can_use_special(special) {
+        // ZDoom `ML_MONSTERSCANACTIVATE` (UDMF `monsteractivate`) widens it.
+        if !is_player && !monster_can_use_special(special) && (flags & 0x2000) == 0 {
             return false;
         }
     }
@@ -5011,19 +5012,27 @@ fn teleport(
     }
     telefrag_occupants(world, mo);
     if source_fog {
-        spawn_teleport_fog(world, old_pos);
+        spawn_teleport_fog_of(world, mo, old_pos, false);
     }
     if dest_fog {
         // Doom: dest fog at `m->x + 20*finecosine[an]`, `m->y + 20*finesine[an]`.
         let fine = room_core::math::bam_to_fine(ang.to_bam().0);
         let fog_x = pos.x() + f64::from(20 * room_core::math::finecosine(fine)) / 65536.0;
         let fog_y = pos.y() + f64::from(20 * room_core::math::finesine(fine)) / 65536.0;
-        spawn_teleport_fog(world, DVec3::new(fog_x, fog_y, floor_z));
+        spawn_teleport_fog_of(world, mo, DVec3::new(fog_x, fog_y, floor_z), true);
     }
     // Player reactiontime stall — monsters move immediately (`Teleport_NoStop` skips).
     if !keep_velocity && world.players.iter().flatten().any(|p| p.mo == Some(mo)) {
+        // `Player.TeleportFreezeTime` (default 18).
+        let freeze = world
+            .actors
+            .get(mo)
+            .and_then(|a| world.classes.get(a.class))
+            .map(|c| c.ext.teleport_freeze_time)
+            .filter(|t| *t >= 0)
+            .unwrap_or(18);
         if let Some(a) = world.actors.get_mut(mo) {
-            a.reaction_time = 18;
+            a.reaction_time = freeze;
         }
     }
     1
@@ -5112,6 +5121,40 @@ fn find_teleport_dest(world: &World, tid: i32, tag: i32) -> Option<(DVec3, Angle
 pub(crate) fn spawn_teleport_fog(world: &mut World, pos: DVec3) {
     world.play_sound("misc/teleport", pos.x(), pos.y(), pos.z(), 1.0);
     if let Some(class) = world.classes.find_name("TeleportFog") {
+        let _ = world.spawn_at(class, pos, Angle::ZERO);
+    }
+}
+
+/// Teleport fog for `mo`: `A_SetTeleFog`'s class, else the class
+/// `TelefogSourceType` / `TelefogDestType`, else `TeleportFog`. `"None"`
+/// spawns no fog (the sound still plays).
+pub(crate) fn spawn_teleport_fog_of(world: &mut World, mo: ActorId, pos: DVec3, dest: bool) {
+    let name = world.actors.get(mo).and_then(|a| {
+        let own = if dest {
+            &a.telefog_dest
+        } else {
+            &a.telefog_source
+        };
+        if !own.is_empty() {
+            return Some(own.clone());
+        }
+        let c = world.classes.get(a.class)?;
+        let t = if dest {
+            &c.ext.telefog_dest_type
+        } else {
+            &c.ext.telefog_source_type
+        };
+        (!t.is_empty()).then(|| t.clone())
+    });
+    let Some(name) = name else {
+        spawn_teleport_fog(world, pos);
+        return;
+    };
+    world.play_sound("misc/teleport", pos.x(), pos.y(), pos.z(), 1.0);
+    if name.eq_ignore_ascii_case("None") {
+        return;
+    }
+    if let Some(class) = world.classes.find_name(&name) {
         let _ = world.spawn_at(class, pos, Angle::ZERO);
     }
 }
@@ -5388,8 +5431,8 @@ fn teleport_in_sector(world: &mut World, args: &[i32; 5]) -> i32 {
         }
         let new_pos = world.actors.get(id).map(|a| a.pos).unwrap_or(old);
         if fog {
-            spawn_teleport_fog(world, old);
-            spawn_teleport_fog(world, new_pos);
+            spawn_teleport_fog_of(world, id, old, false);
+            spawn_teleport_fog_of(world, id, new_pos, true);
         }
         n += 1;
     }
@@ -5418,8 +5461,8 @@ fn teleport_other(world: &mut World, args: &[i32; 5]) -> i32 {
             a.vel = DVec3::ZERO;
         }
         if fog {
-            spawn_teleport_fog(world, old);
-            spawn_teleport_fog(world, dest.0);
+            spawn_teleport_fog_of(world, id, old, false);
+            spawn_teleport_fog_of(world, id, dest.0, true);
         }
     }
     1
@@ -5466,8 +5509,8 @@ fn teleport_group(world: &mut World, args: &[i32; 5]) -> i32 {
         a.vel = DVec3::ZERO;
         let new_pos = a.pos;
         if fog {
-            spawn_teleport_fog(world, old);
-            spawn_teleport_fog(world, new_pos);
+            spawn_teleport_fog_of(world, id, old, false);
+            spawn_teleport_fog_of(world, id, new_pos, true);
         }
         n += 1;
     }

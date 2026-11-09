@@ -7,6 +7,106 @@ use std::collections::BTreeMap;
 /// Generational handle to an [`Actor`].
 pub type ActorId = Handle<Actor>;
 
+/// A light attached with `A_AttachLight` / `A_AttachLightDef`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttachedLight {
+    /// Light id (`A_RemoveLight` key, lowercase).
+    pub id: String,
+    /// GLDEFS light name (`A_AttachLightDef`); empty for an explicit light.
+    pub def: String,
+    /// `DynamicLight` type (0 point, 1 pulse, 2 flicker, 3 sector, 4 random).
+    pub kind: i32,
+    /// Colour as `0xRRGGBB`.
+    pub color: u32,
+    /// Primary and secondary radius.
+    pub radius: (f64, f64),
+    /// `DYNAMICLIGHT_*` flags.
+    pub flags: i32,
+    /// Offset from the actor (forward, left, up rotated by the actor's yaw).
+    pub offset: DVec3,
+    /// Pulse / flicker parameter.
+    pub param: f64,
+    /// Spot inner and outer angles in degrees.
+    pub spot: (f64, f64),
+    /// Intensity multiplier.
+    pub intensity: f64,
+}
+
+/// Model state changed by `A_ChangeModel` / `A_SetAnimation` / model flags.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ActorModelState {
+    /// `A_ChangeModel` replacements: (model index, model path, model file, skin path, skin file).
+    pub models: Vec<(i32, String, String, String, String)>,
+    /// Replacement MODELDEF class (`modeldef` argument).
+    pub modeldef: String,
+    /// Animation set with `A_SetAnimation`: name, framerate (`-1` = model's),
+    /// start / loop / end frames (`-1` = defaults), interpolation tics, flags.
+    pub animation: Option<(String, f64, i32, i32, i32, i32, i32)>,
+    /// Map tic when the animation started.
+    pub animation_start: u32,
+    /// `MDL_*` flags from `A_SetModelFlag` (`None` = MODELDEF's).
+    pub flags: Option<u32>,
+}
+
+/// Per-actor state for actions that UZDoom keeps on `AActor` and Room did not.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ActorExt {
+    /// `SpriteAngle` (`A_SetSpriteAngle`, degrees).
+    pub sprite_angle: f64,
+    /// `SpriteRotation` (`A_SetSpriteRotation`, degrees).
+    pub sprite_rotation: f64,
+    /// `VisibleStartAngle`, `VisibleEndAngle` (`A_SetVisibleRotation`; `None` = all).
+    pub visible_angles: Option<(f64, f64)>,
+    /// `VisibleStartPitch`, `VisibleEndPitch`.
+    pub visible_pitch: Option<(f64, f64)>,
+    /// Lights attached to this actor.
+    pub lights: Vec<AttachedLight>,
+    /// Model overrides.
+    pub model: ActorModelState,
+    /// Hexen `special1` / `special2` counters.
+    pub special1: i32,
+    /// Hexen `special2`.
+    pub special2: i32,
+    /// Actor pointers Hexen keeps in `special1` / `special2` (lightning, Korax spirits…).
+    pub special_actor: (Option<ActorId>, Option<ActorId>),
+    /// `WeaveIndexZ` (`A_Weave` vertical phase).
+    pub weave_z: i32,
+    /// Ice / freeze death in progress (`+ICECORPSE`).
+    pub ice_corpse: bool,
+    /// `Floorclip`: how far the sprite sinks into the floor (Hexen spikes, serpents).
+    pub floorclip: f64,
+    /// `WeaveIndexXY` for ports that drive it directly.
+    pub weave_xy: i32,
+    /// `LastEnemy` (Hexen lightning pairs).
+    pub last_enemy: Option<ActorId>,
+    /// `specialf1` / `specialf2`.
+    pub specialf: (f64, f64),
+    /// Map-thing flags the actor was placed with (`SpawnFlags`, `MTF_*`).
+    pub spawn_flags: u32,
+    /// Generic per-action scratch (Strife / Hexen loops keyed by name).
+    pub scratch: BTreeMap<String, f64>,
+    /// Poison received (`P_PoisonMobj`): damage, tics left, period, poisoner.
+    pub poison: Option<(i32, i32, i32, Option<ActorId>)>,
+}
+
+impl ActorExt {
+    /// Spawn values from class properties: `SpriteRotation`, `VisibleAngles`
+    /// and `VisiblePitch` (`start, end` in degrees).
+    #[must_use]
+    pub fn from_class(c: &crate::class::ClassExt) -> Self {
+        let pair = |name: &str| match (c.stored_f64_at(name, 0), c.stored_f64_at(name, 1)) {
+            (Some(a), Some(b)) => Some((a, b)),
+            _ => None,
+        };
+        Self {
+            sprite_rotation: c.stored_f64("spriterotation").unwrap_or(0.0),
+            visible_angles: pair("visibleangles"),
+            visible_pitch: pair("visiblepitch"),
+            ..Self::default()
+        }
+    }
+}
+
 /// Live actor / mobj (M5 bootstrap fields).
 #[derive(Clone, Debug)]
 pub struct Actor {
@@ -52,6 +152,8 @@ pub struct Actor {
     pub telefog_source: String,
     /// ACS `SetActorTeleFog` destination fog class.
     pub telefog_dest: String,
+    /// Fields for the UZDoom actions ported in `uzact` (`docs/36`).
+    pub ext: Box<ActorExt>,
     /// Damage type for hits this actor inflicts (`A_SetDamageType` may change).
     pub damage_type: String,
     /// Projectile / melee damage amount (`A_SetDamage`; `<0` → use class default).

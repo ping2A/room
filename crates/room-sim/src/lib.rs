@@ -24,7 +24,7 @@ mod deco_eval;
 mod deco_zvm;
 mod flags;
 mod render_pose;
-pub use render_pose::{SpritePose, sprite_pose};
+pub use render_pose::{SpritePose, SpriteView, sprite_pose, sprite_view};
 pub mod fx_events;
 mod hitscan;
 mod inventory;
@@ -38,11 +38,15 @@ mod pickup;
 mod player;
 mod player_names;
 mod polyobj;
+pub mod powerups;
+#[cfg(test)]
+mod props_tests;
 mod script_host;
 pub mod script_mods;
 mod sector_specials;
 mod sight;
 mod sndseq;
+pub mod sound_env;
 mod special_names;
 mod specials;
 mod state;
@@ -50,13 +54,15 @@ mod terrain;
 mod think_player;
 mod thinker;
 mod use_lines;
+mod uz_constants;
+mod uzact;
 mod vanilla;
 pub mod view;
 mod weapon_slots;
 mod world;
 pub mod zscript;
 
-pub use action::{ActionResult, call_action, call_action_args, call_zscript_action};
+pub use action::{ActionResult, call_action, call_action_args, call_zscript_action, gender_name, parse_gender, sound_source_token};
 pub use action_known::{
     canonical_action_name, is_known_action, is_known_action_ci, known_action_names,
 };
@@ -65,13 +71,13 @@ pub use bot::run_bot_brains;
 pub use class::{
     ClassDef, ClassError, ClassRegistry, FLAG_AMBUSH, FLAG_BOSS, FLAG_BOUNCEONFLOORS,
     FLAG_BOUNCEONWALLS, FLAG_BUDDHA, FLAG_CORPSE, FLAG_COUNTITEM, FLAG_COUNTKILL, FLAG_DONTDRAW,
-    FLAG_DONTTHRUST, FLAG_DROPOFF, FLAG_DROPPED, FLAG_FLATSPRITE, FLAG_FLOAT, FLAG_FLOATBOB,
-    FLAG_FLOORCLIP, FLAG_FRIENDLY, FLAG_INVULNERABLE, FLAG_MISSILE, FLAG_NOBLOCKMAP, FLAG_NOBLOOD,
-    FLAG_NODAMAGE, FLAG_NOGRAVITY, FLAG_NOINTERACTION, FLAG_NORADIUSDMG, FLAG_NOTARGET,
-    FLAG_RIPPER, FLAG_SHOOTABLE, FLAG_SOLID, FLAG_SPAWNCEILING, FLAG_USESPECIAL, FLAG_WALLSPRITE,
-    RenderStyle,
+    FLAG_DONTTHRUST, FLAG_DORMANT, FLAG_DROPOFF, FLAG_DROPPED, FLAG_FLATSPRITE, FLAG_FLOAT,
+    FLAG_FLOATBOB, FLAG_FLOORCLIP, FLAG_FRIENDLY, FLAG_INVULNERABLE, FLAG_MISSILE, FLAG_NOBLOCKMAP,
+    FLAG_NOBLOOD, FLAG_NODAMAGE, FLAG_NOGRAVITY, FLAG_NOINTERACTION, FLAG_NORADIUSDMG,
+    FLAG_NOTARGET, FLAG_RIPPER, FLAG_SHOOTABLE, FLAG_SOLID, FLAG_SPAWNCEILING, FLAG_USESPECIAL,
+    FLAG_WALLSPRITE, RenderStyle,
 };
-pub use class::{is_known_flag, is_known_property};
+pub use class::{PROPERTIES_PARSED_ONLY, STORED_PROPERTIES, is_known_flag, is_known_property};
 pub use compat::{
     COMPATF_BOOMSCROLL, COMPATF_MBFMONSTERMOVE, COMPATF_TRACE, COMPATF2_NOMBF21, CompatFlags,
     CompatMode,
@@ -82,8 +88,8 @@ pub use flags::{ActorFlags, FLAG_WORDS, UZDOOM_FLAGS, is_uzdoom_flag};
 pub use fx_events::{FxEvent, Rgb8 as FxRgb8};
 pub use hitscan::{TraceHit, ViewTrace, line_attack, view_trace};
 pub use inventory::{
-    InvItem, InventoryBags, cheat_give, count_inventory, give_inventory, set_inventory,
-    take_inventory,
+    InvItem, InventoryBags, TravelState, apply_travel, capture_travel, cheat_give, count_inventory,
+    give_inventory, inter_hub_amount, set_inventory, take_inventory,
 };
 pub use level::LevelState;
 pub use locks::{LockKeyReq, LockSpec, LockTable};

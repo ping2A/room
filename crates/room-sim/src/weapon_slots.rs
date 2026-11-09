@@ -37,6 +37,8 @@ pub struct WeaponSlots {
     pub player_classes: Vec<PlayerClassEntry>,
     /// Whether `clearplayerclasses` was seen.
     pub cleared_player_classes: bool,
+    /// Class picked on the new-game class menu (wins over the first listed).
+    pub chosen_player_class: Option<String>,
 }
 
 /// Storage key of KEYCONF slot `0..=9` (or `10`): slot 0 is the tenth key.

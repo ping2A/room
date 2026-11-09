@@ -132,6 +132,11 @@ pub enum PlayerState {
 pub struct Player {
     /// Player pawn actor.
     pub mo: Option<ActorId>,
+    /// Strife hazard accumulator (UDMF `damagehazard` sectors), in tics.
+    pub hazard_count: i32,
+    /// Userinfo `gender` for `$playersound` lookup: 0 male, 1 female,
+    /// 2 neutral, 3 other (object / cyborg). `None` = the `gender` CVar.
+    pub gender: Option<u8>,
     /// This tic's command (filtered by [`Self::input_capture`] before think).
     pub cmd: TicCmd,
     /// Raw command before capture filtering (mods read via `player_cmd`).
@@ -311,6 +316,30 @@ pub struct Player {
     pub armor: i32,
     /// Armor save class: `0` none, `1` green (1/3), `2` blue (1/2).
     pub armor_class: u8,
+    /// `BasicArmor.SavePercent` as a fraction. `0` = use `armor_class`
+    /// (green 33.335 %, blue 50 %), which is what vanilla armor gives.
+    pub armor_save_percent: f64,
+    /// `Armor.MaxAbsorb` of the worn armor (`0` = no per-tic limit).
+    pub armor_max_absorb: i32,
+    /// `Armor.MaxFullAbsorb` of the worn armor.
+    pub armor_max_full_absorb: i32,
+    /// Damage absorbed this tic (`BasicArmor.AbsorbCount`; cleared every tic).
+    pub armor_absorb_count: i32,
+    /// Falling-scream already started for this fall (`*falling`).
+    pub falling_scream: bool,
+    /// `BasicArmor.BonusCount`: extra armor cap from `Armor.MaxBonus` items.
+    pub armor_bonus_count: i32,
+    /// Second `iddt`: things are shown on the automap.
+    pub automap_things: bool,
+    /// Hexen `poisoncount` (green screen; 1 damage every 16 tics while > 0).
+    pub poison_count: i32,
+    /// Who poisoned the player (credited for the poison damage).
+    pub poisoner: Option<ActorId>,
+    /// Generic powerups from `PowerupGiver`s (`Power*` class name, lowercase,
+    /// → state). Room's Doom pickups keep their dedicated fields.
+    pub powers: std::collections::BTreeMap<String, crate::powerups::PowerState>,
+    /// Class that gave the worn armor (`BasicArmor.ArmorType`).
+    pub armor_type: Option<ClassId>,
     /// Berserk pack active (fist damage boost; M5 flag).
     pub berserk: bool,
     /// Invulnerability sphere active.
@@ -377,6 +406,8 @@ pub struct Player {
     pub notarget: bool,
     /// `ChangeCamera` view actor (`None` = use `mo`).
     pub camera: Option<ActorId>,
+    /// `A_SetMugshotState` request for the status bar face (consumed by the HUD).
+    pub mugshot_state: Option<String>,
     /// Revert to `mo` on move (`ChangeCamera` revert flag).
     pub camera_revert: bool,
     /// Doom `player->damagecount` — recent damage (0..=100), red flash + face.
@@ -400,6 +431,27 @@ pub struct Player {
 }
 
 impl Player {
+    /// Armor save fraction for the damage formula (`BasicArmor.AbsorbDamage`).
+    #[must_use]
+    pub fn armor_fraction(&self) -> f64 {
+        if self.armor_save_percent > 0.0 {
+            return self.armor_save_percent;
+        }
+        match self.armor_class {
+            0 => 0.0,
+            1 => 0.333_35,
+            _ => 0.5,
+        }
+    }
+
+    /// Drop the worn armor's type and limits (armor points are untouched).
+    pub fn clear_armor_kind(&mut self) {
+        self.armor_save_percent = 0.0;
+        self.armor_max_absorb = 0;
+        self.armor_max_full_absorb = 0;
+        self.armor_type = None;
+    }
+
     /// Clear the secondary weapon overlay layer (GZDoom `A_ClearOverlays`).
     pub(crate) fn clear_secondary_overlay(&mut self) {
         self.overlay2_state = None;
@@ -524,6 +576,7 @@ impl Player {
         self.noclip = false;
         self.armor = 0;
         self.armor_class = 0;
+        self.clear_armor_kind();
         self.berserk = false;
         self.invulnerable = false;
         self.invul_tics = 0;

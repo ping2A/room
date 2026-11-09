@@ -329,6 +329,15 @@ pub struct World {
     pub players: [Option<Player>; MAX_PLAYERS],
     /// `player->refire` of the slot currently in `player_think` (slot is `take()`n).
     pub(crate) thinking_refire: i32,
+    /// Damage type for the next `damage_mobj` (poison); taken by that call.
+    pub(crate) forced_damage_type: Option<String>,
+    /// Set while `PowerReflection` returns damage (no reflecting the reflection).
+    pub(crate) reflecting: bool,
+    /// Powers of the player whose thinker is running (that player is out of
+    /// `players` meanwhile): pawn and power states.
+    pub(crate) thinking_powers: Option<(ActorId, Vec<crate::powerups::PowerState>)>,
+    /// Puff class for the hitscan being fired (`LineAttack(…, puff)`); `None` = `BulletPuff`.
+    pub(crate) puff_override: Option<String>,
     /// `up_move` of the slot currently in `player_think` (slot is `take()`n).
     pub(crate) thinking_up_move: i16,
     /// Weapon whose psprite action is running: state jumps resolve its labels.
@@ -544,6 +553,8 @@ pub struct World {
     pub squad_dbno: bool,
     /// Dead players stay down instead of respawning with Use (mod rule).
     pub no_player_respawn: bool,
+    /// Sound zones and their reverb environment IDs (render-side only).
+    pub sound_env: crate::sound_env::SoundEnvState,
     /// Netgame weapon stay (`sv_weaponstay` / docs/30 W17): map weapons are not
     /// removed on pickup so each player can take them once. Dropped weapons
     /// always disappear. Mods toggle via `game_set_rule(WEAPON_STAY)`.
@@ -568,6 +579,9 @@ pub struct World {
     pub respawn_monsters: bool,
     /// Respawn picked-up items (Duke `ud.respawn_items`).
     pub respawn_items: bool,
+    /// Picked-up items waiting to come back (`respawn_items`): due tic, class,
+    /// spot, angle.
+    pub item_respawns: Vec<(u32, ClassId, DVec3, Angle)>,
     /// Respawn inventory pickups (Duke `ud.respawn_inventory`).
     pub respawn_inventory: bool,
     /// No monsters (Duke `ud.monsters_off`).
@@ -817,6 +831,9 @@ pub enum SimSoundAdjust {
     StopAll,
     /// Stop every sound started by one actor.
     StopActor,
+    /// Stop one actor's sounds on channels `channel ..= channel_flags & 0xff`
+    /// (bit 8 of `channel_flags` = every channel), UZDoom `StopActorSounds`.
+    StopChannels,
 }
 
 /// Lightweight sim sound request (mapped to `room-audio::SoundEvent` by the shell).
@@ -910,6 +927,8 @@ pub struct SimParticleEvent {
     pub fade_out_step: f64,
     /// Particle roll: start angle, velocity, and acceleration in degrees.
     pub roll: [f64; 3],
+    /// `A_SpawnParticleEx` texture lump (`None` = untextured dot).
+    pub texture: Option<String>,
 }
 
 /// ACS `SetHUDClipRect` (HUD draw clip; shell applies).
@@ -1025,6 +1044,11 @@ pub struct PlayerHud {
     pub weapon_angle: f32,
     /// Ready weapon class name, for `MODELDEF ViewModelFOV`.
     pub weapon_class: String,
+    /// Pawn class display name (`Player.DisplayName`, else the class name),
+    /// for SBARINFO `PlayerClass`.
+    pub player_class: String,
+    /// Worn armor class name (SBARINFO `ArmorType`); empty when none.
+    pub armor_type: String,
     /// `A_SetCrosshair` index. 0 draws no mark.
     pub crosshair: i32,
     /// Weapon tint from `A_OverlayTranslation`. 1 is untinted.
@@ -1534,6 +1558,10 @@ impl World {
             live_ids: Vec::new(),
             players: std::array::from_fn(|_| None),
             thinking_refire: 0,
+            forced_damage_type: None,
+            reflecting: false,
+            thinking_powers: None,
+            puff_override: None,
             thinking_up_move: 0,
             psprite_weapon: None,
             psprite_state: None,
@@ -1640,6 +1668,7 @@ impl World {
             self_damage: true,
             squad_dbno: false,
             no_player_respawn: false,
+            sound_env: crate::sound_env::SoundEnvState::default(),
             weapon_stay: false,
             match_over: None,
             match_standings: Vec::new(),
@@ -1651,6 +1680,7 @@ impl World {
             fast_weapons: 0,
             respawn_monsters: skill >= 5,
             respawn_items: false,
+            item_respawns: Vec::new(),
             respawn_inventory: false,
             monsters_off: false,
             from_bonus: false,
@@ -1717,6 +1747,7 @@ impl World {
         crate::specials::init_udmf_floor_skews(&mut world);
         crate::specials::init_transfers(&mut world);
         world.spawn_map_things()?;
+        world.init_sound_zones(0);
         world.map_thinker_count = world.thinkers.default.len();
         crate::specials::init_security_camera_textures(&mut world);
         crate::sector_specials::spawn_sector_light_thinkers(&mut world);
@@ -2119,7 +2150,7 @@ impl World {
 
     fn spawn_map_things(&mut self) -> Result<(), SimError> {
         let things = self.map.things.clone();
-        for thing in &things {
+        for (thing_index, thing) in things.iter().enumerate() {
             // Skill filter (MTF_EASY=1, MTF_NORMAL=2, MTF_HARD=4). Player starts always spawn.
             if thing.type_id != THING_PLAYER1_START && !thing_fits_skill(thing.flags, self.skill) {
                 continue;
@@ -2194,6 +2225,7 @@ impl World {
                     a.flags |= crate::class::FLAG_FRIENDLY;
                 }
             }
+            self.apply_thing_ext(id, self.map.udmf_user.thing_ext(thing_index));
             if let Some(a) = self.actors.get_mut(id) {
                 a.special = u16::from(thing.special);
                 a.args = thing.args;
@@ -2257,6 +2289,7 @@ impl World {
                 if thing.float_bob_phase >= 0 {
                     a.float_bob_phase = (thing.float_bob_phase as u8) & 63;
                 }
+                a.ext.spawn_flags = thing.flags as u16 as u32;
                 if thing.count_secret {
                     a.count_secret = true;
                     self.level.total_secrets = self.level.total_secrets.saturating_add(1);
@@ -2529,11 +2562,43 @@ impl World {
         }
     }
 
+    /// UDMF Strife thing keys (`standing`, `strifeally`, `invisible`,
+    /// `translucent`), as ZDoom's `MTF_STANDSTILL` / `MTF_SHADOW` / `MTF_ALTSHADOW`.
+    fn apply_thing_ext(&mut self, id: ActorId, ext: u32) {
+        use room_map::udmf::ext::*;
+        let Some(a) = self.actors.get_mut(id) else {
+            return;
+        };
+        if ext & THING_STANDING != 0 {
+            a.extra_flags.set_name("STANDSTILL", true);
+        }
+        if ext & THING_STRIFEALLY != 0 {
+            a.flags |= crate::class::FLAG_FRIENDLY;
+        }
+        if ext & THING_TRANSLUCENT != 0 {
+            a.flags |= crate::class::FLAG_SHADOW;
+            a.render_style = crate::class::RenderStyle::Translucent;
+            a.alpha = 0.25;
+        } else if ext & THING_INVISIBLE != 0 {
+            a.render_style = crate::class::RenderStyle::None;
+        }
+    }
+
     /// Spawn map things flagged `MTF_NOTSINGLE` (bit 16) once multiplayer is active.
     fn spawn_multiplayer_only_things(&mut self) -> Result<(), SimError> {
         let things = self.map.things.clone();
-        for thing in &things {
+        for (thing_index, thing) in things.iter().enumerate() {
             if (thing.flags & 16) == 0 {
+                continue;
+            }
+            // UDMF `coop = false` / `dm = false`.
+            let ext = self.map.udmf_user.thing_ext(thing_index);
+            let mode_bit = if self.deathmatch {
+                room_map::udmf::ext::THING_NOTDM
+            } else {
+                room_map::udmf::ext::THING_NOTCOOP
+            };
+            if ext & mode_bit != 0 {
                 continue;
             }
             if thing.type_id == THING_PLAYER1_START
@@ -2566,6 +2631,7 @@ impl World {
                     a.flags |= crate::class::FLAG_FRIENDLY;
                 }
             }
+            self.apply_thing_ext(id, ext);
         }
         Ok(())
     }
@@ -2611,19 +2677,70 @@ impl World {
 
     /// Respawn a dead player at the first Player 1 start (keeps the same pawn id).
     pub fn respawn_player_at(&mut self, player: &mut Player) -> bool {
+        self.respawn_player_at_seat(player, 0)
+    }
+
+    /// Whether map spot `t` lies in a UDMF `norespawn` sector.
+    fn spot_blocks_respawn(&self, t: &room_map::RawThing) -> bool {
+        crate::physics::sector_at_xy(self, f64::from(t.x), f64::from(t.y)).is_some_and(|s| {
+            self.map.udmf_user.sector_ext(s) & room_map::udmf::ext::SECTOR_NORESPAWN != 0
+        })
+    }
+
+    /// Respawn spot for `seat`: a deathmatch start in deathmatch, else the
+    /// seat's own player start. Spots in UDMF `norespawn` sectors are skipped
+    /// (falling back to any other player start), as ZDoom's `SECMF_NORESPAWN`.
+    pub(crate) fn respawn_spot(&self, seat: usize) -> Option<room_map::RawThing> {
+        let ok = |t: &&room_map::RawThing| !self.spot_blocks_respawn(t);
+        let is_player_start = |id: i16| (1..=4).contains(&id) || (4001..=4004).contains(&id);
+        if self.deathmatch {
+            let dm: Vec<_> = self
+                .map
+                .things
+                .iter()
+                .filter(|t| t.type_id == THING_DEATHMATCH_START)
+                .filter(ok)
+                .collect();
+            if !dm.is_empty() {
+                // Deterministic (no RNG draw): rotate through the spots.
+                let i = (self.level.time as usize).wrapping_add(seat) % dm.len();
+                return Some(dm[i].clone());
+            }
+        }
+        let own: i16 = match seat {
+            0..=3 => seat as i16 + 1,
+            _ => 4001 + (seat as i16 - 4),
+        };
+        self.map
+            .things
+            .iter()
+            .filter(|t| t.type_id == own)
+            .find(ok)
+            .or_else(|| {
+                self.map
+                    .things
+                    .iter()
+                    .find(|t| t.type_id == THING_PLAYER1_START && ok(t))
+            })
+            .or_else(|| self.map.things.iter().filter(|t| is_player_start(t.type_id)).find(ok))
+            .or_else(|| {
+                self.map
+                    .things
+                    .iter()
+                    .find(|t| t.type_id == THING_PLAYER1_START)
+            })
+            .cloned()
+    }
+
+    /// [`Self::respawn_player_at`] for player `seat` (picks that seat's spot).
+    pub fn respawn_player_at_seat(&mut self, player: &mut Player, seat: usize) -> bool {
         if player.player_state != crate::player::PlayerState::Dead {
             return false;
         }
         let Some(mo) = player.mo else {
             return false;
         };
-        let Some(start) = self
-            .map
-            .things
-            .iter()
-            .find(|t| t.type_id == THING_PLAYER1_START)
-            .cloned()
-        else {
+        let Some(start) = self.respawn_spot(seat) else {
             return false;
         };
         let class = player.cls;
@@ -2689,9 +2806,15 @@ impl World {
     /// Player pawn class: the first KEYCONF `addplayerclass`, else `PlayerPawn`.
     fn player_class(&self) -> ClassId {
         self.weapon_slots
-            .player_classes
-            .iter()
-            .find_map(|c| self.classes.find_name(&c.class))
+            .chosen_player_class
+            .as_deref()
+            .and_then(|c| self.classes.find_name(c))
+            .or_else(|| {
+                self.weapon_slots
+                    .player_classes
+                    .iter()
+                    .find_map(|c| self.classes.find_name(&c.class))
+            })
             .or_else(|| self.classes.find_name("PlayerPawn"))
             .or_else(|| self.classes.find_name("Actor"))
             .unwrap_or(ClassId::from_raw(0))
@@ -2839,7 +2962,7 @@ impl World {
             let probe = Actor {
                 class,
                 pos,
-                vel: DVec3::ZERO,
+                vel: DVec3::new(0.0, 0.0, def.ext.vspeed),
                 angle,
                 pitch: Angle::ZERO,
                 view_pitch: None,
@@ -2858,6 +2981,7 @@ impl World {
                 translation: def.translation.clone(),
                 telefog_source: String::new(),
                 telefog_dest: String::new(),
+                ext: Box::new(crate::actor::ActorExt::from_class(&def.ext)),
                 damage_type: def.damage_type.clone(),
                 damage: def.damage,
                 score: 0,
@@ -2949,7 +3073,12 @@ impl World {
         } else {
             0
         };
-        let float_bob_phase = spawn_rnd & 63;
+        // `WeaveIndexXY` fixes the start phase; otherwise it is random.
+        let float_bob_phase = if def.ext.weave_index_xy >= 0 {
+            (def.ext.weave_index_xy & 63) as u8
+        } else {
+            spawn_rnd & 63
+        };
         // Doom pickups are `MF_SPECIAL` and not `MF_SOLID` (weapons/ammo/items).
         let mut flags = def.flags;
         if def.is_weapon || def.inventory_max_amount > 1 {
@@ -2958,7 +3087,7 @@ impl World {
         let actor = Actor {
             class,
             pos: spawn_pos,
-            vel: DVec3::ZERO,
+            vel: DVec3::new(0.0, 0.0, def.ext.vspeed),
             angle,
             pitch: Angle::ZERO,
             view_pitch: None,
@@ -2977,6 +3106,7 @@ impl World {
             translation: def.translation.clone(),
             telefog_source: String::new(),
             telefog_dest: String::new(),
+            ext: Box::new(crate::actor::ActorExt::from_class(&def.ext)),
             damage_type: def.damage_type.clone(),
             damage: def.damage,
             score: 0,
@@ -3001,8 +3131,8 @@ impl World {
             designated_team: def.designated_team,
             camera_height: def.camera_height,
             camera_fov: def.camera_fov,
-            accuracy: 0,
-            stamina: 0,
+            accuracy: def.ext.accuracy,
+            stamina: def.ext.stamina,
             ripper_level: def.ripper_level,
             rip_level_min: def.rip_level_min,
             rip_level_max: def.rip_level_max,
@@ -4008,7 +4138,8 @@ impl World {
         if !is_player && !actor.extra_flags.get_name("CANJUMP") {
             return false;
         }
-        let jump_z = actor.jump_z;
+        // `PowerHighJump` multiplies `JumpZ` by its `Strength` (2).
+        let jump_z = actor.jump_z * crate::powerups::jump_factor(self, id);
         if jump_z <= 0.0 {
             return false;
         }
@@ -5072,6 +5203,7 @@ impl World {
             roll: [0.0; 3],
             flags: 0,
             fade_out_step: 0.0,
+            texture: None,
         });
     }
 
@@ -5092,6 +5224,7 @@ impl World {
         roll: [f64; 3],
         flags: u32,
         fade_out_step: f64,
+        texture: Option<String>,
     ) {
         if lifetime <= 0 {
             return;
@@ -5113,6 +5246,7 @@ impl World {
             roll,
             flags,
             fade_out_step,
+            texture: texture.filter(|t| !t.is_empty() && t != "-"),
         });
     }
 
@@ -5492,8 +5626,44 @@ impl World {
         };
         let bob_x = (sway_x + ofs_x) as f32;
         #[allow(clippy::cast_possible_truncation)]
-        let bob_y = (sway_y + (player.pspr_y - crate::player::WEAPON_TOP) + ofs_y) as f32;
+        // `Weapon.YAdjust`: moves the gun down (positive) with the status bar.
+        let y_adjust = player
+            .ready_weapon
+            .and_then(|w| self.classes.get(w))
+            .map_or(0.0, |c| c.ext.weapon_y_adjust);
+        #[allow(clippy::cast_possible_truncation)]
+        let bob_y =
+            (sway_y + (player.pspr_y - crate::player::WEAPON_TOP) + ofs_y + y_adjust) as f32;
+        let class_weapon_scale = player
+            .ready_weapon
+            .and_then(|w| self.classes.get(w))
+            .map_or((1.0, 1.0), |c| {
+                (c.ext.weapon_scale.0, c.ext.weapon_scale.1 / 1.2)
+            });
+        let player_class = self
+            .classes
+            .get(actor.class)
+            .map(|c| {
+                if c.ext.display_name.is_empty() {
+                    c.name.clone()
+                } else {
+                    c.ext.display_name.clone()
+                }
+            })
+            .unwrap_or_default();
+        let armor_type = player
+            .armor_type
+            .and_then(|c| self.classes.get(c))
+            .map(|c| c.name.clone())
+            .or_else(|| match (player.armor > 0, player.armor_class) {
+                (true, 1) => Some("GreenArmor".to_owned()),
+                (true, 2) => Some("BlueArmor".to_owned()),
+                _ => None,
+            })
+            .unwrap_or_default();
         Some(PlayerHud {
+            player_class,
+            armor_type,
             health: actor.health,
             armor: player.armor,
             ammo,
@@ -5558,8 +5728,12 @@ impl World {
                 };
                 alpha as f32
             },
-            weapon_scale_x: player.weapon_scale.map(|(x, _)| x as f32).unwrap_or(1.0),
-            weapon_scale_y: player.weapon_scale.map(|(_, y)| y as f32).unwrap_or(1.0),
+            // `Weapon.WeaponScaleX/Y` (relative to GZDoom's 1.0 × 1.2 default)
+            // times `A_OverlayScale` on the gun layer.
+            weapon_scale_x: (player.weapon_scale.map_or(1.0, |(x, _)| x) * class_weapon_scale.0)
+                as f32,
+            weapon_scale_y: (player.weapon_scale.map_or(1.0, |(_, y)| y) * class_weapon_scale.1)
+                as f32,
             weapon_flip: player.weapon_flip,
             weapon_mirror: player.weapon_mirror,
             weapon_pivot_percent: player.weapon_pivot_percent,
@@ -5686,13 +5860,20 @@ impl World {
         let Some(player) = self.players.get_mut(p).and_then(|s| s.as_mut()) else {
             return false;
         };
-        player.allmap = !player.allmap;
-        let on = player.allmap;
-        self.push_message(if on {
+        // Doom `cheating = (cheating + 1) % 3`: map, map + things, off.
+        let msg = if !player.allmap {
+            player.allmap = true;
             "Computer Area Map ON"
+        } else if !player.automap_things {
+            player.automap_things = true;
+            "Automap things ON"
         } else {
+            player.allmap = false;
+            player.automap_things = false;
             "Computer Area Map OFF"
-        });
+        };
+        let on = player.allmap;
+        self.push_message(msg);
         on
     }
 
@@ -5992,6 +6173,7 @@ impl World {
             });
         }
         tick_contact_damage(self);
+        tick_item_respawns(self);
         crate::damage::tick_duke_effects(self);
         // Snapshot plane Z for render interpolation (`interpolations.begin_tic`).
         for sec in &mut self.sectors {
@@ -6005,6 +6187,7 @@ impl World {
                 self.thinking_up_move = p.cmd.up_move;
                 think_player::player_think_for_seat(self, &mut p, i as i32);
                 self.thinking_up_move = 0;
+                self.thinking_powers = None;
                 self.players[i] = Some(p);
             }
         }
@@ -6095,6 +6278,9 @@ impl World {
             self.advance_actor_state(id);
             self.tick_zscript_actor(id);
         }
+        tick_spectator_cameras(self);
+        tick_stealth(self);
+        crate::damage::tick_poison(self);
         if !self.level.frozen {
             specials::tick_doors(self);
             specials::tick_floors(self);
@@ -6145,6 +6331,7 @@ impl World {
         // state — not the psprite's — or the flare walks the weapon's states
         // and shows up as a ghost gun billboard (BD "phantom gun frames").
         let saved = (self.psprite_weapon.take(), self.psprite_state.take());
+        note_stealth_state(self, id, state);
         self.set_state_chain(id, state, call_action);
         if let Some(actor) = self.actors.get_mut(id)
             && actor.state.is_none()
@@ -6608,15 +6795,25 @@ fn try_nightmare_respawn(world: &mut World, id: ActorId) {
         a.move_count = a.move_count.saturating_add(1);
     }
     let move_count = world.actors.get(id).map(|a| a.move_count).unwrap_or(0);
-    // 12 seconds at TICRATE 35.
-    if move_count < 12 * 35 {
+    // `MinRespawnTics` (default 12 s) and `RespawnDice` (default 4).
+    let (min_tics, dice) = world
+        .actors
+        .get(id)
+        .and_then(|a| world.classes.get(a.class))
+        .map_or((12 * 35, 4), |c| {
+            (
+                c.ext.stored_i32("minrespawntics").unwrap_or(12 * 35),
+                c.ext.stored_i32("respawndice").unwrap_or(4),
+            )
+        });
+    if move_count < min_tics {
         return;
     }
     if world.level.time & 31 != 0 {
         return;
     }
     let roll = world.p_random("pr_respawn");
-    if roll > 4 {
+    if i32::from(roll) > dice {
         return;
     }
     let Some(a) = world.actors.get(id).cloned() else {
@@ -6646,6 +6843,214 @@ fn try_nightmare_respawn(world: &mut World, id: ActorId) {
     crate::specials::spawn_teleport_fog(world, old_pos);
     crate::specials::spawn_teleport_fog(world, spawn_pos);
     let _ = world.spawn_at(class, spawn_pos, spawn_angle);
+}
+
+/// `+STEALTH` (`visdir`): attacking and pain fade the monster in, chasing
+/// fades it back out.
+fn note_stealth_state(world: &mut World, id: ActorId, state: Option<room_core::StateId>) {
+    let Some(sid) = state else {
+        return;
+    };
+    let Some(a) = world.actors.get(id) else {
+        return;
+    };
+    if !a.extra_flags.get_name("STEALTH") {
+        return;
+    }
+    let class = a.class;
+    let is = |label: &str| world.states.find_label(class, label) == Some(sid);
+    let dir = if is("Missile") || is("Melee") || is("Pain") {
+        1.0
+    } else if is("See") || is("Spawn") {
+        -1.0
+    } else {
+        return;
+    };
+    if let Some(a) = world.actors.get_mut(id) {
+        a.ext.scratch.insert("visdir".into(), dir);
+    }
+}
+
+/// Per-tic stealth fade (`AActor::Tick`): `+1/32` alpha per tic while
+/// `visdir > 0`, `-3/32` toward `StealthAlpha` while `visdir < 0`.
+fn tick_stealth(world: &mut World) {
+    let ids: Vec<ActorId> = world.thinkers.default.clone();
+    for id in ids {
+        let Some(a) = world.actors.get(id) else {
+            continue;
+        };
+        if a.destroyed || !a.extra_flags.get_name("STEALTH") {
+            continue;
+        }
+        let Some(dir) = a.ext.scratch.get("visdir").copied().filter(|d| *d != 0.0) else {
+            continue;
+        };
+        let floor = world
+            .classes
+            .get(a.class)
+            .map_or(0.0, |c| c.ext.stealth_alpha);
+        let Some(a) = world.actors.get_mut(id) else {
+            continue;
+        };
+        if dir > 0.0 {
+            a.alpha += 1.0 / 32.0;
+            if a.alpha >= 1.0 {
+                a.alpha = 1.0;
+                a.ext.scratch.insert("visdir".into(), 0.0);
+            }
+        } else {
+            a.alpha -= 3.0 / 32.0;
+            if a.alpha <= floor {
+                a.alpha = floor;
+                a.ext.scratch.insert("visdir".into(), 0.0);
+            }
+        }
+        if a.render_style == crate::class::RenderStyle::Normal {
+            a.render_style = crate::class::RenderStyle::Translucent;
+        }
+    }
+}
+
+/// `SpectatorCamera.Tick`: follow `tracer` (or the camera's player).
+///
+/// `SpectatorCamera.LagDistance` 0 keeps the tracer centred. Otherwise the
+/// camera lags: past `LagDistance` it starts chasing at the tracer's speed,
+/// snaps when twice that far, and `ChaseMode` 1 only chases while the tracer
+/// moves, 2 stops after one step. `ChasingTracer` is the starting state.
+fn tick_spectator_cameras(world: &mut World) {
+    let cams: Vec<ActorId> = world
+        .thinkers
+        .default
+        .iter()
+        .copied()
+        .filter(|&id| {
+            world.actors.get(id).is_some_and(|a| {
+                !a.destroyed
+                    && world
+                        .classes
+                        .get(a.class)
+                        .is_some_and(|c| c.ext.spectator_camera)
+            })
+        })
+        .collect();
+    for id in cams {
+        let Some(cam) = world.actors.get(id).cloned() else {
+            continue;
+        };
+        let def = world
+            .classes
+            .get(cam.class)
+            .map(|c| c.ext.clone())
+            .unwrap_or_default();
+        let lag = def.stored_f64("spectatorcamera.lagdistance").unwrap_or(0.0);
+        let mode = def.stored_i32("spectatorcamera.chasemode").unwrap_or(0);
+        let mut chasing = cam.ext.scratch.get("chasingtracer").map_or_else(
+            || def.stored_bool("spectatorcamera.chasingtracer"),
+            |v| *v != 0.0,
+        );
+        let Some(t) = cam
+            .tracer
+            .and_then(|t| world.actors.get(t))
+            .filter(|t| !t.destroyed)
+            .cloned()
+        else {
+            continue;
+        };
+        let d = DVec3::new(
+            t.pos.x() - cam.pos.x(),
+            t.pos.y() - cam.pos.y(),
+            t.pos.z() - cam.pos.z(),
+        );
+        let dist = room_core::dmath::sqrt(d.x() * d.x() + d.y() * d.y() + d.z() * d.z());
+        let mut dest = cam.pos;
+        if (dist <= 4.0 && chasing) || lag <= 0.0 || dist >= 2.0 * lag {
+            dest = t.pos;
+            chasing = false;
+        } else {
+            if dist > lag && !chasing {
+                chasing = true;
+            }
+            if chasing && dist > 0.0 {
+                let mut speed =
+                    room_core::dmath::sqrt(t.vel.x() * t.vel.x() + t.vel.y() * t.vel.y()) / dist;
+                if speed == 0.0 && mode == 0 {
+                    speed = t.speed / dist;
+                }
+                dest = DVec3::new(
+                    cam.pos.x() + 2.0 * d.x() * speed,
+                    cam.pos.y() + 2.0 * d.y() * speed,
+                    cam.pos.z() + 2.0 * d.z() * speed,
+                );
+                if mode > 1 {
+                    chasing = false;
+                }
+            }
+        }
+        if let Some(a) = world.actors.get_mut(id) {
+            a.pos = dest;
+            a.ext
+                .scratch
+                .insert("chasingtracer".into(), f64::from(u8::from(chasing)));
+        }
+    }
+}
+
+/// Bring back items queued by [`queue_item_respawn`] (GZDoom
+/// `Inventory.DoRespawn`): the item reappears at its map spot with `ItemFog`.
+fn tick_item_respawns(world: &mut World) {
+    if world.item_respawns.is_empty() {
+        return;
+    }
+    let now = world.level.time;
+    let due: Vec<(u32, ClassId, DVec3, Angle)> = world
+        .item_respawns
+        .iter()
+        .copied()
+        .filter(|r| r.0 <= now)
+        .collect();
+    world.item_respawns.retain(|r| r.0 > now);
+    for (_, class, pos, angle) in due {
+        let _ = world.spawn_at(class, pos, angle);
+        world.play_sound("misc/spawn", pos.x(), pos.y(), pos.z(), 1.0);
+        if let Some(fog) = world.classes.find_name("ItemFog") {
+            let _ = world.spawn_at(fog, pos, Angle::ZERO);
+        }
+    }
+}
+
+/// Queue a picked-up map item to respawn (`Inventory.ShouldRespawn`).
+///
+/// Only with `respawn_items` (deathmatch item respawn), never for dropped
+/// items or `+INVENTORY.NEVERRESPAWN`; `FakeInventory` needs
+/// `FakeInventory.Respawns`. `+INVENTORY.ALWAYSRESPAWN` respawns without the
+/// switch. The delay is `Inventory.RespawnTics` (default 30 s).
+pub(crate) fn queue_item_respawn(world: &mut World, item: ActorId) {
+    let Some(a) = world.actors.get(item) else {
+        return;
+    };
+    if a.flags & crate::class::FLAG_DROPPED != 0 {
+        return;
+    }
+    let (class, pos, angle) = (a.class, a.spawn_point, a.spawn_angle);
+    let Some(c) = world.classes.get(class) else {
+        return;
+    };
+    let always = c.ext.has_qualified_flag("INVENTORY.ALWAYSRESPAWN");
+    if !(world.respawn_items || always) || c.ext.has_qualified_flag("INVENTORY.NEVERRESPAWN") {
+        return;
+    }
+    if world.classes.inherits_from(class, "FakeInventory")
+        && !c.ext.stored_bool("fakeinventory.respawns")
+    {
+        return;
+    }
+    let tics = c
+        .ext
+        .stored_i32("inventory.respawntics")
+        .unwrap_or(30 * 35)
+        .max(1);
+    let due = world.level.time.saturating_add(tics as u32);
+    world.item_respawns.push((due, class, pos, angle));
 }
 
 /// `ContactDamage`: hurt overlapping shootable actors every 8 tics.

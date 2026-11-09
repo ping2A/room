@@ -5,6 +5,7 @@
 mod audio_out;
 mod crash;
 mod face_import;
+mod gamepad;
 mod launcher;
 mod midi_device;
 mod netplay;
@@ -764,6 +765,8 @@ fn main() {
         cam_prev: None,
         cam_curr: None,
         sprite_prev: std::collections::HashMap::new(),
+        sprite_extra_prev: std::collections::HashMap::new(),
+        sprite_extra_curr: std::collections::HashMap::new(),
         sprite_curr: std::collections::HashMap::new(),
         messages: MessageQueue::new(),
         hud_message_log: std::collections::HashMap::new(),
@@ -829,6 +832,13 @@ fn main() {
         console_open: false,
         console_line: String::new(),
         keyconf_binds: std::collections::BTreeMap::new(),
+        double_binds: room_input::DoubleBindings::default(),
+        double_tap: room_input::DoubleTapDetector::default(),
+        start_instant: std::time::Instant::now(),
+        pad_backend: gamepad::PadBackend::new(),
+        pad: None,
+        pad_prev_buttons: 0,
+        pad_pressed_since_tic: 0,
         mod_buttons: ModButtonState::default(),
         weapon_impulses: WeaponImpulseState::default(),
         audio,
@@ -907,6 +917,31 @@ fn main() {
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("room: {e}");
         std::process::exit(1);
+    }
+    print_endoom(&app);
+}
+
+/// `showendoom`: print the IWAD/PWAD ENDOOM (ENDTEXT, ENDSTRF) quit screen
+/// to the terminal in ANSI colour after the window closes.
+fn print_endoom(app: &ViewerApp) {
+    let on = matches!(
+        app.console.cvars.get("showendoom"),
+        Some(room_console::CvarValue::Bool(true)) | Some(room_console::CvarValue::Int(1..))
+    );
+    if !on {
+        return;
+    }
+    let Some(vfs) = app.vfs.as_ref() else {
+        return;
+    };
+    for name in room_ui::endoom::ENDOOM_LUMPS {
+        if let Some(lump) = vfs.find_any_ns(name)
+            && let Ok(data) = vfs.read(lump)
+            && let Some(text) = room_ui::endoom::endoom_to_ansi(data.as_ref())
+        {
+            print!("{text}");
+            return;
+        }
     }
 }
 
@@ -2195,6 +2230,10 @@ struct ViewerApp {
     sprite_prev: std::collections::HashMap<room_sim::ActorId, (f32, f32, f32, f32)>,
     /// Sprite XYZ + yaw after the last sim tic.
     sprite_curr: std::collections::HashMap<room_sim::ActorId, (f32, f32, f32, f32)>,
+    /// Scale X/Y + alpha of `+INTERPOLATESCALE` / `+INTERPOLATEALPHA` actors
+    /// at the previous and the last tic.
+    sprite_extra_prev: std::collections::HashMap<room_sim::ActorId, (f32, f32, f32)>,
+    sprite_extra_curr: std::collections::HashMap<room_sim::ActorId, (f32, f32, f32)>,
     /// On-screen messages from the sim.
     messages: MessageQueue,
     /// Last logged text per ACS HudMessage id (console log dedupe).
@@ -2217,6 +2256,17 @@ struct ViewerApp {
     console_line: String,
     /// KEYCONF `defaultbind` → console command (lowercase key name).
     keyconf_binds: std::collections::BTreeMap<String, String>,
+    /// `doublebind` table and its tap timer.
+    double_binds: room_input::DoubleBindings,
+    double_tap: room_input::DoubleTapDetector,
+    /// Process start, for input timing.
+    start_instant: std::time::Instant,
+    /// Game controller backend and this frame's / last frame's sample.
+    pad_backend: gamepad::PadBackend,
+    pad: Option<room_input::GamepadState>,
+    pad_prev_buttons: u32,
+    /// Controller buttons newly pressed since the last tic (edge-triggered binds).
+    pad_pressed_since_tic: u32,
     /// Held `+mod1` … `+mod4` bits (`docs/28` BE4).
     mod_buttons: ModButtonState,
     /// KEYCONF `+reload` / `+zoom` / `+user1`–`4` latch (`docs/33` BD4).
@@ -2248,6 +2298,43 @@ fn load_animdefs(
 }
 
 /// Animate pulse / flicker radius from GLDEFS (`interval` in seconds).
+/// Things for the second `iddt` (`AM_drawThings`): monsters red, items and
+/// pickups yellow, the rest green, each shifted by its class `AutomapOffsets`.
+fn automap_things(world: &room_sim::World) -> Vec<room_ui::AutomapThing> {
+    let mut out = Vec::new();
+    for &id in &world.thinkers.default {
+        let Some(a) = world.actors.get(id) else {
+            continue;
+        };
+        if a.destroyed {
+            continue;
+        }
+        let Some(c) = world.classes.get(a.class) else {
+            continue;
+        };
+        let (ox, oy) = (
+            c.ext.stored_f64_at("automapoffsets", 0).unwrap_or(0.0),
+            c.ext.stored_f64_at("automapoffsets", 1).unwrap_or(0.0),
+        );
+        let color = if a.flags & room_sim::FLAG_COUNTKILL != 0 && a.health > 0 {
+            room_ui::Rgba::new(0.9, 0.2, 0.2, 1.0)
+        } else if a.flags & room_sim::FLAG_COUNTITEM != 0 || c.is_inventory || c.is_weapon {
+            room_ui::Rgba::new(0.9, 0.85, 0.2, 1.0)
+        } else {
+            room_ui::Rgba::new(0.3, 0.85, 0.3, 1.0)
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        out.push(room_ui::AutomapThing {
+            x: a.pos.x() + ox,
+            y: a.pos.y() + oy,
+            angle_deg: a.angle.degrees() as f32,
+            radius: a.radius.max(4.0) as f32,
+            color,
+        });
+    }
+    out
+}
+
 fn animated_light_radius(
     kind: DynLightKind,
     size: f32,
@@ -2329,6 +2416,7 @@ fn title_menu(game: &Headless) -> MenuStack {
     MenuStack::from_menudef_or_doom(game.menudef())
         .with_skills(game.mapinfo().map_or(&[], |m| m.skills.as_slice()))
         .with_episodes(game.mapinfo().map_or(&[], |m| m.episodes.as_slice()))
+        .with_player_classes(game.menu_player_classes())
 }
 
 fn load_sky_defs(
@@ -2553,6 +2641,7 @@ fn start_play_session(
                 Err(e) => eprintln!("room: python mod: {e}"),
             }
         }
+        game.load_reverbs(vfs);
         let mut sounds = SoundSystem::with_sample_rate(audio_rate);
         match sounds.load_sndinfo_from_vfs(vfs) {
             Ok(()) => {
@@ -2854,6 +2943,7 @@ impl ApplicationHandler for ViewerApp {
                         physical_key: PhysicalKey::Code(code),
                         state,
                         text,
+                        repeat,
                         ..
                     },
                 ..
@@ -2958,6 +3048,21 @@ impl ApplicationHandler for ViewerApp {
                     return;
                 }
                 let menu_open = self.menu.is_some();
+                // `doublebind`: a second press inside `m_doubleclicktime`.
+                if down && !repeat && !menu_open && self.play.is_some() {
+                    if let Some(name) = keycode_keyconf_name(code) {
+                        let now = self.start_instant.elapsed().as_millis() as u64;
+                        self.double_tap.threshold_ms = match self.console.cvars.get("m_doubleclicktime") {
+                            Some(room_console::CvarValue::Int(v)) => (*v).max(0) as u64,
+                            _ => room_input::double_tap::DEFAULT_DOUBLE_TAP_MS,
+                        };
+                        if self.double_tap.press(name, now)
+                            && let Some(cmd) = self.double_binds.get(name).map(str::to_owned)
+                        {
+                            self.apply_console(&cmd);
+                        }
+                    }
+                }
                 if down
                     && !menu_open
                     && self.duke_demo_recorder.is_none()
@@ -3676,7 +3781,9 @@ impl ApplicationHandler for ViewerApp {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.poll_gamepad(event_loop);
+        self.update_audio_frame();
         if let Some(w) = &self.window {
             w.request_redraw();
         }
@@ -3684,6 +3791,142 @@ impl ApplicationHandler for ViewerApp {
 }
 
 impl ViewerApp {
+    /// Per-frame audio state: pause (`S_PauseSound`; menus over a running
+    /// single-player game count) and the listener's sound environment.
+    fn update_audio_frame(&mut self) {
+        let Some(audio) = self.audio.as_ref() else {
+            return;
+        };
+        let cvar_on = |name: &str| {
+            !matches!(self.console.cvars.get(name), Some(room_console::CvarValue::Bool(false)))
+        };
+        let reverb_on = cvar_on("snd_reverb");
+        let water = cvar_on("snd_waterreverb");
+        let (paused, env) = match self.play.as_ref() {
+            Some(game) if game.state == GameState::Level => {
+                let paused = game.world().is_some_and(|w| w.paused);
+                let env = if reverb_on {
+                    game.listener_environment(self.local_seat, water).cloned()
+                } else {
+                    None
+                };
+                (paused, env)
+            }
+            _ => (false, None),
+        };
+        if let Ok(mut shared) = audio.shared.lock() {
+            shared.mixer.set_paused(paused);
+            shared.mixer.set_environment(env.as_ref());
+        }
+    }
+
+    /// `joy_*` CVars → controller tuning.
+    fn gamepad_config(&self) -> room_input::GamepadConfig {
+        let f = |n: &str, d: f32| match self.console.cvars.get(n) {
+            Some(room_console::CvarValue::Float(v)) => *v as f32,
+            Some(room_console::CvarValue::Int(v)) => *v as f32,
+            _ => d,
+        };
+        let d = room_input::GamepadConfig::default();
+        room_input::GamepadConfig {
+            deadzone: f("joy_deadzone", d.deadzone),
+            curve: f("joy_curve", d.curve),
+            look_sensitivity: f("joy_sensitivity", d.look_sensitivity),
+            move_sensitivity: f("joy_speedmultiplier", d.move_sensitivity),
+            invert_pitch: matches!(
+                self.console.cvars.get("joy_invertpitch"),
+                Some(room_console::CvarValue::Bool(true))
+            ),
+            trigger_threshold: d.trigger_threshold,
+        }
+    }
+
+    /// Sample the controller; drive menus with D-pad / A / B / Start.
+    fn poll_gamepad(&mut self, event_loop: &ActiveEventLoop) {
+        use room_input::PadButton as B;
+        let enabled = !matches!(
+            self.console.cvars.get("use_joystick"),
+            Some(room_console::CvarValue::Bool(false))
+        );
+        let (state, newly) = self.pad_backend.poll();
+        if let Some(name) = newly {
+            self.messages.push(format!("Controller: {name}"), 70);
+        }
+        let state = state.filter(|_| enabled);
+        let buttons = state.map_or(0, |s| s.buttons);
+        let pressed = buttons & !self.pad_prev_buttons;
+        self.pad_prev_buttons = buttons;
+        self.pad_pressed_since_tic |= pressed;
+        self.pad = state;
+        let Some(state) = state else {
+            return;
+        };
+        let hit = |b: B| pressed & (1 << (b as u8)) != 0;
+        if self.menu.is_some() {
+            let up = hit(B::DPadUp);
+            let down = hit(B::DPadDown);
+            if up || down {
+                let sfx = self.menu.as_mut().and_then(|m| m.move_cursor(if up { -1 } else { 1 }));
+                if let Some(sfx) = sfx {
+                    self.play_menu_sfx(sfx);
+                }
+            }
+            if hit(B::South) || hit(B::Start) {
+                self.menu_activate(event_loop);
+            } else if hit(B::East) || hit(B::Back) {
+                let in_level = self
+                    .play
+                    .as_ref()
+                    .is_some_and(|g| g.state == GameState::Level);
+                if self.menu.as_ref().is_some_and(|m| m.stack.len() > 1) {
+                    if let Some(sfx) = self.menu.as_mut().and_then(|m| m.backup().1) {
+                        self.play_menu_sfx(sfx);
+                    }
+                } else if in_level {
+                    self.toggle_pause();
+                }
+            }
+            let _ = state;
+            return;
+        }
+        if hit(B::Start) {
+            let in_level = self
+                .play
+                .as_ref()
+                .is_some_and(|g| g.state == GameState::Level);
+            if in_level {
+                self.toggle_pause();
+            } else {
+                self.play_advance();
+            }
+        } else if hit(B::Back) && self.play.is_some() {
+            self.automap = !self.automap;
+        } else if hit(B::South) && self.play.as_ref().is_some_and(|g| g.state != GameState::Level) {
+            // Skip intermission / finale text like Enter.
+            self.play_advance();
+        }
+    }
+
+    /// Controller keys for this tic: held binds, with weapon cycling only on
+    /// the press (a held shoulder must not spin through every weapon).
+    fn gamepad_tic_keys(&mut self) -> Vec<Key> {
+        let pressed = std::mem::take(&mut self.pad_pressed_since_tic);
+        let Some(pad) = self.pad else {
+            return Vec::new();
+        };
+        let cfg = self.gamepad_config();
+        let binds = room_input::default_pad_binds();
+        let mut keys = room_input::gamepad_keys(&pad, &binds, &cfg);
+        keys.retain(|k| {
+            let edge_only = matches!(k, Key::NextWeapon | Key::PrevWeapon);
+            !edge_only
+                || binds
+                    .iter()
+                    .any(|(b, bk)| bk == k && pressed & (1 << (*b as u8)) != 0)
+        });
+        keys
+    }
+
     fn play_duke_rts_sound(&mut self, index: usize) -> bool {
         let sound_enabled = !matches!(
             self.console.cvars.get("duke_sound"),
@@ -4474,6 +4717,15 @@ impl ViewerApp {
                         // Live world map carries `ML_MAPPED` exploration bits.
                         } else if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
                             draw_automap(&world.map, &view, &mut ui);
+                            if world
+                                .players
+                                .get(usize::from(self.local_seat))
+                                .and_then(|p| p.as_ref())
+                                .is_some_and(|p| p.automap_things)
+                            {
+                                let things = automap_things(world);
+                                room_ui::draw_automap_things(&view, &things, &mut ui);
+                            }
                             let maptime = world.level.maptime;
                             draw_mod_zones_automap(&world.mod_zones, maptime, 1000, &view, &mut ui);
                         } else {
@@ -5175,9 +5427,21 @@ impl ViewerApp {
             // Pain and ACS FadeTo cover the whole window. The post chain
             // already mixes the palette tint when it is on.
             if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
-                if !use_post {
+                // `Powerup.Color` / `Player.DamageScreenColor`.
+                let extra = room_sim::powerups::screen_blend(world, usize::from(self.local_seat));
+                let replaces_pain =
+                    extra.is_some_and(|(_, r)| r) && (1..=8).contains(&self.hud.palette);
+                // Accessibility `r_reduce_flashing`: damage / pickup / powerup
+                // screen flashes drawn at a third of their strength.
+                let flash = if self.render_settings.reduce_flashing { 0.35 } else { 1.0 };
+                if !use_post && !replaces_pain {
                     if let Some(tint) = room_ui::screen_blend(self.hud.palette) {
-                        hud.fill_rect(0.0, 0.0, fb_w, fb_h, [tint.r, tint.g, tint.b, tint.a]);
+                        hud.fill_rect(0.0, 0.0, fb_w, fb_h, [tint.r, tint.g, tint.b, tint.a * flash]);
+                    }
+                }
+                if let Some((rgba, _)) = extra {
+                    if rgba[3] > 0.001 {
+                        hud.fill_rect(0.0, 0.0, fb_w, fb_h, [rgba[0], rgba[1], rgba[2], rgba[3] * flash]);
                     }
                 }
                 let fade = world.screen_fade;
@@ -5259,6 +5523,7 @@ impl ViewerApp {
                 // the last level camera (letterbox sides were showing the 3D world).
                 if !ui_only {
                     if let Some(vfs) = vfs {
+                        materials.anisotropy = render_settings.anisotropy;
                         pass.draw_materials(gpu, &mut rp, &scene, materials, vfs);
                     } else {
                         pass.draw(&mut rp, &scene);
@@ -5283,7 +5548,8 @@ impl ViewerApp {
             let present_tex = if use_post && !ui_only {
                 let mut blend = [0.0_f32, 0.0, 0.0, 0.0];
                 if let Some(tint) = room_ui::screen_blend(self.hud.palette) {
-                    blend = [tint.r, tint.g, tint.b, tint.a];
+                    let flash = if render_settings.reduce_flashing { 0.35 } else { 1.0 };
+                    blend = [tint.r, tint.g, tint.b, tint.a * flash];
                 }
                 if render_settings.damage_fx && self.hud.health > 0 && self.hud.health < 25 {
                     let low = ((25 - self.hud.health) as f32 / 25.0).clamp(0.0, 1.0);
@@ -5526,11 +5792,16 @@ impl ViewerApp {
         while self.tic_accum >= tic {
             self.tic_accum -= tic;
             let sample = self.sample_input();
-            let bits = build_ticcmd_with_mods_and_impulses(
+            let mut bits = build_ticcmd_with_mods_and_impulses(
                 &sample,
                 self.mod_buttons,
                 self.weapon_impulses,
             );
+            if self.menu.is_none()
+                && let Some(pad) = self.pad
+            {
+                room_input::apply_gamepad(&mut bits, &pad, &self.gamepad_config());
+            }
             let cmd = TicCmd {
                 buttons: Buttons(bits.buttons),
                 pitch: bits.pitch,
@@ -5701,7 +5972,11 @@ impl ViewerApp {
                 entered_intermission =
                     prev_state == GameState::Level && game.state == GameState::Intermission;
                 if let Some(vfs) = self.vfs.as_ref() {
-                    let events = game.drain_audio(vfs);
+                    // Userinfo `gender` for `$playersound` (per local seat).
+                    if let Some(room_console::CvarValue::String(g)) = self.console.cvars.get("gender") {
+                        game.set_player_gender(self.local_seat, room_sim::parse_gender(g));
+                    }
+                    let events = game.drain_audio_for(vfs, self.local_seat);
                     let music_req = game.take_music_request();
                     if let Some(audio) = self.audio.as_ref() {
                         if let Ok(mut shared) = audio.shared.lock() {
@@ -5770,6 +6045,7 @@ impl ViewerApp {
                             fade_out_step: e.fade_out_step,
                             size_step: e.size_step,
                             roll: e.roll,
+                            texture: e.texture,
                         })
                         .collect();
                     let maptime = world.level.maptime;
@@ -6061,8 +6337,11 @@ impl ViewerApp {
                         .unwrap_or((0, 0));
                     self.fixed_colormap = colormap;
                     // Doom: extralight<<4; infrared roughly fills to mid-bright.
-                    let light_boost =
-                        (extralight.clamp(0, 2) * 16 + i32::from(colormap == 1) * 64) as i16;
+                    // Accessibility `r_extralight` (0–4) adds 8 light levels per step.
+                    let acc_light = self.render_settings.extra_light.clamp(0, 4) * 8;
+                    let light_boost = (extralight.clamp(0, 2) * 16
+                        + i32::from(colormap == 1) * 64
+                        + acc_light) as i16;
                     planes = world
                         .sectors
                         .iter()
@@ -6584,6 +6863,8 @@ impl ViewerApp {
                 self.hud.weapon_pivot_y = h.weapon_pivot_y;
                 self.hud.weapon_angle = h.weapon_angle;
                 self.hud.weapon_class = h.weapon_class.clone();
+                self.hud.player_class = h.player_class.clone();
+                self.hud.armor_type = h.armor_type.clone();
                 self.hud.crosshair = h.crosshair;
                 self.hud.weapon_tint_r = h.weapon_tint_r;
                 self.hud.weapon_tint_g = h.weapon_tint_g;
@@ -7159,6 +7440,7 @@ impl ViewerApp {
         let Some(world) = self.play.as_ref().and_then(|g| g.world()) else {
             return out;
         };
+        self.collect_actor_lights(world, &mut out);
         if self.gldefs.object_lights.is_empty() {
             return out;
         }
@@ -7219,6 +7501,146 @@ impl ViewerApp {
             }
         }
         out
+    }
+
+    /// Lights from `A_AttachLight` / `A_AttachLightDef`, and map-placed
+    /// `DynamicLight` actors (`PointLight`, `SpotLight`, …: colour in args 0–2,
+    /// radius in arg 3; spot cones from `DynamicLight.SpotInnerAngle` /
+    /// `SpotOuterAngle`, default 10° / 25°).
+    fn collect_actor_lights(&self, world: &room_sim::World, out: &mut Vec<DynLightInstance>) {
+        let t = f64::from(world.level.maptime) / 35.0;
+        for &id in &world.thinkers.default {
+            let Some(a) = world.actors.get(id) else {
+                continue;
+            };
+            if a.destroyed {
+                continue;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let base = glam::Vec3::new(a.pos.x() as f32, a.pos.y() as f32, a.pos.z() as f32);
+            #[allow(clippy::cast_possible_truncation)]
+            let yaw = a.angle.radians() as f32;
+            #[allow(clippy::cast_possible_truncation)]
+            let pitch = a.pitch.radians() as f32;
+            let facing = glam::Vec3::new(
+                yaw.cos() * pitch.cos(),
+                yaw.sin() * pitch.cos(),
+                pitch.sin(),
+            )
+            .normalize_or_zero();
+            for l in &a.ext.lights {
+                if !l.def.is_empty() {
+                    let Some(def) = self.gldefs.lights.get(&l.def.to_ascii_lowercase()) else {
+                        continue;
+                    };
+                    let radius = animated_light_radius(
+                        def.kind,
+                        def.size,
+                        def.secondary_size,
+                        def.interval,
+                        t,
+                    );
+                    out.push(DynLightInstance {
+                        pos: base + glam::Vec3::from_array(def.offset),
+                        color: def.color,
+                        radius: radius.max(1.0),
+                        subtractive: def.subtractive,
+                        spot_dir: None,
+                        spot_outer_cos: 1.0,
+                        spot_inner_cos: 1.0,
+                    });
+                    continue;
+                }
+                let kind = match l.kind {
+                    1 => DynLightKind::Pulse,
+                    2 => DynLightKind::Flicker,
+                    4 => DynLightKind::FlickerRandom,
+                    3 => DynLightKind::Sector,
+                    _ => DynLightKind::Point,
+                };
+                #[allow(clippy::cast_possible_truncation)]
+                let radius = animated_light_radius(
+                    kind,
+                    l.radius.0 as f32,
+                    l.radius.1 as f32,
+                    l.param as f32,
+                    t,
+                );
+                // Offset: forward, left, up in the actor's frame.
+                #[allow(clippy::cast_possible_truncation)]
+                let (fx, fy, fz) = (
+                    l.offset.x() as f32,
+                    l.offset.y() as f32,
+                    l.offset.z() as f32,
+                );
+                let off = glam::Vec3::new(
+                    fx * yaw.cos() - fy * yaw.sin(),
+                    fx * yaw.sin() + fy * yaw.cos(),
+                    fz,
+                );
+                let rgb = [
+                    ((l.color >> 16) & 0xff) as f32 / 255.0,
+                    ((l.color >> 8) & 0xff) as f32 / 255.0,
+                    (l.color & 0xff) as f32 / 255.0,
+                ];
+                #[allow(clippy::cast_possible_truncation)]
+                let k = l.intensity.max(0.0) as f32;
+                let spot = l.flags & 64 != 0 && l.spot.1 > 0.0;
+                #[allow(clippy::cast_possible_truncation)]
+                let (inner, outer) = (l.spot.0.to_radians() as f32, l.spot.1.to_radians() as f32);
+                out.push(DynLightInstance {
+                    pos: base + off,
+                    color: [rgb[0] * k, rgb[1] * k, rgb[2] * k],
+                    radius: radius.max(1.0),
+                    subtractive: l.flags & 1 != 0,
+                    spot_dir: spot.then_some(facing),
+                    spot_outer_cos: if spot { outer.cos() } else { 1.0 },
+                    spot_inner_cos: if spot { inner.min(outer).cos() } else { 1.0 },
+                });
+            }
+            // Map-placed `DynamicLight` things.
+            let Some(class) = world.classes.get(a.class) else {
+                continue;
+            };
+            if !world.classes.inherits_from(a.class, "DynamicLight") {
+                continue;
+            }
+            if a.flags & room_sim::FLAG_DORMANT != 0 {
+                continue;
+            }
+            let rgb = [
+                (a.args[0].clamp(0, 255)) as f32 / 255.0,
+                (a.args[1].clamp(0, 255)) as f32 / 255.0,
+                (a.args[2].clamp(0, 255)) as f32 / 255.0,
+            ];
+            #[allow(clippy::cast_possible_truncation)]
+            let radius = a.args[3].max(1) as f32;
+            let spot = world.classes.inherits_from(a.class, "SpotLight")
+                || class.name.to_ascii_lowercase().contains("spot");
+            #[allow(clippy::cast_possible_truncation)]
+            let inner = class
+                .ext
+                .stored_f64("dynamiclight.spotinnerangle")
+                .unwrap_or(10.0) as f32;
+            #[allow(clippy::cast_possible_truncation)]
+            let outer = class
+                .ext
+                .stored_f64("dynamiclight.spotouterangle")
+                .unwrap_or(25.0) as f32;
+            out.push(DynLightInstance {
+                pos: base,
+                color: rgb,
+                radius,
+                subtractive: class.name.to_ascii_lowercase().contains("subtractive"),
+                spot_dir: spot.then_some(facing),
+                spot_outer_cos: if spot { outer.to_radians().cos() } else { 1.0 },
+                spot_inner_cos: if spot {
+                    inner.min(outer).to_radians().cos()
+                } else {
+                    1.0
+                },
+            });
+        }
     }
 
     fn fill_voxel_poses(&mut self) {
@@ -7345,17 +7767,23 @@ impl ViewerApp {
             let Some(class) = world.classes.get(a.class) else {
                 continue;
             };
+            // `A_ChangeModel(modeldef: …)` swaps the MODELDEF entry.
+            let model_class = if a.ext.model.modeldef.is_empty() {
+                class.name.clone()
+            } else {
+                a.ext.model.modeldef.clone()
+            };
             if !self
                 .modeldefs
                 .by_actor
-                .contains_key(&class.name.to_ascii_lowercase())
+                .contains_key(&model_class.to_ascii_lowercase())
             {
                 continue;
             }
             let light = (actor_light_level(world, a) as f32 / 255.0).clamp(0.2, 1.0);
             #[allow(clippy::cast_possible_truncation)]
             out.push(ModelActorPose {
-                class: class.name.clone(),
+                class: model_class,
                 origin: Vec3::new(a.pos.x() as f32, a.pos.y() as f32, a.pos.z() as f32),
                 light,
             });
@@ -7750,6 +8178,19 @@ impl ViewerApp {
             std::mem::take(&mut self.sprite_curr)
         };
         self.sprite_curr = next;
+        // `+INTERPOLATESCALE` / `+INTERPOLATEALPHA` (5.0): only flagged actors
+        // keep a scale / alpha sample.
+        let mut extra = std::collections::HashMap::new();
+        for &id in &world.thinkers.default {
+            let Some(a) = world.actors.get(id) else {
+                continue;
+            };
+            if a.extra_flags.get_name("INTERPOLATESCALE") || a.extra_flags.get_name("INTERPOLATEALPHA") {
+                #[allow(clippy::cast_possible_truncation)]
+                extra.insert(id, (a.scale_x as f32, a.scale_y as f32, a.alpha as f32));
+            }
+        }
+        self.sprite_extra_prev = std::mem::replace(&mut self.sprite_extra_curr, extra);
     }
 
     /// Live actor billboards for play mode (`None` in free-fly viewer).
@@ -7783,6 +8224,14 @@ impl ViewerApp {
                 {
                     return None;
                 }
+                // `RenderRequired` / `RenderHidden`, `VisibleAngles` /
+                // `VisiblePitch`, `+SPRITEANGLE`, `SpriteRotation`.
+                let eye = room_core::DVec3::new(
+                    f64::from(self.camera.eye.x),
+                    f64::from(self.camera.eye.y),
+                    f64::from(self.camera.eye.z),
+                );
+                let view = room_sim::sprite_view(world, a, eye, 0)?;
                 let bright = a
                     .state
                     .and_then(|sid| world.states.get(sid))
@@ -7796,7 +8245,18 @@ impl ViewerApp {
                     RenderStyle::Add | RenderStyle::AddStencil | RenderStyle::AddShaded
                 );
                 #[allow(clippy::cast_possible_truncation)]
-                let alpha = alpha as f32;
+                let mut alpha = alpha as f32;
+                let (mut scale_x, mut scale_y) = (a.scale_x, a.scale_y);
+                if let Some(&(psx, psy, pa)) = self.sprite_extra_prev.get(&id) {
+                    let t = frac as f32;
+                    if a.extra_flags.get_name("INTERPOLATESCALE") {
+                        scale_x = f64::from(psx) + (a.scale_x - f64::from(psx)) * frac;
+                        scale_y = f64::from(psy) + (a.scale_y - f64::from(psy)) * frac;
+                    }
+                    if a.extra_flags.get_name("INTERPOLATEALPHA") {
+                        alpha = (pa + (alpha - pa) * t).clamp(0.0, 1.0);
+                    }
+                }
                 let prev = self.sprite_prev.get(&id).copied().unwrap_or((
                     a.pos.x() as f32,
                     a.pos.y() as f32,
@@ -7824,8 +8284,8 @@ impl ViewerApp {
                     pose.angle_deg,
                     a.radius,
                     a.height,
-                    a.scale_x,
-                    a.scale_y,
+                    scale_x,
+                    scale_y,
                     light,
                     bright,
                     alpha,
@@ -7836,6 +8296,12 @@ impl ViewerApp {
                     a.sprite_ofs_y,
                     flags,
                     additive,
+                    view,
+                    // `+CASTSPRITESHADOW` / `+NOSPRITESHADOW` override the
+                    // monsters-only default of `r_actorspriteshadow`.
+                    !a.extra_flags.get_name("NOSPRITESHADOW")
+                        && ((flags & FLAG_COUNTKILL) != 0
+                            || a.extra_flags.get_name("CASTSPRITESHADOW")),
                 ))
             })
             .collect();
@@ -7859,6 +8325,8 @@ impl ViewerApp {
             sprite_ofs_y,
             flags,
             additive,
+            view,
+            casts_shadow,
         ) in actors
         {
             if self.actor_draws_voxel(id) {
@@ -7875,7 +8343,12 @@ impl ViewerApp {
             let mut z_bottom = z;
             let grounded = (flags & (FLAG_NOGRAVITY | FLAG_SPAWNCEILING | FLAG_FLOAT)) == 0;
             if !sprite.is_empty() {
-                let rot = sprite_rotation_digit(x, y, angle_deg, view_x, view_y);
+                let rot_angle = if view.fixed_rotation {
+                    view.rotation_angle_deg
+                } else {
+                    angle_deg
+                };
+                let rot = sprite_rotation_digit(x, y, rot_angle, view_x, view_y);
                 let mut candidates = sprite_lump_candidates_rot(&sprite, frame, rot);
                 if let Some(vfs) = self.vfs.as_ref() {
                     // Indexed lookup first: mixed-letter pairs (`BOS2A2C8`).
@@ -7963,8 +8436,10 @@ impl ViewerApp {
                 anchor_u,
                 orient,
                 additive,
+                #[allow(clippy::cast_possible_truncation)]
+                roll: view.roll_rad as f32,
             });
-            if self.render_settings.actor_sprite_shadow && (flags & FLAG_COUNTKILL) != 0 && !fuzz {
+            if self.render_settings.actor_sprite_shadow && casts_shadow && !fuzz {
                 let shadow_tex = particle_tint_tex_name([16, 16, 16]);
                 out.push(SpriteInstance {
                     pos: Vec3::new(x as f32, y as f32, z as f32 + 0.5),
@@ -7980,6 +8455,7 @@ impl ViewerApp {
                         yaw: angle_deg.to_radians() as f32,
                     },
                     additive: false,
+                    roll: 0.0,
                 });
             }
         }
@@ -8497,6 +8973,11 @@ impl ViewerApp {
             }
             MenuCommand::EndGame | MenuCommand::OpenMenu(_) | MenuCommand::SelectEpisode(_) => {
                 // Confirm / submenus handled inside MenuStack::activate.
+            }
+            MenuCommand::SelectPlayerClass(class) => {
+                if let Some(game) = self.play.as_mut() {
+                    game.set_player_class(Some(&class));
+                }
             }
             MenuCommand::EndGameConfirmed => {
                 if let Some(game) = self.play.as_mut() {
@@ -9047,6 +9528,29 @@ impl ViewerApp {
                     }
                 }
                 HostCommand::Map(name) => self.console_change_map(&name),
+                HostCommand::ChangeMap {
+                    map,
+                    keep_inventory,
+                } => {
+                    let target = map.or_else(|| self.play.as_ref().and_then(|g| g.console_next_map()));
+                    match target {
+                        Some(name) => self.console_change_map_ex(&name, keep_inventory),
+                        None => self.messages.push("changemap: no next map", 70),
+                    }
+                }
+                HostCommand::DoubleBind { key, command } => match command {
+                    Some(cmd) => self.double_binds.bind(&key, &cmd),
+                    None => {
+                        let shown = self.double_binds.get(&key).unwrap_or("(none)").to_owned();
+                        self.messages.push(format!("{key}: {shown}"), 70);
+                    }
+                },
+                HostCommand::ChangeEpisode(n) => {
+                    match self.play.as_ref().and_then(|g| g.episode_start_map(n)) {
+                        Some(name) => self.console_change_map(&name),
+                        None => self.messages.push(format!("changeepisode: no episode {n}"), 70),
+                    }
+                }
                 HostCommand::Save(slot) => self.save_play_save(slot.as_deref()),
                 HostCommand::Load(slot) => self.load_play_save(slot.as_deref()),
                 HostCommand::Record(slot) => self.begin_play_demo(slot.as_deref()),
@@ -9692,6 +10196,11 @@ impl ViewerApp {
     }
 
     fn console_change_map(&mut self, name: &str) {
+        self.console_change_map_ex(name, false);
+    }
+
+    /// `map` (fresh start) / `changemap` (`keep_inventory`: level exit travel).
+    fn console_change_map_ex(&mut self, name: &str, keep_inventory: bool) {
         let Some(vfs) = self.vfs.as_ref() else {
             self.messages.push("map: no IWAD mounted", 70);
             return;
@@ -9711,7 +10220,12 @@ impl ViewerApp {
             return;
         };
         let skill = game.options.skill;
-        match game.start_custom_map(next_map, skill) {
+        let started = if keep_inventory {
+            game.change_map(next_map, true)
+        } else {
+            game.start_custom_map(next_map, skill)
+        };
+        match started {
             Ok(()) => {
                 self.reset_impact_fx();
                 self.menu = None;
@@ -9826,7 +10340,18 @@ impl ViewerApp {
             self.messages.push("save: not in play mode", 70);
             return;
         };
-        match game.save_game() {
+        // Looping voices go into the save so the load can restart them.
+        let loops = self
+            .audio
+            .as_ref()
+            .and_then(|a| a.shared.lock().ok().map(|m| m.mixer.loops_for_save()))
+            .unwrap_or_default();
+        let saved = game
+            .sounds
+            .as_ref()
+            .map(|s| s.save_voices(&loops))
+            .unwrap_or_default();
+        match game.save_game_with_sounds(&saved) {
             Ok(bytes) => {
                 let path = dirs_room_save(&slot);
                 if let Some(dir) = path.parent() {
@@ -9903,6 +10428,22 @@ impl ViewerApp {
         };
         match game.load_game(&bytes) {
             Ok(()) => {
+                // ZDoom `S_RestoreSounds`: drop the old world's voices,
+                // restart the saved loops.
+                let restored = game.take_restored_sounds();
+                let events = match (game.sounds.as_mut(), self.vfs.as_ref()) {
+                    (Some(sounds), Some(vfs)) => sounds.restore_events(vfs, &restored),
+                    _ => Vec::new(),
+                };
+                if let Some(audio) = self.audio.as_ref()
+                    && let Ok(mut shared) = audio.shared.lock()
+                {
+                    shared.mixer.stop_world_sounds();
+                    if let Some(sounds) = game.sounds.as_ref() {
+                        shared.mixer.bank.merge_missing(&sounds.bank);
+                    }
+                    shared.mixer.apply(&events);
+                }
                 self.reset_impact_fx();
                 self.refresh_sky_texture();
                 self.menu = None;
@@ -10492,6 +11033,11 @@ impl ViewerApp {
         } else if self.keys.weapon_cycle < 0 {
             keys.push(Key::PrevWeapon);
             self.keys.weapon_cycle += 1;
+        }
+        for k in self.gamepad_tic_keys() {
+            if !keys.contains(&k) {
+                keys.push(k);
+            }
         }
         let mouse_yaw = self.mouse_yaw_accum;
         self.mouse_yaw_accum = 0;

@@ -30,6 +30,10 @@ pub struct MaterialCatalog {
     pbr_maps: BTreeMap<String, MaterialMaps>,
     /// Nearest sampler shared by all.
     pub sampler: Option<wgpu::Sampler>,
+    /// Wanted anisotropic filtering (`gl_texture_filter_anisotropic`; 1 = off).
+    pub anisotropy: u16,
+    /// Anisotropy the current [`Self::sampler`] was built with.
+    sampler_anisotropy: u16,
 }
 
 /// Optional GLDEFS material maps (paths / lump names).
@@ -69,6 +73,8 @@ impl MaterialCatalog {
             brightmaps: BTreeMap::new(),
             pbr_maps: BTreeMap::new(),
             sampler: None,
+            anisotropy: 1,
+            sampler_anisotropy: 1,
         }
     }
 
@@ -112,20 +118,32 @@ impl MaterialCatalog {
         self.material_maps(name).and_then(|m| m.shader.as_deref())
     }
 
-    /// Ensure a nearest **repeating** sampler exists (Doom walls/flats tile in UV).
+    /// Ensure the shared **repeating** sampler exists. Nearest (Doom pixels)
+    /// unless [`Self::anisotropy`] > 1: wgpu only allows anisotropy on fully
+    /// linear samplers, so that mode trades the crisp look for filtering
+    /// (GZDoom's trilinear + anisotropic option).
     pub fn ensure_sampler(&mut self, device: &wgpu::Device) {
-        if self.sampler.is_none() {
-            self.sampler = Some(device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("mat-nearest-repeat"),
-                address_mode_u: wgpu::AddressMode::Repeat,
-                address_mode_v: wgpu::AddressMode::Repeat,
-                address_mode_w: wgpu::AddressMode::Repeat,
-                mag_filter: wgpu::FilterMode::Nearest,
-                min_filter: wgpu::FilterMode::Nearest,
-                mipmap_filter: wgpu::FilterMode::Nearest,
-                ..Default::default()
-            }));
+        let aniso = sampler_anisotropy(self.anisotropy);
+        if self.sampler.is_some() && self.sampler_anisotropy == aniso {
+            return;
         }
+        let filter = if aniso > 1 {
+            wgpu::FilterMode::Linear
+        } else {
+            wgpu::FilterMode::Nearest
+        };
+        self.sampler = Some(device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some(if aniso > 1 { "mat-aniso-repeat" } else { "mat-nearest-repeat" }),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: filter,
+            min_filter: filter,
+            mipmap_filter: filter,
+            anisotropy_clamp: aniso,
+            ..Default::default()
+        }));
+        self.sampler_anisotropy = aniso;
     }
 
     /// Load PLAYPAL from the VFS if present.
@@ -690,4 +708,26 @@ fn load_named_image(vfs: &Vfs, name: &str) -> Option<Image> {
             alpha: Vec::new(),
         }),
     })
+}
+
+/// Clamp a requested anisotropy to wgpu's legal values (1, 2, 4, 8, 16).
+#[must_use]
+pub fn sampler_anisotropy(requested: u16) -> u16 {
+    let v = requested.clamp(1, 16);
+    1 << (15 - v.leading_zeros())
+}
+
+#[cfg(test)]
+mod anisotropy_tests {
+    use super::sampler_anisotropy;
+
+    #[test]
+    fn anisotropy_rounds_down_to_a_power_of_two() {
+        assert_eq!(sampler_anisotropy(0), 1);
+        assert_eq!(sampler_anisotropy(1), 1);
+        assert_eq!(sampler_anisotropy(3), 2);
+        assert_eq!(sampler_anisotropy(8), 8);
+        assert_eq!(sampler_anisotropy(15), 8);
+        assert_eq!(sampler_anisotropy(64), 16);
+    }
 }

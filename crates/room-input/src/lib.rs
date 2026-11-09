@@ -3,12 +3,19 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 mod attack;
+pub mod double_tap;
+pub mod gamepad;
 mod mod_buttons;
 mod weapon_impulses;
 
 pub use attack::{
     ATTACK_HOLD_TICS, AttackLatch, DeviceButtonOs, device_button_is_primary,
     device_button_is_primary_on,
+};
+pub use double_tap::{DoubleBindings, DoubleTapDetector};
+pub use gamepad::{
+    GamepadAxes, GamepadConfig, GamepadState, PadButton, apply_gamepad, default_pad_binds,
+    gamepad_keys,
 };
 pub use mod_buttons::{ModButtonState, apply_mod_buttons, default_bind_pairs};
 pub use weapon_impulses::{WeaponImpulseState, apply_weapon_impulses, bd_impulse_bind_pairs};

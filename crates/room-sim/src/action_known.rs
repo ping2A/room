@@ -7,13 +7,17 @@ pub fn canonical_action_name(name: &str) -> Option<&'static str> {
         return Some(c);
     }
     let lower = name.to_ascii_lowercase();
-    CANONICAL.iter().find(|(l, _)| *l == lower).map(|(_, c)| *c)
+    CANONICAL
+        .iter()
+        .find(|(l, _)| *l == lower)
+        .map(|(_, c)| *c)
+        .or_else(|| crate::uzact::canonical(name))
 }
 
 /// True when `call_action_args` has an exact arm for `name`.
 #[must_use]
 pub fn is_known_action(name: &str) -> bool {
-    exact_action_name(name).is_some()
+    exact_action_name(name).is_some() || crate::uzact::ported_action_names().contains(&name)
 }
 
 /// Case-folded lookup (DECORATE is case-insensitive).
@@ -26,6 +30,7 @@ pub fn is_known_action_ci(name: &str) -> bool {
 #[must_use]
 pub fn known_action_names() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = CANONICAL.iter().map(|(_, c)| *c).collect();
+    names.extend(crate::uzact::ported_action_names());
     names.sort_unstable();
     names.dedup();
     names
@@ -33,6 +38,26 @@ pub fn known_action_names() -> Vec<&'static str> {
 
 fn exact_action_name(name: &str) -> Option<&'static str> {
     match name {
+        "A_PainShootSkull" => Some("A_PainShootSkull"),
+        "A_DualPainAttack" => Some("A_DualPainAttack"),
+        "A_ComboAttack" => Some("A_ComboAttack"),
+        "A_MissileAttack" => Some("A_MissileAttack"),
+        "A_BetaSkullAttack" => Some("A_BetaSkullAttack"),
+        "A_JumpIfMasterCloser" => Some("A_JumpIfMasterCloser"),
+        "A_JumpIfArmorType" => Some("A_JumpIfArmorType"),
+        "A_Tracer2" => Some("A_Tracer2"),
+        "A_CountdownArg" => Some("A_CountdownArg"),
+        "A_Countdown" => Some("A_Countdown"),
+        "A_SetShadow" => Some("A_SetShadow"),
+        "A_ClearShadow" => Some("A_ClearShadow"),
+        "A_LoopActiveSound" => Some("A_LoopActiveSound"),
+        "A_FLoopActiveSound" => Some("A_FLoopActiveSound"),
+        "A_SetUserVarFloat" => Some("A_SetUserVarFloat"),
+        "A_SetUserArrayFloat" => Some("A_SetUserArrayFloat"),
+        "A_CheckPlayerDone" => Some("A_CheckPlayerDone"),
+        "A_FireOldBFG" => Some("A_FireOldBFG"),
+        "A_CheckForResurrection" => Some("A_CheckForResurrection"),
+        "A_FaceConsolePlayer" => Some("A_FaceConsolePlayer"),
         "A_AddFlags" => Some("A_AddFlags"),
         "A_ActiveAndUnblock" => Some("A_ActiveAndUnblock"),
         "A_ActiveSound" => Some("A_ActiveSound"),
@@ -450,6 +475,26 @@ fn exact_action_name(name: &str) -> Option<&'static str> {
 }
 
 static CANONICAL: &[(&str, &str)] = &[
+    ("a_painshootskull", "A_PainShootSkull"),
+    ("a_dualpainattack", "A_DualPainAttack"),
+    ("a_comboattack", "A_ComboAttack"),
+    ("a_missileattack", "A_MissileAttack"),
+    ("a_betaskullattack", "A_BetaSkullAttack"),
+    ("a_jumpifmastercloser", "A_JumpIfMasterCloser"),
+    ("a_jumpifarmortype", "A_JumpIfArmorType"),
+    ("a_tracer2", "A_Tracer2"),
+    ("a_countdownarg", "A_CountdownArg"),
+    ("a_countdown", "A_Countdown"),
+    ("a_setshadow", "A_SetShadow"),
+    ("a_clearshadow", "A_ClearShadow"),
+    ("a_loopactivesound", "A_LoopActiveSound"),
+    ("a_floopactivesound", "A_FLoopActiveSound"),
+    ("a_setuservarfloat", "A_SetUserVarFloat"),
+    ("a_setuserarrayfloat", "A_SetUserArrayFloat"),
+    ("a_checkplayerdone", "A_CheckPlayerDone"),
+    ("a_fireoldbfg", "A_FireOldBFG"),
+    ("a_checkforresurrection", "A_CheckForResurrection"),
+    ("a_faceconsoleplayer", "A_FaceConsolePlayer"),
     ("a_addflags", "A_AddFlags"),
     ("a_activeandunblock", "A_ActiveAndUnblock"),
     ("a_activesound", "A_ActiveSound"),

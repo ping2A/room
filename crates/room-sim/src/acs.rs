@@ -541,12 +541,10 @@ impl AcsHost for WorldAcsHost<'_> {
         match info {
             0 => p.armor,                  // ARMORINFO_AMOUNT
             1 => i32::from(p.armor_class), // ARMORINFO_CLASS / save type
-            2 => match p.armor_class {
-                // ARMORINFO_SAVEPERCENT approx
-                1 => 33,
-                2 => 50,
-                _ => 0,
-            },
+            // ARMORINFO_SAVEPERCENT (whole percent).
+            2 => (p.armor_fraction() * 100.0) as i32,
+            3 => p.armor_max_absorb,      // ARMORINFO_MAXABSORB
+            4 => p.armor_max_full_absorb, // ARMORINFO_MAXFULLABSORB
             _ => 0,
         }
     }
@@ -628,6 +626,14 @@ impl AcsHost for WorldAcsHost<'_> {
             return 0;
         }
         let want = type_name.to_ascii_lowercase();
+        // `BasicArmor.ArmorType` is the class that gave the armor.
+        if let Some(name) = p
+            .armor_type
+            .and_then(|c| self.world.classes.get(c))
+            .map(|c| c.name.to_ascii_lowercase())
+        {
+            return if name == want { p.armor } else { 0 };
+        }
         let class_ok = match p.armor_class {
             1 => want.contains("green") || want == "greenarmor" || want == "armorbonus",
             2 => want.contains("blue") || want == "bluearmor" || want == "armor",
@@ -780,6 +786,9 @@ impl AcsHost for WorldAcsHost<'_> {
         let Some(class) = self.world.classes.find_name(name) else {
             return 0;
         };
+        if crate::pickup::use_inventory_item(self.world, id, class) {
+            return 1;
+        }
         i32::from(self.world.inventory.take(id, class, 1) > 0)
     }
 

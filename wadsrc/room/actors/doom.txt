@@ -68,7 +68,7 @@ actor Ammo : Inventory
 {
   Inventory.Amount 1
   Inventory.MaxAmount 0
-  Ammo.BackpackAmount 1
+  Ammo.BackpackAmount 0
   Ammo.BackpackMaxAmount 0
 }
 

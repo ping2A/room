@@ -187,6 +187,142 @@ pub fn set_inventory(world: &mut World, owner: ActorId, class: ClassId, amount: 
     world.inventory.set(owner, class, amount, max);
 }
 
+/// What a player keeps when moving to the next map (GZDoom player travel).
+#[derive(Clone, Debug, Default)]
+pub struct TravelState {
+    /// Health of the pawn.
+    pub health: i32,
+    /// Armor points, display class and `BasicArmor` fields.
+    pub armor: i32,
+    /// `armor_class` (HUD icon).
+    pub armor_class: u8,
+    /// Save fraction / absorb limits / armor type.
+    pub armor_save_percent: f64,
+    /// `Armor.MaxAbsorb`.
+    pub armor_max_absorb: i32,
+    /// `Armor.MaxFullAbsorb`.
+    pub armor_max_full_absorb: i32,
+    /// Worn armor class.
+    pub armor_type: Option<ClassId>,
+    /// Backpack owned.
+    pub backpack: bool,
+    /// Carried items after the level-exit strip.
+    pub items: Vec<InvItem>,
+    /// Weapon in hand.
+    pub ready_weapon: Option<ClassId>,
+}
+
+/// `Inventory.InterHubAmount` of `class`: the property, else 0 for keys and
+/// 1 for everything else (UZDoom `Key` / `Inventory` defaults).
+#[must_use]
+pub fn inter_hub_amount(world: &World, class: ClassId) -> i32 {
+    if let Some(n) = world
+        .classes
+        .get(class)
+        .and_then(|c| c.ext.stored_i32("inventory.interhubamount"))
+    {
+        return n;
+    }
+    let kind = crate::pickup::pickup_kind(world, class);
+    let key = matches!(
+        kind.as_str(),
+        "bluecard" | "yellowcard" | "redcard" | "blueskull" | "yellowskull" | "redskull"
+    ) || world.classes.inherits_from(class, "Key");
+    i32::from(!key)
+}
+
+/// `PlayerPawn.PlayerFinishLevel(FINISH_NoHub)` for `seat`, as a snapshot.
+///
+/// Items with `Inventory.InterHubAmount` below 1 (keys by default) are
+/// dropped; inventory-bar items (`+INVENTORY.INVBAR`) are cut to their
+/// `InterHubAmount`. `same_hub` keeps everything (moving inside a hub).
+#[must_use]
+pub fn capture_travel(world: &World, seat: usize, same_hub: bool) -> Option<TravelState> {
+    let p = world.players.get(seat)?.as_ref()?;
+    let mo = p.mo?;
+    let a = world.actors.get(mo)?;
+    if a.health <= 0 {
+        return None;
+    }
+    let mut items = Vec::new();
+    for it in world.inventory.iter(mo) {
+        let mut it = it.clone();
+        if !same_hub {
+            let keep = inter_hub_amount(world, it.class);
+            if keep < 1 {
+                continue;
+            }
+            let invbar = world
+                .classes
+                .get(it.class)
+                .is_some_and(|c| c.ext.has_qualified_flag("INVENTORY.INVBAR"));
+            if invbar && it.amount > keep {
+                it.amount = keep;
+            }
+        }
+        items.push(it);
+    }
+    Some(TravelState {
+        health: a.health,
+        armor: p.armor,
+        armor_class: p.armor_class,
+        armor_save_percent: p.armor_save_percent,
+        armor_max_absorb: p.armor_max_absorb,
+        armor_max_full_absorb: p.armor_max_full_absorb,
+        armor_type: p.armor_type,
+        backpack: p.backpack,
+        items,
+        ready_weapon: p.ready_weapon,
+    })
+}
+
+/// Put a [`TravelState`] on `seat`'s freshly spawned pawn: its starting items
+/// are replaced by the carried ones. `reset_inventory` / `reset_health` are the
+/// MAPINFO `ResetInventory` / `ResetHealth` level flags.
+pub fn apply_travel(
+    world: &mut World,
+    seat: usize,
+    t: &TravelState,
+    reset_inventory: bool,
+    reset_health: bool,
+) {
+    let Some(mo) = world
+        .players
+        .get(seat)
+        .and_then(|p| p.as_ref())
+        .and_then(|p| p.mo)
+    else {
+        return;
+    };
+    if !reset_health {
+        if let Some(a) = world.actors.get_mut(mo) {
+            a.health = t.health;
+        }
+    }
+    if reset_inventory {
+        return;
+    }
+    world.inventory.clear(mo);
+    for it in &t.items {
+        world.inventory.set(mo, it.class, it.amount, it.max_amount);
+    }
+    if let Some(p) = world.players.get_mut(seat).and_then(|p| p.as_mut()) {
+        p.armor = t.armor;
+        p.armor_class = t.armor_class;
+        p.armor_save_percent = t.armor_save_percent;
+        p.armor_max_absorb = t.armor_max_absorb;
+        p.armor_max_full_absorb = t.armor_max_full_absorb;
+        p.armor_type = t.armor_type;
+        p.backpack = t.backpack;
+        if t.ready_weapon.is_some() && t.ready_weapon != p.ready_weapon {
+            p.ready_weapon = t.ready_weapon;
+            p.pending_weapon = None;
+            // Raise the carried weapon on the first tic.
+            p.pspr_state = None;
+        }
+    }
+}
+
 /// Console `give` cheat: `"all"`, `"weapons"`, `"ammo"`, `"keys"`, `"armor"`,
 /// `"idkfa"` / `"idfa"`, or a class name.
 /// Returns how many distinct classes were granted.
@@ -247,6 +383,7 @@ pub fn cheat_give(world: &mut World, owner: ActorId, what: &str) -> u32 {
                 if p.mo == Some(owner) {
                     p.armor = 200;
                     p.armor_class = 2;
+                    p.clear_armor_kind();
                     break;
                 }
             }

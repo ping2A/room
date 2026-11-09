@@ -272,6 +272,132 @@ pub struct UdmfUserStore {
     pub sectors: Vec<UdmfUserBag>,
     /// Things.
     pub things: Vec<UdmfUserBag>,
+    /// Extended linedef flags ([`ext`]`::LINE_*`), parallel to linedefs.
+    pub line_ext: Vec<u32>,
+    /// Extended sector flags ([`ext`]`::SECTOR_*`), parallel to sectors.
+    pub sector_ext: Vec<u32>,
+    /// Extended thing flags ([`ext`]`::THING_*`), parallel to things.
+    pub thing_ext: Vec<u32>,
+}
+
+impl UdmfUserStore {
+    /// Extended flags of linedef `i` (0 when not UDMF / unset).
+    pub fn line_ext(&self, i: usize) -> u32 {
+        self.line_ext.get(i).copied().unwrap_or(0)
+    }
+    /// Extended flags of sector `i`.
+    pub fn sector_ext(&self, i: usize) -> u32 {
+        self.sector_ext.get(i).copied().unwrap_or(0)
+    }
+    /// Extended flags of thing `i`.
+    pub fn thing_ext(&self, i: usize) -> u32 {
+        self.thing_ext.get(i).copied().unwrap_or(0)
+    }
+}
+
+/// UDMF boolean keys that have no slot in the raw Doom/Hexen records.
+pub mod ext {
+    /// Linedef `blockuse`: use traces stop here.
+    pub const LINE_BLOCKUSE: u32 = 1;
+    /// Linedef `passuse`: use passes through to lines behind.
+    pub const LINE_PASSUSE: u32 = 2;
+    /// Linedef `blocklandmonsters`: blocks non-flying monsters.
+    pub const LINE_BLOCKLANDMONSTERS: u32 = 4;
+    /// Linedef `monsteractivate`: monsters may trigger the special.
+    pub const LINE_MONSTERACTIVATE: u32 = 8;
+    /// Linedef `jumpover` (Strife railing): blocks unless the mover jumped.
+    pub const LINE_JUMPOVER: u32 = 16;
+    /// Linedef `drawfullheight`: automap shows as one-sided.
+    pub const LINE_DRAWFULLHEIGHT: u32 = 32;
+    /// Linedef `noskywalls`.
+    pub const LINE_NOSKYWALLS: u32 = 64;
+    /// Linedef `zoneboundary` (reverb zone boundary).
+    pub const LINE_ZONEBOUNDARY: u32 = 128;
+    /// Sector `noattack`: monsters inside do not attack.
+    pub const SECTOR_NOATTACK: u32 = 1;
+    /// Sector `norespawn`: players do not respawn here (DM spots skipped).
+    pub const SECTOR_NORESPAWN: u32 = 2;
+    /// Sector `hurtmonsters`: sector damage also hits monsters.
+    pub const SECTOR_HURTMONSTERS: u32 = 4;
+    /// Sector `harminair`: sector damage applies even when airborne.
+    pub const SECTOR_HARMINAIR: u32 = 8;
+    /// Sector `damagehazard`: Strife-style hazard (accumulating) damage.
+    pub const SECTOR_DAMAGEHAZARD: u32 = 16;
+    /// Sector `hidden`: never drawn on the automap.
+    pub const SECTOR_HIDDEN: u32 = 32;
+    /// Sector `noskywalls`.
+    pub const SECTOR_NOSKYWALLS: u32 = 64;
+    /// Thing `standing` (Strife): stays put.
+    pub const THING_STANDING: u32 = 1;
+    /// Thing `strifeally`.
+    pub const THING_STRIFEALLY: u32 = 2;
+    /// Thing `invisible` (Strife): spawned invisible.
+    pub const THING_INVISIBLE: u32 = 4;
+    /// Thing `translucent` (Strife): 25 % alpha style.
+    pub const THING_TRANSLUCENT: u32 = 8;
+    /// Thing `coop` false: hidden in cooperative games.
+    pub const THING_NOTCOOP: u32 = 16;
+    /// Thing `dm` false: hidden in deathmatch.
+    pub const THING_NOTDM: u32 = 32;
+}
+
+fn ext_bits(fields: &BTreeMap<String, UdmfTok<'_>>, keys: &[(&str, u32)]) -> u32 {
+    keys.iter()
+        .filter(|(k, _)| bool_field(fields, k, false))
+        .fold(0, |a, (_, b)| a | b)
+}
+
+fn line_ext_from_fields(fields: &BTreeMap<String, UdmfTok<'_>>) -> u32 {
+    use ext::*;
+    ext_bits(
+        fields,
+        &[
+            ("blockuse", LINE_BLOCKUSE),
+            ("passuse", LINE_PASSUSE),
+            ("blocklandmonsters", LINE_BLOCKLANDMONSTERS),
+            ("monsteractivate", LINE_MONSTERACTIVATE),
+            ("jumpover", LINE_JUMPOVER),
+            ("drawfullheight", LINE_DRAWFULLHEIGHT),
+            ("noskywalls", LINE_NOSKYWALLS),
+            ("zoneboundary", LINE_ZONEBOUNDARY),
+        ],
+    )
+}
+
+fn sector_ext_from_fields(fields: &BTreeMap<String, UdmfTok<'_>>) -> u32 {
+    use ext::*;
+    ext_bits(
+        fields,
+        &[
+            ("noattack", SECTOR_NOATTACK),
+            ("norespawn", SECTOR_NORESPAWN),
+            ("hurtmonsters", SECTOR_HURTMONSTERS),
+            ("harminair", SECTOR_HARMINAIR),
+            ("damagehazard", SECTOR_DAMAGEHAZARD),
+            ("hidden", SECTOR_HIDDEN),
+            ("noskywalls", SECTOR_NOSKYWALLS),
+        ],
+    )
+}
+
+fn thing_ext_from_fields(fields: &BTreeMap<String, UdmfTok<'_>>) -> u32 {
+    use ext::*;
+    let mut v = ext_bits(
+        fields,
+        &[
+            ("standing", THING_STANDING),
+            ("strifeally", THING_STRIFEALLY),
+            ("invisible", THING_INVISIBLE),
+            ("translucent", THING_TRANSLUCENT),
+        ],
+    );
+    if !bool_field(fields, "coop", true) {
+        v |= THING_NOTCOOP;
+    }
+    if !bool_field(fields, "dm", true) {
+        v |= THING_NOTDM;
+    }
+    v
 }
 
 /// Parsed UDMF translation unit (raw fields).
@@ -299,6 +425,8 @@ pub struct UdmfMap {
 pub fn parse_udmf(text: &str) -> Result<UdmfMap, MapError> {
     let mut lx = UdmfLexer::new(text);
     let mut map = UdmfMap::default();
+    // `zfloor` / `zceiling` per vertex (UDMF vertex heights).
+    let mut vertex_z: Vec<(Option<f64>, Option<f64>)> = Vec::new();
     loop {
         match lx.next_tok()? {
             UdmfTok::Eof => break,
@@ -315,10 +443,12 @@ pub fn parse_udmf(text: &str) -> Result<UdmfMap, MapError> {
                     "thing" => {
                         map.things.push(thing_from_fields(&fields));
                         map.user.things.push(user);
+                        map.user.thing_ext.push(thing_ext_from_fields(&fields));
                     }
                     "linedef" => {
                         map.linedefs.push(linedef_from_fields(&fields));
                         map.user.lines.push(user);
+                        map.user.line_ext.push(line_ext_from_fields(&fields));
                     }
                     "sidedef" => {
                         map.sidedefs.push(sidedef_from_fields(&fields));
@@ -327,8 +457,15 @@ pub fn parse_udmf(text: &str) -> Result<UdmfMap, MapError> {
                     "sector" => {
                         map.sectors.push(sector_from_fields(&fields));
                         map.user.sectors.push(user);
+                        map.user.sector_ext.push(sector_ext_from_fields(&fields));
                     }
                     "vertex" => {
+                        let z = |k: &str| match fields.get(k) {
+                            Some(UdmfTok::Int(v)) => Some(*v as f64),
+                            Some(UdmfTok::Float(v)) => Some(*v),
+                            _ => None,
+                        };
+                        vertex_z.push((z("zfloor"), z("zceiling")));
                         map.vertices.push(vertex_from_fields(&fields));
                         map.vertex_pos.push(room_core::DVec2::new(
                             float_field(&fields, "x", 0.0),
@@ -345,7 +482,84 @@ pub fn parse_udmf(text: &str) -> Result<UdmfMap, MapError> {
             }
         }
     }
+    apply_vertex_heights(&mut map, &vertex_z);
     Ok(map)
+}
+
+/// UDMF vertex heights (GZDoom `P_SetSlopes` vertex pass): a sector bounded by
+/// exactly three vertices, any of which sets `zfloor` / `zceiling`, gets a
+/// floor / ceiling plane through those three points. Vertices without the key
+/// use the sector's flat height. An explicit `floorplane_*` / `ceilingplane_*`
+/// on the sector wins.
+fn apply_vertex_heights(map: &mut UdmfMap, vertex_z: &[(Option<f64>, Option<f64>)]) {
+    if !vertex_z.iter().any(|(f, c)| f.is_some() || c.is_some()) {
+        return;
+    }
+    let mut verts: Vec<Vec<u16>> = vec![Vec::new(); map.sectors.len()];
+    for l in &map.linedefs {
+        for side in [l.side_front, l.side_back] {
+            let Some(sd) = map.sidedefs.get(usize::from(side)).filter(|_| side != u16::MAX) else {
+                continue;
+            };
+            let Some(list) = verts.get_mut(usize::from(sd.sector)) else {
+                continue;
+            };
+            for v in [l.v1, l.v2] {
+                if !list.contains(&v) {
+                    list.push(v);
+                }
+            }
+        }
+    }
+    for (si, list) in verts.iter().enumerate() {
+        if list.len() != 3 {
+            continue;
+        }
+        let pos = |v: u16| map.vertex_pos.get(usize::from(v)).copied();
+        let (Some(p0), Some(p1), Some(p2)) = (pos(list[0]), pos(list[1]), pos(list[2])) else {
+            continue;
+        };
+        let zs = |v: u16| vertex_z.get(usize::from(v)).copied().unwrap_or((None, None));
+        let sector = &map.sectors[si];
+        let (floor_h, ceil_h) = (f64::from(sector.floor_height), f64::from(sector.ceiling_height));
+        for ceiling in [false, true] {
+            let pick = |v: u16| if ceiling { zs(v).1 } else { zs(v).0 };
+            if list.iter().all(|&v| pick(v).is_none()) {
+                continue;
+            }
+            let flat = if ceiling { ceil_h } else { floor_h };
+            let z = |v: u16| pick(v).unwrap_or(flat);
+            let a = [p0.x(), p0.y(), z(list[0])];
+            let b = [p1.x(), p1.y(), z(list[1])];
+            let c = [p2.x(), p2.y(), z(list[2])];
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let mut n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if len < 1e-9 || n[2].abs() < 1e-9 {
+                continue;
+            }
+            for k in &mut n {
+                *k /= len;
+            }
+            // Floors face up, ceilings face down (`secplane_t` convention).
+            if (n[2] < 0.0) != ceiling {
+                for k in &mut n {
+                    *k = -*k;
+                }
+            }
+            let d = -(n[0] * a[0] + n[1] * a[1] + n[2] * a[2]);
+            let plane = Some([n[0], n[1], n[2], d]);
+            let s = &mut map.sectors[si];
+            if ceiling {
+                if s.ceiling_plane.is_none() {
+                    s.ceiling_plane = plane;
+                }
+            } else if s.floor_plane.is_none() {
+                s.floor_plane = plane;
+            }
+        }
+    }
 }
 
 fn expect_eq(lx: &mut UdmfLexer<'_>) -> Result<(), MapError> {
@@ -716,11 +930,15 @@ fn linedef_from_fields(fields: &BTreeMap<String, UdmfTok<'_>>) -> RawLinedef {
     if bool_field(fields, "dontdraw", false) {
         flags |= 0x0080;
     }
-    if bool_field(fields, "mapped", false) {
+    // `revealed` (ZDoom) = shown on the automap from the start, like `mapped`.
+    if bool_field(fields, "mapped", false) || bool_field(fields, "revealed", false) {
         flags |= 0x0100;
     }
     if bool_field(fields, "repeatspecial", false) {
         flags |= 0x0200;
+    }
+    if bool_field(fields, "monsteractivate", false) {
+        flags |= 0x2000; // ML_MONSTERSCANACTIVATE
     }
     if bool_field(fields, "blockplayers", false) {
         flags |= 0x4000; // ML_BLOCK_PLAYERS
@@ -768,7 +986,16 @@ fn linedef_from_fields(fields: &BTreeMap<String, UdmfTok<'_>>) -> RawLinedef {
         block_sight: bool_field(fields, "blocksight", false),
         block_hitscan: bool_field(fields, "blockhitscan", false),
         extra_ids: moreids_field(fields),
-        alpha: float_field(fields, "alpha", 1.0) as f32,
+        // Strife `translucent` (75 %) / `transparent` (25 %) when no explicit alpha.
+        alpha: if fields.contains_key("alpha") {
+            float_field(fields, "alpha", 1.0) as f32
+        } else if bool_field(fields, "transparent", false) {
+            0.25
+        } else if bool_field(fields, "translucent", false) {
+            0.75
+        } else {
+            1.0
+        },
         health: int_field(fields, "health", 0) as i32,
         health_group: int_field(fields, "healthgroup", 0) as i32,
         automap_style: int_field(fields, "automapstyle", 0) as i32,
@@ -1721,5 +1948,57 @@ linedef { v1 = 0; v2 = 1; sidefront = 0; sideback = 1; midtex3d = true; midtex3d
         assert!(m.linedefs[0].block_sight);
         assert!(m.linedefs[0].block_hitscan);
         assert_eq!(m.linedefs[0].extra_ids, vec![7, 8]);
+    }
+
+    #[test]
+    fn vertex_heights_slope_a_triangular_sector() {
+        let text = r#"namespace = "zdoom";
+vertex { x = 0.0; y = 0.0; zfloor = 64.0; }
+vertex { x = 128.0; y = 0.0; }
+vertex { x = 0.0; y = 128.0; zceiling = 96.0; }
+sector { heightfloor = 0; heightceiling = 128; texturefloor = "F"; textureceiling = "C"; }
+sidedef { sector = 0; }
+linedef { v1 = 0; v2 = 1; sidefront = 0; }
+linedef { v1 = 1; v2 = 2; sidefront = 0; }
+linedef { v1 = 2; v2 = 0; sidefront = 0; }
+"#;
+        let map = parse_udmf(text).unwrap();
+        let s = &map.sectors[0];
+        let [a, b, c, d] = s.floor_plane.expect("floor sloped");
+        assert!(c > 0.0, "floor faces up");
+        let z = |x: f64, y: f64| -(a * x + b * y + d) / c;
+        assert!((z(0.0, 0.0) - 64.0).abs() < 1e-9);
+        assert!(z(128.0, 0.0).abs() < 1e-9);
+        assert!(z(0.0, 128.0).abs() < 1e-9);
+        let [a, b, c, d] = s.ceiling_plane.expect("ceiling sloped");
+        assert!(c < 0.0, "ceiling faces down");
+        let z = |x: f64, y: f64| -(a * x + b * y + d) / c;
+        assert!((z(0.0, 128.0) - 96.0).abs() < 1e-9);
+        assert!((z(128.0, 0.0) - 128.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn extended_udmf_keys_land_in_ext_flags() {
+        let text = r#"namespace = "zdoom";
+vertex { x = 0.0; y = 0.0; }
+vertex { x = 64.0; y = 0.0; }
+sector { heightfloor = 0; heightceiling = 128; texturefloor = "F"; textureceiling = "C"; noattack = true; hidden = true; hurtmonsters = true; }
+sidedef { sector = 0; }
+linedef { v1 = 0; v2 = 1; sidefront = 0; blockuse = true; jumpover = true; revealed = true; monsteractivate = true; translucent = true; }
+thing { x = 0.0; y = 0.0; type = 1; standing = true; coop = false; }
+"#;
+        let map = parse_udmf(text).unwrap();
+        use super::ext::*;
+        assert_eq!(map.user.line_ext(0), LINE_BLOCKUSE | LINE_JUMPOVER | LINE_MONSTERACTIVATE);
+        assert_eq!(
+            map.user.sector_ext(0),
+            SECTOR_NOATTACK | SECTOR_HIDDEN | SECTOR_HURTMONSTERS
+        );
+        assert_eq!(map.user.thing_ext(0), THING_STANDING | THING_NOTCOOP);
+        let l = &map.linedefs[0];
+        assert_ne!(l.flags & 0x0100, 0, "revealed = mapped");
+        assert_ne!(l.flags & 0x2000, 0, "monsteractivate");
+        assert!((l.alpha - 0.75).abs() < 1e-6, "strife translucent");
+        assert_eq!(map.user.line_ext(9), 0);
     }
 }

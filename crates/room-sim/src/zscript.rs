@@ -312,11 +312,8 @@ impl ZscriptRuntime {
     /// Selected player voice gender used by SNDINFO `$playersound` lookup.
     #[must_use]
     pub fn player_gender(&self) -> &'static str {
-        match self.vm.as_ref().map_or(0, |vm| vm.play.cvar("gender")) {
-            1 => "female",
-            2 => "other",
-            _ => "male",
-        }
+        let g = self.vm.as_ref().map_or(0, |vm| vm.play.cvar("gender"));
+        crate::action::gender_name(u8::try_from(g.clamp(0, 3)).unwrap_or(0))
     }
 
     /// Install floating CVars for ZScript `CVar.GetFloat` / `SetFloat`.

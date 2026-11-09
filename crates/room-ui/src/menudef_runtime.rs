@@ -195,6 +195,7 @@ fn collect_items(
                                 label: patch.clone(),
                                 action: map_action(&args[2]),
                                 patch: Some(patch),
+                                portrait: None,
                             });
                         }
                     }

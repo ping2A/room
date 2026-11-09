@@ -414,6 +414,7 @@ impl PlaySession {
             MenuStack::from_menudef_or_doom(game.menudef())
                 .with_skills(mapinfo.skills.as_slice())
                 .with_episodes(mapinfo.episodes.as_slice())
+                .with_player_classes(game.menu_player_classes())
         });
         let mut session = Self {
             vfs,
@@ -2384,6 +2385,7 @@ impl PlaySession {
                 anchor_u,
                 orient,
                 additive: false,
+                roll: 0.0,
             });
         }
         out
@@ -2481,6 +2483,9 @@ impl PlaySession {
             return;
         };
         match cmd {
+            MenuCommand::SelectPlayerClass(class) => {
+                self.game.set_player_class(Some(&class));
+            }
             MenuCommand::StartSkill(level) => {
                 self.skill = Skill::new(level);
                 self.game.options.skill = self.skill;

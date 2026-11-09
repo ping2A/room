@@ -36,6 +36,10 @@ impl SoundFlags {
     pub const TRANSIENT: u32 = 1 << 8;
     /// At most one active voice with this logical sound ID.
     pub const UNIQUE_SOUND: u32 = 1 << 9;
+    /// `CHANF_SINGULAR`: skip when this sound already plays anywhere.
+    pub const SINGULAR: u32 = 1 << 20;
+    /// `CHANF_FORCE`: starts even while sound is paused.
+    pub const FORCE: u32 = 1 << 21;
     /// Duke Atomic: allow one simultaneous voice for this logical sound.
     pub const DUKE_LIMIT_ONE: u32 = 1 << 10;
     /// Duke Atomic: allow at most four simultaneous voices for this sound.
@@ -141,6 +145,17 @@ pub enum SoundEvent {
     StopActor {
         /// Stable token of the actor whose sounds should stop.
         source_id: u64,
+    },
+    /// Stop one actor's voices on channels `min..=max` (`all` = any channel).
+    StopActorChannels {
+        /// Actor token.
+        source_id: u64,
+        /// Lowest channel.
+        min: i32,
+        /// Highest channel.
+        max: i32,
+        /// Every channel (`A_StopSounds(0, 0)`).
+        all: bool,
     },
     /// Stop everything.
     StopAll,

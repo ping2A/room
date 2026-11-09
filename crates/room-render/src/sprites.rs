@@ -30,6 +30,9 @@ pub struct SpriteInstance {
     /// `RenderStyle Add`: colour × alpha is added to the scene (GZDoom
     /// `STYLE_Add`); black texels vanish.
     pub additive: bool,
+    /// Rotation of the quad in its own plane, radians counter-clockwise
+    /// (`SpriteRotation` / `A_SetSpriteRotation`).
+    pub roll: f32,
 }
 
 /// How a sprite quad is oriented in the world.
@@ -47,6 +50,14 @@ pub enum SpriteOrient {
     Flat {
         /// Facing direction in radians (map XY).
         yaw: f32,
+    },
+    /// Fully camera-facing quad centred on `pos` (GZDoom particles):
+    /// `right` / `up` span the quad.
+    Facing {
+        /// Unit right vector.
+        right: Vec3,
+        /// Unit up vector.
+        up: Vec3,
     },
 }
 
@@ -162,6 +173,7 @@ pub fn emit_sprite_quad(inst: SpriteInstance, view_forward: Vec3) -> [WallVertex
             Vec3::new(yaw.sin(), -yaw.cos(), 0.0),
             Vec3::new(yaw.cos(), yaw.sin(), 0.0),
         ),
+        SpriteOrient::Facing { right, up } => (right, up),
     };
     let half_w = inst.width * 0.5;
     // Shift so column `anchor_u * width` stays on `inst.pos` (Doom leftoverset;
@@ -172,12 +184,30 @@ pub fn emit_sprite_quad(inst: SpriteInstance, view_forward: Vec3) -> [WallVertex
         // Centred on the actor and lifted off the plane it lies on.
         mid += Vec3::Z * 0.25 - up * (inst.height * 0.5);
     }
+    if matches!(inst.orient, SpriteOrient::Facing { .. }) {
+        mid -= up * (inst.height * 0.5);
+    }
     let lo = mid;
     let hi = mid + up * inst.height;
-    let a = lo - right * half_w;
-    let b = lo + right * half_w;
-    let c = hi + right * half_w;
-    let d = hi - right * half_w;
+    let mut a = lo - right * half_w;
+    let mut b = lo + right * half_w;
+    let mut c = hi + right * half_w;
+    let mut d = hi - right * half_w;
+    if inst.roll.abs() > 1e-6 {
+        // Spin the quad about its centre in its own plane.
+        let centre = (a + c) * 0.5;
+        let (sn, cs) = inst.roll.sin_cos();
+        let spin = |p: Vec3| {
+            let o = p - centre;
+            let x = o.dot(right);
+            let y = o.dot(up);
+            centre + right * (x * cs - y * sn) + up * (x * sn + y * cs)
+        };
+        a = spin(a);
+        b = spin(b);
+        c = spin(c);
+        d = spin(d);
+    }
     let (u0, u1) = if inst.flip_u { (1.0, 0.0) } else { (0.0, 1.0) };
     // Additive sprites carry a negative alpha (decoded by the shader).
     let alpha = if inst.additive {
@@ -232,6 +262,7 @@ mod tests {
                 anchor_u: 0.5,
                 orient: crate::sprites::SpriteOrient::Billboard,
                 additive: false,
+                roll: 0.0,
             },
             Vec3::X,
         );
@@ -257,6 +288,7 @@ mod tests {
                 anchor_u: 0.5,
                 orient: SpriteOrient::Wall { yaw: 0.0 },
                 additive: false,
+                roll: 0.0,
             },
             Vec3::Y,
         );
@@ -285,6 +317,7 @@ mod tests {
                 anchor_u: 0.0,
                 orient: crate::sprites::SpriteOrient::Billboard,
                 additive: false,
+                roll: 0.0,
             },
             Vec3::Y,
         );
@@ -318,6 +351,7 @@ mod tests {
                 anchor_u: 0.5,
                 orient: crate::sprites::SpriteOrient::Billboard,
                 additive: false,
+                roll: 0.0,
             },
             Vec3::Y,
         );
@@ -334,6 +368,7 @@ mod tests {
                 anchor_u: 1.25,
                 orient: crate::sprites::SpriteOrient::Billboard,
                 additive: false,
+                roll: 0.0,
             },
             Vec3::Y,
         );
@@ -394,6 +429,7 @@ mod tests {
                 anchor_u: 0.5,
                 orient: crate::sprites::SpriteOrient::Billboard,
                 additive: false,
+                roll: 0.0,
             },
             Vec3::X,
         );

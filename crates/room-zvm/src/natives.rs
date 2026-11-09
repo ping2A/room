@@ -200,6 +200,8 @@ pub enum ZsActorOp {
     ParticleEx {
         /// Packed RGB color.
         color: u32,
+        /// Texture name from the `TextureID` argument (`None` = untextured).
+        texture: Option<String>,
         /// UZDoom legacy render style (`STYLE_*`).
         render_style: i32,
         /// Particle flags (`SPF_*`).
@@ -442,6 +444,9 @@ mod play_natives {
         pub native_name: String,
         /// ZScript class-id → class name table for `class<T>` values passed to natives.
         pub class_names: Vec<String>,
+        /// `TextureID` table: id `n > 0` names `texture_names[n - 1]`
+        /// (`TexMan.CheckForTexture` interns; 0 = null, −1 = invalid).
+        pub texture_names: Vec<String>,
         /// Script class layouts used by `Object.New`, keyed by lowercase class name.
         pub object_layouts: BTreeMap<String, (u32, u16, u16, u16)>,
         /// Per-player `(2d distance², vertical-adjusted distance², visible)` for the actor
@@ -475,6 +480,7 @@ mod play_natives {
                 resurrection_candidate: None,
                 native_name: String::new(),
                 class_names: Vec::new(),
+                texture_names: Vec::new(),
                 object_layouts: BTreeMap::new(),
                 ai_observers: Vec::new(),
                 gametic: 0,
@@ -488,6 +494,35 @@ mod play_natives {
     }
 
     impl ZvmPlayHost {
+        /// Intern a texture name as a `TextureID`: `""` is invalid (−1),
+        /// `"-"` the null texture (0), as `FTextureManager::CheckForTexture`.
+        pub fn intern_texture(&mut self, name: &str) -> i64 {
+            if name.is_empty() {
+                return -1;
+            }
+            if name == "-" {
+                return 0;
+            }
+            if let Some(i) = self
+                .texture_names
+                .iter()
+                .position(|n| n.eq_ignore_ascii_case(name))
+            {
+                return i as i64 + 1;
+            }
+            self.texture_names.push(name.to_owned());
+            self.texture_names.len() as i64
+        }
+
+        /// Name of `TextureID` `id` (`None` for null / invalid / unknown).
+        #[must_use]
+        pub fn texture_name(&self, id: i64) -> Option<&str> {
+            usize::try_from(id - 1)
+                .ok()
+                .and_then(|i| self.texture_names.get(i))
+                .map(String::as_str)
+        }
+
         /// `Wads.CheckNumForName` / `CheckNumForFullName` over the in-memory map.
         #[must_use]
         pub fn wad_check(&self, name: &str) -> i32 {
@@ -849,7 +884,6 @@ mod play_natives {
         ] {
             add(&format!("screen.{name}"), actor_false);
         }
-        add("texman.checkfortexture", actor_missing_index);
         add("texman.checkrealheight", actor_false);
         add("texman.okforlocalization", actor_false);
         add("texman.getsize", actor_zero_vec);
@@ -1908,6 +1942,13 @@ mod play_natives {
         add("Actor.A_MonsterRail", act_monster_rail);
         add("global.A_MonsterRail", act_monster_rail);
         add("Actor.A_SpawnParticleEx", actor_spawn_particle_ex);
+        add("TexMan.CheckForTexture", texman_check_for_texture);
+        add("TexMan.GetName", texman_get_name);
+        add("TextureID.IsValid", texture_id_is_valid);
+        add("TextureID.Exists", texture_id_is_valid);
+        add("TextureID.IsNull", texture_id_is_null);
+        add("TextureID.SetInvalid", texture_id_set_invalid);
+        add("TextureID.SetNull", texture_id_set_null);
         ids
     }
 
@@ -1921,6 +1962,63 @@ mod play_natives {
         Ok(())
     }
 
+    /// `TexMan.CheckForTexture(name, usetype, flags)`: intern `name` as a
+    /// `TextureID` (`"-"` = null, `""` = invalid). Lump existence is
+    /// checked by the renderer when the texture is drawn.
+    fn texman_check_for_texture(
+        ctx: &mut ZvmCtx<'_>,
+        regs: &mut NativeRegs<'_>,
+    ) -> Result<(), Trap> {
+        let name = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .trim()
+            .to_owned();
+        let id = ctx.play.intern_texture(&name);
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = id;
+        }
+        Ok(())
+    }
+
+    /// `TexMan.GetName(tex)`.
+    fn texman_get_name(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let id = regs.i.first().copied().unwrap_or(0);
+        let name = ctx.play.texture_name(id).unwrap_or("").to_owned();
+        store_string(ctx, regs, &name);
+        Ok(())
+    }
+
+    fn texture_id_is_valid(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let id = regs.i.first().copied().unwrap_or(0);
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = i64::from(id > 0);
+        }
+        Ok(())
+    }
+
+    fn texture_id_is_null(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let id = regs.i.first().copied().unwrap_or(0);
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = i64::from(id == 0);
+        }
+        Ok(())
+    }
+
+    fn texture_id_set_invalid(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = -1;
+        }
+        Ok(())
+    }
+
+    fn texture_id_set_null(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = 0;
+        }
+        Ok(())
+    }
+
     fn actor_spawn_particle_ex(
         ctx: &mut ZvmCtx<'_>,
         regs: &mut NativeRegs<'_>,
@@ -1928,8 +2026,10 @@ mod play_natives {
         let integer = |index: usize| regs.i.get(index).copied().unwrap_or(0);
         let float = |index: usize, default: f64| regs.f.get(index).copied().unwrap_or(default);
         let flags = integer(3) as u32;
+        let texture = ctx.play.texture_name(integer(1)).map(str::to_owned);
         ctx.play.actor_ops.push(super::ZsActorOp::ParticleEx {
             color: integer(0) as u32,
+            texture,
             render_style: integer(2) as i32,
             flags,
             lifetime: integer(4) as i32,
@@ -5244,6 +5344,20 @@ pub use play_natives::{ZvmPlayHost, register_bd_natives};
 mod tests {
     use super::*;
     use crate::heap::{ObjHandle, StrHandle, ZvmHeap};
+
+    #[test]
+    fn texture_ids_intern_by_name() {
+        let mut play = ZvmPlayHost::default();
+        assert_eq!(play.intern_texture(""), -1);
+        assert_eq!(play.intern_texture("-"), 0);
+        let a = play.intern_texture("BAL1A0");
+        assert!(a > 0);
+        assert_eq!(play.intern_texture("bal1a0"), a);
+        assert_ne!(play.intern_texture("PUFFA0"), a);
+        assert_eq!(play.texture_name(a), Some("BAL1A0"));
+        assert_eq!(play.texture_name(0), None);
+        assert_eq!(play.texture_name(-1), None);
+    }
 
     #[test]
     fn bind_imports_keeps_real_natives_and_traps_stubs() {

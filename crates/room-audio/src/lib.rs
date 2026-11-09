@@ -6,6 +6,8 @@
 
 mod event;
 mod mixer;
+pub mod reverb;
 
 pub use event::{SoundEvent, SoundFlags, SoundOrigin};
+pub use reverb::{EnvReverb, EnvironmentTable, ReverbEnv, ReverbProps};
 pub use mixer::{AudioError, ENGINE_SAMPLE_RATE, Mixer, SampleBank, Voice, resample_mono};

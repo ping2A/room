@@ -14,7 +14,9 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-default = []
+default = ["gamepad"]
+## Game controllers through gilrs (needs libudev on Linux).
+gamepad = ["dep:gilrs"]
 ## Embed CPython and load `language = "python"` ROOMMOD modules (desktop only).
 python-mods = ["room-python-host/embed"]
 
@@ -43,6 +45,7 @@ room-ui = { path = "../room-ui" }
 room-vfs = { path = "../room-vfs" }
 room-faceswap = { path = "../room-faceswap" }
 room-python-host = { path = "../room-python-host" }
+gilrs = { version = "0.11", optional = true }
 glam.workspace = true
 image.workspace = true
 pollster.workspace = true

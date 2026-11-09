@@ -253,6 +253,13 @@ impl CvarStore {
             CvarValue::String("auto".into()),
             CvarFlags::ARCHIVE,
         );
+        // Userinfo `gender` (GZDoom default `neutral`): `$playersound` lookup.
+        self.register(
+            "gender",
+            CvarType::String,
+            CvarValue::String("neutral".into()),
+            CvarFlags::ARCHIVE,
+        );
         self.register(
             "name",
             CvarType::String,
@@ -347,6 +354,18 @@ impl CvarStore {
         reg_b(self, "r_wounds", false);
         reg_i(self, "r_gore", 1);
         reg_b(self, "r_reduce_flashing", false);
+        reg_i(self, "r_extralight", 0);
+        reg_b(self, "showendoom", false);
+        reg_b(self, "use_joystick", true);
+        reg_f(self, "joy_deadzone", 0.2);
+        reg_f(self, "joy_curve", 1.6);
+        reg_f(self, "joy_sensitivity", 1.0);
+        reg_f(self, "joy_speedmultiplier", 1.0);
+        reg_b(self, "joy_invertpitch", false);
+        reg_i(self, "m_doubleclicktime", 250);
+        reg_b(self, "snd_reverb", true);
+        reg_b(self, "snd_waterreverb", true);
+        reg_i(self, "gl_texture_filter_anisotropic", 1);
         reg_b(self, "r_gpuprofile", false);
     }
 

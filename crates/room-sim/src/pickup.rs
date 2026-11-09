@@ -15,21 +15,35 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
     }
     let class = it.class;
     let dropped = (it.flags & crate::class::FLAG_DROPPED) != 0;
+    if world.classes.inherits_from(class, "WeaponPiece") {
+        return pickup_weapon_piece(world, toucher, item, class);
+    }
     let amount = world
         .classes
         .get(class)
         .map(|c| c.inventory_amount.max(1))
         .unwrap_or(1);
     // Vanilla `MF_DROPPED`: ammo (and weapon ammo give) at half amount (min 1).
-    let amount = if dropped { (amount / 2).max(1) } else { amount };
+    // `Ammo.DropAmount` replaces the dropped amount; `DropAmmoFactorMultiplier`
+    // scales Doom's half.
+    let amount = if dropped {
+        match world
+            .classes
+            .get(class)
+            .map(|c| (c.ext.drop_amount, c.ext.drop_ammo_factor_mult))
+        {
+            Some((n, _)) if n > 0 => n,
+            Some((_, m)) if (m - 1.0).abs() > 1e-12 => {
+                ((f64::from(amount) * 0.5 * m) as i32).max(1)
+            }
+            _ => (amount / 2).max(1),
+        }
+    } else {
+        amount
+    };
     let class_name = pickup_kind(world, class);
     // Armor pickups set `Player.armor` instead of stacking as inventory.
-    let armor_points = match class_name.as_str() {
-        "greenarmor" => Some(100),
-        "bluearmor" => Some(200),
-        "armorbonus" => Some(-1), // +1, capped at 200
-        _ => None,
-    };
+    let armor_kind = armor_kind(&class_name);
     // Health pickups heal the toucher's actor (amount / max from class props).
     let health_heal = match class_name.as_str() {
         "stimpack" | "medikit" | "healthbonus" | "soulsphere" | "megasphere" => {
@@ -39,6 +53,21 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
                 .map(|c| c.inventory_max_amount)
                 .unwrap_or(100)
                 .max(1);
+            // Stimpacks and medikits heal up to the player's `Player.MaxHealth`
+            // (GZDoom `Health` with no `MaxAmount` uses `GetMaxHealth`).
+            let player_max = world
+                .actors
+                .get(toucher)
+                .and_then(|a| world.classes.get(a.class))
+                .map_or(0, |c| c.ext.player_max_health);
+            let max = if matches!(class_name.as_str(), "stimpack" | "medikit")
+                && max == 100
+                && player_max > 0
+            {
+                player_max
+            } else {
+                max
+            };
             Some((amount, max))
         }
         _ => None,
@@ -53,28 +82,10 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
     let is_backpack = class_name == "backpack";
     // Medikit uses a different message when health was critically low.
     let mut medikit_needed = false;
-    if let Some(pts) = armor_points {
-        let mut applied = false;
-        for p in world.players.iter_mut().flatten() {
-            if p.mo != Some(toucher) {
-                continue;
-            }
-            if pts < 0 {
-                // Armor bonus: +1 up to 200; first bonus grants green armor type.
-                if p.armor < 200 {
-                    p.armor += 1;
-                    if p.armor_class == 0 {
-                        p.armor_class = 1;
-                    }
-                    applied = true;
-                }
-            } else if p.armor < pts {
-                p.armor = pts;
-                p.armor_class = if class_name == "bluearmor" { 2 } else { 1 };
-                applied = true;
-            }
-        }
-        if !applied {
+    // `Health.LowMessage`: replaces the pickup message when health was low.
+    let mut low_message: Option<String> = None;
+    if armor_kind.is_some() {
+        if !use_armor(world, toucher, class, 1) {
             return false;
         }
     } else if let Some((heal, max_hp)) = health_heal {
@@ -83,6 +94,16 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
         };
         if class_name == "medikit" {
             medikit_needed = a.health < 25;
+        }
+        let low = world
+            .classes
+            .get(class)
+            .filter(|c| !c.ext.low_message.is_empty())
+            .map(|c| (c.ext.low_message_health, c.ext.low_message.clone()));
+        if let Some((n, msg)) = low {
+            if a.health < n {
+                low_message = Some(msg);
+            }
         }
         if class_name == "megasphere" {
             a.health = max_hp;
@@ -96,6 +117,7 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
                 if p.mo == Some(toucher) {
                     p.armor = 200;
                     p.armor_class = 2;
+                    p.clear_armor_kind();
                 }
             }
         }
@@ -225,26 +247,7 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
         if !applied {
             return false;
         }
-        // Grant a small ammo dump and double existing ammo stack caps.
-        for ammo_name in ["Clip", "Shell", "RocketAmmo", "Cell"] {
-            let Some(cid) = world.classes.find_name(ammo_name) else {
-                continue;
-            };
-            let max = world
-                .classes
-                .get(cid)
-                .map(|c| c.inventory_max_amount)
-                .unwrap_or(50);
-            let doubled = max.saturating_mul(2);
-            if let Some(item) = world.inventory.find_mut(toucher, cid) {
-                item.max_amount = doubled;
-            }
-            let give = skill_ammo(world, amount.max(1));
-            let _ = give_inventory(world, toucher, cid, give);
-            if let Some(item) = world.inventory.find_mut(toucher, cid) {
-                item.max_amount = doubled;
-            }
-        }
+        backpack_fill(world, toucher);
         world.push_message("Picked up a backpack full of ammo!");
     } else if world.classes.get(class).is_some_and(|c| c.is_weapon) {
         // docs/30 W17: weapon stay — each player may take a map weapon once;
@@ -361,7 +364,8 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
     } else if !give_inventory(
         world,
         toucher,
-        base_ammo(world, class).unwrap_or(class),
+        flechette_for(world, toucher, class)
+            .unwrap_or_else(|| base_ammo(world, class).unwrap_or(class)),
         if class_is_ammo(world, class) {
             skill_ammo(world, amount)
         } else {
@@ -377,13 +381,39 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
             world.level.time, class_name, amount
         );
     }
-    crate::action::apply_powerup_giver(world, toucher, class);
+    if crate::action::apply_powerup_giver(world, toucher, class)
+        && crate::powerups::is_generic_giver(world, class)
+    {
+        // An auto-activating giver is used up on pickup, not carried.
+        let _ = world.inventory.take(toucher, class, 1);
+    }
     let (countitem, countsecret) = world.actors.get(item).map_or((false, false), |a| {
         (
             (a.flags & crate::class::FLAG_COUNTITEM) != 0,
             a.count_secret,
         )
     });
+    // `Inventory.PickupFlash`: a flash actor where the item stood.
+    let flash = world
+        .classes
+        .get(class)
+        .map(|c| c.ext.pickup_flash.clone())
+        .filter(|f| !f.is_empty() && !f.eq_ignore_ascii_case("none"));
+    if let Some(fcid) = flash.and_then(|f| world.classes.find_name(&f)) {
+        let _ = world.spawn_at(fcid, it.pos, room_core::Angle::ZERO);
+    }
+    crate::world::queue_item_respawn(world, item);
+    // `Inventory.GiveQuest n`: Strife quest token `QuestItemN`.
+    if let Some(q) = world
+        .classes
+        .get(class)
+        .and_then(|c| c.ext.stored_i32("inventory.givequest"))
+        .filter(|&q| q > 0)
+    {
+        if let Some(qc) = world.classes.find_name(&format!("QuestItem{q}")) {
+            let _ = give_inventory(world, toucher, qc, 1);
+        }
+    }
     // Consume the world item.
     if let Some(a) = world.actors.get_mut(item) {
         a.destroyed = true;
@@ -402,7 +432,9 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
         .get(class)
         .map(|c| (c.pickup_message.clone(), c.pickup_sound.clone()))
         .unwrap_or_default();
-    if !pickup_msg.is_empty() {
+    if let Some(msg) = low_message {
+        world.push_message(msg);
+    } else if !pickup_msg.is_empty() {
         world.push_message(pickup_msg);
     } else if class_name == "medikit" {
         // Vanilla: `GOTMEDINEED` when health was below 25 before the heal.
@@ -458,11 +490,115 @@ pub(crate) fn skill_ammo(world: &World, amount: i32) -> i32 {
     }
 }
 
+/// Armor family of a pickup kind: `Some(false)` for `BasicArmorPickup`
+/// (green / blue), `Some(true)` for `BasicArmorBonus`.
+fn armor_kind(kind: &str) -> Option<bool> {
+    match kind {
+        "greenarmor" | "bluearmor" | "basicarmorpickup" => Some(false),
+        "armorbonus" | "basicarmorbonus" => Some(true),
+        _ => None,
+    }
+}
+
+/// True when `class` is armor (`BasicArmorPickup` / `BasicArmorBonus` or a
+/// Doom armor subclass).
+#[must_use]
+pub fn is_armor_class(world: &World, class: ClassId) -> bool {
+    armor_kind(&pickup_kind(world, class)).is_some()
+}
+
+/// `BasicArmorPickup.Use` / `BasicArmorBonus.Use` for `owner`'s player.
+///
+/// `count` multiplies `Armor.SaveAmount` (`SetGiveAmount`, as
+/// `A_GiveInventory("GreenArmor", 2)` does). Returns whether the item was used
+/// up: a full armor pickup is left on the floor; an armor bonus is always
+/// taken (`+INVENTORY.ALWAYSPICKUP`, and vanilla Doom).
+pub fn use_armor(world: &mut World, owner: ActorId, class: ClassId, count: i32) -> bool {
+    let kind = pickup_kind(world, class);
+    let Some(bonus) = armor_kind(&kind) else {
+        return false;
+    };
+    let Some(def) = world.classes.get(class) else {
+        return false;
+    };
+    let ext = &def.ext;
+    // Room's Doom armors predate the `Armor.*` properties: fall back to the
+    // GZDoom defaults (`GreenArmor` 100 @ 33.335 %, `BlueArmor` 200 @ 50 %,
+    // `ArmorBonus` 1 @ 33.335 % up to 200).
+    let vanilla = match kind.as_str() {
+        "greenarmor" => (100, 33.335, 0),
+        "bluearmor" => (200, 50.0, 0),
+        "armorbonus" => (1, 33.335, 200),
+        _ => (0, 0.0, 0),
+    };
+    let save_amount = if ext.armor_save_amount > 0 {
+        ext.armor_save_amount
+    } else {
+        vanilla.0
+    };
+    let save_amount = save_amount.saturating_mul(count.max(1));
+    let percent = if ext.armor_save_percent > 0.0 {
+        ext.armor_save_percent
+    } else {
+        vanilla.1
+    };
+    let max_save = if ext.armor_max_save_amount > 0 {
+        ext.armor_max_save_amount
+    } else {
+        vanilla.2
+    };
+    let (bonus_count, bonus_max) = (ext.armor_max_bonus, ext.armor_max_bonus_max);
+    let max_absorb = ext.armor_max_absorb;
+    let max_full = ext.armor_max_full_absorb;
+    let fraction = percent.clamp(0.0, 100.0) / 100.0;
+    let armor_class = if fraction >= 0.5 { 2 } else { 1 };
+    let Some(p) = world
+        .players
+        .iter_mut()
+        .flatten()
+        .find(|p| p.mo == Some(owner))
+    else {
+        return false;
+    };
+    let wear = |p: &mut crate::player::Player| {
+        p.armor_save_percent = fraction;
+        p.armor_max_absorb = max_absorb;
+        p.armor_max_full_absorb = max_full;
+        p.armor_type = Some(class);
+        p.armor_class = armor_class;
+    };
+    if bonus {
+        // `Armor.MaxBonus` raises the cap by `BonusCount` up to `MaxBonusMax`.
+        if bonus_count > 0 && p.armor_bonus_count < bonus_max {
+            p.armor_bonus_count = (p.armor_bonus_count + bonus_count).min(bonus_max);
+        }
+        let save = save_amount.min(max_save);
+        let cap = max_save + p.armor_bonus_count;
+        if save <= 0 || p.armor >= cap {
+            return true;
+        }
+        if p.armor <= 0 {
+            p.armor = 0;
+            wear(p);
+        }
+        p.armor = (p.armor + save).min(cap);
+        return true;
+    }
+    if p.armor >= save_amount + p.armor_bonus_count {
+        return false;
+    }
+    p.armor = save_amount + p.armor_bonus_count;
+    wear(p);
+    true
+}
+
 /// Built-in pickups whose effect is keyed by class name.
-const PICKUP_KINDS: [&str; 20] = [
+const PICKUP_KINDS: [&str; 22] = [
     "greenarmor",
     "bluearmor",
     "armorbonus",
+    "basicarmorpickup",
+    "basicarmorbonus",
     "stimpack",
     "medikit",
     "healthbonus",
@@ -485,7 +621,7 @@ const PICKUP_KINDS: [&str; 20] = [
 /// Lowercase name of the nearest built-in pickup `class` derives from, so a
 /// DECORATE `actor Cola : Stimpack` heals like a stimpack; otherwise the
 /// class's own name.
-fn pickup_kind(world: &World, class: ClassId) -> String {
+pub(crate) fn pickup_kind(world: &World, class: ClassId) -> String {
     let own = world
         .classes
         .get(class)
@@ -521,6 +657,66 @@ fn base_ammo(world: &World, class: ClassId) -> Option<ClassId> {
         cur = def.parent;
     }
     None
+}
+
+/// Base ammo types a backpack fills: classes right under `Ammo`, plus Room's
+/// Doom ammo (which derive from `Actor`), never their subclasses.
+fn backpack_ammo_types(world: &World) -> Vec<ClassId> {
+    let mut out = Vec::new();
+    for def in world.classes.iter() {
+        if def.name.eq_ignore_ascii_case("Ammo") || !class_is_ammo(world, def.id) {
+            continue;
+        }
+        let parent_is_ammo = def.parent.is_some_and(|pid| {
+            world
+                .classes
+                .get(pid)
+                .is_some_and(|p| !p.name.eq_ignore_ascii_case("Ammo"))
+                && class_is_ammo(world, pid)
+        });
+        if !parent_is_ammo {
+            out.push(def.id);
+        }
+    }
+    out
+}
+
+/// `BackpackItem.CreateCopy`: every base ammo type gets `Ammo.BackpackAmount`
+/// (doubled on skills 1 and 5) and its cap raised to `Ammo.BackpackMaxAmount`.
+///
+/// Room's Doom ammo leaves those unset; it falls back to vanilla `P_GiveAmmo
+/// (…, 1)` (one clip: the class `Inventory.Amount`) and a doubled cap.
+fn backpack_fill(world: &mut World, toucher: ActorId) {
+    for cid in backpack_ammo_types(world) {
+        let Some(def) = world.classes.get(cid) else {
+            continue;
+        };
+        let vanilla = matches!(
+            def.name.to_ascii_lowercase().as_str(),
+            "clip" | "shell" | "rocketammo" | "cell"
+        );
+        let (give, max) =
+            if vanilla && def.ammo_backpack_amount <= 0 && def.ammo_backpack_max_amount <= 0 {
+                (
+                    def.inventory_amount.max(1),
+                    def.inventory_max_amount.saturating_mul(2),
+                )
+            } else {
+                (
+                    def.ammo_backpack_amount.max(0),
+                    def.ammo_backpack_max_amount,
+                )
+            };
+        let give = skill_ammo(world, give);
+        let class_max = def.inventory_max_amount.max(1);
+        let max = max.max(class_max);
+        if let Some(item) = world.inventory.find_mut(toucher, cid) {
+            item.max_amount = item.max_amount.max(max);
+        }
+        if give > 0 {
+            let _ = world.inventory.give(toucher, cid, give, max);
+        }
+    }
 }
 
 fn class_is_ammo(world: &World, class: ClassId) -> bool {
@@ -643,10 +839,312 @@ fn run_custom_pickup_at(
     pos: room_core::DVec3,
     angle: room_core::Angle,
 ) -> bool {
+    run_custom_state_at(world, owner, class, pos, angle, "Pickup")
+}
+
+/// `UseInventory(class)`: run a `CustomInventory`'s `Use` state for `owner`
+/// (or wear armor), play `Inventory.UseSound`, and take one. Returns false when
+/// `owner` has none or the item has no use.
+pub fn use_inventory_item(world: &mut World, owner: ActorId, class: room_core::ClassId) -> bool {
+    if world.inventory.count(owner, class) <= 0 {
+        return false;
+    }
+    let used = if is_armor_class(world, class) {
+        use_armor(world, owner, class, 1)
+    } else if world.classes.inherits_from(class, "PuzzleItem") {
+        use_puzzle_item(world, owner, class)
+    } else if world.classes.inherits_from(class, "ArtiHealingRadius") {
+        use_healing_radius(world, owner)
+    } else if world.classes.inherits_from(class, "HealthPickup") {
+        use_health_pickup(world, owner, class)
+    } else if world.classes.inherits_from(class, "PowerupGiver") {
+        crate::powerups::give_power(world, owner, class)
+    } else if let Some((pos, angle)) = world.actors.get(owner).map(|a| (a.pos, a.angle)) {
+        run_custom_state_at(world, owner, class, pos, angle, "Use")
+    } else {
+        false
+    };
+    if !used {
+        return false;
+    }
+    let sound = world
+        .classes
+        .get(class)
+        .map(|c| c.ext.use_sound.clone())
+        .unwrap_or_default();
+    if !sound.is_empty() {
+        if let Some(a) = world.actors.get(owner) {
+            world.play_sound(&sound, a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
+        }
+    }
+    let _ = world.inventory.take(owner, class, 1);
+    true
+}
+
+/// `WeaponPiece.TryPickup` (Hexen fourth weapons): give the whole weapon's
+/// ammo, mark piece `WeaponPiece.Number` in the toucher's holder for
+/// `WeaponPiece.Weapon`, and when the mask holds all `Health` pieces of that
+/// weapon class, give the weapon (with no extra ammo). A piece already held is
+/// still taken if it gave ammo.
+fn pickup_weapon_piece(world: &mut World, toucher: ActorId, item: ActorId, class: ClassId) -> bool {
+    let (weapon, number) = world.classes.get(class).map_or((String::new(), 0), |c| {
+        (
+            c.ext.stored("weaponpiece.weapon").unwrap_or("").to_owned(),
+            c.ext.stored_i32("weaponpiece.number").unwrap_or(0),
+        )
+    });
+    let Some(wcid) = world
+        .classes
+        .find_name(&weapon)
+        .map(|c| world.classes.replacement(c))
+    else {
+        return false;
+    };
+    let Some(wdef) = world.classes.get(wcid).cloned() else {
+        return false;
+    };
+    let mut gave = false;
+    for (ammo, n) in [
+        (&wdef.ammo_type, wdef.ammo_give),
+        (&wdef.ammo_type2, wdef.ammo_give2),
+    ] {
+        if n <= 0 || ammo.is_empty() {
+            continue;
+        }
+        if let Some(acid) = world.classes.find_name(ammo) {
+            let before = world.inventory.count(toucher, acid);
+            let _ = give_inventory(world, toucher, acid, n);
+            gave |= world.inventory.count(toucher, acid) > before;
+        }
+    }
+    let key = format!("piecemask:{}", wdef.name.to_ascii_lowercase());
+    let piece = if (1..=31).contains(&number) {
+        1i64 << (number - 1)
+    } else {
+        0
+    };
+    let mask = world
+        .actors
+        .get(toucher)
+        .and_then(|a| a.ext.scratch.get(&key).copied())
+        .unwrap_or(0.0) as i64;
+    if mask & piece != 0 {
+        if !gave {
+            return false;
+        }
+    } else {
+        let mask = mask | piece;
+        if let Some(a) = world.actors.get_mut(toucher) {
+            a.ext.scratch.insert(key, mask as f64);
+        }
+        let pieces = wdef.health.clamp(1, 31);
+        let full = (1i64 << pieces) - 1;
+        if mask == full && world.inventory.count(toucher, wcid) <= 0 {
+            let _ = world
+                .inventory
+                .give(toucher, wcid, 1, wdef.inventory_max_amount.max(1));
+            if let Some(p) = world
+                .players
+                .iter_mut()
+                .flatten()
+                .find(|p| p.mo == Some(toucher))
+            {
+                p.pending_weapon = Some(wcid);
+            }
+            if !wdef.pickup_message.is_empty() {
+                world.push_message(wdef.pickup_message.clone());
+            }
+        }
+    }
+    let (msg, snd, pos) = world
+        .classes
+        .get(class)
+        .map(|c| {
+            (
+                c.pickup_message.clone(),
+                c.pickup_sound.clone(),
+                world.actors.get(item).map(|a| a.pos),
+            )
+        })
+        .unwrap_or_default();
+    if !msg.is_empty() {
+        world.push_message(msg);
+    }
+    if let (false, Some(p)) = (snd.is_empty(), pos) {
+        world.play_sound(&snd, p.x(), p.y(), p.z(), 1.0);
+    }
+    if let Some(a) = world.actors.get_mut(item) {
+        a.destroyed = true;
+        a.state = None;
+        a.flags = 0;
+    }
+    true
+}
+
+/// Hexen `ArtiPoisonBag.CreateCopy`: the plain flechette becomes the
+/// toucher class's `Player.FlechetteType` (default `ArtiPoisonBag3`).
+fn flechette_for(world: &World, toucher: ActorId, class: ClassId) -> Option<ClassId> {
+    if !world
+        .classes
+        .get(class)?
+        .name
+        .eq_ignore_ascii_case("ArtiPoisonBag")
+    {
+        return None;
+    }
+    let name = world
+        .actors
+        .get(toucher)
+        .and_then(|a| world.classes.get(a.class))
+        .and_then(|c| c.ext.stored("player.flechettetype"))
+        .unwrap_or("ArtiPoisonBag3")
+        .to_owned();
+    world.classes.find_name(&name)
+}
+
+/// `ArtiHealingRadius.Use`: every live player within 255 units gets the
+/// owner class's `Player.HealRadiusType` — `Health` (50..99 health, the
+/// default), `Mana` (50..99 of `Mana1` or `Mana2`) or `Armor` (Room has no
+/// Hexen armor pieces: 5 armor points per piece, four pieces).
+fn use_healing_radius(world: &mut World, owner: ActorId) -> bool {
+    let mode = world
+        .actors
+        .get(owner)
+        .and_then(|a| world.classes.get(a.class))
+        .and_then(|c| c.ext.stored("player.healradiustype"))
+        .unwrap_or("Health")
+        .trim()
+        .to_ascii_lowercase();
+    let Some(origin) = world.actors.get(owner).map(|a| a.pos) else {
+        return false;
+    };
+    let mos: Vec<ActorId> = world
+        .players
+        .iter()
+        .flatten()
+        .filter_map(|p| p.mo)
+        .collect();
+    let mut effective = false;
+    for mo in mos {
+        let Some(a) = world.actors.get(mo) else {
+            continue;
+        };
+        let (dx, dy) = (a.pos.x() - origin.x(), a.pos.y() - origin.y());
+        if a.health <= 0 || (dx * dx + dy * dy).sqrt() > 255.0 {
+            continue;
+        }
+        let amount = 50 + i32::from(world.p_random("pr_healradius")) % 50;
+        let got = match mode.as_str() {
+            "armor" => world
+                .players
+                .iter_mut()
+                .flatten()
+                .find(|p| p.mo == Some(mo))
+                .is_some_and(|p| {
+                    if p.armor >= 100 {
+                        return false;
+                    }
+                    p.armor = (p.armor + 20).min(100);
+                    if p.armor_class == 0 {
+                        p.armor_class = 1;
+                    }
+                    true
+                }),
+            "mana" => ["Mana1", "Mana2"].iter().fold(false, |got, m| {
+                world
+                    .classes
+                    .find_name(m)
+                    .is_some_and(|c| give_inventory(world, mo, c, amount))
+                    || got
+            }),
+            _ => world.actors.get_mut(mo).is_some_and(|a| {
+                if a.health >= 100 {
+                    return false;
+                }
+                a.health = (a.health + amount).min(100);
+                true
+            }),
+        };
+        if got {
+            if let Some(a) = world.actors.get(mo) {
+                world.play_sound("MysticIncant", a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
+            }
+            effective = true;
+        }
+    }
+    effective
+}
+
+/// `PuzzleItem.Use`: try the `UsePuzzleItem` special in front of the owner;
+/// on failure play `PuzzleItem.FailSound` (default `*puzzfail`) and print
+/// `PuzzleItem.FailMessage` (default `$TXT_USEPUZZLEFAILED`).
+fn use_puzzle_item(world: &mut World, owner: ActorId, class: ClassId) -> bool {
+    let (number, fail_sound, fail_msg) =
+        world
+            .classes
+            .get(class)
+            .map_or((0, String::new(), String::new()), |c| {
+                (
+                    c.ext.stored_i32("puzzleitem.number").unwrap_or(0),
+                    c.ext
+                        .stored("puzzleitem.failsound")
+                        .unwrap_or("*puzzfail")
+                        .to_owned(),
+                    c.ext
+                        .stored("puzzleitem.failmessage")
+                        .unwrap_or("$TXT_USEPUZZLEFAILED")
+                        .to_owned(),
+                )
+            });
+    if crate::use_lines::use_puzzle_item(world, owner, number) {
+        return true;
+    }
+    if let Some(a) = world.actors.get(owner) {
+        world.play_sound(&fail_sound, a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
+    }
+    if world.players.iter().flatten().any(|p| p.mo == Some(owner)) {
+        world.push_message(fail_msg);
+    }
+    false
+}
+
+/// `HealthPickup.Use`: heal the class `Health` up to the owner's max health;
+/// refused at full health.
+fn use_health_pickup(world: &mut World, owner: ActorId, class: ClassId) -> bool {
+    let heal = world.classes.get(class).map_or(0, |c| c.health.max(1));
+    let max = world
+        .actors
+        .get(owner)
+        .and_then(|a| world.classes.get(a.class))
+        .map_or(100, |c| {
+            if c.ext.player_max_health > 0 {
+                c.ext.player_max_health
+            } else {
+                100
+            }
+        });
+    let Some(a) = world.actors.get_mut(owner) else {
+        return false;
+    };
+    if a.health >= max {
+        return false;
+    }
+    a.health = (a.health + heal).min(max);
+    true
+}
+
+fn run_custom_state_at(
+    world: &mut World,
+    owner: ActorId,
+    class: room_core::ClassId,
+    pos: room_core::DVec3,
+    angle: room_core::Angle,
+    label: &str,
+) -> bool {
     if !is_custom_inventory(world, class) {
         return false;
     }
-    let Some(start) = world.states.find_label(class, "Pickup") else {
+    let Some(start) = world.states.find_label(class, label) else {
         return false;
     };
     let Ok(item) = world.spawn_at(class, pos, angle) else {
@@ -694,7 +1192,7 @@ fn touch_specials_inner(world: &mut World, toucher: ActorId) {
             continue;
         };
         let kind = pickup_kind(world, other.class);
-        let is_armor = matches!(kind.as_str(), "greenarmor" | "bluearmor" | "armorbonus");
+        let is_armor = armor_kind(&kind).is_some();
         let is_health = matches!(
             kind.as_str(),
             "stimpack"
@@ -1287,6 +1785,164 @@ mod tests {
         assert!(try_pickup(&mut w, player, item2));
         assert_eq!(w.players[0].as_ref().unwrap().armor, 51);
         assert_eq!(w.players[0].as_ref().unwrap().armor_class, 2);
+    }
+
+    fn doom_world_with(extra: &str) -> (World, Arc<ClassRegistry>, ActorId) {
+        let src = format!(
+            "{}\n{extra}",
+            include_str!("../../../testdata/actors/doom_basic.txt")
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        (w, classes, mo)
+    }
+
+    const ARMOR_BASES: &str = "actor Inventory : Actor {}\n\
+        actor BasicArmorPickup : Inventory {}\n\
+        actor BasicArmorBonus : Inventory {}\n";
+
+    #[test]
+    fn decorate_armor_pickup_uses_save_amount_and_percent() {
+        let (mut w, classes, mo) = doom_world_with(&format!(
+            "{ARMOR_BASES}actor SuperArmor : BasicArmorPickup {{\n  Armor.SaveAmount 150\n  Armor.SavePercent 80\n  Armor.MaxAbsorb 10\n}}\n"
+        ));
+        let cid = classes.find_name("SuperArmor").unwrap();
+        let item = w
+            .spawn_at(cid, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO)
+            .unwrap();
+        assert!(try_pickup(&mut w, mo, item));
+        let p = w.players[0].as_ref().unwrap();
+        assert_eq!(p.armor, 150);
+        assert!((p.armor_fraction() - 0.8).abs() < 1e-9);
+        assert_eq!(p.armor_type, Some(cid));
+        assert_eq!(p.armor_class, 2, "80 % shows the blue icon");
+        // 30 damage: 80 % is 24, but MaxAbsorb caps the tic at 10.
+        crate::damage::damage_mobj(&mut w, mo, None, None, 30);
+        let p = w.players[0].as_ref().unwrap();
+        assert_eq!(p.armor, 140);
+        assert_eq!(w.actors.get(mo).unwrap().health, 80);
+        // The same tic's budget is spent: the next hit is all health.
+        crate::damage::damage_mobj(&mut w, mo, None, None, 10);
+        assert_eq!(w.players[0].as_ref().unwrap().armor, 140);
+        assert_eq!(w.actors.get(mo).unwrap().health, 70);
+    }
+
+    #[test]
+    fn decorate_armor_bonus_caps_at_max_save_amount_and_is_always_taken() {
+        let (mut w, classes, mo) = doom_world_with(&format!(
+            "{ARMOR_BASES}actor BigBonus : BasicArmorBonus {{\n  Armor.SaveAmount 5\n  Armor.MaxSaveAmount 12\n}}\n"
+        ));
+        let cid = classes.find_name("BigBonus").unwrap();
+        for want in [5, 10, 12, 12] {
+            let item = w
+                .spawn_at(cid, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO)
+                .unwrap();
+            assert!(try_pickup(&mut w, mo, item), "bonuses are always picked up");
+            assert_eq!(w.players[0].as_ref().unwrap().armor, want);
+        }
+        let p = w.players[0].as_ref().unwrap();
+        assert_eq!(p.armor_type, Some(cid));
+        assert_eq!(p.armor_class, 1);
+    }
+
+    #[test]
+    fn vanilla_armor_absorbs_rounding_down() {
+        let (mut w, _classes, mo) = doom_world_with("");
+        {
+            let p = w.players[0].as_mut().unwrap();
+            p.armor = 100;
+            p.armor_class = 1;
+        }
+        // Doom `P_DamageMobj`: saved = damage / 3 → 3 of 10.
+        crate::damage::damage_mobj(&mut w, mo, None, None, 10);
+        assert_eq!(w.players[0].as_ref().unwrap().armor, 97);
+        assert_eq!(w.actors.get(mo).unwrap().health, 93);
+        {
+            let p = w.players[0].as_mut().unwrap();
+            p.armor = 2;
+            p.armor_class = 2;
+        }
+        // Blue: 9 / 2 = 4, but only 2 points are left; the armor type clears.
+        crate::damage::damage_mobj(&mut w, mo, None, None, 9);
+        let p = w.players[0].as_ref().unwrap();
+        assert_eq!((p.armor, p.armor_class), (0, 0));
+        assert_eq!(w.actors.get(mo).unwrap().health, 86);
+    }
+
+    #[test]
+    fn give_inventory_wears_armor() {
+        let (mut w, classes, mo) = doom_world_with("");
+        let green = classes.find_name("GreenArmor").unwrap();
+        let _ = crate::action::call_action_args(
+            &mut w,
+            mo,
+            "A_GiveInventory",
+            &["GreenArmor".into(), "2".into()],
+        );
+        let p = w.players[0].as_ref().unwrap();
+        assert_eq!(p.armor, 200, "count multiplies SaveAmount");
+        assert_eq!(p.armor_type, Some(green));
+        assert_eq!(
+            w.inventory.count(mo, green),
+            0,
+            "armor is worn, not carried"
+        );
+    }
+
+    #[test]
+    fn backpack_gives_one_clip_of_each_vanilla_ammo() {
+        let (mut w, classes, mo) = doom_world_with("");
+        let pack = classes.find_name("Backpack").unwrap();
+        let ammo = [
+            ("Clip", 10, 400),
+            ("Shell", 4, 100),
+            ("RocketAmmo", 1, 100),
+            ("Cell", 20, 600),
+        ];
+        let had: Vec<i32> = ammo
+            .iter()
+            .map(|(n, _, _)| w.inventory.count(mo, classes.find_name(n).unwrap()))
+            .collect();
+        let item = w
+            .spawn_at(pack, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO)
+            .unwrap();
+        assert!(try_pickup(&mut w, mo, item));
+        for ((name, give, max), had) in ammo.into_iter().zip(had) {
+            let cid = classes.find_name(name).unwrap();
+            let it = w.inventory.find(mo, cid).unwrap();
+            assert_eq!((it.amount, it.max_amount), (had + give, max), "{name}");
+        }
+    }
+
+    #[test]
+    fn backpack_uses_decorate_backpack_amounts() {
+        let (mut w, classes, mo) = doom_world_with(
+            "actor Inventory : Actor {}\nactor Ammo : Inventory {}\n\
+             actor Nails : Ammo {\n  Inventory.MaxAmount 80\n  Ammo.BackpackAmount 7\n  Ammo.BackpackMaxAmount 160\n}\n\
+             actor BigNails : Nails { Inventory.Amount 20 }\n",
+        );
+        let pack = classes.find_name("Backpack").unwrap();
+        let item = w
+            .spawn_at(pack, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO)
+            .unwrap();
+        assert!(try_pickup(&mut w, mo, item));
+        let nails = classes.find_name("Nails").unwrap();
+        let it = w.inventory.find(mo, nails).unwrap();
+        assert_eq!((it.amount, it.max_amount), (7, 160));
+        let big = classes.find_name("BigNails").unwrap();
+        assert!(
+            w.inventory.find(mo, big).is_none(),
+            "subclasses are not filled"
+        );
     }
 
     #[test]

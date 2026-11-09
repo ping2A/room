@@ -383,6 +383,287 @@ pub struct ClassDef {
     pub use_sound: String,
     /// `Player.StartItem` (class, amount) in order; empty = Doom default kit.
     pub start_items: Vec<(String, i32)>,
+    /// Armor, player and attack properties added for `docs/36` parity.
+    pub ext: ClassExt,
+}
+
+/// Less common class properties (`docs/36` §3.2 property semantics).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClassExt {
+    /// `Armor.SaveAmount` (`BasicArmorPickup` / `BasicArmorBonus`).
+    pub armor_save_amount: i32,
+    /// `Armor.SavePercent` in percent (0..=100). `0` = unset.
+    pub armor_save_percent: f64,
+    /// `Armor.MaxSaveAmount` (`BasicArmorBonus` cap).
+    pub armor_max_save_amount: i32,
+    /// `Armor.MaxAbsorb`: most damage absorbed per tic (`0` = no limit).
+    pub armor_max_absorb: i32,
+    /// `Armor.MaxFullAbsorb`: damage fully absorbed per tic.
+    pub armor_max_full_absorb: i32,
+    /// `Armor.MaxBonus` (bonus count added to the cap).
+    pub armor_max_bonus: i32,
+    /// `Armor.MaxBonusMax`.
+    pub armor_max_bonus_max: i32,
+    /// `MissileHeight` for `A_MissileAttack` / `A_ComboAttack` (default 32).
+    pub missile_height: f64,
+    /// `Player.SideMove` scale.
+    pub side_move: f64,
+    /// `Player.DisplayName`.
+    pub display_name: String,
+    /// `Player.RunHealth`: below this health the player cannot run.
+    pub run_health: i32,
+    /// `Player.MaxHealth` (`0` = 100).
+    pub player_max_health: i32,
+    /// `Player.DamageScreenColor` as written (color, intensity, type).
+    pub damage_screen_color: String,
+    /// `RadiusDamageFactor`: scale on splash damage this actor takes.
+    pub radius_damage_factor: f64,
+    /// `SelfDamageFactor`: scale on damage this actor deals to itself.
+    pub self_damage_factor: f64,
+    /// `Stamina` (script-readable).
+    pub stamina: i32,
+    /// `Accuracy` (script-readable).
+    pub accuracy: i32,
+    /// `StealthAlpha`: lowest alpha a `+STEALTH` monster fades to.
+    pub stealth_alpha: f64,
+    /// `TelefogSourceType` (empty = `TeleportFog`).
+    pub telefog_source_type: String,
+    /// `TelefogDestType` (empty = `TeleportFog`).
+    pub telefog_dest_type: String,
+    /// `VSpeed`: vertical speed given at spawn.
+    pub vspeed: f64,
+    /// `DamageMultiply`: scale on all damage this actor deals.
+    pub damage_multiply: f64,
+    /// `Health.LowMessage` threshold (health below it picks the low message).
+    pub low_message_health: i32,
+    /// `Health.LowMessage` text.
+    pub low_message: String,
+    /// `Weapon.SlotPriority` (higher sorts first in the slot).
+    pub slot_priority: f64,
+    /// Class is `SpectatorCamera` or derives from it (native follow tick).
+    pub spectator_camera: bool,
+    /// `Ammo.DropAmount`: amount a dropped copy carries (`0` = half).
+    pub drop_amount: i32,
+    /// `Ammo.DropAmmoFactorMultiplier` on the dropped amount.
+    pub drop_ammo_factor_mult: f64,
+    /// `Inventory.PickupFlash`: class spawned where the item was taken.
+    pub pickup_flash: String,
+    /// `Inventory.UseSound`: played when the item is used from the bar.
+    pub use_sound: String,
+    /// `RipSound`: played when this ripper passes through an actor.
+    pub rip_sound: String,
+    /// `ThruBits`: `+ALLOWTHRUBITS` actors sharing a bit pass through each other.
+    pub thru_bits: u32,
+    /// `WeaveIndexXY` start phase (`-1` = unset).
+    pub weave_index_xy: i32,
+    /// `WeaveIndexZ` start phase (`-1` = unset).
+    pub weave_index_z: i32,
+    /// `Player.UseRange` (`0` = Doom's 64).
+    pub use_range: f64,
+    /// `Player.TeleportFreezeTime` (`-1` = Doom's 18 tics).
+    pub teleport_freeze_time: i32,
+    /// `Player.ViewBob` scale on view bobbing.
+    pub view_bob: f64,
+    /// `MissileChanceMult`: scales the distance used for the missile chance.
+    pub missile_chance_mult: f64,
+    /// `Weapon.MinSelectionAmmo1` / `MinSelectionAmmo2`: auto-switch skips the
+    /// weapon below these amounts.
+    pub min_selection_ammo: (i32, i32),
+    /// `Weapon.SisterWeapon` (powered / unpowered twin).
+    pub sister_weapon: String,
+    /// `Weapon.YAdjust`, `WeaponScaleX`, `WeaponScaleY` for the HUD gun.
+    pub weapon_y_adjust: f64,
+    /// `Weapon.WeaponScaleX` / `WeaponScaleY`.
+    pub weapon_scale: (f64, f64),
+    /// `Weapon.LookScale`: mouse-look sensitivity while this weapon is up.
+    pub look_scale: f64,
+    /// `LandingSpeed`: falling faster than this (negative) plays the land sound.
+    pub landing_speed: f64,
+    /// `PoisonDamageType`.
+    pub poison_damage_type: String,
+    /// Remaining DECORATE properties kept as written, lowercase name → args
+    /// joined by `,` (`Player.Portrait`, `PuzzleItem.Number`, …). Read with
+    /// [`ClassExt::stored`].
+    pub stored: BTreeMap<String, String>,
+}
+
+impl ClassExt {
+    /// A qualified flag set on the class or a parent (`"INVENTORY.NEVERRESPAWN"`).
+    #[must_use]
+    pub fn has_qualified_flag(&self, name: &str) -> bool {
+        self.stored
+            .contains_key(&format!("+{}", name.to_ascii_lowercase()))
+    }
+
+    /// A property kept as written (lowercase DECORATE name, e.g. `"player.portrait"`).
+    #[must_use]
+    pub fn stored(&self, name: &str) -> Option<&str> {
+        self.stored
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
+    }
+
+    /// Comma-separated fields of a stored property (`"10,20"` → `["10", "20"]`).
+    #[must_use]
+    pub fn stored_fields(&self, name: &str) -> Vec<&str> {
+        self.stored(name)
+            .map(|s| s.split(',').map(str::trim).collect())
+            .unwrap_or_default()
+    }
+
+    /// Field `i` of a stored property as a number.
+    #[must_use]
+    pub fn stored_f64_at(&self, name: &str, i: usize) -> Option<f64> {
+        self.stored_fields(name)
+            .get(i)
+            .and_then(|v| v.parse::<f64>().ok())
+    }
+
+    /// First field of a stored property as a number.
+    #[must_use]
+    pub fn stored_f64(&self, name: &str) -> Option<f64> {
+        self.stored_f64_at(name, 0)
+    }
+
+    /// First field of a stored property as an integer (`"0x10"` accepted).
+    #[must_use]
+    pub fn stored_i32(&self, name: &str) -> Option<i32> {
+        let v = *self.stored_fields(name).first()?;
+        if let Some(hex) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+            return i32::from_str_radix(hex, 16).ok();
+        }
+        v.parse::<i32>()
+            .ok()
+            .or_else(|| v.parse::<f64>().ok().map(|f| f as i32))
+    }
+
+    /// First field of a stored property as a flag (`true`, `1`, or present
+    /// with no value).
+    #[must_use]
+    pub fn stored_bool(&self, name: &str) -> bool {
+        match self.stored(name) {
+            None => false,
+            Some(v) => {
+                let v = v.split(',').next().unwrap_or("").trim();
+                v.is_empty()
+                    || v.eq_ignore_ascii_case("true")
+                    || v.parse::<f64>().is_ok_and(|n| n != 0.0)
+            }
+        }
+    }
+}
+
+/// Stored properties nothing reads yet (the parity report counts them as
+/// missing): `Weapon.BobPivot3D` needs first-person 3D weapon models and
+/// `Powerup.Colormap` fixed-colormap powerups, neither of which Room draws.
+///
+/// `RenderRadius` is not listed: it only widens the sectors an actor is linked
+/// into for sector-based sprite culling, and Room draws every live actor, so a
+/// larger render radius is always already satisfied.
+pub const PROPERTIES_PARSED_ONLY: &[&str] = &["weapon.bobpivot3d", "powerup.colormap"];
+
+/// DECORATE properties Room keeps as written for HUD, automap, render and
+/// game-family code (`ClassExt::stored`).
+pub const STORED_PROPERTIES: &[&str] = &[
+    "automapoffsets",
+    "dynamiclight.spotinnerangle",
+    "dynamiclight.spotouterangle",
+    "fakeinventory.respawns",
+    "healthpickup.autouse",
+    "inventory.givequest",
+    "inventory.interhubamount",
+    "inventory.respawntics",
+    "lightlevel",
+    "maxslopesteepness",
+    "minrespawntics",
+    "respawndice",
+    "player.aircapacity",
+    "player.fallingscreamspeed",
+    "player.flechettetype",
+    "player.flybob",
+    "player.healradiustype",
+    "player.invulnerabilitymode",
+    "player.mugshotmaxhealth",
+    "player.portrait",
+    "player.viewbobspeed",
+    "player.waterclimbspeed",
+    "powerreflection.reflecttype",
+    "poisondamage",
+    "powerup.color",
+    "powerup.colormap",
+    "powerup.duration",
+    "powerup.mode",
+    "powerup.strength",
+    "puzzleitem.failmessage",
+    "puzzleitem.failsound",
+    "puzzleitem.number",
+    "renderhidden",
+    "renderradius",
+    "renderrequired",
+    "shadowaimfactor",
+    "shadowpenaltyfactor",
+    "spectatorcamera.chasemode",
+    "spectatorcamera.chasingtracer",
+    "spectatorcamera.lagdistance",
+    "spriterotation",
+    "visibleangles",
+    "visiblepitch",
+    "weapon.bobpivot3d",
+    "weaponpiece.number",
+    "weaponpiece.weapon",
+];
+
+impl Default for ClassExt {
+    fn default() -> Self {
+        Self {
+            armor_save_amount: 0,
+            armor_save_percent: 0.0,
+            armor_max_save_amount: 0,
+            armor_max_absorb: 0,
+            armor_max_full_absorb: 0,
+            armor_max_bonus: 0,
+            armor_max_bonus_max: 0,
+            missile_height: 32.0,
+            side_move: 1.0,
+            display_name: String::new(),
+            run_health: 0,
+            player_max_health: 0,
+            damage_screen_color: String::new(),
+            radius_damage_factor: 1.0,
+            self_damage_factor: 1.0,
+            stamina: 0,
+            accuracy: 0,
+            stealth_alpha: 0.0,
+            telefog_source_type: String::new(),
+            telefog_dest_type: String::new(),
+            vspeed: 0.0,
+            damage_multiply: 1.0,
+            low_message_health: 0,
+            low_message: String::new(),
+            slot_priority: 0.0,
+            spectator_camera: false,
+            drop_amount: 0,
+            drop_ammo_factor_mult: 1.0,
+            pickup_flash: String::new(),
+            use_sound: String::new(),
+            rip_sound: String::new(),
+            thru_bits: 0,
+            weave_index_xy: -1,
+            weave_index_z: -1,
+            use_range: 0.0,
+            teleport_freeze_time: -1,
+            view_bob: 1.0,
+            missile_chance_mult: 1.0,
+            min_selection_ammo: (0, 0),
+            sister_weapon: String::new(),
+            weapon_y_adjust: 0.0,
+            weapon_scale: (1.0, 1.2),
+            look_scale: 1.0,
+            landing_speed: -8.0,
+            poison_damage_type: String::new(),
+            stored: BTreeMap::new(),
+        }
+    }
 }
 
 impl ClassDef {
@@ -537,6 +818,7 @@ impl ClassRegistry {
             push_sound: String::new(),
             use_sound: String::new(),
             start_items: Vec::new(),
+            ext: ClassExt::default(),
         });
         reg
     }
@@ -778,8 +1060,41 @@ impl ClassRegistry {
         let mut melee_damage = parent.melee_damage;
         let mut explosion_damage = parent.explosion_damage;
         let mut explosion_radius = parent.explosion_radius;
+        let mut ext = parent.ext.clone();
+        ext.spectator_camera |= def.name.eq_ignore_ascii_case("SpectatorCamera");
+        let mut slot_number = parent.slot_number;
+        let mut inventory_icon = parent.inventory_icon.clone();
+        let mut ammo_backpack_amount = parent.ammo_backpack_amount;
+        let mut ammo_backpack_max_amount = parent.ammo_backpack_max_amount;
         for p in &def.properties {
-            match p.name.to_ascii_lowercase().as_str() {
+            let lower_name = p.name.to_ascii_lowercase();
+            if lower_name.starts_with("weapon.") {
+                is_weapon = true;
+            }
+            if apply_ext_property(&mut ext, &lower_name, &p.args) {
+                continue;
+            }
+            match canonical_property_name(&lower_name) {
+                "weapon.slotnumber" => {
+                    if let Some(v) = first_i32(&p.args) {
+                        slot_number = v;
+                    }
+                }
+                "inventory.icon" => {
+                    if let Some(a) = p.args.first() {
+                        inventory_icon = a.trim_matches('"').to_owned();
+                    }
+                }
+                "ammo.backpackamount" => {
+                    if let Some(a) = p.args.first() {
+                        ammo_backpack_amount = a.parse().unwrap_or(ammo_backpack_amount);
+                    }
+                }
+                "ammo.backpackmaxamount" => {
+                    if let Some(a) = p.args.first() {
+                        ammo_backpack_max_amount = a.parse().unwrap_or(ammo_backpack_max_amount);
+                    }
+                }
                 "tag" => {
                     if let Some(a) = p.args.first() {
                         tag = a.trim_matches('"').to_owned();
@@ -1423,6 +1738,20 @@ impl ClassRegistry {
             is_weapon = true;
         }
         for f in &def.flags {
+            // Qualified flags (`+INVENTORY.NEVERRESPAWN`, `+WEAPON.AMMO_OPTIONAL`…)
+            // are kept by name for the code that reads them (`ClassDef::has_qualified_flag`).
+            let upper = f.name.to_ascii_uppercase();
+            if upper.starts_with("INVENTORY.")
+                || upper.starts_with("WEAPON.")
+                || upper.starts_with("PLAYERPAWN.")
+            {
+                let key = format!("+{}", upper.to_ascii_lowercase());
+                if f.set {
+                    ext.stored.insert(key, String::new());
+                } else {
+                    ext.stored.remove(&key);
+                }
+            }
             if f.name.eq_ignore_ascii_case("INVENTORY.AUTOACTIVATE") {
                 inventory_autoactivate = f.set;
                 is_inventory |= f.set;
@@ -1522,13 +1851,10 @@ impl ClassRegistry {
             slot.melee_damage = melee_damage;
             slot.explosion_damage = explosion_damage;
             slot.explosion_radius = explosion_radius;
-            slot.slot_number = parent.slot_number;
+            slot.slot_number = slot_number;
             slot.weapon_noalert = parent.weapon_noalert;
             slot.weapon_noautofire = parent.weapon_noautofire;
             slot.weapon_ammo_optional = parent.weapon_ammo_optional;
-            slot.inventory_icon = parent.inventory_icon.clone();
-            slot.ammo_backpack_amount = parent.ammo_backpack_amount;
-            slot.ammo_backpack_max_amount = parent.ammo_backpack_max_amount;
             slot.is_ammo = parent.is_ammo;
             slot.is_inventory = is_inventory;
             slot.inventory_autoactivate = inventory_autoactivate;
@@ -1554,6 +1880,10 @@ impl ClassRegistry {
             slot.bounce_factor = bounce_factor;
             slot.push_sound = push_sound;
             slot.use_sound = use_sound;
+            slot.ext = ext;
+            slot.inventory_icon = inventory_icon;
+            slot.ammo_backpack_amount = ammo_backpack_amount;
+            slot.ammo_backpack_max_amount = ammo_backpack_max_amount;
             slot.doomednum = def.doomednum.or(slot.doomednum);
             return Ok(id);
         }
@@ -1651,13 +1981,13 @@ impl ClassRegistry {
             melee_damage,
             explosion_damage,
             explosion_radius,
-            slot_number: parent.slot_number,
+            slot_number,
             weapon_noalert: parent.weapon_noalert,
             weapon_noautofire: parent.weapon_noautofire,
             weapon_ammo_optional: parent.weapon_ammo_optional,
-            inventory_icon: parent.inventory_icon.clone(),
-            ammo_backpack_amount: parent.ammo_backpack_amount,
-            ammo_backpack_max_amount: parent.ammo_backpack_max_amount,
+            inventory_icon,
+            ammo_backpack_amount,
+            ammo_backpack_max_amount,
             is_ammo: parent.is_ammo,
             is_inventory,
             inventory_autoactivate,
@@ -1683,6 +2013,7 @@ impl ClassRegistry {
             push_sound,
             use_sound,
             start_items,
+            ext,
         })
         .inspect(|&id| self.apply_replaces(id, def.replaces.as_deref()))
     }
@@ -1715,6 +2046,24 @@ impl ClassRegistry {
             }
         }
         cur
+    }
+
+    /// True when `class` is `ancestor` (by name) or derives from it.
+    #[must_use]
+    pub fn inherits_from(&self, class: ClassId, ancestor: &str) -> bool {
+        let mut cur = Some(class);
+        let mut guard = 0;
+        while let Some(c) = cur.and_then(|c| self.get(c)) {
+            if c.name.eq_ignore_ascii_case(ancestor) {
+                return true;
+            }
+            cur = c.parent;
+            guard += 1;
+            if guard > 64 {
+                break;
+            }
+        }
+        false
     }
 
     /// Case-insensitive name lookup.
@@ -1933,6 +2282,153 @@ impl ClassRegistry {
     pub fn is_empty(&self) -> bool {
         self.classes.is_empty()
     }
+}
+
+/// Map GZDoom's qualified spellings onto the names the class builder matches.
+///
+/// `Player.ViewHeight`, `Player.JumpZ` and `Player.AttackZOffset` are the
+/// documented DECORATE names; Room also accepts the bare forms.
+fn canonical_property_name(lower: &str) -> &str {
+    match lower {
+        "player.viewheight" => "viewheight",
+        "player.jumpz" => "jumpz",
+        "player.attackzoffset" => "attackzoffset",
+        "player.gruntspeed" => "gruntspeed",
+        "player.soundclass" => "soundclass",
+        other => other,
+    }
+}
+
+fn first_f64(args: &[String]) -> Option<f64> {
+    args.first()
+        .and_then(|a| a.trim_matches('"').parse::<f64>().ok())
+}
+
+fn first_str(args: &[String]) -> String {
+    args.first()
+        .map(|a| a.trim().trim_matches('"').to_owned())
+        .unwrap_or_default()
+}
+
+fn first_i32(args: &[String]) -> Option<i32> {
+    args.first().and_then(|a| {
+        let a = a.trim_matches('"');
+        a.parse::<i32>()
+            .ok()
+            .or_else(|| a.parse::<f64>().ok().map(|f| f as i32))
+    })
+}
+
+/// Properties stored in [`ClassExt`]. Returns true when `lower` was one of them.
+fn apply_ext_property(ext: &mut ClassExt, lower: &str, args: &[String]) -> bool {
+    match lower {
+        "armor.saveamount" => {
+            ext.armor_save_amount = first_i32(args).unwrap_or(ext.armor_save_amount)
+        }
+        "armor.savepercent" => {
+            ext.armor_save_percent = first_f64(args).unwrap_or(ext.armor_save_percent);
+        }
+        "armor.maxsaveamount" => {
+            ext.armor_max_save_amount = first_i32(args).unwrap_or(ext.armor_max_save_amount);
+        }
+        "armor.maxabsorb" => ext.armor_max_absorb = first_i32(args).unwrap_or(ext.armor_max_absorb),
+        "armor.maxfullabsorb" => {
+            ext.armor_max_full_absorb = first_i32(args).unwrap_or(ext.armor_max_full_absorb);
+        }
+        "armor.maxbonus" => ext.armor_max_bonus = first_i32(args).unwrap_or(ext.armor_max_bonus),
+        "armor.maxbonusmax" => {
+            ext.armor_max_bonus_max = first_i32(args).unwrap_or(ext.armor_max_bonus_max);
+        }
+        "missileheight" => ext.missile_height = first_f64(args).unwrap_or(ext.missile_height),
+        "player.sidemove" => ext.side_move = first_f64(args).unwrap_or(ext.side_move).max(0.0),
+        "player.displayname" => {
+            if let Some(a) = args.first() {
+                ext.display_name = a.trim_matches('"').to_owned();
+            }
+        }
+        "player.runhealth" => ext.run_health = first_i32(args).unwrap_or(ext.run_health),
+        "player.maxhealth" => {
+            ext.player_max_health = first_i32(args).unwrap_or(ext.player_max_health)
+        }
+        "player.damagescreencolor" => {
+            ext.damage_screen_color = args
+                .iter()
+                .map(|a| a.trim_matches('"'))
+                .collect::<Vec<_>>()
+                .join(",");
+        }
+        "radiusdamagefactor" => {
+            ext.radius_damage_factor = first_f64(args).unwrap_or(ext.radius_damage_factor);
+        }
+        "selfdamagefactor" => {
+            ext.self_damage_factor = first_f64(args).unwrap_or(ext.self_damage_factor);
+        }
+        "stamina" => ext.stamina = first_i32(args).unwrap_or(ext.stamina),
+        "accuracy" => ext.accuracy = first_i32(args).unwrap_or(ext.accuracy),
+        "stealthalpha" => ext.stealth_alpha = first_f64(args).unwrap_or(ext.stealth_alpha),
+        "telefogsourcetype" => {
+            if let Some(a) = args.first() {
+                ext.telefog_source_type = a.trim_matches('"').to_owned();
+            }
+        }
+        "telefogdesttype" => {
+            if let Some(a) = args.first() {
+                ext.telefog_dest_type = a.trim_matches('"').to_owned();
+            }
+        }
+        "ammo.dropamount" => ext.drop_amount = first_i32(args).unwrap_or(ext.drop_amount),
+        "ammo.dropammofactormultiplier" => {
+            ext.drop_ammo_factor_mult = first_f64(args).unwrap_or(ext.drop_ammo_factor_mult);
+        }
+        "inventory.pickupflash" => ext.pickup_flash = first_str(args),
+        "inventory.usesound" => ext.use_sound = first_str(args),
+        "ripsound" => ext.rip_sound = first_str(args),
+        "thrubits" => ext.thru_bits = first_i32(args).map_or(ext.thru_bits, |v| v as u32),
+        "weaveindexxy" => ext.weave_index_xy = first_i32(args).unwrap_or(ext.weave_index_xy),
+        "weaveindexz" => ext.weave_index_z = first_i32(args).unwrap_or(ext.weave_index_z),
+        "player.userange" => ext.use_range = first_f64(args).unwrap_or(ext.use_range),
+        "player.teleportfreezetime" => {
+            ext.teleport_freeze_time = first_i32(args).unwrap_or(ext.teleport_freeze_time);
+        }
+        "player.viewbob" => ext.view_bob = first_f64(args).unwrap_or(ext.view_bob),
+        "missilechancemult" => {
+            ext.missile_chance_mult = first_f64(args).unwrap_or(ext.missile_chance_mult);
+        }
+        "weapon.minselectionammo1" => {
+            ext.min_selection_ammo.0 = first_i32(args).unwrap_or(ext.min_selection_ammo.0);
+        }
+        "weapon.minselectionammo2" => {
+            ext.min_selection_ammo.1 = first_i32(args).unwrap_or(ext.min_selection_ammo.1);
+        }
+        "weapon.sisterweapon" => ext.sister_weapon = first_str(args),
+        "weapon.yadjust" => ext.weapon_y_adjust = first_f64(args).unwrap_or(ext.weapon_y_adjust),
+        "weapon.weaponscalex" => ext.weapon_scale.0 = first_f64(args).unwrap_or(ext.weapon_scale.0),
+        "weapon.weaponscaley" => ext.weapon_scale.1 = first_f64(args).unwrap_or(ext.weapon_scale.1),
+        "weapon.lookscale" => ext.look_scale = first_f64(args).unwrap_or(ext.look_scale),
+        "landingspeed" => ext.landing_speed = first_f64(args).unwrap_or(ext.landing_speed),
+        "poisondamagetype" => ext.poison_damage_type = first_str(args),
+        name if STORED_PROPERTIES.contains(&name) => {
+            ext.stored.insert(
+                name.to_owned(),
+                args.iter()
+                    .map(|a| a.trim().trim_matches('"'))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
+        "weapon.slotpriority" => ext.slot_priority = first_f64(args).unwrap_or(ext.slot_priority),
+        "vspeed" => ext.vspeed = first_f64(args).unwrap_or(ext.vspeed),
+        "damagemultiply" => ext.damage_multiply = first_f64(args).unwrap_or(ext.damage_multiply),
+        "health.lowmessage" => {
+            // `Health.LowMessage 25, "$GOTMEDINEED"`
+            ext.low_message_health = first_i32(args).unwrap_or(ext.low_message_health);
+            if let Some(m) = args.get(1) {
+                ext.low_message = m.trim().trim_matches('"').to_owned();
+            }
+        }
+        _ => return false,
+    }
+    true
 }
 
 fn collapse_dotted(stmt: &str) -> String {
@@ -2273,12 +2769,50 @@ pub fn is_known_property(name: &str) -> bool {
         || lower.starts_with("powermorph.")
         || lower.starts_with("armor.")
         || lower.starts_with("health.")
+        || lower.starts_with("dynamiclight.")
+        || lower.starts_with("fakeinventory.")
+        || lower.starts_with("healthpickup.")
+        || lower.starts_with("puzzleitem.")
+        || lower.starts_with("weaponpiece.")
+        || lower.starts_with("spectatorcamera.")
+        || lower.starts_with("powerreflection.")
     {
         return true;
     }
     matches!(
         lower.as_str(),
         "activesound"
+            | "accuracy"
+            | "missileheight"
+            | "radiusdamagefactor"
+            | "selfdamagefactor"
+            | "stamina"
+            | "stealthalpha"
+            | "telefogsourcetype"
+            | "telefogdesttype"
+            | "vspeed"
+            | "damagemultiply"
+            | "ripsound"
+            | "thrubits"
+            | "weaveindexxy"
+            | "weaveindexz"
+            | "missilechancemult"
+            | "landingspeed"
+            | "poisondamagetype"
+            | "poisondamage"
+            | "lightlevel"
+            | "maxslopesteepness"
+            | "minrespawntics"
+            | "respawndice"
+            | "renderhidden"
+            | "renderradius"
+            | "renderrequired"
+            | "shadowaimfactor"
+            | "shadowpenaltyfactor"
+            | "spriterotation"
+            | "visibleangles"
+            | "visiblepitch"
+            | "automapoffsets"
             | "alpha"
             | "attacksound"
             | "attackzoffset"
@@ -2548,6 +3082,22 @@ pub fn is_known_flag(name: &str) -> bool {
             | "ROCKETTRAIL"
             | "*"
     )
+}
+
+/// The legacy `u64` bit(s) for a flag name (`None` when it has none).
+#[must_use]
+pub(crate) fn legacy_flag_bit(name: &str) -> Option<u64> {
+    let mut flags = 0u64;
+    let mut extra = crate::flags::ActorFlags::default();
+    apply_flag(
+        &mut flags,
+        &mut extra,
+        &FlagOp {
+            set: true,
+            name: name.to_owned(),
+        },
+    );
+    (flags != 0).then_some(flags)
 }
 
 fn apply_flag(flags: &mut u64, extra: &mut crate::flags::ActorFlags, op: &FlagOp) {
@@ -3299,6 +3849,53 @@ actor ZombieMan : Actor 3004
         let c = reg.get(reg.find_name("ZombieMan").unwrap()).unwrap();
         assert_eq!(c.tag, "Former Human");
         assert_eq!(c.display_name(), "Former Human");
+    }
+
+    #[test]
+    fn qualified_player_and_armor_properties_apply() {
+        let ir = room_decorate::parse_decorate(
+            r#"
+actor Hero : Actor
+{
+  Player.ViewHeight 48
+  Player.JumpZ 9
+  Player.AttackZOffset 12
+  Player.SideMove 0.5
+  Player.RunHealth 25
+  Player.DisplayName "Hero"
+  MissileHeight 40
+  RadiusDamageFactor 0.5
+  SelfDamageFactor 0.25
+}
+actor Plate : Actor
+{
+  Armor.SaveAmount 75
+  Armor.SavePercent 40
+  Armor.MaxAbsorb 9
+  Armor.MaxFullAbsorb 3
+  Inventory.Icon "PLATA0"
+}
+actor ShinyPlate : Plate { Armor.SavePercent 60 }
+"#,
+        )
+        .unwrap();
+        let reg = ClassRegistry::from_decorate(&ir).unwrap();
+        let hero = reg.get(reg.find_name("Hero").unwrap()).unwrap();
+        assert_eq!(hero.view_height, 48.0);
+        assert_eq!(hero.jump_z, 9.0);
+        assert_eq!(hero.attack_z_offset, 12.0);
+        assert_eq!(hero.ext.side_move, 0.5);
+        assert_eq!(hero.ext.run_health, 25);
+        assert_eq!(hero.ext.display_name, "Hero");
+        assert_eq!(hero.ext.missile_height, 40.0);
+        assert_eq!(hero.ext.radius_damage_factor, 0.5);
+        assert_eq!(hero.ext.self_damage_factor, 0.25);
+        let plate = reg.get(reg.find_name("ShinyPlate").unwrap()).unwrap();
+        assert_eq!(plate.ext.armor_save_amount, 75, "inherited");
+        assert_eq!(plate.ext.armor_save_percent, 60.0);
+        assert_eq!(plate.ext.armor_max_absorb, 9);
+        assert_eq!(plate.ext.armor_max_full_absorb, 3);
+        assert_eq!(plate.inventory_icon, "PLATA0");
     }
 
     #[test]

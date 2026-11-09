@@ -15,6 +15,7 @@ pub mod nodes;
 pub mod raw;
 pub mod reject;
 pub mod setup;
+pub mod sound_zones;
 pub mod spac;
 pub mod svg;
 pub mod udmf;

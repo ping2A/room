@@ -8,6 +8,37 @@ use room_sim::{SimSoundAdjust, SimSoundEvent};
 use room_vfs::{Namespace, Vfs};
 use std::collections::BTreeMap;
 
+/// Which sounds the local listener hears ([`SoundSystem::translate_for`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ListenerFilter {
+    /// Local seat; `None` hears every seat-targeted sound (single view).
+    pub seat: Option<u8>,
+    /// Sound token of the local pawn / camera, for `CHANF_LOCAL`.
+    pub local_source: Option<u64>,
+}
+
+impl ListenerFilter {
+    /// `CHANF_LOCAL` in [`SimSoundEvent::channel_flags`].
+    pub const CHANF_LOCAL: u32 = 1 << 14;
+
+    /// Whether the local listener hears `ev`.
+    #[must_use]
+    pub fn hears(&self, ev: &SimSoundEvent) -> bool {
+        if let (Some(target), Some(me)) = (ev.seat, self.seat)
+            && target != me
+        {
+            return false;
+        }
+        if ev.channel_flags & Self::CHANF_LOCAL != 0
+            && let (Some(src), Some(me)) = (ev.source_id, self.local_source)
+            && src != me
+        {
+            return false;
+        }
+        true
+    }
+}
+
 /// Resolved sound table: logical SNDINFO names → [`SoundId`] + PCM bank.
 #[derive(Clone, Debug)]
 pub struct SoundSystem {
@@ -79,6 +110,69 @@ impl SoundSystem {
         self.load_sndinfo(&combined)
     }
 
+    /// Lump (or logical) name a resolved [`SoundId`] came from, for saves.
+    #[must_use]
+    pub fn sound_name(&self, id: SoundId) -> Option<&str> {
+        self.lump_ids
+            .iter()
+            .find(|(_, v)| **v == id)
+            .or_else(|| self.ids.iter().find(|(_, v)| **v == id))
+            .map(|(k, _)| k.as_str())
+    }
+
+    /// Mixer voices → savable records (unnamed sounds are skipped).
+    #[must_use]
+    pub fn save_voices(&self, voices: &[room_audio::Voice]) -> Vec<crate::save::SavedSound> {
+        voices
+            .iter()
+            .filter_map(|v| {
+                let name = self.sound_name(v.sound)?.to_owned();
+                let (pos, positional) = match v.origin {
+                    SoundOrigin::Point(p) => ([p.x(), p.y(), p.z()], true),
+                    SoundOrigin::None => ([0.0; 3], false),
+                };
+                Some(crate::save::SavedSound {
+                    name,
+                    channel: v.channel,
+                    source_id: v.source_id,
+                    volume: v.volume,
+                    attenuation: v.attenuation,
+                    pitch: v.pitch,
+                    flags: v.flags.0,
+                    pos,
+                    positional,
+                })
+            })
+            .collect()
+    }
+
+    /// Saved records → `Start` events (sounds that no longer resolve are skipped).
+    pub fn restore_events(&mut self, vfs: &Vfs, saved: &[crate::save::SavedSound]) -> Vec<SoundEvent> {
+        saved
+            .iter()
+            .filter_map(|s| {
+                let sound = self.resolve(vfs, &s.name, 0)?;
+                Some(SoundEvent::Start {
+                    origin: if s.positional {
+                        SoundOrigin::Point(DVec3::new(s.pos[0], s.pos[1], s.pos[2]))
+                    } else {
+                        SoundOrigin::None
+                    },
+                    channel: s.channel,
+                    sound,
+                    check_sound: None,
+                    start_time: 0.0,
+                    volume: s.volume,
+                    attenuation: s.attenuation,
+                    pitch: s.pitch,
+                    flags: SoundFlags(s.flags | SoundFlags::LOOP),
+                    source_id: s.source_id,
+                    no_restart: false,
+                })
+            })
+            .collect()
+    }
+
     /// Resolve a logical name to a [`SoundId`], loading the lump from `vfs` if needed.
     ///
     /// `$random` names are re-resolved each call (index selects the variant); plain
@@ -131,10 +225,38 @@ impl SoundSystem {
         events: &[SimSoundEvent],
         random_index: u32,
     ) -> Vec<SoundEvent> {
+        self.translate_for(vfs, events, random_index, &ListenerFilter::default())
+    }
+
+    /// [`Self::translate`] for one local listener: sounds aimed at another
+    /// seat (`SimSoundEvent::seat`) are dropped, and `CHANF_LOCAL` sounds
+    /// only play when their source is the local player's pawn (camera).
+    pub fn translate_for(
+        &mut self,
+        vfs: &Vfs,
+        events: &[SimSoundEvent],
+        random_index: u32,
+        listener: &ListenerFilter,
+    ) -> Vec<SoundEvent> {
         let mut out = Vec::with_capacity(events.len());
         for (i, ev) in events.iter().enumerate() {
+            if !listener.hears(ev) {
+                continue;
+            }
             if ev.adjust == SimSoundAdjust::StopAll {
                 out.push(SoundEvent::StopAll);
+                continue;
+            }
+            if ev.adjust == SimSoundAdjust::StopChannels {
+                if let Some(source_id) = ev.source_id {
+                    #[allow(clippy::cast_possible_wrap)]
+                    out.push(SoundEvent::StopActorChannels {
+                        source_id,
+                        min: ev.channel,
+                        max: (ev.channel_flags & 0xff) as i32,
+                        all: ev.channel_flags & (1 << 8) != 0,
+                    });
+                }
                 continue;
             }
             if ev.adjust == SimSoundAdjust::StopActor {
@@ -228,6 +350,12 @@ impl SoundSystem {
             if ev.channel_flags & (1 << 3) != 0 {
                 flags.0 |= SoundFlags::LISTENER_Z;
             }
+            if ev.channel_flags & (1 << 16) != 0 {
+                flags.0 |= SoundFlags::FORCE;
+            }
+            if ev.channel_flags & (1 << 17) != 0 {
+                flags.0 |= SoundFlags::SINGULAR;
+            }
             out.push(SoundEvent::Start {
                 origin,
                 channel: ev.channel,
@@ -314,6 +442,44 @@ mod tests {
         let id = sys.resolve(&vfs, "weapons/pistol", 0).unwrap();
         assert!(sys.bank.get(id).is_some());
         assert!(!sys.bank.get(id).unwrap().is_empty());
+    }
+
+    fn sim_ev(seat: Option<u8>, source_id: Option<u64>, channel_flags: u32) -> SimSoundEvent {
+        SimSoundEvent {
+            name: "x".into(),
+            check_name: None,
+            start_time: 0.0,
+            sound_class: None,
+            sound_gender: None,
+            source_id,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            volume: 1.0,
+            pitch: 1.0,
+            channel: 0,
+            adjust: SimSoundAdjust::Start,
+            looping: false,
+            no_restart: false,
+            channel_flags,
+            attenuation: 1.0,
+            seat,
+        }
+    }
+
+    #[test]
+    fn listener_filter_routes_seat_and_local_sounds() {
+        let me = ListenerFilter {
+            seat: Some(1),
+            local_source: Some(7),
+        };
+        assert!(me.hears(&sim_ev(None, None, 0)));
+        assert!(me.hears(&sim_ev(Some(1), None, 0)));
+        assert!(!me.hears(&sim_ev(Some(0), None, 0)), "another seat's private sound");
+        let local = ListenerFilter::CHANF_LOCAL;
+        assert!(me.hears(&sim_ev(None, Some(7), local)));
+        assert!(!me.hears(&sim_ev(None, Some(9), local)), "someone else's CHANF_LOCAL");
+        assert!(ListenerFilter::default().hears(&sim_ev(Some(3), Some(9), local)));
     }
 
     #[test]

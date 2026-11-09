@@ -17,6 +17,10 @@ const SPF_NOTIMEFREEZE: u32 = 1 << 5;
 const SPF_NODYNAMICLIGHTING: u32 = 1 << 18;
 const SPF_FADE_IN_OUT: u32 = 1 << 16;
 const SPF_FADE_IN_HOLD_OUT: u32 = 1 << 17;
+const SPF_NO_XY_BILLBOARD: u32 = 1 << 8;
+const SPF_FACECAMERA: u32 = 1 << 11;
+const SPF_NOFACECAMERA: u32 = 1 << 12;
+const SPF_STRETCHPIXELS: u32 = 1 << 14;
 
 /// Particle blend / draw style (GZDoom `SPF_*` subset).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -69,12 +73,14 @@ pub struct ParticleInstance {
     pub style: ParticleStyle,
     /// Optional floor Z (map units). When set, particles clamp and settle on contact.
     pub floor_z: Option<f32>,
+    /// Textured particle (GZDoom `particle->texture`): drawn untinted.
+    pub texture: Option<String>,
     /// Draw as a horizontal floor disc (`Flat`) instead of a vertical billboard.
     pub on_floor: bool,
 }
 
 /// Playsim particle request transferred to the render-owned particle store.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ParticleSpawn {
     /// Packed RGB (`0xRRGGBB`).
     pub color: u32,
@@ -104,6 +110,47 @@ pub struct ParticleSpawn {
     pub size_step: f64,
     /// Initial roll, velocity, and acceleration in degrees.
     pub roll: [f64; 3],
+    /// `A_SpawnParticleEx` texture (graphic / sprite lump); `None` = soft dot.
+    pub texture: Option<String>,
+}
+
+/// GZDoom legacy `STYLE_*` → Room particle blend. Unknown / `STYLE_None`
+/// picks by `fullbright` like UZDoom's default particle style.
+#[must_use]
+pub fn particle_style(style: Option<i32>, fullbright: bool) -> ParticleStyle {
+    match style {
+        // STYLE_Add, STYLE_AddStencil, STYLE_AddShaded.
+        Some(7 | 12 | 13) => ParticleStyle::Additive,
+        // STYLE_Normal, SoulTrans, Stencil, Translucent, Shaded,
+        // TranslucentStencil, Subtract (blended, see `apply_style_tint`).
+        Some(1 | 3 | 5 | 6 | 8 | 9 | 11) => ParticleStyle::Translucent,
+        // STYLE_Fuzzy / OptFuzzy / Shadow: dark soft smudge.
+        Some(2 | 4 | 10) => ParticleStyle::Soft,
+        _ if fullbright => ParticleStyle::Additive,
+        _ => ParticleStyle::Translucent,
+    }
+}
+
+/// Per-style alpha / colour adjustments (`STYLE_SoulTrans` is 2/3 alpha,
+/// `STYLE_Shadow` / fuzz draw black at 30 %, `STYLE_Subtract` darkens:
+/// Room has no subtractive blend, so it draws the inverted colour dark).
+fn apply_style_tint(p: &mut ParticleInstance, style: Option<i32>) {
+    match style {
+        Some(3) => p.alpha *= 2.0 / 3.0,
+        Some(2 | 4 | 10) => {
+            p.color = [0.0; 3];
+            p.alpha *= 0.3;
+            p.light = 1.0;
+        }
+        Some(11) => {
+            p.color = [
+                (1.0 - p.color[0]) * 0.15,
+                (1.0 - p.color[1]) * 0.15,
+                (1.0 - p.color[2]) * 0.15,
+            ];
+        }
+        _ => {}
+    }
 }
 
 /// Soft-circle RGBA texture name for a quantized tint (`__PARTICLE_T_rrggbb`).
@@ -202,6 +249,7 @@ impl ParticleStore {
                 },
                 floor_z: None,
                 on_floor: false,
+                texture: None,
             });
         }
     }
@@ -263,10 +311,17 @@ impl ParticleStore {
                 size: event.size.abs().max(0.5) as f32,
                 light: if event.fullbright {
                     1.0
+                } else if event.texture.as_deref().is_some_and(|t| !t.is_empty()) {
+                    0.85
                 } else {
                     (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]).clamp(0.05, 1.0)
                 },
-                color: rgb,
+                // Textured particles draw their texture untinted.
+                color: if event.texture.as_deref().is_some_and(|t| !t.is_empty()) {
+                    [1.0; 3]
+                } else {
+                    rgb
+                },
                 alpha: event.alpha.clamp(0.0, 1.0) as f32,
                 life,
                 life_max: life,
@@ -277,16 +332,14 @@ impl ParticleStore {
                 roll: event.roll[0] as f32,
                 roll_velocity: event.roll[1] as f32,
                 roll_acceleration: event.roll[2] as f32,
-                style: match event.render_style {
-                    Some(7) => ParticleStyle::Additive,
-                    Some(1 | 6) => ParticleStyle::Translucent,
-                    Some(10) => ParticleStyle::Soft,
-                    _ if event.fullbright => ParticleStyle::Additive,
-                    _ => ParticleStyle::Translucent,
-                },
+                style: particle_style(event.render_style, event.fullbright),
                 floor_z: None,
                 on_floor: false,
+                texture: event.texture.clone().filter(|t| !t.is_empty()),
             });
+            if let Some(p) = self.particles.last_mut() {
+                apply_style_tint(p, event.render_style);
+            }
         }
     }
 
@@ -348,6 +401,7 @@ impl ParticleStore {
             style,
             floor_z: None,
             on_floor: false,
+            texture: None,
         });
     }
 
@@ -409,6 +463,7 @@ impl ParticleStore {
             style,
             floor_z,
             on_floor: floor_z.is_some() && vel.z.abs() < 0.05 && accel.z.abs() < 0.01,
+            texture: None,
         });
     }
 
@@ -573,6 +628,7 @@ impl ParticleStore {
                         style: ParticleStyle::Soft,
                         floor_z: Some(fz),
                         on_floor: true,
+                        texture: None,
                     });
                 }
             }
@@ -913,7 +969,9 @@ pub fn append_particles_ex(
         }
         let q = quantize_rgb(p.color);
         let near_white = q[0] > 240 && q[1] > 240 && q[2] > 240;
-        let tex = if near_white {
+        let tex = if let Some(t) = &p.texture {
+            t.clone()
+        } else if near_white {
             match p.style {
                 ParticleStyle::Additive => PARTICLE_TEX_ADD.to_owned(),
                 ParticleStyle::Translucent | ParticleStyle::Soft => PARTICLE_TEX.to_owned(),
@@ -942,8 +1000,23 @@ pub fn append_particles_ex(
                 p.size * 0.65,
                 crate::sprites::SpriteOrient::Billboard,
             )
-        } else {
+        } else if p.flags & SPF_NO_XY_BILLBOARD != 0 {
+            // Upright: turns about Z only.
             (p.size, p.size, crate::sprites::SpriteOrient::Billboard)
+        } else {
+            // GZDoom `gl_billboard_particles`: face the view plane, or the
+            // eye itself with `SPF_FACECAMERA`.
+            let fwd = if p.flags & SPF_FACECAMERA != 0 && p.flags & SPF_NOFACECAMERA == 0 {
+                (p.pos - camera.eye).normalize_or_zero()
+            } else {
+                camera.forward.normalize_or_zero()
+            };
+            let right = fwd.cross(Vec3::Z).normalize_or_zero();
+            let right = if right == Vec3::ZERO { Vec3::X } else { right };
+            let up = right.cross(fwd).normalize_or_zero();
+            // `SPF_STRETCHPIXELS`: Doom's 1.2 vertical pixel stretch.
+            let h = if p.flags & SPF_STRETCHPIXELS != 0 { p.size * 1.2 } else { p.size };
+            (p.size, h, crate::sprites::SpriteOrient::Facing { right, up })
         };
         #[allow(clippy::cast_possible_truncation)]
         let start = lists.sprites.len() as u32;
@@ -959,7 +1032,10 @@ pub fn append_particles_ex(
                 flip_u: false,
                 anchor_u: 0.5,
                 orient,
-                additive: false,
+                // Textured additive particles use the sprite add blend; the
+                // soft-dot textures already encode their own add look.
+                additive: p.texture.is_some() && p.style == ParticleStyle::Additive,
+                roll: 0.0,
             },
             camera.forward,
         );
@@ -1036,6 +1112,69 @@ mod tests {
         store.tick();
         store.tick();
         assert!(store.particles.is_empty());
+    }
+
+    fn spawn(texture: Option<&str>, style: Option<i32>, flags: u32) -> ParticleSpawn {
+        ParticleSpawn {
+            color: 0xff0000,
+            fullbright: false,
+            render_style: style,
+            lifetime: 10,
+            size: 8.0,
+            pos: [0.0, 64.0, 0.0],
+            vel: [0.0; 3],
+            accel: [0.0; 3],
+            alpha: 1.0,
+            fade_step: -1.0,
+            flags,
+            fade_out_step: 0.0,
+            size_step: 0.0,
+            roll: [0.0; 3],
+            texture: texture.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn textured_particles_use_their_texture_untinted_and_face_the_camera() {
+        let mut store = ParticleStore::default();
+        store.ingest_ex([spawn(Some("BAL1A0"), Some(7), 0)]);
+        let p = &store.particles[0];
+        assert_eq!(p.texture.as_deref(), Some("BAL1A0"));
+        assert_eq!(p.color, [1.0; 3]);
+        assert_eq!(p.style, ParticleStyle::Additive);
+        let camera = Camera {
+            eye: Vec3::new(0.0, 0.0, 0.0),
+            forward: Vec3::new(0.0, 1.0, 0.0),
+            ..Camera::default()
+        };
+        let mut lists = SceneLists::default();
+        append_particles_ex(&mut lists, &store, &camera, false);
+        assert_eq!(lists.sprite_ranges[0].name, "BAL1A0");
+        // Centred on the particle: z spans -4..4.
+        let zs: Vec<f32> = lists.sprites.iter().map(|v| v.pos[2]).collect();
+        assert!(zs.iter().any(|z| (*z + 4.0).abs() < 1e-3));
+        assert!(zs.iter().any(|z| (*z - 4.0).abs() < 1e-3));
+        // Additive textured sprites carry a negative alpha (shader add path).
+        assert!(lists.sprites.iter().all(|v| v._pad[0] < 0.0));
+        // `SPF_NO_XY_BILLBOARD` stands upright with its base on the particle.
+        let mut store = ParticleStore::default();
+        store.ingest_ex([spawn(None, None, SPF_NO_XY_BILLBOARD)]);
+        let mut lists = SceneLists::default();
+        append_particles_ex(&mut lists, &store, &camera, false);
+        assert!(lists.sprites.iter().all(|v| v.pos[2] >= -1e-3));
+    }
+
+    #[test]
+    fn legacy_render_styles_map_to_particle_blends() {
+        assert_eq!(particle_style(Some(12), false), ParticleStyle::Additive);
+        assert_eq!(particle_style(Some(13), false), ParticleStyle::Additive);
+        assert_eq!(particle_style(Some(10), false), ParticleStyle::Soft);
+        assert_eq!(particle_style(Some(6), true), ParticleStyle::Translucent);
+        assert_eq!(particle_style(None, true), ParticleStyle::Additive);
+        let mut store = ParticleStore::default();
+        store.ingest_ex([spawn(None, Some(3), 0), spawn(None, Some(10), 0)]);
+        assert!((store.particles[0].alpha - 2.0 / 3.0).abs() < 1e-5, "SoulTrans");
+        assert_eq!(store.particles[1].color, [0.0; 3], "Shadow is dark");
     }
 
     #[test]

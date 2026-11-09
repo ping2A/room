@@ -129,8 +129,22 @@ fn eval_block(kind: &str, args: &[String], hud: &HudState, deathmatch: bool) -> 
         "usesammo" => hud.ammo_max > 0 || hud.ammo > 0,
         "usessecondaryammo" => hud.ammo2_max > 0 || hud.ammo2 > 0,
         "inventorybarnotvisible" => true,
-        "weaponammo" | "ininventory" | "hasweaponpiece" | "isselected" | "playerclass"
-        | "aspectratio" | "armortype" => true,
+        // `PlayerClass name…`: any of the names is the pawn's display name.
+        "playerclass" => args
+            .iter()
+            .any(|a| a.trim_matches('"').eq_ignore_ascii_case(&hud.player_class)),
+        // `ArmorType name, amount`.
+        "armortype" => {
+            let name = args.first().map(|a| a.trim_matches('"')).unwrap_or("");
+            let min = args
+                .get(1)
+                .and_then(|a| a.trim().parse::<i32>().ok())
+                .unwrap_or(1);
+            !hud.armor_type.is_empty()
+                && hud.armor_type.eq_ignore_ascii_case(name)
+                && hud.armor >= min
+        }
+        "weaponammo" | "ininventory" | "hasweaponpiece" | "isselected" | "aspectratio" => true,
         _ => true,
     }
 }

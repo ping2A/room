@@ -117,6 +117,7 @@ fn set_duke_stance(world: &mut World, player: &mut Player, mo: ActorId, crouch: 
 
 /// Tick timed powerups toward expiry.
 fn tick_powerups(world: &mut World, player: &mut Player) {
+    crate::powerups::tick_powers(world, player);
     if player.berserk {
         player.berserk_tics = player.berserk_tics.saturating_add(1);
     }
@@ -212,6 +213,11 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
         return;
     };
     world.thinking_refire = player.refire;
+    world.thinking_powers =
+        (!player.powers.is_empty()).then(|| (mo, player.powers.values().cloned().collect()));
+    // `BasicArmor.Tick`: the per-tic absorb budget starts over.
+    player.armor_absorb_count = 0;
+    player_environment_tick(world, player, mo);
     // Raw cmd from the shell / net; filter captured bits for playsim.
     let raw = player.cmd;
     player.raw_cmd = raw;
@@ -227,7 +233,19 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
             crate::player::apply_input_capture(&mut player.cmd, player.input_capture);
         }
     }
-    let cmd = player.cmd;
+    let mut cmd = player.cmd;
+    // `Weapon.LookScale`: turning and looking slow down while the gun is up
+    // (sniper zoom).
+    if let Some(k) = player
+        .ready_weapon
+        .and_then(|w| world.classes.get(w))
+        .map(|c| c.ext.look_scale)
+        .filter(|k| (k - 1.0).abs() > 1e-9)
+    {
+        let scale = |v: i16| (f64::from(v) * k).round().clamp(-32768.0, 32767.0) as i16;
+        cmd.yaw = scale(cmd.yaw);
+        cmd.pitch = scale(cmd.pitch);
+    }
     // Dead: sink to the floor, face the killer; USE → respawn at Player 1 start.
     if player.player_state == PlayerState::Dead {
         // Keep lowering the weapon while dead (vanilla `P_MovePsprites`).
@@ -249,7 +267,7 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
             }
         }
         if cmd.buttons.any(Buttons::USE) && !world.no_player_respawn {
-            if world.fire_player_respawning(seat, mo) && world.respawn_player_at(player) {
+            if world.fire_player_respawning(seat, mo) && world.respawn_player_at_seat(player, seat as usize) {
                 world.fire_player_respawned(seat, mo);
                 if let Some(mo) = player.mo {
                     crate::acs::start_respawn_scripts(world, mo);
@@ -377,21 +395,47 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
         move_cmd.forward_move = move_cmd.forward_move.saturating_mul(2);
         move_cmd.side_move = move_cmd.side_move.saturating_mul(2);
     }
-    let scale = world
+    let (scale, side_scale, run_health) = world
         .actors
         .get(mo)
         .and_then(|a| world.classes.get(a.class))
-        .map(|c| c.forward_move)
-        .filter(|s| *s > 0.0)
-        .unwrap_or(1.0);
+        .map(|c| {
+            let fwd = if c.forward_move > 0.0 {
+                c.forward_move
+            } else {
+                1.0
+            };
+            // `Player.SideMove` scales strafing. Without it Room keeps its old
+            // rule of strafing at the `Player.ForwardMove` scale.
+            let side = if (c.ext.side_move - 1.0).abs() > 1e-9 {
+                c.ext.side_move
+            } else {
+                fwd
+            };
+            (fwd, side, c.ext.run_health)
+        })
+        .unwrap_or((1.0, 1.0, 0));
+    let scale_i16 = |v: i16, k: f64| {
+        (f64::from(v) * k)
+            .round()
+            .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16
+    };
     if (scale - 1.0).abs() > 1e-9 {
-        let scale_i16 = |v: i16| {
-            (f64::from(v) * scale)
-                .round()
-                .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16
-        };
-        move_cmd.forward_move = scale_i16(move_cmd.forward_move);
-        move_cmd.side_move = scale_i16(move_cmd.side_move);
+        move_cmd.forward_move = scale_i16(move_cmd.forward_move, scale);
+    }
+    if (side_scale - 1.0).abs() > 1e-9 {
+        move_cmd.side_move = scale_i16(move_cmd.side_move, side_scale);
+    }
+    // `PowerSpeed`: 1.5× walk and run.
+    let speed = crate::powerups::speed_factor(world, mo);
+    if (speed - 1.0).abs() > 1e-9 {
+        move_cmd.forward_move = scale_i16(move_cmd.forward_move, speed);
+        move_cmd.side_move = scale_i16(move_cmd.side_move, speed);
+    }
+    // `Player.RunHealth` (`TweakSpeeds`): at or below it the player walks.
+    if run_health > 0 && world.actors.get(mo).is_some_and(|a| a.health <= run_health) {
+        move_cmd.forward_move = move_cmd.forward_move.clamp(-0x19 * 256, 0x19 * 256);
+        move_cmd.side_move = move_cmd.side_move.clamp(-0x18 * 256, 0x18 * 256);
     }
     if player.crouching {
         move_cmd.forward_move /= 2;
@@ -511,9 +555,26 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
         let bob_sq = a.vel.x() * a.vel.x() + a.vel.y() * a.vel.y();
         player.bob = (bob_sq * 0.25).clamp(0.0, 16.0);
         // Doom `P_CalcHeight`: bob the eye when grounded (fine-angle from maptime).
-        let bob_z = if player.on_ground {
-            let t = f64::from(world.level.maptime) * (std::f64::consts::TAU / 20.0);
-            player.bob * 0.5 * dmath::sin(t)
+        // `Player.ViewBobSpeed` is the bob period in tics (default 20, Doom's).
+        let (scale, period, fly_bob) = world.classes.get(a.class).map_or((1.0, 20.0, 1.0), |c| {
+            (
+                c.ext.view_bob,
+                c.ext
+                    .stored_f64("player.viewbobspeed")
+                    .filter(|v| *v > 0.0)
+                    .unwrap_or(20.0),
+                c.ext.stored_f64("player.flybob").unwrap_or(1.0),
+            )
+        });
+        let flying = !player.on_ground && a.flags & crate::class::FLAG_NOGRAVITY != 0;
+        if flying {
+            // `Player.FlyBob`: a fixed bob while flying (`0.5 × FlyBob`).
+            player.bob = (0.5 * fly_bob).abs().min(16.0);
+        }
+        let bob_z = if player.on_ground || flying {
+            let t = f64::from(world.level.maptime) * (std::f64::consts::TAU / period);
+            // `Player.ViewBob` scales the eye bob (not the weapon).
+            player.bob * 0.5 * dmath::sin(t) * scale
         } else {
             0.0
         };
@@ -1996,6 +2057,23 @@ fn fire_weapon(world: &mut World, player: &mut Player, mo: ActorId, alt: bool) {
 }
 
 /// Owned weapon with ammo, preferred by lowest `Weapon.SelectionOrder` (W3).
+/// `Weapon.MinSelectionAmmo1/2`: automatic switching skips a weapon with less.
+fn below_min_selection_ammo(world: &World, mo: ActorId, weapon: room_core::ClassId) -> bool {
+    let Some(def) = world.classes.get(weapon) else {
+        return false;
+    };
+    let (min1, min2) = def.ext.min_selection_ammo;
+    let low = |ammo: &str, min: i32| {
+        min > 0
+            && !ammo.is_empty()
+            && world
+                .classes
+                .find_name(ammo)
+                .is_some_and(|a| world.inventory.count(mo, a) < min)
+    };
+    low(&def.ammo_type, min1) || low(&def.ammo_type2, min2)
+}
+
 fn best_weapon_with_ammo(
     world: &World,
     mo: ActorId,
@@ -2003,7 +2081,10 @@ fn best_weapon_with_ammo(
 ) -> Option<room_core::ClassId> {
     let mut best: Option<(i32, room_core::ClassId)> = None;
     for cid in owned_weapon_order(world, mo) {
-        if exclude == Some(cid) || !has_ammo(world, mo, cid) {
+        if exclude == Some(cid)
+            || !has_ammo(world, mo, cid)
+            || below_min_selection_ammo(world, mo, cid)
+        {
             continue;
         }
         let order = world
@@ -2017,6 +2098,68 @@ fn best_weapon_with_ammo(
         }
     }
     best.map(|(_, c)| c)
+}
+
+/// Air supply and falling scream (UZDoom `P_PlayerThink` / `PlayerPawn`).
+///
+/// * `Player.AirCapacity` × the level air supply (20 s): with the head under
+///   water (`waterlevel` 3) the player then takes `2 + seconds over` damage
+///   every 32 tics, and gasps (`*gasp`) on surfacing after running out.
+/// * `Player.FallingScreamSpeed min, max` (default 35, 40): falling between
+///   those speeds plays `*falling` once per fall.
+fn player_environment_tick(world: &mut World, player: &mut Player, mo: ActorId) {
+    let Some(a) = world.actors.get(mo) else {
+        return;
+    };
+    if a.health <= 0 {
+        player.falling_scream = false;
+        return;
+    }
+    let ext = world
+        .classes
+        .get(a.class)
+        .map(|c| c.ext.clone())
+        .unwrap_or_default();
+    let water = crate::physics::actor_waterlevel(world, a);
+    let vz = a.vel.z();
+    let now = world.level.maptime as i32;
+    let capacity = ext.stored_f64("player.aircapacity").unwrap_or(1.0);
+    let supply = (20.0 * 35.0 * capacity) as i32;
+    let protected = player.god || player.invulnerable;
+    if water < 3 || protected || supply <= 0 {
+        if player.air_finished != 0 && player.air_finished <= now && water < 3 {
+            play_player_sound(world, mo, "*gasp");
+        }
+        player.air_finished = if supply > 0 {
+            now.saturating_add(supply)
+        } else {
+            i32::MAX
+        };
+    } else {
+        if player.air_finished == 0 {
+            player.air_finished = now.saturating_add(supply);
+        }
+        if player.air_finished <= now && now & 31 == 0 {
+            let over = (now - player.air_finished) / 35;
+            world.forced_damage_type = Some("Drowning".to_owned());
+            crate::damage::damage_mobj(world, mo, None, None, 2 + over);
+            world.forced_damage_type = None;
+        }
+    }
+    let lo = ext
+        .stored_f64_at("player.fallingscreamspeed", 0)
+        .unwrap_or(35.0);
+    let hi = ext
+        .stored_f64_at("player.fallingscreamspeed", 1)
+        .unwrap_or(40.0);
+    if water == 0 && vz <= -lo && vz >= -hi {
+        if !player.falling_scream {
+            player.falling_scream = true;
+            play_player_sound(world, mo, "*falling");
+        }
+    } else if vz > -lo {
+        player.falling_scream = false;
+    }
 }
 
 fn play_player_sound(world: &mut World, mo: ActorId, name: &str) {
@@ -2191,6 +2334,11 @@ fn try_consume_ammo(world: &mut World, mo: ActorId, weapon: room_core::ClassId, 
     let Some(def) = world.classes.get(weapon) else {
         return true;
     };
+    // `PowerInfiniteAmmo` (and `+WEAPON.AMMO_OPTIONAL` weapons with none left
+    // are handled by the ammo checks below).
+    if crate::powerups::infinite_ammo(world, mo) {
+        return true;
+    }
     let (ty, need) = if alt && !def.ammo_type2.is_empty() {
         (def.ammo_type2.as_str(), def.ammo_use2)
     } else {

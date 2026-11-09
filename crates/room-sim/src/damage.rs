@@ -489,17 +489,21 @@ pub(crate) fn damage_mobj_with_flags(
             }
         }
     }
-    let dtype = inflictor.and_then(|id| {
-        let a = world.actors.get(id)?;
-        if !a.damage_type.is_empty() {
-            Some(a.damage_type.clone())
-        } else {
-            world
-                .classes
-                .get(a.class)
-                .map(|c| c.damage_type.clone())
-                .filter(|s| !s.is_empty())
-        }
+    // A damage type forced by the caller (poison, drowning) wins.
+    let forced = world.forced_damage_type.take();
+    let dtype = forced.or_else(|| {
+        inflictor.and_then(|id| {
+            let a = world.actors.get(id)?;
+            if !a.damage_type.is_empty() {
+                Some(a.damage_type.clone())
+            } else {
+                world
+                    .classes
+                    .get(a.class)
+                    .map(|c| c.damage_type.clone())
+                    .filter(|s| !s.is_empty())
+            }
+        })
     });
     let factor = world
         .actors
@@ -534,25 +538,36 @@ pub(crate) fn damage_mobj_with_flags(
     if damage <= 0 {
         return 0;
     }
-    // Armor absorb: green = ceil(dmg/3), blue = ceil(dmg/2).
-    let mut health_damage = damage;
-    for slot in world.players.iter_mut().flatten() {
-        if slot.mo != Some(target) || slot.armor <= 0 {
-            continue;
-        }
-        let saved = if slot.armor_class >= 2 {
-            (damage + 1) / 2 // ceil(damage/2)
+    // `DamageMultiply` on the source scales everything it deals.
+    let damage = match source
+        .and_then(|src| world.actors.get(src))
+        .and_then(|a| world.classes.get(a.class))
+        .map(|c| c.ext.damage_multiply)
+    {
+        Some(m) if (m - 1.0).abs() > 1e-12 && damage < 1_000_000 => (f64::from(damage) * m) as i32,
+        _ => damage,
+    };
+    // `SelfDamageFactor`: the actor's own attacks (rocket jumps, barrels it shot).
+    let damage = if source == Some(target) {
+        let f = world
+            .actors
+            .get(target)
+            .and_then(|a| world.classes.get(a.class))
+            .map_or(1.0, |c| c.ext.self_damage_factor);
+        if (f - 1.0).abs() < 1e-12 {
+            damage
         } else {
-            (damage + 2) / 3 // ceil(damage/3)
-        };
-        let take = saved.min(slot.armor);
-        slot.armor -= take;
-        if slot.armor <= 0 {
-            slot.armor_class = 0;
+            (f64::from(damage) * f) as i32
         }
-        health_damage = damage - take;
-        break;
+    } else {
+        damage
+    };
+    if damage <= 0 {
+        return 0;
     }
+    // Generic powerups (`PowerDamage`, `PowerProtection`, `PowerReflection`).
+    let damage = crate::powerups::modify_damage(world, target, source, damage);
+    let health_damage = absorb_armor(world, target, damage);
     let class = world.actors.get(target).map(|a| a.class);
     let Some(class) = class else {
         return 0;
@@ -770,6 +785,15 @@ pub(crate) fn damage_mobj_with_flags(
         }
         actor.health
     };
+    let health = if is_player_pawn {
+        auto_use_health(world, target, health)
+    } else {
+        health
+    };
+    crate::powerups::after_damage(world, target, source, health_damage, dtype.as_deref());
+    if health > 0 {
+        poison_mobj(world, target, inflictor, source);
+    }
     let mut pain_flash = None;
     if is_player_pawn {
         for p in world.players.iter_mut().flatten() {
@@ -1246,6 +1270,219 @@ pub(crate) fn spawn_drop_items(world: &mut World, target: ActorId, class: room_c
     }
 }
 
+/// `P_PoisonMobj`: an inflictor with `PoisonDamage damage [, duration [, period]]`
+/// poisons what it hits. With a duration the target takes `damage` every
+/// `period` tics (default 1) for `duration` tics; `+ADDITIVEPOISONDAMAGE` /
+/// `+ADDITIVEPOISONDURATION` on the target stack instead of replacing. With no
+/// duration it is Hexen poison: a player's `poisoncount` rises by `damage`
+/// (max 100). Poison damage is typed by the inflictor's `PoisonDamageType`.
+fn poison_mobj(
+    world: &mut World,
+    target: ActorId,
+    inflictor: Option<ActorId>,
+    source: Option<ActorId>,
+) {
+    let Some(inf) = inflictor.filter(|&i| i != target) else {
+        return;
+    };
+    let Some(spec) = world
+        .actors
+        .get(inf)
+        .and_then(|a| world.classes.get(a.class))
+        .map(|c| {
+            (
+                c.ext.stored_f64_at("poisondamage", 0).unwrap_or(0.0) as i32,
+                c.ext.stored_f64_at("poisondamage", 1).unwrap_or(0.0) as i32,
+                c.ext.stored_f64_at("poisondamage", 2).unwrap_or(1.0) as i32,
+            )
+        })
+        .filter(|s| s.0 > 0)
+    else {
+        return;
+    };
+    let (dmg, dur, period) = spec;
+    if dur <= 0 {
+        if let Some(p) = world
+            .players
+            .iter_mut()
+            .flatten()
+            .find(|p| p.mo == Some(target))
+        {
+            p.poison_count = (p.poison_count + dmg).min(100);
+            p.poisoner = source;
+        }
+        return;
+    }
+    let Some(t) = world.actors.get_mut(target) else {
+        return;
+    };
+    let add_dmg = t.extra_flags.get_name("ADDITIVEPOISONDAMAGE");
+    let add_dur = t.extra_flags.get_name("ADDITIVEPOISONDURATION");
+    let (old_dmg, old_dur) = t.ext.poison.map_or((0, 0), |p| (p.0, p.1));
+    let new_dmg = if add_dmg { old_dmg + dmg } else { dmg };
+    let new_dur = if add_dur { old_dur + dur } else { dur };
+    t.ext.poison = Some((new_dmg, new_dur, period.max(1), source));
+}
+
+/// `PoisonDamageType` of the poisoner's class (default `Poison`).
+fn poison_type(world: &World, by: Option<ActorId>) -> String {
+    by.and_then(|b| world.actors.get(b))
+        .and_then(|a| world.classes.get(a.class))
+        .map(|c| c.ext.poison_damage_type.clone())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "Poison".to_owned())
+}
+
+/// Run poison each tic: actors with `PoisonDamage` received and players'
+/// Hexen `poisoncount`.
+pub(crate) fn tick_poison(world: &mut World) {
+    let now = world.level.time;
+    let ids: Vec<ActorId> = world
+        .thinkers
+        .default
+        .iter()
+        .copied()
+        .filter(|&id| {
+            world
+                .actors
+                .get(id)
+                .is_some_and(|a| a.ext.poison.is_some() && !a.destroyed)
+        })
+        .collect();
+    for id in ids {
+        let Some((dmg, dur, period, by)) = world.actors.get(id).and_then(|a| a.ext.poison) else {
+            continue;
+        };
+        if dur <= 0 || world.actors.get(id).is_some_and(|a| a.health <= 0) {
+            if let Some(a) = world.actors.get_mut(id) {
+                a.ext.poison = None;
+            }
+            continue;
+        }
+        if let Some(a) = world.actors.get_mut(id) {
+            a.ext.poison = Some((dmg, dur - 1, period, by));
+        }
+        if now % period.max(1) as u32 == 0 {
+            world.forced_damage_type = Some(poison_type(world, by));
+            damage_mobj(world, id, None, by, dmg);
+            world.forced_damage_type = None;
+        }
+    }
+    if now & 15 != 0 {
+        return;
+    }
+    let poisoned: Vec<(ActorId, Option<ActorId>)> = world
+        .players
+        .iter_mut()
+        .flatten()
+        .filter(|p| p.poison_count > 0)
+        .filter_map(|p| {
+            p.poison_count = (p.poison_count - 5).max(0);
+            Some((p.mo?, p.poisoner))
+        })
+        .collect();
+    for (mo, by) in poisoned {
+        if world.actors.get(mo).is_some_and(|a| a.health > 0) {
+            world.forced_damage_type = Some(poison_type(world, by));
+            damage_mobj(world, mo, None, by, 1);
+            world.forced_damage_type = None;
+        }
+    }
+}
+
+/// `HealthPickup.AutoUse` (`P_AutoUseHealth` / `P_AutoUseStrifeHealth`):
+/// carried health items heal a player automatically.
+///
+/// * `1`: when the hit would kill, on skills with auto-use (baby, easy);
+/// * `2`: when the hit would kill, on any skill;
+/// * `3`: whenever health drops below 50 (Strife med patches).
+///
+/// Each use heals the item's `Health` up to the player's max health.
+/// Returns the health after any uses.
+fn auto_use_health(world: &mut World, mo: ActorId, mut health: i32) -> i32 {
+    let items: Vec<(room_core::ClassId, i32, i32)> = world
+        .inventory
+        .iter(mo)
+        .filter(|it| it.amount > 0)
+        .filter_map(|it| {
+            let c = world.classes.get(it.class)?;
+            let mode = c.ext.stored_i32("healthpickup.autouse")?;
+            (mode > 0).then_some((it.class, mode, c.health.max(1)))
+        })
+        .collect();
+    if items.is_empty() {
+        return health;
+    }
+    let max = world
+        .actors
+        .get(mo)
+        .and_then(|a| world.classes.get(a.class))
+        .map_or(100, |c| {
+            if c.ext.player_max_health > 0 {
+                c.ext.player_max_health
+            } else {
+                100
+            }
+        });
+    let easy = world.skill <= 1;
+    for (class, mode, heal) in items {
+        loop {
+            let want = match mode {
+                1 => health <= 0 && easy,
+                2 => health <= 0,
+                3 => health < 50,
+                _ => false,
+            };
+            if !want || world.inventory.count(mo, class) <= 0 {
+                break;
+            }
+            let _ = world.inventory.take(mo, class, 1);
+            health = (health.max(0) + heal).min(max.max(health));
+            if let Some(a) = world.actors.get_mut(mo) {
+                a.health = health;
+            }
+        }
+    }
+    health
+}
+
+/// `BasicArmor.AbsorbDamage`: the share of `damage` the target's armor takes.
+///
+/// `saved = full + int((damage - full) × SavePercent)`, capped by
+/// `Armor.MaxAbsorb` per tic and by the armor left. With vanilla armor
+/// (33.335 % / 50 %) this is Doom's `damage / 3` and `damage / 2`, rounded down.
+/// Returns the damage left for health.
+pub(crate) fn absorb_armor(world: &mut World, target: ActorId, damage: i32) -> i32 {
+    for slot in world.players.iter_mut().flatten() {
+        if slot.mo != Some(target) || slot.armor <= 0 {
+            continue;
+        }
+        let full = (slot.armor_max_full_absorb - slot.armor_absorb_count).max(0);
+        let mut saved = if damage < full {
+            damage
+        } else {
+            let s = full + (f64::from(damage - full) * slot.armor_fraction()) as i32;
+            if slot.armor_max_absorb > 0 && s + slot.armor_absorb_count > slot.armor_max_absorb {
+                (slot.armor_max_absorb - slot.armor_absorb_count).max(0)
+            } else {
+                s
+            }
+        };
+        if slot.armor < saved {
+            saved = slot.armor;
+        }
+        slot.armor -= saved;
+        slot.armor_absorb_count += saved;
+        if slot.armor <= 0 {
+            slot.armor = 0;
+            slot.armor_class = 0;
+            slot.clear_armor_kind();
+        }
+        return damage - saved;
+    }
+    damage
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -1387,6 +1624,38 @@ actor PlayerPawn : Actor 0
         assert_eq!(w.actors.get(mo).unwrap().health, 100);
         assert!((w.actors.get(mo).unwrap().pos.x() - 64.0).abs() < 1e-6);
         assert!((w.actors.get(mo).unwrap().pos.y() - 64.0).abs() < 1e-6);
+        w.players[0] = Some(player);
+    }
+
+    #[test]
+    fn udmf_norespawn_sector_skips_its_start() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = room_decorate::parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        // A player-2 start in the same room.
+        let mut p2 = map.things[0].clone();
+        p2.type_id = 2;
+        p2.x = 192;
+        p2.y = 192;
+        map.things.push(p2);
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        // Spot choice: seat 1 takes its own (P2) start; seat 0 its P1 start.
+        assert_eq!(w.respawn_spot(1).map(|t| t.x), Some(192));
+        assert_eq!(w.respawn_spot(0).map(|t| t.x), Some(64));
+        // `norespawn` everywhere: no clean spot, so the P1 start is the last resort.
+        std::sync::Arc::make_mut(&mut w.map).udmf_user.sector_ext = vec![room_map::udmf::ext::SECTOR_NORESPAWN; w.map.sectors.len()];
+        assert_eq!(w.respawn_spot(1).map(|t| t.x), Some(64));
+        let mo = w.players[0].as_ref().and_then(|p| p.mo).unwrap();
+        let _ = damage_mobj(&mut w, mo, None, None, 999);
+        let mut player = w.players[0].take().unwrap();
+        assert!(w.respawn_player_at_seat(&mut player, 0));
         w.players[0] = Some(player);
     }
 

@@ -35,8 +35,11 @@ pub use music::{
 };
 pub use native_mods::{NativePlayMod, PythonModSource};
 pub use runtime::{GameCmd, GameRuntime};
-pub use save::{SaveError, SaveInfo, load_world, read_save_info, save_world, validate_world_bin};
-pub use sound::SoundSystem;
+pub use save::{
+    SaveError, SaveInfo, SavedSound, decode_sounds, encode_sounds, load_world, read_save_info,
+    read_saved_sounds, save_world, save_world_with_sounds, validate_world_bin,
+};
+pub use sound::{ListenerFilter, SoundSystem};
 pub use vanilla_lmp::VanillaLmp;
 pub use zscript_load::acs_library_pool;
 pub use zscript_load::{

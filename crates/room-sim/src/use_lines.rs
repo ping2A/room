@@ -22,14 +22,24 @@ pub fn use_lines(world: &mut World, mo: ActorId) -> bool {
     let rad = actor.angle.radians();
     let dir = DVec2::new(dmath::cos(rad), dmath::sin(rad));
     let origin = DVec2::new(actor.pos.x(), actor.pos.y());
+    // `Player.UseRange` replaces Doom's 64.
+    let use_range = world
+        .classes
+        .get(actor.class)
+        .map(|c| c.ext.use_range)
+        .filter(|r| *r > 0.0)
+        .unwrap_or(USE_RANGE);
     let end = DVec2::new(
-        origin.x() + dir.x() * USE_RANGE,
-        origin.y() + dir.y() * USE_RANGE,
+        origin.x() + dir.x() * use_range,
+        origin.y() + dir.y() * use_range,
     );
     let mid = DVec2::new((origin.x() + end.x()) * 0.5, (origin.y() + end.y()) * 0.5);
-    let mut best: Option<(room_core::LineId, f64)> = None;
-    for lid in lines_near(&world.map, mid, USE_RANGE) {
-        if world.line_special(lid) == 0 {
+    // Every crossed line with a special (plus UDMF `blockuse` occluders),
+    // nearest first. A `passuse` special line lets the use continue.
+    let mut hits: Vec<(room_core::LineId, f64)> = Vec::new();
+    for lid in lines_near(&world.map, mid, use_range) {
+        let ext = world.map.udmf_user.line_ext(lid.raw() as usize);
+        if world.line_special(lid) == 0 && ext & room_map::udmf::ext::LINE_BLOCKUSE == 0 {
             continue;
         }
         let Some(line) = world.map.lines.get(lid.raw() as usize) else {
@@ -42,10 +52,25 @@ pub fn use_lines(world: &mut World, mo: ActorId) -> bool {
             continue;
         };
         if let Some(t) = ray_hits_seg(origin, end, v1.pos, v2.pos) {
-            if best.as_ref().is_none_or(|(_, bt)| t < *bt) {
-                best = Some((lid, t));
-            }
+            hits.push((lid, t));
         }
+    }
+    hits.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let mut best: Option<(room_core::LineId, f64)> = None;
+    let mut passed = false;
+    for (lid, t) in hits {
+        let ext = world.map.udmf_user.line_ext(lid.raw() as usize);
+        if world.line_special(lid) == 0 {
+            // `blockuse` without a special: the use stops dead here.
+            break;
+        }
+        if ext & room_map::udmf::ext::LINE_PASSUSE != 0 && ext & room_map::udmf::ext::LINE_BLOCKUSE == 0 {
+            activate_line(world, lid, Some(mo), ActivationType::Use);
+            passed = true;
+            continue;
+        }
+        best = Some((lid, t));
+        break;
     }
     if let Some((lid, t)) = best {
         if !cfg!(test) {
@@ -78,8 +103,87 @@ pub fn use_lines(world: &mut World, mo: ActorId) -> bool {
         }
         true
     } else {
-        false
+        passed
     }
+}
+
+/// Hexen `UsePuzzleItem` line / thing special number.
+const USE_PUZZLE_ITEM: i16 = 129;
+
+/// `P_UsePuzzleItem`: the nearest line in use range (or a thing within it)
+/// whose special is `UsePuzzleItem` with `arg0 == item` runs ACS script
+/// `arg1` with `arg2..arg4`, and the special is cleared. Returns whether a
+/// match was found.
+pub fn use_puzzle_item(world: &mut World, mo: ActorId, item: i32) -> bool {
+    let Some(actor) = world.actors.get(mo).cloned() else {
+        return false;
+    };
+    let rad = actor.angle.radians();
+    let dir = DVec2::new(dmath::cos(rad), dmath::sin(rad));
+    let origin = DVec2::new(actor.pos.x(), actor.pos.y());
+    let use_range = world
+        .classes
+        .get(actor.class)
+        .map(|c| c.ext.use_range)
+        .filter(|r| *r > 0.0)
+        .unwrap_or(USE_RANGE);
+    let end = DVec2::new(
+        origin.x() + dir.x() * use_range,
+        origin.y() + dir.y() * use_range,
+    );
+    let mid = DVec2::new((origin.x() + end.x()) * 0.5, (origin.y() + end.y()) * 0.5);
+    let mut best: Option<(room_core::LineId, f64)> = None;
+    for lid in lines_near(&world.map, mid, use_range) {
+        if world.line_special(lid) != USE_PUZZLE_ITEM || world.line_args(lid)[0] != item {
+            continue;
+        }
+        let Some(line) = world.map.lines.get(lid.raw() as usize) else {
+            continue;
+        };
+        let (Some(v1), Some(v2)) = (
+            world.map.vertices.get(line.v1.raw() as usize),
+            world.map.vertices.get(line.v2.raw() as usize),
+        ) else {
+            continue;
+        };
+        if let Some(t) = ray_hits_seg(origin, end, v1.pos, v2.pos) {
+            if best.as_ref().is_none_or(|(_, bt)| t < *bt) {
+                best = Some((lid, t));
+            }
+        }
+    }
+    if let Some((lid, _)) = best {
+        let a = world.line_args(lid);
+        world.line_specials.insert(lid.raw(), 0);
+        let script = [a[1], 0, a[2], a[3], a[4]];
+        let _ = crate::acs::acs_execute(world, &script, false, Some(mo), Some(lid));
+        return true;
+    }
+    // Things carrying the special (`P_UsePuzzleItem` also checks actors).
+    let ids: Vec<ActorId> = world.thinkers.default.clone();
+    for id in ids {
+        let Some(t) = world.actors.get(id) else {
+            continue;
+        };
+        if t.destroyed || i32::from(t.special) != i32::from(USE_PUZZLE_ITEM) || t.args[0] != item {
+            continue;
+        }
+        let dx = t.pos.x() - origin.x();
+        let dy = t.pos.y() - origin.y();
+        if dx * dir.x() + dy * dir.y() < 0.0
+            || dmath::sqrt(dx * dx + dy * dy) > use_range + t.radius
+        {
+            continue;
+        }
+        let a = t.args;
+        if let Some(t) = world.actors.get_mut(id) {
+            t.special = 0;
+        }
+        let script = [a[1], 0, a[2], a[3], a[4]];
+        let _ = crate::acs::acs_execute(world, &script, false, Some(mo), None);
+        return true;
+    }
+    false
 }
 
 /// Use the nearest `+USESPECIAL` actor in front of `mo`.
@@ -350,6 +454,64 @@ mod tests {
             a.angle = Angle::from_degrees(90.0);
             a.pos = room_core::DVec3::new(128.0, 200.0, 0.0);
         }
+        assert!(use_lines(&mut w, mo));
+        assert!(!w.doors.is_empty());
+    }
+
+    fn door_room(ext_on_door: u32, blocker: bool) -> (World, ActorId) {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 72.0)
+            .player_start(128.0, 32.0, 90)
+            .build_udmf("MAP01")
+            .unwrap();
+        map.sectors[0].tags.push(1);
+        let mut door = 0;
+        for (i, line) in map.lines.iter_mut().enumerate() {
+            let v1 = map.vertices[line.v1.raw() as usize].pos;
+            let v2 = map.vertices[line.v2.raw() as usize].pos;
+            if (v1.y() - 256.0).abs() < 1.0 && (v2.y() - 256.0).abs() < 1.0 {
+                line.special = num::DOOR_RAISE as i16;
+                line.args = [1, 16, 150, 0, 0];
+                door = i;
+                break;
+            }
+        }
+        map.udmf_user.line_ext.resize(map.lines.len(), 0);
+        map.udmf_user.line_ext[door] = ext_on_door;
+        if blocker {
+            // A special-less `blockuse` line between the player and the door.
+            let base = map.vertices.len() as u32;
+            map.vertices.push(room_map::Vertex { pos: room_core::DVec2::new(64.0, 230.0) });
+            map.vertices.push(room_map::Vertex { pos: room_core::DVec2::new(192.0, 230.0) });
+            let mut l = map.lines[door].clone();
+            l.v1 = room_core::VertexId::from_raw(base);
+            l.v2 = room_core::VertexId::from_raw(base + 1);
+            l.delta = room_core::DVec2::new(128.0, 0.0);
+            l.special = 0;
+            map.lines.push(l);
+            map.udmf_user.line_ext.push(room_map::udmf::ext::LINE_BLOCKUSE);
+            map.blockmap = room_map::blockmap::build_blockmap(&map.vertices, &map.lines);
+        }
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        if let Some(a) = w.actors.get_mut(mo) {
+            a.angle = Angle::from_degrees(90.0);
+            a.pos = room_core::DVec3::new(128.0, 200.0, 0.0);
+        }
+        (w, mo)
+    }
+
+    #[test]
+    fn udmf_blockuse_line_stops_the_use_trace() {
+        let (mut w, mo) = door_room(0, true);
+        assert!(!use_lines(&mut w, mo));
+        assert!(w.doors.is_empty());
+    }
+
+    #[test]
+    fn udmf_passuse_special_still_counts_as_a_use() {
+        let (mut w, mo) = door_room(room_map::udmf::ext::LINE_PASSUSE, false);
         assert!(use_lines(&mut w, mo));
         assert!(!w.doors.is_empty());
     }

@@ -102,6 +102,9 @@ pub struct GameOptions {
     pub deathmatch: bool,
     /// Session display names per seat (BE3); empty → sim fallback `Player N`.
     pub player_names: [String; MAX_PLAYERS],
+    /// Start every map from scratch (UZDoom `sv_pistolstart`): no weapons,
+    /// ammo, armor or health carried from the previous map.
+    pub pistol_start: bool,
 }
 
 impl GameOptions {
@@ -173,6 +176,10 @@ pub struct Headless {
     pending_map: Option<MapGeometry>,
     /// Optional SNDINFO + sample bank for draining sim sound events.
     pub sounds: Option<SoundSystem>,
+    /// Looping sounds read by the last load ([`Self::take_restored_sounds`]).
+    restored_sounds: Vec<save::SavedSound>,
+    /// Sound environments: built-ins, UZDoom `reverbs.txt`, then `REVERBS` lumps.
+    pub environments: room_audio::EnvironmentTable,
     /// Optional MAPINFO for next/secretnext/par (falls back to Doom II heuristics).
     mapinfo: Option<Arc<room_defs::MapInfo>>,
     /// Optional TERRAIN table for hit-floor splash.
@@ -207,6 +214,8 @@ pub struct Headless {
     pub sv_nomapfixes: bool,
     /// In-memory hub map snapshots (keyed by uppercase map lump name).
     hub_snapshots: BTreeMap<String, HubSnapshot>,
+    /// Players carried into the next map by [`Self::continue_to_map`].
+    travel: Vec<Option<room_sim::TravelState>>,
     /// Play-scope WASM mod modules (rebuilt per new game).
     mod_sources: Vec<room_sim::script_mods::ModSource>,
     /// Match time left across maps of this game (tics; `None` = no limit).
@@ -515,6 +524,8 @@ impl Headless {
             intermission: None,
             pending_map: None,
             sounds: None,
+            environments: room_audio::EnvironmentTable::new(),
+            restored_sounds: Vec::new(),
             mapinfo: None,
             terrain: room_sim::TerrainTable::default(),
             sndseq: room_sim::SndSeqTable::default(),
@@ -532,6 +543,7 @@ impl Headless {
             level_fixes: None,
             sv_nomapfixes: false,
             hub_snapshots: BTreeMap::new(),
+            travel: Vec::new(),
             mod_sources: Vec::new(),
             time_left: None,
             mods: None,
@@ -840,6 +852,55 @@ impl Headless {
     pub fn set_keyconf(&mut self, conf: &room_defs::KeyConf) {
         apply_keyconf(&mut self.weapon_slots, conf);
         self.keyconf = Some(conf.clone());
+        self.add_extra_weapons();
+    }
+
+    /// Classes for the new-game class menu: KEYCONF `addplayerclass` entries
+    /// without `nomenu`, as (class, `Player.DisplayName`, `Player.Portrait`).
+    #[must_use]
+    pub fn menu_player_classes(&self) -> Vec<(String, String, Option<String>)> {
+        self.weapon_slots
+            .player_classes
+            .iter()
+            .filter(|e| !e.nomenu)
+            .filter_map(|e| {
+                let def = self.classes.get(self.classes.find_name(&e.class)?)?;
+                let name = if def.ext.display_name.is_empty() {
+                    def.name.clone()
+                } else {
+                    def.ext.display_name.clone()
+                };
+                let portrait = def
+                    .ext
+                    .stored("player.portrait")
+                    .map(str::to_owned)
+                    .filter(|p| !p.is_empty());
+                Some((def.name.clone(), name, portrait))
+            })
+            .collect()
+    }
+
+    /// Start new games as `class` (the class menu pick); `None` = first listed.
+    pub fn set_player_class(&mut self, class: Option<&str>) {
+        self.weapon_slots.chosen_player_class = class.map(str::to_owned);
+    }
+
+    /// GZDoom `FWeaponSlots::AddExtraWeapons`: a weapon with `Weapon.SlotNumber`
+    /// that no slot lists yet joins that slot, ordered by `Weapon.SlotPriority`.
+    /// Replaced classes are skipped (their replacement is the one in play).
+    pub fn add_extra_weapons(&mut self) {
+        let mut extra: Vec<(i32, f64, String)> = self
+            .classes
+            .iter()
+            .filter(|d| d.is_weapon && d.slot_number > 0 && d.slot_number <= 10)
+            .filter(|d| self.classes.replacement(d.id) == d.id)
+            .filter(|d| !self.weapon_slots.contains(&d.name))
+            .map(|d| (d.slot_number, d.ext.slot_priority, d.name.clone()))
+            .collect();
+        extra.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)));
+        for (slot, _, name) in extra {
+            self.weapon_slots.add_slot_default(slot, &name);
+        }
     }
 
     /// Remove slotted weapons whose `Ready` sprite has no graphics in `vfs`
@@ -942,6 +1003,77 @@ impl Headless {
         self.sounds = Some(sounds);
     }
 
+    /// Userinfo `gender` of `seat` for `$playersound` lookup (see
+    /// [`room_sim::parse_gender`]). Per world: set it again after a map change.
+    pub fn set_player_gender(&mut self, seat: u8, gender: u8) {
+        if let Some(p) = self
+            .world
+            .as_mut()
+            .and_then(|w| w.players.get_mut(usize::from(seat)))
+            .and_then(Option::as_mut)
+        {
+            p.gender = Some(gender.min(3));
+        }
+    }
+
+    /// Read every `REVERBS` (and legacy `SNDEAX`) lump into
+    /// [`Self::environments`], in load order, so later files override.
+    pub fn load_reverbs(&mut self, vfs: &Vfs) {
+        for name in ["SNDEAX", "REVERBS"] {
+            let ids: Vec<_> = vfs.find_all(name, Namespace::Global).collect();
+            for id in ids {
+                if let Ok(bytes) = vfs.read(id) {
+                    let text = String::from_utf8_lossy(bytes.as_ref());
+                    if let Err(e) = self.environments.parse_reverbs(&text) {
+                        eprintln!("room: {name} line {}: {}", e.line, e.message);
+                    }
+                }
+            }
+        }
+    }
+
+    /// MAPINFO `DefaultEnvironment = "name"` or `= id1, id2` for the current map.
+    fn default_environment_id(&self) -> u16 {
+        let key = self.map_name.to_ascii_uppercase();
+        let Some(raw) = self
+            .mapinfo
+            .as_ref()
+            .and_then(|i| i.maps.get(&key))
+            .and_then(|d| {
+                d.extras
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("defaultenvironment"))
+                    .map(|(_, v)| v.clone())
+            })
+        else {
+            return 0;
+        };
+        let raw = raw.trim().trim_matches('"');
+        let nums: Vec<i32> = raw
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|t| !t.is_empty())
+            .filter_map(|t| t.parse().ok())
+            .collect();
+        match nums.as_slice() {
+            [a, b] => room_sim::sound_env::env_id(*a, *b),
+            [a] => room_sim::sound_env::env_id(*a, 0),
+            _ => self.environments.find_name(raw).map_or(0, |e| e.id),
+        }
+    }
+
+    /// Environment the local listener (`seat`'s pawn) hears. `water_reverb`
+    /// (`snd_waterreverb`) swaps in "DSP Water" while it is under water.
+    #[must_use]
+    pub fn listener_environment(&self, seat: u8, water_reverb: bool) -> Option<&room_audio::ReverbEnv> {
+        let world = self.world.as_ref()?;
+        let mo = world.players.get(usize::from(seat))?.as_ref()?.mo?;
+        let (env, under) = world.listener_environment(mo);
+        if under && water_reverb {
+            return self.environments.find(room_audio::reverb::ENV_DSP_WATER);
+        }
+        self.environments.find(env)
+    }
+
     /// Drain sim sound events through the sound system (unknown names skipped).
     pub fn drain_audio(&mut self, vfs: &Vfs) -> Vec<SoundEvent> {
         let Some(world) = self.world.as_mut() else {
@@ -952,6 +1084,29 @@ impl Headless {
             return Vec::new();
         };
         sounds.translate(vfs, &events, world.level.maptime)
+    }
+
+    /// [`Self::drain_audio`] for the local `seat`: other seats' private
+    /// sounds and other actors' `CHANF_LOCAL` sounds are dropped.
+    pub fn drain_audio_for(&mut self, vfs: &Vfs, seat: u8) -> Vec<SoundEvent> {
+        let Some(world) = self.world.as_mut() else {
+            return Vec::new();
+        };
+        let local_source = world
+            .players
+            .get(usize::from(seat))
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.camera.or(p.mo))
+            .map(room_sim::sound_source_token);
+        let events = world.drain_sound_events();
+        let Some(sounds) = self.sounds.as_mut() else {
+            return Vec::new();
+        };
+        let filter = crate::sound::ListenerFilter {
+            seat: Some(seat),
+            local_source,
+        };
+        sounds.translate_for(vfs, &events, world.level.maptime, &filter)
     }
 
     /// Take a pending ACS `SetMusic` request, if any.
@@ -1178,6 +1333,23 @@ impl Headless {
                 }
             }
         }
+        if !self.travel.is_empty() {
+            let flags = self
+                .mapinfo
+                .as_ref()
+                .and_then(|info| info.maps.get(&map_key))
+                .map_or((false, false), |def| {
+                    (
+                        def.extras.contains_key("resetinventory"),
+                        def.extras.contains_key("resethealth"),
+                    )
+                });
+            for (seat, t) in self.travel.iter().enumerate() {
+                if let Some(t) = t {
+                    room_sim::apply_travel(&mut world, seat, t, flags.0, flags.1);
+                }
+            }
+        }
         if self.options.record_demo {
             if let Some(prev) = self.demo.take() {
                 if !prev.tics.is_empty() {
@@ -1298,6 +1470,11 @@ impl Headless {
         self.conevt_attack_down = false;
         self.conevt_holster_down = false;
         self.conevt_was_dead = false;
+        // MAPINFO `DefaultEnvironment` (zones without a SoundEnvironment thing).
+        let default_env = self.default_environment_id();
+        if default_env != 0 {
+            world.init_sound_zones(default_env);
+        }
         self.world = Some(world);
         if let Some(rt) = self.mods.as_mut() {
             rt.begin_map(&mut self.world);
@@ -1360,7 +1537,93 @@ impl Headless {
                 "continue_to_map only from Intermission or Title".into(),
             ));
         }
-        self.start_custom_map(map, self.options.skill)
+        // Player travel (`G_PlayerFinishLevel`): leaving a finished level keeps
+        // each live player's weapons, ammo, armor and health. Not from the title.
+        // Demo bundles replay every map from a fresh start (they store tics and
+        // a seed, not the carried inventory), so recording pistol-starts.
+        self.travel.clear();
+        if self.state == GameState::Intermission
+            && !self.options.pistol_start
+            && !self.options.record_demo
+        {
+            if let Some(w) = self.world.as_ref() {
+                let same_hub = self.next_is_same_hub(&map.name);
+                self.travel = (0..MAX_PLAYERS)
+                    .map(|seat| room_sim::capture_travel(w, seat, same_hub))
+                    .collect();
+            }
+        }
+        let r = self.start_custom_map(map, self.options.skill);
+        self.travel.clear();
+        r
+    }
+
+    /// Console `changemap`: leave the running level for `map` like an exit
+    /// would. `keep_inventory` carries each player's inventory (vanilla
+    /// travel); `false` is UZDoom's `changemap <map> -1` pistol start.
+    pub fn change_map(&mut self, map: MapGeometry, keep_inventory: bool) -> Result<(), GameError> {
+        self.travel.clear();
+        if keep_inventory
+            && self.state == GameState::Level
+            && !self.options.pistol_start
+            && !self.options.record_demo
+        {
+            if let Some(w) = self.world.as_ref() {
+                let same_hub = self.next_is_same_hub(&map.name);
+                self.travel = (0..MAX_PLAYERS)
+                    .map(|seat| room_sim::capture_travel(w, seat, same_hub))
+                    .collect();
+            }
+        }
+        let r = self.start_custom_map(map, self.options.skill);
+        self.travel.clear();
+        r
+    }
+
+    /// Map that `changemap` with no map name goes to: MAPINFO `next`, else
+    /// the stock Doom / Doom II order.
+    #[must_use]
+    pub fn console_next_map(&self) -> Option<String> {
+        let cur = self.map_name.to_ascii_uppercase();
+        if let Some(next) = self
+            .mapinfo
+            .as_ref()
+            .and_then(|i| i.maps.get(&cur))
+            .and_then(|d| d.next.clone())
+            .filter(|n| !n.is_empty() && !n.eq_ignore_ascii_case("endgame"))
+        {
+            return Some(next);
+        }
+        default_next_map_name(&cur, false)
+    }
+
+    /// Start map of episode `n` (1-based, `changeepisode`): MAPINFO episode
+    /// list first, else `E<n>M1`.
+    #[must_use]
+    pub fn episode_start_map(&self, n: usize) -> Option<String> {
+        if n == 0 {
+            return None;
+        }
+        if let Some(ep) = self.mapinfo.as_ref().and_then(|i| i.episodes.get(n - 1)) {
+            return Some(ep.start_map.clone());
+        }
+        (n <= 9).then(|| format!("E{n}M1"))
+    }
+
+    /// True when the current map and `next` sit in the same MAPINFO hub cluster.
+    fn next_is_same_hub(&self, next: &str) -> bool {
+        let Some(info) = self.mapinfo.as_ref() else {
+            return false;
+        };
+        let cluster = |name: &str| {
+            info.maps
+                .get(&name.to_ascii_uppercase())
+                .and_then(|d| d.cluster)
+        };
+        match (cluster(&self.map_name), cluster(next)) {
+            (Some(a), Some(b)) => a == b && info.is_hub_cluster(a),
+            _ => false,
+        }
     }
 
     /// Suggested next map lump for Doom II / FreeDoom / Doom 1 episode naming.
@@ -1576,9 +1839,30 @@ impl Headless {
         Ok(save::save_world(world, &map, skill)?)
     }
 
+    /// [`Self::save_game`] storing `sounds` (looping voices) for the load.
+    pub fn save_game_with_sounds(&mut self, sounds: &[save::SavedSound]) -> Result<Vec<u8>, GameError> {
+        if self.state != GameState::Level {
+            return Err(GameError::Message("can only save during Level".into()));
+        }
+        let map = self.map_name.clone();
+        let skill = self.options.skill.0;
+        let world = self
+            .world
+            .as_mut()
+            .ok_or_else(|| GameError::Message("no world to save".into()))?;
+        Ok(save::save_world_with_sounds(world, &map, skill, sounds)?)
+    }
+
+    /// Looping sounds the last [`Self::load_game`] read (the shell restarts
+    /// them after stopping the old world's voices).
+    pub fn take_restored_sounds(&mut self) -> Vec<save::SavedSound> {
+        std::mem::take(&mut self.restored_sounds)
+    }
+
     /// Restore player/sector state from a `.fsave` into the current world.
     pub fn load_game(&mut self, bytes: &[u8]) -> Result<(), GameError> {
         let _info = save::read_save_info(bytes)?;
+        self.restored_sounds = save::read_saved_sounds(bytes);
         let world = self
             .world
             .as_mut()
@@ -9215,6 +9499,123 @@ actor PlayerPawn : Actor 0
         assert!(!game.cheat_pause());
     }
 
+    fn travel_game(pistol_start: bool) -> (Headless, std::sync::Arc<room_sim::ClassRegistry>) {
+        use room_decorate::parse_decorate;
+        use room_sim::{ClassRegistry, StateTable};
+        use std::sync::Arc;
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let ir = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut game = Headless::new(GameOptions {
+            pistol_start,
+            ..GameOptions::default()
+        });
+        game.set_defs(classes.clone(), states);
+        let mut map1 = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map1);
+        game.start_custom_map(map1, Skill::new(3)).unwrap();
+        {
+            let w = game.world_mut().unwrap();
+            let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+            let cg = classes.find_name("Chaingun").unwrap();
+            let clip = classes.find_name("Clip").unwrap();
+            let key = classes.find_name("BlueCard").unwrap();
+            room_sim::give_inventory(w, mo, cg, 1);
+            room_sim::set_inventory(w, mo, clip, 77);
+            room_sim::give_inventory(w, mo, key, 1);
+            w.actors.get_mut(mo).unwrap().health = 61;
+            let p = w.players[0].as_mut().unwrap();
+            p.armor = 50;
+            p.armor_class = 1;
+            p.ready_weapon = Some(cg);
+            w.level.exiting = true;
+        }
+        game.tick(&[]);
+        assert_eq!(game.state, GameState::Intermission);
+        let mut map2 = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP02")
+            .unwrap();
+        apply_nodes(&mut map2);
+        game.continue_to_map(map2).unwrap();
+        (game, classes)
+    }
+
+    #[test]
+    fn next_map_keeps_weapons_ammo_armor_and_health_but_not_keys() {
+        let (game, classes) = travel_game(false);
+        let w = game.world().unwrap();
+        let p = w.players[0].as_ref().unwrap();
+        let mo = p.mo.unwrap();
+        let count = |name: &str| room_sim::count_inventory(w, mo, classes.find_name(name).unwrap());
+        assert_eq!(count("Chaingun"), 1);
+        assert_eq!(count("Clip"), 77);
+        assert_eq!(count("BlueCard"), 0, "keys stay behind (InterHubAmount 0)");
+        assert_eq!(w.actors.get(mo).unwrap().health, 61);
+        assert_eq!((p.armor, p.armor_class), (50, 1));
+        assert_eq!(p.ready_weapon, classes.find_name("Chaingun"));
+    }
+
+    #[test]
+    fn pistol_start_resets_the_player_each_map() {
+        let (game, classes) = travel_game(true);
+        let w = game.world().unwrap();
+        let p = w.players[0].as_ref().unwrap();
+        let mo = p.mo.unwrap();
+        assert_eq!(
+            room_sim::count_inventory(w, mo, classes.find_name("Chaingun").unwrap()),
+            0
+        );
+        assert_eq!(w.actors.get(mo).unwrap().health, 100);
+        assert_eq!(p.armor, 0);
+    }
+
+    #[test]
+    fn console_changemap_keeps_or_resets_inventory() {
+        use room_decorate::parse_decorate;
+        use room_sim::{ClassRegistry, StateTable};
+        use std::sync::Arc;
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let ir = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mk = |name: &str| {
+            let mut m = MapBuilder::new()
+                .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+                .player_start(64.0, 64.0, 0)
+                .build_udmf(name)
+                .unwrap();
+            apply_nodes(&mut m);
+            m
+        };
+        for keep in [true, false] {
+            let mut game = Headless::new(GameOptions::default());
+            game.set_defs(classes.clone(), states.clone());
+            game.start_custom_map(mk("MAP01"), Skill::new(3)).unwrap();
+            assert_eq!(game.console_next_map().as_deref(), Some("MAP02"));
+            let cg = classes.find_name("Chaingun").unwrap();
+            {
+                let w = game.world_mut().unwrap();
+                let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+                room_sim::give_inventory(w, mo, cg, 1);
+            }
+            game.change_map(mk("MAP02"), keep).unwrap();
+            let w = game.world().unwrap();
+            let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+            assert_eq!(room_sim::count_inventory(w, mo, cg), i32::from(keep));
+            assert_eq!(game.map_name(), "MAP02");
+        }
+        let game = Headless::new(GameOptions::default());
+        assert_eq!(game.episode_start_map(3).as_deref(), Some("E3M1"));
+        assert_eq!(game.episode_start_map(0), None);
+    }
+
     #[test]
     fn cheat_iddt_toggles_allmap() {
         let mut map = MapBuilder::new()
@@ -9225,10 +9626,30 @@ actor PlayerPawn : Actor 0
         apply_nodes(&mut map);
         let mut game = Headless::new(GameOptions::default());
         game.start_custom_map(map, Skill::new(3)).unwrap();
+        // Doom cycles iddt: full map, then things too, then off.
         assert!(game.cheat_iddt(0));
         assert!(game.world().unwrap().players[0].as_ref().unwrap().allmap);
+        assert!(
+            !game.world().unwrap().players[0]
+                .as_ref()
+                .unwrap()
+                .automap_things
+        );
+        assert!(game.cheat_iddt(0));
+        assert!(
+            game.world().unwrap().players[0]
+                .as_ref()
+                .unwrap()
+                .automap_things
+        );
         assert!(!game.cheat_iddt(0));
         assert!(!game.world().unwrap().players[0].as_ref().unwrap().allmap);
+        assert!(
+            !game.world().unwrap().players[0]
+                .as_ref()
+                .unwrap()
+                .automap_things
+        );
     }
 
     #[test]

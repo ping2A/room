@@ -86,3 +86,111 @@ mod tests {
         );
     }
 }
+
+/// How a live actor's sprite is drawn for one viewer (UZDoom sprite setup).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpriteView {
+    /// Angle to pick the rotation frame with: the actor's angle, or with
+    /// `+SPRITEANGLE` one that makes the view-relative angle `SpriteAngle`.
+    pub rotation_angle_deg: f64,
+    /// `+SPRITEANGLE`: use [`Self::rotation_angle_deg`] instead of the
+    /// (interpolated) facing.
+    pub fixed_rotation: bool,
+    /// In-plane spin in radians (`SpriteRotation`, plus `roll` for `+ROLLSPRITE`).
+    pub roll_rad: f64,
+    /// `Scale` already applies; this is the actor's own light override
+    /// (`LightLevel`), `None` = sector light.
+    pub light_level: Option<i32>,
+}
+
+fn wrap180(mut d: f64) -> f64 {
+    while d > 180.0 {
+        d -= 360.0;
+    }
+    while d < -180.0 {
+        d += 360.0;
+    }
+    d
+}
+
+fn in_range(v: f64, (start, end): (f64, f64)) -> bool {
+    let (s, e) = (wrap180(start), wrap180(end));
+    if s <= e {
+        v >= s && v <= e
+    } else {
+        v >= s || v <= e
+    }
+}
+
+/// Sprite visibility and orientation for a viewer at `eye` whose
+/// `ViewRenderFlags` are `viewer_flags` (0 for the normal player view).
+///
+/// Hidden when the class `RenderRequired` bits are not all in the viewer's
+/// flags, when `RenderHidden` shares a bit with them, or when the viewer sits
+/// outside `VisibleAngles` / `VisiblePitch` (relative to the actor's facing
+/// unless `+ABSVIEWANGLES`). `RenderRadius` only widens which sectors an
+/// actor links into for portal/sector culling; Room draws every live actor,
+/// so it never hides anything.
+#[must_use]
+pub fn sprite_view(
+    world: &crate::world::World,
+    a: &crate::actor::Actor,
+    eye: room_core::DVec3,
+    viewer_flags: i32,
+) -> Option<SpriteView> {
+    let class = world.classes.get(a.class)?;
+    let required = class.ext.stored_i32("renderrequired").unwrap_or(0);
+    if required != 0 && viewer_flags & required != required {
+        return None;
+    }
+    let hidden = class.ext.stored_i32("renderhidden").unwrap_or(0);
+    if hidden & viewer_flags != 0 {
+        return None;
+    }
+    let dx = eye.x() - a.pos.x();
+    let dy = eye.y() - a.pos.y();
+    let to_viewer = room_core::dmath::atan2(dy, dx).to_degrees();
+    let facing = a.angle.degrees();
+    if let Some(range) = a.ext.visible_angles {
+        let rel = if a.extra_flags.get_name("ABSVIEWANGLES") {
+            wrap180(to_viewer)
+        } else {
+            wrap180(to_viewer - facing)
+        };
+        if !in_range(rel, range) {
+            return None;
+        }
+    }
+    if let Some(range) = a.ext.visible_pitch {
+        let dist = (dx * dx + dy * dy).sqrt();
+        let mid = a.pos.z() + a.height * 0.5;
+        // UZDoom pitch: positive looks down, so a viewer above is negative.
+        let pitch = -room_core::dmath::atan2(eye.z() - mid, dist).to_degrees();
+        let rel = if a.extra_flags.get_name("ABSVIEWANGLES") {
+            pitch
+        } else {
+            pitch + a.pitch.degrees()
+        };
+        if !in_range(rel, range) {
+            return None;
+        }
+    }
+    let rotation_angle_deg = if a.extra_flags.get_name("SPRITEANGLE") {
+        // Rotation frames compare the viewer's angle with the actor's. Pick an
+        // actor angle that leaves `SpriteAngle` as that difference.
+        to_viewer - a.ext.sprite_angle
+    } else {
+        facing
+    };
+    let mut roll = a.ext.sprite_rotation;
+    if a.extra_flags.get_name("ROLLSPRITE") {
+        roll += a.roll.degrees();
+    }
+    let light_level = class.ext.stored_i32("lightlevel").filter(|&l| l >= 0);
+    Some(SpriteView {
+        rotation_angle_deg,
+        fixed_rotation: a.extra_flags.get_name("SPRITEANGLE"),
+        roll_rad: roll.to_radians(),
+        light_level,
+    })
+}

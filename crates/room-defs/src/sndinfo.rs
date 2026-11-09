@@ -74,13 +74,17 @@ impl SoundRegistry {
         let gender = gender.to_ascii_lowercase();
         for _ in 0..16 {
             let definition = [
+                // `S_LookupPlayerSound`: the class's own gender, then male,
+                // then any gender the class defines, then the default class.
                 (class.as_str(), gender.as_str()),
                 (class.as_str(), "male"),
                 (class.as_str(), "female"),
+                (class.as_str(), "neutral"),
                 (class.as_str(), "other"),
                 ("player", gender.as_str()),
                 ("player", "male"),
                 ("player", "female"),
+                ("player", "neutral"),
                 ("player", "other"),
             ]
             .into_iter()
