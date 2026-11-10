@@ -55,26 +55,7 @@ pub fn optimize_function(f: &mut CompiledFunction) {
 }
 
 fn has_ext(op: Op) -> bool {
-    matches!(
-        op,
-        Op::LoadConstI
-            | Op::LoadConstF
-            | Op::LoadConstS
-            | Op::Jmp
-            | Op::JmpIf
-            | Op::JmpIfNot
-            | Op::CallStatic
-            | Op::CallNative
-            | Op::NewObj
-            | Op::LoadFieldI
-            | Op::StoreFieldI
-            | Op::LoadFieldA
-            | Op::StoreFieldA
-            | Op::LoadFieldS
-            | Op::StoreFieldS
-            | Op::Trap
-            | Op::IsClass
-    )
+    op.needs_ext()
 }
 
 #[cfg(test)]

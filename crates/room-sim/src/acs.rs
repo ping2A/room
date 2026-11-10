@@ -1074,15 +1074,22 @@ impl AcsHost for WorldAcsHost<'_> {
         1
     }
 
-    fn script_call(&mut self, args: &[i32], _activator: u64) -> i32 {
-        let class = self
-            .world
-            .acs
-            .resolve_string(args.first().copied().unwrap_or(0));
-        let func = self
-            .world
-            .acs
-            .resolve_string(args.get(1).copied().unwrap_or(0));
+    fn script_call(&mut self, args: &[i32], activator: u64) -> i32 {
+        // Direct calls (tests, puke) while the ACS state is still in the world.
+        let strings: Vec<Option<String>> = args
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                (i < 2 || (v > 0 && (v & 0x4000_0000) != 0 && (v & 0x0FFF_FFFF) < 4096))
+                    .then(|| self.world.acs.resolve_string(v))
+            })
+            .collect();
+        self.script_call_resolved(args, &strings, activator)
+    }
+
+    fn script_call_resolved(&mut self, args: &[i32], strings: &[Option<String>], activator: u64) -> i32 {
+        let name = |i: usize| strings.get(i).cloned().flatten().unwrap_or_default();
+        let (class, func) = (name(0), name(1));
         if class.is_empty() || func.is_empty() {
             return 0;
         }
@@ -1093,21 +1100,45 @@ impl AcsHost for WorldAcsHost<'_> {
             self.world.zscript.sync_host(self.world.skill, 0, 0);
             let mut i_args = Vec::new();
             let mut s_owned = Vec::new();
-            for &v in rest {
-                // Dynamic string indices are positive and carry `0x40000000`.
-                // Negative integers such as `-2` stay ints.
-                if v > 0 && (v & 0x4000_0000) != 0 && (v & 0x0FFF_FFFF) < 4096 {
-                    s_owned.push(self.world.acs.resolve_string(v));
-                } else {
-                    i_args.push(i64::from(v));
+            for (k, &v) in rest.iter().enumerate() {
+                // String handles were resolved by the VM; other values,
+                // including negative ones such as `-2`, are ints.
+                match strings.get(k + 2).cloned().flatten() {
+                    Some(text) => s_owned.push(text),
+                    None => i_args.push(i64::from(v)),
                 }
             }
             let s_refs: Vec<&str> = s_owned.iter().map(String::as_str).collect();
-            if let Ok(v) = self
+            let result = self
                 .world
                 .zscript
-                .script_call_with(&qname, &i_args, &s_refs)
-            {
+                .script_call_with(&qname, &i_args, &s_refs);
+            // What the function did to the playsim: `GiveInventory` /
+            // `TakeInventory` on any actor (Brutal Doom's `GetGender` gives
+            // the `GenderMale` token its status bar draws the face for) and
+            // the other queued natives.
+            let grants = self.world.zscript.take_grants();
+            let fallback = resolve_actor(self.world, 0, activator).or_else(|| {
+                self.world.players.iter().flatten().find_map(|p| p.mo)
+            });
+            if let Some(owner) = fallback {
+                for (cookie, item, amount) in grants {
+                    // `players[n].mo` handles name the player's pawn.
+                    let pawn = self
+                        .world
+                        .zscript
+                        .player_of_cookie(cookie)
+                        .and_then(|pn| usize::try_from(pn).ok())
+                        .and_then(|pn| self.world.players.get(pn).and_then(|p| p.as_ref()))
+                        .and_then(|p| p.mo);
+                    match pawn {
+                        Some(mo) => self.world.apply_zscript_inventory_change(mo, -1, &item, amount),
+                        None => self.world.apply_zscript_inventory_change(owner, cookie, &item, amount),
+                    }
+                }
+            }
+            self.world.apply_zscript_native_ops(None);
+            if let Ok(v) = result {
                 return i32::try_from(v).unwrap_or(i32::MAX);
             }
         }

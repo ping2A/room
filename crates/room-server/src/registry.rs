@@ -397,7 +397,13 @@ impl RoomRegistry {
                 return Err(RegistryError::VerifierFull);
             }
         }
-        let max_players = req.max_players.clamp(2, 8);
+        // Doom rooms take up to 64 seats (protocol v3); native Duke keeps 8.
+        let seat_cap = if game == GAMES[0] {
+            crate::room::v2::MAX_SEATS as u8
+        } else {
+            8
+        };
+        let max_players = req.max_players.clamp(2, seat_cap);
         let visibility = match req.visibility.to_ascii_lowercase().as_str() {
             "private" => "private".into(),
             _ => "public".into(),

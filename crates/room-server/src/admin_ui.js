@@ -329,7 +329,7 @@
       bodyHtml:
         '<label class="field"><span>Map</span><input name="map" value="E1M1" required/></label>' +
         '<label class="field"><span>Skill (1–5)</span><input name="skill" type="number" min="1" max="5" value="3"/></label>' +
-        '<label class="field"><span>Max players</span><input name="max_players" type="number" min="2" max="8" value="2"/></label>' +
+        '<label class="field"><span>Max players</span><input name="max_players" type="number" min="2" max="64" value="2"/></label>' +
         '<label class="field"><span><input name="enable_verifier" type="checkbox"/> Enable verifier</span></label>',
     });
     if (!data) return;

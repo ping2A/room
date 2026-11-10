@@ -98,11 +98,13 @@ pub struct ClassLayout {
     pub n_a: u16,
     /// Number of `s` script fields.
     pub n_s: u16,
+    /// Number of `f` script fields (`double`, vector components).
+    pub n_f: u16,
     /// `Array<int>` field indices in the object bank.
     pub array_i: Vec<u16>,
     /// `Array<string>` field indices in the object bank.
     pub array_s: Vec<u16>,
-    /// Field name → (bank, index). bank: 0=i 1=a 2=s
+    /// Field name → (bank, index). bank: 0=i 1=a 2=s 3=f (vectors: first component)
     pub fields: BTreeMap<String, (u8, u16)>,
 }
 

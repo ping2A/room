@@ -874,7 +874,12 @@ pub fn try_move_ex(world: &mut World, actor_id: ActorId, new_pos: DVec3) -> TryM
         let floating = (actor.flags & crate::class::FLAG_FLOAT) != 0
             || (actor.flags & crate::class::FLAG_NOGRAVITY) != 0;
         let can_dropoff = (actor.flags & crate::class::FLAG_DROPOFF) != 0;
-        if !floating && !can_dropoff && delta < -max_drop {
+        // Doom / GZDoom `P_TryMove`: "don't stand over a dropoff" compares the
+        // highest and lowest floors under the new box (`tmfloorz - tmdropoffz`),
+        // not the floor with the actor's own z. An actor in the air (a gib
+        // thrown at chest height, a missile checked by `P_CheckMissileSpawn`)
+        // over flat ground is not at a ledge.
+        if !floating && !can_dropoff && check.floor_z - check.dropoff_z > max_drop {
             return TryMoveResult {
                 ok: false,
                 blocking_actor: None,
@@ -1092,6 +1097,45 @@ const GRAVITY: f64 = 1.0;
 /// Below this speed (units per tic) a bounce settles instead of rebounding.
 const BOUNCE_REST_SPEED: f64 = 1.0;
 
+/// Remaining bounces (GZDoom `AActor::bouncecount`), kept per actor and
+/// seeded from the class `BounceCount` on the first bounce.
+const BOUNCES_LEFT: &str = "__room_bouncecount";
+
+/// GZDoom `if (bouncecount > 0 && --bouncecount == 0)`: true when this bounce
+/// uses up the last one (the bouncer then explodes instead of rebounding).
+fn spend_bounce(world: &mut World, actor_id: ActorId) -> bool {
+    let Some(a) = world.actors.get(actor_id) else {
+        return false;
+    };
+    let left = a.user_vars.get(BOUNCES_LEFT).copied().unwrap_or_else(|| {
+        world
+            .classes
+            .get(a.class)
+            .map_or(-1, |c| c.bounce_count_max)
+    });
+    if left <= 0 {
+        return false;
+    }
+    let left = left - 1;
+    if let Some(a) = world.actors.get_mut(actor_id) {
+        a.user_vars.insert(BOUNCES_LEFT.to_owned(), left);
+    }
+    left == 0
+}
+
+/// The last bounce is spent: missiles explode, other bouncers stop.
+fn end_bounce(world: &mut World, actor_id: ActorId) {
+    let missile = world
+        .actors
+        .get(actor_id)
+        .is_some_and(|a| a.flags & FLAG_MISSILE != 0);
+    if missile {
+        explode_missile(world, actor_id);
+    } else if let Some(a) = world.actors.get_mut(actor_id) {
+        a.vel = DVec3::ZERO;
+    }
+}
+
 /// `+MBFBOUNCER` uses the same floor and wall reflect as the bounce flags (UZ1).
 fn mbf_bouncer(actor: &Actor) -> bool {
     actor.extra_flags.get_name("MBFBOUNCER")
@@ -1140,6 +1184,13 @@ fn bounce_off_wall(world: &mut World, actor_id: ActorId, dest: DVec3) -> bool {
                     .is_some_and(|l| l.back_sector.is_none())
             })
     });
+    if lid.is_none_or(|lid| world.map.lines.get(lid.raw() as usize).is_none()) {
+        return false;
+    }
+    // GZDoom `P_BounceWall`: the bounce count runs out → the caller explodes it.
+    if spend_bounce(world, actor_id) {
+        return false;
+    }
     let Some(line) = lid.and_then(|lid| world.map.lines.get(lid.raw() as usize)) else {
         return false;
     };
@@ -1468,17 +1519,45 @@ pub fn z_movement(world: &mut World, actor_id: ActorId) {
         let hit_floor = z <= floor_z && vel_z < 0.0;
         let hit_ceiling = z + actor.height > ceiling_z && vel_z > 0.0;
         if hit_floor || hit_ceiling {
-            let rebound = -vel_z * bounce_factor(world, &actor);
-            let loud = rebound.abs() >= BOUNCE_REST_SPEED;
-            let vel_z = if loud { rebound } else { 0.0 };
             let z = if hit_floor {
                 floor_z
             } else {
                 ceiling_z - actor.height
             };
+            // GZDoom `AActor::FloorBounceMissile`.
+            if spend_bounce(world, actor_id) {
+                if let Some(a) = world.actors.get_mut(actor_id) {
+                    a.pos = DVec3::new(a.pos.x(), a.pos.y(), z);
+                }
+                end_bounce(world, actor_id);
+                return;
+            }
+            let f = bounce_factor(world, &actor);
+            let rebound = -vel_z * f;
+            let loud = rebound.abs() >= BOUNCE_REST_SPEED;
+            let vel_z = if loud { rebound } else { 0.0 };
+            let doom_bounce = actor.extra_flags.get_name("BOUNCEAUTOOFF")
+                || actor.extra_flags.get_name("BOUNCEAUTOOFFFLOORONLY");
+            // GZDoom reflects the whole velocity and keeps `BounceFactor` of
+            // it. Room applies that to the Doom bounce type (`+DOOMBOUNCE`);
+            // other bouncers (Duke glass, MBF) keep their horizontal speed.
+            let xy = if doom_bounce && !mbf_bouncer(&actor) { f } else { 1.0 };
+            // `BOUNCE_AutoOff` (`+DOOMBOUNCE`): a slow floor rebound ends the
+            // bouncing, so the next floor contact explodes the missile.
+            let auto_off = (actor.extra_flags.get_name("BOUNCEAUTOOFF")
+                || (hit_floor && actor.extra_flags.get_name("BOUNCEAUTOOFFFLOORONLY")))
+                && (actor.flags & crate::class::FLAG_NOGRAVITY) == 0
+                && vel_z < 3.0;
             if let Some(a) = world.actors.get_mut(actor_id) {
                 a.pos = DVec3::new(a.pos.x(), a.pos.y(), z);
-                a.vel = DVec3::new(a.vel.x(), a.vel.y(), vel_z);
+                a.vel = DVec3::new(a.vel.x() * xy, a.vel.y() * xy, vel_z);
+                if auto_off {
+                    a.flags &= !(crate::class::FLAG_BOUNCEONFLOORS | crate::class::FLAG_BOUNCEONWALLS);
+                    a.extra_flags.set_name("BOUNCEONFLOORS", false);
+                    a.extra_flags.set_name("BOUNCEONWALLS", false);
+                    a.extra_flags.set_name("BOUNCEONCEILINGS", false);
+                    a.extra_flags.set_name("MBFBOUNCER", false);
+                }
             }
             if loud {
                 play_bounce_sound(world, &actor, false);
@@ -2742,6 +2821,106 @@ actor ExprBall : Actor
     }
 
     #[test]
+    fn doom_bounce_limb_settles_into_its_death_state() {
+        // Brutal Doom limbs (`XDeathArm1`) are `+DOOMBOUNCE` gravity missiles
+        // that tumble in a looping Spawn state until they die. GZDoom ends the
+        // bounce (`BOUNCE_AutoOff` below 3 units/tic up, or `BounceCount`), and
+        // every bounce keeps only `BounceFactor` of the whole velocity.
+        use crate::{ClassRegistry, StateTable};
+        use room_decorate::parse_decorate;
+        use std::sync::Arc;
+
+        let file = parse_decorate(
+            r#"
+actor Limb 9994
+{
+  Radius 8
+  Height 8
+  Speed 8
+  Gravity 0.5
+  BounceFactor 0.2
+  WallBounceFactor 0.2
+  BounceCount 3
+  +DOOMBOUNCE
+  +MISSILE
+  +NOBLOCKMAP
+  States
+  {
+  Spawn:
+    XARM ABCD 5
+    Loop
+  Death:
+    XDT5 I -1
+    Stop
+  }
+}
+actor Grenade : Limb 9995
+{
+  BounceFactor 0.9
+  BounceCount 2
+  -DOOMBOUNCE
+  +HEXENBOUNCE
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 2048.0, 2048.0), 0.0, 512.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let limb = classes.find_name("Limb").unwrap();
+        let death = w.states.find_label(limb, "Death").unwrap();
+        let id = w
+            .spawn_at(limb, DVec3::new(1024.0, 1024.0, 40.0), room_core::Angle::ZERO)
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(id) {
+            a.vel = DVec3::new(6.0, 2.0, 4.0);
+        }
+        let mut died = None;
+        for t in 0..200 {
+            w.tick();
+            if w.actors.get(id).is_some_and(|a| a.state == Some(death)) {
+                died = Some(t);
+                break;
+            }
+        }
+        assert!(died.is_some(), "a Doom-bounce limb must stop tumbling and die");
+
+        // `BounceCount 2` on a lively Hexen bouncer (no auto-off): the second
+        // floor contact explodes it.
+        let grenade = classes.find_name("Grenade").unwrap();
+        let gdeath = w.states.find_label(grenade, "Death").unwrap();
+        let g = w
+            .spawn_at(grenade, DVec3::new(512.0, 512.0, 64.0), room_core::Angle::ZERO)
+            .unwrap();
+        if let Some(a) = w.actors.get_mut(g) {
+            a.vel = DVec3::new(0.0, 0.0, -10.0);
+        }
+        let mut floor_hits = 0;
+        let mut was_up = true;
+        for _ in 0..300 {
+            w.tick();
+            let a = w.actors.get(g).unwrap();
+            if a.state == Some(gdeath) {
+                break;
+            }
+            let down = a.pos.z() <= 0.0;
+            if down && was_up {
+                floor_hits += 1;
+            }
+            was_up = !down;
+        }
+        assert_eq!(w.actors.get(g).unwrap().state, Some(gdeath), "BounceCount 2 must end it");
+        assert!(floor_hits <= 1, "exploded on the second floor contact, saw {floor_hits} rebounds");
+    }
+
+    #[test]
     fn bouncers_reflect_off_floors_and_walls() {
         use crate::{ClassRegistry, StateTable};
         use room_decorate::parse_decorate;
@@ -3021,10 +3200,10 @@ actor Reckless : Actor 9912
                 room_core::Angle::ZERO,
             )
             .unwrap();
-        // Dest deep in the low sector so check_position floor is 0 (not max'd with 40
-        // from the shared wall still in the same blockmap cell).
-        // 40-unit drop > MaxDropOffHeight 24 → blocked without DROPOFF.
-        assert!(!try_move(&mut w, cautious, DVec3::new(400.0, 128.0, 40.0)));
+        // Doom `P_TryMove` "don't stand over a dropoff": the box at x=248
+        // (radius 16) spans the 40-unit ledge at x=256, so floorz − dropoffz
+        // is 40 > MaxDropOffHeight 24 → blocked without DROPOFF.
+        assert!(!try_move(&mut w, cautious, DVec3::new(248.0, 128.0, 40.0)));
         let daredevil = w
             .spawn_at(
                 reckless,
@@ -3032,8 +3211,8 @@ actor Reckless : Actor 9912
                 room_core::Angle::ZERO,
             )
             .unwrap();
-        assert!(try_move(&mut w, daredevil, DVec3::new(400.0, 128.0, 40.0)));
-        assert!((w.actors.get(daredevil).unwrap().pos.x() - 400.0).abs() < 1e-6);
+        assert!(try_move(&mut w, daredevil, DVec3::new(248.0, 128.0, 40.0)));
+        assert!((w.actors.get(daredevil).unwrap().pos.x() - 248.0).abs() < 1e-6);
     }
 
     #[test]
@@ -3533,6 +3712,60 @@ actor GoreBit : Actor 9320
             a, b,
             "512 NOINTERACTION gore actors × 8 tics must be deterministic"
         );
+    }
+
+    #[test]
+    fn airborne_actor_over_flat_floor_is_not_at_a_dropoff() {
+        // Brutal Doom gibs are gravity missiles spawned at chest height by
+        // `A_CustomMissile`. Doom's dropoff test compares the floors under the
+        // box (`tmfloorz - tmdropoffz`), so `P_CheckMissileSpawn` lets them
+        // fly; comparing the floor with the actor's z exploded them in mid-air
+        // and left their wall smears floating in the room.
+        use crate::{ClassRegistry, StateTable};
+        use room_decorate::parse_decorate;
+        use std::sync::Arc;
+
+        let ir = parse_decorate(
+            r#"
+actor FlyingGib : Actor 9322
+{
+  Radius 1
+  Height 1
+  +MISSILE
+  +NOBLOCKMAP
+  +THRUACTORS
+  States { Spawn: BLUD C -1 Stop }
+}
+actor Walker : Actor 9323
+{
+  Radius 16
+  Height 56
+  States { Spawn: TROO A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let gib = classes.find_name("FlyingGib").unwrap();
+        let walker = classes.find_name("Walker").unwrap();
+        let mut map = MapBuilder::new()
+            .room("high", rect(0.0, 0.0, 256.0, 256.0), 64.0, 256.0)
+            .room("low", rect(256.0, 0.0, 512.0, 256.0), 0.0, 256.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        let g = w
+            .spawn_at(gib, DVec3::new(100.0, 128.0, 106.0), room_core::Angle::ZERO)
+            .unwrap();
+        assert!(try_move(&mut w, g, DVec3::new(104.0, 128.0, 106.0)), "42 units up over flat floor");
+        // A walker still stops at a 64-unit ledge (box over both floors).
+        let m = w
+            .spawn_at(walker, DVec3::new(236.0, 128.0, 64.0), room_core::Angle::ZERO)
+            .unwrap();
+        assert!(!try_move(&mut w, m, DVec3::new(248.0, 128.0, 64.0)), "ledge must still block");
     }
 
     #[test]

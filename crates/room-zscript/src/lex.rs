@@ -86,6 +86,8 @@ const KEYWORDS: &[&str] = &[
     "foreach",
     "let",
     "is",
+    "dot",
+    "cross",
     "out",
     "ref",
     "in",

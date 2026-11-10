@@ -82,6 +82,12 @@ pub enum Op {
     LoadFieldS = 55,
     /// `field_s(a[a], ext) = s[b]`
     StoreFieldS = 56,
+    /// `f[a] = obj(a-bank b).fields_f[ext]`
+    LoadFieldF = 57,
+    /// `obj(a-bank a).fields_f[ext] = f[b]`
+    StoreFieldF = 58,
+    /// `rets[c] = bank a reg b` (extra results of a multi-return).
+    SetRet = 59,
     /// `i[a] = array_len(a[b])`
     ArrayLen = 60,
     /// `i[a] = array_get_i(a[b], i[c])`
@@ -173,6 +179,9 @@ impl Op {
             53 => Self::LoadFieldA,
             54 => Self::StoreFieldA,
             55 => Self::LoadFieldS,
+            57 => Self::LoadFieldF,
+            58 => Self::StoreFieldF,
+            59 => Self::SetRet,
             56 => Self::StoreFieldS,
             60 => Self::ArrayLen,
             61 => Self::ArrayGetI,
@@ -221,6 +230,8 @@ impl Op {
                 | Self::StoreFieldA
                 | Self::LoadFieldS
                 | Self::StoreFieldS
+                | Self::LoadFieldF
+                | Self::StoreFieldF
                 | Self::Trap
                 | Self::IsClass
                 | Self::Call

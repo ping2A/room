@@ -175,6 +175,7 @@ pub fn save_world(world: &mut World, map: &str, skill: u8) -> Result<Vec<u8>, Sa
         info.checksum
     );
     let world_bin = encode_world(world)?;
+    let players_bin = encode_other_players(world)?;
     let scripts_bin = encode_scripts(&world.scripts.snapshot_play_modules());
     let modhud_bin = world.mod_hud.to_bytes();
 
@@ -190,12 +191,25 @@ pub fn save_world(world: &mut World, map: &str, skill: u8) -> Result<Vec<u8>, Sa
             .map_err(|e| SaveError::Message(e.to_string()))?;
         zip.write_all(&world_bin)
             .map_err(|e| SaveError::Message(e.to_string()))?;
+        // Every seat past player 1 (UZ12 net saves); absent in single player.
+        if !players_bin.is_empty() {
+            zip.start_file("players.bin", opts)
+                .map_err(|e| SaveError::Message(e.to_string()))?;
+            zip.write_all(&players_bin)
+                .map_err(|e| SaveError::Message(e.to_string()))?;
+        }
         if !scripts_bin.is_empty() {
             zip.start_file("scripts.bin", opts)
                 .map_err(|e| SaveError::Message(e.to_string()))?;
             zip.write_all(&scripts_bin)
                 .map_err(|e| SaveError::Message(e.to_string()))?;
         }
+        // Zone sound environments changed after map start (UZ5); absent on
+        // older saves, which keep the map's initial environments.
+        zip.start_file("soundenv.bin", opts)
+            .map_err(|e| SaveError::Message(e.to_string()))?;
+        zip.write_all(&world.sound_env.to_bytes())
+            .map_err(|e| SaveError::Message(e.to_string()))?;
         // Optional Mod HUD widgets (`docs/27` MH0); absent on older saves.
         if modhud_bin.len() > 12 {
             zip.start_file("modhud.bin", opts)
@@ -317,6 +331,12 @@ pub fn load_world(world: &mut World, bytes: &[u8]) -> Result<u64, SaveError> {
             .map_err(|e| SaveError::Message(e.to_string()))?;
     }
     decode_world(world, &bin)?;
+    if let Ok(mut file) = zip.by_name("players.bin") {
+        let mut players = Vec::new();
+        file.read_to_end(&mut players)
+            .map_err(|e| SaveError::Message(e.to_string()))?;
+        decode_other_players(world, &players)?;
+    }
     if let Ok(mut file) = zip.by_name("scripts.bin") {
         let mut scripts = Vec::new();
         file.read_to_end(&mut scripts)
@@ -327,6 +347,12 @@ pub fn load_world(world: &mut World, bytes: &[u8]) -> Result<u64, SaveError> {
             .restore_play_modules(&snaps)
             .map_err(|e| SaveError::Message(e.to_string()))?;
     }
+    if let Ok(mut file) = zip.by_name("soundenv.bin") {
+        let mut env = Vec::new();
+        file.read_to_end(&mut env)
+            .map_err(|e| SaveError::Message(e.to_string()))?;
+        world.sound_env.load_bytes(&env).map_err(SaveError::Message)?;
+    }
     if let Ok(mut file) = zip.by_name("modhud.bin") {
         let mut hud = Vec::new();
         file.read_to_end(&mut hud)
@@ -336,6 +362,53 @@ pub fn load_world(world: &mut World, bytes: &[u8]) -> Result<u64, SaveError> {
         world.mod_hud.clear_all();
     }
     Ok(info.checksum)
+}
+
+const PLAYERS_MAGIC: &[u8; 4] = b"FPLS";
+
+/// `players.bin`: `FPLS`, a count, then `(u8 seat, u32 len, block)` for each
+/// seat past 0 that is in the game. Empty when only player 1 plays.
+fn encode_other_players(world: &World) -> Result<Vec<u8>, SaveError> {
+    let seats: Vec<usize> = (1..world.players.len())
+        .filter(|&s| world.players[s].as_ref().is_some_and(|p| p.mo.is_some()))
+        .collect();
+    if seats.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(PLAYERS_MAGIC);
+    out.push(seats.len() as u8);
+    for seat in seats {
+        let mut block = Vec::new();
+        encode_player_block(world, seat, &mut block)?;
+        out.push(seat as u8);
+        out.extend_from_slice(&(block.len() as u32).to_le_bytes());
+        out.extend_from_slice(&block);
+    }
+    Ok(out)
+}
+
+/// Restore the seats in `players.bin`. A seat the loaded game has no player
+/// for (fewer players than when saved) is skipped.
+fn decode_other_players(world: &mut World, bin: &[u8]) -> Result<(), SaveError> {
+    if bin.len() < 5 || &bin[0..4] != PLAYERS_MAGIC {
+        return Err(SaveError::Message("bad players.bin".into()));
+    }
+    let n = usize::from(bin[4]);
+    let mut o = 5;
+    for _ in 0..n {
+        let seat = usize::from(*bin.get(o).ok_or_else(|| SaveError::Message("players.bin truncated".into()))?);
+        let len = read_u32(bin, o + 1)? as usize;
+        o += 5;
+        let block = bin
+            .get(o..o + len)
+            .ok_or_else(|| SaveError::Message("players.bin truncated".into()))?;
+        if world.players.get(seat).is_some_and(|p| p.as_ref().is_some_and(|p| p.mo.is_some())) {
+            let _ = decode_player_block(world, seat, block, 0)?;
+        }
+        o += len;
+    }
+    Ok(())
 }
 
 const SCRIPTS_MAGIC: &[u8; 4] = b"FSCR";
@@ -487,8 +560,18 @@ fn encode_world(world: &World) -> Result<Vec<u8>, SaveError> {
         p.extend_from_slice(&s.light.to_le_bytes());
     }
     // Player 0 bootstrap.
-    let Some(player) = world.players[0].as_ref() else {
+    if world.players[0].is_none() {
         return Err(SaveError::Message("no player 0".into()));
+    }
+    encode_player_block(world, 0, &mut p)?;
+    Ok(p)
+}
+
+/// One player's block in `world.bin` / `players.bin`: pawn position, angle,
+/// health, armor, powers, state, pitch, ready weapon, inventory and flags.
+fn encode_player_block(world: &World, seat: usize, p: &mut Vec<u8>) -> Result<(), SaveError> {
+    let Some(player) = world.players.get(seat).and_then(|p| p.as_ref()) else {
+        return Err(SaveError::Message(format!("no player {seat}")));
     };
     let mo = player
         .mo
@@ -524,7 +607,7 @@ fn encode_world(world: &World) -> Result<Vec<u8>, SaveError> {
         .and_then(|cid| world.classes.get(cid))
         .map(|c| c.name.as_str())
         .unwrap_or("");
-    write_pascal_str(&mut p, ready_name);
+    write_pascal_str(p, ready_name);
     let inv: Vec<(String, i32)> = world
         .inventory
         .iter(mo)
@@ -538,7 +621,7 @@ fn encode_world(world: &World) -> Result<Vec<u8>, SaveError> {
         .collect();
     p.extend_from_slice(&(inv.len() as u16).to_le_bytes());
     for (name, amount) in inv {
-        write_pascal_str(&mut p, &name);
+        write_pascal_str(p, &name);
         p.extend_from_slice(&amount.to_le_bytes());
     }
     // Optional UZ1 trailer. Older blobs end after inventory and load with
@@ -550,7 +633,7 @@ fn encode_world(world: &World) -> Result<Vec<u8>, SaveError> {
             p.extend_from_slice(&word.to_le_bytes());
         }
     }
-    Ok(p)
+    Ok(())
 }
 
 fn decode_world(world: &mut World, bin: &[u8]) -> Result<(), SaveError> {
@@ -588,6 +671,15 @@ fn decode_world(world: &mut World, bin: &[u8]) -> Result<(), SaveError> {
             s.light = light;
         }
     }
+    let _ = decode_player_block(world, 0, bin, o)?;
+    Ok(())
+}
+
+/// Restore seat `seat` from a block at `bin[o..]`; returns the offset after it.
+fn decode_player_block(world: &mut World, seat: usize, bin: &[u8], mut o: usize) -> Result<usize, SaveError> {
+    if seat >= world.players.len() {
+        return Err(SaveError::Message(format!("bad seat {seat}")));
+    }
     let x = f64::from_bits(read_u64(bin, o)?);
     o += 8;
     let y = f64::from_bits(read_u64(bin, o)?);
@@ -605,16 +697,16 @@ fn decode_world(world: &mut World, bin: &[u8]) -> Result<(), SaveError> {
     }
     let flags = &bin[o..o + 8];
     let pstate = bin[o + 8];
-    let mo = world.players[0]
+    let mo = world.players[seat]
         .as_ref()
         .and_then(|p| p.mo)
-        .ok_or_else(|| SaveError::Message("no player mo to restore".into()))?;
+        .ok_or_else(|| SaveError::Message(format!("no player {seat} mo to restore")))?;
     if let Some(a) = world.actors.get_mut(mo) {
         a.pos = DVec3::new(x, y, z);
         a.angle = Angle::from_degrees(ang);
         a.health = health;
     }
-    if let Some(p) = world.players[0].as_mut() {
+    if let Some(p) = world.players[seat].as_mut() {
         p.armor = armor;
         p.god = flags[0] != 0;
         p.berserk = flags[1] != 0;
@@ -646,7 +738,7 @@ fn decode_world(world: &mut World, bin: &[u8]) -> Result<(), SaveError> {
     if let Some(a) = world.actors.get_mut(mo) {
         a.pitch = Angle::from_degrees(pitch_deg);
     }
-    if let Some(p) = world.players[0].as_mut() {
+    if let Some(p) = world.players[seat].as_mut() {
         p.armor_class = armor_class;
         p.ready_weapon = if ready_name.is_empty() {
             None
@@ -683,8 +775,7 @@ fn decode_world(world: &mut World, bin: &[u8]) -> Result<(), SaveError> {
             a.extra_flags.load_words(&words);
         }
     }
-    let _ = o;
-    Ok(())
+    Ok(o)
 }
 
 fn write_pascal_str(buf: &mut Vec<u8>, s: &str) {

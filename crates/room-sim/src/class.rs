@@ -582,6 +582,7 @@ pub const STORED_PROPERTIES: &[&str] = &[
     "player.flechettetype",
     "player.flybob",
     "player.healradiustype",
+    "player.hexenarmor",
     "player.invulnerabilitymode",
     "player.mugshotmaxhealth",
     "player.portrait",
@@ -605,6 +606,7 @@ pub const STORED_PROPERTIES: &[&str] = &[
     "spectatorcamera.chasemode",
     "spectatorcamera.chasingtracer",
     "spectatorcamera.lagdistance",
+    "spriteangle",
     "spriterotation",
     "visibleangles",
     "visiblepitch",
@@ -2809,6 +2811,7 @@ pub fn is_known_property(name: &str) -> bool {
             | "renderrequired"
             | "shadowaimfactor"
             | "shadowpenaltyfactor"
+            | "spriteangle"
             | "spriterotation"
             | "visibleangles"
             | "visiblepitch"
@@ -3118,6 +3121,11 @@ fn apply_flag(flags: &mut u64, extra: &mut crate::flags::ActorFlags, op: &FlagOp
     // Every UZDoom `DEFINE_FLAG` is stored, including names that also have a
     // legacy `u64` bit. Gameplay for the legacy set still reads `flags`.
     extra.set_name(&upper, op.set);
+    // GZDoom `BOUNCE_Doom` = walls | floors | ceilings | actors | AutoOff.
+    if upper == "DOOMBOUNCE" {
+        extra.set_name("BOUNCEAUTOOFF", op.set);
+        extra.set_name("BOUNCEONCEILINGS", op.set);
+    }
     let bit = match upper.as_str() {
         "SOLID" => FLAG_SOLID,
         "SHOOTABLE" => FLAG_SHOOTABLE,

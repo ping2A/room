@@ -3,8 +3,43 @@
 use crate::actor::ActorId;
 use room_core::{ClassId, StateId};
 
-/// Max simultaneous players (storage; netplay targets fewer).
-pub const MAX_PLAYERS: usize = 8;
+/// Max simultaneous players (UZDoom `MAXPLAYERS`).
+pub const MAX_PLAYERS: usize = 64;
+
+/// Seats the playsim had before UZ12. The world checksum always covers these
+/// (present or not) and covers a higher seat only when it is in the game, so
+/// games of up to 8 players hash exactly as before.
+pub const LEGACY_SEATS: usize = 8;
+
+/// `player->frags[victim]` for every seat (an array past the 32 that `Default`
+/// covers, so it gets its own type).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Frags(pub [i32; MAX_PLAYERS]);
+
+impl Default for Frags {
+    fn default() -> Self {
+        Self([0; MAX_PLAYERS])
+    }
+}
+
+impl std::ops::Deref for Frags {
+    type Target = [i32; MAX_PLAYERS];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Frags {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// Bit for `seat` in a 64-seat mask.
+#[must_use]
+pub const fn seat_bit(seat: usize) -> u64 {
+    if seat < 64 { 1u64 << seat } else { 0 }
+}
 
 /// Button bits (`BT_*` / GZDoom `Button` subset).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,6 +64,15 @@ impl Buttons {
     pub const QUICKKICK: u32 = 1 << 7;
     /// Use the carried inventory item (Duke medkit / steroids).
     pub const INVUSE: u32 = 1 << 8;
+    /// `invnext`: select the next inventory-bar item (one tic).
+    pub const INVNEXT: u32 = 1 << 20;
+    /// `invprev`: select the previous inventory-bar item (one tic).
+    pub const INVPREV: u32 = 1 << 21;
+    /// Netplay: the host asks every peer to save now (slot in
+    /// `weapon_select`; vanilla `BTS_SAVEGAME`). Never reaches the playsim.
+    pub const NETSAVE: u32 = 1 << 22;
+    /// Netplay: the host asks every peer to load its copy of a net save.
+    pub const NETLOAD: u32 = 1 << 23;
     /// Alt / secondary attack (`docs/31` MA4).
     pub const ALTATTACK: u32 = 1 << 9;
     /// Reload (`+reload` / BD KEYCONF R; `docs/33` BD4).
@@ -127,9 +171,110 @@ pub enum PlayerState {
     Reborn,
 }
 
+/// UZDoom `PSPF_*` overlay flags (`p_pspr.h`).
+pub mod pspf {
+    /// Add the weapon layer's offset.
+    pub const ADDWEAPON: u32 = 1 << 0;
+    /// Add weapon sway.
+    pub const ADDBOB: u32 = 1 << 1;
+    /// Halve tics under `PowerDoubleFiringSpeed`.
+    pub const POWDOUBLE: u32 = 1 << 2;
+    /// Shorten tics with fast weapons.
+    pub const CVARFAST: u32 = 1 << 3;
+    /// Use the layer's own alpha.
+    pub const ALPHA: u32 = 1 << 4;
+    /// Use the layer's own render style.
+    pub const RENDERSTYLE: u32 = 1 << 5;
+    /// Flip left to right.
+    pub const FLIP: u32 = 1 << 6;
+    /// Alpha ignores the player's own.
+    pub const FORCEALPHA: u32 = 1 << 7;
+    /// Style ignores the player's own (invisibility fuzz).
+    pub const FORCESTYLE: u32 = 1 << 8;
+    /// Mirror the offset and bob around the screen center.
+    pub const MIRROR: u32 = 1 << 9;
+    /// Use the player's translation.
+    pub const PLAYERTRANSLATED: u32 = 1 << 10;
+    /// Pivot is a fraction of the patch, not pixels.
+    pub const PIVOTPERCENT: u32 = 1 << 11;
+    /// Interpolate between tics.
+    pub const INTERPOLATE: u32 = 1 << 12;
+    /// Flags a new layer starts with (`P_GetPSprite`).
+    pub const NEW_LAYER: u32 = ADDWEAPON | ADDBOB | CVARFAST | POWDOUBLE | PIVOTPERCENT;
+}
+
+/// `PSP_FLASH`.
+pub const PSP_FLASH: i32 = 1000;
+
+/// One weapon layer started by `A_Overlay` with an id other than the gun (1),
+/// the legacy second layer (2) and the flash (1000). Negative ids draw under
+/// the gun, positive ones over it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PspLayer {
+    /// Current state, `None` once the layer ran out.
+    pub state: Option<StateId>,
+    /// Tics left on [`Self::state`] (-1 holds).
+    pub tics: i32,
+    /// Sprite shown.
+    pub sprite: String,
+    /// Frame letter index.
+    pub frame: u8,
+    /// `A_OverlayOffset` x.
+    pub x: f64,
+    /// `A_OverlayOffset` y.
+    pub y: f64,
+    /// `A_OverlayAlpha` (used with [`pspf::ALPHA`] / [`pspf::FORCEALPHA`]).
+    pub alpha: f64,
+    /// `A_OverlayScale`.
+    pub scale: (f64, f64),
+    /// `A_OverlayPivot` / `A_OverlayPivotAlign`.
+    pub pivot: (f64, f64),
+    /// `A_OverlayRotate`, degrees counter-clockwise.
+    pub angle: f64,
+    /// `A_OverlayTranslation`; empty is none.
+    pub translation: String,
+    /// `A_OverlayRenderStyle` (used with [`pspf::RENDERSTYLE`]).
+    pub style: Option<crate::class::RenderStyle>,
+    /// `PSPF_*` bits.
+    pub flags: u32,
+    /// `A_OverlayVertexOffset`: corners 0–3 (top-left, top-right, bottom-left, bottom-right).
+    pub vertex: [(f64, f64); 4],
+    /// Weapon that started the layer; it goes away when that weapon is put away.
+    pub caller: Option<ClassId>,
+    /// Started this tic: its first frame keeps its full length.
+    pub fresh: bool,
+}
+
+impl Default for PspLayer {
+    fn default() -> Self {
+        Self {
+            state: None,
+            tics: 0,
+            sprite: String::new(),
+            frame: 0,
+            x: 0.0,
+            y: 0.0,
+            alpha: 1.0,
+            scale: (1.0, 1.0),
+            pivot: (0.0, 0.0),
+            angle: 0.0,
+            translation: String::new(),
+            style: None,
+            flags: pspf::NEW_LAYER,
+            vertex: [(0.0, 0.0); 4],
+            caller: None,
+            fresh: false,
+        }
+    }
+}
+
 /// One local / net player slot.
 #[derive(Clone, Debug, Default)]
 pub struct Player {
+    /// Extra weapon layers by id (see [`PspLayer`]).
+    pub psp_layers: std::collections::BTreeMap<i32, PspLayer>,
+    /// Layer whose state action is running (`OverlayID()`); 1 is the gun.
+    pub psp_current: i32,
     /// Player pawn actor.
     pub mo: Option<ActorId>,
     /// Strife hazard accumulator (UDMF `damagehazard` sectors), in tics.
@@ -211,6 +356,9 @@ pub struct Player {
     pub overlay2_mirror: bool,
     /// Layer-2 rotation in degrees from `A_OverlayRotate`. 0 is upright.
     pub overlay2_angle: f64,
+    /// Layer-2 corner offsets from `A_OverlayVertexOffset` (UZDoom order:
+    /// top-left, bottom-left, top-right, bottom-right).
+    pub overlay2_vertex: [(f64, f64); 4],
     /// Layer-2 scale pivot from `A_OverlayPivot`. Absent means the patch center.
     pub overlay2_pivot: Option<(f64, f64)>,
     /// Layer-2 translation from `A_OverlayTranslation`. Empty is untinted.
@@ -273,6 +421,8 @@ pub struct Player {
     pub weapon_pivot: Option<(f64, f64)>,
     /// Weapon-layer rotation in degrees from `A_OverlayRotate`. 0 is upright.
     pub weapon_angle: f64,
+    /// Weapon-layer corner offsets from `A_OverlayVertexOffset`.
+    pub weapon_vertex: [(f64, f64); 4],
     /// Weapon-layer render style from `A_OverlayRenderStyle`. Absent keeps the gun solid.
     pub weapon_style: Option<crate::class::RenderStyle>,
     /// Attack button was held last tic (edge detect).
@@ -298,6 +448,10 @@ pub struct Player {
     pub acs_use_latched: bool,
     /// Inventory-use button was held last tic.
     pub invuse_down: bool,
+    /// Selected inventory-bar item (`PlayerPawn.InvSel`).
+    pub inv_sel: Option<ClassId>,
+    /// Tics the inventory bar stays open (`player_t.inventorytics`).
+    pub inventory_tics: i32,
     /// Quick-kick button was held last tic.
     pub quick_kick_down: bool,
     /// Sim-driven bot: [`crate::bot::run_bot_brains`] overwrites [`Self::cmd`] each tic.
@@ -340,6 +494,9 @@ pub struct Player {
     pub powers: std::collections::BTreeMap<String, crate::powerups::PowerState>,
     /// Class that gave the worn armor (`BasicArmor.ArmorType`).
     pub armor_type: Option<ClassId>,
+    /// `HexenArmor.Slots[0..4]` (armor, shield, helm, amulet), in AC × 5.
+    /// Slot 4 (the class's natural AC) comes from `Player.HexenArmor`.
+    pub hexen_armor: [f64; 4],
     /// Berserk pack active (fist damage boost; M5 flag).
     pub berserk: bool,
     /// Invulnerability sphere active.
@@ -402,6 +559,9 @@ pub struct Player {
     pub air_finished: i32,
     /// `SetPlayerProperty` PROP_FROZEN / PROP_TOTALLYFROZEN.
     pub frozen: bool,
+    /// `player.timefreezer`: one bit per player whose `PowerTimeFreezer`
+    /// lets this player move while time is stopped.
+    pub timefreezer: u64,
     /// `SetPlayerProperty` PROP_NOTARGET — monsters ignore this player.
     pub notarget: bool,
     /// `ChangeCamera` view actor (`None` = use `mo`).
@@ -421,7 +581,7 @@ pub struct Player {
     /// Status-bar face animator (`ST_updateFaceWidget`).
     pub mugshot: crate::mugshot::MugShot,
     /// Doom `player->frags[victim]` — kills of each player slot (own = suicides).
-    pub frags: [i32; MAX_PLAYERS],
+    pub frags: Frags,
     /// Damage dealt to other players this match (BE10).
     pub damage_dealt: i32,
     /// Last weapon class ref that damaged this pawn (BE10).
@@ -453,6 +613,16 @@ impl Player {
     }
 
     /// Clear the secondary weapon overlay layer (GZDoom `A_ClearOverlays`).
+    /// `A_ClearOverlays(start, stop, safety)` on the extra layers.
+    pub(crate) fn clear_extra_layers(&mut self, start: i32, stop: i32, safety: bool) {
+        let all = start == 0 && stop == 0;
+        self.psp_layers.retain(|&id, _| {
+            let in_range = all || (start <= id && id <= stop);
+            let protected = safety && (id == 1 || id == PSP_FLASH);
+            !in_range || protected
+        });
+    }
+
     pub(crate) fn clear_secondary_overlay(&mut self) {
         self.overlay2_state = None;
         self.overlay2_tics = 0;
@@ -465,6 +635,7 @@ impl Player {
         self.overlay2_flip = false;
         self.overlay2_mirror = false;
         self.overlay2_angle = 0.0;
+        self.overlay2_vertex = [(0.0, 0.0); 4];
         self.overlay2_pivot = None;
         self.overlay2_translation.clear();
         self.overlay2_style = None;
@@ -514,6 +685,7 @@ impl Player {
         self.pspr_frame = 0;
         self.pspr_flash_state = None;
         self.pspr_flash_tics = 0;
+        self.psp_layers.clear();
         self.overlay2_state = None;
         self.overlay2_tics = 0;
         self.overlay2_sprite.clear();
@@ -525,6 +697,7 @@ impl Player {
         self.overlay2_flip = false;
         self.overlay2_mirror = false;
         self.overlay2_angle = 0.0;
+        self.overlay2_vertex = [(0.0, 0.0); 4];
         self.overlay2_pivot = None;
         self.overlay2_translation.clear();
         self.overlay2_style = None;
@@ -556,6 +729,7 @@ impl Player {
         self.weapon_interpolate = true;
         self.weapon_pivot = None;
         self.weapon_angle = 0.0;
+        self.weapon_vertex = [(0.0, 0.0); 4];
         self.weapon_style = None;
         self.attack_down = false;
         self.alt_attack_down = false;
@@ -577,6 +751,7 @@ impl Player {
         self.armor = 0;
         self.armor_class = 0;
         self.clear_armor_kind();
+        self.hexen_armor = [0.0; 4];
         self.berserk = false;
         self.invulnerable = false;
         self.invul_tics = 0;

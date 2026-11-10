@@ -21,6 +21,12 @@ const SPF_NO_XY_BILLBOARD: u32 = 1 << 8;
 const SPF_FACECAMERA: u32 = 1 << 11;
 const SPF_NOFACECAMERA: u32 = 1 << 12;
 const SPF_STRETCHPIXELS: u32 = 1 << 14;
+/// Texture animation starts at the particle's first frame (own clock).
+const SPF_LOCAL_ANIM: u32 = 1 << 9;
+/// Keep the texture's GLDEFS material (brightmap); otherwise default shader.
+const SPF_ALLOWSHADERS: u32 = 1 << 15;
+/// UZDoom `STYLE_Subtract`.
+const STYLE_SUBTRACT: i32 = 11;
 
 /// Particle blend / draw style (GZDoom `SPF_*` subset).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -77,6 +83,11 @@ pub struct ParticleInstance {
     pub texture: Option<String>,
     /// Draw as a horizontal floor disc (`Flat`) instead of a vertical billboard.
     pub on_floor: bool,
+    /// `STYLE_Subtract`: drawn with reverse-subtract blending.
+    pub subtract: bool,
+    /// Tics advanced since spawn, not counting level-freeze tics (the clock of
+    /// an `SPF_LOCAL_ANIM` texture animation).
+    pub anim_age: u32,
 }
 
 /// Playsim particle request transferred to the render-owned particle store.
@@ -132,8 +143,9 @@ pub fn particle_style(style: Option<i32>, fullbright: bool) -> ParticleStyle {
 }
 
 /// Per-style alpha / colour adjustments (`STYLE_SoulTrans` is 2/3 alpha,
-/// `STYLE_Shadow` / fuzz draw black at 30 %, `STYLE_Subtract` darkens:
-/// Room has no subtractive blend, so it draws the inverted colour dark).
+/// `STYLE_Shadow` / fuzz draw black at 30 %; `STYLE_Subtract` keeps its
+/// colour and is drawn with reverse-subtract blending, see
+/// [`ParticleInstance::subtract`]).
 fn apply_style_tint(p: &mut ParticleInstance, style: Option<i32>) {
     match style {
         Some(3) => p.alpha *= 2.0 / 3.0,
@@ -141,13 +153,6 @@ fn apply_style_tint(p: &mut ParticleInstance, style: Option<i32>) {
             p.color = [0.0; 3];
             p.alpha *= 0.3;
             p.light = 1.0;
-        }
-        Some(11) => {
-            p.color = [
-                (1.0 - p.color[0]) * 0.15,
-                (1.0 - p.color[1]) * 0.15,
-                (1.0 - p.color[2]) * 0.15,
-            ];
         }
         _ => {}
     }
@@ -249,6 +254,8 @@ impl ParticleStore {
                 },
                 floor_z: None,
                 on_floor: false,
+                subtract: false,
+                anim_age: 0,
                 texture: None,
             });
         }
@@ -335,6 +342,8 @@ impl ParticleStore {
                 style: particle_style(event.render_style, event.fullbright),
                 floor_z: None,
                 on_floor: false,
+                subtract: event.render_style == Some(STYLE_SUBTRACT),
+                anim_age: 0,
                 texture: event.texture.clone().filter(|t| !t.is_empty()),
             });
             if let Some(p) = self.particles.last_mut() {
@@ -401,6 +410,8 @@ impl ParticleStore {
             style,
             floor_z: None,
             on_floor: false,
+            subtract: false,
+            anim_age: 0,
             texture: None,
         });
     }
@@ -463,6 +474,8 @@ impl ParticleStore {
             style,
             floor_z,
             on_floor: floor_z.is_some() && vel.z.abs() < 0.05 && accel.z.abs() < 0.01,
+            subtract: false,
+            anim_age: 0,
             texture: None,
         });
     }
@@ -476,8 +489,10 @@ impl ParticleStore {
     pub fn tick_with_freeze(&mut self, level_frozen: bool) {
         self.particles.retain_mut(|p| {
             if level_frozen && p.flags & SPF_NOTIMEFREEZE == 0 {
+                // `SPF_LOCAL_ANIM` holds its frame too (`SwitchTic++`).
                 return true;
             }
+            p.anim_age = p.anim_age.saturating_add(1);
             let remaining_tics = p.life;
             p.alpha -= p.fade_step;
             let fade_in_out = p.flags & SPF_FADE_IN_OUT != 0;
@@ -628,6 +643,8 @@ impl ParticleStore {
                         style: ParticleStyle::Soft,
                         floor_z: Some(fz),
                         on_floor: true,
+                        subtract: false,
+                        anim_age: 0,
                         texture: None,
                     });
                 }
@@ -963,6 +980,20 @@ pub fn append_particles_ex(
     camera: &Camera,
     stretch: bool,
 ) {
+    append_particles_animated(lists, store, camera, stretch, None);
+}
+
+/// [`append_particles_ex`] with ANIMDEFS: a textured particle shows the
+/// animation frame due at `tic` (the level animation, as UZDoom's texture
+/// translation), or, with `SPF_LOCAL_ANIM`, the frame due at its own age so
+/// the animation starts at its first frame when spawned.
+pub fn append_particles_animated(
+    lists: &mut SceneLists,
+    store: &ParticleStore,
+    camera: &Camera,
+    stretch: bool,
+    anim: Option<(&crate::TextureAnimator, u32)>,
+) {
     for p in &store.particles {
         if p.alpha <= 0.001 {
             continue;
@@ -970,7 +1001,9 @@ pub fn append_particles_ex(
         let q = quantize_rgb(p.color);
         let near_white = q[0] > 240 && q[1] > 240 && q[2] > 240;
         let tex = if let Some(t) = &p.texture {
-            t.clone()
+            let clock = |tic: u32| if p.flags & SPF_LOCAL_ANIM != 0 { p.anim_age } else { tic };
+            anim.and_then(|(a, tic)| a.frame(t, clock(tic)))
+                .map_or_else(|| t.clone(), str::to_owned)
         } else if near_white {
             match p.style {
                 ParticleStyle::Additive => PARTICLE_TEX_ADD.to_owned(),
@@ -1034,8 +1067,11 @@ pub fn append_particles_ex(
                 orient,
                 // Textured additive particles use the sprite add blend; the
                 // soft-dot textures already encode their own add look.
-                additive: p.texture.is_some() && p.style == ParticleStyle::Additive,
+                // `STYLE_Subtract` also takes the additive vertex flag: the
+                // subtract pipeline wants premultiplied colour and alpha 0.
+                additive: (p.texture.is_some() && p.style == ParticleStyle::Additive) || p.subtract,
                 roll: 0.0,
+                fx: Default::default(),
             },
             camera.forward,
         );
@@ -1054,10 +1090,18 @@ pub fn append_particles_ex(
         if p.flags & SPF_NODYNAMICLIGHTING == 0 {
             crate::scene::apply_dyn_lights_to_sprite_range(lists, start..start.saturating_add(6));
         }
+        let mut flags = 0;
+        if p.subtract {
+            flags |= MaterialRange::SUBTRACT;
+        }
+        if p.flags & SPF_ALLOWSHADERS == 0 {
+            flags |= MaterialRange::NO_BRIGHTMAP;
+        }
         lists.sprite_ranges.push(MaterialRange {
             name: tex,
             start,
             count: 6,
+            flags,
         });
     }
 }
@@ -1163,6 +1207,107 @@ mod tests {
         append_particles_ex(&mut lists, &store, &camera, false);
         assert!(lists.sprites.iter().all(|v| v.pos[2] >= -1e-3));
     }
+
+    fn camera() -> Camera {
+        Camera {
+            eye: Vec3::ZERO,
+            forward: Vec3::new(0.0, 1.0, 0.0),
+            ..Camera::default()
+        }
+    }
+
+    #[test]
+    fn subtract_particles_keep_their_colour_and_take_the_subtract_pipeline() {
+        let mut store = ParticleStore::default();
+        store.ingest_ex([
+            spawn(None, Some(STYLE_SUBTRACT), 0),
+            spawn(Some("BAL1A0"), Some(6), SPF_ALLOWSHADERS),
+        ]);
+        assert!(store.particles[0].subtract);
+        assert_eq!(store.particles[0].color, [1.0, 0.0, 0.0], "colour is subtracted as is");
+        let mut lists = SceneLists::default();
+        append_particles_ex(&mut lists, &store, &camera(), false);
+        let r = &lists.sprite_ranges;
+        assert_eq!(r[0].flags, MaterialRange::SUBTRACT | MaterialRange::NO_BRIGHTMAP);
+        // Subtractive vertices use the premultiplied (additive-flag) path.
+        assert!(lists.sprites[..6].iter().all(|v| v._pad[0] < 0.0));
+        // `SPF_ALLOWSHADERS` keeps the texture's brightmap.
+        assert_eq!(r[1].flags, 0);
+        assert!(lists.sprites[6..].iter().all(|v| v._pad[0] > 0.0));
+    }
+
+    #[test]
+    fn local_anim_starts_at_the_first_frame_and_holds_while_frozen() {
+        let defs = room_defs::animdefs::parse_animdefs(
+            "texture BAL1A0\n pic BAL1A0 tics 2\n pic BAL1B0 tics 2\n",
+        )
+        .unwrap();
+        let anim = crate::TextureAnimator::new(&defs);
+        let mut store = ParticleStore::default();
+        store.ingest_ex([spawn(Some("BAL1A0"), None, 0), spawn(Some("BAL1A0"), None, SPF_LOCAL_ANIM)]);
+        let names = |store: &ParticleStore, tic: u32| {
+            let mut lists = SceneLists::default();
+            append_particles_animated(&mut lists, store, &camera(), false, Some((&anim, tic)));
+            lists.sprite_ranges.iter().map(|r| r.name.clone()).collect::<Vec<_>>()
+        };
+        // Spawned at level tic 2: the level animation is on its second frame,
+        // the local one on its first.
+        assert_eq!(names(&store, 2), ["BAL1B0", "BAL1A0"]);
+        store.tick_with_freeze(true);
+        store.tick_with_freeze(true);
+        assert_eq!(names(&store, 4)[1], "BAL1A0", "frozen: the local clock holds");
+        store.tick();
+        store.tick();
+        // Level tic 8: the level animation is back on frame 1; the local
+        // one has run two tics and shows frame 2.
+        assert_eq!(names(&store, 8), ["BAL1A0", "BAL1B0"]);
+    }
+
+    /// Golden: a fixed spawn set ticked through fades, roll, growth, gravity
+    /// and a level freeze, rounded and compared against the recorded state.
+    #[test]
+    fn particle_simulation_golden() {
+        let mut store = ParticleStore::default();
+        let mut a = spawn(Some("BAL1A0"), Some(7), SPF_LOCAL_ANIM | SPF_NOTIMEFREEZE);
+        a.vel = [1.0, 0.5, 2.0];
+        a.accel = [0.0, 0.0, -0.25];
+        a.fade_step = 0.04;
+        a.size_step = 0.5;
+        a.roll = [10.0, 3.0, 0.5];
+        a.lifetime = 30;
+        let mut b = spawn(None, Some(STYLE_SUBTRACT), SPF_FADE_IN_OUT);
+        b.alpha = 0.0;
+        b.fade_step = -0.25;
+        b.fade_out_step = 0.1;
+        b.lifetime = 30;
+        let mut c = spawn(None, None, SPF_FADE_IN_HOLD_OUT);
+        c.alpha = 0.2;
+        c.fade_step = -0.2;
+        c.fade_out_step = 0.125;
+        c.lifetime = 20;
+        store.ingest_ex([a, b, c]);
+        let mut trace = String::new();
+        for tic in 0..24 {
+            if tic % 6 == 0 {
+                for p in &store.particles {
+                    trace.push_str(&format!(
+                        "{tic}:({:.2},{:.2},{:.2}) a{:.3} s{:.1} r{:.1} l{} g{};",
+                        p.pos.x, p.pos.y, p.pos.z, p.alpha, p.size, p.roll, p.life, p.anim_age
+                    ));
+                }
+                trace.push('\n');
+            }
+            store.tick_with_freeze((8..11).contains(&tic));
+        }
+        assert_eq!(trace, PARTICLE_GOLDEN, "\n{trace}");
+    }
+
+    const PARTICLE_GOLDEN: &str = concat!(
+        "0:(0.00,64.00,0.00) a1.000 s8.0 r10.0 l30 g0;0:(0.00,64.00,0.00) a0.000 s8.0 r0.0 l30 g0;0:(0.00,64.00,0.00) a0.200 s8.0 r0.0 l20 g0;\n",
+        "6:(6.00,67.00,6.75) a0.760 s11.0 r35.5 l24 g6;6:(0.00,64.00,0.00) a0.400 s8.0 r0.0 l24 g6;6:(0.00,64.00,0.00) a1.000 s8.0 r0.0 l14 g6;\n",
+        "12:(12.00,70.00,4.50) a0.520 s14.0 r79.0 l18 g12;12:(0.00,64.00,0.00) a0.600 s8.0 r0.0 l21 g9;12:(0.00,64.00,0.00) a1.000 s8.0 r0.0 l11 g9;\n",
+        "18:(18.00,73.00,-6.75) a0.280 s17.0 r140.5 l12 g18;18:(0.00,64.00,0.00) a1.000 s8.0 r0.0 l15 g15;18:(0.00,64.00,0.00) a1.000 s8.0 r0.0 l5 g15;\n",
+    );
 
     #[test]
     fn legacy_render_styles_map_to_particle_blends() {

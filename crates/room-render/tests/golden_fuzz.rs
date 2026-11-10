@@ -59,6 +59,7 @@ fn fuzz_modulates_sprite_mean() {
             orient: room_render::SpriteOrient::Billboard,
             additive: false,
             roll: 0.0,
+            fx: Default::default(),
         },
         camera.forward,
     );
@@ -67,6 +68,7 @@ fn fuzz_modulates_sprite_mean() {
         name: "-".into(),
         start,
         count: 6,
+        flags: 0,
     });
 
     let target = OffscreenTarget::new(&gpu, 320, 200);

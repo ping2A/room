@@ -108,6 +108,7 @@ impl Zvm {
 
     fn linking(mut program: CompiledProgram, stub_missing: bool) -> Self {
         let mut natives = NativeTable::with_builtins();
+        inherit_native_imports(&mut program, &natives);
         if stub_missing {
             natives.bind_imports(&program.native_imports);
         }
@@ -301,6 +302,80 @@ impl Zvm {
             let h = self.heap.intern_string(s);
             if let Some(slot) = frame.s.get_mut(i) {
                 *slot = h;
+            }
+        }
+        let mut stack = vec![frame];
+        self.run_with_result(&mut stack)
+    }
+
+    /// Instance call with every bank: `self` in `a[0]`, then `i`, `f`, `s` and
+    /// further object arguments in declaration order per bank.
+    pub fn call_method_banks(
+        &mut self,
+        name: &str,
+        self_h: ObjHandle,
+        i_args: &[i64],
+        f_args: &[f64],
+        s_args: &[&str],
+        obj_args: &[ObjHandle],
+    ) -> Result<i64, Trap> {
+        let idx = lookup_func(&self.program, name)?;
+        self.fuel_left = self.config.fuel;
+        let func = &self.program.functions[idx as usize];
+        let mut frame = Frame {
+            func: idx,
+            pc: 0,
+            i: vec![0; func.n_i.max(1) as usize],
+            f: vec![0.0; func.n_f.max(1) as usize],
+            s: vec![StrHandle::EMPTY; func.n_s.max(1) as usize],
+            a: vec![ObjHandle::NULL; func.n_a.max(1) as usize],
+            ret: None,
+        };
+        // Arguments go to the declared parameter registers, in order per bank.
+        let params = func.params.clone();
+        let (mut ni, mut nf, mut ns, mut na) = (0usize, 0usize, 0usize, 0usize);
+        let mut self_placed = false;
+        for p in &params {
+            let reg = p.reg as usize;
+            match p.bank {
+                3 if !self_placed => {
+                    self_placed = true;
+                    if let Some(slot) = frame.a.get_mut(reg) {
+                        *slot = self_h;
+                    }
+                }
+                3 => {
+                    if let (Some(slot), Some(v)) = (frame.a.get_mut(reg), obj_args.get(na)) {
+                        *slot = *v;
+                    }
+                    na += 1;
+                }
+                1 => {
+                    if let (Some(slot), Some(v)) = (frame.f.get_mut(reg), f_args.get(nf)) {
+                        *slot = *v;
+                    }
+                    nf += 1;
+                }
+                2 => {
+                    if let Some(v) = s_args.get(ns) {
+                        let h = self.heap.intern_string(v);
+                        if let Some(slot) = frame.s.get_mut(reg) {
+                            *slot = h;
+                        }
+                    }
+                    ns += 1;
+                }
+                _ => {
+                    if let (Some(slot), Some(v)) = (frame.i.get_mut(reg), i_args.get(ni)) {
+                        *slot = *v;
+                    }
+                    ni += 1;
+                }
+            }
+        }
+        if !self_placed {
+            if let Some(slot) = frame.a.get_mut(0) {
+                *slot = self_h;
             }
         }
         let mut stack = vec![frame];
@@ -553,39 +628,25 @@ impl Zvm {
                         self.play.native_name.push_str(name);
                     }
                     let pushed = std::mem::take(&mut self.args);
-                    let mut i = [0i64; 8];
-                    let mut fv = [0f64; 4];
-                    let mut s = [StrHandle::EMPTY; 4];
-                    let mut ao = [ObjHandle::NULL; 4];
-                    let mut ni = 0;
-                    let mut nf = 0;
-                    let mut ns = 0;
-                    let mut na = 0;
+                    // At least 8 / 4 / 4 / 4 slots (natives read missing
+                    // arguments as zero); more when a `vararg` call pushes more.
+                    let mut i: Vec<i64> = Vec::with_capacity(8);
+                    let mut fv: Vec<f64> = Vec::with_capacity(4);
+                    let mut s: Vec<StrHandle> = Vec::with_capacity(4);
+                    let mut ao: Vec<ObjHandle> = Vec::with_capacity(4);
                     for v in pushed {
                         match v {
-                            Value::I(x) if ni < i.len() => {
-                                i[ni] = x;
-                                ni += 1;
-                            }
-                            Value::F(x) if nf < fv.len() => {
-                                fv[nf] = x;
-                                nf += 1;
-                            }
-                            Value::S(h) if ns < s.len() => {
-                                s[ns] = h;
-                                ns += 1;
-                            }
-                            Value::A(h) if na < ao.len() => {
-                                ao[na] = h;
-                                na += 1;
-                            }
-                            _ => {}
+                            Value::I(x) => i.push(x),
+                            Value::F(x) => fv.push(x),
+                            Value::S(h) => s.push(h),
+                            Value::A(h) => ao.push(h),
                         }
                     }
-                    let mut i = i.to_vec();
-                    let mut fv = fv.to_vec();
-                    let mut s = s.to_vec();
-                    let mut ao = ao.to_vec();
+                    self.play.native_arg_counts = [i.len(), fv.len(), s.len(), ao.len()];
+                    i.resize(i.len().max(8), 0);
+                    fv.resize(fv.len().max(4), 0.0);
+                    s.resize(s.len().max(4), StrHandle::EMPTY);
+                    ao.resize(ao.len().max(4), ObjHandle::NULL);
                     let mut regs = NativeRegs {
                         i: &mut i,
                         f: &mut fv,
@@ -598,8 +659,16 @@ impl Zvm {
                         host,
                         play: &mut self.play,
                     };
+                    ctx.play.multi_ret.clear();
                     f(&mut ctx, &mut regs)?;
                     self.rets = [None; 8];
+                    // `b == 4` — vector result in `f[0..4]`.
+                    if b == 4 {
+                        for (k, v) in fv.iter().take(4).enumerate() {
+                            self.rets[k] = Some(Value::F(*v));
+                        }
+                        continue;
+                    }
                     // `b == 2` — string natives write the result into `s[1]`.
                     self.rets[0] = if b == 2 {
                         Some(Value::S(s.get(1).copied().unwrap_or_default()))
@@ -610,6 +679,19 @@ impl Zvm {
                     } else {
                         Some(Value::I(i.first().copied().unwrap_or(0)))
                     };
+                    // Multi-return natives (`int, int F()`) fill `play.multi_ret`.
+                    for (k, v) in std::mem::take(&mut self.play.multi_ret).into_iter().enumerate() {
+                        if k < self.rets.len() {
+                            self.rets[k] = Some(v);
+                        }
+                    }
+                }
+                Op::SetRet => {
+                    // Extra results of `return a, b;` before the final `Ret`.
+                    let v = read_value(&stack[top], a, b);
+                    if (c as usize) < self.rets.len() {
+                        self.rets[c as usize] = Some(v);
+                    }
                 }
                 Op::Ret => {
                     let v = read_value(&stack[top], a, b);
@@ -797,9 +879,13 @@ impl Zvm {
                         .get(ext as usize)
                         .cloned()
                         .unwrap_or_default();
-                    let h = self
-                        .heap
-                        .new_object(ext, layout.n_i, layout.n_a, layout.n_s);
+                    let h = self.heap.new_object_f(
+                        ext,
+                        layout.n_i,
+                        layout.n_a,
+                        layout.n_s,
+                        layout.n_f,
+                    );
                     let made_i: Vec<_> = layout
                         .array_i
                         .iter()
@@ -902,6 +988,38 @@ impl Zvm {
                             if let Some(slot) = fields_s.get_mut(ext) {
                                 *slot = v;
                             }
+                        }
+                        None => {
+                            return Err(Trap::NullDeref { func: fname, line });
+                        }
+                        _ => {}
+                    }
+                }
+                Op::LoadFieldF => {
+                    let ext = self.take_ext(stack, func_i)? as usize;
+                    let h = stack[top].a.get(b as usize).copied().unwrap_or_default();
+                    let v = match self.heap.get(h) {
+                        Some(ObjKind::Object { fields_f, .. }) => {
+                            fields_f.get(ext).copied().unwrap_or(0.0)
+                        }
+                        None => {
+                            return Err(Trap::NullDeref { func: fname, line });
+                        }
+                        _ => 0.0,
+                    };
+                    set_f(&mut stack[top], a, v);
+                }
+                Op::StoreFieldF => {
+                    let ext = self.take_ext(stack, func_i)? as usize;
+                    let h = stack[top].a.get(a as usize).copied().unwrap_or_default();
+                    let v = stack[top].f.get(b as usize).copied().unwrap_or(0.0);
+                    match self.heap.get_mut(h) {
+                        Some(ObjKind::Object { fields_f, .. }) => {
+                            // Objects made before a layout grew (event proxies) widen here.
+                            if fields_f.len() <= ext {
+                                fields_f.resize(ext + 1, 0.0);
+                            }
+                            fields_f[ext] = v;
                         }
                         None => {
                             return Err(Trap::NullDeref { func: fname, line });
@@ -1123,6 +1241,43 @@ fn class_is(program: &CompiledProgram, mut class_id: u32, want: u32) -> bool {
         class_id = parent as u32;
     }
     false
+}
+
+/// `PlayerPawn.FindInventory` binds to `Actor.FindInventory` when only the
+/// declaring class has the native (calls through a typed receiver).
+fn inherit_native_imports(program: &mut CompiledProgram, natives: &NativeTable) {
+    let parent_of = |class: &str| -> Option<String> {
+        program
+            .classes
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(class))
+            .map(|c| c.parent.clone())
+            .filter(|p| !p.is_empty())
+    };
+    let mut renamed = Vec::new();
+    for (k, name) in program.native_imports.iter().enumerate() {
+        if natives.id_ci(name).is_some() {
+            continue;
+        }
+        let Some((class, method)) = name.split_once('.') else {
+            continue;
+        };
+        let mut cur = parent_of(class);
+        for _ in 0..64 {
+            let Some(parent) = cur else {
+                break;
+            };
+            let candidate = format!("{parent}.{method}");
+            if natives.id_ci(&candidate).is_some() {
+                renamed.push((k, candidate));
+                break;
+            }
+            cur = parent_of(&parent);
+        }
+    }
+    for (k, name) in renamed {
+        program.native_imports[k] = name;
+    }
 }
 
 fn remap_native_imports(program: &mut CompiledProgram, natives: &NativeTable) {

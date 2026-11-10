@@ -958,6 +958,15 @@ pub trait AcsHost {
         let _ = (args, activator);
         0
     }
+    /// ACSF `ScriptCall(class, function, args…)` from a running script, with
+    /// the class and function names and every string-valued argument already
+    /// resolved by the VM (`strings[i]` for `args[i]`). The host cannot
+    /// resolve them itself: the ACS state is out of the world while scripts
+    /// run. Defaults to [`Self::script_call`].
+    fn script_call_resolved(&mut self, args: &[i32], strings: &[Option<String>], activator: u64) -> i32 {
+        let _ = strings;
+        self.script_call(args, activator)
+    }
     /// ACSF `SpawnParticle(color [, fullbright, lifetime, size, x, y, z, …])`.
     fn spawn_particle(
         &mut self,
@@ -2502,7 +2511,19 @@ fn dispatch_acs_func(
             let value = acs_string(state, args.get(2).copied().unwrap_or(0));
             host.set_user_cvar_string(player, &name, &value)
         }
-        pcd::acsf::SCRIPT_CALL => host.script_call(args, activator),
+        pcd::acsf::SCRIPT_CALL => {
+            // Class and function are always strings; the rest are strings
+            // when they carry a string handle (dynamic or library-tagged).
+            let strings: Vec<Option<String>> = args
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| {
+                    (i < 2 || (v > 0 && (v & 0x4000_0000) != 0 && (v & 0x0FFF_FFFF) < 4096))
+                        .then(|| acs_string(state, v))
+                })
+                .collect();
+            host.script_call_resolved(args, &strings, activator)
+        }
         pcd::acsf::START_SLIDESHOW => {
             let name = acs_string(state, args.first().copied().unwrap_or(0));
             host.start_slideshow(&name);
@@ -5267,11 +5288,13 @@ mod tests {
         sound_class: String,
         see_sound: String,
         huds: Vec<HudMessageArgs>,
+        script_calls: Vec<Vec<Option<String>>>,
     }
 
     impl TestHost {
         fn new() -> Self {
             Self {
+                script_calls: Vec::new(),
                 specials: Vec::new(),
                 prints: Vec::new(),
                 time: 0,
@@ -5291,6 +5314,10 @@ mod tests {
     }
 
     impl AcsHost for TestHost {
+        fn script_call_resolved(&mut self, _args: &[i32], strings: &[Option<String>], _activator: u64) -> i32 {
+            self.script_calls.push(strings.to_vec());
+            1
+        }
         fn hud_message_ex(&mut self, msg: HudMessageArgs) {
             self.huds.push(msg);
         }
@@ -6442,6 +6469,38 @@ mod tests {
         assert_eq!(host.specials.len(), 1);
         assert_eq!(host.specials[0].0, 80);
         assert_eq!(host.specials[0].1[0], 9);
+    }
+
+    #[test]
+    fn script_call_hands_the_host_resolved_names() {
+        // `ScriptCall("ZandroCompat", "GetGender", 7)` from a running script.
+        // The host cannot read the module's strings itself (the ACS state is
+        // out of the world while scripts run), so the VM resolves them.
+        let mut code = Vec::new();
+        for v in [0i32, 1, 7] {
+            code.extend_from_slice(&pcd::PUSHNUMBER.to_le_bytes());
+            code.extend_from_slice(&v.to_le_bytes());
+        }
+        code.extend_from_slice(&pcd::CALLFUNC.to_le_bytes());
+        code.extend_from_slice(&3i32.to_le_bytes());
+        code.extend_from_slice(&pcd::acsf::SCRIPT_CALL.to_le_bytes());
+        code.extend_from_slice(&pcd::DROP.to_le_bytes());
+        code.extend_from_slice(&pcd::TERMINATE.to_le_bytes());
+        let mut module = module_with_code(&code, 1);
+        let base = module.data.len();
+        module.data.extend_from_slice(b"ZandroCompat\0GetGender\0");
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            module.string_offsets = vec![base as u32, (base + 13) as u32];
+        }
+        let mut state = AcsState::new();
+        state.push_module(module);
+        let mut host = TestHost::new();
+        assert_eq!(start_script(&mut state, &mut host, 1, &[0; 3], false), 1);
+        assert_eq!(
+            host.script_calls,
+            vec![vec![Some("ZandroCompat".into()), Some("GetGender".into()), None]]
+        );
     }
 
     #[test]

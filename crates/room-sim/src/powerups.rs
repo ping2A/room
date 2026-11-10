@@ -29,6 +29,8 @@ pub struct PowerState {
     pub color: String,
     /// Weapon swapped in by `PowerWeaponLevel2` (to swap back at the end).
     pub swapped_weapon: Option<ClassId>,
+    /// Owner's player number (`PowerTimeFreezer` freeze mask).
+    pub seat: u8,
 }
 
 /// Map a `Power*` class (or its ancestors) to the base kind it behaves as.
@@ -85,6 +87,8 @@ fn kind_defaults(kind: &str) -> (i32, f64, &'static str) {
         "infiniteammo" => (30 * 35, 0.0, ""),
         "reflection" => (60 * 35, 0.0, ""),
         "timefreezer" => (12 * 35, 0.0, ""),
+        "targeter" => (160 * 35, 0.0, ""),
+        "scanner" => (80 * 35, 0.0, ""),
         "weaponlevel2" => (40 * 35, 0.0, ""),
         _ => (30 * 35, 0.0, ""),
     }
@@ -113,6 +117,41 @@ fn player_slot(world: &World, mo: ActorId) -> Option<usize> {
         .players
         .iter()
         .position(|p| p.as_ref().is_some_and(|p| p.mo == Some(mo)))
+}
+
+/// UZDoom `PlayerPawn.GetEffectTicsForItem`: the tics left on the power
+/// `giver` hands out and its full duration, `None` when it is not running.
+/// SBARINFO `PowerupTime` reads this.
+#[must_use]
+pub fn effect_tics_for_item(world: &World, mo: ActorId, giver: ClassId) -> Option<(i32, i32)> {
+    let ty = world.classes.get(giver).map(|c| c.powerup_type.clone())?;
+    if ty.is_empty() {
+        return None;
+    }
+    let power = world
+        .classes
+        .find_name(&ty)
+        .filter(|&c| world.classes.inherits_from(c, "Powerup"))
+        .or_else(|| world.classes.find_name(&format!("Power{ty}")))?;
+    let kind = base_kind(world, power)?;
+    let (dur, _, _) = kind_defaults(kind);
+    let max = prop(world, giver, power, "powerup.duration")
+        .and_then(|v| v.split(',').next()?.trim().parse::<f64>().ok())
+        .map_or(dur, duration_tics);
+    let player = world.players.get(player_slot(world, mo)?)?.as_ref()?;
+    let key = world.classes.get(power).map(|c| c.name.to_ascii_lowercase())?;
+    if let Some(st) = player.powers.get(&key) {
+        return Some((st.tics, max));
+    }
+    // Doom's own spheres keep their time on the player.
+    let legacy = match kind {
+        "invulnerable" => player.invul_tics,
+        "invisibility" => player.blur_tics,
+        "ironfeet" => player.radsuit_tics,
+        "lightamp" => player.infrared_tics,
+        _ => 0,
+    };
+    (legacy > 0).then_some((legacy, max))
 }
 
 /// Give the powerup a `PowerupGiver` names to `receiver`'s player.
@@ -165,6 +204,7 @@ pub fn give_power(world: &mut World, receiver: ActorId, giver: ClassId) -> bool 
         reflect_type,
         color,
         swapped_weapon: None,
+        seat: u8::try_from(slot).unwrap_or(0),
     };
     let Some(mut player) = world.players[slot].take() else {
         return false;
@@ -235,6 +275,27 @@ fn init_effect(world: &mut World, p: &mut Player, mo: ActorId, st: &mut PowerSta
             }
         }
         "frightener" => set_flag(world, mo, "FRIGHTENING", true),
+        "timefreezer" => {
+            // UZDoom `PowerTimeFreezer.InitEffect`: the owner and teammates may
+            // move; the effect starts and ends on an even tic.
+            let mask = crate::player::seat_bit(usize::from(st.seat));
+            p.timefreezer |= mask;
+            let team = p.team;
+            let dm = world.deathmatch;
+            for other in world.players.iter_mut().flatten() {
+                if !dm || (team != 255 && other.team == team) {
+                    other.timefreezer |= mask;
+                }
+            }
+            if st.tics & 1 == 0 && st.tics != i32::MAX {
+                st.tics += 1;
+            }
+            if world.level.maptime & 1 == 0 {
+                world.level.frozen_power = true;
+            } else if st.tics < i32::MAX {
+                st.tics += 1;
+            }
+        }
         "weaponlevel2" => {
             // Swap the gun in hand for its powered sister (Tome of Power).
             if let Some(sister) = p.ready_weapon.and_then(|w| sister_weapon(world, w)) {
@@ -268,6 +329,18 @@ fn end_effect(world: &mut World, p: &mut Player, mo: ActorId, st: &PowerState) {
             }
         }
         "frightener" => set_flag(world, mo, "FRIGHTENING", false),
+        "timefreezer" => {
+            let mask = !crate::player::seat_bit(usize::from(st.seat));
+            p.timefreezer &= mask;
+            for other in world.players.iter_mut().flatten() {
+                other.timefreezer &= mask;
+            }
+            let any = p.timefreezer != 0
+                || world.players.iter().flatten().any(|o| o.timefreezer != 0);
+            if !any {
+                world.level.frozen_power = false;
+            }
+        }
         "weaponlevel2" => {
             if let Some(orig) = st.swapped_weapon {
                 if p.ready_weapon
@@ -377,6 +450,9 @@ pub(crate) fn tick_powers(world: &mut World, p: &mut Player) {
         if st.kind == "invisibility" {
             apply_invisibility_style(world, mo, &st);
         }
+        if st.kind == "timefreezer" && now & 1 == 0 {
+            world.level.frozen_power = time_freezer_frozen(st.tics);
+        }
         if st.tics != i32::MAX {
             st.tics -= 1;
         }
@@ -387,6 +463,86 @@ pub(crate) fn tick_powers(world: &mut World, p: &mut Player) {
             p.powers.insert(key, st);
         }
     }
+}
+
+/// `PowerTimeFreezer.DoEffect`: frozen, blinking faster in the last 4 s.
+#[must_use]
+pub fn time_freezer_frozen(t: i32) -> bool {
+    t > 4 * 32
+        || (t > 3 * 32 && t <= 4 * 32 && (t + 1) & 15 != 0)
+        || (t > 2 * 32 && t <= 3 * 32 && (t + 1) & 7 != 0)
+        || (t > 32 && t <= 2 * 32 && (t + 1) & 3 != 0)
+        || (t > 0 && t <= 32 && (t + 1) & 1 != 0)
+}
+
+/// UZDoom `AActor::isFrozen` (level freeze part): under a freeze, actors stop
+/// unless `+NOTIMEFREEZE`; players stop only for the time freezer, and only
+/// when no freezer bit covers them.
+#[must_use]
+pub fn actor_time_frozen(world: &World, id: ActorId) -> bool {
+    if !world.level.is_frozen() {
+        return false;
+    }
+    let Some(a) = world.actors.get(id) else {
+        return false;
+    };
+    if a.extra_flags.get_name("NOTIMEFREEZE") {
+        return false;
+    }
+    match world.players.iter().flatten().find(|p| p.mo == Some(id)) {
+        Some(p) => world.level.frozen_power && p.timefreezer == 0,
+        None => true,
+    }
+}
+
+/// Targeter HUD (`PowerTargeter`): which reticle pieces show and where, in
+/// 320×200 psprite coordinates (top-left of each piece before offsets).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TargeterHud {
+    /// Centre piece position (`TRGTA0`).
+    pub center: (f32, f32),
+    /// Left piece x (`TRGTB0`), when shown.
+    pub left_x: Option<f32>,
+    /// Right piece x (`TRGTC0`), when shown.
+    pub right_x: Option<f32>,
+}
+
+/// `PowerTargeter.PositionAccuracy` / `DoEffect` for `mo`: the side pieces
+/// sit `100 − accuracy` away from the centre and blink in the last 5 s.
+#[must_use]
+pub fn targeter_hud(world: &World, mo: ActorId) -> Option<TargeterHud> {
+    const POS_X: f32 = 160.0 - 3.0;
+    const POS_Y: f32 = 100.0 - 3.0;
+    let st = power(world, mo, "targeter")?;
+    let accuracy = world.actors.get(mo).map_or(0, |a| a.accuracy);
+    let spread = (100 - accuracy) as f32;
+    let (mut left, mut right) = (true, true);
+    // Last 5 s: bit 5 shows only the left piece, bit 4 only the right; other
+    // tics keep whatever the previous (higher) tic showed.
+    if st.tics < 5 * 35 {
+        for u in st.tics..5 * 35 {
+            if u & 32 != 0 {
+                (left, right) = (true, false);
+                break;
+            }
+            if u & 16 != 0 {
+                (left, right) = (false, true);
+                break;
+            }
+        }
+    }
+    Some(TargeterHud {
+        center: (POS_X, POS_Y),
+        left_x: left.then_some(POS_X - spread),
+        right_x: right.then_some(POS_X + spread),
+    })
+}
+
+/// Whether `mo`'s automap shows the whole level (`allmap`, or `PowerScanner`
+/// while it runs, as Strife's scanner).
+#[must_use]
+pub fn reveals_map(world: &World, mo: ActorId) -> bool {
+    power(world, mo, "scanner").is_some()
 }
 
 /// Strength of a running power of `kind` on `mo`'s player.

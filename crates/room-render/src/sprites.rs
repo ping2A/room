@@ -33,6 +33,22 @@ pub struct SpriteInstance {
     /// Rotation of the quad in its own plane, radians counter-clockwise
     /// (`SpriteRotation` / `A_SetSpriteRotation`).
     pub roll: f32,
+    /// UZDoom sprite extras (flip, roll pivot, lighting, blend).
+    pub fx: SpriteFx,
+}
+
+/// Per-sprite render flags from the actor (UZDoom `renderflags`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SpriteFx {
+    /// `+YFLIP`: upside down.
+    pub flip_v: bool,
+    /// Roll pivot in the world (the actor's origin; UZDoom rolls about it
+    /// unless `+ROLLCENTER`). `None` = the quad centre.
+    pub roll_pivot: Option<Vec3>,
+    /// `+NODYNAMICLIGHTING`: dynamic lights skip this sprite.
+    pub no_dynlight: bool,
+    /// `STYLE_Subtract`: reverse-subtract blending.
+    pub subtract: bool,
 }
 
 /// How a sprite quad is oriented in the world.
@@ -194,8 +210,13 @@ pub fn emit_sprite_quad(inst: SpriteInstance, view_forward: Vec3) -> [WallVertex
     let mut c = hi + right * half_w;
     let mut d = hi - right * half_w;
     if inst.roll.abs() > 1e-6 {
-        // Spin the quad about its centre in its own plane.
-        let centre = (a + c) * 0.5;
+        // Spin the quad in its own plane about its centre, or about the
+        // actor's origin projected onto the quad (UZDoom without ROLLCENTER).
+        let mid_q = (a + c) * 0.5;
+        let centre = inst.fx.roll_pivot.map_or(mid_q, |p| {
+            let o = p - mid_q;
+            mid_q + right * o.dot(right) + up * o.dot(up)
+        });
         let (sn, cs) = inst.roll.sin_cos();
         let spin = |p: Vec3| {
             let o = p - centre;
@@ -209,25 +230,27 @@ pub fn emit_sprite_quad(inst: SpriteInstance, view_forward: Vec3) -> [WallVertex
         d = spin(d);
     }
     let (u0, u1) = if inst.flip_u { (1.0, 0.0) } else { (0.0, 1.0) };
-    // Additive sprites carry a negative alpha (decoded by the shader).
-    let alpha = if inst.additive {
+    let (v_lo, v_hi) = if inst.fx.flip_v { (0.0, 1.0) } else { (1.0, 0.0) };
+    // Additive (and subtractive) sprites carry a negative alpha (decoded by
+    // the shader as premultiplied colour, alpha 0).
+    let alpha = if inst.additive || inst.fx.subtract {
         -inst.alpha.clamp(0.0, 1.0).max(1e-4)
     } else {
         inst.alpha.clamp(0.0, 1.0)
     };
-    let va = WallVertex::new(a, Vec2::new(u0, 1.0), inst.light)
+    let va = WallVertex::new(a, Vec2::new(u0, v_lo), inst.light)
         .with_alpha(alpha)
         .with_masked()
         .with_fuzz(inst.fuzz);
-    let vb = WallVertex::new(b, Vec2::new(u1, 1.0), inst.light)
+    let vb = WallVertex::new(b, Vec2::new(u1, v_lo), inst.light)
         .with_alpha(alpha)
         .with_masked()
         .with_fuzz(inst.fuzz);
-    let vc = WallVertex::new(c, Vec2::new(u1, 0.0), inst.light)
+    let vc = WallVertex::new(c, Vec2::new(u1, v_hi), inst.light)
         .with_alpha(alpha)
         .with_masked()
         .with_fuzz(inst.fuzz);
-    let vd = WallVertex::new(d, Vec2::new(u0, 0.0), inst.light)
+    let vd = WallVertex::new(d, Vec2::new(u0, v_hi), inst.light)
         .with_alpha(alpha)
         .with_masked()
         .with_fuzz(inst.fuzz);
@@ -263,6 +286,7 @@ mod tests {
                 orient: crate::sprites::SpriteOrient::Billboard,
                 additive: false,
                 roll: 0.0,
+                fx: Default::default(),
             },
             Vec3::X,
         );
@@ -289,6 +313,7 @@ mod tests {
                 orient: SpriteOrient::Wall { yaw: 0.0 },
                 additive: false,
                 roll: 0.0,
+                fx: Default::default(),
             },
             Vec3::Y,
         );
@@ -318,6 +343,7 @@ mod tests {
                 orient: crate::sprites::SpriteOrient::Billboard,
                 additive: false,
                 roll: 0.0,
+                fx: Default::default(),
             },
             Vec3::Y,
         );
@@ -352,6 +378,7 @@ mod tests {
                 orient: crate::sprites::SpriteOrient::Billboard,
                 additive: false,
                 roll: 0.0,
+                fx: Default::default(),
             },
             Vec3::Y,
         );
@@ -369,6 +396,7 @@ mod tests {
                 orient: crate::sprites::SpriteOrient::Billboard,
                 additive: false,
                 roll: 0.0,
+                fx: Default::default(),
             },
             Vec3::Y,
         );
@@ -430,6 +458,7 @@ mod tests {
                 orient: crate::sprites::SpriteOrient::Billboard,
                 additive: false,
                 roll: 0.0,
+                fx: Default::default(),
             },
             Vec3::X,
         );

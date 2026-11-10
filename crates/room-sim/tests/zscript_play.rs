@@ -1230,16 +1230,32 @@ class StimToken : Inventory
     assert!(give_inventory(&mut w, player, cid, 10));
     assert_eq!(count_inventory(&w, player, cid), 5);
     let id = w.summon_in_front(0, "StimToken").expect("summon");
+    // Own fields come after the inherited ones, so look the slots up by name.
+    let slot = |w: &World, name: &str| -> usize {
+        let vm = w.zscript.vm.as_ref().unwrap();
+        let layout = vm
+            .program
+            .classes
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case("StimToken"))
+            .unwrap();
+        usize::from(layout.fields[name].1)
+    };
+    let (begun_slot, ticks_slot) = (slot(&w, "begun"), slot(&w, "ticks"));
     let h = w.zscript.actor_fields[&id.index()];
     let begun = match w.zscript.vm.as_ref().unwrap().heap.get(h) {
-        Some(room_zvm::ObjKind::Object { fields_i, .. }) => fields_i.get(1).copied().unwrap_or(0),
+        Some(room_zvm::ObjKind::Object { fields_i, .. }) => {
+            fields_i.get(begun_slot).copied().unwrap_or(0)
+        }
         _ => 0,
     };
     assert_eq!(begun, 1, "PostBeginPlay runs on the summoned item");
     w.tick();
     let h = w.zscript.actor_fields[&id.index()];
     let ticks = match w.zscript.vm.as_ref().unwrap().heap.get(h) {
-        Some(room_zvm::ObjKind::Object { fields_i, .. }) => fields_i.first().copied().unwrap_or(0),
+        Some(room_zvm::ObjKind::Object { fields_i, .. }) => {
+            fields_i.get(ticks_slot).copied().unwrap_or(0)
+        }
         _ => 0,
     };
     assert_eq!(ticks, 1, "Tick runs with the item's own script object");
@@ -2163,4 +2179,300 @@ class RailProbe : Actor
         after < before,
         "A_MonsterRail should hit; health {before} -> {after}"
     );
+}
+
+/// UZDoom stdlib plus one extra mod source.
+fn load_uzdoom_stdlib_with(extra: &str) -> room_zvm::CompiledProgram {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
+    let entry = std::fs::read_to_string(root.join("zscript.txt")).expect("zscript.txt");
+    let mut sources = vec![("zscript.txt".to_owned(), entry.clone())];
+    for line in entry.lines() {
+        let Some(rest) = line.trim().strip_prefix("#include") else {
+            continue;
+        };
+        let path = rest.trim().trim_matches('"');
+        let text = std::fs::read_to_string(root.join(path)).expect(path);
+        sources.push((path.replace('\\', "/"), text));
+    }
+    sources.push(("mod.zs".to_owned(), extra.to_owned()));
+    let result = room_zscript::check(&sources);
+    assert!(result.ok(), "{:?}", result.diagnostics.iter().filter(|d| d.severity == room_zscript::Severity::Error).collect::<Vec<_>>());
+    result.program.expect("uzdoom program")
+}
+
+#[test]
+fn zscript_tick_sees_and_changes_live_actor_fields() {
+    let deco = include_str!("../../../testdata/actors/doom_basic.txt");
+    let ir = parse_decorate(deco).unwrap();
+    let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+    let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+    let mut map = MapBuilder::new()
+        .room("a", rect(0.0, 0.0, 512.0, 256.0), 0.0, 128.0)
+        .player_start(64.0, 64.0, 0)
+        .build_udmf("MAP01")
+        .unwrap();
+    apply_nodes(&mut map);
+    let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+    let prog = load_uzdoom_stdlib_with(
+        r#"
+class TestMover : Actor
+{
+    double seenx;
+    double seenfloor;
+    int seenhp;
+    override void Tick()
+    {
+        seenx = pos.x;
+        seenfloor = floorz;
+        angle = 33.5;
+        vel.z = 2.25;
+        if (target) { seenhp = target.health; target.health -= 7; }
+    }
+}
+"#,
+    );
+    w.load_zscript_program_stubbed(prog);
+    let cid = w.classes.find_name("TestMover").expect("TestMover registered");
+    let mover = w
+        .spawn_at(
+            cid,
+            room_core::math::DVec3::new(200.5, 64.0, 0.0),
+            room_core::math::Angle::ZERO,
+        )
+        .expect("mover");
+    let player = w.players[0].as_ref().unwrap().mo.unwrap();
+    w.actors.get_mut(mover).unwrap().target = Some(player);
+    let hp = w.actors.get(player).unwrap().health;
+    w.tick();
+    let a = w.actors.get(mover).unwrap();
+    assert!((a.angle.degrees() - 33.5).abs() < 1e-6, "angle {}", a.angle.degrees());
+    assert!(a.vel.z() > 0.0, "vel.z written back: {}", a.vel.z());
+    assert_eq!(w.actors.get(player).unwrap().health, hp - 7);
+    // Script fields saw live values.
+    let h = w.zscript.actor_fields[&mover.index()];
+    let vm = w.zscript.vm.as_ref().unwrap();
+    let layout = vm
+        .program
+        .classes
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case("TestMover"))
+        .unwrap();
+    let (fx, ff, fh) = (
+        usize::from(layout.fields["seenx"].1),
+        usize::from(layout.fields["seenfloor"].1),
+        usize::from(layout.fields["seenhp"].1),
+    );
+    match vm.heap.get(h) {
+        Some(room_zvm::ObjKind::Object { fields_f, fields_i, .. }) => {
+            assert!((fields_f[fx] - 200.5).abs() < 1e-9, "seenx {}", fields_f[fx]);
+            assert_eq!(fields_f[ff], 0.0);
+            assert_eq!(fields_i[fh], i64::from(hp));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn zscript_world_query_natives_read_live_data() {
+    let deco = include_str!("../../../testdata/actors/doom_basic.txt");
+    let ir = parse_decorate(deco).unwrap();
+    let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+    let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+    let mut map = MapBuilder::new()
+        .room("a", rect(0.0, 0.0, 512.0, 256.0), 0.0, 128.0)
+        .player_start(64.0, 64.0, 0)
+        .build_udmf("MAP01")
+        .unwrap();
+    apply_nodes(&mut map);
+    let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+    let prog = load_uzdoom_stdlib_with(
+        r#"
+class Probe : Actor
+{
+    int saw;
+    double dist;
+    double ang;
+    int clips;
+    int found;
+    override void Tick()
+    {
+        if (!target) return;
+        saw = CheckSight(target);
+        dist = Distance2D(target);
+        ang = AngleTo(target);
+        clips = target.CountInv("Clip");
+        let inv = target.FindInventory("Clip");
+        found = inv ? inv.Amount : -1;
+        vector3 there = Vec3Offset(10, 0, 4);
+        SetOrigin(there, false);
+    }
+}
+"#,
+    );
+    w.load_zscript_program_stubbed(prog);
+    let cid = w.classes.find_name("Probe").expect("Probe");
+    let probe = w
+        .spawn_at(
+            cid,
+            room_core::math::DVec3::new(164.0, 64.0, 0.0),
+            room_core::math::Angle::ZERO,
+        )
+        .expect("probe");
+    let player = w.players[0].as_ref().unwrap().mo.unwrap();
+    let clip = w.classes.find_name("Clip").expect("Clip");
+    let have = room_sim::count_inventory(&w, player, clip);
+    w.actors.get_mut(probe).unwrap().target = Some(player);
+    w.tick();
+    let vm = w.zscript.vm.as_ref().unwrap();
+    let layout = vm
+        .program
+        .classes
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case("Probe"))
+        .unwrap();
+    let slot = |n: &str| usize::from(layout.fields[n].1);
+    let h = w.zscript.actor_fields[&probe.index()];
+    let (fi, ff) = match vm.heap.get(h) {
+        Some(room_zvm::ObjKind::Object { fields_i, fields_f, .. }) => (fields_i.clone(), fields_f.clone()),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(fi[slot("saw")], 1, "player visible");
+    assert!((ff[slot("dist")] - 100.0).abs() < 1e-6, "dist {}", ff[slot("dist")]);
+    assert!((ff[slot("ang")] - 180.0).abs() < 1e-6, "ang {}", ff[slot("ang")]);
+    assert_eq!(fi[slot("clips")], i64::from(have));
+    assert_eq!(fi[slot("found")], if have > 0 { i64::from(have) } else { -1 });
+    let a = w.actors.get(probe).unwrap();
+    assert!((a.pos.x() - 174.0).abs() < 1e-6, "SetOrigin x {}", a.pos.x());
+    assert!((a.pos.z() - 4.0).abs() < 1e-6 || a.pos.z() <= 4.0, "SetOrigin z {}", a.pos.z());
+}
+
+#[test]
+fn zscript_cursector_set_environment_id_after_map_start() {
+    let deco = format!(
+        "{}\n{}",
+        include_str!("../../../testdata/actors/doom_basic.txt"),
+        r#"
+actor EchoSetter 9902
+{
+  States
+  {
+  Spawn:
+    POSS A -1
+    Stop
+  }
+}
+"#
+    );
+    let ir = parse_decorate(&deco).unwrap();
+    let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+    let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+    // UZDoom's `SoundEnvironment.Activate` pattern, against the vendored
+    // UZDoom stdlib (`Actor.CurSector` is a native `Sector`).
+    let zs = r#"
+class EchoSetter : Actor
+{
+    override void PostBeginPlay()
+    {
+        CurSector.SetEnvironmentID((8 << 8) | 0);
+    }
+}
+"#;
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
+    let entry = std::fs::read_to_string(root.join("zscript.txt")).unwrap();
+    let mut sources = vec![("zscript.txt".to_owned(), entry.clone())];
+    for line in entry.lines() {
+        if let Some(rest) = line.trim().strip_prefix("#include") {
+            let path = rest.trim().trim_matches('"');
+            sources.push((path.replace('\\', "/"), std::fs::read_to_string(root.join(path)).unwrap()));
+        }
+    }
+    sources.push(("echo.zs".into(), zs.into()));
+    let result = room_zscript::check(&sources);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut map = MapBuilder::new()
+        .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+        .player_start(64.0, 64.0, 0)
+        .build_udmf("MAP01")
+        .unwrap();
+    apply_nodes(&mut map);
+    let mut w =
+        World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+    w.load_zscript_program(result.program.unwrap());
+    let sector = 0; // the only room
+    assert_eq!(w.sound_env.sector_env(sector), 0);
+    let zid = classes.find_name("EchoSetter").unwrap();
+    w.spawn_at(
+        zid,
+        room_core::math::DVec3::new(100.0, 100.0, 0.0),
+        room_core::math::Angle::ZERO,
+    )
+    .unwrap();
+    w.tick();
+    assert_eq!(w.sound_env.sector_env(sector), 0x0800, "Cave set by ZScript");
+}
+
+#[test]
+fn uz6_level_sky_fog_natives_reach_the_world() {
+    let src = r#"
+class FogProbe : EventHandler
+{
+    override void WorldTick()
+    {
+        Level.SetSkyFog(96);
+        Level.SetThickFog(512.0, 4.0);
+        TextureID mist = TexMan.CheckForTexture("MIST01", TexMan.Type_Any);
+        Level.ChangeSkyMist(mist, false, 0.5);
+    }
+}
+"#;
+    let result = room_zscript::check(&[("fog_probe.zs".into(), src.into())]);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut map = MapBuilder::new()
+        .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+        .player_start(64.0, 64.0, 0)
+        .build_udmf("MAP01")
+        .unwrap();
+    apply_nodes(&mut map);
+    let mut w = World::from_map(map).unwrap();
+    let prog = result.program.unwrap();
+    w.load_zscript_program(prog);
+    w.zscript.set_event_handlers(["FogProbe".into()]);
+    assert_eq!(w.thick_fog(), None, "MAPINFO default -1 = off");
+    w.tick();
+    assert_eq!(w.sky_fog, 96.0);
+    assert_eq!(w.thick_fog(), Some((512.0, 4.0)));
+    assert_eq!(w.sky_mist.as_deref(), Some("MIST01"));
+    assert!(!w.use_sky_mist);
+    assert!((w.sky_mist_yscale - 0.5).abs() < 1e-9);
+}
+
+#[test]
+fn uz3_super_calls_run_the_parent_body() {
+    let src = r#"
+class BaseProbe : EventHandler
+{
+    int score;
+    virtual int Score() { return 10; }
+}
+class UzProbe : BaseProbe
+{
+    override int Score() { return Super.Score() + 1; }
+    override void WorldLoaded(WorldEvent e)
+    {
+        score = Score();
+    }
+}
+"#;
+    let result = room_zscript::check(&[("uz_probe.zs".into(), src.into())]);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut rt = ZscriptRuntime::default();
+    rt.load_program(result.program.unwrap());
+    rt.set_event_handlers(["UzProbe".into()]);
+    rt.activate_map_handlers().expect("activate");
+    let h = rt.handler_objs["UzProbe"];
+    let score = match rt.vm.as_ref().unwrap().heap.get(h) {
+        Some(room_zvm::ObjKind::Object { fields_i, .. }) => fields_i.first().copied().unwrap_or(0),
+        _ => 0,
+    };
+    assert_eq!(score, 11, "Super.Score() runs the parent body, then + 1");
 }

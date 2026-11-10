@@ -1,5 +1,8 @@
 # 17 — Netplay, demos, save games
 
+> Current state of every network path (seats, delays, prediction, desync checks,
+> known gaps): `38-network-state.md`. This file is the design.
+
 Crates: `room-net`, `room-game::{demo, save}`. GZDoom references: `src/d_net.cpp`,
 `src/d_protocol.cpp`, `src/g_game.cpp` (demo record/playback), `src/serializer*.cpp`,
 `src/g_level.cpp` (`G_SnapshotLevel`, hubs).
@@ -12,10 +15,10 @@ Deterministic **lockstep**, like GZDoom: every peer runs the full simulation; on
 `TicCmd`s and `NetCommand`s are exchanged. Requirements (from `02 §4.2`) make this work across platforms.
 
 - Topologies: **peer-to-peer** (each peer sends its commands to all; GZDoom default for ≤ 4 players) and **packet-server** (host relays; GZDoom `-netmode 1`), selectable; packet-server is default for > 4 players and for web peers.
-- Players: up to 8 in 1.0 (storage supports 16).
+- Players: up to 64 (UZ12; `room_sim::MAX_PLAYERS`); per-transport limits in `38 §1`.
 - Input delay: adaptive `netdelay` (default auto: RTT/2 rounded up to tics + 1, clamp 1..=8). Local input is buffered for `delay` tics; the sim only advances when all peers' commands for tic N are present (stall otherwise; show "waiting for player" after 1 s).
 - `ticdup` (GZDoom `-dup`): send one command per N tics — S.
-- No rollback/prediction in 1.0 (deterministic rollback is a possible 2.0 feature; the architecture — fast `World` snapshot/restore — keeps that door open; record as ADR).
+- View-only client prediction of the local player exists since UZ12 (`38 §5`); the sim itself has no rollback. Originally: no rollback/prediction in 1.0 (deterministic rollback is a possible 2.0 feature; the architecture — fast `World` snapshot/restore — keeps that door open; record as ADR).
 
 ### 1.2 Session lifecycle
 

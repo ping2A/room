@@ -121,6 +121,7 @@ pub fn append_model(
         name: texture.to_string(),
         start,
         count,
+        flags: 0,
     });
 }
 
@@ -578,6 +579,8 @@ pub struct IqmModel {
     pub blend_indexes: Vec<[u8; 4]>,
     /// Per-vertex bone weights 0..=255 (empty if unskinned).
     pub blend_weights: Vec<[u8; 4]>,
+    /// Joint names, animations and decoded frames (UZ7).
+    pub anim: crate::iqm_anim::IqmAnimData,
 }
 
 impl IqmModel {
@@ -828,6 +831,7 @@ pub fn parse_iqm_full(data: &[u8]) -> Result<IqmModel, ModelError> {
         inv_base_mats = base_mats.iter().map(|m| m.inverse()).collect();
     }
 
+    let anim = crate::iqm_anim::parse_iqm_anim_data(data, &joints).unwrap_or_default();
     Ok(IqmModel {
         mesh: ModelMesh { vertices, indices },
         joints,
@@ -835,6 +839,7 @@ pub fn parse_iqm_full(data: &[u8]) -> Result<IqmModel, ModelError> {
         inv_base_mats,
         blend_indexes,
         blend_weights,
+        anim,
     })
 }
 
@@ -976,6 +981,7 @@ f 1 2 3 4
             inv_base_mats: vec![base.inverse()],
             blend_indexes: vec![[0, 0, 0, 0]],
             blend_weights: vec![[255, 0, 0, 0]],
+            anim: Default::default(),
         };
         let skinned = iqm.skin_bind_pose();
         let p = skinned.vertices[0].pos;
@@ -1007,6 +1013,7 @@ f 1 2 3 4
             inv_base_mats: vec![base.inverse()],
             blend_indexes: vec![[0, 0, 0, 0]],
             blend_weights: vec![[255, 0, 0, 0]],
+            anim: Default::default(),
         };
         let posed = [Mat4::from_translation(Vec3::new(5.0, 0.0, 0.0))];
         let out = iqm.skin_cpu(&posed);

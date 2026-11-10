@@ -11,7 +11,10 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 const RING: usize = 128;
-const MAX_SEATS: usize = 8;
+/// Seats a room starts with storage for (grown when a room allows more).
+const BASE_SEATS: usize = 8;
+/// Most seats a room may have (protocol v3, `room_sim::MAX_PLAYERS`).
+pub const MAX_SEATS: usize = 64;
 /// One Doom tic (1/35 s).
 pub const TIC: Duration = Duration::from_nanos(28_571_429);
 /// Late tics a seat's last command is repeated before it goes neutral.
@@ -33,20 +36,22 @@ pub enum V2Error {
 /// Per-room v2 lockstep state.
 pub struct V2State {
     next_tic: u32,
-    /// `cmds[tic % RING][seat]`
-    ring: [[Option<NetTicCmd>; MAX_SEATS]; RING],
+    /// `cmds[(tic % RING) * seats + seat]`.
+    ring: Vec<Option<NetTicCmd>>,
+    /// Seats [`Self::ring`] has room for.
+    seats: usize,
     /// When the first cmd for `tic % RING` arrived (relay latency start).
     first_cmd_at: [Option<Instant>; RING],
-    active_mask: u8,
+    active_mask: u64,
     max_players: u8,
     /// Clock origin for tic 0.
     start_at: Instant,
     /// Late-seat tolerance past a tic's slot.
     grace: Duration,
     /// Last command released per seat (repeated while a seat is briefly late).
-    last_cmd: [NetTicCmd; MAX_SEATS],
+    last_cmd: Vec<NetTicCmd>,
     /// Consecutive tics each seat was filled by the server.
-    miss_streak: [u8; MAX_SEATS],
+    miss_streak: Vec<u8>,
     /// Micros from first cmd → frame for the last completed tic.
     pub last_relay_us: Option<u64>,
 }
@@ -57,16 +62,25 @@ impl V2State {
     pub fn new() -> Self {
         Self {
             next_tic: 0,
-            ring: [[None; MAX_SEATS]; RING],
+            ring: vec![None; RING * BASE_SEATS],
+            seats: BASE_SEATS,
             first_cmd_at: [None; RING],
             active_mask: 0,
             max_players: 2,
             start_at: Instant::now(),
             grace: Duration::from_millis(30),
-            last_cmd: [NetTicCmd::default(); MAX_SEATS],
-            miss_streak: [0; MAX_SEATS],
+            last_cmd: vec![NetTicCmd::default(); BASE_SEATS],
+            miss_streak: vec![0; BASE_SEATS],
             last_relay_us: None,
         }
+    }
+
+    fn cell(&mut self, slot: usize, seat: usize) -> &mut Option<NetTicCmd> {
+        &mut self.ring[slot * self.seats + seat]
+    }
+
+    fn cell_ref(&self, slot: usize, seat: usize) -> Option<&NetTicCmd> {
+        self.ring[slot * self.seats + seat].as_ref()
     }
 
     /// Reset when the match starts; tic 0 is due now.
@@ -77,11 +91,11 @@ impl V2State {
     /// Reset with an explicit clock origin (tests).
     pub fn reset_for_start_at(&mut self, start_at: Instant) {
         self.next_tic = 0;
-        self.ring = [[None; MAX_SEATS]; RING];
+        self.ring = vec![None; RING * self.seats];
         self.first_cmd_at = [None; RING];
         self.start_at = start_at;
-        self.last_cmd = [NetTicCmd::default(); MAX_SEATS];
-        self.miss_streak = [0; MAX_SEATS];
+        self.last_cmd = vec![NetTicCmd::default(); self.seats];
+        self.miss_streak = vec![0; self.seats];
         self.last_relay_us = None;
     }
 
@@ -92,8 +106,27 @@ impl V2State {
 
     /// Set which seats are active (bitmask).
     pub fn set_active_seats(&mut self, max_players: u8) {
-        self.max_players = max_players.clamp(2, 8);
-        self.active_mask = (1u8 << self.max_players).wrapping_sub(1);
+        self.max_players = max_players.clamp(2, MAX_SEATS as u8);
+        self.active_mask = if usize::from(self.max_players) >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << self.max_players) - 1
+        };
+        let want = usize::from(self.max_players).max(BASE_SEATS);
+        if want != self.seats {
+            // Re-lay the ring for the new seat count (only before play).
+            let old = std::mem::take(&mut self.ring);
+            let old_seats = self.seats;
+            self.ring = vec![None; RING * want];
+            for slot in 0..RING {
+                for seat in 0..old_seats.min(want) {
+                    self.ring[slot * want + seat] = old[slot * old_seats + seat];
+                }
+            }
+            self.seats = want;
+            self.last_cmd.resize(want, NetTicCmd::default());
+            self.miss_streak.resize(want, 0);
+        }
     }
 
     fn slot_at(&self, tic: u32) -> Instant {
@@ -101,14 +134,14 @@ impl V2State {
     }
 
     fn seat_active(&self, s: u8) -> bool {
-        (self.active_mask & (1 << s)) != 0
+        u32::from(s) < 64 && (self.active_mask & (1u64 << s)) != 0
     }
 
     fn all_present(&self, tic: u32) -> bool {
         let slot = (tic as usize) % RING;
         (0..self.max_players)
             .filter(|&s| self.seat_active(s))
-            .all(|s| self.ring[slot][usize::from(s)].is_some())
+            .all(|s| self.cell_ref(slot, usize::from(s)).is_some())
     }
 
     /// Push a command; returns a frame when `next_tic` is complete and due.
@@ -146,15 +179,14 @@ impl V2State {
             return Err(V2Error::TooFar);
         }
         let slot = (tic as usize) % RING;
-        let cell = &mut self.ring[slot][usize::from(seat)];
-        if cell.is_some() {
+        if self.cell_ref(slot, usize::from(seat)).is_some() {
             // First-cmd-wins.
             return Ok(None);
         }
         if self.first_cmd_at[slot].is_none() {
             self.first_cmd_at[slot] = Some(now);
         }
-        *cell = Some(msg.cmd);
+        *self.cell(slot, usize::from(seat)) = Some(msg.cmd);
         Ok(self.try_complete_at(now))
     }
 
@@ -184,7 +216,7 @@ impl V2State {
                 continue;
             }
             let i = usize::from(s);
-            let cmd = if let Some(c) = self.ring[slot][i].take() {
+            let cmd = if let Some(c) = self.cell(slot, i).take() {
                 self.miss_streak[i] = 0;
                 c
             } else {
@@ -204,7 +236,9 @@ impl V2State {
         self.last_relay_us = self.first_cmd_at[slot]
             .map(|t| u64::try_from(now.duration_since(t).as_micros()).unwrap_or(u64::MAX));
         self.first_cmd_at[slot] = None;
-        self.ring[slot] = [None; MAX_SEATS];
+        for seat in 0..self.seats {
+            *self.cell(slot, seat) = None;
+        }
         self.next_tic = self.next_tic.saturating_add(1);
         TicFrameMsg {
             tic,
@@ -274,6 +308,36 @@ mod tests {
                 ..NetTicCmd::default()
             },
         }
+    }
+
+    #[test]
+    fn sixty_four_seats_release_a_full_wide_frame() {
+        let t0 = Instant::now();
+        let mut s = V2State::new();
+        s.set_active_seats(64);
+        s.reset_for_start_at(t0);
+        let mut frame = None;
+        for seat in 0..64u8 {
+            frame = s.push_cmd_at(seat, cmd(0, i16::from(seat)), t0).unwrap();
+            if seat < 63 {
+                assert!(frame.is_none(), "waits for seat 63");
+            }
+        }
+        let frame = frame.unwrap();
+        assert_eq!(frame.seat_mask, u64::MAX);
+        assert_eq!(frame.cmds.len(), 64);
+        assert_eq!(frame.cmds[63].forward_move, 63);
+        assert!(room_proto::tic_frame_is_wide(&frame));
+        assert_eq!(s.push_cmd_at(64, cmd(1, 0), t0), Err(V2Error::BadSeat));
+        // Eight seats still make v2 frames.
+        let mut s8 = V2State::new();
+        s8.set_active_seats(8);
+        s8.reset_for_start_at(t0);
+        let mut f8 = None;
+        for seat in 0..8u8 {
+            f8 = s8.push_cmd_at(seat, cmd(0, 0), t0).unwrap();
+        }
+        assert!(!room_proto::tic_frame_is_wide(&f8.unwrap()));
     }
 
     #[test]

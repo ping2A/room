@@ -40,8 +40,11 @@ pub struct TicCmdMsg {
 pub struct TicFrameMsg {
     /// Simulation tic.
     pub tic: u32,
-    /// Bit `i` set ⇒ seat `i` has a command in `cmds` (in seat order).
-    pub seat_mask: u8,
+    /// Bit `i` set ⇒ seat `i` has a command in `cmds` (in seat order). Up to
+    /// 64 seats; a mask that fits in 8 bits goes on the wire in the v2 layout
+    /// ([`MSG_TIC_FRAME`](crate::MSG_TIC_FRAME)), a wider one as v3
+    /// ([`MSG_TIC_FRAME_WIDE`](crate::MSG_TIC_FRAME_WIDE)).
+    pub seat_mask: u64,
     /// Commands for set bits, low seat first.
     pub cmds: Vec<NetTicCmd>,
 }
@@ -126,37 +129,83 @@ pub fn parse_tic_cmd(bytes: &[u8]) -> Result<TicCmdMsg, ProtoError> {
     Ok(TicCmdMsg { tic, cmd })
 }
 
-/// Encode TIC_FRAME payload.
+/// Seats in a v2 frame (one mask byte).
+pub const V2_FRAME_SEATS: usize = 8;
+
+/// The frame needs the v3 layout (a seat past 8).
+#[must_use]
+pub fn tic_frame_is_wide(msg: &TicFrameMsg) -> bool {
+    msg.seat_mask > 0xFF
+}
+
+/// Encode TIC_FRAME payload: `u32 tic`, the seat mask (one byte, or eight in
+/// the v3 layout when [`tic_frame_is_wide`]), then the commands.
 #[must_use]
 pub fn encode_tic_frame(msg: &TicFrameMsg) -> Vec<u8> {
     let n = msg.seat_mask.count_ones() as usize;
-    let mut v = Vec::with_capacity(5 + n * NET_TIC_CMD_LEN);
+    let wide = tic_frame_is_wide(msg);
+    let mut v = Vec::with_capacity(if wide { 12 } else { 5 } + n * NET_TIC_CMD_LEN);
     v.extend_from_slice(&msg.tic.to_le_bytes());
-    v.push(msg.seat_mask);
+    if wide {
+        v.extend_from_slice(&msg.seat_mask.to_le_bytes());
+    } else {
+        v.push(msg.seat_mask as u8);
+    }
     for cmd in &msg.cmds {
         v.extend_from_slice(&encode_net_tic_cmd(cmd));
     }
     v
 }
 
-/// Parse TIC_FRAME payload.
+/// Bytes a frame body takes at the start of `bytes` (`wide`: v3 layout).
+///
+/// # Errors
+///
+/// Truncated header.
+pub fn tic_frame_len(bytes: &[u8], wide: bool) -> Result<usize, ProtoError> {
+    let (head, mask) = if wide {
+        let m = bytes.get(4..12).ok_or(ProtoError::BadPacket)?;
+        (12, u64::from_le_bytes(m.try_into().map_err(|_| ProtoError::BadPacket)?))
+    } else {
+        (5, u64::from(*bytes.get(4).ok_or(ProtoError::BadPacket)?))
+    };
+    Ok(head + mask.count_ones() as usize * NET_TIC_CMD_LEN)
+}
+
+/// Parse a v2 TIC_FRAME payload (one mask byte).
 ///
 /// # Errors
 ///
 /// Truncated / seat_mask vs cmds length mismatch.
 pub fn parse_tic_frame(bytes: &[u8]) -> Result<TicFrameMsg, ProtoError> {
-    if bytes.len() < 5 {
-        return Err(ProtoError::BadPacket);
-    }
-    let tic = u32::from_le_bytes(bytes[0..4].try_into().map_err(|_| ProtoError::BadPacket)?);
-    let seat_mask = bytes[4];
-    let n = seat_mask.count_ones() as usize;
-    let need = 5 + n * NET_TIC_CMD_LEN;
+    parse_tic_frame_layout(bytes, false)
+}
+
+/// Parse a v3 TIC_FRAME payload (eight mask bytes, up to 64 seats).
+///
+/// # Errors
+///
+/// Truncated / seat_mask vs cmds length mismatch.
+pub fn parse_tic_frame_wide(bytes: &[u8]) -> Result<TicFrameMsg, ProtoError> {
+    parse_tic_frame_layout(bytes, true)
+}
+
+fn parse_tic_frame_layout(bytes: &[u8], wide: bool) -> Result<TicFrameMsg, ProtoError> {
+    let need = tic_frame_len(bytes, wide)?;
     if bytes.len() != need {
         return Err(ProtoError::BadPacket);
     }
+    let tic = u32::from_le_bytes(bytes[0..4].try_into().map_err(|_| ProtoError::BadPacket)?);
+    let (seat_mask, mut o) = if wide {
+        (
+            u64::from_le_bytes(bytes[4..12].try_into().map_err(|_| ProtoError::BadPacket)?),
+            12,
+        )
+    } else {
+        (u64::from(bytes[4]), 5)
+    };
+    let n = seat_mask.count_ones() as usize;
     let mut cmds = Vec::with_capacity(n);
-    let mut o = 5;
     for _ in 0..n {
         cmds.push(decode_net_tic_cmd(&bytes[o..o + NET_TIC_CMD_LEN])?);
         o += NET_TIC_CMD_LEN;
@@ -237,5 +286,35 @@ mod tests {
         };
         let enc = encode_tic_frame(&frame);
         assert_eq!(parse_tic_frame(&enc).unwrap(), frame);
+    }
+
+    #[test]
+    fn narrow_frames_keep_the_v2_bytes_and_wide_ones_carry_64_seats() {
+        let frame = TicFrameMsg {
+            tic: 7,
+            seat_mask: 0b101,
+            cmds: vec![NetTicCmd::default(); 2],
+        };
+        let enc = encode_tic_frame(&frame);
+        // v2 layout: tic, one mask byte, two 17-byte commands.
+        assert_eq!(enc.len(), 4 + 1 + 2 * NET_TIC_CMD_LEN);
+        assert_eq!(enc[4], 0b101);
+        let all = TicFrameMsg {
+            tic: 9,
+            seat_mask: u64::MAX,
+            cmds: (0..64)
+                .map(|i| NetTicCmd {
+                    forward_move: i,
+                    ..NetTicCmd::default()
+                })
+                .collect(),
+        };
+        assert!(tic_frame_is_wide(&all));
+        let enc = encode_tic_frame(&all);
+        assert_eq!(enc.len(), 4 + 8 + 64 * NET_TIC_CMD_LEN);
+        let back = parse_tic_frame_wide(&enc).unwrap();
+        assert_eq!(back, all);
+        assert_eq!(back.cmds[63].forward_move, 63);
+        assert!(parse_tic_frame(&enc).is_err(), "v2 parser refuses a v3 body");
     }
 }

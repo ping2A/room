@@ -664,7 +664,7 @@
         '<label class="field" data-custom data-duke><span>Friendly fire</span><input name="duke_friendly_fire" type="checkbox"/></label>' +
         '<label class="field" data-custom data-free-map><span>Map</span><input name="map" value="E1M1"/></label>' +
         '<label class="field"><span>Skill</span><input name="skill" type="number" min="1" max="5" value="3"/></label>' +
-        '<label class="field"><span>Max players</span><input name="max_players" type="number" min="2" max="8" value="2"/></label>' +
+        '<label class="field"><span>Max players</span><input name="max_players" type="number" min="2" max="64" value="2"/></label>' +
         '<label class="field"><span>Time limit (minutes)</span><input name="time_limit" type="number" min="1" max="180" value="' +
         escapeHtml(state.config.room_time_limit_mins || 20) +
         '"/></label>' +

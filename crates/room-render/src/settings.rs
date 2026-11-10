@@ -124,7 +124,13 @@ pub struct RenderSettings {
     // --- actors / particles ---
     pub particle_fx: bool,
     pub dissolve: bool,
-    pub actor_sprite_shadow: bool,
+    /// `r_actorspriteshadow`: 0 off, 1 `+CASTSPRITESHADOW` actors (UZDoom's
+    /// default), 2 also monsters and players without `+NOSPRITESHADOW`.
+    pub actor_sprite_shadow: u8,
+    /// `r_actorspriteshadowalpha` (0.5).
+    pub actor_sprite_shadow_alpha: f32,
+    /// `r_actorspriteshadowfadeheight` (0 = no fade).
+    pub actor_sprite_shadow_fade_height: f32,
 
     // --- more post ---
     pub auto_exposure: bool,
@@ -210,7 +216,9 @@ impl Default for RenderSettings {
             decal_fx: false,
             particle_fx: false,
             dissolve: false,
-            actor_sprite_shadow: false,
+            actor_sprite_shadow: 1,
+            actor_sprite_shadow_alpha: 0.5,
+            actor_sprite_shadow_fade_height: 0.0,
             auto_exposure: false,
             powerup_fx: false,
             underwater_fx: false,
@@ -660,8 +668,24 @@ impl RenderSettings {
                 true
             }
             "r_actorspriteshadow" => {
-                self.actor_sprite_shadow =
-                    b.or(i.map(|v| v != 0)).unwrap_or(self.actor_sprite_shadow);
+                self.actor_sprite_shadow = i
+                    .map(|v| v.clamp(0, 2) as u8)
+                    .or(b.map(|on| if on { 2 } else { 0 }))
+                    .unwrap_or(self.actor_sprite_shadow);
+                true
+            }
+            "r_actorspriteshadowalpha" => {
+                #[allow(clippy::cast_possible_truncation)]
+                if let Some(v) = f.or(i.map(f64::from)) {
+                    self.actor_sprite_shadow_alpha = v.clamp(0.0, 1.0) as f32;
+                }
+                true
+            }
+            "r_actorspriteshadowfadeheight" => {
+                #[allow(clippy::cast_possible_truncation)]
+                if let Some(v) = f.or(i.map(f64::from)) {
+                    self.actor_sprite_shadow_fade_height = v.max(0.0) as f32;
+                }
                 true
             }
             "r_autoexposure" => {
@@ -863,6 +887,8 @@ pub const SHADER_CVAR_NAMES: &[&str] = &[
     "r_particlefx",
     "r_dissolve",
     "r_actorspriteshadow",
+    "r_actorspriteshadowalpha",
+    "r_actorspriteshadowfadeheight",
     "r_autoexposure",
     "r_powerupfx",
     "r_underwaterfx",

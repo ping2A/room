@@ -24,10 +24,16 @@ mod deco_eval;
 mod deco_zvm;
 mod flags;
 mod render_pose;
-pub use render_pose::{SpritePose, SpriteView, sprite_pose, sprite_view};
+pub use render_pose::{
+    PIXEL_STRETCH, SpritePose, SpriteView, casts_sprite_shadow, isometric_sprite, sprite_pose,
+    sprite_view, view_eye,
+};
 pub mod fx_events;
 mod hitscan;
 mod inventory;
+pub mod invbar;
+mod predict;
+pub use predict::PredictedView;
 mod level;
 mod locks;
 pub mod mod_hud;
@@ -60,13 +66,14 @@ mod vanilla;
 pub mod view;
 mod weapon_slots;
 mod world;
+pub mod zs_native_ops;
 pub mod zscript;
 
 pub use action::{ActionResult, call_action, call_action_args, call_zscript_action, gender_name, parse_gender, sound_source_token};
 pub use action_known::{
     canonical_action_name, is_known_action, is_known_action_ci, known_action_names,
 };
-pub use actor::{Actor, ActorArena, ActorId};
+pub use actor::{Actor, ActorArena, ActorId, ActorModelState, BoneComponent, BoneOffset, BonePart};
 pub use bot::run_bot_brains;
 pub use class::{
     ClassDef, ClassError, ClassRegistry, FLAG_AMBUSH, FLAG_BOSS, FLAG_BOUNCEONFLOORS,
@@ -98,8 +105,11 @@ pub use physics::{
     CheckResult, actor_light_level, actor_waterlevel, ceiling_at_xy, check_position, floor_at_xy,
     sector_at_xy, try_move, xy_movement, z_movement,
 };
-pub use pickup::{touch_specials, try_pickup};
-pub use player::{Buttons, INVERSE_COLORMAP, MAX_PLAYERS, Player, PlayerState, TicCmd};
+pub use pickup::{hexen_armor_class, touch_specials, try_pickup};
+pub use player::{
+    Buttons, Frags, INVERSE_COLORMAP, LEGACY_SEATS, MAX_PLAYERS, Player, PlayerState, TicCmd,
+    seat_bit,
+};
 pub use player_names::{PlayerNames, sanitize_display_name};
 pub use polyobj::{PolyDoor, PolyMotion, PolyMotionResume, PolyobjDynamic, tick_polyobjs};
 pub use script_host::{ModuleMemorySnapshot, ScriptHost};
@@ -123,9 +133,9 @@ pub use vanilla::{
 };
 pub use weapon_slots::{PlayerClassEntry, WeaponSlots, default_slot_weapons};
 pub use world::{
-    BossAction, CameraTextureBind, DEFAULT_BODY_QUEUE_SIZE, DEFAULT_CORPSE_QUEUE_SIZE, HudClipRect,
+    BossAction, CameraTextureBind, DEFAULT_BODY_QUEUE_SIZE, DamageTypeInfo, DEFAULT_CORPSE_QUEUE_SIZE, HudClipRect,
     HudMessage, KillEvent, LastDamageInfo, MAX_KILL_EVENTS, MatchOver, MatchStanding, MessageTo,
-    PlayerHud, Quake, ScreenFade, SectorDynamic, ShotKind, ShotTrace, SimDecalEvent, SimError,
+    HudPspLayer, PlayerHud, ScoreRow, StatusBarItems, Quake, ScreenFade, SectorDynamic, ShotKind, ShotTrace, SimDecalEvent, SimError,
     SimParticleEvent, SimSoundAdjust, SimSoundEvent, Standing, World, psprite_scalelight,
 };
 pub use zscript::{ZscriptRuntime, ZscriptSaveBlob};

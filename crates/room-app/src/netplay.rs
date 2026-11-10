@@ -61,7 +61,7 @@ impl NetPlay {
     /// Host: bind, wait for joiners, broadcast start.
     pub fn host(opts: HostOpts<'_>) -> Result<Self, String> {
         let max_players = match opts.kind {
-            NetTransportKind::TcpServer => opts.max_players.clamp(2, 8),
+            NetTransportKind::TcpServer => opts.max_players.clamp(2, 64),
             _ => opts.max_players.clamp(2, 4),
         };
         match opts.kind {
@@ -178,7 +178,7 @@ impl NetPlay {
         }
 
         let peers: Vec<PeerId> = lobby.seats().iter().map(|(id, _)| *id).collect();
-        let mut session = LockstepSession::new(PeerId(0), peers.clone(), 1);
+        let mut session = LockstepSession::new(PeerId(0), peers.clone(), net_input_delay());
         seed_tic0(&mut session, max_players);
         let transport = maybe_noise(transport, PeerId(0), &peers, noise)?;
 
@@ -253,7 +253,7 @@ impl NetPlay {
         transport.add_peer(PeerId(0), host_addr);
 
         let peers: Vec<PeerId> = (0..peer_count).map(PeerId).collect();
-        let mut session = LockstepSession::new(local, peers.clone(), 1);
+        let mut session = LockstepSession::new(local, peers.clone(), net_input_delay());
         seed_tic0(&mut session, peer_count);
         let transport = maybe_noise(transport, local, &peers, noise)?;
 
@@ -336,7 +336,7 @@ impl NetPlay {
         }
 
         let peers: Vec<PeerId> = lobby.seats().iter().map(|(id, _)| *id).collect();
-        let mut session = LockstepSession::new(PeerId(0), peers.clone(), 1);
+        let mut session = LockstepSession::new(PeerId(0), peers.clone(), net_input_delay());
         seed_tic0(&mut session, max_players);
         let transport = maybe_noise(transport, PeerId(0), &peers, noise)?;
 
@@ -408,7 +408,7 @@ impl NetPlay {
         let local = w.peer_id;
 
         let peers: Vec<PeerId> = (0..peer_count).map(PeerId).collect();
-        let mut session = LockstepSession::new(local, peers.clone(), 1);
+        let mut session = LockstepSession::new(local, peers.clone(), net_input_delay());
         seed_tic0(&mut session, peer_count);
         let transport = maybe_noise(transport, local, &peers, noise)?;
 
@@ -484,7 +484,7 @@ impl NetPlay {
         server.broadcast_host(&start_msg.encode());
 
         let peers: Vec<PeerId> = lobby.seats().iter().map(|(id, _)| *id).collect();
-        let mut session = LockstepSession::new(PeerId(0), peers.clone(), 1);
+        let mut session = LockstepSession::new(PeerId(0), peers.clone(), net_input_delay());
         seed_tic0(&mut session, max_players);
         let transport = maybe_noise(server, PeerId(0), &peers, noise)?;
 
@@ -505,7 +505,7 @@ impl NetPlay {
         noise: bool,
         max_players: u8,
     ) -> Result<(Self, String), String> {
-        let max_players = max_players.clamp(2, 8);
+        let max_players = max_players.clamp(2, 64);
         // Relay handshake needs the host pumping; spawn a short retry loop.
         let mut client =
             TcpRelayClient::connect(host_addr, name, max_players).map_err(|e| e.to_string())?;
@@ -563,7 +563,7 @@ impl NetPlay {
         let local = client.self_id();
 
         let peers: Vec<PeerId> = (0..peer_count).map(PeerId).collect();
-        let mut session = LockstepSession::new(local, peers.clone(), 1);
+        let mut session = LockstepSession::new(local, peers.clone(), net_input_delay());
         seed_tic0(&mut session, peer_count);
         let transport = maybe_noise(client, local, &peers, noise)?;
 
@@ -581,6 +581,16 @@ impl NetPlay {
     }
 
     /// Submit local cmd; wait for all peers; return seat-ordered [`TicCmd`]s.
+    /// Local commands sent but not released yet, oldest first (for
+    /// `cl_predict`).
+    pub fn pending_local_cmds(&self) -> Vec<TicCmd> {
+        self.session
+            .pending_local()
+            .into_iter()
+            .map(net_to_tic)
+            .collect()
+    }
+
     pub fn advance_tic(&mut self, local_cmd: NetTicCmd) -> Result<Vec<TicCmd>, String> {
         self.advance_tic_with_checksum(local_cmd, None)
     }
@@ -707,13 +717,28 @@ fn maybe_noise<T: Transport + 'static>(
     Ok(Box::new(nt))
 }
 
+/// Lockstep input delay in tics: `ROOM_NET_DELAY` (1..=8, default 1). Every
+/// peer must use the same value. More delay hides network latency without
+/// stalls; client prediction (`cl_predict 1`) hides the delay itself.
+pub fn net_input_delay() -> u32 {
+    std::env::var("ROOM_NET_DELAY")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(1)
+        .clamp(1, 8)
+}
+
+/// Neutral commands for every seat for the tics before the first local input
+/// lands (`0..delay`).
 fn seed_tic0(session: &mut LockstepSession, peer_count: u8) {
-    for i in 0..peer_count {
-        session.push_remote(TimedCmd {
-            tic: 0,
-            peer: PeerId(i),
-            cmd: NetTicCmd::default(),
-        });
+    for tic in 0..session.delay() {
+        for i in 0..peer_count {
+            session.push_remote(TimedCmd {
+                tic,
+                peer: PeerId(i),
+                cmd: NetTicCmd::default(),
+            });
+        }
     }
 }
 

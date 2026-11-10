@@ -508,6 +508,8 @@ mod tests {
                 clip_midtex: false,
                 wrap_midtex: false,
                 no_decals: false,
+                alpha: None,
+                block_rendering: false,
                 upper: "-".into(),
                 lower: "-".into(),
                 middle: "STARTAN2".into(),

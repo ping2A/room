@@ -346,6 +346,7 @@ impl SkinnedPass {
             light_params: [0.0, 0.0, 0.0, 0.0],
             clip_plane: [0.0, 0.0, 0.0, 0.0],
             lightmap_params: [0.0, 0.0, 0.0, 0.0],
+            fog_params: [0.0; 4],
         };
         queue.write_buffer(&self.view_buf, 0, bytes_of(&view_u));
         let bones = BoneUniforms::from_skin_mats(skin_mats);
@@ -476,6 +477,7 @@ mod tests {
             inv_base_mats: vec![base.inverse()],
             blend_indexes: vec![[0, 0, 0, 0]],
             blend_weights: vec![[255, 0, 0, 0]],
+            anim: Default::default(),
         };
         let mats = skin_matrices(&iqm, &iqm.base_mats);
         let p = mats[0].transform_point3(Vec3::new(1.0, 2.0, 3.0));
@@ -517,6 +519,7 @@ mod tests {
             inv_base_mats: vec![Mat4::IDENTITY],
             blend_indexes: vec![[0, 0, 0, 0]; 3],
             blend_weights: vec![[255, 0, 0, 0]; 3],
+            anim: Default::default(),
         };
         let v = iqm_to_skinned_vertices(&iqm, Vec3::ZERO, Vec3::ONE, 1.0);
         assert_eq!(v.len(), 3);

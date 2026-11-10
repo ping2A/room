@@ -29,6 +29,8 @@ pub mod frame;
 pub mod fuzz;
 pub mod glsl_translate;
 pub mod hardware_shader;
+pub mod hw_post;
+pub mod iqm_anim;
 pub mod kvx;
 pub mod lightmap;
 pub mod lightmode;
@@ -79,6 +81,15 @@ pub use hardware_shader::{
     CompiledHardwareShader, HARDWARE_POST_HOST_WGSL, HardwareShaderCatalog, HardwareShaderError,
     compile_material_glsl, compose_hardware_post_wgsl, create_hardware_post_pipeline,
 };
+pub use hw_post::{
+    CompiledPostShader, HardwarePostRunner, POST_VS_WGSL, PostTimes, PostUniformField,
+    compile_post_glsl, post_prolog, post_uniform_layout,
+};
+pub use iqm_anim::{
+    BoneComponent, BoneKind, BoneOverride, IqmAnim, IqmAnimData, ModelAnim, Trs, absolute_matrices,
+    anim_frames, apply_overrides, blend_poses, frame_pose, interpolate_bone, interpolate_quat,
+    parse_iqm_anim_data,
+};
 pub use kvx::{
     KvxHeader, KvxModel, KvxVoxel, kvx_to_mesh, kvx_to_mesh_greedy, kvx_to_mesh_naive, parse_kvx,
 };
@@ -98,7 +109,10 @@ pub use mesh::{FlatVertex, ViewUniforms, WallVertex};
 pub use mod_zones::{
     ModZonePass, ZoneDraw, ZoneMeshes, ZoneVertex, build_zone_meshes, flags as mod_zone_flags,
 };
-pub use model_catalog::{ModelActorPose, ModelCatalog, append_actor_models, join_model_path};
+pub use model_catalog::{
+    AnimRequest, ModelActorPose, ModelCatalog, actor_pose, append_actor_models, join_model_path,
+    posed_mesh, resolve_anim,
+};
 pub use models::{
     IqmJoint, IqmModel, Md2Model, Md3Model, ModelError, ModelMesh, ModelVertex, append_model,
     parse_iqm, parse_iqm_full, parse_md2, parse_md3, parse_model_bytes, parse_obj,
@@ -109,7 +123,7 @@ pub use offscreen::{
 pub use particle_pass::ParticleInstancedPass;
 pub use particles::{
     MAX_PARTICLES, PARTICLE_TEX, PARTICLE_TEX_ADD, ParticleGpuInstance, ParticleInstance,
-    ParticleStore, ParticleStyle, append_particles, append_particles_ex, pack_particle_instances,
+    ParticleStore, ParticleStyle, append_particles, append_particles_animated, append_particles_ex, pack_particle_instances,
     particle_tint_tex_name, soft_disc_rgba,
 };
 pub use pass::UnlitPass;
@@ -133,7 +147,7 @@ pub use skinning::{
 };
 pub use sky::{CubemapFaces, cubemap_sky, cylinder_sky, scroll_sky_u};
 pub use sprites::{
-    SpriteInstance, SpriteOrient, emit_sprite_quad, mirror_rotation, sprite_lump_candidates,
+    SpriteFx, SpriteInstance, SpriteOrient, emit_sprite_quad, mirror_rotation, sprite_lump_candidates,
     sprite_lump_candidates_rot, sprite_offset_delta, sprite_rotation_digit,
 };
 pub use ssao::{

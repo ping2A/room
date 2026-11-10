@@ -439,6 +439,75 @@ mod tests {
     }
 
     #[test]
+    fn const_methods_are_read_only_from_4_15_1() {
+        let body = r#"
+class T
+{
+    int count;
+    Array<int> list;
+    Actor other;
+    int Peek() const { return count; }
+    void Bump() const { count++; }
+    void Set() const { self.count = 3; }
+    void Add() const { list[0] += 1; }
+    void Poke() const { other.health = 1; int count2 = 1; count2++; }
+    void Fine() unsafe(const) { count = 4; }
+    static void Free() { int count = 1; count++; }
+}
+"#;
+        let errors = |version: &str| -> Vec<String> {
+            let src = format!("version \"{version}\"\n{body}");
+            crate::check(&[("t.zs".into(), src)])
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .map(|d| d.message.clone())
+                .collect()
+        };
+        let new = errors("4.15.1");
+        assert_eq!(new.len(), 3, "{new:?}");
+        assert!(new.iter().all(|m| m.contains("const method")), "{new:?}");
+        assert!(new.iter().any(|m| m.contains("'list'")), "{new:?}");
+        let old = errors("4.14");
+        assert!(
+            old.iter().all(|m| !m.contains("const method")),
+            "{old:?}"
+        );
+    }
+
+    #[test]
+    fn deprecated_classes_warn_from_their_version() {
+        let body = r#"
+class OldBox deprecated("4.15.1", "Use Map<String, String> instead")
+{
+    static OldBox Make() { return new("OldBox"); }
+}
+class User
+{
+    void Go() { OldBox b = OldBox.Make(); let c = new("OldBox"); }
+}
+"#;
+        let warns = |version: &str| -> Vec<String> {
+            let src = format!("version \"{version}\"\n{body}");
+            let r = crate::check(&[("t.zs".into(), src)]);
+            assert!(
+                r.diagnostics.iter().all(|d| d.severity != Severity::Error),
+                "{:?}",
+                r.diagnostics
+            );
+            r.diagnostics
+                .iter()
+                .filter(|d| d.message.contains("deprecated since"))
+                .map(|d| d.message.clone())
+                .collect()
+        };
+        let new = warns("4.15.1");
+        assert_eq!(new.len(), 1, "{new:?}");
+        assert!(new[0].contains("OldBox") && new[0].contains("Map<String"), "{new:?}");
+        assert!(warns("4.14").is_empty());
+    }
+
+    #[test]
     fn unknown_name_is_an_error() {
         let src = "class T { void F() { noSuch(); } }\n";
         let result = crate::check(&[("t.zs".into(), src.into())]);

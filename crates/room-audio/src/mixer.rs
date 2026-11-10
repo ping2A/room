@@ -291,15 +291,28 @@ pub struct Mixer {
     pub sample_rate: u32,
     next_voice_sequence: u64,
     reverb: DukeReverb,
-    /// ZDoom sound-environment reverb for the listener's zone (`None` = off).
-    env_reverb: Option<crate::reverb::EnvReverb>,
-    /// "DSP Water" low-pass while the listener is under water.
-    water: Option<crate::reverb::WaterFilter>,
+    /// ZDoom sound-environment reverb for the listener's zone (`None` = off):
+    /// OpenAL Soft's EAX reverb, fed a first-order B-format send.
+    env_reverb: Option<crate::efx::EfxReverb>,
+    /// Listener under water: world voices play [`UNDERWATER_PITCH`] lower.
+    underwater: bool,
+    /// `snd_waterreverb` direct filter: high shelf at 5 kHz, gain 0.125, on
+    /// world voices (`EnvFilters[0]`); `None` = dry path unfiltered.
+    water_filter: Option<[crate::efx::Biquad; 2]>,
     /// Game paused: voices without `NOPAUSE` / `UI` hold their place silently.
     pub paused: bool,
-    /// Scratch send buffer for the environment reverb.
+    /// Scratch B-format (W Y Z X) send buffer for the environment reverb.
     send: Vec<f32>,
+    /// Scratch dry buffer for world voices while `water_filter` is on.
+    world: Vec<f32>,
 }
+
+/// UZDoom `PITCH_MULT`: world sounds drop about four semitones under water.
+pub const UNDERWATER_PITCH: f32 = 0.793_700_5;
+/// UZDoom's under-water direct filter (`AL_LOWPASS_GAINHF` 0.125; OpenAL's
+/// low-pass is a 5 kHz high shelf).
+const WATER_GAIN_HF: f32 = 0.125;
+const WATER_HF_REFERENCE: f32 = 5000.0;
 
 impl Default for Mixer {
     fn default() -> Self {
@@ -317,9 +330,11 @@ impl Default for Mixer {
             next_voice_sequence: 0,
             reverb: DukeReverb::new(ENGINE_SAMPLE_RATE),
             env_reverb: None,
-            water: None,
+            underwater: false,
+            water_filter: None,
             paused: false,
             send: Vec::new(),
+            world: Vec::new(),
         }
     }
 }
@@ -360,39 +375,49 @@ impl Mixer {
     }
 
     /// Select the ZDoom sound environment heard by the listener (`None`, or
-    /// an inaudible one such as "Off", disables it). The tail carries over
-    /// when only the parameters change.
+    /// an inaudible one such as "Off", disables it). As with OpenAL Soft, a
+    /// change of only gains, delays or panning glides; a change of decay,
+    /// density, diffusion or modulation cross-fades to a fresh network while
+    /// the old tail rings out.
     pub fn set_environment(&mut self, env: Option<&crate::reverb::ReverbEnv>) {
-        let env = env.filter(|e| e.software_water || e.props.room > -9000);
+        let env = env.filter(|e| e.props.room > -9000);
         match env {
-            None => {
-                self.env_reverb = None;
-                self.water = None;
-            }
-            Some(e) if e.software_water => {
-                self.env_reverb = None;
-                if self.water.is_none() {
-                    self.water = Some(crate::reverb::WaterFilter::default());
-                }
-            }
+            None => self.env_reverb = None,
             Some(e) => {
-                self.water = None;
-                match self.env_reverb.as_mut() {
-                    Some(r) if r.props() == &e.props => {}
-                    Some(r) => r.set_props(&e.props),
-                    None => {
-                        self.env_reverb =
-                            Some(crate::reverb::EnvReverb::new(self.sample_rate, &e.props));
-                    }
+                let p = crate::efx::EfxParams::from_props(&e.props);
+                let rv = self
+                    .env_reverb
+                    .get_or_insert_with(|| crate::efx::EfxReverb::new(self.sample_rate));
+                if rv.params() != Some(&p) {
+                    rv.set_params(&p);
                 }
             }
         }
     }
 
-    /// Whether an environment reverb (or the water filter) is active.
+    /// Listener under water (UZDoom `listener.underwater`, or a "DSP Water"
+    /// zone): world voices play [`UNDERWATER_PITCH`] lower, and with
+    /// `muffle` (`snd_waterreverb` with reverb on) their direct path loses
+    /// high frequencies. Pair with the "Underwater" environment.
+    pub fn set_underwater(&mut self, underwater: bool, muffle: bool) {
+        self.underwater = underwater;
+        let muffle = underwater && muffle;
+        match (muffle, self.water_filter.is_some()) {
+            (true, false) => {
+                let mut f = crate::efx::Biquad::default();
+                let f0 = (WATER_HF_REFERENCE / self.sample_rate.max(1) as f32).min(0.49);
+                f.set_shelf(true, f0, WATER_GAIN_HF, 1.0);
+                self.water_filter = Some([f, f]);
+            }
+            (false, true) => self.water_filter = None,
+            _ => {}
+        }
+    }
+
+    /// Whether an environment reverb (or the under-water filter) is active.
     #[must_use]
     pub fn environment_active(&self) -> bool {
-        self.env_reverb.is_some() || self.water.is_some()
+        self.env_reverb.is_some() || self.water_filter.is_some()
     }
 
     /// Looping world voices worth restoring after a savegame load
@@ -750,10 +775,16 @@ impl Mixer {
         out.fill(0.0);
         let frames = out.len() / 2;
         let mut finished = Vec::new();
-        let use_send = self.env_reverb.is_some() || self.water.is_some();
+        let send_decay = self.env_reverb.as_ref().and_then(|r| r.params()).map(|p| p.decay_time);
+        let use_send = send_decay.is_some();
         if use_send {
             self.send.clear();
-            self.send.resize(out.len(), 0.0);
+            self.send.resize(frames * 4, 0.0);
+        }
+        let muffle = self.water_filter.is_some();
+        if muffle {
+            self.world.clear();
+            self.world.resize(out.len(), 0.0);
         }
         for (vi, voice) in self.voices.iter_mut().enumerate() {
             let held = voice.flags.0 & (SoundFlags::NOPAUSE | SoundFlags::UI) != 0;
@@ -768,7 +799,8 @@ impl Mixer {
                 }
                 o => o,
             };
-            let to_send = use_send && voice.flags.0 & SoundFlags::UI == 0;
+            let world = voice.flags.0 & SoundFlags::UI == 0;
+            let to_send = use_send && world;
             let Some(pcm) = self.bank.get(voice.sound) else {
                 finished.push(vi);
                 continue;
@@ -812,6 +844,45 @@ impl Mixer {
             } else {
                 (gain_l, gain_r)
             };
+            // Reverb send: OpenAL encodes the source direction in first-order
+            // B-format and shapes the gain by distance (`WetGainAuto`).
+            let send = if to_send {
+                if is_duke {
+                    let g = (gain_l + gain_r) * 0.5;
+                    [g, 0.0, 0.0, 0.0]
+                } else {
+                    let base = voice.volume * self.master;
+                    let (dir, dist) = send_geometry(
+                        origin,
+                        self.listener,
+                        self.listener_facing,
+                        voice.attenuation,
+                        voice.flags,
+                    );
+                    let g = match dist {
+                        Some(d) => {
+                            let dry = attenuate(
+                                origin,
+                                self.listener,
+                                voice.attenuation,
+                                voice.flags.duke_distance_offset().map_or(0.0, f64::from),
+                            );
+                            base * crate::efx::send_distance_gain(d, dry, send_decay.unwrap_or(1.0))
+                        }
+                        None => base,
+                    };
+                    let c = crate::efx::bformat_coeffs(dir[0], dir[1], dir[2]);
+                    [g * c[0], g * c[1], g * c[2], g * c[3]]
+                }
+            } else {
+                [0.0; 4]
+            };
+            let step = if self.underwater && world {
+                voice.pitch * UNDERWATER_PITCH
+            } else {
+                voice.pitch
+            };
+            let dry_out: &mut [f32] = if muffle && world { &mut self.world } else { out };
             let mut pos = voice.cursor as f32;
             for f in 0..frames {
                 let idx = pos as usize;
@@ -824,13 +895,16 @@ impl Mixer {
                     break;
                 }
                 let s = pcm[idx];
-                out[f * 2] += s * gain_l;
-                out[f * 2 + 1] += s * gain_r;
+                dry_out[f * 2] += s * gain_l;
+                dry_out[f * 2 + 1] += s * gain_r;
                 if to_send {
-                    self.send[f * 2] += s * gain_l;
-                    self.send[f * 2 + 1] += s * gain_r;
+                    let b = &mut self.send[f * 4..f * 4 + 4];
+                    b[0] += s * send[0];
+                    b[1] += s * send[1];
+                    b[2] += s * send[2];
+                    b[3] += s * send[3];
                 }
-                pos += voice.pitch;
+                pos += step;
             }
             voice.cursor = pos as usize;
             if !voice.loop_ && voice.cursor >= pcm.len() {
@@ -845,20 +919,18 @@ impl Mixer {
                 self.voices.swap_remove(vi);
             }
         }
-        if let Some(rv) = self.env_reverb.as_mut() {
-            for (frame, send) in out.chunks_exact_mut(2).zip(self.send.chunks_exact(2)) {
-                let (wl, wr) = rv.process_frame(send[0], send[1]);
-                frame[0] += wl;
-                frame[1] += wr;
+        if let Some(f) = self.water_filter.as_mut() {
+            // Muffle the world voices' direct path; UI voices stay clear.
+            for (frame, w) in out.chunks_exact_mut(2).zip(self.world.chunks_exact(2)) {
+                frame[0] += f[0].process(w[0]);
+                frame[1] += f[1].process(w[1]);
             }
         }
-        if let Some(w) = self.water.as_mut() {
-            // Muffle world sounds only; UI voices stay dry.
-            for (frame, send) in out.chunks_exact_mut(2).zip(self.send.chunks_exact(2)) {
-                let mut wet = [send[0], send[1]];
-                w.process(&mut wet, self.sample_rate);
-                frame[0] += wet[0] - send[0];
-                frame[1] += wet[1] - send[1];
+        if let Some(rv) = self.env_reverb.as_mut() {
+            for (frame, b) in out.chunks_exact_mut(2).zip(self.send.chunks_exact(4)) {
+                let (wl, wr) = rv.process_bformat([b[0], b[1], b[2], b[3]]);
+                frame[0] += wl;
+                frame[1] += wr;
             }
         }
         if self.reverb_level > 0 {
@@ -905,6 +977,33 @@ fn origins_eq(a: SoundOrigin, b: SoundOrigin) -> bool {
         }
         _ => false,
     }
+}
+
+/// Direction `(front, left, up)` of a voice from the listener (zero when it
+/// has no position or sits on the listener, like UZDoom's head-relative
+/// sources) and its scaled distance (`None` when it does not attenuate).
+fn send_geometry(
+    origin: SoundOrigin,
+    listener: DVec3,
+    facing: Option<(f64, f64)>,
+    scale: f32,
+    flags: SoundFlags,
+) -> ([f32; 3], Option<f32>) {
+    let SoundOrigin::Point(p) = origin else {
+        return ([0.0; 3], None);
+    };
+    let (dx, dy, dz) = (p.x() - listener.x(), p.y() - listener.y(), p.z() - listener.z());
+    let dist = room_core::dmath::sqrt(dx * dx + dy * dy + dz * dz);
+    let attenuates = scale > 0.0 && flags.0 & SoundFlags::ATTN_NONE == 0;
+    let scaled = attenuates.then(|| (dist * f64::from(scale)) as f32);
+    if dist < 0.0004 || !attenuates {
+        return ([0.0; 3], scaled);
+    }
+    let (fx, fy) = facing.unwrap_or((1.0, 0.0));
+    let front = (fx * dx + fy * dy) / dist;
+    let left = (fx * dy - fy * dx) / dist;
+    #[allow(clippy::cast_possible_truncation)]
+    ([front as f32, left as f32, (dz / dist) as f32], scaled)
 }
 
 fn attenuate(origin: SoundOrigin, listener: DVec3, scale: f32, distance_offset: f64) -> f32 {
@@ -1350,6 +1449,51 @@ mod tests {
         // "Off" disables it.
         mix.set_environment(table.find(crate::reverb::ENV_OFF));
         assert!(!mix.environment_active());
+    }
+
+    #[test]
+    fn reverb_send_carries_the_source_direction() {
+        let table = crate::reverb::EnvironmentTable::builtin_only();
+        let wet = |y: f64| {
+            let mut mix = Mixer::new();
+            mix.set_listener(DVec3::ZERO, 0.0);
+            mix.set_environment(table.find(0x0A00));
+            mix.bank.insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 32]));
+            start(&mut mix, SoundOrigin::Point(DVec3::new(0.0, y, 0.0)), 0);
+            let mut out = vec![0.0f32; 8192];
+            mix.render(&mut out);
+            // Early reflections (after Hangar's 20 ms delay) keep the
+            // direction; the late tail is diffuse.
+            out[1600..3800].chunks_exact(2).fold((0.0, 0.0), |a, f| (a.0 + f[0] * f[0], a.1 + f[1] * f[1]))
+        };
+        let (l, r) = wet(200.0); // facing +X: +Y is on the left
+        assert!(l > r * 3.0, "left source wet l={l} r={r}");
+        let (l2, r2) = wet(-200.0);
+        assert!(r2 > l2 * 3.0, "right source wet l={l2} r={r2}");
+    }
+
+    #[test]
+    fn underwater_lowers_pitch_and_muffles_world_voices() {
+        // A 1-in-2 alternating (Nyquist) tone through 4 frames of output.
+        let tone: Vec<f32> = (0..400).map(|i| if i % 2 == 0 { 0.5 } else { -0.5 }).collect();
+        let run = |under: bool, muffle: bool, flags: u32| {
+            let mut mix = Mixer::new();
+            mix.bank.insert(SoundId::from_raw(1), Arc::from(tone.clone()));
+            mix.set_underwater(under, muffle);
+            start(&mut mix, SoundOrigin::None, flags);
+            let mut out = vec![0.0f32; 200];
+            mix.render(&mut out);
+            (mix.voices.first().map(|v| v.cursor), out[100..].iter().map(|s| s.abs()).sum::<f32>())
+        };
+        let (dry_cursor, dry) = run(false, false, 0);
+        let (wet_cursor, unmuffled) = run(true, false, 0);
+        assert_eq!(dry_cursor, Some(100));
+        assert_eq!(wet_cursor, Some(79), "pitch × {UNDERWATER_PITCH}");
+        let (_, muffled) = run(true, true, 0);
+        assert!(muffled < unmuffled * 0.5, "muffled {muffled} vs {unmuffled}");
+        let (ui_cursor, ui) = run(true, true, SoundFlags::UI);
+        assert_eq!(ui_cursor, Some(100));
+        assert!((ui - dry).abs() < 1e-3);
     }
 
     fn render_point(mix: &mut Mixer, at: DVec3) -> (f32, f32) {

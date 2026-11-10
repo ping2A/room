@@ -1415,9 +1415,11 @@ fn actors_with_tid(world: &World, tid: i32) -> Vec<ActorId> {
 }
 
 fn thing_set_dormant(world: &mut World, args: &[i32; 5], dormant: bool) -> i32 {
+    // `SoundEnvironment` things live in the zone state, not as actors.
+    let envs = world.activate_sound_environments(args[0], !dormant);
     let ids = actors_with_tid(world, args[0]);
     if ids.is_empty() {
-        return 0;
+        return i32::from(envs);
     }
     for id in ids {
         if let Some(a) = world.actors.get_mut(id) {

@@ -101,6 +101,35 @@ fn apply_psprite_fuzz(pixels: &mut [u8], w: u32, h: u32) {
     }
 }
 
+/// The part of a `w`×`h` RGBA image drawn at `(x0, y0)` inside the
+/// framebuffer rectangle `clip`, as `(x, y, w, h, pixels)`.
+fn crop_rgba(
+    pixels: &[u8],
+    x0: f32,
+    y0: f32,
+    w: u32,
+    h: u32,
+    clip: [f32; 4],
+) -> Option<(f32, f32, u32, u32, Vec<u8>)> {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+    let to_px = |v: f32, lim: u32| (v.round().max(0.0) as u32).min(lim);
+    let left = to_px(clip[0] - x0, w);
+    let top = to_px(clip[1] - y0, h);
+    let right = to_px(clip[2] - x0, w);
+    let bottom = to_px(clip[3] - y0, h);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    let (cw, ch) = (right - left, bottom - top);
+    let mut out = Vec::with_capacity((cw * ch * 4) as usize);
+    for row in top..bottom {
+        let start = ((row * w + left) * 4) as usize;
+        out.extend_from_slice(&pixels[start..start + (cw * 4) as usize]);
+    }
+    #[allow(clippy::cast_precision_loss)]
+    Some((x0 + left as f32, y0 + top as f32, cw, ch, out))
+}
+
 /// Full blit path: soft fonts + optional Doom picture cache for [`DrawCmd::Patch`].
 pub fn blit_draw_list_full(
     list: &UiDrawList,
@@ -112,8 +141,13 @@ pub fn blit_draw_list_full(
 ) {
     let sx = fb_w / list.virtual_w;
     let sy = fb_h / list.virtual_h;
+    // `DrawCmd::Clip`, in framebuffer pixels: `[x0, y0, x1, y1]`.
+    let mut clip: Option<[f32; 4]> = None;
     for cmd in &list.cmds {
         match cmd {
+            DrawCmd::Clip { rect } => {
+                clip = rect.map(|r| [r.x * sx, r.y * sy, (r.x + r.w) * sx, (r.y + r.h) * sy]);
+            }
             DrawCmd::Fill { rect, color } => {
                 sink.fill_rect(
                     rect.x * sx,
@@ -172,6 +206,7 @@ pub fn blit_draw_list_full(
                 tint,
                 alpha,
                 recolor,
+                corners,
             } => {
                 let dest_w = if size.x > 0.0 { size.x } else { 16.0 };
                 let dest_h = if size.y > 0.0 { size.y } else { 16.0 };
@@ -251,10 +286,22 @@ pub fn blit_draw_list_full(
                         if *mirror {
                             mirror_rgba_cols(&mut pixels, dw, dh);
                         }
-                        if angle.abs() > 0.01 {
+                        let warped = corners.iter().any(|c| c.x.abs() > 1e-3 || c.y.abs() > 1e-3);
+                        if warped {
+                            let offs = corners.map(|c| (c.x * sx, c.y * sy));
+                            let (out, qw, qh, ox, oy) =
+                                warp_rgba(&pixels, dw, dh, offs, *angle, *pivot_x, *pivot_y);
+                            sink.blit_rgba(x0 + ox, y0 + oy, qw, qh, &out);
+                        } else if angle.abs() > 0.01 {
                             let (rotated, rw, rh, ox, oy) =
                                 rotate_rgba(&pixels, dw, dh, *angle, *pivot_x, *pivot_y);
                             sink.blit_rgba(x0 + ox, y0 + oy, rw, rh, &rotated);
+                        } else if let Some([cx0, cy0, cx1, cy1]) = clip {
+                            if let Some((bx, by, bw, bh, cropped)) =
+                                crop_rgba(&pixels, x0, y0, dw, dh, [cx0, cy0, cx1, cy1])
+                            {
+                                sink.blit_rgba(bx, by, bw, bh, &cropped);
+                            }
                         } else {
                             sink.blit_rgba(x0, y0, dw, dh, &pixels);
                         }
@@ -335,6 +382,77 @@ fn apply_rgb_tint(pixels: &mut [u8], tint: [f32; 3]) {
 /// Positive degrees are counter-clockwise on a y-down screen.
 /// Returns the new buffer, its size, and the top-left shift from the old origin.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+/// Draw `src` (`width`×`height`) on the quad its corners make after moving
+/// them by `offs` (top-left, bottom-left, top-right, bottom-right, as UZDoom
+/// `A_OverlayVertexOffset`) and turning them `degrees` counter-clockwise about
+/// the pivot. Mapped like the hardware renderer: two triangles,
+/// (TL, BL, TR) and (BL, TR, BR), each affine. Returns the pixels, their size
+/// and their offset from the unwarped top-left.
+fn warp_rgba(
+    src: &[u8],
+    width: u32,
+    height: u32,
+    offs: [(f32, f32); 4],
+    degrees: f32,
+    pivot_x: f32,
+    pivot_y: f32,
+) -> (Vec<u8>, u32, u32, f32, f32) {
+    let w = width.max(1) as f32;
+    let h = height.max(1) as f32;
+    let base = [(0.0, 0.0), (0.0, h), (w, 0.0), (w, h)];
+    let uv = [(0.0f32, 0.0f32), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0)];
+    let (px, py) = (pivot_x * w, pivot_y * h);
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let mut v = [(0.0f32, 0.0f32); 4];
+    for i in 0..4 {
+        let dx = base[i].0 + offs[i].0 - px;
+        let dy = base[i].1 + offs[i].1 - py;
+        v[i] = (px + dx * cos + dy * sin, py - dx * sin + dy * cos);
+    }
+    let min_x = v.iter().map(|p| p.0).fold(f32::MAX, f32::min).floor();
+    let min_y = v.iter().map(|p| p.1).fold(f32::MAX, f32::min).floor();
+    let max_x = v.iter().map(|p| p.0).fold(f32::MIN, f32::max).ceil();
+    let max_y = v.iter().map(|p| p.1).fold(f32::MIN, f32::max).ceil();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let dw = (max_x - min_x).clamp(1.0, 4096.0) as u32;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let dh = (max_y - min_y).clamp(1.0, 4096.0) as u32;
+    let mut dst = vec![0u8; dw as usize * dh as usize * 4];
+    let tris = [[0usize, 1, 2], [1, 2, 3]];
+    for j in 0..dh {
+        for i in 0..dw {
+            let p = (min_x + i as f32 + 0.5, min_y + j as f32 + 0.5);
+            for t in &tris {
+                let (a, b, c) = (v[t[0]], v[t[1]], v[t[2]]);
+                let den = (b.1 - c.1) * (a.0 - c.0) + (c.0 - b.0) * (a.1 - c.1);
+                if den.abs() < 1e-6 {
+                    continue;
+                }
+                let l0 = ((b.1 - c.1) * (p.0 - c.0) + (c.0 - b.0) * (p.1 - c.1)) / den;
+                let l1 = ((c.1 - a.1) * (p.0 - c.0) + (a.0 - c.0) * (p.1 - c.1)) / den;
+                let l2 = 1.0 - l0 - l1;
+                let eps = -1e-4;
+                if l0 < eps || l1 < eps || l2 < eps {
+                    continue;
+                }
+                let u = l0 * uv[t[0]].0 + l1 * uv[t[1]].0 + l2 * uv[t[2]].0;
+                let vv = l0 * uv[t[0]].1 + l1 * uv[t[1]].1 + l2 * uv[t[2]].1;
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let sx = ((u * w) as u32).min(width.max(1) - 1);
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let sy = ((vv * h) as u32).min(height.max(1) - 1);
+                let si = (sy as usize * width as usize + sx as usize) * 4;
+                let di = (j as usize * dw as usize + i as usize) * 4;
+                if let (Some(s), Some(d)) = (src.get(si..si + 4), dst.get_mut(di..di + 4)) {
+                    d.copy_from_slice(s);
+                }
+                break;
+            }
+        }
+    }
+    (dst, dw, dh, min_x, min_y)
+}
+
 fn rotate_rgba(
     src: &[u8],
     width: u32,
@@ -468,6 +586,30 @@ mod tests {
     use crate::draw::{DrawCmd, Rgba, Vec2};
     use crate::font::{FontId, FontRegistry};
     use std::path::PathBuf;
+
+    #[test]
+    fn warp_rgba_moves_one_corner_and_stretches_the_quad() {
+        // 2×2: red, green / blue, white. Pull the top-right corner 4 right.
+        let src = [
+            255, 0, 0, 255, 0, 255, 0, 255, //
+            0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+        let offs = [(0.0, 0.0), (0.0, 0.0), (4.0, 0.0), (0.0, 0.0)];
+        let (dst, dw, dh, ox, oy) = warp_rgba(&src, 2, 2, offs, 0.0, 0.5, 0.5);
+        assert_eq!((dw, dh, ox, oy), (6, 2, 0.0, 0.0));
+        let px = |x: usize, y: usize| &dst[(y * dw as usize + x) * 4..(y * dw as usize + x) * 4 + 4];
+        assert_eq!(px(0, 0), &[255, 0, 0, 255]);
+        // The top row now reaches past x = 3 in green; the slanted right
+        // edge leaves the far corner and the bottom right empty.
+        assert_eq!(px(3, 0), &[0, 255, 0, 255]);
+        assert_eq!(px(5, 0)[3], 0, "outside the quad");
+        assert_eq!(px(5, 1)[3], 0, "outside the quad");
+        assert_eq!(px(0, 1), &[0, 0, 255, 255]);
+        // Untouched corners and no turn: same as the source.
+        let (same, w2, h2, _, _) = warp_rgba(&src, 2, 2, [(0.0, 0.0); 4], 0.0, 0.5, 0.5);
+        assert_eq!((w2, h2), (2, 2));
+        assert_eq!(same, src);
+    }
 
     #[test]
     fn rotate_rgba_sends_the_right_pixel_up() {

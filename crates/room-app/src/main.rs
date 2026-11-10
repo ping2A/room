@@ -43,7 +43,7 @@ use room_render::{
     ModelActorPose, ModelCatalog, OffscreenTarget, PARTICLE_TEX, PARTICLE_TEX_ADD, ParticleStore,
     PostChain, PostChainInputs, RenderSettings, SceneLists, SpriteInstance, SpriteOrient,
     TextureAnimator, UnlitPass, VoxelActorPose, VoxelCatalog, ZoneDraw, ZoneMeshes,
-    append_actor_models, append_decals, append_particles_ex, apply_glow_fullbright, build_scene,
+    append_actor_models, append_decals, append_particles_animated, apply_glow_fullbright, build_scene,
     build_scene_with_sky_ex_sized, build_zone_meshes, clip_scene_to_mirror_line, mirror_clip_plane,
     particle_tint_tex_name, read_rgba, read_texture_rgba, render_offscreen, scroll_sky_u,
     soft_disc_rgba, sprite_lump_candidates_rot, sprite_offset_delta, sprite_rotation_digit,
@@ -51,7 +51,7 @@ use room_render::{
 };
 use room_sim::mod_hud::layer as mod_hud_layer;
 use room_sim::{
-    ActorId, Buttons, ClassRegistry, FLAG_CORPSE, FLAG_COUNTKILL, FLAG_DONTDRAW, FLAG_DROPPED,
+    ActorId, Buttons, ClassRegistry, FLAG_CORPSE, FLAG_DONTDRAW, FLAG_DROPPED,
     FLAG_FLOAT, FLAG_MISSILE, FLAG_NOGRAVITY, FLAG_SPAWNCEILING, RenderStyle, ShotKind, StateTable,
     TicCmd, actor_light_level, check_sight, sprite_pose,
 };
@@ -360,8 +360,8 @@ fn main() {
             }
         }
     }
-    let (play, decaldef) = if args.play && !args.native_duke {
-        let (mut game, decaldef) = start_play_session(
+    let (play, decaldef, script_sbar, sbarinfo_bar) = if args.play && !args.native_duke {
+        let (mut game, decaldef, script_sbar, sbarinfo_bar) = start_play_session(
             &map,
             args.decorate.as_deref(),
             vfs.as_mut(),
@@ -456,9 +456,9 @@ fn main() {
                 eprintln!("room: use --title for the main menu");
             }
         }
-        (Some(game), decaldef)
+        (Some(game), decaldef, script_sbar, sbarinfo_bar)
     } else {
-        (None, None)
+        (None, None, None, None)
     };
     let (duke_session, duke_renderer, duke_sound_bank, duke_campaign_content, duke_start_state) =
         if args.native_duke {
@@ -671,6 +671,9 @@ fn main() {
         hit_flash: std::collections::BTreeMap::new(),
         heat_haze_tics: 0,
         decaldef,
+        script_sbar,
+        sbarinfo_bar,
+        althud_bar: None,
         sky_texture: initial_sky,
         sky_cubemap: initial_cube,
         skyboxes,
@@ -696,6 +699,7 @@ fn main() {
         post_ping: None,
         post_ldr: None,
         post_chain: None,
+        hw_post: None,
         render_settings: RenderSettings::default(),
         ephemeral_shaders: args.combat_demo,
         canvas_gpu: None,
@@ -841,6 +845,9 @@ fn main() {
         pad_pressed_since_tic: 0,
         mod_buttons: ModButtonState::default(),
         weapon_impulses: WeaponImpulseState::default(),
+        inv_cmd: 0,
+        show_scores: false,
+        net_save_cmd: None,
         audio,
     };
     if let Some(audio) = &app.audio {
@@ -874,6 +881,17 @@ fn main() {
         for (key, cmd) in keyconf_default_binds(conf) {
             app.keyconf_binds.insert(key.to_ascii_lowercase(), cmd);
         }
+    }
+    // UZDoom's inventory keys, where Room has no other use for them.
+    for (key, cmd) in [
+        ("pgup", "invprev"),
+        ("pgdn", "invnext"),
+        ("end", "invuse"),
+        ("\\", "+showscores"),
+    ] {
+        app.keyconf_binds
+            .entry(key.to_owned())
+            .or_insert_with(|| cmd.to_owned());
     }
     if app.net.is_none() {
         let local_name = if !args.name.is_empty() {
@@ -2061,6 +2079,13 @@ struct ViewerApp {
     heat_haze_tics: u8,
     /// DECALDEF registry for fader / pic lookup (`--play`).
     decaldef: Option<room_defs::DecalInfo>,
+    /// `GameInfo.StatusBarClass` running in ZScript (else the native bar).
+    script_sbar: Option<room_ui::ScriptStatusBar>,
+    /// A mod's SBARINFO bar; drawn instead of the stock bar.
+    sbarinfo_bar: Option<room_ui::SbarInfoBar>,
+    /// `hud_althud` runner when no ZScript status bar is loaded (made on
+    /// first use; `Err` once loading failed).
+    althud_bar: Option<Result<room_ui::ScriptStatusBar, String>>,
     /// Current MAPINFO `sky1` texture (empty = default bind).
     sky_texture: String,
     /// Active GLDEFS cubemap (when complete); else cylinder uses [`Self::sky_texture`].
@@ -2069,6 +2094,9 @@ struct ViewerApp {
     skyboxes: std::collections::BTreeMap<String, CubemapFaces>,
     /// GLDEFS dynamic lights + object-frame bindings (M10).
     gldefs: GlDefs,
+    /// GLDEFS `HardwareShader PostProcess` runners for `Enabled` shaders
+    /// (built on first frame; docs/36 UZ6). `None` = not built yet.
+    hw_post: Option<(wgpu::TextureFormat, Vec<room_render::HardwarePostRunner>)>,
     /// MODELDEF registry (M10).
     modeldefs: ModelDefs,
     /// Cached MODELDEF meshes.
@@ -2271,6 +2299,12 @@ struct ViewerApp {
     mod_buttons: ModButtonState,
     /// KEYCONF `+reload` / `+zoom` / `+user1`–`4` latch (`docs/33` BD4).
     weapon_impulses: WeaponImpulseState,
+    /// One-tic inventory-bar buttons from `invnext` / `invprev` / `invuse`.
+    inv_cmd: u32,
+    /// `+showscores` held.
+    show_scores: bool,
+    /// Host's net save (`false`) / load (`true`) to send with the next tic.
+    net_save_cmd: Option<(bool, u8)>,
     /// Native audio output (mixer + music on the device thread).
     audio: Option<AudioOut>,
 }
@@ -2389,6 +2423,54 @@ fn load_modeldefs(vfs: Option<&Vfs>) -> ModelDefs {
         .unwrap_or_default()
 }
 
+/// The playsim's bone override in the renderer's form (UZ7).
+fn bone_override(b: &room_sim::BoneOffset) -> room_render::BoneOverride {
+    let comp = |c: &room_sim::BoneComponent| {
+        (c.mode != 0 || c.prev_mode != 0).then(|| room_render::BoneComponent {
+            mode: c.mode,
+            prev_mode: c.prev_mode,
+            switch_tic: c.switch_tic,
+            interp_len: c.interp_len,
+            prev: c.prev.map(|v| v as f32),
+            cur: c.cur.map(|v| v as f32),
+        })
+    };
+    room_render::BoneOverride {
+        translation: comp(&b.translation),
+        rotation: comp(&b.rotation),
+        scaling: comp(&b.scaling),
+    }
+}
+
+/// Compile every GLDEFS `HardwareShader PostProcess` marked `Enabled`
+/// (UZDoom 5.0 auto uniforms + `LastInputTexture`; docs/36 UZ6).
+fn build_hw_post_runners(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    gldefs: &GlDefs,
+    vfs: &Vfs,
+) -> Vec<room_render::HardwarePostRunner> {
+    let mut out = Vec::new();
+    for def in gldefs.hardware_shaders.values() {
+        if def.kind != room_defs::HardwareShaderKind::PostProcess || !def.enabled {
+            continue;
+        }
+        let Some(src) = vfs
+            .find_full(&def.shader)
+            .and_then(|id| vfs.read(id).ok())
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+        else {
+            eprintln!("room: post shader {}: lump {} not found", def.name, def.shader);
+            continue;
+        };
+        match room_render::compile_post_glsl(def, &src) {
+            Ok(compiled) => out.push(room_render::HardwarePostRunner::new(device, format, &compiled)),
+            Err(e) => eprintln!("room: post shader {}: {e}", def.name),
+        }
+    }
+    out
+}
+
 fn load_gldefs(vfs: Option<&Vfs>) -> GlDefs {
     let defaults = GlDefs::doom_attack_defaults();
     let mut out = GlDefs::default();
@@ -2494,7 +2576,15 @@ fn start_play_session(
     audio_rate: u32,
     rng_seed: u32,
     coop_players: u8,
-) -> (Headless, Option<room_defs::DecalInfo>) {
+) -> (
+    Headless,
+    Option<room_defs::DecalInfo>,
+    Option<room_ui::ScriptStatusBar>,
+    Option<room_ui::SbarInfoBar>,
+) {
+    let mut sbar_class: Option<String> = std::env::var("ROOM_STATUSBAR").ok().filter(|v| !v.is_empty());
+    let mut script_sbar = None;
+    let mut sbarinfo_bar = None;
     let mut game = Headless::new(GameOptions {
         skill,
         rng_seed,
@@ -2520,12 +2610,23 @@ fn start_play_session(
             }
             game.set_complevel(defs.complevel);
             zscript_handlers = defs.zscript_event_handlers();
+            if sbar_class.is_none() {
+                sbar_class = defs.mapinfo.statusbar_class.clone();
+            }
             game.set_mapinfo(Arc::new(defs.mapinfo));
             game.set_terrain(&defs.terrain);
             game.set_sndseq(&defs.sndseq);
             game.set_lockdefs(&defs.lockdefs, Some("Doom"));
             game.set_decaldef(&defs.decaldef);
             decaldef = Some(defs.decaldef.clone());
+            // A mod's SBARINFO replaces the stock bar (UZDoom `DSBarInfo`).
+            if let Some(info) = defs.sbarinfo.clone().filter(|i| !i.statusbars.is_empty()) {
+                eprintln!(
+                    "room: SBARINFO status bar ({})",
+                    info.statusbars.keys().cloned().collect::<Vec<_>>().join(", ")
+                );
+                sbarinfo_bar = Some(room_ui::SbarInfoBar::new(info, &defs.fonts));
+            }
             game.set_keyconf(&defs.keyconf);
             if let Some(id) = vfs.find_any_ns("CONEVT") {
                 if let Ok(bytes) = vfs.read(id) {
@@ -2559,6 +2660,18 @@ fn start_play_session(
         // Compile ZScript from mounted archives (docs/34) — was missing from play path.
         let zs = room_game::load_zscript_from_vfs(vfs);
         room_game::log_zscript_report(&zs, &zscript_handlers);
+        // `GameInfo.StatusBarClass`: a ZScript `BaseStatusBar` over the UZDoom library.
+        if let Some(class) = sbar_class.as_deref() {
+            match room_game::load_status_bar_program(vfs)
+                .and_then(|prog| room_ui::ScriptStatusBar::new(prog, class))
+            {
+                Ok(bar) => {
+                    eprintln!("room: ZScript status bar {}", bar.class());
+                    script_sbar = Some(bar);
+                }
+                Err(e) => eprintln!("room: status bar {class}: {e} (native bar kept)"),
+            }
+        }
         game.set_zscript(zs.program, zscript_handlers);
         if let Some(path) = decorate {
             let src = match std::fs::read_to_string(path) {
@@ -2690,7 +2803,7 @@ fn start_play_session(
     eprintln!(
         "room: play mode — WASD move, ←→/Q turn, mouse look, wheel weapon, E use, Ctrl/LMB attack, Tab automap (=/- / wheel zoom), Esc pause, F6–F9 cheats, F12 screenshot, F11 GIF"
     );
-    (game, decaldef)
+    (game, decaldef, script_sbar, sbarinfo_bar)
 }
 
 fn draw_console_overlay(list: &mut UiDrawList, console: &Console, line: &str) {
@@ -3802,21 +3915,22 @@ impl ViewerApp {
         };
         let reverb_on = cvar_on("snd_reverb");
         let water = cvar_on("snd_waterreverb");
-        let (paused, env) = match self.play.as_ref() {
+        let (paused, env, underwater) = match self.play.as_ref() {
             Some(game) if game.state == GameState::Level => {
-                let paused = game.world().is_some_and(|w| w.paused);
-                let env = if reverb_on {
-                    game.listener_environment(self.local_seat, water).cloned()
-                } else {
-                    None
-                };
-                (paused, env)
+                // `PowerTimeFreezer` pauses world sound too (`S_PauseSound`).
+                let paused = game.world().is_some_and(|w| w.paused || w.level.frozen_power);
+                // `snd_reverb` off is UZDoom without an effect slot: no
+                // reverb and no water filter, but the pitch still drops.
+                let heard = game.listener_sound(self.local_seat, water && reverb_on);
+                let env = if reverb_on { heard.env.cloned() } else { None };
+                (paused, env, heard.underwater)
             }
-            _ => (false, None),
+            _ => (false, None, false),
         };
         if let Ok(mut shared) = audio.shared.lock() {
             shared.mixer.set_paused(paused);
             shared.mixer.set_environment(env.as_ref());
+            shared.mixer.set_underwater(underwater, water && reverb_on);
         }
     }
 
@@ -4358,7 +4472,11 @@ impl ViewerApp {
             apply_glow_fullbright(&mut scene, &glow);
         }
         let mut fog_density = 0.0f32;
+        let mut thick_fog = (0.0f32, 0.0f32);
+        let mut sky_fog = 0.0f32;
         if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
+            thick_fog = world.thick_fog().unwrap_or((0.0, 0.0));
+            sky_fog = world.sky_fog;
             // ACS `SetSkyScrollSpeed`: map-units/tic → UV turns (full circle ≈ 360°).
             let du = (world.sky_speed1 * f64::from(world.level.maptime) / 360.0) as f32;
             scroll_sky_u(&mut scene.sky_parts, du);
@@ -4402,26 +4520,18 @@ impl ViewerApp {
                         );
                     }
                 }
-                if self.render_settings.actor_sprite_shadow {
-                    let name = particle_tint_tex_name([16, 16, 16]);
-                    if self.materials.get(&name).is_none() {
-                        let rgba = soft_disc_rgba([16, 16, 16]);
-                        let _ = self.materials.upsert_rgba(
-                            &gpu.device,
-                            &gpu.queue,
-                            &name,
-                            16,
-                            16,
-                            &rgba,
-                        );
-                    }
-                }
             }
-            append_particles_ex(
+            let anim_tic = self
+                .play
+                .as_ref()
+                .and_then(|g| g.world())
+                .map_or(0, |w| u32::try_from(w.level.maptime).unwrap_or(0));
+            append_particles_animated(
                 &mut scene,
                 &self.particles,
                 &self.camera,
                 self.render_settings.particle_fx,
+                Some((&self.tex_anim, anim_tic)),
             );
             if let (Some(vfs), poses) = (self.vfs.as_ref(), self.collect_model_poses()) {
                 if !poses.is_empty() && !self.modeldefs.by_actor.is_empty() {
@@ -4509,6 +4619,15 @@ impl ViewerApp {
                     ),
                 ))
             });
+        if let (Some(gpu), Some(vfs), Some(frame_color)) =
+            (self.gpu.as_ref(), self.vfs.as_ref(), self.frame_color.as_ref())
+        {
+            let format = frame_color.0.format();
+            if self.hw_post.as_ref().is_none_or(|(f, _)| *f != format) {
+                let runners = build_hw_post_runners(&gpu.device, format, &self.gldefs, vfs);
+                self.hw_post = Some((format, runners));
+            }
+        }
         let capture_rgba = {
             let (
                 Some(surface),
@@ -4545,6 +4664,8 @@ impl ViewerApp {
             // Linear scene when the post chain will tonemap / encode (SH0).
             pass.encode_srgb = !use_post;
             pass.set_fog_density(fog_density);
+            pass.set_thick_fog(thick_fog.0, thick_fog.1);
+            pass.set_sky_fog(sky_fog);
             pass.inverse_colormap = inverse_colormap;
             pass.time += dt; // fuzz animation clock
             pass.prepare(gpu, &self.camera, &scene);
@@ -4561,6 +4682,9 @@ impl ViewerApp {
             }
             // Build UI draw list (status bar + optional automap) then blit to canvas.
             let mut ui = UiDrawList::new();
+            // SBARINFO bar: its commands, own screen placement, and where in
+            // `ui` it goes (above the weapon, under messages and scores).
+            let mut sbarinfo_out: Option<(usize, room_ui::SbarInfoOutput)> = None;
             match self.play.as_ref().map(|g| g.state) {
                 Some(GameState::Title) => {
                     let elapsed_ms = self
@@ -4614,6 +4738,24 @@ impl ViewerApp {
                         })
                         .unwrap_or_default();
                     draw_intermission(&mut ui, &stats, 320.0, 200.0);
+                    // Netplay ready-vote: who has pressed use / fire.
+                    if self.net.is_some() {
+                        if let Some(game) = self.play.as_ref() {
+                            let (ready, of) = game.intermission_votes();
+                            if of > 0 {
+                                let me = game.intermission_ready
+                                    & room_sim::seat_bit(usize::from(self.local_seat))
+                                    != 0;
+                                let line = if me {
+                                    format!("READY  {ready}/{of}")
+                                } else {
+                                    format!("PRESS USE WHEN READY  {ready}/{of}")
+                                };
+                                let w = room_ui::measure_stcfn_string(&line, 1.0);
+                                room_ui::draw_stcfn_string(&mut ui, 160.0 - w / 2.0, 188.0, &line, 1.0);
+                            }
+                        }
+                    }
                 }
                 Some(GameState::Finale) => {
                     let map_name = self
@@ -4664,12 +4806,13 @@ impl ViewerApp {
                 _ => {
                     if self.automap {
                         let seat = usize::from(self.local_seat);
-                        let allmap = self
-                            .play
-                            .as_ref()
-                            .and_then(|g| g.world())
-                            .and_then(|w| w.players.get(seat).and_then(|p| p.as_ref()))
-                            .is_some_and(|p| p.allmap);
+                        // `PowerScanner` reveals the map while it runs.
+                        let allmap = self.play.as_ref().and_then(|g| g.world()).is_some_and(|w| {
+                            w.players.get(seat).and_then(|p| p.as_ref()).is_some_and(|p| {
+                                p.allmap
+                                    || p.mo.is_some_and(|mo| room_sim::powerups::reveals_map(w, mo))
+                            })
+                        });
                         let view = AutomapView {
                             center_x: f64::from(self.camera.eye.x),
                             center_y: f64::from(self.camera.eye.y),
@@ -4742,6 +4885,9 @@ impl ViewerApp {
                             if !self.hud.overlay_patch.is_empty() {
                                 let _ = self.patches.ensure(vfs, &self.hud.overlay_patch);
                             }
+                            for layer in &self.hud.layers {
+                                let _ = self.patches.ensure(vfs, &layer.patch);
+                            }
                         }
                         let weapon_cmds = ui.cmds.len();
                         let soft = self.patches.get(&self.hud.weapon_patch);
@@ -4769,6 +4915,70 @@ impl ViewerApp {
                             frac,
                             self.hud.overlay_interpolate,
                         );
+                        // Extra `A_Overlay` layers (UZDoom draws them by id around the gun).
+                        let draw_layers = |ui: &mut room_ui::UiDrawList,
+                                           pick: &dyn Fn(i32) -> bool| {
+                            for layer in self.hud.layers.iter().filter(|l| pick(l.id)) {
+                                let Some(soft_layer) = self.patches.get(&layer.patch) else {
+                                    continue;
+                                };
+                                let (lbx, lby) = overlay_bob(
+                                    self.weapon_bob_prev,
+                                    (self.hud.bob_x, self.hud.bob_y),
+                                    frac,
+                                    layer.interpolate,
+                                );
+                                let mut x = overlay_layer_bob(
+                                    lbx,
+                                    self.hud.bob_ofs_x,
+                                    layer.add_bob,
+                                    layer.add_weapon,
+                                ) + layer.ofs_x;
+                                if layer.mirror {
+                                    x = -x;
+                                }
+                                let y = overlay_layer_bob(
+                                    lby,
+                                    self.hud.bob_ofs_y,
+                                    layer.add_bob,
+                                    layer.add_weapon,
+                                ) + layer.ofs_y;
+                                let first = ui.cmds.len();
+                                draw_weapon_tinted(
+                                    ui,
+                                    &layer.patch,
+                                    self.hud.fullscreen,
+                                    Some(soft_layer),
+                                    x,
+                                    y,
+                                    self.hud.weapon_light,
+                                    layer.bright,
+                                    layer.fuzz,
+                                    layer.alpha,
+                                    layer.scale_x,
+                                    layer.scale_y,
+                                    layer.flip,
+                                    layer.pivot_x,
+                                    layer.pivot_y,
+                                    layer.angle,
+                                    layer.tint.0,
+                                    layer.tint.1,
+                                    layer.tint.2,
+                                    false,
+                                    layer.pivot_percent,
+                                );
+                                room_ui::set_patch_corners(
+                                    ui,
+                                    first,
+                                    layer.vertex,
+                                    layer.scale_x,
+                                    layer.scale_y,
+                                    layer.flip,
+                                );
+                            }
+                        };
+                        draw_layers(&mut ui, &|id| id < 1);
+                        let gun_first = ui.cmds.len();
                         draw_weapon_tinted(
                             &mut ui,
                             &self.hud.weapon_patch,
@@ -4792,8 +5002,17 @@ impl ViewerApp {
                             self.hud.weapon_mirror,
                             self.hud.weapon_pivot_percent,
                         );
+                        room_ui::set_patch_corners(
+                            &mut ui,
+                            gun_first,
+                            self.hud.weapon_vertex,
+                            self.hud.weapon_scale_x * vm_scale,
+                            self.hud.weapon_scale_y * vm_scale,
+                            self.hud.weapon_flip,
+                        );
                         if !self.hud.overlay_patch.is_empty() {
                             if let Some(soft_overlay) = self.patches.get(&self.hud.overlay_patch) {
+                                let ov_first = ui.cmds.len();
                                 draw_weapon_tinted(
                                     &mut ui,
                                     &self.hud.overlay_patch,
@@ -4827,8 +5046,17 @@ impl ViewerApp {
                                     self.hud.overlay_mirror,
                                     self.hud.overlay_pivot_percent,
                                 );
+                                room_ui::set_patch_corners(
+                                    &mut ui,
+                                    ov_first,
+                                    self.hud.overlay_vertex,
+                                    self.hud.overlay_scale_x,
+                                    self.hud.overlay_scale_y,
+                                    self.hud.overlay_flip,
+                                );
                             }
                         }
+                        draw_layers(&mut ui, &|id| id > 1 && id < 1000);
                         // A flash frame without a lump draws nothing (GZDoom).
                         if let Some(soft_flash) = self.patches.get(&self.hud.flash_patch) {
                             draw_weapon_lit(
@@ -4850,10 +5078,34 @@ impl ViewerApp {
                                 0.0,
                             );
                         }
+                        draw_layers(&mut ui, &|id| id > 1000);
                         if self.hud.inverse_colormap() {
                             ui.invert_since(weapon_cmds);
                         }
                         draw_crosshair(&mut ui, self.hud.crosshair);
+                        // `PowerTargeter` reticle (TRGTA0 centre, B0 / C0 sides).
+                        let targeter = self.play.as_ref().and_then(|g| g.world()).and_then(|w| {
+                            w.player_hud(usize::from(self.local_seat)).and_then(|h| h.targeter)
+                        });
+                        if let (Some(t), Some(vfs)) = (targeter, self.vfs.as_ref()) {
+                            let mut piece = |name: &str, x: f32, y: f32| {
+                                if let Some(p) = self.patches.ensure(vfs, name) {
+                                    let (w, h) = (f32::from(p.width), f32::from(p.height));
+                                    let pos = room_ui::Vec2::new(
+                                        x - f32::from(p.left_offset),
+                                        y - f32::from(p.top_offset),
+                                    );
+                                    ui.patch(name, pos, room_ui::Vec2::new(w, h));
+                                }
+                            };
+                            piece("TRGTA0", t.center.0, t.center.1);
+                            if let Some(x) = t.left_x {
+                                piece("TRGTB0", x, t.center.1);
+                            }
+                            if let Some(x) = t.right_x {
+                                piece("TRGTC0", x, t.center.1);
+                            }
+                        }
                     }
                     let (mod_hud_seat, mod_hud_tic) = self
                         .play
@@ -4898,7 +5150,170 @@ impl ViewerApp {
                             .is_some_and(|p| {
                                 p.player_state == room_sim::PlayerState::Dead && p.camera.is_some()
                             });
-                        if !spectating {
+                        let seat = usize::from(self.local_seat);
+                        // `hud_althud` replaces the full-screen HUD (UZDoom
+                        // `DrawAltHUD`, `screenblocks` 11).
+                        let althud = !spectating
+                            && self.hud.fullscreen
+                            && matches!(
+                                self.console.cvars.get("hud_althud"),
+                                Some(room_console::CvarValue::Bool(true) | room_console::CvarValue::Int(1..))
+                            )
+                            && world.status_bar_items(seat).is_some();
+                        if althud && self.script_sbar.is_none() && self.althud_bar.is_none() {
+                            self.althud_bar = Some(match self.vfs.as_ref() {
+                                Some(vfs) => room_game::load_status_bar_program(vfs)
+                                    .and_then(|prog| room_ui::ScriptStatusBar::new(prog, "DoomStatusBar")),
+                                None => Err("no VFS".to_owned()),
+                            });
+                            if let Some(Err(e)) = &self.althud_bar {
+                                eprintln!("room: alt HUD unavailable: {e}");
+                            }
+                        }
+                        let althud = althud
+                            && (self.script_sbar.is_some()
+                                || matches!(self.althud_bar, Some(Ok(_))));
+                        let use_sbarinfo = !spectating && !althud && self.sbarinfo_bar.is_some();
+                        let scripted = !spectating
+                            && (self.script_sbar.is_some() || althud || use_sbarinfo)
+                            && world.status_bar_items(seat).is_some();
+                        if scripted {
+                            let items = world.status_bar_items(seat).unwrap_or_default();
+                            let snap = room_ui::SbarSnapshot {
+                                health: self.hud.health,
+                                keys: self.hud.keys,
+                                slots: items.slots,
+                                face: self.hud.face.clone(),
+                                inventory: items.inventory,
+                                icons: items.icons,
+                                ready_weapon: items.ready_weapon,
+                                ammo1: items.ammo1,
+                                ammo2: items.ammo2,
+                                frags: self.hud.frags,
+                                inv_sel: items.inv_sel,
+                                inv_bar: items.inv_bar,
+                                inventory_tics: items.inventory_tics,
+                                weapons: items
+                                    .weapons
+                                    .into_iter()
+                                    .map(|(class, slot, ammo1, ammo2)| room_ui::SbarWeapon {
+                                        class,
+                                        slot,
+                                        ammo1,
+                                        ammo2,
+                                    })
+                                    .collect(),
+                                spawn_sprites: items.spawn_sprites,
+                                max_amounts: items.max_amounts,
+                                power_tics: items.power_tics,
+                            };
+                            if let Some(vfs) = self.vfs.as_ref() {
+                                for name in room_ui::ScriptStatusBar::althud_patches(&snap) {
+                                    let _ = self.patches.ensure(vfs, &name);
+                                }
+                                if use_sbarinfo {
+                                    if let Some(bar) = self.sbarinfo_bar.as_ref() {
+                                        for name in bar.wanted_patches(&snap) {
+                                            let _ = self.patches.ensure(vfs, &name);
+                                        }
+                                    }
+                                }
+                            }
+                            let patches = &self.patches;
+                            let dims = |name: &str| {
+                                patches.get(name).map(|p| room_ui::PatchDims {
+                                    w: f32::from(p.width),
+                                    h: f32::from(p.height),
+                                    left: f32::from(p.left_offset),
+                                    top: f32::from(p.top_offset),
+                                })
+                            };
+                            let first = ui.cmds.len();
+                            if use_sbarinfo {
+                                let (fb_w, fb_h) = self
+                                    .config
+                                    .as_ref()
+                                    .map(|c| (c.width as f32, c.height as f32))
+                                    .unwrap_or((1280.0, 720.0));
+                                let multiplayer = world.players.iter().flatten().count() > 1;
+                                let frame = room_ui::SbarInfoFrame {
+                                    snap: &snap,
+                                    fullscreen: self.hud.fullscreen,
+                                    screen: (fb_w, fb_h),
+                                    deathmatch: world.deathmatch,
+                                    teamplay: false,
+                                    multiplayer,
+                                    player_class: &self.hud.player_class,
+                                    hud_aspectscale: matches!(
+                                        self.console.cvars.get("hud_aspectscale"),
+                                        Some(room_console::CvarValue::Bool(true))
+                                    ),
+                                    dims: &dims,
+                                };
+                                if let Some(out) = self.sbarinfo_bar.as_ref().and_then(|b| b.draw(&frame)) {
+                                    sbarinfo_out = Some((first, out));
+                                } else if !self.hud.fullscreen {
+                                    // No bar for this mode in the lump: the stock bar.
+                                    DoomStatusBar.draw(&self.hud, &mut ui);
+                                }
+                            } else if althud {
+                                // `DBaseStatusBar::DrawAltHUD`: 640 / scale wide,
+                                // the height by the window's aspect ratio.
+                                let scale = match self.console.cvars.get("hud_scalefactor") {
+                                    Some(room_console::CvarValue::Float(f)) if *f > 0.0 => *f,
+                                    _ => 1.0,
+                                };
+                                let w = (640.0 / scale).round();
+                                let mut h = (w / self.camera.aspect.max(0.1)).round();
+                                if matches!(
+                                    self.console.cvars.get("hud_aspectscale"),
+                                    Some(room_console::CvarValue::Bool(true))
+                                ) {
+                                    h = (h * 5.0 / 6.0).round();
+                                }
+                                let cvars: Vec<(&str, i64)> = room_ui::HUD_CVARS
+                                    .iter()
+                                    .filter_map(|(name, _)| match self.console.cvars.get(name) {
+                                        Some(room_console::CvarValue::Int(v)) => Some((*name, i64::from(*v))),
+                                        Some(room_console::CvarValue::Bool(b)) => Some((*name, i64::from(*b))),
+                                        _ => None,
+                                    })
+                                    .collect();
+                                let bar = match self.script_sbar.as_mut() {
+                                    Some(bar) => Some(bar),
+                                    None => self.althud_bar.as_mut().and_then(|r| r.as_mut().ok()),
+                                };
+                                if let Some(bar) = bar {
+                                    for (name, v) in cvars {
+                                        bar.set_cvar(name, v);
+                                    }
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    bar.draw_althud(&snap, (w as i32, h as i32), &dims, &mut ui);
+                                    if let Some(e) = bar.last_error.take() {
+                                        static LOGGED_ALT: std::sync::Once = std::sync::Once::new();
+                                        LOGGED_ALT.call_once(|| eprintln!("room: alt HUD: {e}"));
+                                    }
+                                }
+                            } else if let Some(bar) = self.script_sbar.as_mut() {
+                                bar.draw(&snap, self.hud.fullscreen, 1.0, &dims, &mut ui);
+                                if let Some(e) = bar.last_error.take() {
+                                    static LOGGED: std::sync::Once = std::sync::Once::new();
+                                    LOGGED.call_once(|| {
+                                        eprintln!("room: status bar {}: {e}", bar.class());
+                                    });
+                                }
+                            }
+                            // Mod graphics the bar names beyond the stock set.
+                            if let Some(vfs) = self.vfs.as_ref() {
+                                for cmd in &ui.cmds[first..] {
+                                    if let DrawCmd::Patch { name, .. } = cmd {
+                                        if !self.patches.contains(name) {
+                                            let _ = self.patches.ensure(vfs, name);
+                                        }
+                                    }
+                                }
+                            }
+                        } else if !spectating {
                             if self
                                 .vfs
                                 .as_ref()
@@ -4908,6 +5323,38 @@ impl ViewerApp {
                             } else {
                                 DoomStatusBar.draw(&self.hud, &mut ui);
                             }
+                        }
+                    }
+                    // Scoreboard: held, or on its own while dead in deathmatch.
+                    if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
+                        let seat = usize::from(self.local_seat);
+                        let dead = world
+                            .players
+                            .get(seat)
+                            .and_then(|p| p.as_ref())
+                            .is_some_and(|p| p.player_state == room_sim::PlayerState::Dead);
+                        if self.show_scores || (world.deathmatch && dead) {
+                            let lines: Vec<room_ui::ScoreLine> = world
+                                .scoreboard()
+                                .into_iter()
+                                .map(|r| room_ui::ScoreLine {
+                                    seat: r.seat,
+                                    name: r.name,
+                                    frags: r.frags,
+                                    deaths: r.deaths,
+                                    kills: r.kills,
+                                    items: r.items,
+                                    secrets: r.secrets,
+                                })
+                                .collect();
+                            let l = &world.level;
+                            room_ui::draw_scoreboard(
+                                &mut ui,
+                                &lines,
+                                world.deathmatch,
+                                seat,
+                                [l.total_kills, l.total_items, l.total_secrets],
+                            );
                         }
                     }
                     // Pain tint stays off this letterboxed 320×200 layer. A fill
@@ -5150,22 +5597,67 @@ impl ViewerApp {
                     self.inner.blit_rgba(x + self.ox, y + self.oy, w, h, pixels);
                 }
             }
+            // The SBARINFO bar has its own placement: draw `ui` up to its
+            // slot, the bar, then the rest of `ui`.
+            let (ui_under, ui_over) = match &sbarinfo_out {
+                Some((at, _)) => {
+                    let at = (*at).min(ui.cmds.len());
+                    let mut under = UiDrawList::new();
+                    under.cmds = ui.cmds[..at].to_vec();
+                    let mut over = UiDrawList::new();
+                    over.cmds = ui.cmds[at..].to_vec();
+                    (under, Some(over))
+                }
+                None => (std::mem::take(&mut ui), None),
+            };
+            let mut sink = OffsetSink {
+                inner: Sink {
+                    canvas: &mut hud,
+                    duke_palette_state,
+                    remap_cache: std::collections::HashMap::new(),
+                },
+                ox,
+                oy,
+            };
             blit_draw_list_full(
-                &ui,
+                &ui_under,
                 320.0 * scale,
                 200.0 * scale,
                 Some(&self.fonts),
                 Some(&self.patches),
-                &mut OffsetSink {
-                    inner: Sink {
-                        canvas: &mut hud,
-                        duke_palette_state,
-                        remap_cache: std::collections::HashMap::new(),
-                    },
-                    ox,
-                    oy,
-                },
+                &mut sink,
             );
+            if let Some((_, bar)) = &sbarinfo_out {
+                if let Some(vfs) = self.vfs.as_ref() {
+                    for cmd in &bar.list.cmds {
+                        if let DrawCmd::Patch { name, .. } = cmd {
+                            let _ = self.patches.ensure(vfs, name);
+                        }
+                    }
+                }
+                sink.ox = bar.origin.0;
+                sink.oy = bar.origin.1;
+                blit_draw_list_full(
+                    &bar.list,
+                    bar.size.0,
+                    bar.size.1,
+                    Some(&self.fonts),
+                    Some(&self.patches),
+                    &mut sink,
+                );
+                sink.ox = ox;
+                sink.oy = oy;
+            }
+            if let Some(over) = &ui_over {
+                blit_draw_list_full(
+                    over,
+                    320.0 * scale,
+                    200.0 * scale,
+                    Some(&self.fonts),
+                    Some(&self.patches),
+                    &mut sink,
+                );
+            }
             let draw_list_end = hud.cmds.len();
             if self.duke_bonus_panel.is_none()
                 && let Some(session) = &self.duke_session
@@ -5540,6 +6032,43 @@ impl ViewerApp {
                     }
                 }
             }
+            // GLDEFS custom post shaders: frame_color → post_ping → frame_color.
+            if !ui_only
+                && let Some((_, runners)) = self.hw_post.as_mut()
+                && !runners.is_empty()
+            {
+                let game = self
+                    .play
+                    .as_ref()
+                    .and_then(|g| g.world())
+                    .map_or(0.0, |w| w.level.maptime as f32 / 35.0);
+                let times = room_render::PostTimes {
+                    delta: dt,
+                    time: pass.time,
+                    game,
+                };
+                let size = wgpu::Extent3d {
+                    width: frame_color.0.width(),
+                    height: frame_color.0.height(),
+                    depth_or_array_layers: 1,
+                };
+                for runner in runners.iter_mut() {
+                    runner.run(
+                        &gpu.device,
+                        &gpu.queue,
+                        &mut encoder,
+                        &frame_color.0,
+                        &post_ping.1,
+                        times,
+                        &[],
+                    );
+                    encoder.copy_texture_to_texture(
+                        post_ping.0.as_image_copy(),
+                        frame_color.0.as_image_copy(),
+                        size,
+                    );
+                }
+            }
             let (cap_w, cap_h) = self
                 .config
                 .as_ref()
@@ -5802,6 +6331,11 @@ impl ViewerApp {
             {
                 room_input::apply_gamepad(&mut bits, &pad, &self.gamepad_config());
             }
+            bits.buttons |= std::mem::take(&mut self.inv_cmd);
+            if let Some((load, slot)) = self.net_save_cmd.take() {
+                bits.buttons |= if load { Buttons::NETLOAD } else { Buttons::NETSAVE };
+                bits.weapon_select = slot;
+            }
             let cmd = TicCmd {
                 buttons: Buttons(bits.buttons),
                 pitch: bits.pitch,
@@ -5825,6 +6359,8 @@ impl ViewerApp {
             };
             let mut msgs = Vec::new();
             let mut cam = None;
+            // Set again below while a `VPSF_ORTHOGRAPHIC` view is active.
+            self.camera.ortho = None;
             let mut hud_snap = None;
             let mut planes = Vec::new();
             let mut side_offs = Vec::new();
@@ -5860,6 +6396,8 @@ impl ViewerApp {
             let mut weapon_smoke: Vec<(glam::Vec3, glam::Vec3, u64)> = Vec::new();
             let mut kick_impulse = (0.0_f32, 0.0_f32);
             let mut entered_intermission = false;
+            let mut vote_passed = false;
+            let mut net_save_req = None;
             let gore_level = match self.console.cvars.get("r_gore") {
                 Some(room_console::CvarValue::Int(i)) => *i,
                 _ => 1,
@@ -5909,6 +6447,16 @@ impl ViewerApp {
                 Some(room_console::CvarValue::Bool(b)) => *b,
                 Some(room_console::CvarValue::Int(i)) => *i != 0,
                 _ => false,
+            };
+            let predict_on = matches!(
+                self.console.cvars.get("cl_predict"),
+                Some(room_console::CvarValue::Bool(true) | room_console::CvarValue::Int(1..))
+            );
+            // Unreleased local input for `cl_predict` (netplay only).
+            let pending_local: Vec<TicCmd> = if predict_on {
+                self.net.as_ref().map(netplay::NetPlay::pending_local_cmds).unwrap_or_default()
+            } else {
+                Vec::new()
             };
             let hit_flash_on = match self.console.cvars.get("r_hitflash") {
                 Some(room_console::CvarValue::Bool(b)) => *b,
@@ -5971,6 +6519,10 @@ impl ViewerApp {
                 }
                 entered_intermission =
                     prev_state == GameState::Level && game.state == GameState::Intermission;
+                if game.take_intermission_advance() && self.net.is_some() {
+                    vote_passed = true;
+                }
+                net_save_req = game.take_net_save_request();
                 if let Some(vfs) = self.vfs.as_ref() {
                     // Userinfo `gender` for `$playersound` (per local seat).
                     if let Some(room_console::CvarValue::String(g)) = self.console.cvars.get("gender") {
@@ -6434,9 +6986,24 @@ impl ViewerApp {
                     if let Some(p) = world.players.get(seat).and_then(|p| p.as_ref()) {
                         // `ChangeCamera` view actor, else player mobj.
                         let view_id = p.camera.or(p.mo);
+                        // `cl_predict`: the confirmed pawn moved by the input
+                        // still in flight (view only; the world is untouched).
+                        let predicted = world
+                            .predict_player_view(seat, &pending_local)
+                            .and_then(|pv| {
+                                let mut a = world.actors.get(p.mo?)?.clone();
+                                a.pos = pv.pos;
+                                a.angle = pv.angle;
+                                a.pitch = pv.pitch;
+                                Some((a, pv.view_z))
+                            });
                         if let Some(vid) = view_id {
-                            if let Some(a) = world.actors.get(vid) {
-                                let z = if p.camera.is_some() {
+                            let confirmed = world.actors.get(vid);
+                            let a = predicted.as_ref().map(|(a, _)| a).or(confirmed);
+                            if let Some(a) = a {
+                                let z = if let Some((_, vz)) = predicted {
+                                    vz
+                                } else if p.camera.is_some() {
                                     let eye = if a.camera_height > 0.0 {
                                         a.camera_height
                                     } else if a.view_height > 0.0 {
@@ -6458,7 +7025,13 @@ impl ViewerApp {
                                 } else {
                                     room_sim::Player::zoomed_fov(base, p.weapon_zoom)
                                 };
-                                let (mut ex, mut ey, ez) = a.camera_eye(z);
+                                // `SetViewPos`: offset, floor / ceiling clamp
+                                // unless out-of-bounds, orthographic flag.
+                                let ((mut ex, mut ey, ez), ortho) = room_sim::view_eye(world, a, z);
+                                #[allow(clippy::cast_possible_truncation)]
+                                {
+                                    self.camera.ortho = ortho.map(|d| d as f32);
+                                }
                                 // GZDoom `R_SetupFrame` quake jiggers: classic
                                 // quakes push the eye along the view's forward
                                 // and side axes by up to ±intensity units.
@@ -6497,6 +7070,17 @@ impl ViewerApp {
             }
             if entered_intermission {
                 self.start_intermission_music();
+            }
+            if vote_passed {
+                self.play_advance_now();
+            }
+            if let Some(req) = net_save_req {
+                let name = format!("net{}", req.slot);
+                if req.load {
+                    self.load_play_save_local(Some(&name));
+                } else {
+                    self.save_play_save_local(Some(&name));
+                }
             }
             // Render lerp between previous and current plane Z.
             let frac = (self.tic_accum / tic).clamp(0.0, 1.0) as f64;
@@ -6827,6 +7411,32 @@ impl ViewerApp {
                 self.hud.keys = h.keys;
                 self.hud.face = h.face;
                 self.hud.weapon_patch = h.weapon_patch;
+                self.hud.layers = h
+                    .layers
+                    .iter()
+                    .map(|l| room_ui::HudLayer {
+                        id: l.id,
+                        patch: l.patch.clone(),
+                        ofs_x: l.ofs_x,
+                        ofs_y: l.ofs_y,
+                        alpha: l.alpha,
+                        scale_x: l.scale_x,
+                        scale_y: l.scale_y,
+                        flip: l.flip,
+                        mirror: l.mirror,
+                        angle: l.angle,
+                        pivot_x: l.pivot_x,
+                        pivot_y: l.pivot_y,
+                        pivot_percent: l.pivot_percent,
+                        add_bob: l.add_bob,
+                        add_weapon: l.add_weapon,
+                        interpolate: l.interpolate,
+                        fuzz: l.fuzz,
+                        bright: l.bright,
+                        tint: l.tint,
+                        vertex: l.vertex,
+                    })
+                    .collect();
                 self.hud.flash_patch = h.flash_patch;
                 self.hud.overlay_patch = h.overlay_patch;
                 self.hud.overlay_ofs_x = h.overlay_ofs_x;
@@ -6862,6 +7472,27 @@ impl ViewerApp {
                 self.hud.weapon_pivot_x = h.weapon_pivot_x;
                 self.hud.weapon_pivot_y = h.weapon_pivot_y;
                 self.hud.weapon_angle = h.weapon_angle;
+                self.hud.weapon_vertex = h.weapon_vertex;
+                self.hud.inv_bar = h
+                    .inv_bar
+                    .iter()
+                    .map(|(icon, amount)| {
+                        let (w, hh) = self
+                            .vfs
+                            .as_ref()
+                            .and_then(|v| self.patches.ensure(v, icon))
+                            .map_or((0.0, 0.0), |p| (f32::from(p.width), f32::from(p.height)));
+                        room_ui::HudInvItem {
+                            icon: icon.clone(),
+                            amount: *amount,
+                            w,
+                            h: hh,
+                        }
+                    })
+                    .collect();
+                self.hud.inv_sel = h.inv_sel;
+                self.hud.inv_bar_open = h.inv_bar_open;
+                self.hud.overlay_vertex = h.overlay_vertex;
                 self.hud.weapon_class = h.weapon_class.clone();
                 self.hud.player_class = h.player_class.clone();
                 self.hud.armor_type = h.armor_type.clone();
@@ -7781,11 +8412,43 @@ impl ViewerApp {
                 continue;
             }
             let light = (actor_light_level(world, a) as f32 / 255.0).clamp(0.2, 1.0);
+            let (sprite, frame) = a
+                .state
+                .and_then(|st| world.states.get(st))
+                .map_or((String::new(), 'A'), |st| (st.sprite.clone(), char::from(b'A' + st.frame.min(25))));
+            let m = &a.ext.model;
+            let req = |anim: &(String, f64, i32, i32, i32, i32, i32), start: u32| room_render::AnimRequest {
+                name: anim.0.clone(),
+                framerate: anim.1,
+                start_frame: anim.2,
+                loop_frame: anim.3,
+                end_frame: anim.4,
+                interpolate_tics: anim.5,
+                flags: anim.6,
+                start_tic: f64::from(start),
+            };
             #[allow(clippy::cast_possible_truncation)]
             out.push(ModelActorPose {
                 class: model_class,
                 origin: Vec3::new(a.pos.x() as f32, a.pos.y() as f32, a.pos.z() as f32),
                 light,
+                angle_deg: a.angle.degrees() as f32,
+                sprite,
+                frame,
+                tic: f64::from(world.level.maptime) + f64::from((self.tic_accum * 35.0).clamp(0.0, 1.0)),
+                animation: m.animation.as_ref().map(|anim| req(anim, m.animation_start)),
+                prev_animation: m
+                    .prev_animation
+                    .as_ref()
+                    .map(|(anim, start, switch)| (req(anim, *start), f64::from(*switch))),
+                bones: m.bones.iter().map(|b| (b.index, b.name.clone(), bone_override(b))).collect(),
+                animation_file: m.animation_file.as_ref().map(|(_, path, file)| {
+                    if path.is_empty() {
+                        file.clone()
+                    } else {
+                        room_render::join_model_path(path, file)
+                    }
+                }),
             });
         }
         out
@@ -8247,6 +8910,7 @@ impl ViewerApp {
                 #[allow(clippy::cast_possible_truncation)]
                 let mut alpha = alpha as f32;
                 let (mut scale_x, mut scale_y) = (a.scale_x, a.scale_y);
+                let blend_subtract = matches!(a.render_style, RenderStyle::Subtract);
                 if let Some(&(psx, psy, pa)) = self.sprite_extra_prev.get(&id) {
                     let t = frac as f32;
                     if a.extra_flags.get_name("INTERPOLATESCALE") {
@@ -8297,11 +8961,15 @@ impl ViewerApp {
                     flags,
                     additive,
                     view,
-                    // `+CASTSPRITESHADOW` / `+NOSPRITESHADOW` override the
-                    // monsters-only default of `r_actorspriteshadow`.
-                    !a.extra_flags.get_name("NOSPRITESHADOW")
-                        && ((flags & FLAG_COUNTKILL) != 0
-                            || a.extra_flags.get_name("CASTSPRITESHADOW")),
+                    blend_subtract,
+                    // `R_ShouldDrawSpriteShadow` (`r_actorspriteshadow` mode),
+                    // with the floor the shadow snaps to.
+                    room_sim::casts_sprite_shadow(world, id, self.render_settings.actor_sprite_shadow)
+                        .then(|| {
+                            room_sim::floor_at_xy(world, a.pos.x(), a.pos.y())
+                                .unwrap_or(a.pos.z())
+                                .min(a.pos.z())
+                        }),
                 ))
             })
             .collect();
@@ -8326,9 +8994,13 @@ impl ViewerApp {
             flags,
             additive,
             view,
+            blend_subtract,
             casts_shadow,
         ) in actors
         {
+            // `+ROLLSPRITE` / `+SQUAREPIXELS` keep square pixels.
+            let scale_x = scale_x * view.pixel_scale.0;
+            let scale_y = scale_y * view.pixel_scale.1;
             if self.actor_draws_voxel(id) {
                 continue;
             }
@@ -8346,9 +9018,13 @@ impl ViewerApp {
                 let rot_angle = if view.fixed_rotation {
                     view.rotation_angle_deg
                 } else {
-                    angle_deg
+                    angle_deg + view.rotation_offset_deg
                 };
-                let rot = sprite_rotation_digit(x, y, rot_angle, view_x, view_y);
+                let mut rot = sprite_rotation_digit(x, y, rot_angle, view_x, view_y);
+                if view.sprite_flip {
+                    // `GetSpriteFrame(…, flip)`: the mirrored rotation.
+                    rot = room_render::mirror_rotation(rot).unwrap_or(rot);
+                }
                 let mut candidates = sprite_lump_candidates_rot(&sprite, frame, rot);
                 if let Some(vfs) = self.vfs.as_ref() {
                     // Indexed lookup first: mixed-letter pairs (`BOS2A2C8`).
@@ -8404,14 +9080,38 @@ impl ViewerApp {
             }
             #[allow(clippy::cast_possible_truncation)]
             let yaw = angle_deg.to_radians() as f32;
-            let orient = if flags & room_sim::FLAG_FLATSPRITE != 0 {
+            // `+SPRITEFLIP` and `+XFLIP` each mirror the sprite.
+            flip_u ^= view.sprite_flip ^ view.flip_x;
+            let mut sprite_pos = Vec3::new(x as f32, y as f32, z_bottom as f32);
+            let mut orient = if flags & room_sim::FLAG_FLATSPRITE != 0 {
                 z_bottom = z;
+                sprite_pos.z = z as f32;
                 SpriteOrient::Flat { yaw }
             } else if flags & room_sim::FLAG_WALLSPRITE != 0 {
                 SpriteOrient::Wall { yaw }
             } else {
                 SpriteOrient::Billboard
             };
+            if view.isometric && self.camera.ortho.is_some() && matches!(orient, SpriteOrient::Billboard) {
+                // `+ISOMETRICSPRITES` under an orthographic camera: stretch,
+                // tilt toward the camera about the sprite's foot, and step
+                // back `radius·√2` along the view so stacked actors overlap.
+                let fwd = Vec3::new(self.camera.forward.x, self.camera.forward.y, 0.0).normalize_or_zero();
+                let pitch = (-self.camera.forward.z).clamp(-1.0, 1.0).asin().to_degrees();
+                let yaw_deg = f64::from(self.camera.forward.y.atan2(self.camera.forward.x)).to_degrees();
+                let (scale_iso, theta) = room_sim::isometric_sprite(radius, w, h, yaw_deg, f64::from(pitch));
+                h *= scale_iso;
+                #[allow(clippy::cast_possible_truncation)]
+                let t = (theta as f32).to_radians();
+                let up = (Vec3::Z * t.cos() + fwd * t.sin()).normalize_or_zero();
+                let right = Vec3::new(-fwd.y, fwd.x, 0.0);
+                #[allow(clippy::cast_possible_truncation)]
+                let back = fwd * (radius as f32 * std::f32::consts::SQRT_2);
+                sprite_pos -= back;
+                // `Facing` centres the quad on `pos`: lift by half the height.
+                sprite_pos += up * (h as f32 * 0.5);
+                orient = SpriteOrient::Facing { right, up };
+            }
             if std::env::var("ROOM_DEBUG_SPRITE")
                 .is_ok_and(|v| v == "*" || sprite.eq_ignore_ascii_case(&v))
             {
@@ -8420,7 +9120,7 @@ impl ViewerApp {
                 );
             }
             out.push(SpriteInstance {
-                pos: Vec3::new(x as f32, y as f32, z_bottom as f32)
+                pos: sprite_pos
                     + sprite_offset_delta(
                         self.camera.forward,
                         sprite_ofs_x as f32,
@@ -8438,25 +9138,56 @@ impl ViewerApp {
                 additive,
                 #[allow(clippy::cast_possible_truncation)]
                 roll: view.roll_rad as f32,
+                fx: room_render::SpriteFx {
+                    flip_v: view.flip_y,
+                    // UZDoom rolls about the actor's origin unless `+ROLLCENTER`.
+                    roll_pivot: (!view.roll_center).then(|| Vec3::new(x as f32, y as f32, z as f32)),
+                    no_dynlight: view.no_dynlight,
+                    subtract: blend_subtract,
+                },
             });
-            if self.render_settings.actor_sprite_shadow && casts_shadow && !fuzz {
-                let shadow_tex = particle_tint_tex_name([16, 16, 16]);
-                out.push(SpriteInstance {
-                    pos: Vec3::new(x as f32, y as f32, z as f32 + 0.5),
-                    width: (w as f32 * 0.9).max(8.0),
-                    height: (w as f32 * 0.35).max(4.0),
-                    light: 0.15,
-                    alpha: 0.35,
-                    fuzz: false,
-                    texture: shadow_tex,
-                    flip_u: false,
-                    anchor_u: 0.5,
-                    orient: SpriteOrient::Flat {
-                        yaw: angle_deg.to_radians() as f32,
-                    },
-                    additive: false,
-                    roll: 0.0,
-                });
+            if let (Some(floor), SpriteOrient::Billboard) = (casts_shadow, orient) {
+                // UZDoom sprite shadow: the same frame as a black stencil at
+                // `r_actorspriteshadowalpha`, its height ×0.15 about the
+                // floor (`r.Scale(…, sprscale.Y * 0.15)` with `z = floorz`),
+                // fading with height over `r_actorspriteshadowfadeheight`.
+                let base = self.render_settings.actor_sprite_shadow_alpha;
+                let fade = self.render_settings.actor_sprite_shadow_fade_height;
+                #[allow(clippy::cast_possible_truncation)]
+                let above = (z - floor).max(0.0) as f32;
+                let shadow_alpha = if fade > 0.0 {
+                    (base - above / fade).clamp(0.0, base)
+                } else {
+                    base
+                } * alpha;
+                if shadow_alpha > 0.0 {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let (bottom, height) = (
+                        (floor + (z_bottom - z) * 0.15) as f32,
+                        (h * 0.15) as f32,
+                    );
+                    // Always behind its sprite (UZDoom: `depth += EQUAL_EPSILON`).
+                    let away = Vec3::new(x as f32 - self.camera.eye.x, y as f32 - self.camera.eye.y, 0.0)
+                        .normalize_or_zero();
+                    out.push(SpriteInstance {
+                        pos: Vec3::new(x as f32, y as f32, bottom) + away,
+                        width: w as f32,
+                        height,
+                        light: 0.0,
+                        alpha: shadow_alpha,
+                        fuzz: false,
+                        texture: out.last().map(|s| s.texture.clone()).unwrap_or_default(),
+                        flip_u,
+                        anchor_u,
+                        orient: SpriteOrient::Billboard,
+                        additive: false,
+                        roll: 0.0,
+                        fx: room_render::SpriteFx {
+                            flip_v: view.flip_y,
+                            ..Default::default()
+                        },
+                    });
+                }
             }
         }
         Some(out)
@@ -8697,6 +9428,20 @@ impl ViewerApp {
     }
 
     fn play_advance(&mut self) {
+        // Netplay: leaving the intermission is a ready-vote carried by the
+        // lockstep (use / fire), so every peer goes on the same tic.
+        if self.net.is_some()
+            && self
+                .play
+                .as_ref()
+                .is_some_and(|g| g.state == GameState::Intermission)
+        {
+            return;
+        }
+        self.play_advance_now();
+    }
+
+    fn play_advance_now(&mut self) {
         let Some(game) = self.play.as_mut() else {
             return;
         };
@@ -9452,6 +10197,30 @@ impl ViewerApp {
         }
         if self.weapon_impulses.apply_cmd(trimmed) {
             return;
+        }
+        // Inventory bar (UZDoom `invnext` / `invprev` / `invuse`): one tic each.
+        match trimmed.to_ascii_lowercase().as_str() {
+            "invnext" => {
+                self.inv_cmd |= Buttons::INVNEXT;
+                return;
+            }
+            "invprev" => {
+                self.inv_cmd |= Buttons::INVPREV;
+                return;
+            }
+            "invuse" => {
+                self.inv_cmd |= Buttons::INVUSE;
+                return;
+            }
+            "+showscores" => {
+                self.show_scores = true;
+                return;
+            }
+            "-showscores" => {
+                self.show_scores = false;
+                return;
+            }
+            _ => {}
         }
         let head = trimmed
             .split_whitespace()
@@ -10334,7 +11103,36 @@ impl ViewerApp {
         }
     }
 
+    /// Netplay save / load go through the lockstep: only the host may ask,
+    /// and every peer then saves (loads) its own `net<N>` copy on the same tic.
+    /// Returns true when the request was handled here.
+    fn route_net_save(&mut self, slot: Option<&str>, load: bool) -> bool {
+        let Some(net) = self.net.as_ref() else {
+            return false;
+        };
+        if net.local.0 != 0 {
+            let what = if load { "load" } else { "save" };
+            self.messages
+                .push(format!("Only the host can {what} a net game"), 70);
+            return true;
+        }
+        // `net3` or `3` → slot 3; anything else is slot 0.
+        let n = slot
+            .map(|s| s.trim().trim_start_matches("net"))
+            .and_then(|s| s.parse::<u8>().ok())
+            .unwrap_or(0);
+        self.net_save_cmd = Some((load, n));
+        true
+    }
+
     fn save_play_save(&mut self, slot: Option<&str>) {
+        if self.route_net_save(slot, false) {
+            return;
+        }
+        self.save_play_save_local(slot);
+    }
+
+    fn save_play_save_local(&mut self, slot: Option<&str>) {
         let slot = save_slot_name(slot);
         let Some(game) = self.play.as_mut() else {
             self.messages.push("save: not in play mode", 70);
@@ -10372,6 +11170,13 @@ impl ViewerApp {
     }
 
     fn load_play_save(&mut self, slot: Option<&str>) {
+        if self.route_net_save(slot, true) {
+            return;
+        }
+        self.load_play_save_local(slot);
+    }
+
+    fn load_play_save_local(&mut self, slot: Option<&str>) {
         let slot = save_slot_name(slot);
         let (path, bytes) = match read_play_save_bytes(&slot) {
             Ok(v) => v,

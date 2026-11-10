@@ -136,7 +136,26 @@ pub fn call_action_args(
         "A_SetFloatSpeed" => a_set_float_speed(world, self_id, args),
         "A_SetFastSpeed" => a_set_fast_speed(world, self_id, args),
         "A_SetViewHeight" => a_set_view_height(world, self_id, args),
+        "A_ClearOverlays" if world.player_seat_of(self_id).is_some_and(|seat| {
+            world
+                .players
+                .get(usize::from(seat))
+                .is_some_and(Option::is_none)
+        }) =>
+        {
+            world
+                .psp_action_queue
+                .push((self_id, name.to_owned(), args.to_vec()));
+            ActionResult::Continue
+        }
         "A_ClearOverlays" => a_clear_overlays(world, self_id, args),
+        "A_Overlay" | "A_OverlayOffset" | "A_OverlayAlpha" | "A_OverlayScale"
+        | "A_OverlayFlags" | "A_OverlayPivot" | "A_OverlayPivotAlign" | "A_OverlayRotate"
+        | "A_OverlayRenderStyle" | "A_OverlayTranslation" | "A_OverlayVertexOffset"
+        | "A_WeaponOffset" => {
+            crate::think_player::overlay_action_from_actor(world, self_id, name, args);
+            ActionResult::Continue
+        }
         "A_SetAttackZOffset" => a_set_attack_z_offset(world, self_id, args),
         "A_SetObituary" => a_set_obituary(world, self_id, args),
         "A_SetHitObituary" => a_set_hit_obituary(world, self_id, args),
@@ -385,6 +404,14 @@ pub fn call_action_args(
         }
         "A_JumpIfTargetInsideMeleeRange" => {
             a_jump_if_target_melee_range(world, self_id, args, true)
+        }
+        // `A_Chase(melee, missile, flags)` (DECORATE / `A_DoChase`); bare
+        // `A_Chase` keeps the vanilla path.
+        "A_Chase" if !args.is_empty() => {
+            let melee = args.first().map(|a| a.trim().trim_matches('"').to_owned()).unwrap_or_default();
+            let missile = args.get(1).map(|a| a.trim().trim_matches('"').to_owned()).unwrap_or_default();
+            let flags = parse_i32_arg(args, 2, 0);
+            chase_with_labels(world, self_id, &melee, &missile, flags)
         }
         "A_Chase" => a_chase(world, self_id),
         "A_ExtChase" => a_ext_chase(world, self_id, args),
@@ -2231,14 +2258,19 @@ fn a_set_actor_flag(world: &mut World, self_id: ActorId, flag: u64, on: bool) ->
 fn a_clear_overlays(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
     let start = parse_i32_arg(args, 0, 0);
     let stop = parse_i32_arg(args, 1, 0);
+    let safety = parse_i32_arg(args, 2, 1) != 0
+        && !args
+            .get(2)
+            .is_some_and(|s| s.trim().eq_ignore_ascii_case("false"));
     let clear_layer_two = (start == 0 && stop == 0) || (start <= 2 && stop >= 2);
-    if clear_layer_two {
-        if let Some(seat) = world.player_seat_of(self_id) {
-            if let Some(player) = world
-                .players
-                .get_mut(usize::from(seat))
-                .and_then(Option::as_mut)
-            {
+    if let Some(seat) = world.player_seat_of(self_id) {
+        if let Some(player) = world
+            .players
+            .get_mut(usize::from(seat))
+            .and_then(Option::as_mut)
+        {
+            player.clear_extra_layers(start, stop, safety);
+            if clear_layer_two {
                 player.clear_secondary_overlay();
             }
         }
@@ -2956,9 +2988,11 @@ pub fn call_zscript_action(world: &mut World, self_id: ActorId, name: &str) -> A
         .zscript
         .set_ai_observers(world.zscript_ai_observers(self_id));
     world.zscript.set_resurrection_candidate(candidate);
+    let synced = world.zscript_sync_in(self_id);
     let _ = world
         .zscript
         .call_actor_virtual(self_id.index(), &class_name, name);
+    world.zscript_sync_out(self_id, synced);
     apply_zscript_actor_ops(world, self_id);
     ActionResult::Continue
 }
@@ -3012,28 +3046,7 @@ pub fn apply_zscript_actor_ops(world: &mut World, self_id: ActorId) {
                 missile,
                 flags,
             } => {
-                let is_default = |label: &str| {
-                    label.is_empty() || label.eq_ignore_ascii_case("_a_chase_default")
-                };
-                let use_melee = is_default(&melee) || !melee.eq_ignore_ascii_case("null");
-                let use_missile = is_default(&missile) || !missile.eq_ignore_ascii_case("null");
-                let resurrected = (flags & 8 != 0)
-                    .then(|| try_raise_corpse(world, self_id))
-                    .flatten();
-                let result = resurrected.unwrap_or_else(|| {
-                    a_chase_with_options(
-                        world,
-                        self_id,
-                        use_melee,
-                        use_missile,
-                        flags & 2 == 0,
-                        flags & 4 != 0,
-                        (!is_default(&melee)).then_some(melee.as_str()),
-                        (!is_default(&missile)).then_some(missile.as_str()),
-                        flags & 16 != 0,
-                        flags as i32,
-                    )
-                });
+                let result = chase_with_labels(world, self_id, &melee, &missile, flags as i32);
                 if let ActionResult::Jump(state) = result {
                     world.set_state(self_id, Some(state), false);
                 }
@@ -3279,6 +3292,16 @@ pub fn apply_zscript_actor_ops(world: &mut World, self_id: ActorId) {
                     actor.damage = dmg.max(0);
                 }
             }
+            room_zvm::ZsActorOp::SetEnvironment { id, name } => {
+                let at = world.actors.get(self_id).map(|a| (a.pos.x(), a.pos.y()));
+                if let Some(sector) = at.and_then(|(x, y)| crate::physics::sector_at_xy(world, x, y)) {
+                    match (id, name) {
+                        (Some(id), _) => world.set_sector_environment(sector, id),
+                        (None, Some(name)) => world.set_sector_environment_name(sector, &name),
+                        (None, None) => {}
+                    }
+                }
+            }
             room_zvm::ZsActorOp::FitSector => {
                 let pose = world
                     .actors
@@ -3433,6 +3456,8 @@ pub fn apply_zscript_actor_ops(world: &mut World, self_id: ActorId) {
         }
     }
     apply_zscript_tid_changes(world);
+    world.apply_zscript_level_ops();
+    world.apply_zscript_native_ops(Some(self_id));
 }
 
 fn apply_zscript_tid_changes(world: &mut World) {
@@ -4083,31 +4108,6 @@ fn particle_vector(
     room_core::DVec3::new(x * cos + y * sin, x * sin - y * cos, z)
 }
 
-/// `A_StopAllSounds` — drop every queued sound and tell the mixer to stop.
-fn a_stop_all_sounds(world: &mut World) -> ActionResult {
-    world.sound_events.clear();
-    world.sound_events.push(crate::world::SimSoundEvent {
-        name: String::new(),
-        check_name: None,
-        start_time: 0.0,
-        sound_class: None,
-        sound_gender: None,
-        source_id: None,
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-        volume: 0.0,
-        pitch: 1.0,
-        channel: 0,
-        adjust: crate::world::SimSoundAdjust::StopAll,
-        looping: false,
-        no_restart: false,
-        channel_flags: 0,
-        attenuation: 0.0,
-        seat: None,
-    });
-    ActionResult::Continue
-}
 
 /// Stop this actor's sounds on channels `lo..=hi` (`all` = every channel):
 /// drop matching queued starts, then tell the mixer.
@@ -7311,6 +7311,45 @@ pub(crate) fn check_missile_range(world: &mut World, self_id: ActorId, tid: Acto
     true
 }
 
+/// UZDoom `A_Chase(melee, missile, flags)` / `A_DoChase`: `_a_chase_default`
+/// (or empty) means the class's Melee / Missile state, `null` means none;
+/// `CHF_RESURRECT` tries `A_VileChase`'s raise first.
+pub(crate) fn chase_with_labels(
+    world: &mut World,
+    self_id: ActorId,
+    melee: &str,
+    missile: &str,
+    flags: i32,
+) -> ActionResult {
+    let is_default =
+        |label: &str| label.is_empty() || label.eq_ignore_ascii_case("_a_chase_default");
+    let is_null = |label: &str| label.eq_ignore_ascii_case("null") || label == "0";
+    let use_melee = !is_null(melee);
+    let use_missile = !is_null(missile);
+    if flags & 8 != 0
+        && let Some(r) = try_raise_corpse(world, self_id)
+    {
+        return r;
+    }
+    a_chase_with_options(
+        world,
+        self_id,
+        use_melee,
+        use_missile,
+        flags & 2 == 0,
+        flags & 4 != 0,
+        (use_melee && !is_default(melee)).then_some(melee),
+        (use_missile && !is_default(missile)).then_some(missile),
+        flags & 16 != 0,
+        // Room marks the UZDoom path (bit 30, outside CHF_*) so the vanilla
+        // `A_Chase` keeps its demo-exact order.
+        (flags & 0x3fff_ffff) | CHASE_UZDOOM,
+    )
+}
+
+/// Internal: chase called through UZDoom's `A_DoChase` entry points.
+const CHASE_UZDOOM: i32 = 1 << 30;
+
 /// `A_Chase`: 8-dir walk toward target (`P_NewChaseDir` / `P_Move`); Melee/Missile by range.
 pub(crate) fn a_chase(world: &mut World, self_id: ActorId) -> ActionResult {
     a_chase_with_options(
@@ -7331,6 +7370,8 @@ fn a_ext_chase(world: &mut World, self_id: ActorId, args: &[String]) -> ActionRe
             })
             .unwrap_or(default)
     };
+    // UZDoom: `A_DoChase(false, usemelee ? MeleeState : null, usemissile ?
+    // MissileState : null, playactive, nightmarefast, false, 0)`.
     a_chase_with_options(
         world,
         self_id,
@@ -7341,7 +7382,7 @@ fn a_ext_chase(world: &mut World, self_id: ActorId, args: &[String]) -> ActionRe
         None,
         None,
         false,
-        0,
+        CHASE_UZDOOM,
     )
 }
 
@@ -7357,14 +7398,42 @@ fn a_chase_with_options(
     dont_move: bool,
     chase_flags: i32,
 ) -> ActionResult {
-    let fast_chase = chase_flags & 1 != 0;
     // UDMF sector `noattack`: monsters inside never start an attack.
     let (use_melee, use_missile) = if in_noattack_sector(world, self_id) {
         (false, false)
     } else {
         (use_melee, use_missile)
     };
-    use crate::class::{FLAG_JUSTATTACKED, FLAG_JUSTHIT};
+    let uz = chase_flags & CHASE_UZDOOM != 0;
+    if uz {
+        // `MF5_INCONVERSATION` / `MF7_INCHASE`: no chase while talking or re-entering.
+        let busy = world.actors.get(self_id).is_some_and(|a| {
+            a.extra_flags.get_name("INCONVERSATION") || a.extra_flags.get_name("INCHASE")
+        });
+        if busy {
+            return ActionResult::Continue;
+        }
+        if let Some(a) = world.actors.get_mut(self_id) {
+            a.extra_flags.set_name("INCHASE", true);
+        }
+        let r = a_chase_uz_body(
+            world,
+            self_id,
+            use_melee,
+            use_missile,
+            play_active,
+            nightmare_fast,
+            melee_label,
+            missile_label,
+            dont_move,
+            chase_flags,
+        );
+        if let Some(a) = world.actors.get_mut(self_id) {
+            a.extra_flags.set_name("INCHASE", false);
+        }
+        return r;
+    }
+    use crate::class::FLAG_JUSTATTACKED;
     if nightmare_fast
         && world.fast_monsters
         && let Some(actor) = world.actors.get_mut(self_id)
@@ -7411,6 +7480,37 @@ fn a_chase_with_options(
         }
         return ActionResult::Continue;
     };
+    a_chase_tail(
+        world,
+        self_id,
+        use_melee,
+        use_missile,
+        play_active,
+        melee_label,
+        missile_label,
+        dont_move,
+        chase_flags,
+        tid,
+    )
+}
+
+/// Shared second half of the chase: fast-chase strafe, melee / missile
+/// checks, movement and the active sound, toward `tid`.
+#[allow(clippy::too_many_arguments)]
+fn a_chase_tail(
+    world: &mut World,
+    self_id: ActorId,
+    use_melee: bool,
+    use_missile: bool,
+    play_active: bool,
+    melee_label: Option<&str>,
+    missile_label: Option<&str>,
+    dont_move: bool,
+    chase_flags: i32,
+    tid: ActorId,
+) -> ActionResult {
+    use crate::class::{FLAG_JUSTATTACKED, FLAG_JUSTHIT};
+    let fast_chase = chase_flags & 1 != 0;
     let attack = friendly_should_attack(world, self_id, tid);
     let (sx, sy, sz, tx, ty, tz, class, flags, move_count) = {
         let Some(s) = world.actors.get(self_id) else {
@@ -7437,50 +7537,7 @@ fn a_chase_with_options(
     // UZDoom's CHF_FASTCHASE gives boss actors a short lateral strafe burst
     // when they are within 640 map units, then pauses ordinary chase movement
     // for the burst's three tics.
-    let fast_strafe_active = if fast_chase && !dont_move {
-        const STRAFE_TICS_KEY: &str = "room_fastchase_strafe_tics";
-        let remaining = world
-            .actors
-            .get(self_id)
-            .and_then(|actor| actor.user_vars.get(STRAFE_TICS_KEY).copied())
-            .unwrap_or(0)
-            .max(0);
-        if remaining > 0 {
-            if let Some(actor) = world.actors.get_mut(self_id) {
-                actor
-                    .user_vars
-                    .insert(STRAFE_TICS_KEY.into(), remaining - 1);
-            }
-            true
-        } else {
-            if let Some(actor) = world.actors.get_mut(self_id) {
-                actor.user_vars.insert(STRAFE_TICS_KEY.into(), 0);
-                actor.vel = DVec3::new(0.0, 0.0, actor.vel.z());
-            }
-            if len < 640.0 && i32::from(world.p_random("pr_chase")) < 100 {
-                let bearing = dmath::atan2(dy, dx);
-                let turn: f64 = if world.p_random("pr_chase") < 128 {
-                    90.0
-                } else {
-                    -90.0
-                };
-                let angle = bearing + turn.to_radians();
-                if let Some(actor) = world.actors.get_mut(self_id) {
-                    actor.vel = DVec3::new(
-                        dmath::cos(angle) * 13.0,
-                        dmath::sin(angle) * 13.0,
-                        actor.vel.z(),
-                    );
-                    actor.user_vars.insert(STRAFE_TICS_KEY.into(), 3);
-                }
-                true
-            } else {
-                false
-            }
-        }
-    } else {
-        false
-    };
+    let fast_strafe_active = fast_chase && !dont_move && fast_chase_strafe(world, self_id, len, dx, dy);
     // Keep a small follow distance when trailing the player (MBF friends).
     let follow_keep = 96.0;
     if !attack && len < follow_keep {
@@ -7695,6 +7752,156 @@ fn a_chase_with_options(
         }
     }
     ActionResult::Continue
+}
+
+/// UZDoom `CHF_FASTCHASE` (Hexen class bosses): count an active strafe
+/// down, else stop and, within 640 units, start a 3-tic sideways burst at
+/// speed 13. Returns whether the strafe owns this tic's movement.
+fn fast_chase_strafe(world: &mut World, self_id: ActorId, len: f64, dx: f64, dy: f64) -> bool {
+    let remaining = world.actors.get(self_id).map_or(0, |a| a.fast_chase_strafe);
+    if remaining > 0 {
+        if let Some(a) = world.actors.get_mut(self_id) {
+            a.fast_chase_strafe -= 1;
+        }
+        return true;
+    }
+    if let Some(a) = world.actors.get_mut(self_id) {
+        a.fast_chase_strafe = 0;
+        a.vel = DVec3::new(0.0, 0.0, a.vel.z());
+    }
+    if len < 640.0 && i32::from(world.p_random("pr_chase")) < 100 {
+        let bearing = dmath::atan2(dy, dx);
+        let turn: f64 = if world.p_random("pr_chase") < 128 { 90.0 } else { -90.0 };
+        let angle = bearing + turn.to_radians();
+        if let Some(a) = world.actors.get_mut(self_id) {
+            a.vel = DVec3::new(dmath::cos(angle) * 13.0, dmath::sin(angle) * 13.0, a.vel.z());
+            a.fast_chase_strafe = 3;
+        }
+        return true;
+    }
+    false
+}
+
+/// Whether `target` is hidden from chasers (`RF_INVISIBLE` / `+MINVISIBLE`).
+fn chase_target_invisible(world: &World, target: ActorId) -> bool {
+    world.actors.get(target).is_some_and(|t| {
+        t.extra_flags.get_name("MINVISIBLE") || (t.flags & crate::class::FLAG_DONTDRAW) != 0
+    })
+}
+
+/// `AActor::SetIdle`: the `Idle` state, else `Spawn`.
+fn idle_state(world: &World, self_id: ActorId) -> Option<room_core::StateId> {
+    let class = world.actors.get(self_id)?.class;
+    world
+        .states
+        .find_label(class, "Idle")
+        .or_else(|| world.states.find_label(class, "Spawn"))
+}
+
+/// UZDoom `A_DoChase` body, in its order: reaction / threshold, nightmare
+/// tics, target upkeep (invisible, dead or friendly targets dropped; no
+/// target → idle, or wander with `CHF_DONTIDLE` / friends), then
+/// `MF_JUSTATTACKED`, fast-chase strafe, attacks (scared monsters attack
+/// less often), movement and the active sound.
+#[allow(clippy::too_many_arguments)]
+fn a_chase_uz_body(
+    world: &mut World,
+    self_id: ActorId,
+    use_melee: bool,
+    use_missile: bool,
+    play_active: bool,
+    nightmare_fast: bool,
+    melee_label: Option<&str>,
+    missile_label: Option<&str>,
+    dont_move: bool,
+    chase_flags: i32,
+) -> ActionResult {
+    use crate::class::{FLAG_FRIENDLY, FLAG_JUSTATTACKED};
+    // Stealth monsters fade back in while chasing.
+    if let Some(a) = world.actors.get_mut(self_id) {
+        if a.reaction_time > 0 {
+            a.reaction_time -= 1;
+        }
+    }
+    // Invisible targets are dropped (unless they are the goal).
+    if let Some(t) = world.actors.get(self_id).and_then(|a| a.target)
+        && chase_target_invisible(world, t)
+        && world.actors.get(self_id).and_then(|a| a.goal) != Some(t)
+        && let Some(a) = world.actors.get_mut(self_id)
+    {
+        a.target = None;
+    }
+    // Threshold: cleared when the target is gone, else counts down.
+    let target_alive = world
+        .actors
+        .get(self_id)
+        .and_then(|a| a.target)
+        .and_then(|t| world.actors.get(t))
+        .is_some_and(|t| t.health > 0);
+    if let Some(a) = world.actors.get_mut(self_id)
+        && a.threshold > 0
+    {
+        if target_alive {
+            a.threshold -= 1;
+        } else {
+            a.threshold = 0;
+        }
+    }
+    if nightmare_fast
+        && world.fast_monsters
+        && let Some(a) = world.actors.get_mut(self_id)
+        && a.tics > 3
+    {
+        a.tics = (a.tics - a.tics / 2).max(3);
+    }
+    let friendly = world.actors.get(self_id).is_some_and(|a| a.flags & FLAG_FRIENDLY != 0);
+    let Some(tid) = resolve_chase_target(world, self_id, chase_flags) else {
+        // No target: idle (`SetIdle`), or wander with CHF_DONTIDLE / friends.
+        if chase_flags & 512 != 0 || friendly {
+            if !dont_move {
+                return a_wander(world, self_id);
+            }
+            return ActionResult::Continue;
+        }
+        return idle_state(world, self_id).map_or(ActionResult::Continue, ActionResult::Jump);
+    };
+    // Do not attack twice in a row.
+    if world.actors.get(self_id).is_some_and(|a| a.flags & FLAG_JUSTATTACKED != 0) {
+        if let Some(a) = world.actors.get_mut(self_id) {
+            a.flags &= !FLAG_JUSTATTACKED;
+        }
+        let fast = world.fast_monsters
+            || world.actors.get(self_id).is_some_and(|a| a.extra_flags.get_name("ALWAYSFAST"));
+        if !fast && !dont_move && chase_flags & (128 | 256) == 0 {
+            new_chase_dir(world, self_id, tid);
+        }
+        if chase_flags & 256 != 0 {
+            let next = i32::from(world.p_random("pr_trywalk")) & 15;
+            if let Some(a) = world.actors.get_mut(self_id) {
+                a.move_count = next;
+            }
+        }
+        return ActionResult::Continue;
+    }
+    // Scared monsters (`+FRIGHTENED`, or a `+FRIGHTENING` / frightener
+    // target) only consider attacking 43 times in 256.
+    let scared = world.actors.get(self_id).is_some_and(|a| a.frightened)
+        || world.actors.get(tid).is_some_and(|t| t.extra_flags.get_name("FRIGHTENING"));
+    let may_attack = !scared || i32::from(world.p_random("pr_scaredycat")) < 43;
+    // The shared walker handles strafe, attacks, movement and sound; the
+    // pre-attack steps above already ran, so it skips them (no flag 1<<29).
+    a_chase_tail(
+        world,
+        self_id,
+        use_melee && may_attack,
+        use_missile && may_attack,
+        play_active,
+        melee_label,
+        missile_label,
+        dont_move,
+        chase_flags,
+        tid,
+    )
 }
 
 /// Doom `P_Move`: step one chase-dir cell via `P_TryMove`.
@@ -13570,6 +13777,103 @@ actor AlwaysShoot : Actor 9402
         );
     }
 
+    fn chase_world() -> (World, Arc<ClassRegistry>, ActorId, room_core::ClassId) {
+        let ir = parse_decorate(
+            r#"
+actor Shooter : Actor 9403
+{
+  Health 100
+  Speed 0
+  MinMissileChance 0
+  ReactionTime 0
+  +SHOOTABLE
+  States
+  {
+  Spawn:
+    POSS A -1
+    Stop
+  Idle:
+    POSS E -1
+    Stop
+  See:
+    POSS A 1 A_Chase
+    Loop
+  Missile:
+    POSS B -1
+    Stop
+  Shoot2:
+    POSS C -1
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let cls = classes.find_name("Shooter").unwrap();
+        let id = w
+            .spawn_at(cls, room_core::DVec3::new(200.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        w.level.time = 16;
+        (w, classes, id, cls)
+    }
+
+    #[test]
+    fn decorate_a_chase_takes_labels_and_flags() {
+        let (mut w, _, id, cls) = chase_world();
+        // Custom missile label.
+        assert_eq!(
+            call_action_args(&mut w, id, "A_Chase", &["\"_a_chase_default\"".into(), "\"Shoot2\"".into()]),
+            ActionResult::Jump(w.states.find_label(cls, "Shoot2").unwrap())
+        );
+        // `null` missile: no attack.
+        let (mut w, _, id, cls) = chase_world();
+        let r = call_action_args(&mut w, id, "A_Chase", &["null".into(), "null".into(), "CHF_DONTMOVE".into()]);
+        assert_ne!(r, ActionResult::Jump(w.states.find_label(cls, "Missile").unwrap()));
+        assert_eq!(w.actors.get(id).unwrap().pos.x(), 200.0, "CHF_DONTMOVE");
+    }
+
+    #[test]
+    fn uzdoom_chase_idles_without_a_target_and_drops_invisible_ones() {
+        let (mut w, _, id, cls) = chase_world();
+        // Kill the only player: no target → `SetIdle` (Idle state).
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        w.actors.get_mut(mo).unwrap().health = 0;
+        assert_eq!(
+            chase_with_labels(&mut w, id, "", "", 0),
+            ActionResult::Jump(w.states.find_label(cls, "Idle").unwrap())
+        );
+        // CHF_DONTIDLE wanders instead.
+        assert_ne!(
+            chase_with_labels(&mut w, id, "", "", 512),
+            ActionResult::Jump(w.states.find_label(cls, "Idle").unwrap())
+        );
+        // An invisible target is forgotten.
+        let (mut w, _, id, _) = chase_world();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        w.actors.get_mut(id).unwrap().target = Some(mo);
+        w.actors.get_mut(mo).unwrap().extra_flags.set_name("MINVISIBLE", true);
+        let _ = a_ext_chase(&mut w, id, &["false".into(), "false".into()]);
+        assert!(!w.actors.get(id).unwrap().extra_flags.get_name("INCHASE"), "guard released");
+    }
+
+    #[test]
+    fn fast_chase_strafe_lives_on_the_actor() {
+        let (mut w, _, id, _) = chase_world();
+        w.actors.get_mut(id).unwrap().fast_chase_strafe = 2;
+        let _ = chase_with_labels(&mut w, id, "null", "null", 1);
+        assert_eq!(w.actors.get(id).unwrap().fast_chase_strafe, 1);
+        assert!(w.actors.get(id).unwrap().user_vars.is_empty());
+    }
+
     #[test]
     fn a_chase_never_attacks_from_a_noattack_sector() {
         let ir = parse_decorate(
@@ -14440,7 +14744,8 @@ actor ZombieMan : Actor 3004
         let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
         let states = Arc::new(StateTable::from_decorate(&file, &classes));
         let mut map = MapBuilder::new()
-            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 256.0)
+            .room("a", rect(0.0, 0.0, 256.0, 512.0), 0.0, 256.0)
+            .room("ledge", rect(256.0, 0.0, 512.0, 512.0), 120.0, 256.0)
             .player_start(64.0, 64.0, 0)
             .build_udmf("MAP01")
             .unwrap();
@@ -14455,9 +14760,11 @@ actor ZombieMan : Actor 3004
             p.pos = DVec3::new(64.0, 64.0, 0.0);
         }
         let id = w
-            .spawn_at(imp, DVec3::new(300.0, 64.0, 120.0), Angle::ZERO)
+            .spawn_at(imp, DVec3::new(400.0, 64.0, 120.0), Angle::ZERO)
             .unwrap();
         if let Some(a) = w.actors.get_mut(id) {
+            // The spawn state's `A_Chase` may step; keep the imp where the test puts it.
+            a.pos = DVec3::new(400.0, 64.0, 120.0);
             a.target = Some(mo);
             a.pitch = Angle::ZERO;
         }
@@ -19519,6 +19826,10 @@ actor DecalZombie : ZombieMan
         let low = w
             .spawn_at(z, DVec3::new(220.0, 200.0, 0.0), Angle::ZERO)
             .unwrap();
+        // Spawn states run `A_Chase`; an actor 40 units up over a flat floor
+        // may step and land. Pin the heights the comparison is about.
+        w.actors.get_mut(high).unwrap().pos = DVec3::new(200.0, 200.0, 40.0);
+        w.actors.get_mut(low).unwrap().pos = DVec3::new(220.0, 200.0, 0.0);
         w.actors.get_mut(high).unwrap().target = Some(low);
         assert_eq!(
             call_action_args(&mut w, high, "A_SetPainThreshold", &["40".into()]),

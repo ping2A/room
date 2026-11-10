@@ -140,6 +140,12 @@ pub struct RawSidedef {
     pub wrap_midtex: bool,
     /// UDMF `nodecals` — do not attach impact decals to this sidedef.
     pub no_decals: bool,
+    /// UDMF sidedef `alpha` (UZDoom 5.0): overrides the linedef alpha for
+    /// this side's mid texture. `None` = use the linedef's.
+    pub alpha: Option<f32>,
+    /// UDMF `blockrendering` (`WALLF_BLOCKRENDERING`): nothing behind this
+    /// side is drawn when seen through it (a two-sided line rendered as solid).
+    pub block_rendering: bool,
 }
 
 /// Sector.

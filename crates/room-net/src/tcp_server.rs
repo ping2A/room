@@ -55,11 +55,11 @@ pub struct TcpRelayServer {
 }
 
 impl TcpRelayServer {
-    /// Bind relay on `addr` for up to `max_players` seats (2..=8), including host.
+    /// Bind relay on `addr` for up to `max_players` seats (2..=64), including host.
     pub fn bind(addr: SocketAddr, max_players: u8) -> Result<Self, NetError> {
         let listener = TcpListener::bind(addr).map_err(NetError::from_io)?;
         listener.set_nonblocking(true).map_err(NetError::from_io)?;
-        let max_players = max_players.clamp(2, 8);
+        let max_players = max_players.clamp(2, 64);
         Ok(Self {
             listener,
             max_players,

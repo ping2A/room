@@ -26,6 +26,73 @@ pub fn load_zscript_from_vfs(vfs: &Vfs) -> ZscriptLoadReport {
     compile_report(sources, skipped)
 }
 
+/// The vendored UZDoom ZScript library (`wadsrc/uzdoom`) as `(path, text)`,
+/// entry file first. Empty when the folder is not found.
+#[must_use]
+pub fn uzdoom_stdlib_sources() -> Vec<(String, String)> {
+    let candidates = [
+        std::path::PathBuf::from("wadsrc/uzdoom"),
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom"),
+    ];
+    let Some(root) = candidates.into_iter().find(|p| p.join("zscript.txt").is_file()) else {
+        return Vec::new();
+    };
+    let Ok(entry) = std::fs::read_to_string(root.join("zscript.txt")) else {
+        return Vec::new();
+    };
+    // Paths under `uzdoom/` so a mod's own `zscript.txt` / `zscript/…` files
+    // stay separate; the entry's `#include`s are rewritten to match.
+    let mut text = String::new();
+    let mut files = Vec::new();
+    for line in entry.lines() {
+        if let Some(rest) = line.trim().strip_prefix("#include") {
+            let path = rest.trim().trim_matches('"').replace('\\', "/");
+            text.push_str(&format!("#include \"uzdoom/{path}\"\n"));
+            if let Ok(body) = std::fs::read_to_string(root.join(&path)) {
+                files.push((format!("uzdoom/{path}"), body));
+            }
+        } else {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    let mut sources = vec![("uzdoom/zscript.txt".to_owned(), text)];
+    sources.extend(files);
+    sources
+}
+
+/// Program for a ZScript status bar: the UZDoom library plus the mod's own
+/// ZScript from `vfs` (GZDoom `GameInfo.StatusBarClass`). `Err` carries the
+/// first diagnostics.
+pub fn load_status_bar_program(vfs: &Vfs) -> Result<CompiledProgram, String> {
+    let mut sources = uzdoom_stdlib_sources();
+    if sources.is_empty() {
+        return Err("wadsrc/uzdoom not found".into());
+    }
+    let (mods, _) = zscript_sources_from_vfs(vfs);
+    sources.extend(mods);
+    let result = room_zscript::check(&sources);
+    if !result.ok() {
+        return Err(result
+            .diagnostics
+            .iter()
+            .filter(|d| format!("{:?}", d.severity) == "Error")
+            .take(4)
+            .map(|d| format!("{} ({})", d.message, d.path))
+            .collect::<Vec<_>>()
+            .join("; "));
+    }
+    result.program.ok_or_else(|| {
+        result
+            .diagnostics
+            .iter()
+            .take(4)
+            .map(|d| format!("{} ({})", d.message, d.path))
+            .collect::<Vec<_>>()
+            .join("; ")
+    })
+}
+
 /// ZScript sources of `vfs` as `(path, text)`, entry file (`zscript` /
 /// `zscript.zc`) first, plus the paths that were skipped.
 ///
@@ -398,4 +465,46 @@ pub fn acs_library_pool(vfs: &Vfs) -> Vec<(String, Vec<u8>)> {
         pool.push((name, bytes.to_vec()));
     }
     pool
+}
+
+#[cfg(test)]
+mod status_bar_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn mod_status_bar_compiles_over_the_uzdoom_library() {
+        let zs = b"version \"4.10\"\nclass MyBar : DoomStatusBar\n{\n    override void Draw(int state, double ticfrac)\n    {\n        Super.Draw(state, ticfrac);\n        DrawString(mHUDFont, FormatNumber(CPlayer.health, 3), (160, 100));\n    }\n}\n";
+        let pk3 = room_vfs::zip_from_files(&[("zscript.zs", zs)]).unwrap();
+        let vfs = room_vfs::VfsBuilder::new()
+            .mount_memory("bar.pk3", pk3)
+            .unwrap()
+            .build()
+            .unwrap();
+        let prog = load_status_bar_program(&vfs).unwrap();
+        let mut bar = room_ui::ScriptStatusBar::new(prog, "MyBar").unwrap();
+        assert_eq!(bar.class().to_ascii_lowercase(), "mybar");
+        let snap = room_ui::SbarSnapshot {
+            health: 57,
+            face: "STFST01".into(),
+            ..Default::default()
+        };
+        let dims = |_: &str| {
+            Some(room_ui::PatchDims {
+                w: 14.0,
+                h: 16.0,
+                left: 0.0,
+                top: 0.0,
+            })
+        };
+        let mut list = room_ui::UiDrawList::default();
+        bar.draw(&snap, false, 1.0, &dims, &mut list);
+        assert!(bar.last_error.is_none(), "{:?}", bar.last_error);
+        let at_100 = list.cmds.iter().any(|c| {
+            matches!(c, room_ui::DrawCmd::Patch { name, pos, .. }
+                if name.starts_with("STTNUM") && (pos.y - 100.0).abs() < 20.0)
+        });
+        assert!(at_100, "mod's own DrawString ran: {:?}", list.cmds.len());
+    }
 }

@@ -86,7 +86,7 @@ const COLOR_RAMPS: [(&str, [u8; 3], [u8; 3]); 26] = [
 /// `CR_UNTRANSLATED`.
 const CR_UNTRANSLATED: i32 = 11;
 
-fn ramp(cr: i32) -> Option<[[f32; 3]; 2]> {
+pub(crate) fn ramp(cr: i32) -> Option<[[f32; 3]; 2]> {
     if cr == CR_UNTRANSLATED {
         return None;
     }

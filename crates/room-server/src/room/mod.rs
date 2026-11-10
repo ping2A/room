@@ -4,7 +4,7 @@ mod actor;
 mod duke_v2;
 mod legacy;
 mod spectate;
-mod v2;
+pub(crate) mod v2;
 
 pub use actor::{
     AdminCmd, ConnId, CreateRoomRequest, CreateRoomResponse, GAMES, LeaveReason, PoseInspect,

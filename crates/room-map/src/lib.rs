@@ -35,7 +35,7 @@ pub use geom::{
     Line, MapFormat, MapGeometry, SectorStatic, Side, Vertex, link_geometry, link_geometry_at,
 };
 pub use level_fixes::{LevelFixOp, LevelFixesDatabase, apply_level_fixes};
-pub use loader::load_map;
+pub use loader::{list_maps, load_map};
 pub use nodes::{
     ExtendedNodes, GameNodes, GlNodes, GlSeg, NF_SUBSECTOR, Node, Seg, Subsector, gl_nodes_to_game,
     load_extended_nodes_lump, load_game_nodes, parse_nodes, parse_segs, parse_ssectors,

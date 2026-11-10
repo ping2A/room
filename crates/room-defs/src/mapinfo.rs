@@ -46,12 +46,26 @@ pub struct EpisodeDef {
 }
 
 /// Skill definition (`skill <id> { name = "…" }`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SkillDef {
     /// Skill identifier (`baby`, `easy`, …).
     pub id: String,
     /// Menu name.
     pub name: Option<String>,
+    /// `ArmorFactor` (`SKILLP_ArmorFactor`): scales armor pickups' `SaveAmount`.
+    pub armor_factor: Option<f64>,
+}
+
+/// MAPINFO `damagetype <name> { … }` (UZDoom `DamageTypeDefinition`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DamageTypeDef {
+    /// `NoArmor`: armor never absorbs this type.
+    pub no_armor: bool,
+    /// `Factor`: default damage factor for actors without their own.
+    pub factor: Option<f64>,
+    /// `ReplaceFactor`: `Factor` replaces the actor's general `DamageFactor`
+    /// instead of multiplying it.
+    pub replace_factor: bool,
 }
 
 /// Cluster / hub definition (`cluster` / `clusterdef`).
@@ -84,8 +98,12 @@ pub struct MapInfo {
     pub clusters: BTreeMap<i32, ClusterDef>,
     /// Skills in menu order (empty: the game's defaults).
     pub skills: Vec<SkillDef>,
+    /// `damagetype` blocks, by lowercase name.
+    pub damage_types: BTreeMap<String, DamageTypeDef>,
     /// `gameinfo { AddEventHandlers = … }` / `EventHandlers` — ZScript class names.
     pub event_handlers: Vec<String>,
+    /// `gameinfo { StatusBarClass = "…" }` — ZScript `BaseStatusBar` subclass.
+    pub statusbar_class: Option<String>,
 }
 
 impl MapInfo {
@@ -288,6 +306,7 @@ pub fn parse_mapinfo(text: &str) -> Result<MapInfo, DefsError> {
                 let mut def = SkillDef {
                     id: id.to_ascii_lowercase(),
                     name: None,
+                    armor_factor: None,
                 };
                 if sc.check_punct(Punct::LBrace)? {
                     let mut depth = 1;
@@ -299,6 +318,10 @@ pub fn parse_mapinfo(text: &str) -> Result<MapInfo, DefsError> {
                             Tok::Ident(k) if depth == 1 && Scanner::compare(k, "name") => {
                                 let _ = sc.check_punct(Punct::Eq)?;
                                 def.name = Some(read_name(&mut sc)?);
+                            }
+                            Tok::Ident(k) if depth == 1 && Scanner::compare(k, "armorfactor") => {
+                                let _ = sc.check_punct(Punct::Eq)?;
+                                def.armor_factor = read_number(&mut sc)?;
                             }
                             _ => {}
                         }
@@ -330,6 +353,33 @@ pub fn parse_mapinfo(text: &str) -> Result<MapInfo, DefsError> {
                         }
                     }
                 }
+            }
+            Tok::Ident(kw) if Scanner::compare(kw, "damagetype") => {
+                let name = read_name(&mut sc)?.to_ascii_lowercase();
+                let mut def = info.damage_types.get(&name).cloned().unwrap_or_default();
+                if sc.check_punct(Punct::LBrace)? {
+                    loop {
+                        match sc.next_token()? {
+                            Tok::Punct(Punct::RBrace) | Tok::Eof => break,
+                            Tok::Ident(k) if Scanner::compare(k, "noarmor") => def.no_armor = true,
+                            Tok::Ident(k) if Scanner::compare(k, "replacefactor") => {
+                                def.replace_factor = true;
+                            }
+                            Tok::Ident(k) if Scanner::compare(k, "factor") => {
+                                let _ = sc.check_punct(Punct::Eq)?;
+                                def.factor = read_number(&mut sc)?;
+                            }
+                            Tok::Ident(_) => {
+                                // `Obituary = "…"` and other keys: skip the value.
+                                if sc.check_punct(Punct::Eq)? {
+                                    let _ = sc.next_token()?;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                info.damage_types.insert(name, def);
             }
             Tok::Ident(_) => {
                 if sc.check_punct(Punct::LBrace)? {
@@ -385,6 +435,20 @@ fn parse_map_block_new(sc: &mut Scanner<'_>, def: &mut MapDef) -> Result<(), Def
                 if matches!(key_l.as_str(), "sky1" | "sky" | "sky2") {
                     def.sky1 = Some(read_name(sc)?);
                     consume_optional_number(sc)?;
+                    let _ = sc.check_punct(Punct::Semi)?;
+                    continue;
+                }
+                if key_l == "skymist" {
+                    let tex = read_name(sc)?;
+                    let mut v = tex;
+                    if sc.check_punct(Punct::Comma)? {
+                        match sc.next_token()? {
+                            Tok::Int(n) => v = format!("{v},{n}"),
+                            Tok::Float(f) => v = format!("{v},{f}"),
+                            other => sc.unget(other),
+                        }
+                    }
+                    def.extras.insert(key_l, v);
                     let _ = sc.check_punct(Punct::Semi)?;
                     continue;
                 }
@@ -720,6 +784,11 @@ fn parse_gameinfo_block(sc: &mut Scanner<'_>, info: &mut MapInfo) -> Result<(), 
                             }
                         }
                     }
+                    "statusbarclass" => match sc.next_token()? {
+                        Tok::String(v) => info.statusbar_class = Some(v.into_owned()),
+                        Tok::Ident(v) => info.statusbar_class = Some(v.to_owned()),
+                        _ => {}
+                    },
                     _ => {
                         // Skip value until `;` or end of block.
                         loop {
@@ -774,11 +843,26 @@ fn read_string_list(sc: &mut Scanner<'_>) -> Result<Vec<String>, DefsError> {
     Ok(out)
 }
 
+/// A numeric value (`1.5`, `2`, `"0.75"`); `None` when unparseable.
+fn read_number(sc: &mut Scanner<'_>) -> Result<Option<f64>, DefsError> {
+    Ok(match sc.next_token()? {
+        Tok::Int(n) => Some(n as f64),
+        Tok::Float(f) => Some(f),
+        Tok::String(s) => s.trim().parse().ok(),
+        Tok::Ident(s) => s.trim().parse().ok(),
+        other => {
+            sc.unget(other);
+            None
+        }
+    })
+}
+
 fn read_name(sc: &mut Scanner<'_>) -> Result<String, DefsError> {
     match sc.next_token()? {
         Tok::Ident(s) => Ok(s.to_owned()),
         Tok::String(s) => Ok(s.into_owned()),
         Tok::Int(n) => Ok(n.to_string()),
+        Tok::Float(f) => Ok(f.to_string()),
         other => Err(DefsError::Message(format!(
             "MAPINFO: expected name, got {other:?}"
         ))),
@@ -790,6 +874,29 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn gameinfo_status_bar_class() {
+        let info = parse_mapinfo("gameinfo { StatusBarClass = \"MyBar\" }").unwrap();
+        assert_eq!(info.statusbar_class.as_deref(), Some("MyBar"));
+    }
+
+    #[test]
+    fn skill_armor_factor_and_damage_types() {
+        let info = parse_mapinfo(
+            r#"
+skill hard { Name = "Hard" ArmorFactor = 0.5 }
+damagetype Fire { Factor = 0.5 ReplaceFactor Obituary = "$OB_FIRE" }
+damagetype Poison { NoArmor }
+"#,
+        )
+        .unwrap();
+        assert_eq!(info.skills[0].armor_factor, Some(0.5));
+        let fire = &info.damage_types["fire"];
+        assert_eq!(fire.factor, Some(0.5));
+        assert!(fire.replace_factor && !fire.no_armor);
+        assert!(info.damage_types["poison"].no_armor);
+    }
 
     #[test]
     fn parse_gameinfo_add_event_handlers() {
@@ -977,5 +1084,30 @@ map MAP01 "Clip"
         let m = info.maps.get("MAP01").unwrap();
         assert_eq!(m.clip_midtextures, Some(true));
         assert_eq!(m.wrap_midtextures, Some(true));
+    }
+
+    #[test]
+    fn parse_uz6_sky_fog_keys() {
+        let info = parse_mapinfo(
+            r#"
+map MAP01 "Fog"
+{
+    skyfog = 128
+    skymist = "MIST01", 200
+    skymistyscale = 0.5
+    useskymist
+    thickfogdistance = 1024
+    thickfogmultiplier = 8.5
+}
+"#,
+        )
+        .unwrap();
+        let m = info.maps.get("MAP01").unwrap();
+        assert_eq!(m.extras.get("skyfog").map(String::as_str), Some("128"));
+        assert_eq!(m.extras.get("skymist").map(String::as_str), Some("MIST01,200"));
+        assert_eq!(m.extras.get("skymistyscale").map(String::as_str), Some("0.5"));
+        assert!(m.extras.contains_key("useskymist"));
+        assert_eq!(m.extras.get("thickfogdistance").map(String::as_str), Some("1024"));
+        assert_eq!(m.extras.get("thickfogmultiplier").map(String::as_str), Some("8.5"));
     }
 }

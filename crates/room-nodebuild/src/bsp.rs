@@ -516,6 +516,8 @@ mod tests {
                 clip_midtex: false,
                 wrap_midtex: false,
                 no_decals: false,
+                alpha: None,
+                block_rendering: false,
             })
             .collect();
         let sectors = vec![RawSector {

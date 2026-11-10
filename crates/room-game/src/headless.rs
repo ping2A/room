@@ -100,8 +100,9 @@ pub struct GameOptions {
     pub time_limit_tics: u32,
     /// Deathmatch / DukeMatch: PvP, DM starts, no monsters on Duke.
     pub deathmatch: bool,
-    /// Session display names per seat (BE3); empty → sim fallback `Player N`.
-    pub player_names: [String; MAX_PLAYERS],
+    /// Session display names per seat (BE3); empty or missing → sim
+    /// fallback `Player N`.
+    pub player_names: Vec<String>,
     /// Start every map from scratch (UZDoom `sv_pistolstart`): no weapons,
     /// ammo, armor or health carried from the previous map.
     pub pistol_start: bool,
@@ -116,10 +117,23 @@ impl GameOptions {
         for (seat, name) in names {
             let i = usize::from(seat);
             if i < MAX_PLAYERS {
+                if self.player_names.len() <= i {
+                    self.player_names.resize(i + 1, String::new());
+                }
                 self.player_names[i] = name.as_ref().to_owned();
             }
         }
     }
+}
+
+/// A net save or load asked for by the host (see
+/// [`Headless::take_net_save_request`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NetSaveRequest {
+    /// Load instead of save.
+    pub load: bool,
+    /// Net save slot (`net<slot>` on every peer).
+    pub slot: u8,
 }
 
 /// Headless errors.
@@ -172,6 +186,18 @@ pub struct Headless {
     base_states: Arc<StateTable>,
     /// Tallies captured when entering Intermission.
     pub intermission: Option<IntermissionTallies>,
+    /// Intermission ready-vote (UZ12): seats that pressed use or fire since
+    /// the intermission began, one bit each.
+    pub intermission_ready: u64,
+    /// Seats voting (the command count of the first intermission tic).
+    intermission_voters: usize,
+    /// Buttons each seat held on the previous intermission tic (edges only).
+    intermission_prev: Vec<u32>,
+    /// Every seat is ready: the shell should go on to the next map. Set on the
+    /// same tic on every peer, since it comes from the lockstep commands.
+    intermission_advance: bool,
+    /// A net save / load the host asked for this tic (UZ12).
+    net_save_request: Option<NetSaveRequest>,
     /// Map kept for title → start / intermission → restart.
     pending_map: Option<MapGeometry>,
     /// Optional SNDINFO + sample bank for draining sim sound events.
@@ -506,6 +532,16 @@ fn parse_boss_actions(raw: Option<&String>) -> Vec<BossAction> {
     out
 }
 
+/// [`Headless::listener_sound`]: the reverb environment and under-water state.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ListenerSound<'a> {
+    /// Environment to render (`None` = no reverb).
+    pub env: Option<&'a room_audio::ReverbEnv>,
+    /// Listener under water: world sounds drop in pitch (and, with
+    /// `snd_waterreverb`, lose their highs).
+    pub underwater: bool,
+}
+
 impl Headless {
     /// Create a session with empty registries (call [`Self::set_defs`] or use defaults).
     #[must_use]
@@ -522,6 +558,11 @@ impl Headless {
             base_classes: Arc::new(ClassRegistry::new()),
             base_states: Arc::new(StateTable::new()),
             intermission: None,
+            intermission_ready: 0,
+            intermission_voters: 0,
+            intermission_prev: Vec::new(),
+            intermission_advance: false,
+            net_save_request: None,
             pending_map: None,
             sounds: None,
             environments: room_audio::EnvironmentTable::new(),
@@ -1061,17 +1102,31 @@ impl Headless {
         }
     }
 
-    /// Environment the local listener (`seat`'s pawn) hears. `water_reverb`
-    /// (`snd_waterreverb`) swaps in "DSP Water" while it is under water.
+    /// What the local listener (`seat`'s pawn) hears: its zone's
+    /// environment and whether it is under water (UZDoom
+    /// `listener.underwater || env->SoftwareWater`). Under water with
+    /// `water_reverb` (`snd_waterreverb`) the environment is the
+    /// "Underwater" preset, as `OpenALSoundRenderer::UpdateListener` loads.
     #[must_use]
-    pub fn listener_environment(&self, seat: u8, water_reverb: bool) -> Option<&room_audio::ReverbEnv> {
-        let world = self.world.as_ref()?;
-        let mo = world.players.get(usize::from(seat))?.as_ref()?.mo?;
-        let (env, under) = world.listener_environment(mo);
-        if under && water_reverb {
-            return self.environments.find(room_audio::reverb::ENV_DSP_WATER);
+    pub fn listener_sound(&self, seat: u8, water_reverb: bool) -> ListenerSound<'_> {
+        let none = ListenerSound { env: None, underwater: false };
+        let Some(world) = self.world.as_ref() else {
+            return none;
+        };
+        let Some(mo) = world.players.get(usize::from(seat)).and_then(|p| p.as_ref()?.mo) else {
+            return none;
+        };
+        let (id, under) = world.listener_environment(mo);
+        let env = self.environments.find(id);
+        let underwater = under || env.is_some_and(|e| e.software_water);
+        if underwater && water_reverb {
+            let water = self
+                .environments
+                .find(room_audio::reverb::ENV_UNDERWATER)
+                .or_else(|| self.environments.find(room_audio::reverb::ENV_OFF));
+            return ListenerSound { env: water, underwater };
         }
-        self.environments.find(env)
+        ListenerSound { env, underwater }
     }
 
     /// Drain sim sound events through the sound system (unknown names skipped).
@@ -1223,6 +1278,7 @@ impl Headless {
         if let Some(info) = self.mapinfo.as_ref() {
             if let Some(def) = info.maps.get(&map_key) {
                 world.boss_actions = parse_boss_actions(def.extras.get("bossaction"));
+                world.apply_mapinfo_fog(&def.extras);
                 world.level.par_time = def.par_seconds.unwrap_or(0);
                 world.level.cluster = def.cluster.unwrap_or(0);
                 if let Some(fd) = def.falling_damage {
@@ -1470,6 +1526,35 @@ impl Headless {
         self.conevt_attack_down = false;
         self.conevt_holster_down = false;
         self.conevt_was_dead = false;
+        // MAPINFO skill `ArmorFactor` and `damagetype` blocks.
+        if let Some(info) = self.mapinfo.as_ref() {
+            let skill = usize::from(world.skill.max(1)) - 1;
+            world.armor_factor = info
+                .skills
+                .get(skill)
+                .and_then(|s| s.armor_factor)
+                .unwrap_or(1.0);
+            world.damage_types = info
+                .damage_types
+                .iter()
+                .map(|(k, d)| {
+                    (
+                        k.clone(),
+                        room_sim::DamageTypeInfo {
+                            no_armor: d.no_armor,
+                            factor: d.factor,
+                            replace_factor: d.replace_factor,
+                        },
+                    )
+                })
+                .collect();
+        }
+        // `Sector.SetEnvironment(name)` resolves REVERBS names in the sim.
+        world.sound_env.names = self
+            .environments
+            .iter()
+            .map(|e| (e.name.to_ascii_lowercase(), e.id))
+            .collect();
         // MAPINFO `DefaultEnvironment` (zones without a SoundEnvironment thing).
         let default_env = self.default_environment_id();
         if default_env != 0 {
@@ -1657,14 +1742,71 @@ impl Headless {
         if seat >= MAX_PLAYERS {
             return;
         }
+        if self.options.player_names.len() <= seat {
+            self.options.player_names.resize(seat + 1, String::new());
+        }
         self.options.player_names[seat] = name.to_owned();
         if let Some(w) = self.world.as_mut() {
             w.set_player_display_name(seat, name);
         }
     }
 
+    /// Intermission ready-vote (UZDoom's net intermission): a seat is ready
+    /// once it presses use or fire; when every seat in `cmds` is ready,
+    /// [`Self::take_intermission_advance`] turns true. Pressing again does
+    /// nothing; a seat cannot take its vote back.
+    fn intermission_vote(&mut self, cmds: &[TicCmd]) {
+        let n = cmds.len().min(MAX_PLAYERS);
+        if self.intermission_voters == 0 {
+            self.intermission_voters = n;
+            // Held on entry (still firing when the level ended) is no press.
+            self.intermission_prev = cmds.iter().map(|c| c.buttons.0).collect();
+            return;
+        }
+        self.intermission_prev.resize(n, 0);
+        for (seat, c) in cmds.iter().enumerate().take(n) {
+            let now = c.buttons.0 & (Buttons::USE | Buttons::ATTACK);
+            let was = self.intermission_prev[seat] & (Buttons::USE | Buttons::ATTACK);
+            if now & !was != 0 {
+                self.intermission_ready |= room_sim::seat_bit(seat);
+            }
+            self.intermission_prev[seat] = c.buttons.0;
+        }
+        let all = (0..self.intermission_voters)
+            .all(|s| self.intermission_ready & room_sim::seat_bit(s) != 0);
+        if all {
+            self.intermission_advance = true;
+        }
+    }
+
+    /// The host's net save / load request from the last tic (consumed). Every
+    /// peer gets it on the same tic and saves (or loads) its own copy, so the
+    /// copies stay identical (vanilla `G_DoSaveGame` from `BTS_SAVEGAME`).
+    pub fn take_net_save_request(&mut self) -> Option<NetSaveRequest> {
+        self.net_save_request.take()
+    }
+
+    /// Every seat has voted ready since the intermission began (consumed).
+    pub fn take_intermission_advance(&mut self) -> bool {
+        std::mem::take(&mut self.intermission_advance)
+    }
+
+    /// Seats in the intermission vote and how many are ready.
+    #[must_use]
+    pub fn intermission_votes(&self) -> (usize, usize) {
+        let n = self.intermission_voters;
+        let ready = (0..n)
+            .filter(|&s| self.intermission_ready & room_sim::seat_bit(s) != 0)
+            .count();
+        (ready, n)
+    }
+
     /// One game tic. `cmds` are copied into player slots (pad/truncate to [`MAX_PLAYERS`]).
     pub fn tick(&mut self, cmds: &[TicCmd]) {
+        if self.state == GameState::Intermission {
+            self.intermission_vote(cmds);
+            return;
+        }
         if self.state != GameState::Level {
             return;
         }
@@ -1679,6 +1821,22 @@ impl Headless {
         let mut full = [TicCmd::default(); MAX_PLAYERS];
         for (i, c) in cmds.iter().enumerate().take(MAX_PLAYERS) {
             full[i] = *c;
+        }
+        // Net save / load requests ride in the host's command (seat 0 only)
+        // and are taken out before the playsim sees them.
+        let save_bits = Buttons::NETSAVE | Buttons::NETLOAD;
+        for (i, c) in full.iter_mut().enumerate() {
+            if c.buttons.0 & save_bits == 0 {
+                continue;
+            }
+            if i == 0 {
+                self.net_save_request = Some(NetSaveRequest {
+                    load: c.buttons.0 & Buttons::NETLOAD != 0,
+                    slot: c.weapon_select,
+                });
+            }
+            c.buttons.0 &= !save_bits;
+            c.weapon_select = 0;
         }
         world.set_ticcmds(&full);
         if let Some(p) = mods_ptr {
@@ -1811,6 +1969,11 @@ impl Headless {
             }
             self.intermission = Some(tallies);
             self.state = GameState::Intermission;
+            // Fresh ready-vote; bots are ready at once.
+            self.intermission_ready = world.bot_seats;
+            self.intermission_voters = 0;
+            self.intermission_prev.clear();
+            self.intermission_advance = false;
         }
         if let Some(demo) = &mut self.demo {
             demo.record_tic(world, &full[..cmds.len().clamp(1, MAX_PLAYERS)]);
@@ -25280,6 +25443,106 @@ actor PlayerPawn : Actor 0
             super::player_has_action(game.world().unwrap(), "SEE"),
             "CON action SEE should jump the pawn"
         );
+    }
+
+    #[test]
+    fn net_saves_keep_every_seat_and_the_request_never_reaches_the_playsim() {
+        let mk = || {
+            let mut map = MapBuilder::new()
+                .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+                .player_start(32.0, 32.0, 0)
+                .build_udmf("MAP01")
+                .unwrap();
+            apply_nodes(&mut map);
+            let mut game = Headless::new(GameOptions {
+                skill: Skill::new(3),
+                rng_seed: 1,
+                record_demo: false,
+                coop_players: 3,
+                ..Default::default()
+            });
+            game.start_custom_map(map, Skill::new(3)).unwrap();
+            game
+        };
+        let mut game = mk();
+        let walk = TicCmd {
+            forward_move: 0x32 * 256,
+            ..TicCmd::default()
+        };
+        for _ in 0..10 {
+            game.tick(&[TicCmd::default(), TicCmd::default(), walk]);
+        }
+        // The host asks for a save in slot 4.
+        let host = TicCmd {
+            buttons: Buttons(Buttons::NETSAVE),
+            weapon_select: 4,
+            ..TicCmd::default()
+        };
+        game.tick(&[host, TicCmd::default(), TicCmd::default()]);
+        assert_eq!(
+            game.take_net_save_request(),
+            Some(NetSaveRequest { load: false, slot: 4 })
+        );
+        assert_eq!(game.take_net_save_request(), None);
+        let p0 = game.world().unwrap().players[0].as_ref().unwrap();
+        assert_eq!(p0.cmd.buttons.0 & Buttons::NETSAVE, 0, "stripped before the playsim");
+        assert_eq!(p0.cmd.weapon_select, 0);
+        // A client's bit is ignored and stripped too.
+        game.tick(&[TicCmd::default(), host, TicCmd::default()]);
+        assert_eq!(game.take_net_save_request(), None);
+        let seat2 = |g: &Headless| {
+            let w = g.world().unwrap();
+            let mo = w.players[2].as_ref().unwrap().mo.unwrap();
+            w.actors.get(mo).unwrap().pos
+        };
+        let saved_pos = seat2(&game);
+        let bytes = game.save_game().unwrap();
+        let mut other = mk();
+        assert_ne!(seat2(&other), saved_pos);
+        other.load_game(&bytes).unwrap();
+        assert_eq!(seat2(&other), saved_pos, "seat 2 restored from players.bin");
+    }
+
+    #[test]
+    fn intermission_waits_for_every_seat_to_press_use_or_fire() {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut game = Headless::new(GameOptions {
+            skill: Skill::new(3),
+            rng_seed: 1,
+            record_demo: false,
+            coop_players: 3,
+            ..Default::default()
+        });
+        game.start_custom_map(map, Skill::new(3)).unwrap();
+        game.world_mut().unwrap().level.exiting = true;
+        let held = TicCmd {
+            buttons: Buttons(Buttons::ATTACK),
+            ..TicCmd::default()
+        };
+        let idle = TicCmd::default();
+        let press = |b| TicCmd {
+            buttons: Buttons(b),
+            ..TicCmd::default()
+        };
+        game.tick(&[held, idle, idle]);
+        assert_eq!(game.state, GameState::Intermission);
+        // Seat 0 is still holding fire from the level: not a vote.
+        game.tick(&[held, idle, idle]);
+        game.tick(&[held, idle, idle]);
+        assert_eq!(game.intermission_votes(), (0, 3));
+        game.tick(&[idle, press(Buttons::USE), idle]);
+        game.tick(&[press(Buttons::ATTACK), idle, idle]);
+        assert_eq!(game.intermission_votes(), (2, 3));
+        assert!(!game.take_intermission_advance());
+        game.tick(&[idle, idle, press(Buttons::USE)]);
+        assert_eq!(game.intermission_votes(), (3, 3));
+        assert!(game.take_intermission_advance());
+        assert!(!game.take_intermission_advance(), "consumed");
     }
 
     #[test]

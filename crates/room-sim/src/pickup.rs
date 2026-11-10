@@ -84,7 +84,17 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
     let mut medikit_needed = false;
     // `Health.LowMessage`: replaces the pickup message when health was low.
     let mut low_message: Option<String> = None;
-    if armor_kind.is_some() {
+    if world.classes.inherits_from(class, "HexenArmor") {
+        // `HexenArmor.HandlePickup`: `Health` is the slot, `Amount` the AC
+        // to add (0 = the class's full piece).
+        let (slot, raw_amount) = world
+            .classes
+            .get(class)
+            .map_or((0, 0), |c| (c.health, c.inventory_amount));
+        if !add_hexen_armor(world, toucher, slot, raw_amount) {
+            return false;
+        }
+    } else if armor_kind.is_some() {
         if !use_armor(world, toucher, class, 1) {
             return false;
         }
@@ -423,9 +433,11 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
     }
     if countitem {
         world.level.found_items = world.level.found_items.saturating_add(1);
+        world.credit_player_stat(Some(toucher), 1);
     }
     if countsecret {
         world.level.found_secrets = world.level.found_secrets.saturating_add(1);
+        world.credit_player_stat(Some(toucher), 2);
     }
     let (pickup_msg, pickup_snd) = world
         .classes
@@ -537,6 +549,14 @@ pub fn use_armor(world: &mut World, owner: ActorId, class: ClassId, count: i32) 
         vanilla.0
     };
     let save_amount = save_amount.saturating_mul(count.max(1));
+    // `GetSaveAmount`: skill `ArmorFactor` unless `+INVENTORY.IGNORESKILL`.
+    let save_amount = if (world.armor_factor - 1.0).abs() > 1e-12
+        && !ext.has_qualified_flag("INVENTORY.IGNORESKILL")
+    {
+        (f64::from(save_amount) * world.armor_factor) as i32
+    } else {
+        save_amount
+    };
     let percent = if ext.armor_save_percent > 0.0 {
         ext.armor_save_percent
     } else {
@@ -590,6 +610,106 @@ pub fn use_armor(world: &mut World, owner: ActorId, class: ClassId, count: i32) 
     p.armor = save_amount + p.armor_bonus_count;
     wear(p);
     true
+}
+
+/// `Player.HexenArmor` of `owner`'s class: natural AC (slot 4) and the four
+/// slot increments, all × 5 as in UZDoom (`HexenArmor.Slots`).
+#[must_use]
+pub fn hexen_armor_profile(world: &World, owner: ActorId) -> Option<(f64, [f64; 4])> {
+    let class = world.actors.get(owner)?.class;
+    let mut cur = Some(class);
+    for _ in 0..32 {
+        let def = cur.and_then(|c| world.classes.get(c))?;
+        if let Some(raw) = def.ext.stored("player.hexenarmor") {
+            let v: Vec<f64> = raw
+                .split(',')
+                .filter_map(|t| t.trim().trim_matches('"').parse().ok())
+                .collect();
+            if v.len() >= 5 {
+                return Some((v[0], [v[1], v[2], v[3], v[4]]));
+            }
+        }
+        cur = def.parent;
+    }
+    None
+}
+
+/// `HexenArmor.AddArmorToSlot(slot, amount)` for `owner`'s player. `amount`
+/// 0 = a full piece (the slot's increment); otherwise `amount × 5` AC points
+/// up to the class maximum (Dragonskin Bracers).
+pub fn add_hexen_armor(world: &mut World, owner: ActorId, slot: i32, amount: i32) -> bool {
+    let Ok(slot) = usize::try_from(slot) else {
+        return false;
+    };
+    if slot > 3 {
+        return false;
+    }
+    let (base, inc) = hexen_armor_profile(world, owner).unwrap_or((0.0, [0.0; 4]));
+    let Some(p) = world.players.iter_mut().flatten().find(|p| p.mo == Some(owner)) else {
+        return false;
+    };
+    if amount <= 0 {
+        if p.hexen_armor[slot] < inc[slot] {
+            p.hexen_armor[slot] = inc[slot];
+            return true;
+        }
+        return false;
+    }
+    let total: f64 = p.hexen_armor.iter().sum::<f64>() + base;
+    let max = inc.iter().sum::<f64>() + base + 4.0 * 5.0;
+    if total < max {
+        p.hexen_armor[slot] += f64::from(amount) * 5.0;
+        return true;
+    }
+    false
+}
+
+/// `HexenArmor.AbsorbDamage`: returns the damage left. Each worn piece wears
+/// down by `damage × increment / 300` (gone below 2); 10000+ damage strips it.
+pub(crate) fn absorb_hexen_armor(world: &mut World, target: ActorId, damage: i32) -> i32 {
+    let Some((base, inc)) = hexen_armor_profile(world, target) else {
+        return damage;
+    };
+    let Some(p) = world.players.iter_mut().flatten().find(|p| p.mo == Some(target)) else {
+        return damage;
+    };
+    let mut saved_percent: f64 = p.hexen_armor.iter().sum::<f64>() + base;
+    if saved_percent <= 0.0 {
+        return damage;
+    }
+    saved_percent = saved_percent.min(100.0);
+    for (i, slot) in p.hexen_armor.iter_mut().enumerate() {
+        if *slot != 0.0 {
+            if damage < 10_000 {
+                *slot -= f64::from(damage) * inc[i] / 300.0;
+                if *slot < 2.0 {
+                    *slot = 0.0;
+                }
+            } else {
+                *slot = 0.0;
+            }
+        }
+    }
+    let mut saved = (f64::from(damage) * saved_percent / 100.0) as i32;
+    if f64::from(saved) > saved_percent * 2.0 {
+        saved = (saved_percent * 2.0) as i32;
+    }
+    damage - saved
+}
+
+/// Hexen armor class shown on the status bar (`(Σ slots) / 5`).
+#[must_use]
+pub fn hexen_armor_class(world: &World, owner: ActorId) -> i32 {
+    let Some((base, _)) = hexen_armor_profile(world, owner) else {
+        return 0;
+    };
+    let worn: f64 = world
+        .players
+        .iter()
+        .flatten()
+        .find(|p| p.mo == Some(owner))
+        .map_or(0.0, |p| p.hexen_armor.iter().sum());
+    ((worn + base) / 5.0) as i32
 }
 
 /// Built-in pickups whose effect is keyed by class name.
@@ -851,6 +971,13 @@ pub fn use_inventory_item(world: &mut World, owner: ActorId, class: room_core::C
     }
     let used = if is_armor_class(world, class) {
         use_armor(world, owner, class, 1)
+    } else if world.classes.inherits_from(class, "ArtiBoostArmor") {
+        // Dragonskin Bracers: one AC point (×5) in each of the four slots.
+        let mut any = false;
+        for slot in 0..4 {
+            any |= add_hexen_armor(world, owner, slot, 1);
+        }
+        any
     } else if world.classes.inherits_from(class, "PuzzleItem") {
         use_puzzle_item(world, owner, class)
     } else if world.classes.inherits_from(class, "ArtiHealingRadius") {
@@ -1811,6 +1938,59 @@ mod tests {
         actor BasicArmorBonus : Inventory {}\n";
 
     #[test]
+    fn hexen_armor_slots_fill_absorb_and_wear_down() {
+        let (mut w, classes, mo) = doom_world_with(&format!(
+            "{ARMOR_BASES}actor HexenArmor : Inventory {{}}\n\
+             actor TestMesh : HexenArmor {{ Health 0 Inventory.Amount 0 }}\n\
+             actor TestAmulet : HexenArmor {{ Health 3 Inventory.Amount 0 }}\n\
+             actor ArtiBoostArmor : Inventory {{}}\n\
+             actor TestFighter : DoomPlayer {{ Player.HexenArmor 15, 25, 20, 15, 5 }}\n"
+        ));
+        let fighter = classes.find_name("TestFighter").unwrap();
+        w.actors.get_mut(mo).unwrap().class = fighter;
+        assert_eq!(hexen_armor_profile(&w, mo), Some((15.0, [25.0, 20.0, 15.0, 5.0])));
+        assert_eq!(hexen_armor_class(&w, mo), 3, "natural AC 15 / 5");
+        let mesh = classes.find_name("TestMesh").unwrap();
+        let item = w.spawn_at(mesh, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO).unwrap();
+        assert!(try_pickup(&mut w, mo, item));
+        assert_eq!(w.players[0].as_ref().unwrap().hexen_armor[0], 25.0);
+        let again = w.spawn_at(mesh, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO).unwrap();
+        assert!(!try_pickup(&mut w, mo, again), "a full piece is not taken twice");
+        let amulet = classes.find_name("TestAmulet").unwrap();
+        let item = w.spawn_at(amulet, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO).unwrap();
+        assert!(try_pickup(&mut w, mo, item));
+        assert_eq!(hexen_armor_class(&w, mo), 9, "(15 + 25 + 5) / 5");
+        // 45 % saved; mesh wears by 30 × 25 / 300 = 2.5.
+        let left = absorb_hexen_armor(&mut w, mo, 30);
+        assert_eq!(left, 30 - 13);
+        let slots = w.players[0].as_ref().unwrap().hexen_armor;
+        assert!((slots[0] - 22.5).abs() < 1e-9);
+        assert!((slots[3] - 4.5).abs() < 1e-9, "amulet wears 30 × 5 / 300");
+        // Dragonskin Bracers add 5 to every slot.
+        let bracers = classes.find_name("ArtiBoostArmor").unwrap();
+        let _ = crate::inventory::give_inventory(&mut w, mo, bracers, 1);
+        assert!(use_inventory_item(&mut w, mo, bracers));
+        let slots = w.players[0].as_ref().unwrap().hexen_armor;
+        assert!((slots[1] - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn skill_armor_factor_scales_save_amount_unless_ignoreskill() {
+        let (mut w, classes, mo) = doom_world_with(&format!(
+            "{ARMOR_BASES}actor HalfArmor : BasicArmorPickup {{ Armor.SaveAmount 100 }}\n\
+             actor FixedArmor : BasicArmorPickup {{ Armor.SaveAmount 100 +INVENTORY.IGNORESKILL }}\n"
+        ));
+        w.armor_factor = 0.5;
+        let half = classes.find_name("HalfArmor").unwrap();
+        assert!(use_armor(&mut w, mo, half, 1));
+        assert_eq!(w.players[0].as_ref().unwrap().armor, 50);
+        w.players[0].as_mut().unwrap().armor = 0;
+        let fixed = classes.find_name("FixedArmor").unwrap();
+        assert!(use_armor(&mut w, mo, fixed, 1));
+        assert_eq!(w.players[0].as_ref().unwrap().armor, 100);
+    }
+
+    #[test]
     fn decorate_armor_pickup_uses_save_amount_and_percent() {
         let (mut w, classes, mo) = doom_world_with(&format!(
             "{ARMOR_BASES}actor SuperArmor : BasicArmorPickup {{\n  Armor.SaveAmount 150\n  Armor.SavePercent 80\n  Armor.MaxAbsorb 10\n}}\n"
@@ -1852,6 +2032,23 @@ mod tests {
         let p = w.players[0].as_ref().unwrap();
         assert_eq!(p.armor_type, Some(cid));
         assert_eq!(p.armor_class, 1);
+    }
+
+    #[test]
+    fn armor_max_bonus_raises_the_cap_up_to_max_bonus_max() {
+        let (mut w, classes, mo) = doom_world_with(&format!(
+            "{ARMOR_BASES}actor CapBonus : BasicArmorBonus {{\n  Armor.SaveAmount 5\n  Armor.MaxSaveAmount 10\n  Armor.MaxBonus 3\n  Armor.MaxBonusMax 4\n}}\n"
+        ));
+        let cid = classes.find_name("CapBonus").unwrap();
+        // Cap 10 + bonus count (3, then capped at 4).
+        for want in [5, 10, 14, 14] {
+            let item = w
+                .spawn_at(cid, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO)
+                .unwrap();
+            assert!(try_pickup(&mut w, mo, item));
+            assert_eq!(w.players[0].as_ref().unwrap().armor, want);
+        }
+        assert_eq!(w.players[0].as_ref().unwrap().armor_bonus_count, 4);
     }
 
     #[test]

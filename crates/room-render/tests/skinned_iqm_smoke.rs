@@ -48,6 +48,7 @@ fn skinned_iqm_translates_on_gpu() {
         inv_base_mats: vec![Mat4::IDENTITY],
         blend_indexes: vec![[0, 0, 0, 0]; 3],
         blend_weights: vec![[255, 0, 0, 0]; 3],
+        anim: Default::default(),
     };
     let origin = Vec3::new(0.0, 80.0, 0.0);
     let verts = iqm_to_skinned_vertices(&iqm, origin, Vec3::ONE, 1.0);

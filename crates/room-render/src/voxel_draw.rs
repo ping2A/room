@@ -137,7 +137,7 @@ impl VoxelCatalog {
             lists.opaque_walls.extend_from_slice(&verts);
             lists
                 .wall_ranges
-                .push(crate::scene::MaterialRange { name, start, count });
+                .push(crate::scene::MaterialRange { name, start, count, flags: 0 });
         }
         uploads
     }

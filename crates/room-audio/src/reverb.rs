@@ -6,15 +6,13 @@
 //! present; a mod's `REVERBS` lump adds or replaces entries. An environment
 //! is named by two numbers, `id1 id2`, stored as `id1 << 8 | id2`.
 //!
-//! UZDoom hands these EAX/EFX parameters to OpenAL. Room renders them with a
-//! Freeverb-style network (early taps + 8 damped combs + 4 allpasses per
-//! side), so the result follows the presets' decay, level, size and damping
-//! but is not bit-identical to an EFX device. Render-side only: no gameplay
-//! state depends on it.
+//! UZDoom hands these EAX/EFX parameters to OpenAL; Room renders them with a
+//! port of OpenAL Soft's reverb ([`crate::efx`]) using UZDoom's parameter
+//! mapping. Render-side only: no gameplay state depends on it.
 
 use std::collections::BTreeMap;
 
-/// EAX / EFX reverb parameters (ZDoom `REVERB_PROPERTIES`, minus the pan vectors).
+/// EAX / EFX reverb parameters (ZDoom `REVERB_PROPERTIES`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ReverbProps {
     /// EAX base environment index (0–25) used to fill unset REVERBS fields.
@@ -65,6 +63,11 @@ pub struct ReverbProps {
     pub density: f32,
     /// `REVERB_FLAGS` (`bDecayTimeScale` = bit 0, …).
     pub flags: u32,
+    /// Direction the early reflections come from (`ReflectionsPanX/Y/Z`;
+    /// EAX left-handed: x right, y up, z front; length up to 1 = focus).
+    pub reflections_pan: [f32; 3],
+    /// Direction of the late reverb (`ReverbPanX/Y/Z`).
+    pub reverb_pan: [f32; 3],
 }
 
 /// One named environment.
@@ -129,6 +132,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 0.0,
         density: 0.0,
         flags: 0x33f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Generic", 0x0001, false, ReverbProps {
         environment: 0,
@@ -155,6 +160,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Padded Cell", 0x0100, false, ReverbProps {
         environment: 1,
@@ -181,6 +188,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Room", 0x0200, false, ReverbProps {
         environment: 2,
@@ -207,6 +216,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Bathroom", 0x0300, false, ReverbProps {
         environment: 3,
@@ -233,6 +244,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 60.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Living Room", 0x0400, false, ReverbProps {
         environment: 4,
@@ -259,6 +272,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Stone Room", 0x0500, false, ReverbProps {
         environment: 5,
@@ -285,6 +300,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Auditorium", 0x0600, false, ReverbProps {
         environment: 6,
@@ -311,6 +328,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Concert Hall", 0x0700, false, ReverbProps {
         environment: 7,
@@ -337,6 +356,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Cave", 0x0800, false, ReverbProps {
         environment: 8,
@@ -363,6 +384,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x1f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Arena", 0x0900, false, ReverbProps {
         environment: 9,
@@ -389,6 +412,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Hangar", 0x0A00, false, ReverbProps {
         environment: 10,
@@ -415,6 +440,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Carpetted Hallway", 0x0B00, false, ReverbProps {
         environment: 11,
@@ -441,6 +468,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Hallway", 0x0C00, false, ReverbProps {
         environment: 12,
@@ -467,6 +496,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Stone Corridor", 0x0D00, false, ReverbProps {
         environment: 13,
@@ -493,6 +524,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Alley", 0x0E00, false, ReverbProps {
         environment: 14,
@@ -519,6 +552,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Forest", 0x0F00, false, ReverbProps {
         environment: 15,
@@ -545,6 +580,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 79.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("City", 0x1000, false, ReverbProps {
         environment: 16,
@@ -571,6 +608,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 50.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Mountains", 0x1100, false, ReverbProps {
         environment: 17,
@@ -597,6 +636,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 27.0,
         density: 100.0,
         flags: 0x1f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Quarry", 0x1200, false, ReverbProps {
         environment: 18,
@@ -623,6 +664,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Plain", 0x1300, false, ReverbProps {
         environment: 19,
@@ -649,6 +692,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 21.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Parking Lot", 0x1400, false, ReverbProps {
         environment: 20,
@@ -675,6 +720,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x1f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Sewer Pipe", 0x1500, false, ReverbProps {
         environment: 21,
@@ -701,6 +748,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 80.0,
         density: 60.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Sewer Pipe 2", 0x1502, false, ReverbProps {
         environment: 21,
@@ -727,6 +776,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 80.0,
         density: 60.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Sewer Pipe 3", 0x1503, false, ReverbProps {
         environment: 21,
@@ -753,6 +804,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 80.0,
         density: 60.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Underwater", 0x1600, false, ReverbProps {
         environment: 22,
@@ -779,6 +832,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x3f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Drugged", 0x1700, false, ReverbProps {
         environment: 23,
@@ -805,6 +860,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x1f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Dizzy", 0x1800, false, ReverbProps {
         environment: 24,
@@ -831,6 +888,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x1f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("Psychotic", 0x1900, false, ReverbProps {
         environment: 25,
@@ -857,6 +916,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 100.0,
         density: 100.0,
         flags: 0x1f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     builtin("DSP Water", 0xFFFF, true, ReverbProps {
         environment: 0,
@@ -883,6 +944,8 @@ fn builtins() -> Vec<ReverbEnv> {
         diffusion: 0.0,
         density: 0.0,
         flags: 0x33f,
+        reflections_pan: [0.0; 3],
+        reverb_pan: [0.0; 3],
     }),
     ]
 }
@@ -945,6 +1008,11 @@ impl EnvironmentTable {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.envs.is_empty()
+    }
+
+    /// Every environment, by ID.
+    pub fn iter(&self) -> impl Iterator<Item = &ReverbEnv> {
+        self.envs.values()
     }
 
     /// Environment by ID.
@@ -1087,6 +1155,14 @@ fn apply_fields(mut p: ReverbProps, set: &BTreeMap<String, String>) -> ReverbPro
     fset!("roomrollofffactor", room_rolloff, 0.0, 10.0);
     fset!("diffusion", diffusion, 0.0, 100.0);
     fset!("density", density, 0.0, 100.0);
+    for (i, axis) in ["x", "y", "z"].iter().enumerate() {
+        if let Some(v) = f(&format!("reflectionspan{axis}")) {
+            p.reflections_pan[i] = v.clamp(-2000.0, 2000.0);
+        }
+        if let Some(v) = f(&format!("reverbpan{axis}")) {
+            p.reverb_pan[i] = v.clamp(-2000.0, 2000.0);
+        }
+    }
     for (key, bit) in [
         ("bdecaytimescale", 0),
         ("breflectionsscale", 1),
@@ -1112,266 +1188,6 @@ fn apply_fields(mut p: ReverbProps, set: &BTreeMap<String, String>) -> ReverbPro
 #[must_use]
 pub fn mb_to_gain(mb: f32) -> f32 {
     10f32.powf(mb / 2000.0)
-}
-
-// Freeverb tunings at 44.1 kHz.
-const COMB_TUNING: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
-const ALLPASS_TUNING: [usize; 4] = [556, 441, 341, 225];
-const STEREO_SPREAD: usize = 23;
-/// Largest room-size scale the buffers are sized for.
-const MAX_SCALE: f32 = 3.0;
-/// Early reflection taps as fractions of the reflection spread, with gains.
-const EARLY_TAPS: [(f32, f32); 6] = [(0.0, 1.0), (0.21, 0.8), (0.37, 0.65), (0.55, 0.5), (0.71, 0.4), (1.0, 0.3)];
-
-#[derive(Clone, Debug)]
-struct Comb {
-    buf: Vec<f32>,
-    len: usize,
-    idx: usize,
-    store: f32,
-    feedback: f32,
-    damp: f32,
-}
-
-impl Comb {
-    fn new(max: usize) -> Self {
-        Self {
-            buf: vec![0.0; max.max(1)],
-            len: max.max(1),
-            idx: 0,
-            store: 0.0,
-            feedback: 0.5,
-            damp: 0.2,
-        }
-    }
-    fn process(&mut self, x: f32) -> f32 {
-        let y = self.buf[self.idx];
-        self.store = y * (1.0 - self.damp) + self.store * self.damp;
-        self.buf[self.idx] = x + self.store * self.feedback;
-        self.idx += 1;
-        if self.idx >= self.len {
-            self.idx = 0;
-        }
-        y
-    }
-}
-
-#[derive(Clone, Debug)]
-struct Allpass {
-    buf: Vec<f32>,
-    len: usize,
-    idx: usize,
-    feedback: f32,
-}
-
-impl Allpass {
-    fn new(max: usize) -> Self {
-        Self {
-            buf: vec![0.0; max.max(1)],
-            len: max.max(1),
-            idx: 0,
-            feedback: 0.5,
-        }
-    }
-    fn process(&mut self, x: f32) -> f32 {
-        let b = self.buf[self.idx];
-        let y = -x + b;
-        self.buf[self.idx] = x + b * self.feedback;
-        self.idx += 1;
-        if self.idx >= self.len {
-            self.idx = 0;
-        }
-        y
-    }
-}
-
-/// Software reverb for one [`ReverbProps`] set (stereo in, stereo wet out).
-#[derive(Clone, Debug)]
-pub struct EnvReverb {
-    sample_rate: u32,
-    props: ReverbProps,
-    combs: [Vec<Comb>; 2],
-    allpasses: [Vec<Allpass>; 2],
-    /// Mono pre-delay line feeding early taps and the late network.
-    pre: Vec<f32>,
-    pre_idx: usize,
-    early_delay: usize,
-    early_spread: usize,
-    late_delay: usize,
-    early_gain: f32,
-    late_gain: f32,
-    hf_coef: f32,
-    hf_state: f32,
-}
-
-impl EnvReverb {
-    /// Network for `props` at `sample_rate`.
-    #[must_use]
-    pub fn new(sample_rate: u32, props: &ReverbProps) -> Self {
-        let sr = sample_rate.max(1);
-        let k = sr as f32 / 44_100.0;
-        let max_len = |t: usize| ((t + STEREO_SPREAD) as f32 * k * MAX_SCALE) as usize + 2;
-        let combs = [
-            COMB_TUNING.iter().map(|&t| Comb::new(max_len(t))).collect(),
-            COMB_TUNING.iter().map(|&t| Comb::new(max_len(t))).collect(),
-        ];
-        let allpasses = [
-            ALLPASS_TUNING.iter().map(|&t| Allpass::new(max_len(t))).collect(),
-            ALLPASS_TUNING.iter().map(|&t| Allpass::new(max_len(t))).collect(),
-        ];
-        // 0.3 s reflections + 0.1 s reverb delay + 0.1 s reflection spread.
-        let pre = vec![0.0; (sr as f32 * 0.55) as usize + 2];
-        let mut r = Self {
-            sample_rate: sr,
-            props: *props,
-            combs,
-            allpasses,
-            pre,
-            pre_idx: 0,
-            early_delay: 0,
-            early_spread: 1,
-            late_delay: 0,
-            early_gain: 0.0,
-            late_gain: 0.0,
-            hf_coef: 1.0,
-            hf_state: 0.0,
-        };
-        r.set_props(props);
-        r
-    }
-
-    /// Current parameters.
-    #[must_use]
-    pub fn props(&self) -> &ReverbProps {
-        &self.props
-    }
-
-    /// Retune to `props`, keeping the tail already in the buffers.
-    pub fn set_props(&mut self, props: &ReverbProps) {
-        self.props = *props;
-        let sr = self.sample_rate as f32;
-        let k = sr / 44_100.0;
-        let scale = (props.env_size / 7.5).clamp(0.3, MAX_SCALE);
-        let decay = props.decay_time.max(0.1);
-        // HF decays `decay_hf_ratio` times as fast: damp the comb loops.
-        let damp = (1.0 - props.decay_hf_ratio.min(1.0)).clamp(0.0, 0.9) * 0.8 + 0.05;
-        for (side, combs) in self.combs.iter_mut().enumerate() {
-            for (c, &t) in combs.iter_mut().zip(COMB_TUNING.iter()) {
-                let len = (((t + side * STEREO_SPREAD) as f32) * k * scale) as usize;
-                c.len = len.clamp(1, c.buf.len());
-                c.idx %= c.len;
-                let secs = c.len as f32 / sr;
-                c.feedback = 10f32.powf(-3.0 * secs / decay).clamp(0.0, 0.98);
-                c.damp = damp;
-            }
-        }
-        let ap_fb = 0.3 + 0.4 * props.env_diffusion.clamp(0.0, 1.0);
-        for (side, aps) in self.allpasses.iter_mut().enumerate() {
-            for (a, &t) in aps.iter_mut().zip(ALLPASS_TUNING.iter()) {
-                let len = (((t + side * STEREO_SPREAD) as f32) * k * scale) as usize;
-                a.len = len.clamp(1, a.buf.len());
-                a.idx %= a.len;
-                a.feedback = ap_fb;
-            }
-        }
-        let room = mb_to_gain(props.room as f32);
-        self.early_gain = room * mb_to_gain(props.reflections as f32) * 0.5;
-        // Freeverb's fixed input gain (0.015) and wet scale (3) folded in.
-        self.late_gain = room * mb_to_gain(props.reverb as f32) * 0.045;
-        let max_pre = self.pre.len().saturating_sub(2);
-        self.early_delay = ((props.reflections_delay * sr) as usize).min(max_pre);
-        self.early_spread = ((0.03 * scale * sr) as usize).max(1);
-        self.late_delay =
-            (((props.reflections_delay + props.reverb_delay) * sr) as usize).min(max_pre);
-        // One-pole low-pass on the send for `RoomHF` (gain at HF reference).
-        self.hf_coef = mb_to_gain(props.room_hf as f32).clamp(0.05, 1.0);
-    }
-
-    /// Whether this environment makes any sound (`Room` above −90 dB).
-    #[must_use]
-    pub fn is_audible(&self) -> bool {
-        self.props.room > -9000
-    }
-
-    /// Clear the tail.
-    pub fn reset(&mut self) {
-        for side in &mut self.combs {
-            for c in side {
-                c.buf.fill(0.0);
-                c.store = 0.0;
-            }
-        }
-        for side in &mut self.allpasses {
-            for a in side {
-                a.buf.fill(0.0);
-            }
-        }
-        self.pre.fill(0.0);
-        self.hf_state = 0.0;
-    }
-
-    fn tap(&self, delay: usize) -> f32 {
-        let n = self.pre.len();
-        self.pre[(self.pre_idx + n - delay.min(n - 1)) % n]
-    }
-
-    /// Process one stereo frame of send signal; returns the wet frame.
-    pub fn process_frame(&mut self, l: f32, r: f32) -> (f32, f32) {
-        let x = (l + r) * 0.5;
-        self.hf_state += self.hf_coef * (x - self.hf_state);
-        let n = self.pre.len();
-        self.pre_idx = (self.pre_idx + 1) % n;
-        self.pre[self.pre_idx] = self.hf_state;
-        let mut early_l = 0.0;
-        let mut early_r = 0.0;
-        for (i, &(pos, g)) in EARLY_TAPS.iter().enumerate() {
-            let d = self.early_delay + (pos * self.early_spread as f32) as usize;
-            let s = self.tap(d) * g;
-            if i % 2 == 0 {
-                early_l += s;
-                early_r += s * 0.6;
-            } else {
-                early_r += s;
-                early_l += s * 0.6;
-            }
-        }
-        let late_in = self.tap(self.late_delay);
-        let mut out = [0.0f32; 2];
-        for side in 0..2 {
-            let mut acc = 0.0;
-            for c in &mut self.combs[side] {
-                acc += c.process(late_in);
-            }
-            for a in &mut self.allpasses[side] {
-                acc = a.process(acc);
-            }
-            out[side] = acc;
-        }
-        (
-            early_l * self.early_gain + out[0] * self.late_gain,
-            early_r * self.early_gain + out[1] * self.late_gain,
-        )
-    }
-}
-
-/// ZDoom's software under-water effect: a low-pass on the whole mix.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct WaterFilter {
-    state: [f32; 2],
-    state2: [f32; 2],
-}
-
-impl WaterFilter {
-    /// Two-pole low-pass at roughly 600 Hz for `sample_rate`.
-    pub fn process(&mut self, frame: &mut [f32], sample_rate: u32) {
-        let fc = 600.0f32;
-        let a = 1.0 - (-2.0 * std::f32::consts::PI * fc / sample_rate.max(1) as f32).exp();
-        for ch in 0..2.min(frame.len()) {
-            self.state[ch] += a * (frame[ch] - self.state[ch]);
-            self.state2[ch] += a * (self.state[ch] - self.state2[ch]);
-            frame[ch] = self.state2[ch];
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1408,11 +1224,12 @@ mod tests {
     }
 
     fn tail_energy(env: &ReverbEnv) -> f32 {
-        let mut r = EnvReverb::new(44_100, &env.props);
+        let mut r = crate::efx::EfxReverb::new(44_100);
+        r.set_params(&crate::efx::EfxParams::from_props(&env.props));
         let mut e = 0.0;
         for i in 0..44_100 {
             let x = if i == 0 { 1.0 } else { 0.0 };
-            let (l, rr) = r.process_frame(x, x);
+            let (l, rr) = r.process_bformat([x, 0.0, 0.0, 0.0]);
             if i > 22_050 {
                 e += l * l + rr * rr;
             }
@@ -1426,6 +1243,6 @@ mod tests {
         let cell = tail_energy(t.find(0x0100).unwrap()); // Padded Cell, 0.17 s
         let hangar = tail_energy(t.find(0x0A00).unwrap()); // Hangar, 10 s
         assert!(hangar > cell * 100.0, "hangar {hangar} vs cell {cell}");
-        assert!(!EnvReverb::new(44_100, &t.find(ENV_OFF).unwrap().props).is_audible());
+        assert!(t.find(ENV_OFF).unwrap().props.room <= -9000);
     }
 }

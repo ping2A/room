@@ -54,6 +54,7 @@ pub fn sprites_back_to_front(
             name: r.name.clone(),
             start,
             count: r.count,
+            flags: r.flags,
         });
     }
     (out_v, out_r)
@@ -68,6 +69,19 @@ pub struct MaterialRange {
     pub start: u32,
     /// Vertex count.
     pub count: u32,
+    /// [`MaterialRange::SUBTRACT`] / [`MaterialRange::NO_BRIGHTMAP`] bits.
+    pub flags: u8,
+}
+
+impl MaterialRange {
+    /// Sprite range drawn with reverse-subtract blending (`STYLE_Subtract`):
+    /// its vertices carry the additive flag (premultiplied colour, alpha 0).
+    pub const SUBTRACT: u8 = 1;
+    /// Draw with the default shader: no GLDEFS brightmap (UZDoom particles
+    /// without `SPF_ALLOWSHADERS` force `OverrideShader = 0`).
+    pub const NO_BRIGHTMAP: u8 = 2;
+    /// `+NODYNAMICLIGHTING` actor: dynamic lights skip this range.
+    pub const NO_DYNLIGHT: u8 = 4;
 }
 
 /// Draw lists for one frame (CPU side).
@@ -344,6 +358,7 @@ fn apply_sky(lists: &mut SceneLists, sky_texture: Option<&str>, cubemap: Option<
                 name,
                 start: (i as u32) * 6,
                 count: 6,
+                flags: 0,
             })
             .collect();
         lists.sky_texture.clear();
@@ -438,8 +453,20 @@ pub fn apply_dyn_lights(lists: &mut SceneLists) {
     for v in &mut lists.translucent_flats {
         boost(v.pos, &mut v.light);
     }
-    for v in &mut lists.sprites {
-        boost(v.pos, &mut v.light);
+    // `+NODYNAMICLIGHTING` sprite ranges are left alone.
+    let mut skip = vec![false; lists.sprites.len()];
+    for r in &lists.sprite_ranges {
+        if r.flags & MaterialRange::NO_DYNLIGHT != 0 {
+            let end = (r.start + r.count) as usize;
+            for s in skip.iter_mut().take(end.min(lists.sprites.len())).skip(r.start as usize) {
+                *s = true;
+            }
+        }
+    }
+    for (v, skip) in lists.sprites.iter_mut().zip(skip) {
+        if !skip {
+            boost(v.pos, &mut v.light);
+        }
     }
 }
 
@@ -546,10 +573,18 @@ pub fn append_sprites_in_map(
             crate::sprites::SpriteOrient::Facing { .. } => {}
         }
         lists.sprites.extend_from_slice(&quad);
+        let mut flags = 0;
+        if inst.fx.subtract {
+            flags |= MaterialRange::SUBTRACT;
+        }
+        if inst.fx.no_dynlight {
+            flags |= MaterialRange::NO_DYNLIGHT;
+        }
         lists.sprite_ranges.push(MaterialRange {
             name: inst.texture.clone(),
             start,
             count: 6,
+            flags,
         });
     }
 }
@@ -871,6 +906,7 @@ fn emit_thing_sprites(map: &MapGeometry, camera: &Camera, lists: &mut SceneLists
             orient: crate::sprites::SpriteOrient::Billboard,
             additive: false,
             roll: 0.0,
+            fx: Default::default(),
         };
         #[allow(clippy::cast_possible_truncation)]
         let start = lists.sprites.len() as u32;
@@ -880,6 +916,7 @@ fn emit_thing_sprites(map: &MapGeometry, camera: &Camera, lists: &mut SceneLists
             name: String::new(),
             start,
             count: 6,
+            flags: 0,
         });
     }
 }
@@ -2281,6 +2318,7 @@ fn clip_wall_buffer(
                 name: r.name,
                 start: range_start,
                 count,
+                flags: 0,
             });
         }
     }
@@ -2351,6 +2389,7 @@ fn clip_flat_buffer(
                 name: r.name,
                 start: range_start,
                 count,
+                flags: 0,
             });
         }
     }
@@ -2392,6 +2431,7 @@ fn rebuild_sprites_clipped(
                 name: r.name,
                 start: range_start,
                 count,
+                flags: 0,
             });
         }
     }
@@ -2491,7 +2531,7 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists, step_on_
                 v_off: v_off_mid,
                 v_scale: sy_mid,
                 light,
-                alpha: line.mid_alpha,
+                alpha: side.alpha.unwrap_or(line.mid_alpha),
                 // One-sided faces are solid; TEXTUREX gaps become black, not holes.
                 masked: false,
                 clamp_v: false,
@@ -2720,7 +2760,7 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists, step_on_
                     v_off: if wrap { v_off_mid } else { 0.0 },
                     v_scale: if wrap { sy_mid } else { 1.0 },
                     light,
-                    alpha: line.mid_alpha,
+                    alpha: side.alpha.unwrap_or(line.mid_alpha),
                     masked: true,
                     clamp_v: !wrap,
                     single_v: !wrap,
@@ -3077,6 +3117,7 @@ fn push_range(ranges: &mut Vec<MaterialRange>, name: &str, start: u32, count: u3
         name: key,
         start,
         count,
+        flags: 0,
     });
 }
 
@@ -3153,6 +3194,7 @@ mod tests {
             name: "TEST".into(),
             start: 0,
             count: 6,
+            flags: 0,
         });
         // Mirror along X axis; reflected eye on +Y → drop +Y triangle.
         clip_scene_to_mirror_line(&mut lists, 0.0, 0.0, 100.0, 0.0, 5.0, 10.0);
@@ -3852,6 +3894,7 @@ mod tests {
             orient: crate::sprites::SpriteOrient::Billboard,
             additive: false,
             roll: 0.0,
+            fx: Default::default(),
         }];
         let with_live = build_scene(&map, &cam, Some(&live));
         assert_eq!(with_live.sprites.len(), 6);
@@ -3889,6 +3932,7 @@ mod tests {
             orient: crate::sprites::SpriteOrient::Billboard,
             additive: false,
             roll: 0.0,
+            fx: Default::default(),
         }
     }
 
@@ -3952,6 +3996,7 @@ mod tests {
             orient: crate::sprites::SpriteOrient::Billboard,
             additive: false,
             roll: 0.0,
+            fx: Default::default(),
         };
         let mut lists = SceneLists::default();
         // Actor order: near smoke, far monster, middle blood.
@@ -4046,6 +4091,7 @@ mod tests {
             orient: crate::sprites::SpriteOrient::Wall { yaw: 0.0 },
             additive: false,
             roll: 0.0,
+            fx: Default::default(),
         };
         let cam = Camera {
             eye: Vec3::new(140.0, 0.0, 16.0),
@@ -4171,6 +4217,8 @@ mod tests {
                 clip_midtex: false,
                 wrap_midtex: false,
                 no_decals: false,
+                alpha: None,
+                block_rendering: false,
             })
             .collect();
         let sectors = vec![RawSector {

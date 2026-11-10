@@ -515,6 +515,12 @@ pub(crate) fn damage_mobj_with_flags(
                     .classes
                     .get(a.class)
                     .and_then(|c| c.typed_damage_factors.get(&key).copied())
+                    .or_else(|| {
+                        // MAPINFO `damagetype { Factor = … [ReplaceFactor] }`.
+                        let d = world.damage_types.get(&key)?;
+                        let f = d.factor?;
+                        Some(if d.replace_factor { f } else { f * a.damage_factor })
+                    })
                     .unwrap_or(a.damage_factor)
             } else {
                 a.damage_factor
@@ -567,7 +573,17 @@ pub(crate) fn damage_mobj_with_flags(
     }
     // Generic powerups (`PowerDamage`, `PowerProtection`, `PowerReflection`).
     let damage = crate::powerups::modify_damage(world, target, source, damage);
-    let health_damage = absorb_armor(world, target, damage);
+    // MAPINFO `damagetype … { NoArmor }`: armor is skipped.
+    let no_armor = dtype
+        .as_deref()
+        .and_then(|t| world.damage_types.get(&t.to_ascii_lowercase()))
+        .is_some_and(|d| d.no_armor);
+    let health_damage = if no_armor {
+        damage
+    } else {
+        let left = absorb_armor(world, target, damage);
+        crate::pickup::absorb_hexen_armor(world, target, left)
+    };
     let class = world.actors.get(target).map(|a| a.class);
     let Some(class) = class else {
         return 0;
@@ -1003,6 +1019,7 @@ pub(crate) fn die(
         .unwrap_or((false, 0));
     if countkill {
         world.level.found_kills = world.level.found_kills.saturating_add(1);
+        world.credit_player_stat(source, 0);
     }
     record_kill_event(world, target, class, countkill, source);
     if countkill {
@@ -3236,6 +3253,68 @@ actor PlayerPawn : Actor 0
         assert_eq!(damage_mobj(&mut w, mo, None, None, 30), 15);
         assert_eq!(w.actors.get(mo).unwrap().health, 85);
         assert_eq!(w.players[0].as_ref().unwrap().armor, 185);
+    }
+
+    #[test]
+    fn mapinfo_noarmor_and_default_factor_damage_types() {
+        let ir = parse_decorate(
+            r#"
+actor PlayerPawn : Actor 0
+{
+  Health 100
+  +SHOOTABLE
+  States { Spawn: PLAY A -1 Stop }
+}
+actor PoisonDart : Actor
+{
+  DamageType "Poison"
+  +MISSILE
+  States { Spawn: BAL1 A -1 Stop }
+}
+actor FireBall : Actor
+{
+  DamageType "Fire"
+  +MISSILE
+  States { Spawn: BAL1 A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes.clone(), states).unwrap();
+        w.damage_types.insert(
+            "poison".into(),
+            crate::world::DamageTypeInfo { no_armor: true, ..Default::default() },
+        );
+        w.damage_types.insert(
+            "fire".into(),
+            crate::world::DamageTypeInfo { factor: Some(0.5), ..Default::default() },
+        );
+        let mo = w.players[0].as_ref().and_then(|p| p.mo).unwrap();
+        if let Some(p) = w.players[0].as_mut() {
+            p.armor = 200;
+            p.armor_class = 2;
+        }
+        let dart = w
+            .spawn_at(classes.find_name("PoisonDart").unwrap(), DVec3::new(64.0, 64.0, 0.0), Default::default())
+            .unwrap();
+        damage_mobj(&mut w, mo, Some(dart), None, 20);
+        assert_eq!(w.actors.get(mo).unwrap().health, 80, "NoArmor: all 20 to health");
+        assert_eq!(w.players[0].as_ref().unwrap().armor, 200);
+        let fire = w
+            .spawn_at(classes.find_name("FireBall").unwrap(), DVec3::new(64.0, 64.0, 0.0), Default::default())
+            .unwrap();
+        damage_mobj(&mut w, mo, Some(fire), None, 40);
+        // Factor 0.5 → 20, blue armor takes 10.
+        assert_eq!(w.actors.get(mo).unwrap().health, 70);
+        assert_eq!(w.players[0].as_ref().unwrap().armor, 190);
     }
 
     #[test]

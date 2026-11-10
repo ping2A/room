@@ -18,7 +18,17 @@ actor PowerReflection : Powerup {}
 actor PowerInvisibility : Powerup {}
 actor PowerRegeneration : Powerup {}
 actor PowerInfiniteAmmo : Powerup {}
+actor PowerTimeFreezer : Powerup {}
+actor PowerTargeter : Powerup {}
+actor PowerScanner : Powerup {}
+actor PowerDoubleFiringSpeed : Powerup {}
 actor PowerupGiver : Inventory {}
+actor FreezeGiver : PowerupGiver { +INVENTORY.AUTOACTIVATE Powerup.Type "TimeFreezer" Powerup.Duration -6 States { Spawn: TIME A -1 Stop } }
+actor TargetGiver : PowerupGiver { +INVENTORY.AUTOACTIVATE Powerup.Type "Targeter" Powerup.Duration -10 States { Spawn: TRGT A -1 Stop } }
+actor ScanGiver : PowerupGiver { +INVENTORY.AUTOACTIVATE Powerup.Type "Scanner" States { Spawn: SCAN A -1 Stop } }
+actor HasteGiver : PowerupGiver { +INVENTORY.AUTOACTIVATE Powerup.Type "DoubleFiringSpeed" States { Spawn: HAST A -1 Stop } }
+actor Drifter : Actor { Radius 8 Height 16 +NOGRAVITY States { Spawn: DRFT A -1 Stop } }
+actor Clock : Actor { Radius 8 Height 16 +NOGRAVITY +NOTIMEFREEZE States { Spawn: DRFT A -1 Stop } }
 actor PuzzleItem : Inventory {}
 actor WeaponPiece : Inventory {}
 actor HealthPickup : Inventory {}
@@ -309,10 +319,10 @@ fn sprite_view_honours_render_required_visible_angles_and_rotation() {
     let pa = w.actors.get(p).unwrap().clone();
     // Facing east: a viewer to the east is inside ±45°, one to the west is not.
     let front = crate::sprite_view(&w, &pa, DVec3::new(400.0, 200.0, 41.0), 0).unwrap();
-    assert!(
-        (front.roll_rad - 30f64.to_radians()).abs() < 1e-9,
-        "SpriteRotation 30"
-    );
+    // `SpriteRotation` turns the rotation frame, not the quad (UZDoom
+    // `hw_sprites.cpp`); the quad rolls only with `+ROLLSPRITE`.
+    assert!((front.rotation_offset_deg - 30.0).abs() < 1e-9, "SpriteRotation 30");
+    assert!(front.roll_rad.abs() < 1e-12);
     assert_eq!(front.light_level, Some(200));
     assert!(crate::sprite_view(&w, &pa, DVec3::new(0.0, 200.0, 41.0), 0).is_none());
     assert_eq!(
@@ -361,4 +371,67 @@ fn falling_scream_plays_once_per_fall() {
         .filter(|e| e.name == "*falling")
         .count();
     assert_eq!(screams, 1);
+}
+
+#[test]
+fn time_freezer_stops_others_but_not_its_owner_and_blinks_out() {
+    let (mut w, classes, mo) = world_with("");
+    let drifter = w
+        .spawn_at(classes.find_name("Drifter").unwrap(), DVec3::new(300.0, 300.0, 32.0), Angle::ZERO)
+        .unwrap();
+    let clock = w
+        .spawn_at(classes.find_name("Clock").unwrap(), DVec3::new(200.0, 300.0, 32.0), Angle::ZERO)
+        .unwrap();
+    for id in [drifter, clock] {
+        w.actors.get_mut(id).unwrap().vel = DVec3::new(2.0, 0.0, 0.0);
+    }
+    assert!(pick(&mut w, &classes, mo, "FreezeGiver"));
+    assert!(w.players[0].as_ref().unwrap().timefreezer & 1 != 0);
+    // The freeze starts on the next even tic.
+    for _ in 0..2 {
+        w.tick();
+    }
+    assert!(w.level.is_frozen());
+    let x0 = w.actors.get(drifter).unwrap().pos.x();
+    let c0 = w.actors.get(clock).unwrap().pos.x();
+    for _ in 0..4 {
+        w.tick();
+    }
+    assert_eq!(w.actors.get(drifter).unwrap().pos.x(), x0, "frozen in time");
+    assert!(w.actors.get(clock).unwrap().pos.x() > c0, "+NOTIMEFREEZE keeps moving");
+    assert!(!crate::powerups::actor_time_frozen(&w, mo), "the owner moves");
+    for _ in 0..220 {
+        w.tick();
+    }
+    assert!(!w.level.frozen_power, "ran out");
+    assert_eq!(w.players[0].as_ref().unwrap().timefreezer, 0);
+    assert!(w.actors.get(drifter).unwrap().pos.x() > x0);
+    // Blinking: the last second alternates.
+    assert!(crate::powerups::time_freezer_frozen(200));
+    assert!(!crate::powerups::time_freezer_frozen(31) || !crate::powerups::time_freezer_frozen(32));
+}
+
+#[test]
+fn targeter_scanner_and_double_firing_speed() {
+    let (mut w, classes, mo) = world_with("");
+    assert!(crate::powerups::targeter_hud(&w, mo).is_none());
+    assert!(pick(&mut w, &classes, mo, "TargetGiver"));
+    w.actors.get_mut(mo).unwrap().accuracy = 40;
+    let t = crate::powerups::targeter_hud(&w, mo).unwrap();
+    assert_eq!(t.center, (157.0, 97.0));
+    assert_eq!(t.left_x, Some(157.0 - 60.0));
+    assert_eq!(t.right_x, Some(157.0 + 60.0));
+    assert_eq!(w.player_hud(0).unwrap().targeter, Some(t));
+    // Last five seconds: bit 5 of the tics left shows only the left piece.
+    w.players[0].as_mut().unwrap().powers.get_mut("powertargeter").unwrap().tics = 40;
+    let t = crate::powerups::targeter_hud(&w, mo).unwrap();
+    assert!(t.left_x.is_some() && t.right_x.is_none());
+    w.players[0].as_mut().unwrap().powers.get_mut("powertargeter").unwrap().tics = 20;
+    let t = crate::powerups::targeter_hud(&w, mo).unwrap();
+    assert!(t.left_x.is_none() && t.right_x.is_some());
+    assert!(!crate::powerups::reveals_map(&w, mo));
+    assert!(pick(&mut w, &classes, mo, "ScanGiver"));
+    assert!(crate::powerups::reveals_map(&w, mo));
+    assert!(pick(&mut w, &classes, mo, "HasteGiver"));
+    assert!(crate::powerups::power(&w, mo, "doublefiringspeed").is_some());
 }

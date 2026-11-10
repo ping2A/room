@@ -18,6 +18,7 @@ room-vfs = { path = "../room-vfs" }
 room-zvm = { path = "../room-zvm" }
 
 [dev-dependencies]
+room-zscript = { path = "../room-zscript" }
 png.workspace = true
 room-nodebuild = { path = "../room-nodebuild" }
 room-testkit = { path = "../room-testkit" }

@@ -1195,6 +1195,10 @@ fn sidedef_from_fields(fields: &BTreeMap<String, UdmfTok<'_>>) -> RawSidedef {
         clip_midtex: bool_field(fields, "clipmidtex", false),
         wrap_midtex: bool_field(fields, "wrapmidtex", false),
         no_decals: bool_field(fields, "nodecals", false),
+        alpha: fields
+            .contains_key("alpha")
+            .then(|| float_field(fields, "alpha", 1.0) as f32),
+        block_rendering: bool_field(fields, "blockrendering", false),
     }
 }
 
@@ -1387,6 +1391,8 @@ linedef {
         assert!(m.sidedefs[0].clip_midtex);
         assert!(m.sidedefs[0].wrap_midtex);
         assert!(m.sidedefs[0].no_decals);
+        assert_eq!(m.sidedefs[0].alpha, None);
+        assert!(!m.sidedefs[0].block_rendering);
     }
 
     #[test]

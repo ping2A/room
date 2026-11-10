@@ -52,8 +52,8 @@ struct Args {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    if !(2..=8).contains(&args.players) {
-        eprintln!("room-load: --players must be 2..=8");
+    if !(2..=64).contains(&args.players) {
+        eprintln!("room-load: --players must be 2..=64");
         std::process::exit(2);
     }
 
@@ -275,7 +275,11 @@ async fn drive_room(
         wait_control(ws, |m| matches!(m, ControlMsg::Start { .. })).await?;
     }
 
-    let mask = (1u8 << players).wrapping_sub(1);
+    let mask = if players >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << players) - 1
+    };
     let mut samples = Vec::with_capacity(tics as usize);
     for tic in 0..tics {
         // Prefill all but the last seat, then time last input → TIC_FRAME.

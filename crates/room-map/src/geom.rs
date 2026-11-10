@@ -195,6 +195,12 @@ pub struct Side {
     pub wrap_midtex: bool,
     /// UDMF `nodecals` — suppress impact decals on this side.
     pub no_decals: bool,
+    /// UDMF sidedef `alpha` (UZDoom 5.0): overrides the linedef alpha for
+    /// this side's mid texture. `None` = use the linedef's.
+    pub alpha: Option<f32>,
+    /// UDMF `blockrendering` (`WALLF_BLOCKRENDERING`): nothing behind this
+    /// side is drawn when seen through it (a two-sided line rendered as solid).
+    pub block_rendering: bool,
     /// Upper texture.
     pub upper: String,
     /// Lower texture.
@@ -381,6 +387,8 @@ pub fn link_geometry_at(
                 clip_midtex: s.clip_midtex,
                 wrap_midtex: s.wrap_midtex,
                 no_decals: s.no_decals,
+                alpha: s.alpha,
+                block_rendering: s.block_rendering,
                 upper: s.upper.clone(),
                 lower: s.lower.clone(),
                 middle: s.middle.clone(),

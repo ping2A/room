@@ -21,7 +21,30 @@ Doom/Freedoom IWAD bytes it starts a Headless play session (E1M1 / MAP01).
 # Copies testdata/doom/doom1.wad into the serve dir when present, then opens the browser.
 ./scripts/play-web.sh
 # Or: ROOM_WEB_IWAD=/path/to/doom1.wad ./scripts/play-web.sh
+# Mount PK3 / PK7 / ZIP / PWAD files on top of the IWAD (in this order):
+./scripts/play-web.sh mymod.pk3 extra-maps.wad
+# Same with --pwad / ROOM_WEB_PWAD=a.pk3:b.wad; --map MAP01 (or ROOM_WEB_MAP) skips the title
 ```
+
+**PK3 / PWAD files in the play page.** Besides `?pwad=url1,url2` (what
+`play-web.sh` uses; files are copied to `<out>/pwads/`), you can pick files with
+**Add PK3 / PWAD…** in the boot panel or **PK3** in the top bar, or drop them on
+the window. PK3 / PK7 / PKE / ZIP and PWADs are mounted after the IWAD and the
+packaged mods / voxel pack, and the current game restarts with them; an IWAD
+(`IWAD` header, `.ipk3`) or a Duke GRP dropped the same way starts a new game.
+Picked files are kept in IndexedDB, so skill and mod changes (which reload the
+page) keep them; ✕ on a file's chip in the bar removes it. Single-player only:
+coop rooms (`?ws=`) hide the control so every seat loads the same content.
+JS API: `roomAddPwad(name, bytes)` (same name replaces), `roomRemovePwad(name)`,
+`roomPwadNames()`, `roomIsResourceArchive(bytes)`.
+
+**Map picker.** Once a game runs, **Map** in the top bar lists every map of the
+IWAD and the loaded PK3s / PWADs (custom names too), with MAPINFO titles,
+grouped by episode. Picking one restarts the game there in place (no reload, so
+a locally picked IWAD and the PK3s stay); **Title screen** goes back to the
+title. The choice is written to `?map=`, so skill / mod changes keep it, and the
+picker follows level exits. Hidden in coop (the host picks the map). JS API:
+`roomMapList()` (JSON `[{name, title}]`), `roomCurrentMap()`.
 
 Controls: any key/click/touch unlocks audio (Web Audio autoplay) and click locks the
 mouse; WASD move, E/Space use, LMB/Ctrl attack, 1–7 weapons, wheel to cycle.

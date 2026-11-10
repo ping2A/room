@@ -53,6 +53,8 @@ pub enum ObjKind {
         fields_a: Vec<ObjHandle>,
         /// String script fields.
         fields_s: Vec<StrHandle>,
+        /// Float script fields (`double`, vector components).
+        fields_f: Vec<f64>,
     },
     /// `Array<int>` backing store.
     ArrayI(Vec<i64>),
@@ -102,6 +104,7 @@ impl ZvmHeap {
                     fields_i: Vec::new(),
                     fields_a: Vec::new(),
                     fields_s: Vec::new(),
+                    fields_f: Vec::new(),
                 },
             }],
             free: Vec::new(),
@@ -170,11 +173,24 @@ impl ZvmHeap {
 
     /// Allocate a script object for `class_id` with field counts.
     pub fn new_object(&mut self, class_id: u32, n_i: u16, n_a: u16, n_s: u16) -> ObjHandle {
+        self.new_object_f(class_id, n_i, n_a, n_s, 0)
+    }
+
+    /// Allocate a script object with a float bank too.
+    pub fn new_object_f(
+        &mut self,
+        class_id: u32,
+        n_i: u16,
+        n_a: u16,
+        n_s: u16,
+        n_f: u16,
+    ) -> ObjHandle {
         self.alloc_slot(ObjKind::Object {
             class_id,
             fields_i: vec![0; n_i as usize],
             fields_a: vec![ObjHandle::NULL; n_a as usize],
             fields_s: vec![StrHandle::EMPTY; n_s as usize],
+            fields_f: vec![0.0; n_f as usize],
         })
     }
 
@@ -316,8 +332,12 @@ impl ZvmHeap {
                     fields_i,
                     fields_a,
                     fields_s,
+                    fields_f,
                 } => {
                     mix(&mut h, 1);
+                    for v in fields_f {
+                        mix(&mut h, v.to_bits());
+                    }
                     mix(&mut h, u64::from(*class_id));
                     for v in fields_i {
                         mix(&mut h, *v as u64);
@@ -381,11 +401,13 @@ impl ZvmHeap {
                             fields_i,
                             fields_a,
                             fields_s,
+                            fields_f,
                         } => HeapKindImage::Object {
                             class_id: *class_id,
                             fields_i: fields_i.clone(),
                             fields_a: fields_a.iter().map(|h| (h.index, h.generation)).collect(),
                             fields_s: fields_s.iter().map(|s| s.0).collect(),
+                            fields_f: fields_f.iter().map(|v| v.to_bits()).collect(),
                         },
                         ObjKind::ArrayI(items) => HeapKindImage::ArrayI(items.clone()),
                         ObjKind::ArrayS(items) => {
@@ -428,6 +450,7 @@ impl ZvmHeap {
                         fields_i,
                         fields_a,
                         fields_s,
+                        fields_f,
                     } => ObjKind::Object {
                         class_id: *class_id,
                         fields_i: fields_i.clone(),
@@ -436,6 +459,7 @@ impl ZvmHeap {
                             .map(|&(index, generation)| ObjHandle { index, generation })
                             .collect(),
                         fields_s: fields_s.iter().map(|&i| StrHandle(i)).collect(),
+                        fields_f: fields_f.iter().map(|&b| f64::from_bits(b)).collect(),
                     },
                     HeapKindImage::ArrayI(items) => ObjKind::ArrayI(items.clone()),
                     HeapKindImage::ArrayS(items) => {
@@ -454,6 +478,7 @@ impl ZvmHeap {
                     fields_i: Vec::new(),
                     fields_a: Vec::new(),
                     fields_s: Vec::new(),
+                    fields_f: Vec::new(),
                 },
             });
         }
@@ -497,6 +522,8 @@ pub enum HeapKindImage {
         fields_a: Vec<(u32, u32)>,
         /// String fields.
         fields_s: Vec<u32>,
+        /// Float fields as IEEE bits.
+        fields_f: Vec<u64>,
     },
     /// `Array<int>`.
     ArrayI(Vec<i64>),

@@ -13,19 +13,24 @@ mod peephole;
 mod program;
 mod tier1;
 mod trap;
+mod uz3_natives;
+mod world_natives;
 
 pub use budget::{DESKTOP_10K_TICK_MS, WEB_10K_TICK_MS, measure_ticks_ms, trivial_tick_program};
 pub use coverage::{CoverageRow, NativeStatus, bd_stub_map, coverage_percent, coverage_report};
 pub use heap::{HeapImage, HeapKindImage, HeapSlotImage, ObjHandle, ObjKind, StrHandle, ZvmHeap};
 pub use interp::{DEFAULT_FUEL, DEFAULT_STACK_LIMIT, Value, Zvm, ZvmConfig};
 pub use natives::{
-    NativeFn, NativeRegs, NativeTable, ZsActorOp, ZvmCtx, ZvmPlayHost, register_bd_natives,
+    NativeFn, NativeRegs, NativeTable, ZsActorOp, ZsLevelOp, ZsNativeOp, ZvmCtx, ZvmPlayHost, format_printf,
+    register_bd_natives, vararg_values,
 };
 pub use opcode::{Op, pack, unpack};
 pub use peephole::{optimize_function, optimize_program};
 pub use program::{ClassLayout, CompiledFunction, CompiledProgram, FuncParam};
 pub use tier1::{ExecTier, conformance_call, jit_enabled};
 pub use trap::{Trap, TrapPolicy};
+pub use uz3_natives::{HOST_NATIVES, QUEUED_NATIVES, quat_from_ypr};
+pub use world_natives::{ActorSlots, TYPED_NATIVES, typed_native_vector_result};
 
 /// VM register file (`docs/34` §14.3.3). `I` ints, `F` floats, `S` strings, `A` objects.
 #[repr(u8)]

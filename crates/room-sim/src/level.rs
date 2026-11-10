@@ -15,6 +15,9 @@ pub struct LevelState {
     pub air_control: f64,
     /// Frozen (cheat / ACS); thinkers still run but specials pause later.
     pub frozen: bool,
+    /// `PowerTimeFreezer` freeze (UZDoom `frozenstate & 1`): everything but
+    /// actors with `+NOTIMEFREEZE` and players holding a freezer bit stops.
+    pub frozen_power: bool,
     /// Exit_Normal / Exit_Secret / Teleport_NewMap requested this level.
     pub exiting: bool,
     /// True if the pending exit is secret.
@@ -54,6 +57,7 @@ impl Default for LevelState {
             gravity: 1.0,
             air_control: 0.003_906_25,
             frozen: false,
+            frozen_power: false,
             exiting: false,
             secret_exit: false,
             next_map_override: None,
@@ -81,6 +85,12 @@ impl LevelState {
         if !self.frozen {
             self.maptime = self.maptime.saturating_add(1);
         }
+    }
+
+    /// `Level.isFrozen()`: the cheat / ACS freeze or a running time freezer.
+    #[must_use]
+    pub fn is_frozen(&self) -> bool {
+        self.frozen || self.frozen_power
     }
 
     /// Percent helper (100 if total is 0).

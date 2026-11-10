@@ -33,6 +33,22 @@ const SPRITE_BLEND: wgpu::BlendState = wgpu::BlendState {
     },
 };
 
+/// `STYLE_Subtract` sprites: `dst − src` on colour (the premultiplied entry
+/// point with the additive vertex flag writes `rgb·a`, alpha 0), destination
+/// alpha untouched — UZDoom's `GL_FUNC_REVERSE_SUBTRACT` with `GL_ONE, GL_ONE`.
+const SUBTRACT_BLEND: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::ReverseSubtract,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
 /// Owns pipelines and per-frame buffers for the unlit pass.
 pub struct UnlitPass {
     target_format: wgpu::TextureFormat,
@@ -50,6 +66,8 @@ pub struct UnlitPass {
     sprite_pipeline: wgpu::RenderPipeline,
     /// Opaque sprite billboards (Doom patches: opaque or discard holes).
     opaque_sprite_pipeline: wgpu::RenderPipeline,
+    /// Sprite ranges flagged [`MaterialRange::SUBTRACT`] (no depth write).
+    subtract_sprite_pipeline: wgpu::RenderPipeline,
     /// Write stencil = ref (Always/Replace); no color or depth writes — portal/mirror mask.
     stencil_mask_pipeline: wgpu::RenderPipeline,
     /// Draw only where stencil == ref (Equal/keep) — portal/mirror sub-scene.
@@ -109,6 +127,11 @@ pub struct UnlitPass {
     pub glob_vis: f32,
     /// Radial fog density (`0` = off).
     pub fog_density: f32,
+    /// [`Self::set_thick_fog`].
+    pub thick_fog: (f32, f32),
+    /// UZDoom 5.0 sky fog (`skyfog` / `Level.SetSkyFog`, 0–255; 0 = off).
+    /// [`Self::set_sky_fog`].
+    pub sky_fog: f32,
     /// Spectre fuzz variant (`gl_fuzztype`).
     pub fuzz_type: FuzzType,
     /// Elapsed seconds (fuzz animation).
@@ -348,6 +371,25 @@ impl UnlitPass {
             wgpu::DepthBiasState {
                 constant: -8,
                 slope_scale: -2.0,
+                clamp: 0.0,
+            },
+        );
+        let subtract_sprite_pipeline = make_unlit_pipeline_bias(
+            device,
+            &shader,
+            &layout,
+            target_format,
+            "subtract-sprite-pipe",
+            SUBTRACT_BLEND,
+            false,
+            None,
+            wgpu::ColorWrites::ALL,
+            wgpu::StencilState::default(),
+            wgpu::CompareFunction::LessEqual,
+            crate::DEPTH_STENCIL_FORMAT,
+            wgpu::DepthBiasState {
+                constant: -48,
+                slope_scale: -8.0,
                 clamp: 0.0,
             },
         );
@@ -731,6 +773,7 @@ impl UnlitPass {
             sky_wall_cap: 64 * 32,
             sprite_pipeline,
             opaque_sprite_pipeline,
+            subtract_sprite_pipeline,
             stencil_mask_pipeline,
             stencil_equal_pipeline,
             view_buf,
@@ -772,6 +815,8 @@ impl UnlitPass {
             // DoomSoftware floor so monsters vanished into dark sectors.
             glob_vis: 512.0,
             fog_density: 0.0,
+            thick_fog: (0.0, 0.0),
+            sky_fog: 0.0,
             fuzz_type: FuzzType::Shadow,
             time: 0.0,
             clip_plane: [0.0; 4],
@@ -780,6 +825,17 @@ impl UnlitPass {
             encode_srgb: false,
             inverse_colormap: false,
         }
+    }
+
+    /// UZDoom 5.0 `ThickFogDistance` / `ThickFogMultiplier` (distance 0 = off).
+    pub fn set_thick_fog(&mut self, distance: f32, multiplier: f32) {
+        self.thick_fog = (distance, multiplier);
+    }
+
+    /// UZDoom 5.0 sky fog amount (`skyfog`, 0–255): the sky is mixed toward
+    /// the fog colour by `amount / 255`.
+    pub fn set_sky_fog(&mut self, amount: f32) {
+        self.sky_fog = amount.clamp(0.0, 255.0);
     }
 
     /// ACS / MAPINFO fog density (0 = off).
@@ -960,6 +1016,12 @@ impl UnlitPass {
                 if self.encode_srgb { 1.0 } else { 0.0 },
                 if self.inverse_colormap { 1.0 } else { 0.0 },
             ],
+            fog_params: [
+                self.thick_fog.0.max(0.0),
+                self.thick_fog.1.max(0.0),
+                self.sky_fog / 255.0,
+                0.0,
+            ],
         };
         gpu.queue
             .write_buffer(&self.view_buf, 0, bytes_of(&uniforms));
@@ -1050,7 +1112,7 @@ impl UnlitPass {
             &self.sky_buf,
             &mut self.sky_cap,
             "sky",
-            &scene.sky_parts,
+            &mark_sky_vertices(&scene.sky_parts),
         );
         self.sky_wall_buf = ensure_vb(
             &gpu.device,
@@ -1208,6 +1270,7 @@ impl UnlitPass {
                 name: scene.sky_texture.clone(),
                 start: 0,
                 count: scene.sky_parts.len() as u32,
+                flags: 0,
             }];
             self.draw_ranges(gpu, pass, &range, catalog, vfs);
         }
@@ -1271,8 +1334,24 @@ impl UnlitPass {
                 let n = scene.sprites.len() as u32;
                 pass.draw(0..n, 0..1);
             } else {
+                // Back-to-front order is kept: switch pipeline only where a
+                // run of subtractive ranges starts or ends.
                 let ranges = std::mem::take(&mut self.sprite_ranges);
-                self.draw_ranges(gpu, pass, &ranges, catalog, vfs);
+                let mut i = 0;
+                while i < ranges.len() {
+                    let sub = ranges[i].flags & MaterialRange::SUBTRACT != 0;
+                    let j = ranges[i..]
+                        .iter()
+                        .position(|r| (r.flags & MaterialRange::SUBTRACT != 0) != sub)
+                        .map_or(ranges.len(), |k| i + k);
+                    pass.set_pipeline(if sub {
+                        &self.subtract_sprite_pipeline
+                    } else {
+                        &self.opaque_sprite_pipeline
+                    });
+                    self.draw_ranges(gpu, pass, &ranges[i..j], catalog, vfs);
+                    i = j;
+                }
                 self.sprite_ranges = ranges;
             }
         }
@@ -1288,6 +1367,7 @@ impl UnlitPass {
                     name: r.name.clone(),
                     start: r.start + base,
                     count: r.count,
+                    flags: 0,
                 })
                 .collect();
             self.draw_ranges(gpu, pass, &ranges, catalog, vfs);
@@ -1304,6 +1384,7 @@ impl UnlitPass {
                     name: r.name.clone(),
                     start: r.start + base,
                     count: r.count,
+                    flags: 0,
                 })
                 .collect();
             self.draw_ranges(gpu, pass, &ranges, catalog, vfs);
@@ -1337,7 +1418,11 @@ impl UnlitPass {
         for r in ranges {
             // Missing lumps must not reuse the previous sprite's bind — that made
             // bullet impact decals draw as whatever actor/puff was bound last.
-            let bm_name = catalog.brightmap_name(&r.name).map(str::to_owned);
+            let bm_name = if r.flags & MaterialRange::NO_BRIGHTMAP == 0 {
+                catalog.brightmap_name(&r.name).map(str::to_owned)
+            } else {
+                None
+            };
             let Some(id) = catalog.get_or_upload(&gpu.device, &gpu.queue, vfs, &r.name) else {
                 // Still draw with the pass default albedo (solid white) so missing
                 // monster/item sprites stay visible instead of silently vanishing.
@@ -1520,7 +1605,7 @@ fn make_unlit_pipeline_bias(
             module: shader,
             // MRT: colour + aux G-buffer-lite (RGBA8; docs/29 U16). Premultiplied
             // blending (sprites) needs the premultiplied entry point.
-            entry_point: Some(if blend == SPRITE_BLEND {
+            entry_point: Some(if blend == SPRITE_BLEND || blend == SUBTRACT_BLEND {
                 "fs_main_mrt_pm"
             } else {
                 "fs_main_mrt"
@@ -1604,3 +1689,19 @@ fn ensure_vb<T: Pod>(
 fn mat4_cols(m: Mat4) -> [[f32; 4]; 4] {
     m.to_cols_array_2d()
 }
+
+/// Tag sky shell vertices (`style.y = -1`) so the shader can apply sky fog.
+/// Negative style still reads as solid for the masked / fuzz tests.
+fn mark_sky_vertices(parts: &[crate::mesh::WallVertex]) -> Vec<crate::mesh::WallVertex> {
+    parts
+        .iter()
+        .map(|v| {
+            let mut v = *v;
+            v._pad[1] = SKY_STYLE;
+            v
+        })
+        .collect()
+}
+
+/// `WallVertex::_pad[1]` marker for sky shell vertices.
+pub const SKY_STYLE: f32 = -1.0;

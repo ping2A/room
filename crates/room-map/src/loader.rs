@@ -238,6 +238,48 @@ pub(crate) fn collect_map_lumps(
     Ok(out)
 }
 
+/// Names of every loadable map in `vfs`: a lump directly followed (in the same
+/// container) by `THINGS` or `TEXTMAP`, so custom names (`MYMAP`, MAPINFO
+/// names) count too. Later containers win on duplicates; the list is sorted
+/// `E1M1 … E4M9`, then `MAP01 …`, then other names alphabetically.
+#[must_use]
+pub fn list_maps(vfs: &Vfs) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut prev: Option<(String, room_vfs::ContainerId)> = None;
+    for id in vfs.iter_lumps() {
+        let Some(info) = vfs.lump(id) else {
+            continue;
+        };
+        let name = info.short_name.to_string();
+        if let Some((marker, container)) = prev.take() {
+            if container == info.container
+                && (name.eq_ignore_ascii_case("THINGS") || name.eq_ignore_ascii_case("TEXTMAP"))
+                && !marker.is_empty()
+            {
+                let up = marker.to_ascii_uppercase();
+                if !names.contains(&up) {
+                    names.push(up);
+                }
+            }
+        }
+        prev = Some((name, info.container));
+    }
+    names.sort_by(|a, b| map_sort_key(a).cmp(&map_sort_key(b)));
+    names
+}
+
+fn map_sort_key(name: &str) -> (u8, u32, u32, String) {
+    let u = name.to_ascii_uppercase();
+    let b = u.as_bytes();
+    if b.len() == 4 && b[0] == b'E' && b[2] == b'M' && b[1].is_ascii_digit() && b[3].is_ascii_digit() {
+        return (0, u32::from(b[1] - b'0'), u32::from(b[3] - b'0'), u);
+    }
+    if let Some(n) = u.strip_prefix("MAP").and_then(|d| d.parse::<u32>().ok()) {
+        return (1, n, 0, u);
+    }
+    (2, 0, 0, u)
+}
+
 fn is_map_marker(name: &str) -> bool {
     let u = name.to_ascii_uppercase();
     if u.starts_with("MAP") && u.len() == 5 && u.as_bytes()[3..].iter().all(u8::is_ascii_digit) {
@@ -273,4 +315,65 @@ fn map_checksum(lumps: &[(String, Vec<u8>)], format: MapFormat) -> [u8; 16] {
     let mut out = [0u8; 16];
     out.copy_from_slice(&dig);
     out
+}
+
+#[cfg(test)]
+mod list_maps_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::list_maps;
+    use room_vfs::VfsBuilder;
+
+    fn wad(lumps: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut data = Vec::new();
+        let mut dir = Vec::new();
+        for (name, body) in lumps {
+            let off = 12 + data.len();
+            data.extend_from_slice(body);
+            dir.push((off as u32, body.len() as u32, *name));
+        }
+        let mut out = b"PWAD".to_vec();
+        out.extend_from_slice(&(lumps.len() as u32).to_le_bytes());
+        out.extend_from_slice(&((12 + data.len()) as u32).to_le_bytes());
+        out.extend_from_slice(&data);
+        for (off, len, name) in dir {
+            out.extend_from_slice(&off.to_le_bytes());
+            out.extend_from_slice(&len.to_le_bytes());
+            let mut n = [0u8; 8];
+            n[..name.len()].copy_from_slice(name.as_bytes());
+            out.extend_from_slice(&n);
+        }
+        out
+    }
+
+    #[test]
+    fn lists_doom_udmf_and_custom_named_maps_in_play_order() {
+        let a = wad(&[
+            ("MAP10", b""),
+            ("TEXTMAP", b"x"),
+            ("ENDMAP", b""),
+            ("E1M2", b""),
+            ("THINGS", b""),
+            ("LINEDEFS", b""),
+            ("PLAYPAL", b"p"),
+            ("COLORMAP", b"c"),
+        ]);
+        let b = wad(&[
+            ("MYMAP", b""),
+            ("TEXTMAP", b"y"),
+            ("ENDMAP", b""),
+            ("MAP02", b""),
+            ("THINGS", b""),
+            ("E1M2", b""),
+            ("THINGS", b""),
+        ]);
+        let vfs = VfsBuilder::new()
+            .mount_memory("a.wad", a)
+            .unwrap()
+            .mount_memory("b.wad", b)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(list_maps(&vfs), vec!["E1M2", "MAP02", "MAP10", "MYMAP"]);
+    }
 }

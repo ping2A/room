@@ -1,5 +1,6 @@
 //! Native function table.
 
+use crate::Value;
 use crate::heap::{ObjHandle, StrHandle, ZvmHeap};
 use crate::trap::Trap;
 use std::collections::BTreeMap;
@@ -29,6 +30,42 @@ pub struct ZvmCtx<'a> {
 
 /// Native function signature.
 pub type NativeFn = fn(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap>;
+
+/// A play-scope native recorded for the playsim (UZ3 / UZ7): the native's
+/// lowercase name, its receiver, and the raw arguments per bank.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ZsNativeOp {
+    /// Lowercase registered name (`actor.setbonerotation`).
+    pub name: String,
+    /// Receiver (`a[0]`; null for statics).
+    pub recv: ObjHandle,
+    /// Further object arguments.
+    pub objs: Vec<ObjHandle>,
+    /// Int arguments.
+    pub i: Vec<i64>,
+    /// Float arguments (vectors as components).
+    pub f: Vec<f64>,
+    /// String / name / class arguments.
+    pub s: Vec<String>,
+}
+
+/// A `LevelLocals` sky / fog native recorded for the playsim (UZDoom 5.0).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ZsLevelOp {
+    /// `Level.SetSkyFog(int)`.
+    SkyFog(i32),
+    /// `Level.SetThickFog(distance, multiplier)`.
+    ThickFog(f64, f64),
+    /// `Level.ChangeSkyMist(TextureID, usemist, yscale)`; `None` = null texture.
+    SkyMist {
+        /// Mist texture name.
+        texture: Option<String>,
+        /// `usemist` (`LEVEL3_SKYMIST`).
+        use_mist: bool,
+        /// Mist y scale.
+        yscale: f64,
+    },
+}
 
 /// A ZScript actor native recorded for the playsim to apply after the call.
 ///
@@ -144,6 +181,15 @@ pub enum ZsActorOp {
     },
     /// `FindFloorCeiling`: keep the actor between the floor and the ceiling.
     FitSector,
+    /// `Sector.SetEnvironmentID(id)` / `Sector.SetEnvironment(name)` on the
+    /// caller's `CurSector` (Room's ZScript has no free sector objects; the
+    /// call is applied to the sector the calling actor stands in).
+    SetEnvironment {
+        /// Environment ID (`id1 << 8 | id2`), when set by number.
+        id: Option<u16>,
+        /// REVERBS name, when set by name.
+        name: Option<String>,
+    },
     /// `RestoreDamage`: put the class's damage value back on the actor.
     RestoreDamage,
     /// `RemoveFromHash`: the actor is no longer found by its tid.
@@ -261,6 +307,23 @@ impl NativeTable {
         id
     }
 
+    /// Bind `name` (any case) to `f`, replacing earlier bindings of it.
+    pub fn replace(&mut self, name: &str, f: NativeFn) {
+        let mut hit = false;
+        for (n, (id, g)) in &mut self.by_name {
+            if n.eq_ignore_ascii_case(name) {
+                *g = f;
+                if let Some(slot) = self.by_id.get_mut(*id as usize) {
+                    slot.1 = f;
+                }
+                hit = true;
+            }
+        }
+        if !hit {
+            self.register(name, f);
+        }
+    }
+
     /// Resolve by id.
     #[must_use]
     pub fn get(&self, id: u32) -> Option<NativeFn> {
@@ -322,6 +385,8 @@ impl NativeTable {
         t.register("Console.Printf", native_printf);
         t.register("Array.PushI", native_array_push_i);
         let _ = play_natives::register_bd_natives(&mut t);
+        crate::world_natives::register(&mut t);
+        crate::uz3_natives::register(&mut t);
         t
     }
 }
@@ -352,6 +417,249 @@ fn native_printf(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), 
         regs.s[1] = ctx.heap.intern_string(&out);
     }
     Ok(())
+}
+
+/// The extra arguments of a `vararg` native in call order, after `ni` / `nf`
+/// / `ns` declared ints, floats and strings. `room-zscript` passes the
+/// extras in the bank of their type, then each extra's bank (0 int, 1 float,
+/// 2 string) and their count at the end of the int bank.
+#[must_use]
+pub fn vararg_values(ctx: &ZvmCtx<'_>, regs: &NativeRegs<'_>, ni: usize, nf: usize, ns: usize) -> Vec<Value> {
+    let len = ctx.play.native_arg_counts[0].min(regs.i.len());
+    let Some(&n) = len.checked_sub(1).and_then(|k| regs.i.get(k)) else {
+        return Vec::new();
+    };
+    let Ok(n) = usize::try_from(n) else {
+        return Vec::new();
+    };
+    if n + 1 > len.saturating_sub(ni) {
+        return Vec::new();
+    }
+    let codes = &regs.i[len - 1 - n..len - 1];
+    let (mut ci, mut cf, mut cs) = (ni, nf, ns);
+    let mut out = Vec::with_capacity(n);
+    for code in codes {
+        match code {
+            1 => {
+                out.push(Value::F(regs.f.get(cf).copied().unwrap_or(0.0)));
+                cf += 1;
+            }
+            2 => {
+                out.push(Value::S(regs.s.get(cs).copied().unwrap_or_default()));
+                cs += 1;
+            }
+            _ => {
+                out.push(Value::I(regs.i.get(ci).copied().unwrap_or(0)));
+                ci += 1;
+            }
+        }
+    }
+    out
+}
+
+/// `String.Format` / `Printf`: C `printf` conversions (`%d %i %u %x %X %o
+/// %c %s %f %e %g %%`, flags `-+ 0#`, width, `.precision`, `*`), each
+/// taking the next argument, coerced as C's varargs would.
+#[must_use]
+pub fn format_printf(heap: &crate::heap::ZvmHeap, fmt: &str, args: &[Value]) -> String {
+    let mut out = String::with_capacity(fmt.len() + 16);
+    let mut args = args.iter().copied();
+    let as_i = |v: Option<Value>| match v {
+        Some(Value::I(x)) => x,
+        #[allow(clippy::cast_possible_truncation)]
+        Some(Value::F(x)) => x as i64,
+        _ => 0,
+    };
+    let chars: Vec<char> = fmt.chars().collect();
+    let mut k = 0;
+    while k < chars.len() {
+        let c = chars[k];
+        k += 1;
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        if chars.get(k) == Some(&'%') {
+            out.push('%');
+            k += 1;
+            continue;
+        }
+        let (mut left, mut plus, mut space, mut zero, mut alt) = (false, false, false, false, false);
+        while let Some(&f) = chars.get(k) {
+            match f {
+                '-' => left = true,
+                '+' => plus = true,
+                ' ' => space = true,
+                '0' => zero = true,
+                '#' => alt = true,
+                _ => break,
+            }
+            k += 1;
+        }
+        let mut width = 0usize;
+        if chars.get(k) == Some(&'*') {
+            width = usize::try_from(as_i(args.next())).unwrap_or(0);
+            k += 1;
+        }
+        while let Some(d) = chars.get(k).and_then(|c| c.to_digit(10)) {
+            width = width * 10 + d as usize;
+            k += 1;
+        }
+        let mut prec: Option<usize> = None;
+        if chars.get(k) == Some(&'.') {
+            k += 1;
+            let mut p = 0usize;
+            if chars.get(k) == Some(&'*') {
+                p = usize::try_from(as_i(args.next())).unwrap_or(0);
+                k += 1;
+            }
+            while let Some(d) = chars.get(k).and_then(|c| c.to_digit(10)) {
+                p = p * 10 + d as usize;
+                k += 1;
+            }
+            prec = Some(p);
+        }
+        // Length modifiers are accepted and ignored.
+        while matches!(chars.get(k), Some('l' | 'h' | 'z' | 'j' | 't' | 'L' | 'q')) {
+            k += 1;
+        }
+        let Some(&conv) = chars.get(k) else {
+            break;
+        };
+        k += 1;
+        let sign = |neg: bool| {
+            if neg {
+                "-"
+            } else if plus {
+                "+"
+            } else if space {
+                " "
+            } else {
+                ""
+            }
+        };
+        let (body, prefix, numeric): (String, String, bool) = match conv {
+            'd' | 'i' => {
+                let v = as_i(args.next());
+                let mut digits = v.unsigned_abs().to_string();
+                if let Some(p) = prec {
+                    while digits.len() < p {
+                        digits.insert(0, '0');
+                    }
+                }
+                (digits, sign(v < 0).to_owned(), true)
+            }
+            'u' => (u64::from(as_i(args.next()) as u32).to_string(), String::new(), true),
+            'x' | 'X' | 'o' => {
+                #[allow(clippy::cast_sign_loss)]
+                let v = as_i(args.next()) as u64 & 0xFFFF_FFFF;
+                let digits = match conv {
+                    'x' => format!("{v:x}"),
+                    'X' => format!("{v:X}"),
+                    _ => format!("{v:o}"),
+                };
+                let pre = if alt && v != 0 {
+                    match conv {
+                        'x' => "0x",
+                        'X' => "0X",
+                        _ => "0",
+                    }
+                } else {
+                    ""
+                };
+                (digits, pre.to_owned(), true)
+            }
+            'c' => {
+                let v = as_i(args.next());
+                (
+                    char::from_u32(u32::try_from(v).unwrap_or(0)).map(String::from).unwrap_or_default(),
+                    String::new(),
+                    false,
+                )
+            }
+            's' => {
+                let text = match args.next() {
+                    Some(Value::S(h)) => heap.str(h).to_owned(),
+                    Some(Value::I(x)) => x.to_string(),
+                    Some(Value::F(x)) => x.to_string(),
+                    _ => String::new(),
+                };
+                let text = match prec {
+                    Some(p) => text.chars().take(p).collect(),
+                    None => text,
+                };
+                (text, String::new(), false)
+            }
+            'f' | 'F' | 'e' | 'E' | 'g' | 'G' => {
+                let v = match args.next() {
+                    Some(Value::F(x)) => x,
+                    Some(Value::I(x)) => x as f64,
+                    _ => 0.0,
+                };
+                let p = prec.unwrap_or(6);
+                let body = match conv {
+                    'f' | 'F' => format!("{:.*}", p, v.abs()),
+                    'e' | 'E' => {
+                        let s = format!("{:.*e}", p, v.abs());
+                        // C writes a signed two-digit exponent (`1.5e+00`).
+                        let (m, e) = s.split_once('e').unwrap_or((&s, "0"));
+                        let e: i32 = e.parse().unwrap_or(0);
+                        let s = format!("{m}e{}{:02}", if e < 0 { '-' } else { '+' }, e.abs());
+                        if conv == 'E' { s.to_uppercase() } else { s }
+                    }
+                    _ => {
+                        // %g: shortest of %e / %f with `p` significant digits.
+                        let p = p.max(1);
+                        let a = v.abs();
+                        let exp = if a == 0.0 { 0 } else { a.log10().floor() as i32 };
+                        let s = if exp < -4 || exp >= p as i32 {
+                            let s = format!("{:.*e}", p - 1, a);
+                            let (m, e) = s.split_once('e').unwrap_or((&s, "0"));
+                            let m = if alt { m.to_owned() } else { trim_zeros(m) };
+                            let e: i32 = e.parse().unwrap_or(0);
+                            format!("{m}e{}{:02}", if e < 0 { '-' } else { '+' }, e.abs())
+                        } else {
+                            let decimals = usize::try_from(p as i32 - 1 - exp).unwrap_or(0);
+                            let s = format!("{a:.decimals$}");
+                            if alt { s } else { trim_zeros(&s) }
+                        };
+                        if conv == 'G' { s.to_uppercase() } else { s }
+                    }
+                };
+                (body, sign(v.is_sign_negative() && v != 0.0).to_owned(), true)
+            }
+            other => {
+                // Unknown conversion: print it as written.
+                out.push('%');
+                out.push(other);
+                continue;
+            }
+        };
+        let len = prefix.chars().count() + body.chars().count();
+        let pad = width.saturating_sub(len);
+        if left {
+            out.push_str(&prefix);
+            out.push_str(&body);
+            out.extend(std::iter::repeat_n(' ', pad));
+        } else if zero && numeric && (prec.is_none() || matches!(conv, 'f' | 'F' | 'e' | 'E' | 'g' | 'G')) {
+            out.push_str(&prefix);
+            out.extend(std::iter::repeat_n('0', pad));
+            out.push_str(&body);
+        } else {
+            out.extend(std::iter::repeat_n(' ', pad));
+            out.push_str(&prefix);
+            out.push_str(&body);
+        }
+    }
+    out
+}
+
+fn trim_zeros(s: &str) -> String {
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_owned()
+    } else {
+        s.to_owned()
+    }
 }
 
 fn native_unbound(_ctx: &mut ZvmCtx<'_>, _regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
@@ -438,10 +746,28 @@ mod play_natives {
         pub color_rgb: Option<(u8, u8, u8)>,
         /// Actor natives queued for the playsim (`A_Look`, `LineAttack`, …).
         pub actor_ops: Vec<super::ZsActorOp>,
+        /// `LevelLocals` sky / fog natives queued for the playsim.
+        pub level_ops: Vec<super::ZsLevelOp>,
+        /// Other play-scope natives queued for the playsim (UZ3 / UZ7).
+        pub native_ops: Vec<super::ZsNativeOp>,
+        /// DECORATE / ZScript `replaces`: lowercase class → replacement.
+        pub replacements: BTreeMap<String, String>,
+        /// Lowercase class → lowercase parent (empty for roots).
+        pub class_parents: BTreeMap<String, String>,
+        /// Lowercase abstract class names.
+        pub abstract_classes: std::collections::BTreeSet<String>,
+        /// Weapon slots 0–9: weapon class names in slot order.
+        pub weapon_slots: Vec<Vec<String>>,
+        /// Live actors this tic `(lowercase class, position)`, for
+        /// `CheckProximity` (filled by the playsim when a program needs it).
+        pub census: Vec<(String, [f64; 3])>,
         /// Physical corpse candidate for the current actor VM call.
         pub resurrection_candidate: Option<(u32, u32)>,
         /// Registered name of the native currently running (`Actor.A_SetSize`).
         pub native_name: String,
+        /// Arguments pushed to the running native per bank (int, float,
+        /// string, object): the register slices are padded past these.
+        pub native_arg_counts: [usize; 4],
         /// ZScript class-id → class name table for `class<T>` values passed to natives.
         pub class_names: Vec<String>,
         /// `TextureID` table: id `n > 0` names `texture_names[n - 1]`
@@ -452,6 +778,18 @@ mod play_natives {
         /// Per-player `(2d distance², vertical-adjusted distance², visible)` for the actor
         /// whose ZScript method is currently running.
         pub ai_observers: Vec<(f64, f64, bool)>,
+        /// Slots of `Actor` native fields in script objects (set at load).
+        pub actor_slots: crate::world_natives::ActorSlots,
+        /// Per call: line of sight from the calling actor to each mirrored object.
+        pub sight: Vec<(ObjHandle, bool)>,
+        /// Per call: `CheckMeleeRange()` of the calling actor against its target.
+        pub melee_ok: bool,
+        /// Per call: the calling actor's target object.
+        pub self_target: ObjHandle,
+        /// Per call: mirrored actors' inventory `(class lowercase, amount, max)`.
+        pub inventory: Vec<(ObjHandle, Vec<(String, i32, i32)>)>,
+        /// Results of a multi-return native (`int, int F()`), set by the native.
+        pub multi_ret: Vec<crate::interp::Value>,
     }
 
     impl Default for ZvmPlayHost {
@@ -477,12 +815,26 @@ mod play_natives {
                 mo_player: BTreeMap::new(),
                 sound_class: BTreeMap::new(),
                 actor_ops: Vec::new(),
+                level_ops: Vec::new(),
+                native_ops: Vec::new(),
+                replacements: BTreeMap::new(),
+                class_parents: BTreeMap::new(),
+                abstract_classes: std::collections::BTreeSet::new(),
+                weapon_slots: Vec::new(),
+                census: Vec::new(),
                 resurrection_candidate: None,
                 native_name: String::new(),
+                native_arg_counts: [0; 4],
                 class_names: Vec::new(),
                 texture_names: Vec::new(),
                 object_layouts: BTreeMap::new(),
                 ai_observers: Vec::new(),
+                actor_slots: crate::world_natives::ActorSlots::default(),
+                sight: Vec::new(),
+                melee_ok: false,
+                self_target: ObjHandle::NULL,
+                inventory: Vec::new(),
+                multi_ret: Vec::new(),
                 gametic: 0,
                 wp_nochange: ObjHandle::NULL,
                 inter_music: String::new(),
@@ -747,6 +1099,7 @@ mod play_natives {
         add("Array.NewI", array_new_i);
         add("Array.NewS", array_new_s);
         add("Array.PushS", array_push_s);
+        add("Array.FindS", array_find_s);
         add("String.CharCodeAt", string_char_code_at);
         add("String.ByteAt", string_byte_at);
         add("String.Length", string_length);
@@ -794,7 +1147,6 @@ mod play_natives {
         add("Icon.isValid", object_is_valid);
         add("Sucks.IsValid", object_is_valid);
         for name in [
-            "Dictionary.Create",
             "HUDFont.Create",
             "InterBackground.Create",
             "InventoryBarState.Create",
@@ -837,6 +1189,12 @@ mod play_natives {
         add("levellocals.vec3diff", actor_zero_vec);
         add("levellocals.givesecret", actor_false);
         add("levellocals.setintermusic", level_set_inter_music);
+        // `Level.X(...)` lowers to the `level` global's name; bind both spellings.
+        for recv in ["levellocals", "level"] {
+            add(&format!("{recv}.setskyfog"), level_set_sky_fog);
+            add(&format!("{recv}.setthickfog"), level_set_thick_fog);
+            add(&format!("{recv}.changeskymist"), level_change_sky_mist);
+        }
         add("levellocals.exitlevel", actor_false);
         add("levellocals.executespecial", actor_false);
         add("playerclass.GetColorSetName", player_color);
@@ -923,8 +1281,16 @@ mod play_natives {
         ] {
             add(name, actor_false);
         }
+        add("Dictionary.Create", dict_new);
         add("dictionary.at", dict_at);
         add("dictionary.insert", dict_insert);
+        add("Dictionary.Remove", dict_remove);
+        add("Dictionary.ToString", dict_to_string);
+        add("Dictionary.FromString", dict_from_string);
+        add("DictionaryIterator.Create", dict_iter_new);
+        add("DictionaryIterator.Next", dict_iter_next);
+        add("DictionaryIterator.Key", dict_iter_key);
+        add("DictionaryIterator.Value", dict_iter_value);
         add("actor.instatesequence", actor_false);
         add("cursorTex.IsValid", object_is_valid);
         add("custommessageboxmenubase.optioncount", actor_false);
@@ -1136,6 +1502,8 @@ mod play_natives {
         }
         add("global.sound", object_next_null);
         add("sector.GetHeightSec", object_next_null);
+        add("sector.SetEnvironmentID", sector_set_environment_id);
+        add("sector.SetEnvironment", sector_set_environment);
         add("sector.LowestFloorAt", actor_flat_aim);
         add("sector.nextlowestfloorat", actor_flat_aim);
         add("sector.NextHighestCeilingAt", sector_ceiling);
@@ -1581,6 +1949,14 @@ mod play_natives {
             "double",
             "frandom",
             "vectorangle",
+            "sqrt",
+            "floor",
+            "exp",
+            "log",
+            "fmin",
+            "fmax",
+            "deltaangle",
+            "absangle",
         ] {
             add(&format!("math.{name}"), math_op);
         }
@@ -2262,6 +2638,11 @@ mod play_natives {
         Ok(())
     }
 
+    fn wrap_180(d: f64) -> f64 {
+        let r = d - 360.0 * room_core::dmath::floor((d + 180.0) / 360.0);
+        if r >= 180.0 { r - 360.0 } else { r }
+    }
+
     fn math_op(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         let name = ctx
             .play
@@ -2287,6 +2668,14 @@ mod play_natives {
             "atan2" => rad_to_deg(room_core::dmath::atan2(a, b)),
             "vectorangle" => rad_to_deg(room_core::dmath::atan2(b, a)),
             "pow" => room_core::dmath::pow(a, b),
+            "sqrt" => room_core::dmath::sqrt(a),
+            "exp" => room_core::dmath::exp(a),
+            "log" => room_core::dmath::log(a),
+            "fmin" => a.min(b),
+            "fmax" => a.max(b),
+            // UZDoom `deltaangle(a1, a2)`: a2 - a1 wrapped to [-180, 180).
+            "deltaangle" => wrap_180(b - a),
+            "absangle" => abs_f(wrap_180(b - a)),
             "floor" => room_core::dmath::floor(a),
             "round" => round_half_away(a),
             "ceil" => ceil_f(a),
@@ -3696,6 +4085,26 @@ mod play_natives {
         Ok(())
     }
 
+    fn sector_set_environment_id(
+        ctx: &mut ZvmCtx<'_>,
+        regs: &mut NativeRegs<'_>,
+    ) -> Result<(), Trap> {
+        let id = regs.i.first().copied().unwrap_or(0);
+        ctx.play.actor_ops.push(super::ZsActorOp::SetEnvironment {
+            id: Some(u16::try_from(id & 0xFFFF).unwrap_or(0)),
+            name: None,
+        });
+        Ok(())
+    }
+
+    fn sector_set_environment(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let name = ctx.heap.str(regs.s.first().copied().unwrap_or_default()).to_owned();
+        ctx.play
+            .actor_ops
+            .push(super::ZsActorOp::SetEnvironment { id: None, name: Some(name) });
+        Ok(())
+    }
+
     fn sector_ceiling(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         let bottom = regs.f.get(2).copied().unwrap_or(0.0);
         if let Some(slot) = regs.f.first_mut() {
@@ -3793,6 +4202,256 @@ mod play_natives {
         Ok(())
     }
 
+    /// A `Dictionary` keeps `key, value` string pairs in `fields_s`.
+    fn dict_new(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let h = ctx.heap.new_object(0, 0, 0, 0);
+        if let Some(slot) = regs.a.first_mut() {
+            *slot = h;
+        }
+        Ok(())
+    }
+
+    fn dict_pairs(ctx: &ZvmCtx<'_>, h: ObjHandle) -> Vec<(String, String)> {
+        match ctx.heap.get(h) {
+            Some(ObjKind::Object { fields_s, .. }) => fields_s
+                .chunks_exact(2)
+                .map(|kv| (ctx.heap.str(kv[0]).to_owned(), ctx.heap.str(kv[1]).to_owned()))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn dict_remove(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let key = regs.s.first().copied().unwrap_or_default();
+        if let Some(ObjKind::Object { fields_s, .. }) = ctx.heap.get_mut(h) {
+            let mut i = 0;
+            while i + 1 < fields_s.len() {
+                if fields_s[i] == key {
+                    fields_s.drain(i..i + 2);
+                    break;
+                }
+                i += 2;
+            }
+        }
+        Ok(())
+    }
+
+    /// UZDoom `DictionaryToString`: a JSON object of string values.
+    pub(crate) fn dict_json(pairs: &[(String, String)]) -> String {
+        fn quote(out: &mut String, s: &str) {
+            out.push('"');
+            for ch in s.chars() {
+                match ch {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    '\u{8}' => out.push_str("\\b"),
+                    '\u{c}' => out.push_str("\\f"),
+                    c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04X}", c as u32)),
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+        }
+        let mut out = String::from("{");
+        for (n, (k, v)) in pairs.iter().enumerate() {
+            if n > 0 {
+                out.push(',');
+            }
+            quote(&mut out, k);
+            out.push(':');
+            quote(&mut out, v);
+        }
+        out.push('}');
+        out
+    }
+
+    /// Parse `{"k":"v",…}`; `None` when it is not an object of strings.
+    pub(crate) fn dict_parse_json(text: &str) -> Option<Vec<(String, String)>> {
+        let mut it = text.chars().peekable();
+        fn ws(it: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+            while it.peek().is_some_and(|c| c.is_whitespace()) {
+                it.next();
+            }
+        }
+        fn string(it: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
+            if it.next()? != '"' {
+                return None;
+            }
+            let mut out = String::new();
+            loop {
+                match it.next()? {
+                    '"' => return Some(out),
+                    '\\' => match it.next()? {
+                        '"' => out.push('"'),
+                        '\\' => out.push('\\'),
+                        '/' => out.push('/'),
+                        'n' => out.push('\n'),
+                        'r' => out.push('\r'),
+                        't' => out.push('\t'),
+                        'b' => out.push('\u{8}'),
+                        'f' => out.push('\u{c}'),
+                        'u' => {
+                            let hex: String = (0..4).filter_map(|_| it.next()).collect();
+                            let code = u32::from_str_radix(&hex, 16).ok()?;
+                            out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
+                        }
+                        _ => return None,
+                    },
+                    c => out.push(c),
+                }
+            }
+        }
+        let mut pairs = Vec::new();
+        ws(&mut it);
+        if it.next()? != '{' {
+            return None;
+        }
+        ws(&mut it);
+        if it.peek() == Some(&'}') {
+            it.next();
+        } else {
+            loop {
+                ws(&mut it);
+                let k = string(&mut it)?;
+                ws(&mut it);
+                if it.next()? != ':' {
+                    return None;
+                }
+                ws(&mut it);
+                let v = string(&mut it)?;
+                if let Some(slot) = pairs.iter_mut().find(|(pk, _): &&mut (String, String)| *pk == k) {
+                    slot.1 = v;
+                } else {
+                    pairs.push((k, v));
+                }
+                ws(&mut it);
+                match it.next()? {
+                    ',' => continue,
+                    '}' => break,
+                    _ => return None,
+                }
+            }
+        }
+        ws(&mut it);
+        it.next().is_none().then_some(pairs)
+    }
+
+    fn store_string_ret(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>, text: &str) {
+        let h = ctx.heap.intern_string(text);
+        if let Some(slot) = regs.s.first_mut() {
+            *slot = h;
+        }
+        if regs.s.len() > 1 {
+            regs.s[1] = h;
+        }
+    }
+
+    fn dict_to_string(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let text = dict_json(&dict_pairs(ctx, h));
+        store_string_ret(ctx, regs, &text);
+        Ok(())
+    }
+
+    fn dict_from_string(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let text = ctx.heap.str(regs.s.first().copied().unwrap_or_default()).to_owned();
+        if text == "null" {
+            if let Some(slot) = regs.a.first_mut() {
+                *slot = ObjHandle::NULL;
+            }
+            return Ok(());
+        }
+        let pairs = if text.is_empty() {
+            Vec::new()
+        } else {
+            dict_parse_json(&text).ok_or_else(|| {
+                Trap::Native("Dictionary is expected to be a JSON object of strings.".into())
+            })?
+        };
+        let h = ctx.heap.new_object(0, 0, 0, 0);
+        let handles: Vec<_> = pairs
+            .iter()
+            .flat_map(|(k, v)| [k.as_str(), v.as_str()])
+            .map(|t| ctx.heap.intern_string(t))
+            .collect();
+        if let Some(ObjKind::Object { fields_s, .. }) = ctx.heap.get_mut(h) {
+            *fields_s = handles;
+        }
+        if let Some(slot) = regs.a.first_mut() {
+            *slot = h;
+        }
+        Ok(())
+    }
+
+    /// `DictionaryIterator`: `fields_a[0]` = dictionary, `fields_i[0]` = pair index.
+    fn dict_iter_new(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let dict = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let h = ctx.heap.new_object(0, 1, 1, 0);
+        if let Some(ObjKind::Object {
+            fields_i, fields_a, ..
+        }) = ctx.heap.get_mut(h)
+        {
+            fields_i[0] = -1;
+            fields_a[0] = dict;
+        }
+        if let Some(slot) = regs.a.first_mut() {
+            *slot = h;
+        }
+        Ok(())
+    }
+
+    fn dict_iter_state(ctx: &ZvmCtx<'_>, h: ObjHandle) -> Option<(ObjHandle, i64)> {
+        match ctx.heap.get(h) {
+            Some(ObjKind::Object {
+                fields_i, fields_a, ..
+            }) => Some((*fields_a.first()?, *fields_i.first()?)),
+            _ => None,
+        }
+    }
+
+    fn dict_iter_next(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let mut more = false;
+        if let Some((dict, idx)) = dict_iter_state(ctx, h) {
+            let len = dict_pairs(ctx, dict).len() as i64;
+            let next = (idx + 1).min(len);
+            more = next < len;
+            if let Some(ObjKind::Object { fields_i, .. }) = ctx.heap.get_mut(h) {
+                fields_i[0] = next;
+            }
+        }
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = i64::from(more);
+        }
+        Ok(())
+    }
+
+    fn dict_iter_entry(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>, value: bool) {
+        let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let text = dict_iter_state(ctx, h)
+            .and_then(|(dict, idx)| {
+                let pairs = dict_pairs(ctx, dict);
+                let (k, v) = pairs.get(usize::try_from(idx).ok()?)?.clone();
+                Some(if value { v } else { k })
+            })
+            .unwrap_or_default();
+        store_string_ret(ctx, regs, &text);
+    }
+
+    fn dict_iter_key(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        dict_iter_entry(ctx, regs, false);
+        Ok(())
+    }
+
+    fn dict_iter_value(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        dict_iter_entry(ctx, regs, true);
+        Ok(())
+    }
+
     fn dict_at(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
         let key = regs.s.first().copied().unwrap_or_default();
@@ -3822,12 +4481,15 @@ mod play_natives {
     fn array_find(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
         let needle = regs.i.first().copied().unwrap_or(0);
+        // UZDoom `Find`: the first index, else `Size()` (scripts test
+        // `Find(x) == Size()`).
         let found = match ctx.heap.get(h) {
             Some(ObjKind::ArrayI(items)) => items
                 .iter()
                 .position(|item| *item == needle)
-                .map_or(-1, |idx| idx as i64),
-            _ => -1,
+                .map_or(items.len() as i64, |idx| idx as i64),
+            Some(ObjKind::ArrayS(items)) => items.len() as i64,
+            _ => 0,
         };
         write_num(regs, found as f64);
         Ok(())
@@ -3951,6 +4613,25 @@ mod play_natives {
         let h = ctx.heap.new_array_s();
         if let Some(slot) = regs.a.first_mut() {
             *slot = h;
+        }
+        Ok(())
+    }
+
+    /// `Array<String>.Find(v)` (names and class values too, case-insensitive
+    /// like names).
+    fn array_find_s(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let v = ctx.heap.str(regs.s.first().copied().unwrap_or_default()).to_owned();
+        let k = match ctx.heap.get(h) {
+            Some(ObjKind::ArrayS(items)) => items
+                .iter()
+                .position(|x| ctx.heap.str(*x).eq_ignore_ascii_case(&v))
+                .unwrap_or(items.len()),
+            Some(ObjKind::ArrayI(items)) => items.len(),
+            _ => 0,
+        };
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = k as i64;
         }
         Ok(())
     }
@@ -4621,6 +5302,46 @@ mod play_natives {
         Ok(())
     }
 
+    fn level_set_sky_fog(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let v = regs.i.first().copied().unwrap_or(0);
+        ctx.play
+            .level_ops
+            .push(super::ZsLevelOp::SkyFog(i32::try_from(v).unwrap_or(0)));
+        Ok(())
+    }
+
+    fn level_set_thick_fog(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let d = regs.f.first().copied().unwrap_or(0.0);
+        let m = regs.f.get(1).copied().unwrap_or(0.0);
+        ctx.play.level_ops.push(super::ZsLevelOp::ThickFog(d, m));
+        Ok(())
+    }
+
+    fn level_change_sky_mist(
+        ctx: &mut ZvmCtx<'_>,
+        regs: &mut NativeRegs<'_>,
+    ) -> Result<(), Trap> {
+        // Args: TextureID (int bank), bool usemist = true (int bank), float yscale = 1.
+        let id = regs.i.first().copied().unwrap_or(0);
+        let texture = ctx.play.texture_name(id).map(str::to_owned);
+        let use_mist = if ctx.play.native_arg_counts[0] >= 2 {
+            regs.i.get(1).copied().unwrap_or(1) != 0
+        } else {
+            true
+        };
+        let yscale = if ctx.play.native_arg_counts[1] >= 1 {
+            regs.f.first().copied().unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        ctx.play.level_ops.push(super::ZsLevelOp::SkyMist {
+            texture,
+            use_mist,
+            yscale,
+        });
+        Ok(())
+    }
+
     fn status_top(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         write_num(regs, 168.0);
         Ok(())
@@ -4693,16 +5414,9 @@ mod play_natives {
     }
 
     fn string_format(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
-        let fmt = ctx.heap.str(regs.s.first().copied().unwrap_or_default());
-        let arg = regs.i.first().copied().unwrap_or(0);
-        let rendered = arg.to_string();
-        let out = if fmt.contains("%d") {
-            fmt.replacen("%d", &rendered, 1)
-        } else if fmt.contains("%i") {
-            fmt.replacen("%i", &rendered, 1)
-        } else {
-            fmt.to_owned()
-        };
+        let fmt = ctx.heap.str(regs.s.first().copied().unwrap_or_default()).to_owned();
+        let args = super::vararg_values(ctx, regs, 0, 0, 1);
+        let out = super::format_printf(ctx.heap, &fmt, &args);
         let h = ctx.heap.intern_string(&out);
         if regs.s.len() > 1 {
             regs.s[1] = h;
@@ -8258,7 +8972,6 @@ mod tests {
         assert_eq!(call_font_int("actor.CheckMissileSpawn", ""), 1);
         assert_eq!(call_font_int("actor.checklocalview", ""), 1);
         assert_eq!(call_math("actor.deltaangle", &[10.0, 350.0]), -20.0);
-        assert_eq!(call_math("actor.distance2d", &[0.0, 0.0, 3.0, 4.0]), 5.0);
         assert_eq!(call_math("actor.distancebyspeed", &[70.0, 10.0]), 7.0);
         assert_eq!(call_font_int("actor.countsaskill", ""), 1);
         assert_eq!(call_font_int("actor.checkposition", ""), 1);
@@ -8322,7 +9035,8 @@ mod tests {
         assert_eq!(call_font_int("texture.IsValid", ""), 0);
         assert_eq!(call_font_int("translation.getid", ""), -1);
         assert_eq!(call_math("texman.getsize", &[8.0, 9.0]), 0.0);
-        assert_eq!(call_font_int("array.Find", ""), -1);
+        // `Array.Find` on no array: its size, 0 (UZDoom returns `Size()` when not found).
+        assert_eq!(call_font_int("array.Find", ""), 0);
         assert_eq!(call_font_int("cleanwidth", ""), 320);
         assert_eq!(call_font_int("cleanheight", ""), 200);
         assert_eq!(call_font_int("cl_run", ""), 1);
@@ -8763,7 +9477,8 @@ mod tests {
         let factor = table
             .get(table.id_ci("actor.ApplyDamageFactor").expect("dmg"))
             .expect("fn");
-        a[0] = ctx.heap.new_object(0, 6, 0, 1);
+        ctx.play.actor_slots.pos = Some(0);
+        a[0] = ctx.heap.new_object_f(0, 6, 0, 1, 3);
         f[0] = 5.0;
         {
             let mut regs = NativeRegs {
@@ -8829,6 +9544,97 @@ mod tests {
         }
         assert_eq!(i[0], 15);
         assert_eq!(ZvmPlayHost::default().cvar("sv_ammofactor"), 1);
+    }
+
+    #[test]
+    fn dictionary_remove_serialize_and_iterate() {
+        let table = NativeTable::with_builtins();
+        let get = |n: &str| table.get(table.id_ci(n).expect(n)).expect("fn");
+        let (make, put, remove, to_s, from_s) = (
+            get("Dictionary.Create"),
+            get("Dictionary.Insert"),
+            get("Dictionary.Remove"),
+            get("Dictionary.ToString"),
+            get("Dictionary.FromString"),
+        );
+        let (iter, next, key, value) = (
+            get("DictionaryIterator.Create"),
+            get("DictionaryIterator.Next"),
+            get("DictionaryIterator.Key"),
+            get("DictionaryIterator.Value"),
+        );
+        let mut heap = ZvmHeap::new();
+        let mut play = ZvmPlayHost::default();
+        let mut ctx = ZvmCtx {
+            heap: &mut heap,
+            host: 0,
+            play: &mut play,
+        };
+        let mut i = [0i64; 2];
+        let mut f = [0.0; 2];
+        let mut s = [StrHandle::EMPTY; 2];
+        let mut a = [ObjHandle::NULL; 2];
+        macro_rules! call {
+            ($fn:expr) => {{
+                let mut regs = NativeRegs {
+                    i: &mut i,
+                    f: &mut f,
+                    s: &mut s,
+                    a: &mut a,
+                };
+                $fn(&mut ctx, &mut regs).expect("native");
+            }};
+        }
+        call!(make);
+        let dict = a[0];
+        for (k, v) in [("a", "1"), ("b", "two \"q\""), ("c", "3")] {
+            s[0] = ctx.heap.intern_string(k);
+            s[1] = ctx.heap.intern_string(v);
+            a[0] = dict;
+            call!(put);
+        }
+        s[0] = ctx.heap.intern_string("c");
+        a[0] = dict;
+        call!(remove);
+        a[0] = dict;
+        call!(to_s);
+        let text = ctx.heap.str(s[0]).to_owned();
+        assert_eq!(text, r#"{"a":"1","b":"two \"q\""}"#);
+        s[0] = ctx.heap.intern_string(&text);
+        call!(from_s);
+        let copy = a[0];
+        assert!(!copy.is_null() && copy != dict);
+        call!(iter);
+        let it = a[0];
+        let mut seen = Vec::new();
+        loop {
+            a[0] = it;
+            call!(next);
+            if i[0] == 0 {
+                break;
+            }
+            a[0] = it;
+            call!(key);
+            let k = ctx.heap.str(s[0]).to_owned();
+            a[0] = it;
+            call!(value);
+            seen.push((k, ctx.heap.str(s[0]).to_owned()));
+        }
+        assert_eq!(
+            seen,
+            vec![("a".into(), "1".into()), ("b".into(), "two \"q\"".into())]
+        );
+        s[0] = ctx.heap.intern_string("null");
+        call!(from_s);
+        assert!(a[0].is_null());
+        s[0] = ctx.heap.intern_string("[1]");
+        let mut regs = NativeRegs {
+            i: &mut i,
+            f: &mut f,
+            s: &mut s,
+            a: &mut a,
+        };
+        assert!(from_s(&mut ctx, &mut regs).is_err());
     }
 
     #[test]
@@ -8995,7 +9801,9 @@ mod tests {
             ctx.play.actor_ops.last(),
             Some(super::ZsActorOp::Look)
         ));
-        a[0] = ctx.heap.new_object(0, 6, 0, 0);
+        // `SetZ` writes the mirrored `pos.z` float field.
+        ctx.play.actor_slots.pos = Some(0);
+        a[0] = ctx.heap.new_object_f(0, 6, 0, 0, 3);
         f[0] = 32.0;
         {
             let mut regs = NativeRegs {
@@ -9007,9 +9815,8 @@ mod tests {
             setz(&mut ctx, &mut regs).expect("setz");
         }
         match ctx.heap.get(a[0]) {
-            Some(crate::heap::ObjKind::Object { fields_i, .. }) => {
-                assert_eq!(fields_i[5], 1);
-                assert_eq!(f64::from_bits(fields_i[4] as u64), 32.0);
+            Some(crate::heap::ObjKind::Object { fields_f, .. }) => {
+                assert_eq!(fields_f[2], 32.0);
             }
             other => panic!("setz object {other:?}"),
         }

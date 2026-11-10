@@ -1147,7 +1147,8 @@ fn pump_spectators(state: &mut RoomState) {
 
 /// Log a released frame for spectators and stream it out.
 fn spectate_frame(state: &mut RoomState, bin: &Bytes) {
-    if state.frame_log.push(&bin[5..]) {
+    let wide = bin.get(4) == Some(&room_proto::MSG_TIC_FRAME_WIDE);
+    if state.frame_log.push_layout(&bin[5..], wide) {
         pump_spectators(state);
         return;
     }

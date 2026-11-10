@@ -244,6 +244,8 @@ pub struct ClassInfo {
     pub states: Option<StatesBlock>,
     /// Descends from `Actor`.
     pub actor_derived: bool,
+    /// `deprecated("version", "message")`.
+    pub deprecated: Option<(String, String)>,
 }
 
 /// All classes, structs, and top-level constants.
@@ -309,6 +311,7 @@ impl ClassTable {
                     defaults: None,
                     states: None,
                     actor_derived: false,
+                    deprecated: None,
                 },
             );
         }
@@ -492,7 +495,11 @@ impl ClassTable {
             defaults: None,
             states: None,
             actor_derived: false,
+            deprecated: c.flags.deprecated.clone(),
         });
+        if c.flags.deprecated.is_some() {
+            entry.deprecated = c.flags.deprecated.clone();
+        }
         if c.parent.is_some() {
             entry.parent = c.parent.clone();
         }
@@ -532,6 +539,7 @@ impl ClassTable {
                 defaults: None,
                 states: None,
                 actor_derived: false,
+                deprecated: None,
             },
         );
     }
@@ -565,6 +573,7 @@ impl ClassTable {
             defaults: None,
             states: None,
             actor_derived: false,
+            deprecated: None,
         };
         push_members(&mut info, &s.members, diags);
         self.by_lower.insert(key, info);
@@ -654,6 +663,9 @@ impl ClassTable {
     /// Resolve every method body. An unknown name is an error.
     pub fn check_bodies(&self, unit: &TranslationUnit, diags: &mut Vec<Diagnostic>) {
         self.check_declared_types(unit, diags);
+        // UZDoom 4.15.1 marks `const` methods `VARF_SafeConst`: `self` becomes a
+        // read-only pointer. Older scripts only got the flag, not the check.
+        let version = unit.version.clone().unwrap_or_else(|| "2.3".into());
         for decl in &unit.decls {
             let (name, members) = match decl {
                 Decl::Class(c) | Decl::ExtendClass(c) | Decl::Mixin(c) => {
@@ -665,7 +677,7 @@ impl ClassTable {
             let Some(info) = self.get(name) else {
                 continue;
             };
-            check_members(self, info, members, diags);
+            check_members(self, info, members, &version, diags);
         }
     }
 }
@@ -691,7 +703,10 @@ fn push_members(info: &mut ClassInfo, members: &[Member], diags: &mut Vec<Diagno
                         native: f.quals.native.then(|| n.clone()),
                         readonly: f.quals.readonly,
                         scope: f.quals.scope.clone(),
-                        norollback: f.quals.norollback,
+                        // UZDoom: `ui` and `native` fields are never rolled back.
+                        norollback: f.quals.norollback
+                            || f.quals.native
+                            || f.quals.scope.as_deref() == Some("ui"),
                     });
                 }
             }
@@ -913,6 +928,14 @@ struct Resolver<'a> {
     class: &'a ClassInfo,
     is_static: bool,
     scopes: Vec<BTreeMap<String, ZType>>,
+    /// Script version enforces `const` methods (4.15.1+).
+    safe_const: bool,
+    /// Script `version`.
+    version: &'a str,
+    /// Deprecated classes already reported.
+    warned: BTreeSet<String>,
+    /// Checking a `const` (not `unsafe(const)`) method body.
+    in_const: bool,
 }
 
 impl Resolver<'_> {
@@ -947,11 +970,95 @@ impl Resolver<'_> {
         self.diags.push(Diagnostic::error("", span, message));
     }
 
+    /// UZDoom warns when a script at or above a class's `deprecated` version uses it.
+    fn note_class_use(&mut self, name: &str, span: Span) {
+        let Some(c) = self.ct.get(name) else {
+            return;
+        };
+        let Some((since, msg)) = &c.deprecated else {
+            return;
+        };
+        // UZDoom skips uses inside another deprecated type (`DictionaryIterator`).
+        if c.name.eq_ignore_ascii_case(&self.class.name) || self.class.deprecated.is_some() {
+            return;
+        }
+        let mut parts = since
+            .split(|ch: char| !ch.is_ascii_digit())
+            .filter(|p| !p.is_empty())
+            .map(|p| p.parse::<u32>().unwrap_or(0));
+        let (a, b, d) = (
+            parts.next().unwrap_or(0),
+            parts.next().unwrap_or(0),
+            parts.next().unwrap_or(0),
+        );
+        if !crate::parse::version_at_least(self.version, a, b, d) {
+            return;
+        }
+        let key = c.name.to_ascii_lowercase();
+        if !self.warned.insert(key) {
+            return;
+        }
+        let text = if msg.is_empty() {
+            format!("class '{}' is deprecated since {since}", c.name)
+        } else {
+            format!("class '{}' is deprecated since {since}: {msg}", c.name)
+        };
+        self.diags.push(Diagnostic::warn("", span, text));
+    }
+
+    /// `self.x = …`, `x += …`, `arr[i]++` inside a safe `const` method.
+    /// Writes through an object pointer field (`self.target.health`) reach
+    /// another object and stay legal, as in UZDoom.
+    fn check_const_write(&mut self, target: &Expr, span: Span) {
+        let mut path: Vec<&str> = Vec::new();
+        let mut cur = target;
+        loop {
+            match cur {
+                Expr::Member { obj, field, .. } => {
+                    path.push(field);
+                    cur = obj;
+                }
+                Expr::Index { arr, .. } => cur = arr,
+                _ => break,
+            }
+        }
+        path.reverse();
+        let Expr::Ident(root, _) = cur else {
+            return;
+        };
+        let field_name = if root.eq_ignore_ascii_case("self") || root.eq_ignore_ascii_case("invoker")
+        {
+            if path.is_empty() {
+                return;
+            }
+            path.remove(0)
+        } else if self.local(root).is_some() {
+            return;
+        } else {
+            root.as_str()
+        };
+        let Some(field) = self.ct.lookup_field(&self.class.name, field_name) else {
+            return;
+        };
+        if !path.is_empty() && matches!(field.ty, ZType::Object(_) | ZType::Class(_)) {
+            return;
+        }
+        let name = field.name.clone();
+        self.error(
+            span,
+            format!("cannot modify field '{name}' in a const method (use unsafe(const))"),
+        );
+    }
+
     fn check_members(&mut self, members: &[Member]) {
         for m in members {
             if let Member::Method(meth) = m {
                 if let Some(body) = &meth.body {
                     self.is_static = meth.quals.static_;
+                    self.in_const = self.safe_const
+                        && meth.quals.const_
+                        && !meth.quals.unsafe_const
+                        && !meth.quals.static_;
                     self.scopes.clear();
                     self.push();
                     if !meth.quals.static_ {
@@ -1069,6 +1176,7 @@ impl Resolver<'_> {
         match ty {
             ZType::Object(n) => {
                 if let Some(c) = self.ct.get(&n) {
+                    self.note_class_use(&n, span);
                     if c.is_struct {
                         ZType::Struct(c.name.clone())
                     } else {
@@ -1093,12 +1201,20 @@ impl Resolver<'_> {
             Expr::String(_, _) => ZType::String,
             Expr::Name(_, _) => ZType::Name,
             Expr::Ident(name, span) => self.ident(name, *span),
-            Expr::Binary { lhs, rhs, .. } => {
+            Expr::Binary { op, lhs, rhs, span } => {
+                if self.in_const && is_assign_op(op) {
+                    self.check_const_write(lhs, *span);
+                }
                 let _ = self.expr_ty(lhs);
                 let _ = self.expr_ty(rhs);
                 ZType::int()
             }
-            Expr::Unary { expr, .. } => self.expr_ty(expr),
+            Expr::Unary { op, expr, span } => {
+                if self.in_const && matches!(op.as_str(), "++" | "--" | "post++" | "post--") {
+                    self.check_const_write(expr, *span);
+                }
+                self.expr_ty(expr)
+            }
             Expr::Call { callee, args, span } => self.call(callee, args, *span),
             Expr::Member { obj, field, span } => self.member(obj, field, *span),
             Expr::Index { arr, index, span } => {
@@ -1146,6 +1262,7 @@ impl Resolver<'_> {
                     self.error(*span, format!("unknown class '{class}'"));
                     ZType::Error
                 } else {
+                    self.note_class_use(class, *span);
                     ZType::Object(class.clone())
                 }
             }
@@ -1207,6 +1324,7 @@ impl Resolver<'_> {
             return ty.clone();
         }
         if self.ct.get(name).is_some() {
+            self.note_class_use(name, span);
             return ZType::Class(name.to_owned());
         }
         if let Some(ty) = builtin_value(name) {
@@ -1592,16 +1710,26 @@ fn check_members(
     ct: &ClassTable,
     info: &ClassInfo,
     members: &[Member],
+    version: &str,
     diags: &mut Vec<Diagnostic>,
 ) {
+    let safe_const = crate::parse::version_at_least(version, 4, 15, 1);
     let mut r = Resolver {
         ct,
         diags,
         class: info,
         is_static: false,
         scopes: Vec::new(),
+        safe_const,
+        version,
+        warned: BTreeSet::new(),
+        in_const: false,
     };
     r.check_members(members);
+}
+
+fn is_assign_op(op: &str) -> bool {
+    op.ends_with('=') && !matches!(op, "==" | "!=" | "<=" | ">=" | "~==" | "<>=")
 }
 
 fn builtin_value(name: &str) -> Option<ZType> {

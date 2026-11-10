@@ -151,6 +151,16 @@ pub enum DrawCmd {
         /// Font colour translation: glyph luminance mapped onto a dark → bright
         /// ramp (GZDoom `EColorRange`); `None` keeps the patch colours.
         recolor: Option<[[f32; 3]; 2]>,
+        /// Corner offsets in virtual pixels (UZDoom `A_OverlayVertexOffset`
+        /// order: top-left, bottom-left, top-right, bottom-right). All zero
+        /// draws the plain rectangle.
+        corners: [Vec2; 4],
+    },
+    /// Restrict the patches that follow to `rect` (virtual pixels); `None`
+    /// lifts it (SBARINFO `DrawBar`).
+    Clip {
+        /// Visible area.
+        rect: Option<Rect>,
     },
     /// Coloured line segment (automap).
     Line {
@@ -233,6 +243,7 @@ impl UiDrawList {
             tint: [1.0, 1.0, 1.0],
             alpha: 1.0,
             recolor: None,
+            corners: [Vec2::new(0.0, 0.0); 4],
         });
     }
 
@@ -267,6 +278,7 @@ impl UiDrawList {
             tint,
             alpha: 1.0,
             recolor: None,
+            corners: [Vec2::new(0.0, 0.0); 4],
         });
     }
 
@@ -313,6 +325,7 @@ impl UiDrawList {
             tint: [1.0, 1.0, 1.0],
             alpha: 1.0,
             recolor: None,
+            corners: [Vec2::new(0.0, 0.0); 4],
         });
     }
 }

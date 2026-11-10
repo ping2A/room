@@ -74,6 +74,10 @@ fn uzdoom_zscript_txt_resolves_every_include() {
     let stubs = table.bind_imports(&prog.native_imports);
     let bound = imports - stubs;
     eprintln!("uz3 natives {imports} implemented {bound} stubs {stubs}");
+    // UZ3 acceptance (docs/36): every import binds to a native — computed,
+    // queued for the playsim, engine-managed, or a host native that traps
+    // with the host's name — none is a silent return-zero stub.
+    assert_eq!(stubs, 0, "return-zero stubs left");
     assert!(
         prog.native_imports
             .iter()

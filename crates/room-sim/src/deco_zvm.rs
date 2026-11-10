@@ -561,6 +561,8 @@ fn patch(code: &mut [u32], from: u32, to: u32) {
                     | room_zvm::Op::StoreFieldA
                     | room_zvm::Op::LoadFieldS
                     | room_zvm::Op::StoreFieldS
+                    | room_zvm::Op::LoadFieldF
+                    | room_zvm::Op::StoreFieldF
                     | room_zvm::Op::Trap
             )
         );

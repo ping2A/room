@@ -374,6 +374,23 @@ impl LockstepSession {
         self.next_tic
     }
 
+    /// Input delay in tics.
+    #[must_use]
+    pub fn delay(&self) -> u32 {
+        self.delay
+    }
+
+    /// Local commands submitted but not yet released, oldest first (client
+    /// prediction plays these on top of the confirmed world).
+    #[must_use]
+    pub fn pending_local(&self) -> Vec<NetTicCmd> {
+        self.buffer
+            .range((self.next_tic, PeerId(0))..)
+            .filter(|((_, peer), _)| *peer == self.local)
+            .map(|(_, cmd)| *cmd)
+            .collect()
+    }
+
     /// Submit local input for the current local tic (stored at `local_tic + delay`).
     pub fn submit_local(&mut self, cmd: NetTicCmd) -> TimedCmd {
         let tic = self.local_tic.saturating_add(self.delay);
@@ -543,6 +560,33 @@ impl LockstepSession {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_local_lists_unreleased_local_input_oldest_first() {
+        let (p0, p1) = (PeerId(0), PeerId(1));
+        let mut s = LockstepSession::new(p0, [p0, p1], 3);
+        for t in 0..3 {
+            for p in [p0, p1] {
+                s.push_remote(TimedCmd {
+                    tic: t,
+                    peer: p,
+                    cmd: NetTicCmd::default(),
+                });
+            }
+        }
+        for f in 1..=4 {
+            let _ = s.submit_local(NetTicCmd {
+                forward_move: f,
+                ..NetTicCmd::default()
+            });
+        }
+        // Tics 3..=6 hold the four local inputs; nothing released yet.
+        let fm: Vec<i16> = s.pending_local().iter().map(|c| c.forward_move).collect();
+        assert_eq!(fm, vec![0, 0, 0, 1, 2, 3, 4]);
+        assert!(s.try_advance().is_some());
+        assert_eq!(s.pending_local().len(), 6);
+        assert_eq!(s.delay(), 3);
+    }
 
     #[test]
     fn lockstep_does_not_advance_until_all_peers_present() {

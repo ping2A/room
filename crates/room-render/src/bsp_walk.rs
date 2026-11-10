@@ -95,8 +95,10 @@ fn visit_subsector(
         let Some(line) = map.lines.get(line_id.raw() as usize) else {
             continue;
         };
-        // Only solid one-sided lines occlude.
-        if line.back_sector.is_some() {
+        // Solid one-sided lines occlude, and so does a two-sided line whose
+        // viewed side has UDMF `blockrendering` (UZDoom `WALLF_BLOCKRENDERING`).
+        let blocks = line.back_sector.is_some() && seg_blocks_rendering(map, line, seg.side);
+        if line.back_sector.is_some() && !blocks {
             continue;
         }
         let Some(v1) = map.vertices.get(seg.v1.raw() as usize) else {
@@ -110,15 +112,30 @@ fn visit_subsector(
         let dx = v2.pos.x() - v1.pos.x();
         let dy = v2.pos.y() - v1.pos.y();
         let cross = dx * (vy - v1.pos.y()) - dy * (vx - v1.pos.x());
-        if cross <= 0.0 {
+        let mut a1 = pseudo_angle(vx, vy, v1.pos.x(), v1.pos.y());
+        let mut a2 = pseudo_angle(vx, vy, v2.pos.x(), v2.pos.y());
+        if blocks {
+            // Doom winding: the side's front is on the right of v1→v2, so a
+            // viewer on that side sees the seg clockwise (v2 → v1 is the
+            // counter-clockwise span the clipper takes).
+            if cross >= 0.0 {
+                continue;
+            }
+            std::mem::swap(&mut a1, &mut a2);
+        } else if cross <= 0.0 {
             continue;
         }
-        let a1 = pseudo_angle(vx, vy, v1.pos.x(), v1.pos.y());
-        let a2 = pseudo_angle(vx, vy, v2.pos.x(), v2.pos.y());
         if a1.0 != a2.0 && clip.is_range_visible(a1, a2) {
             clip.add_range(a1, a2);
         }
     }
+}
+
+/// `blockrendering` on the side this seg is drawn from.
+fn seg_blocks_rendering(map: &MapGeometry, line: &room_map::Line, seg_side: i16) -> bool {
+    line.sides[usize::from(seg_side != 0)]
+        .and_then(|sid| map.sides.get(sid.raw() as usize))
+        .is_some_and(|s| s.block_rendering)
 }
 
 fn point_on_side(node: &room_map::Node, x: f64, y: f64) -> usize {

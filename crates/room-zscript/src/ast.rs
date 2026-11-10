@@ -57,6 +57,8 @@ pub struct ClassFlags {
     pub native: bool,
     /// `ui` / `play` / `clearscope`
     pub scope: Option<String>,
+    /// `deprecated("version", "message")`.
+    pub deprecated: Option<(String, String)>,
 }
 
 /// Struct declaration.
@@ -179,6 +181,8 @@ pub struct MethodDecl {
     pub name: String,
     /// Return type.
     pub ret: TypeRef,
+    /// Further return types of a multi-return method (`int, int F()`).
+    pub extra_rets: Vec<TypeRef>,
     /// Parameters.
     pub params: Vec<Param>,
     /// Body (`None` = native / abstract semicolon).
@@ -204,6 +208,8 @@ pub struct MethodQuals {
     pub action: bool,
     /// `native`
     pub native: bool,
+    /// `vararg`: takes `...` past its declared parameters.
+    pub vararg: bool,
     /// Scope keyword.
     pub scope: Option<String>,
     /// `const` method.

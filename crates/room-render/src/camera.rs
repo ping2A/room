@@ -19,6 +19,10 @@ pub struct Camera {
     pub z_near: f32,
     /// Far plane.
     pub z_far: f32,
+    /// `SetViewPos` with `VPSF_ORTHOGRAPHIC`: orthographic projection, the
+    /// value is the view offset length (UZDoom `inv_iso_dist`). The view
+    /// spans `tan(fov/2)·dist` up and down and starts `3·dist` behind the eye.
+    pub ortho: Option<f32>,
 }
 
 impl Default for Camera {
@@ -32,6 +36,7 @@ impl Default for Camera {
             aspect: 16.0 / 9.0,
             z_near: 1.0,
             z_far: 65536.0,
+            ortho: None,
         }
     }
 }
@@ -46,7 +51,16 @@ impl Camera {
         let fov = self.fov_y_deg as f32;
         #[allow(clippy::cast_possible_truncation)]
         let aspect = self.aspect as f32;
-        let proj = Mat4::perspective_rh(fov.to_radians(), aspect, self.z_near, self.z_far);
+        let proj = match self.ortho {
+            Some(dist) => {
+                // `VREyeInfo::GetProjection(…, iso_ortho)`.
+                let dist = dist.max(1.0);
+                let h = (fov.to_radians() * 0.5).tan() * dist;
+                let w = h * aspect;
+                Mat4::orthographic_rh(-w, w, -h, h, -3.0 * dist, self.z_far)
+            }
+            None => Mat4::perspective_rh(fov.to_radians(), aspect, self.z_near, self.z_far),
+        };
         proj * view
     }
 
@@ -102,6 +116,7 @@ impl Camera {
             aspect: aspect.max(0.1),
             z_near: 1.0,
             z_far: 65536.0,
+            ortho: None,
         }
     }
 
@@ -137,6 +152,7 @@ impl Camera {
             aspect: self.aspect,
             z_near: self.z_near,
             z_far: self.z_far,
+            ortho: self.ortho,
         }
     }
 
@@ -167,6 +183,7 @@ impl Camera {
             aspect: self.aspect,
             z_near: self.z_near,
             z_far: self.z_far,
+            ortho: self.ortho,
         }
     }
 }

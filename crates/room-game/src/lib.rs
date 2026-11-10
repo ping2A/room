@@ -24,7 +24,8 @@ pub use engine_data::{
     load_layered_engine_data, mount_embedded_engine, mount_optional_engine_extras,
 };
 pub use headless::{
-    GameError, GameOptions, GameState, Headless, IntermissionTallies, Skill,
+    GameError, GameOptions, GameState, Headless, IntermissionTallies, ListenerSound, NetSaveRequest,
+    Skill,
     apply_complevel_to_world, default_next_map_name, default_par_seconds, keyconf_alias_lines,
     keyconf_default_binds,
 };
@@ -43,5 +44,6 @@ pub use sound::{ListenerFilter, SoundSystem};
 pub use vanilla_lmp::VanillaLmp;
 pub use zscript_load::acs_library_pool;
 pub use zscript_load::{
-    ZscriptLoadReport, load_zscript_from_vfs, log_zscript_report, zscript_sources_from_vfs,
+    ZscriptLoadReport, load_status_bar_program, load_zscript_from_vfs, log_zscript_report,
+    uzdoom_stdlib_sources, zscript_sources_from_vfs,
 };

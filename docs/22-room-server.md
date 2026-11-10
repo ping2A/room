@@ -139,6 +139,7 @@ The server becomes the arbitrator and the only sender of tic frames: clients sen
 | 0x13 | PING / 0x14 PONG | both | `u64 nonce`, `u64 server_time_us` | RTT shown in admin UI |
 | 0x15 | TIC\_BATCH | S→C | `u16 count`, then `count` TIC\_FRAME bodies back to back | Spectator catch-up only; ≤256 frames, ≤64 KiB |
 | 0x1F | VOICE\_LEGACY | both | old PCM layout | Only until the SFU ships; off by default |
+| 0x16 / 0x17 | TIC\_FRAME\_WIDE / TIC\_BATCH\_WIDE | S→C | protocol v3: `u64` seat mask (rooms past 8 seats); see `38 §3.2` | Rooms of ≤ 8 seats keep sending 0x11 / 0x15 |
 
 **JSON control messages:**
 
@@ -193,7 +194,7 @@ kills, damage, avg place, placement rating); `GET /api/br/leaderboard` and the l
 
 **Room lifecycle:**
 
-1. **Created** — `POST /api/rooms` with {map, skill, max\_players 2–8, visibility public/private, password?, media flags, `mod?`}. The server generates `room_id` (128-bit random, base32) and `rng_seed` from the OS CSPRNG.
+1. **Created** — `POST /api/rooms` with {map, skill, max\_players 2–64 for Doom (2–8 for Duke), visibility public/private, password?, media flags, `mod?`}. The server generates `room_id` (128-bit random, base32) and `rng_seed` from the OS CSPRNG.
 2. **Lobby** — players join with tickets; first `hello` pins the IWAD fingerprint unless the creator set it. Mismatch → `reject{code: "fingerprint"}`.
 3. **Loading** — creator (or auto-start when full) triggers start; server sends `welcome` settings; waits for `ready` from every seat (timeout 60 s, then drop that seat).
 4. **Running** — tic relay as above.
@@ -210,7 +211,7 @@ kills, damage, avg place, placement rating); `GET /api/br/leaderboard` and the l
 6. **Verifier.** The headless verifier mounts the same catalog bytes and calls `discover_mods` + `set_script_mods`, so server checksums include the mod.
 7. **HUD messages.** A mod's `player_print` to everyone shows on every client; a print to one seat only on that seat's screen (and spectators following it). Unscoped sim messages (pickups, ACS `Print`) stay hidden in netplay.
 
-Example mods shipped with the server: `bounty` (Bounty Hunter), `survival` (Survival Director) and `royale` (Battle Royale — multiplayer only: no monsters, fists only, deathmatch rules with one life, closing zone, last player standing ends the level; `mods/doom1-royale`). Doom coop has four player starts, so modded rooms, like all rooms, play with at most four bodies.
+Example mods shipped with the server: `bounty` (Bounty Hunter), `survival` (Survival Director) and `royale` (Battle Royale — multiplayer only: no monsters, fists only, deathmatch rules with one life, closing zone, last player standing ends the level; `mods/doom1-royale`). Rooms past four seats place the extra players on Player 5–8 starts, deathmatch starts, then free floor around Player 1's start (`38 §2`).
 
 The legacy `FTRL` gateway has no mod field; its rooms are always vanilla.
 

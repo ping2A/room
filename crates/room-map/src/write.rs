@@ -89,6 +89,8 @@ impl Default for RawSidedef {
             clip_midtex: false,
             wrap_midtex: false,
             no_decals: false,
+            alpha: None,
+            block_rendering: false,
         }
     }
 }
@@ -776,6 +778,7 @@ pub fn write_textmap(map: &RawMap) -> String {
             ("clipmidtex", s.clip_midtex),
             ("wrapmidtex", s.wrap_midtex),
             ("nodecals", s.no_decals),
+            ("blockrendering", s.block_rendering),
         ] {
             b.flag(k, on);
         }
@@ -791,6 +794,9 @@ pub fn write_textmap(map: &RawMap) -> String {
         }
         b.float_if("xscroll", f64::from(s.scroll_x), 0.0);
         b.float_if("yscroll", f64::from(s.scroll_y), 0.0);
+        if let Some(a) = s.alpha {
+            b.float("alpha", f64::from(a));
+        }
         out.push_str("}\n\n");
     }
     for s in &map.sectors {

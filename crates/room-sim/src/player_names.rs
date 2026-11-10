@@ -108,6 +108,10 @@ impl PlayerNames {
     pub fn checksum_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(MAX_PLAYERS * (1 + MAX_BYTES));
         for seat in 0..MAX_PLAYERS {
+            // Seats past the first 8 only count once named (UZ12 hash compat).
+            if seat >= crate::player::LEGACY_SEATS && self.len[seat] == 0 {
+                continue;
+            }
             out.push(self.len[seat]);
             let n = usize::from(self.len[seat]).min(MAX_BYTES);
             out.extend_from_slice(&self.bytes[seat][..n]);

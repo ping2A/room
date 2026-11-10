@@ -188,6 +188,12 @@ pub struct HardwareShaderDef {
     pub textures: BTreeMap<String, String>,
     /// Define macros.
     pub defines: BTreeMap<String, String>,
+    /// Post-process target (`HardwareShader PostProcess scene` → `scene`).
+    pub target: String,
+    /// `Uniform <type> <name>` declarations (post shaders), in order.
+    pub uniforms: Vec<(String, String)>,
+    /// `Enabled` — post shader active from the start.
+    pub enabled: bool,
 }
 
 /// Compiled GLDEFS registry (subset).
@@ -719,6 +725,7 @@ fn parse_hardware_shader(sc: &mut Scanner<'_>) -> Result<HardwareShaderDef, Defs
                 }
                 "postprocess" | "post" => {
                     kind = HardwareShaderKind::PostProcess;
+                    // GZDoom: `PostProcess <target> { Name "…" … }`.
                     read_name_or_path(sc)?
                 }
                 _ => kw.to_owned(),
@@ -740,6 +747,9 @@ fn parse_hardware_shader(sc: &mut Scanner<'_>) -> Result<HardwareShaderDef, Defs
         kind,
         ..Default::default()
     };
+    if kind == HardwareShaderKind::PostProcess {
+        def.target = def.name.to_ascii_lowercase();
+    }
     expect_lbrace(sc)?;
     loop {
         match sc.next_token()? {
@@ -748,7 +758,23 @@ fn parse_hardware_shader(sc: &mut Scanner<'_>) -> Result<HardwareShaderDef, Defs
             Tok::Ident(key) => {
                 let k = key.to_ascii_lowercase();
                 match k.as_str() {
-                    "shader" | "wgsl" => def.shader = read_name_or_path(sc)?,
+                    "shader" | "wgsl" => {
+                        def.shader = read_name_or_path(sc)?;
+                        // GZDoom post: `Shader "file.fp" 330` (GLSL version).
+                        match sc.next_token()? {
+                            Tok::Int(_) => {}
+                            other => sc.unget(other),
+                        }
+                    }
+                    "name" if def.kind == HardwareShaderKind::PostProcess => {
+                        def.name = read_name_or_path(sc)?;
+                    }
+                    "uniform" => {
+                        let ty = read_name(sc)?.to_ascii_lowercase();
+                        let name = read_name(sc)?;
+                        def.uniforms.push((ty, name));
+                    }
+                    "enabled" => def.enabled = true,
                     "speed" => def.speed = read_f32(sc)?,
                     "define" => {
                         let (n, v) = read_define(sc)?;
@@ -1161,5 +1187,35 @@ material texture SHINY
         let shiny = info.materials.get("SHINY").unwrap();
         assert_eq!(shiny.shader.as_deref(), Some("shaders/shiny.fp"));
         assert!((shiny.shader_speed - 1.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn parses_gzdoom_post_process_shader() {
+        let text = r#"
+HardwareShader PostProcess scene
+{
+	Name "WaterWarp"
+	Shader "shaders/waterwarp.fp" 330
+	Uniform float strength
+	Uniform vec2 offset
+	Texture noise "textures/noise.png"
+	Enabled
+}
+"#;
+        let info = parse_gldefs(text).unwrap();
+        let hs = info.hardware_shaders.get("WATERWARP").unwrap();
+        assert_eq!(hs.kind, HardwareShaderKind::PostProcess);
+        assert_eq!(hs.name, "WaterWarp");
+        assert_eq!(hs.target, "scene");
+        assert_eq!(hs.shader, "shaders/waterwarp.fp");
+        assert_eq!(
+            hs.uniforms,
+            vec![
+                ("float".to_owned(), "strength".to_owned()),
+                ("vec2".to_owned(), "offset".to_owned())
+            ]
+        );
+        assert!(hs.enabled);
+        assert!(hs.textures.contains_key("noise"));
     }
 }

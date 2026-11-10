@@ -8,7 +8,19 @@ struct ViewUniforms {
     clip_plane: vec4<f32>,
     // x = lightmap strength (0 = off)
     lightmap_params: vec4<f32>,
+    // x = ThickFogDistance (0 = off), y = ThickFogMultiplier, z = sky fog 0–1
+    fog_params: vec4<f32>,
 };
+
+// UZDoom 5.0 thick fog: distance past `ThickFogDistance` counts
+// `1 + ThickFogMultiplier` times, for light diminishing and fog alike.
+fn fog_distance(d: f32) -> f32 {
+    let thick = view.fog_params.x;
+    if (thick > 0.0 && d > thick) {
+        return d + view.fog_params.y * (d - thick);
+    }
+    return d;
+}
 
 @group(0) @binding(0) var<uniform> view: ViewUniforms;
 
@@ -199,7 +211,7 @@ fn doom_software_shade(sector_light: f32, dist: f32, glob_vis: f32) -> f32 {
 fn apply_lightmode(sector_light: f32, world_pos: vec3<f32>) -> f32 {
     let mode = i32(view.light_params.x + 0.5);
     let eye = view.eye.xyz;
-    let dist = length(world_pos - eye);
+    let dist = fog_distance(length(world_pos - eye));
     switch mode {
     case 1: {
         return clamp(sector_light * 1.15, 0.0, 1.0);
@@ -358,10 +370,16 @@ fn shade(v: VsOut) -> vec4<f32> {
         let lum = dot(g, vec3<f32>(0.299, 0.587, 0.114));
         color = vec3<f32>(pow(1.0 - lum, 2.2));
     } else if (fog_density > 0.0) {
-        let dist = length(v.world_pos - view.eye.xyz);
+        // Thick fog thickens walls / flats / sprites, not the sky shell.
+        let raw = length(v.world_pos - view.eye.xyz);
+        let dist = select(fog_distance(raw), raw, v.fuzz < -0.5);
         let fog_factor = clamp(1.0 - exp(-fog_density * dist * 0.001), 0.0, 1.0);
         let fog_color = vec3<f32>(0.05, 0.05, 0.08);
         color = mix(color, fog_color, fog_factor);
+    }
+    // UZDoom 5.0 sky fog: the sky shell (style.y < 0) fades toward the fog colour.
+    if (v.fuzz < -0.5 && view.fog_params.z > 0.0) {
+        color = mix(color, vec3<f32>(0.05, 0.05, 0.08), clamp(view.fog_params.z, 0.0, 1.0));
     }
     // `lightmap_params.y` = output gain (1.0 = identity; web shell may lift).
     color = color * max(view.lightmap_params.y, 0.01);

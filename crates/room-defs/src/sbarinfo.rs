@@ -19,6 +19,11 @@ pub struct SbarInfo {
     pub complete_border: bool,
     /// `monospacefonts`.
     pub monospace_fonts: bool,
+    /// `monospacefonts true, "0"`: every glyph takes this character's width.
+    pub monospace_char: Option<char>,
+    /// `monospacefonts true, "0", left|center|right`: glyph placement in
+    /// its cell (UZDoom default `center`).
+    pub monospace_align: Option<String>,
     /// `lowerhealthcap`.
     pub lower_health_cap: bool,
     /// `resolution w, h`.
@@ -150,9 +155,25 @@ pub fn parse_sbarinfo(text: &str) -> Result<SbarInfo, DefsError> {
                         info.complete_border = read_bool_flag(&mut sc)?;
                     }
                     "monospacefonts" => {
-                        info.monospace_fonts = true;
-                        // optional `, "0"` style args — consume until `;`
-                        consume_until_semi(&mut sc)?;
+                        // `monospacefonts true|false [, "0" [, alignment]];`
+                        let mut on = true;
+                        let mut strings = Vec::new();
+                        loop {
+                            match sc.next_token()? {
+                                Tok::Punct(Punct::Semi) | Tok::Eof => break,
+                                Tok::Ident(v) if strings.is_empty() && v.eq_ignore_ascii_case("false") => on = false,
+                                Tok::Ident(v) if !v.eq_ignore_ascii_case("true") => strings.push(v.to_owned()),
+                                Tok::String(v) => strings.push(v.into_owned()),
+                                _ => {}
+                            }
+                        }
+                        info.monospace_fonts = on;
+                        info.monospace_char = if on {
+                            strings.first().and_then(|s| s.chars().next())
+                        } else {
+                            None
+                        };
+                        info.monospace_align = strings.get(1).map(|a| a.to_ascii_lowercase());
                     }
                     "lowerhealthcap" => {
                         info.lower_health_cap = read_bool_flag(&mut sc)?;
@@ -342,56 +363,99 @@ fn parse_cmd_block(sc: &mut Scanner<'_>) -> Result<Vec<SbarCmd>, DefsError> {
             Tok::Punct(Punct::Semi) => {}
             Tok::Ident(name) => {
                 let lower = name.to_ascii_lowercase();
-                // `else` / block openers that take `{` with optional args.
-                if is_block_keyword(&lower) {
-                    let mut args = Vec::new();
-                    let mut braced = false;
-                    loop {
-                        match sc.next_token()? {
-                            Tok::Punct(Punct::LBrace) => {
-                                braced = true;
-                                break;
-                            }
-                            // `gamemode deathmatch;` — flag-style, no nested body.
-                            Tok::Punct(Punct::Semi) => break,
-                            Tok::Punct(Punct::Comma) => {}
-                            Tok::Ident(a) => args.push(a.to_owned()),
-                            Tok::String(a) => args.push(a.into_owned()),
-                            Tok::Int(n) => args.push(n.to_string()),
-                            Tok::Float(f) => args.push(f.to_string()),
-                            Tok::Punct(Punct::OrOr) => args.push("||".into()),
-                            Tok::Punct(Punct::AndAnd) => args.push("&&".into()),
-                            Tok::Punct(Punct::Pipe) => args.push("|".into()),
-                            Tok::Punct(Punct::Amp) => args.push("&".into()),
-                            Tok::Punct(Punct::Bang) => args.push("!".into()),
-                            Tok::Punct(Punct::EqEq) => args.push("==".into()),
-                            Tok::Punct(Punct::NotEq) => args.push("!=".into()),
-                            Tok::Punct(Punct::Minus) => args.push("-".into()),
-                            Tok::Punct(Punct::Plus) => args.push("+".into()),
-                            other => {
-                                return Err(DefsError::Message(format!(
-                                    "SBARINFO block {lower}: unexpected {other:?}"
-                                )));
-                            }
-                        }
-                    }
-                    let body = if braced {
-                        parse_cmd_block(sc)?
-                    } else {
-                        Vec::new()
-                    };
-                    cmds.push(SbarCmd::Block {
-                        kind: lower,
-                        args,
-                        body,
-                    });
-                    continue;
-                }
-                cmds.push(parse_draw_cmd(sc, &lower)?);
+                cmds.push(parse_one_cmd(sc, &lower)?);
             }
             other => {
                 return Err(DefsError::Message(format!(
                     "SBARINFO command: unexpected {other:?}"
+                )));
+            }
+        }
+    }
+}
+
+/// One command whose keyword (`lower`) was just read. Flow-control blocks
+/// take `{ … }` or, as in UZDoom (`SBarInfoCommandFlowControl::Parse`), a
+/// single following command: `else InInventory X, 1 { … }`,
+/// `gamemode deathmatch, teamgame drawnumber …;`, `alpha 0.75 InInventory …`.
+fn parse_one_cmd(sc: &mut Scanner<'_>, lower: &str) -> Result<SbarCmd, DefsError> {
+    if !is_block_keyword(lower) {
+        return parse_draw_cmd(sc, lower);
+    }
+    let (args, body) = parse_block_rest(sc, lower)?;
+    Ok(SbarCmd::Block {
+        kind: lower.to_owned(),
+        args,
+        body,
+    })
+}
+
+/// How many header values a block keyword takes before its body (besides a
+/// leading `not`): `else` none, `alpha` one, the rest a separated list.
+fn header_values(kind: &str) -> Option<usize> {
+    match kind {
+        "else" | "usesammo" | "usessecondaryammo" | "inventorybarnotvisible" | "ifinvulnerable" => Some(0),
+        "alpha" | "aspectratio" => Some(1),
+        _ => None,
+    }
+}
+
+fn parse_block_rest(sc: &mut Scanner<'_>, kind: &str) -> Result<(Vec<String>, Vec<SbarCmd>), DefsError> {
+    let max = header_values(kind);
+    let mut args: Vec<String> = Vec::new();
+    let mut values = 0usize;
+    let mut expect_value = max != Some(0);
+    loop {
+        let tok = sc.next_token()?;
+        match tok {
+            Tok::Punct(Punct::LBrace) => {
+                return Ok((args, parse_cmd_block(sc)?));
+            }
+            // `gamemode deathmatch;` — flag-style, no nested body.
+            Tok::Punct(Punct::Semi) => return Ok((args, Vec::new())),
+            Tok::Eof => return Ok((args, Vec::new())),
+            Tok::Ident(a) if args.is_empty() && a.eq_ignore_ascii_case("not") => {
+                args.push(a.to_owned());
+            }
+            Tok::Punct(Punct::Comma) => {
+                // `InInventory X, 1` / `IsSelected A, B` / `gamemode a, b`.
+                expect_value = true;
+            }
+            Tok::Punct(Punct::OrOr) | Tok::Punct(Punct::AndAnd) => {
+                args.push(if matches!(tok, Tok::Punct(Punct::OrOr)) { "||" } else { "&&" }.into());
+                expect_value = true;
+            }
+            Tok::Punct(Punct::Percent) => args.push("%".into()),
+            Tok::Punct(Punct::Minus) if expect_value => args.push("-".into()),
+            Tok::Ident(_) | Tok::String(_) | Tok::Int(_) | Tok::Float(_)
+                if expect_value && max.is_none_or(|m| values < m) =>
+            {
+                let v = match tok {
+                    Tok::Ident(a) => a.to_owned(),
+                    Tok::String(a) => a.into_owned(),
+                    Tok::Int(n) => n.to_string(),
+                    Tok::Float(f) => f.to_string(),
+                    _ => String::new(),
+                };
+                // A `-` read just before belongs to this number.
+                if args.last().is_some_and(|l| l == "-") {
+                    args.pop();
+                    args.push(format!("-{v}"));
+                } else {
+                    args.push(v);
+                }
+                values += 1;
+                expect_value = false;
+            }
+            Tok::Ident(name) => {
+                // Header done: one command is the body.
+                let lower = name.to_ascii_lowercase();
+                let cmd = parse_one_cmd(sc, &lower)?;
+                return Ok((args, vec![cmd]));
+            }
+            other => {
+                return Err(DefsError::Message(format!(
+                    "SBARINFO block {kind}: unexpected {other:?}"
                 )));
             }
         }
@@ -412,6 +476,8 @@ fn is_block_keyword(name: &str) -> bool {
             | "weaponammo"
             | "ininventory"
             | "else"
+            | "alpha"
+            | "ifinvulnerable"
             | "armortype"
             | "health"
             | "armor"
@@ -445,6 +511,16 @@ fn parse_draw_cmd(sc: &mut Scanner<'_>, name: &str) -> Result<SbarCmd, DefsError
         });
     }
     Ok(match name {
+        // `N + center` coordinates stay raw (`Other`): the renderer reads them.
+        "drawimage"
+            if args.get(1).is_some_and(|a| a.trim().parse::<i32>().is_err())
+                || args.get(2).is_some_and(|a| a.trim().parse::<i32>().is_err()) =>
+        {
+            SbarCmd::Other {
+                name: name.to_owned(),
+                args,
+            }
+        }
         "drawimage" => {
             let image = args.first().cloned().unwrap_or_default();
             let x = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -633,15 +709,6 @@ fn read_bool_flag(sc: &mut Scanner<'_>) -> Result<bool, DefsError> {
             sc.unget(other);
             let _ = sc.check_punct(Punct::Semi)?;
             Ok(true)
-        }
-    }
-}
-
-fn consume_until_semi(sc: &mut Scanner<'_>) -> Result<(), DefsError> {
-    loop {
-        match sc.next_token()? {
-            Tok::Punct(Punct::Semi) | Tok::Eof => return Ok(()),
-            _ => {}
         }
     }
 }

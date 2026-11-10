@@ -1062,6 +1062,8 @@ pub struct NetPlay {
     last_ping_ms: f64,
     /// v2: look deltas sent but not yet simulated `(tic, yaw, pitch)`.
     sent_look: std::collections::VecDeque<(u32, i16, i16)>,
+    /// v2: every command sent but not yet simulated, for client prediction.
+    sent_cmds: std::collections::VecDeque<(u32, NetTicCmd)>,
     /// Seatless watcher: never uplinks input.
     spectator: bool,
     /// Join / leave lines for the HUD event feed.
@@ -1097,6 +1099,7 @@ impl NetPlay {
             next_send_tic: 0,
             last_ping_ms: f64::NEG_INFINITY,
             sent_look: std::collections::VecDeque::new(),
+            sent_cmds: std::collections::VecDeque::new(),
             spectator: r.spectator,
             feed: Vec::new(),
         }
@@ -1383,6 +1386,12 @@ impl NetPlay {
                 weapon_select: bits.weapon_select,
             };
             t.send_tic_cmd(self.next_send_tic, &cmd);
+            if !self.spectator {
+                if self.sent_cmds.len() >= 128 {
+                    self.sent_cmds.pop_front();
+                }
+                self.sent_cmds.push_back((self.next_send_tic, cmd));
+            }
             if cmd.yaw != 0 || cmd.pitch != 0 {
                 if self.sent_look.len() >= 64 {
                     self.sent_look.pop_front();
@@ -1401,6 +1410,9 @@ impl NetPlay {
             let next = self.session.next_tic();
             while self.sent_look.front().is_some_and(|(t, _, _)| *t < next) {
                 self.sent_look.pop_front();
+            }
+            while self.sent_cmds.front().is_some_and(|(t, _)| *t < next) {
+                self.sent_cmds.pop_front();
             }
             self.log_advance(tic, &frame);
             return Some(frame_to_cmds(frame, self.peer_count));
@@ -1431,6 +1443,26 @@ impl NetPlay {
             .fold((0, 0), |(y, p), (_, dy, dp)| {
                 (y + i32::from(*dy), p + i32::from(*dp))
             })
+    }
+
+    /// Local commands sent but not yet simulated, oldest first: what client
+    /// prediction plays on top of the last confirmed tic (`docs/38`).
+    #[must_use]
+    pub fn unapplied_cmds(&self) -> Vec<TicCmd> {
+        if self.spectator {
+            return Vec::new();
+        }
+        let next = self.session.next_tic();
+        let raw: Vec<NetTicCmd> = match &self.transport {
+            CoopSocket::V2(_) => self
+                .sent_cmds
+                .iter()
+                .filter(|(t, _)| *t >= next)
+                .map(|(_, c)| *c)
+                .collect(),
+            CoopSocket::Legacy(_) => self.session.pending_local(),
+        };
+        raw.into_iter().map(net_cmd_to_tic).collect()
     }
 
     /// Smoothed RTT in ms (v2 only).
@@ -1680,6 +1712,19 @@ impl NetPlay {
     }
 }
 
+fn net_cmd_to_tic(net: NetTicCmd) -> TicCmd {
+    TicCmd {
+        buttons: Buttons(net.buttons),
+        pitch: net.pitch,
+        yaw: net.yaw,
+        roll: net.roll,
+        forward_move: net.forward_move,
+        side_move: net.side_move,
+        up_move: net.up_move,
+        weapon_select: net.weapon_select,
+    }
+}
+
 fn frame_to_cmds(
     frame: std::collections::BTreeMap<PeerId, NetTicCmd>,
     peer_count: u8,
@@ -1688,16 +1733,7 @@ fn frame_to_cmds(
     for (peer, net) in frame {
         let i = usize::from(peer.0);
         if i < cmds.len() {
-            cmds[i] = TicCmd {
-                buttons: Buttons(net.buttons),
-                pitch: net.pitch,
-                yaw: net.yaw,
-                roll: net.roll,
-                forward_move: net.forward_move,
-                side_move: net.side_move,
-                up_move: net.up_move,
-                weapon_select: net.weapon_select,
-            };
+            cmds[i] = net_cmd_to_tic(net);
         }
     }
     cmds

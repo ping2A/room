@@ -162,6 +162,7 @@ impl ModZonePass {
             light_params: [0.0; 4],
             clip_plane: [0.0; 4],
             lightmap_params: [0.0; 4],
+            fog_params: [0.0; 4],
         };
         gpu.queue
             .write_buffer(&self.view_buf, 0, bytes_of(&uniforms));

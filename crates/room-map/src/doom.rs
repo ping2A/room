@@ -155,6 +155,8 @@ pub fn parse_sidedefs(data: &[u8]) -> Result<Vec<RawSidedef>, MapError> {
             clip_midtex: false,
             wrap_midtex: false,
             no_decals: false,
+            alpha: None,
+            block_rendering: false,
         });
     }
     Ok(out)

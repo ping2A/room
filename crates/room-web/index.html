@@ -228,6 +228,20 @@
     body.menu-open #gamebar { display: flex !important; }
     #gamebar select { background: #1a1e28; color: #dde; border: 1px solid #3a4258; border-radius: 4px; font: inherit; padding: 2px 4px; }
     #gamebar input[type="file"] { max-width: 11rem; font: inherit; color: #dde; }
+    #gamebar .pwad-list { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+    #gamebar .pwad-chip {
+      display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px;
+      background: #1a2333; border: 1px solid #3a4c68; border-radius: 10px; color: #cfe0ff;
+    }
+    #gamebar .pwad-chip button {
+      appearance: none; border: 0; background: none; color: #f99; cursor: pointer; font: inherit; padding: 0;
+    }
+    body.drop-pwad::after {
+      content: "Drop a PK3 / PK7 / ZIP / WAD to load it (an IWAD starts a new game)";
+      position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center;
+      background: rgba(20, 40, 80, 0.55); color: #fff; font: 600 20px system-ui, sans-serif;
+      border: 3px dashed rgba(180, 210, 255, 0.85); pointer-events: none;
+    }
     #gamebar a { color: #8fb4ff; text-decoration: none; }
     #gamebar button.settings-open-btn {
       appearance: none; cursor: pointer; font: inherit; color: #dde;
@@ -361,8 +375,15 @@
       Voxel sprites
     </label>
     <label title="Load your own Doom / Freedoom IWAD (commercial WADs stay on your machine)">IWAD
-      <input id="game-iwad" type="file" accept=".wad,application/octet-stream" />
+      <input id="game-iwad" type="file" accept=".wad,.ipk3,.iwad,application/octet-stream" />
     </label>
+    <label id="game-map-label" title="Jump to any map of the IWAD and loaded PK3s / PWADs (restarts the game there)">Map
+      <select id="game-map"><option value="">Title screen</option></select>
+    </label>
+    <label id="game-pwad-label" title="Mount PK3 / PK7 / ZIP / PWAD files on top of the IWAD (kept in this browser until removed)">PK3
+      <input id="game-pwad" type="file" multiple accept=".pk3,.pk7,.pke,.zip,.wad,application/zip,application/octet-stream" />
+    </label>
+    <span id="game-pwads" class="pwad-list" aria-live="polite"></span>
     <a href="editor.html" title="Map editor — Scripts tab for WASM mods">Editor ↗</a>
   </div>
   <div id="boot">
@@ -371,7 +392,11 @@
       <p>Load a Doom / Freedoom IWAD to play in the browser.</p>
       <label>
         Choose IWAD…
-        <input id="iwad" type="file" accept=".wad,application/octet-stream" />
+        <input id="iwad" type="file" accept=".wad,.ipk3,.iwad,application/octet-stream" />
+      </label>
+      <label id="pwad-label">
+        Add PK3 / PWAD…
+        <input id="pwad" type="file" multiple accept=".pk3,.pk7,.pke,.zip,.wad,application/zip,application/octet-stream" />
       </label>
       <label>
         Skill
@@ -383,7 +408,7 @@
           <option value="5">Nightmare!</option>
         </select>
       </label>
-      <p class="hint">Packaged builds ship <code>doom1.wad</code> / <code>doom2.wad</code> / Freedoom and load the first that responds; voxels are on by default (<code>?voxel=0</code> to disable). Or pick a local IWAD above / via <strong>IWAD</strong> in the bar — files stay in the browser and are never uploaded. Coop: add <code>?ws=…&amp;players=2</code>. Press a key or click to unlock audio; click the canvas for mouse look.</p>
+      <p class="hint">Packaged builds ship <code>doom1.wad</code> / <code>doom2.wad</code> / Freedoom and load the first that responds; voxels are on by default (<code>?voxel=0</code> to disable). Or pick a local IWAD above / via <strong>IWAD</strong> in the bar — files stay in the browser and are never uploaded. PK3 / PK7 / ZIP / PWAD mods: <strong>Add PK3</strong>, the <strong>PK3</strong> bar button, drag and drop, or <code>?pwad=url1,url2</code>; they are remembered in this browser until you remove them (✕). Coop: add <code>?ws=…&amp;players=2</code>. Press a key or click to unlock audio; click the canvas for mouse look.</p>
     </div>
   </div>
   <div id="lobby" aria-live="polite">
@@ -842,6 +867,207 @@
         }
       };
       await mountSoloAssets();
+
+      // ---- User PK3 / PK7 / ZIP / PWAD files ---------------------------------
+      // Mounted after the IWAD and the mods / packs above (`roomAddPwad`), kept
+      // in IndexedDB so skill / mod changes (which reload the page) keep them.
+      // Single-player only: a coop room must load identical content on every seat.
+      let lastIwad = null;
+      let afterStart = () => {}; // set by the map picker below
+      const userPwads = new Map(); // name → Uint8Array, in load order
+      const pwadAllowed = !params.get("ws") && !dukeUrl;
+      const pwadDb = (() => {
+        let dbp = null;
+        const open = () => {
+          if (dbp) return dbp;
+          dbp = new Promise((resolve, reject) => {
+            if (!window.indexedDB) return reject(new Error("no IndexedDB"));
+            const req = indexedDB.open("room-web-pwads", 1);
+            req.onupgradeneeded = () => req.result.createObjectStore("pwads", { keyPath: "name" });
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+          });
+          return dbp;
+        };
+        const tx = async (mode, fn) => {
+          const db = await open();
+          return new Promise((resolve, reject) => {
+            const t = db.transaction("pwads", mode);
+            const out = fn(t.objectStore("pwads"));
+            t.oncomplete = () => resolve(out && "result" in out ? out.result : undefined);
+            t.onerror = () => reject(t.error);
+            t.onabort = () => reject(t.error);
+          });
+        };
+        return {
+          all: () => tx("readonly", (st) => st.getAll()),
+          put: (name, bytes, order) => tx("readwrite", (st) => st.put({ name, bytes, order })),
+          del: (name) => tx("readwrite", (st) => st.delete(name)),
+        };
+      })();
+      const pwadKind = (name, bytes) => {
+        const magic = String.fromCharCode(...bytes.subarray(0, 4));
+        if (isGrpBytes(bytes)) return "iwad";
+        if (magic === "IWAD" || /\.(ipk3|ipk7|iwad)$/i.test(name)) return "iwad";
+        if (mod.roomIsResourceArchive(bytes)) return "pwad";
+        return "unknown";
+      };
+      const renderPwadChips = () => {
+        const box = document.getElementById("game-pwads");
+        if (!box) return;
+        box.textContent = "";
+        for (const name of userPwads.keys()) {
+          const chip = document.createElement("span");
+          chip.className = "pwad-chip";
+          chip.textContent = name;
+          const x = document.createElement("button");
+          x.type = "button";
+          x.title = `Remove ${name}`;
+          x.textContent = "✕";
+          x.addEventListener("click", async (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            await removeUserPwad(name);
+          });
+          chip.appendChild(x);
+          box.appendChild(chip);
+        }
+      };
+      const restartWithPwads = () => {
+        if (lastIwad) startWithBytes(lastIwad.bytes, lastIwad.label);
+        else status.textContent = `${[...userPwads.keys()].join(", ")} ready — choose an IWAD to play`;
+      };
+      const addUserPwad = (name, bytes, persist = true) => {
+        mod.roomAddPwad(name, bytes);
+        userPwads.delete(name); // re-adding moves it to the end of the chip list
+        userPwads.set(name, bytes);
+        console.log(`room-web: mounted ${name} (${(bytes.byteLength / 1048576).toFixed(1)} MB)`);
+        if (persist) {
+          pwadDb.put(name, bytes, Date.now()).catch((e) =>
+            console.warn(`room-web: could not remember ${name} (it stays for this page only)`, e)
+          );
+        }
+        renderPwadChips();
+      };
+      const removeUserPwad = async (name) => {
+        mod.roomRemovePwad(name);
+        userPwads.delete(name);
+        try {
+          await pwadDb.del(name);
+        } catch (_) {
+          /* ignore */
+        }
+        renderPwadChips();
+        restartWithPwads();
+      };
+      // Load picked / dropped files: IWADs start a game, archives are mounted.
+      const loadLocalFiles = async (files) => {
+        let iwad = null;
+        let added = 0;
+        for (const file of files) {
+          try {
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            const kind = pwadKind(file.name, bytes);
+            if (kind === "iwad") {
+              iwad = { bytes, label: file.name };
+            } else if (kind === "pwad") {
+              if (!pwadAllowed) {
+                status.textContent = `${file.name}: PK3 / PWAD files are single-player only`;
+                status.style.color = "#f66";
+                continue;
+              }
+              addUserPwad(file.name, bytes);
+              added += 1;
+            } else {
+              status.textContent = `${file.name} is not a WAD, PK3, PK7 or ZIP`;
+              status.style.color = "#f66";
+            }
+          } catch (err) {
+            console.error(err);
+            status.textContent = `Failed to read ${file.name}: ${err && err.message ? err.message : err}`;
+            status.style.color = "#f66";
+          }
+        }
+        try {
+          if (iwad) startWithBytes(iwad.bytes, iwad.label);
+          else if (added) restartWithPwads();
+        } catch (err) {
+          console.error(err);
+          status.textContent = "Failed to start: " + (err && err.message ? err.message : err);
+          status.style.color = "#f66";
+        }
+      };
+      if (pwadAllowed) {
+        // `?pwad=a.pk3,b.wad` (or `?file=`), fetched like the packaged mods.
+        const urls = [...params.getAll("pwad"), ...params.getAll("file")]
+          .flatMap((v) => v.split(","))
+          .map((v) => v.trim())
+          .filter(Boolean);
+        for (const url of urls) {
+          try {
+            const res = await fetch(url, { cache: "no-cache" });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const bytes = new Uint8Array(await res.arrayBuffer());
+            const name = decodeURIComponent(url.split("/").pop().split("?")[0]) || url;
+            if (pwadKind(name, bytes) !== "pwad") throw new Error("not a WAD / PK3 / PK7 / ZIP");
+            addUserPwad(name, bytes, false);
+          } catch (e) {
+            console.warn(`room-web: pwad ${url} unavailable`, e);
+            status.textContent = `PWAD ${url} unavailable: ${e && e.message ? e.message : e}`;
+          }
+        }
+        // Files picked in earlier visits (`?pwad` ones above win on a name clash).
+        try {
+          const saved = (await pwadDb.all()) || [];
+          saved.sort((a, b) => (a.order || 0) - (b.order || 0));
+          for (const rec of saved) {
+            if (userPwads.has(rec.name) || !rec.bytes) continue;
+            addUserPwad(rec.name, new Uint8Array(rec.bytes), false);
+          }
+        } catch (e) {
+          console.warn("room-web: saved PK3 list unavailable", e);
+        }
+        for (const id of ["pwad", "game-pwad"]) {
+          const input = document.getElementById(id);
+          if (!input) continue;
+          input.addEventListener("change", async () => {
+            await loadLocalFiles([...(input.files || [])]);
+            input.value = "";
+          });
+          input.addEventListener("keydown", (ev) => ev.stopPropagation());
+        }
+      } else {
+        for (const id of ["pwad-label", "game-pwad-label"]) {
+          const el = document.getElementById(id);
+          if (el) el.hidden = true;
+        }
+      }
+      // Drag and drop anywhere: IWADs (and Duke GRPs) start, archives mount.
+      {
+        let depth = 0;
+        const hasFiles = (ev) => ev.dataTransfer && [...ev.dataTransfer.types].includes("Files");
+        window.addEventListener("dragenter", (ev) => {
+          if (!hasFiles(ev)) return;
+          ev.preventDefault();
+          depth += 1;
+          document.body.classList.add("drop-pwad");
+        });
+        window.addEventListener("dragover", (ev) => {
+          if (hasFiles(ev)) ev.preventDefault();
+        });
+        window.addEventListener("dragleave", () => {
+          depth = Math.max(0, depth - 1);
+          if (!depth) document.body.classList.remove("drop-pwad");
+        });
+        window.addEventListener("drop", async (ev) => {
+          if (!hasFiles(ev)) return;
+          ev.preventDefault();
+          depth = 0;
+          document.body.classList.remove("drop-pwad");
+          await loadLocalFiles([...ev.dataTransfer.files]);
+        });
+      }
+      renderPwadChips();
       // Coop / spectate always needs a callsign before the IWAD boots the session.
       if (params.get("ws") && !(params.get("name") || "").trim()) {
         const watching = !!params.get("spectate") && params.get("spectate") !== "0";
@@ -899,9 +1125,100 @@
         status.textContent = `Loading ${label}…`;
         if (isGrpBytes(bytes)) useDukeUi();
         mod.roomStartIwad(bytes);
-        status.textContent = `Playing ${label}`;
+        lastIwad = { bytes, label };
+        afterStart();
+        status.textContent = userPwads.size
+          ? `Playing ${label} + ${[...userPwads.keys()].join(", ")}`
+          : `Playing ${label}`;
         return true;
       };
+
+      // ---- Map picker ---------------------------------------------------------
+      // Lists every map of the IWAD + PK3s / PWADs once a game runs; picking one
+      // restarts there in place (no page reload, so a locally picked IWAD stays).
+      {
+        const mapSel = document.getElementById("game-map");
+        const mapLabel = document.getElementById("game-map-label");
+        if (params.get("ws") || !mapSel) {
+          if (mapLabel) mapLabel.hidden = true;
+        } else {
+          let listKey = "";
+          let pollTimer = 0;
+          const fillMaps = () => {
+            let maps = [];
+            try {
+              maps = JSON.parse(mod.roomMapList() || "[]");
+            } catch (_) {
+              maps = [];
+            }
+            if (!maps.length) return false;
+            const key = maps.map((m) => m.name).join(",");
+            if (key !== listKey) {
+              listKey = key;
+              const want = (params.get("map") || "").toUpperCase();
+              mapSel.textContent = "";
+              const title = document.createElement("option");
+              title.value = "";
+              title.textContent = "Title screen";
+              mapSel.appendChild(title);
+              let group = null;
+              let groupKey = "";
+              for (const m of maps) {
+                const ep = /^E(\d)M\d$/.exec(m.name);
+                const gk = ep ? `Episode ${ep[1]}` : /^MAP\d+$/.test(m.name) ? "Maps" : "Other";
+                if (gk !== groupKey) {
+                  group = document.createElement("optgroup");
+                  group.label = gk;
+                  mapSel.appendChild(group);
+                  groupKey = gk;
+                }
+                const o = document.createElement("option");
+                o.value = m.name;
+                o.textContent = m.title ? `${m.name} — ${m.title}` : m.name;
+                group.appendChild(o);
+              }
+              mapSel.value = want && maps.some((m) => m.name === want) ? want : "";
+            }
+            return true;
+          };
+          // The session may start after GPU init, so poll briefly after each start.
+          afterStart = () => {
+            clearInterval(pollTimer);
+            let tries = 0;
+            pollTimer = setInterval(() => {
+              tries += 1;
+              if (fillMaps() || tries > 40) clearInterval(pollTimer);
+            }, 250);
+          };
+          // Follow level exits so the picker shows where you are.
+          setInterval(() => {
+            if (document.activeElement === mapSel || !listKey) return;
+            const cur = (mod.roomCurrentMap() || "").toUpperCase();
+            if (cur && params.get("map") && [...mapSel.options].some((o) => o.value === cur)) {
+              mapSel.value = cur;
+            }
+          }, 1000);
+          mapSel.addEventListener("change", () => {
+            const v = mapSel.value;
+            if (v) params.set("map", v);
+            else params.delete("map");
+            // In-place: the engine reads ?map= at start; skill / mod reloads keep it.
+            history.replaceState(null, "", `${location.pathname}?${params.toString()}${location.hash}`);
+            mapSel.blur();
+            if (lastIwad) {
+              try {
+                startWithBytes(lastIwad.bytes, lastIwad.label);
+                status.textContent = v ? `Playing ${v}` : `Playing ${lastIwad.label}`;
+              } catch (err) {
+                console.error(err);
+                status.textContent = `Failed to start ${v}: ${err && err.message ? err.message : err}`;
+                status.style.color = "#f66";
+              }
+            }
+          });
+          mapSel.addEventListener("keydown", (ev) => ev.stopPropagation());
+        }
+      }
 
       status.textContent = "Room web ready — load an IWAD to play";
 
@@ -937,6 +1254,11 @@
         if (!file) return;
         try {
           const buf = new Uint8Array(await file.arrayBuffer());
+          // A PK3 / PWAD picked in the IWAD box is mounted, not booted.
+          if (pwadKind(file.name, buf) === "pwad" && String.fromCharCode(...buf.subarray(0, 4)) !== "IWAD") {
+            await loadLocalFiles([file]);
+            return;
+          }
           startWithBytes(buf, file.name);
         } catch (err) {
           console.error(err);

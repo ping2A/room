@@ -151,6 +151,29 @@ pub fn draw_weapon_tinted(
     );
 }
 
+/// Give the patches pushed since `first` the layer's `A_OverlayVertexOffset`
+/// corners, scaled with the layer and mirrored with `PSPF_FLIP` (UZDoom
+/// `hw_weapon.cpp`).
+pub fn set_patch_corners(
+    list: &mut UiDrawList,
+    first: usize,
+    vertex: [(f32, f32); 4],
+    scale_x: f32,
+    scale_y: f32,
+    flip: bool,
+) {
+    if vertex.iter().all(|(x, y)| *x == 0.0 && *y == 0.0) {
+        return;
+    }
+    let sx = if flip { -scale_x } else { scale_x };
+    let c = vertex.map(|(x, y)| Vec2::new(x * sx, y * scale_y));
+    for cmd in list.cmds.iter_mut().skip(first) {
+        if let crate::draw::DrawCmd::Patch { corners, .. } = cmd {
+            *corners = c;
+        }
+    }
+}
+
 /// Gun bob shared with a weapon overlay, then adjusted for that layer's flags.
 /// `gun_bob` already includes `weapon_ofs` when the gun itself adds it.
 #[must_use]

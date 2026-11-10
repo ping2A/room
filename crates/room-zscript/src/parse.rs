@@ -121,6 +121,7 @@ fn parse_file_with_version(path: &str, text: &str, version: Option<String>) -> P
         path: path.to_owned(),
         version,
         diags: Vec::new(),
+        extra_rets: Vec::new(),
     };
     let unit = p.parse_unit();
     diags.append(&mut p.diags);
@@ -136,6 +137,8 @@ struct Parser {
     path: String,
     version: Option<String>,
     diags: Vec<Diagnostic>,
+    /// Return types after the first (`int, int GetAmount(…)`) for the next method.
+    extra_rets: Vec<TypeRef>,
 }
 
 impl Parser {
@@ -338,7 +341,25 @@ impl Parser {
                 }
                 continue;
             }
-            if self.check_kw("version") || self.check_kw("deprecated") {
+            if self.check_kw("deprecated") {
+                self.bump();
+                if self.eat_punct("(") {
+                    let mut text = Vec::new();
+                    while !matches!(&self.peek().kind, TokenKind::Eof)
+                        && !matches!(&self.peek().kind, TokenKind::Punct(p) if p == ")")
+                    {
+                        if let TokenKind::String(v) = self.bump().kind {
+                            text.push(v);
+                        }
+                    }
+                    self.expect_punct(")");
+                    let mut text = text.into_iter();
+                    flags.deprecated =
+                        Some((text.next().unwrap_or_default(), text.next().unwrap_or_default()));
+                }
+                continue;
+            }
+            if self.check_kw("version") {
                 self.bump();
                 self.skip_balanced('(', ')');
                 continue;
@@ -612,7 +633,8 @@ impl Parser {
                 continue;
             }
             if self.eat_kw("vararg") {
-                // GZDoom `vararg` methods (`SendNetworkCommand`); accepted as a qual.
+                // GZDoom `vararg` natives (`Screen.DrawText`, `SendNetworkCommand`).
+                mq.vararg = true;
                 continue;
             }
             // `readonly<Actor>` is a type. `readonly int` is a qualifier.
@@ -679,6 +701,7 @@ impl Parser {
                     let effect = self.parse_ident_name().unwrap_or_default();
                     self.expect_punct(")");
                     if effect.eq_ignore_ascii_case("const") {
+                        mq.const_ = true;
                         mq.unsafe_const = true;
                     } else if effect.eq_ignore_ascii_case("clearscope") {
                         fq.scope = Some("unsafe(clearscope)".into());
@@ -703,19 +726,23 @@ impl Parser {
         if matches!(&self.peek().kind, TokenKind::Punct(p) if p == ",") {
             let save = self.pos;
             let mut extras = 0i32;
+            let mut extra_types = Vec::new();
             while self.eat_punct(",") {
                 let before = self.pos;
-                let _extra = self.parse_type();
+                let extra = self.parse_type();
                 if self.pos == before {
                     extras = -1;
                     break;
                 }
+                extra_types.push(extra);
                 extras += 1;
             }
             let multi_method = extras > 0
                 && matches!(&self.peek().kind, TokenKind::Ident(_) | TokenKind::Kw(_))
                 && matches!(&self.peek_n(1).kind, TokenKind::Punct(p) if p == "(");
-            if !multi_method {
+            if multi_method {
+                self.extra_rets = extra_types;
+            } else {
                 self.pos = save;
             }
         }
@@ -771,9 +798,7 @@ impl Parser {
             self.expect_punct(")");
             // fall through to body / `;`
             let mut quals = quals;
-            if self.eat_kw("const") {
-                quals.const_ = true;
-            }
+            self.parse_func_const(&mut quals);
             while self.check_kw("version") || self.check_kw("deprecated") {
                 self.bump();
                 self.skip_balanced('(', ')');
@@ -787,6 +812,7 @@ impl Parser {
                 None
             };
             return Some(MethodDecl {
+                extra_rets: std::mem::take(&mut self.extra_rets),
                 name,
                 ret,
                 params,
@@ -848,9 +874,7 @@ impl Parser {
         }
         // optional const after params
         let mut quals = quals;
-        if self.eat_kw("const") {
-            quals.const_ = true;
-        }
+        self.parse_func_const(&mut quals);
         while self.check_kw("version") || self.check_kw("deprecated") {
             self.bump();
             self.skip_balanced('(', ')');
@@ -864,6 +888,7 @@ impl Parser {
             None
         };
         Some(MethodDecl {
+            extra_rets: std::mem::take(&mut self.extra_rets),
             name,
             ret,
             params,
@@ -1323,9 +1348,10 @@ impl Parser {
             }
         }
         self.bump(); // name
+        let mut fixed_size = None;
         if self.eat_punct("[") {
             if !self.eat_punct("]") {
-                let _ = self.parse_expr(0);
+                fixed_size = Some(self.parse_expr(0));
                 self.expect_punct("]");
             }
             maybe_ty = TypeRef::Array(Box::new(maybe_ty));
@@ -1334,6 +1360,9 @@ impl Parser {
         let mut init = None;
         if self.eat_punct("=") {
             init = Some(self.parse_expr(0));
+        } else if fixed_size.is_some() {
+            // `bool locks[6];`: a fixed array keeps its size as the initializer.
+            init = fixed_size;
         }
         let mut extra_inits = Vec::new();
         while self.eat_punct(",") {
@@ -1689,7 +1718,41 @@ fn type_ref_name(ty: &TypeRef) -> String {
     }
 }
 
-fn version_at_least(version: &str, major: u32, minor: u32, patch: u32) -> bool {
+impl Parser {
+    /// Trailing `const` / UZDoom 4.15.1 `unsafe(const)` after a parameter list.
+    fn parse_func_const(&mut self, quals: &mut MethodQuals) {
+        if self.eat_kw("const") {
+            quals.const_ = true;
+            return;
+        }
+        let is_unsafe =
+            matches!(&self.peek().kind, TokenKind::Ident(s) if s.eq_ignore_ascii_case("unsafe"));
+        if !is_unsafe {
+            return;
+        }
+        let span = self.bump().span;
+        if !version_at_least(self.version.as_deref().unwrap_or("2.3"), 4, 15, 1) {
+            self.error(span, "unsafe effects require ZScript version 4.15.1 or above");
+        }
+        if self.eat_punct("(") {
+            let ok = self.eat_kw("const")
+                || self
+                    .parse_ident_name()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("const"));
+            self.expect_punct(")");
+            if ok {
+                quals.const_ = true;
+                quals.unsafe_const = true;
+            } else {
+                self.error(span, "expected unsafe(const) after a parameter list");
+            }
+        } else {
+            self.error(span, "expected '(' after unsafe");
+        }
+    }
+}
+
+pub(crate) fn version_at_least(version: &str, major: u32, minor: u32, patch: u32) -> bool {
     let mut parts = version
         .split(|c: char| !c.is_ascii_digit())
         .filter(|part| !part.is_empty())
@@ -1879,7 +1942,7 @@ class Script_DamageMult : EventHandler
     fn parse_map_foreach_and_norollback_field() {
         let r = parse_file(
             "t.zs",
-            r#"
+            r#"version "4.15.1"
 class Scoreboard
 {
     void Draw(Map<int, int> teamScores)

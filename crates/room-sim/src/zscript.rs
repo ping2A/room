@@ -68,6 +68,25 @@ pub struct ZscriptRuntime {
     target_sentinel: ObjHandle,
     /// True after [`Self::activate_map_handlers`] ran `OnRegister`/`WorldLoaded`.
     pub map_handlers_active: bool,
+    /// Actor index → generation last synced into its script object.
+    actor_gen: BTreeMap<u32, u32>,
+    /// `(class id, field)` → `(bank, slot)` with parents walked.
+    field_cache: std::cell::RefCell<BTreeMap<(u32, &'static str), Option<(u8, usize)>>>,
+}
+
+/// Native actor fields mirrored into a script object around a call.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ActorFieldSnap {
+    /// `(index, generation)`.
+    pub id: (u32, u32),
+    /// Class name.
+    pub class: String,
+    /// Float fields (vector components are `name.x` / `.y` / `.z`).
+    pub floats: Vec<(&'static str, f64)>,
+    /// Integer fields.
+    pub ints: Vec<(&'static str, i64)>,
+    /// Actor pointers as `(index, generation, class)`.
+    pub ptrs: Vec<(&'static str, Option<(u32, u32, String)>)>,
 }
 
 impl ZscriptRuntime {
@@ -98,7 +117,7 @@ impl ZscriptRuntime {
             .map(|class| class.name.clone())
             .collect();
         self.vm = Some(vm);
-        self.program = Some(program);
+        self.program = Some(Arc::clone(&program));
         self.actor_fields.clear();
         self.begun_play.clear();
         self.handler_objs.clear();
@@ -106,6 +125,41 @@ impl ZscriptRuntime {
         self.actor_proxies.clear();
         self.event_actor_proxies.clear();
         self.map_handlers_active = false;
+        self.actor_gen.clear();
+        self.field_cache.borrow_mut().clear();
+        let slots = actor_slots_of(&program);
+        if let Some(vm) = self.vm.as_mut() {
+            vm.play.actor_slots = slots;
+        }
+    }
+
+    /// Per-call world answers for the typed natives (`CheckSight`, `CountInv`, …).
+    pub(crate) fn set_call_world(
+        &mut self,
+        sight: Vec<(ObjHandle, bool)>,
+        melee_ok: bool,
+        self_target: ObjHandle,
+        inventory: Vec<(ObjHandle, Vec<(String, i32, i32)>)>,
+    ) {
+        if let Some(vm) = self.vm.as_mut() {
+            vm.play.sight = sight;
+            vm.play.melee_ok = melee_ok;
+            vm.play.self_target = self_target;
+            vm.play.inventory = inventory;
+        }
+    }
+
+    fn cached_field(&self, vm: &Zvm, object: ObjHandle, name: &'static str) -> Option<(u8, usize)> {
+        let class_id = match vm.heap.get(object)? {
+            ObjKind::Object { class_id, .. } => *class_id,
+            _ => return None,
+        };
+        if let Some(hit) = self.field_cache.borrow().get(&(class_id, name)) {
+            return *hit;
+        }
+        let found = walk_field(vm, object, name);
+        self.field_cache.borrow_mut().insert((class_id, name), found);
+        found
     }
 
     /// True when `Class.Method` exists on that class (case-insensitive).
@@ -208,6 +262,67 @@ impl ZscriptRuntime {
             cur = layout.parent.clone();
         }
         None
+    }
+
+    /// Play-scope natives queued since the last drain (UZ3 / UZ7), with their
+    /// receivers resolved to playsim actor indexes where they are actors.
+    pub fn take_native_ops(&mut self) -> Vec<(Option<u32>, room_zvm::ZsNativeOp)> {
+        let ops = self
+            .vm
+            .as_mut()
+            .map(|vm| std::mem::take(&mut vm.play.native_ops))
+            .unwrap_or_default();
+        ops.into_iter()
+            .map(|op| {
+                let actor = self
+                    .actor_fields
+                    .iter()
+                    .find(|(_, h)| **h == op.recv)
+                    .map(|(&id, _)| id);
+                (actor, op)
+            })
+            .collect()
+    }
+
+    /// Whether the program calls `CheckProximity` (the playsim then fills
+    /// the per-tic actor census).
+    #[must_use]
+    pub fn needs_census(&self) -> bool {
+        self.program.as_ref().is_some_and(|p| {
+            p.native_imports
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case("actor.checkproximity"))
+        })
+    }
+
+    /// Per-tic `(lowercase class, position)` of live actors.
+    pub fn set_census(&mut self, census: Vec<(String, [f64; 3])>) {
+        if let Some(play) = self.play_mut() {
+            play.census = census;
+        }
+    }
+
+    /// Class tables for `GetReplacement`, `GetParentClass`, `CheckProximity`
+    /// and the weapon slots for `SlotSize` / `HasWeaponsInSlot`.
+    pub fn set_class_tables(
+        &mut self,
+        replacements: BTreeMap<String, String>,
+        parents: BTreeMap<String, String>,
+        weapon_slots: Vec<Vec<String>>,
+    ) {
+        if let Some(play) = self.play_mut() {
+            play.replacements = replacements;
+            play.class_parents = parents;
+            play.weapon_slots = weapon_slots;
+        }
+    }
+
+    /// `LevelLocals` sky / fog natives queued since the last drain.
+    pub fn take_level_ops(&mut self) -> Vec<room_zvm::ZsLevelOp> {
+        self.vm
+            .as_mut()
+            .map(|vm| std::mem::take(&mut vm.play.level_ops))
+            .unwrap_or_default()
     }
 
     /// Actor natives queued by the last call (`A_Look`, `LineAttack`, …).
@@ -559,6 +674,13 @@ impl ZscriptRuntime {
         self.vm.as_mut().map(|vm| &mut vm.play)
     }
 
+    /// Player number a `players[n].mo` handle stands for (`players.at`
+    /// makes a fresh VM object per access, not an actor mirror).
+    #[must_use]
+    pub fn player_of_cookie(&self, cookie: i64) -> Option<i32> {
+        self.vm.as_ref()?.play.mo_player.get(&cookie).copied()
+    }
+
     /// Drop pending grants (tests that start from a known host).
     pub fn clear_grants(&mut self) {
         if let Some(play) = self.play_mut() {
@@ -871,9 +993,138 @@ impl ZscriptRuntime {
                 .get(cid as usize)
                 .cloned()
                 .unwrap_or_default();
-            vm.heap.new_object(cid, layout.n_i, layout.n_a, layout.n_s)
+            vm.heap
+                .new_object_f(cid, layout.n_i, layout.n_a, layout.n_s, layout.n_f)
         });
         Some(h)
+    }
+
+    /// Copy the playsim actor's native fields into its script object before a
+    /// call, so `pos`, `vel`, `angle`, `health`, `target`, … read live values.
+    pub(crate) fn write_actor_fields(&mut self, snap: &ActorFieldSnap) -> Option<ObjHandle> {
+        let h = self.ensure_actor_object(snap.id.0, &snap.class)?;
+        self.actor_gen.insert(snap.id.0, snap.id.1);
+        let mut ptrs = Vec::new();
+        for (name, other) in &snap.ptrs {
+            let handle = match other {
+                Some((index, generation, class)) => {
+                    self.actor_gen.insert(*index, *generation);
+                    self.ensure_actor_object(*index, class).unwrap_or(ObjHandle::NULL)
+                }
+                None => ObjHandle::NULL,
+            };
+            ptrs.push((*name, handle));
+        }
+        let slots: Vec<_> = {
+            let vm = self.vm.as_ref()?;
+            let floats: Vec<_> = snap
+                .floats
+                .iter()
+                .map(|(n, v)| (self.cached_field(vm, h, n), *v))
+                .collect();
+            let ints: Vec<_> = snap
+                .ints
+                .iter()
+                .map(|(n, v)| (self.cached_field(vm, h, n), *v))
+                .collect();
+            let objs: Vec<_> = ptrs
+                .iter()
+                .map(|(n, v)| (self.cached_field(vm, h, n), *v))
+                .collect();
+            vec![(floats, ints, objs)]
+        };
+        let vm = self.vm.as_mut()?;
+        let Some(ObjKind::Object {
+            fields_i,
+            fields_a,
+            fields_f,
+            ..
+        }) = vm.heap.get_mut(h)
+        else {
+            return Some(h);
+        };
+        for (floats, ints, objs) in slots {
+            for (slot, v) in floats {
+                if let Some((3, index)) = slot {
+                    if fields_f.len() <= index {
+                        fields_f.resize(index + 1, 0.0);
+                    }
+                    fields_f[index] = v;
+                }
+            }
+            for (slot, v) in ints {
+                if let Some((0, index)) = slot
+                    && let Some(cell) = fields_i.get_mut(index)
+                {
+                    *cell = v;
+                }
+            }
+            for (slot, v) in objs {
+                if let Some((1, index)) = slot
+                    && let Some(cell) = fields_a.get_mut(index)
+                {
+                    *cell = v;
+                }
+            }
+        }
+        Some(h)
+    }
+
+    /// Read the native fields back after a call. Pointers come back as
+    /// `(index, generation)` of the actor whose script object they hold.
+    pub(crate) fn read_actor_fields(&self, h: ObjHandle, like: &ActorFieldSnap) -> ActorFieldSnap {
+        let mut out = ActorFieldSnap {
+            id: like.id,
+            class: like.class.clone(),
+            ..ActorFieldSnap::default()
+        };
+        let Some(vm) = self.vm.as_ref() else {
+            return out;
+        };
+        let Some(ObjKind::Object {
+            fields_i,
+            fields_a,
+            fields_f,
+            ..
+        }) = vm.heap.get(h)
+        else {
+            return like.clone();
+        };
+        for (name, old) in &like.floats {
+            let v = match self.cached_field(vm, h, name) {
+                Some((3, index)) => fields_f.get(index).copied().unwrap_or(0.0),
+                _ => *old,
+            };
+            out.floats.push((*name, v));
+        }
+        for (name, old) in &like.ints {
+            let v = match self.cached_field(vm, h, name) {
+                Some((0, index)) => fields_i.get(index).copied().unwrap_or(*old),
+                _ => *old,
+            };
+            out.ints.push((*name, v));
+        }
+        for (name, old) in &like.ptrs {
+            let got = match self.cached_field(vm, h, name) {
+                Some((1, index)) => fields_a.get(index).copied(),
+                _ => None,
+            };
+            let value = match got {
+                None => old.clone(),
+                Some(handle) if handle.is_null() => None,
+                Some(handle) => self
+                    .actor_fields
+                    .iter()
+                    .find(|(_, obj)| **obj == handle)
+                    .and_then(|(&index, _)| {
+                        let generation = *self.actor_gen.get(&index)?;
+                        Some((index, generation, String::new()))
+                    })
+                    .or_else(|| old.clone()),
+            };
+            out.ptrs.push((*name, value));
+        }
+        out
     }
 
     /// Run `Class.ModifyDamage` for an inventory item (ZS4b).
@@ -1107,6 +1358,30 @@ impl ZscriptRuntime {
     }
 }
 
+/// Slots of the UZDoom `Actor` / `Inventory` native fields in this program.
+fn actor_slots_of(program: &CompiledProgram) -> room_zvm::ActorSlots {
+    let layout = |name: &str| program.classes.iter().find(|c| c.name.eq_ignore_ascii_case(name));
+    let field = |class: &str, name: &str, bank: u8| {
+        layout(class)
+            .and_then(|l| l.fields.get(name).copied())
+            .filter(|(b, _)| *b == bank)
+            .map(|(_, i)| usize::from(i))
+    };
+    room_zvm::ActorSlots {
+        pos: field("Actor", "pos", 3),
+        vel: field("Actor", "vel", 3),
+        angle: field("Actor", "angle", 3),
+        pitch: field("Actor", "pitch", 3),
+        radius: field("Actor", "radius", 3),
+        height: field("Actor", "height", 3),
+        amount: field("Inventory", "amount", 0),
+        max_amount: field("Inventory", "maxamount", 0),
+        target: field("Actor", "target", 1),
+        master: field("Actor", "master", 1),
+        tracer: field("Actor", "tracer", 1),
+    }
+}
+
 fn call_handler_with_event(
     vm: &mut Zvm,
     name: &str,
@@ -1133,7 +1408,7 @@ fn new_typed_object(vm: &mut Zvm, type_name: &str) -> ObjHandle {
         .cloned()
         .unwrap_or_default();
     vm.heap
-        .new_object(class_id, layout.n_i, layout.n_a, layout.n_s)
+        .new_object_f(class_id, layout.n_i, layout.n_a, layout.n_s, layout.n_f)
 }
 
 fn typed_field(vm: &Zvm, object: ObjHandle, name: &str) -> Option<(u8, usize)> {
@@ -1144,6 +1419,44 @@ fn typed_field(vm: &Zvm, object: ObjHandle, name: &str) -> Option<(u8, usize)> {
     let layout = vm.program.classes.get(class_id as usize)?;
     let (bank, index) = layout.fields.get(&name.to_ascii_lowercase()).copied()?;
     Some((bank, usize::from(index)))
+}
+
+/// `(bank, slot)` of `name` on the object's class or an ancestor. A vector
+/// component is spelled `pos.y`.
+fn walk_field(vm: &Zvm, object: ObjHandle, name: &str) -> Option<(u8, usize)> {
+    let class_id = match vm.heap.get(object)? {
+        ObjKind::Object { class_id, .. } => *class_id,
+        _ => return None,
+    };
+    let (base, offset) = match name.split_once('.') {
+        Some((base, axis)) => (
+            base,
+            match axis {
+                "x" => 0,
+                "y" => 1,
+                "z" => 2,
+                _ => 3,
+            },
+        ),
+        None => (name, 0),
+    };
+    let key = base.to_ascii_lowercase();
+    let mut layout = vm.program.classes.get(class_id as usize)?;
+    for _ in 0..64 {
+        if let Some(&(bank, index)) = layout.fields.get(&key) {
+            return Some((bank, usize::from(index) + offset));
+        }
+        if layout.parent.is_empty() {
+            return None;
+        }
+        let parent = layout.parent.clone();
+        layout = vm
+            .program
+            .classes
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(&parent))?;
+    }
+    None
 }
 
 fn set_typed_int_field(vm: &mut Zvm, object: ObjHandle, name: &str, value: i64) {

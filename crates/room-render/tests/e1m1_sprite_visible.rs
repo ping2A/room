@@ -121,6 +121,7 @@ fn e1m1_zombie_sprite_visible_offscreen() {
             orient: room_render::SpriteOrient::Billboard,
             additive: false,
             roll: 0.0,
+            fx: Default::default(),
         }],
         &camera,
     );
@@ -371,6 +372,7 @@ fn e1m1_zombie_visible_through_open_computer_door() {
         orient: room_render::SpriteOrient::Billboard,
         additive: false,
         roll: 0.0,
+        fx: Default::default(),
     }];
     let scene = room_render::build_scene_with_sky_ex(&map, &camera, Some(&sprites), None, None);
     eprintln!(

@@ -161,6 +161,10 @@ pub struct ViewUniforms {
     /// `x` = lightmap blend strength (0 = off), `y` = output gain, `z` = sRGB
     /// encode, `w` = inverse colormap (invulnerability).
     pub lightmap_params: [f32; 4],
+    /// UZDoom 5.0 thick fog: `x` = `ThickFogDistance` (0 = off), `y` =
+    /// `ThickFogMultiplier`; past the distance the fog distance grows by
+    /// `multiplier × (d − distance)` (`main.fp`). `zw` unused.
+    pub fog_params: [f32; 4],
 }
 
 #[cfg(test)]

@@ -5244,6 +5244,7 @@ dependencies = [
  "room-sim",
  "room-testkit",
  "room-vfs",
+ "room-zscript",
  "room-zvm",
 ]
 

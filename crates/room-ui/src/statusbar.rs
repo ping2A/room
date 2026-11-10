@@ -2,7 +2,50 @@
 
 use crate::doom_text::{draw_stt_percent, draw_stt_string, draw_stt_string_right, draw_stys_num};
 use crate::draw::{Rect, Rgba, UiDrawList, Vec2};
-use crate::hud::HudState;
+use crate::hud::{HudInvItem, HudState};
+
+/// Boxes on the inventory bar (UZDoom `DoomStatusBar` draws 7).
+const INV_BOXES: usize = 7;
+/// Box size (UZDoom's default when `ARTIBOX` is missing).
+const INV_BOX: f32 = 32.0;
+
+/// An icon with its centre (`DI_ITEM_CENTER`) or bottom centre on `(x, y)`.
+fn inv_icon(list: &mut UiDrawList, item: &HudInvItem, x: f32, y: f32, bottom: bool) {
+    let top = if bottom { y - item.h } else { y - item.h / 2.0 };
+    list.patch(&item.icon, Vec2::new(x - item.w / 2.0, top), Vec2::new(0.0, 0.0));
+}
+
+/// The open inventory bar from `(x, y)`: seven boxes, the selected one framed,
+/// counts above 1 in small digits (UZDoom `BaseStatusBar.DrawInventoryBar`).
+fn draw_inventory_bar(list: &mut UiDrawList, hud: &HudState, x: f32, y: f32) {
+    if hud.inv_bar.is_empty() {
+        return;
+    }
+    // Scroll so the selection is visible (`ValidateInvFirst`).
+    let sel = hud.inv_sel.unwrap_or(0);
+    let first = sel.saturating_sub(INV_BOXES - 1).min(hud.inv_bar.len().saturating_sub(INV_BOXES));
+    let first = if sel < first { sel } else { first };
+    list.fill(
+        Rect::new(x, y, INV_BOX * INV_BOXES as f32, INV_BOX),
+        Rgba::new(0.0, 0.0, 0.0, 0.5),
+    );
+    for (i, item) in hud.inv_bar.iter().enumerate().skip(first).take(INV_BOXES) {
+        let bx = x + INV_BOX * (i - first) as f32;
+        if Some(i) == hud.inv_sel {
+            let gold = Rgba::new(0.85, 0.7, 0.2, 1.0);
+            list.fill(Rect::new(bx, y, INV_BOX, 1.0), gold);
+            list.fill(Rect::new(bx, y + INV_BOX - 1.0, INV_BOX, 1.0), gold);
+            list.fill(Rect::new(bx, y, 1.0, INV_BOX), gold);
+            list.fill(Rect::new(bx + INV_BOX - 1.0, y, 1.0, INV_BOX), gold);
+        }
+        if !item.icon.is_empty() {
+            inv_icon(list, item, bx + INV_BOX / 2.0, y + INV_BOX / 2.0, false);
+        }
+        if item.amount > 1 {
+            draw_stys_num(list, bx + INV_BOX - 2.0, y + INV_BOX - 8.0, item.amount);
+        }
+    }
+}
 
 /// Status bar drawer.
 pub trait StatusBar {
@@ -60,6 +103,15 @@ impl StatusBar for DoomStatusBar {
                     kx -= 10.0;
                 }
             }
+            if hud.inv_bar_open {
+                // Centred on the bottom edge.
+                draw_inventory_bar(list, hud, 160.0 - INV_BOX * INV_BOXES as f32 / 2.0, 168.0);
+            } else if let Some(item) = hud.inv_sel.and_then(|i| hud.inv_bar.get(i)) {
+                inv_icon(list, item, 306.0, 150.0, true);
+                if item.amount > 1 {
+                    draw_stys_num(list, 318.0, 144.0, item.amount);
+                }
+            }
             return;
         }
 
@@ -98,7 +150,14 @@ impl StatusBar for DoomStatusBar {
         if let Some(n) = hud.face_back {
             list.picture(&format!("STFB{}", n % 4), Vec2::new(143.0, 168.0));
         }
-        if !hud.face.is_empty() {
+        // The selected inventory item takes the face's place (UZDoom
+        // `DoomStatusBar.DrawMainBar`).
+        if let Some(item) = hud.inv_sel.and_then(|i| hud.inv_bar.get(i)) {
+            inv_icon(list, item, 160.0, 198.0, true);
+            if item.amount > 1 {
+                draw_stys_num(list, 175.0, 192.0, item.amount);
+            }
+        } else if !hud.face.is_empty() {
             list.picture(&hud.face, Vec2::new(143.0, 168.0));
         }
         draw_stt_percent(list, 221.0, 171.0, hud.armor.clamp(0, 999), 1.0);
@@ -111,6 +170,9 @@ impl StatusBar for DoomStatusBar {
             let y = 173.0 + 6.0 * row as f32;
             draw_stys_num(list, 288.0, y, *count);
             draw_stys_num(list, 314.0, y, *max);
+        }
+        if hud.inv_bar_open {
+            draw_inventory_bar(list, hud, 48.0, 169.0);
         }
     }
 }
@@ -194,6 +256,51 @@ mod tests {
 
     use super::*;
     use crate::draw::DrawCmd;
+
+    fn at(list: &UiDrawList, name: &str) -> Vec<(f32, f32)> {
+        list.cmds
+            .iter()
+            .filter_map(|c| match c {
+                DrawCmd::Patch { name: n, pos, .. } if n == name => Some((pos.x, pos.y)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn inventory_bar_and_selected_item_on_the_classic_bar() {
+        let bar = DoomStatusBar;
+        let mut hud = HudState::doom_default();
+        hud.face = "STFST01".into();
+        let item = |icon: &str, amount| HudInvItem {
+            icon: icon.into(),
+            amount,
+            w: 20.0,
+            h: 10.0,
+        };
+        hud.inv_bar = vec![item("ARTIPTN2", 3), item("ARTITRCH", 1)];
+        hud.inv_sel = Some(1);
+        let mut list = UiDrawList::new();
+        bar.draw(&hud, &mut list);
+        // Closed: the selection replaces the face, bottom-centred on (160, 198).
+        assert_eq!(at(&list, "ARTITRCH"), vec![(150.0, 188.0)]);
+        assert!(at(&list, "STFST01").is_empty());
+        assert!(at(&list, "ARTIPTN2").is_empty());
+        // Open: seven boxes from (48, 169), icons centred in theirs.
+        hud.inv_bar_open = true;
+        let mut list = UiDrawList::new();
+        bar.draw(&hud, &mut list);
+        assert_eq!(at(&list, "ARTIPTN2"), vec![(54.0, 180.0)]);
+        assert!(at(&list, "ARTITRCH").contains(&(86.0, 180.0)));
+        // Amount 3 in small digits at the box's bottom right.
+        assert!(at(&list, "STYSNUM3").contains(&(74.0, 193.0)));
+        // No selection: the face is back.
+        hud.inv_sel = None;
+        hud.inv_bar.clear();
+        let mut list = UiDrawList::new();
+        bar.draw(&hud, &mut list);
+        assert_eq!(at(&list, "STFST01").len(), 1);
+    }
 
     #[test]
     fn default_hud_is_classic_stbar() {

@@ -1,8 +1,69 @@
 //! HUD / status-bar input snapshot (from SimView).
 
+/// One extra weapon layer (`A_Overlay` ids other than 1, 2 and the flash).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HudLayer {
+    /// Layer id: under the gun when below 1, over it otherwise.
+    pub id: i32,
+    /// Patch lump.
+    pub patch: String,
+    /// Offset.
+    pub ofs_x: f32,
+    /// Offset.
+    pub ofs_y: f32,
+    /// Alpha.
+    pub alpha: f32,
+    /// Scale.
+    pub scale_x: f32,
+    /// Scale.
+    pub scale_y: f32,
+    /// Left-right flip.
+    pub flip: bool,
+    /// Offset and sway mirrored.
+    pub mirror: bool,
+    /// Rotation in degrees.
+    pub angle: f32,
+    /// Pivot.
+    pub pivot_x: f32,
+    /// Pivot.
+    pub pivot_y: f32,
+    /// Pivot is a fraction.
+    pub pivot_percent: bool,
+    /// Adds weapon sway.
+    pub add_bob: bool,
+    /// Adds the gun offset.
+    pub add_weapon: bool,
+    /// Interpolates between tics.
+    pub interpolate: bool,
+    /// Spectre fuzz.
+    pub fuzz: bool,
+    /// Fullbright.
+    pub bright: bool,
+    /// Translation tint.
+    pub tint: (f32, f32, f32),
+    /// `A_OverlayVertexOffset` corners (top-left, bottom-left, top-right,
+    /// bottom-right).
+    pub vertex: [(f32, f32); 4],
+}
+
+/// One inventory-bar item for the native bar.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HudInvItem {
+    /// Icon lump.
+    pub icon: String,
+    /// Amount carried.
+    pub amount: i32,
+    /// Icon size, for centring (0 when the lump is missing).
+    pub w: f32,
+    /// Icon height.
+    pub h: f32,
+}
+
 /// Per-frame HUD numbers the status bar needs.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HudState {
+    /// Extra weapon layers in id order.
+    pub layers: Vec<HudLayer>,
     /// Current health.
     pub health: i32,
     /// Armor points.
@@ -95,6 +156,16 @@ pub struct HudState {
     pub weapon_pivot_y: f32,
     /// Weapon-layer rotation in degrees. 0 until `A_OverlayRotate`.
     pub weapon_angle: f32,
+    /// Inventory-bar items in bar order (`+INVENTORY.INVBAR`).
+    pub inv_bar: Vec<HudInvItem>,
+    /// Index of the selected item in [`Self::inv_bar`].
+    pub inv_sel: Option<usize>,
+    /// The bar is open after `invnext` / `invprev`.
+    pub inv_bar_open: bool,
+    /// Weapon-layer `A_OverlayVertexOffset` corners.
+    pub weapon_vertex: [(f32, f32); 4],
+    /// Layer-2 `A_OverlayVertexOffset` corners.
+    pub overlay_vertex: [(f32, f32); 4],
     /// Ready weapon class (`MODELDEF` `ViewModelFOV`).
     pub weapon_class: String,
     /// Pawn display name (SBARINFO `PlayerClass`).
@@ -155,6 +226,7 @@ impl HudState {
     #[must_use]
     pub fn doom_default() -> Self {
         Self {
+            layers: Vec::new(),
             health: 100,
             armor: 0,
             ammo: 50,
@@ -201,6 +273,11 @@ impl HudState {
             weapon_pivot_x: 0.5,
             weapon_pivot_y: 0.5,
             weapon_angle: 0.0,
+            inv_bar: Vec::new(),
+            inv_sel: None,
+            inv_bar_open: false,
+            weapon_vertex: [(0.0, 0.0); 4],
+            overlay_vertex: [(0.0, 0.0); 4],
             weapon_class: String::new(),
             player_class: String::new(),
             armor_type: String::new(),
@@ -233,6 +310,7 @@ impl HudState {
         fullscreen: bool,
     ) -> Self {
         Self {
+            layers: Vec::new(),
             health,
             armor,
             ammo,
@@ -279,6 +357,11 @@ impl HudState {
             weapon_pivot_x: 0.5,
             weapon_pivot_y: 0.5,
             weapon_angle: 0.0,
+            inv_bar: Vec::new(),
+            inv_sel: None,
+            inv_bar_open: false,
+            weapon_vertex: [(0.0, 0.0); 4],
+            overlay_vertex: [(0.0, 0.0); 4],
             weapon_class: String::new(),
             player_class: String::new(),
             armor_type: String::new(),

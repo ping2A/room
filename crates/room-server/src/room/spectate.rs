@@ -1,7 +1,9 @@
 //! Spectator support: compact log of every released TIC_FRAME so a watcher
 //! joining mid-game can replay the match from tic 0.
 
-use room_proto::{FTR2_MAGIC, MAX_TIC_BATCH_FRAMES, MAX_TIC_BATCH_PAYLOAD, MSG_TIC_BATCH};
+use room_proto::{
+    FTR2_MAGIC, MAX_TIC_BATCH_FRAMES, MAX_TIC_BATCH_PAYLOAD, MSG_TIC_BATCH, MSG_TIC_BATCH_WIDE,
+};
 
 /// Hard cap on logged frame bytes per room (~5 h of 2-player play).
 pub const MAX_FRAME_LOG_BYTES: usize = 48 << 20;
@@ -16,6 +18,8 @@ pub struct FrameLog {
     offsets: Vec<u32>,
     full: bool,
     cap: usize,
+    /// Frames are v3 (64-bit seat mask); a room never mixes layouts.
+    wide: bool,
 }
 
 impl FrameLog {
@@ -34,8 +38,19 @@ impl FrameLog {
         }
     }
 
-    /// Append one frame body; once full the log freezes (returns `false`).
+    /// Append one v2 frame body; once full the log freezes (returns `false`).
     pub fn push(&mut self, body: &[u8]) -> bool {
+        self.push_layout(body, false)
+    }
+
+    /// Append one frame body in the v2 or v3 (`wide`) layout. The first
+    /// frame sets the log's layout; a frame in the other layout is refused.
+    pub fn push_layout(&mut self, body: &[u8], wide: bool) -> bool {
+        if self.offsets.is_empty() {
+            self.wide = wide;
+        } else if wide != self.wide {
+            return false;
+        }
         if self.full {
             return false;
         }
@@ -82,7 +97,7 @@ impl FrameLog {
         }
         let mut out = Vec::with_capacity(4096);
         out.extend_from_slice(FTR2_MAGIC);
-        out.push(MSG_TIC_BATCH);
+        out.push(if self.wide { MSG_TIC_BATCH_WIDE } else { MSG_TIC_BATCH });
         out.extend_from_slice(&[0, 0]);
         let mut i = from;
         let mut n: u16 = 0;
@@ -119,6 +134,30 @@ mod tests {
                 NetTicCmd::default(),
             ],
         }
+    }
+
+    #[test]
+    fn a_64_seat_room_logs_and_replays_wide_frames() {
+        let mut log = FrameLog::new();
+        for t in 0..300 {
+            let f = TicFrameMsg {
+                tic: t,
+                seat_mask: u64::MAX,
+                cmds: vec![NetTicCmd::default(); 64],
+            };
+            assert!(log.push_layout(&encode_tic_frame(&f), true));
+        }
+        let mut cursor = 0;
+        let mut seen = 0;
+        while let Some((pkt, next)) = log.batch(cursor) {
+            let BinaryMsg::TicBatch(frames) = parse_binary(&pkt).unwrap() else {
+                panic!("not a batch");
+            };
+            assert!(frames.iter().all(|f| f.cmds.len() == 64));
+            seen += frames.len();
+            cursor = next;
+        }
+        assert_eq!(seen, 300);
     }
 
     #[test]

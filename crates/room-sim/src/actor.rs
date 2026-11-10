@@ -46,6 +46,149 @@ pub struct ActorModelState {
     pub animation_start: u32,
     /// `MDL_*` flags from `A_SetModelFlag` (`None` = MODELDEF's).
     pub flags: Option<u32>,
+    /// Bone overrides from `SetBoneRotation` / `…Translation` / `…Scaling`
+    /// (UZDoom 4.15 bone API), applied on top of the animated pose.
+    pub bones: Vec<BoneOffset>,
+    /// Animation playing before the last `A_SetAnimation`, its start tic and
+    /// the tic of the switch: the renderer blends from it over the new
+    /// animation's interpolation tics.
+    pub prev_animation: Option<((String, f64, i32, i32, i32, i32, i32), u32, u32)>,
+    /// `A_ChangeModel` animation source: (animation index, path, file); the
+    /// IQM whose animations drive the model (`None` = the model's own).
+    pub animation_file: Option<(i32, String, String)>,
+}
+
+/// Which part of a bone an override changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BonePart {
+    /// Rotation quaternion `(x, y, z, w)`.
+    Rotation,
+    /// Translation `(x, y, z)`.
+    Translation,
+    /// Scaling `(x, y, z)`.
+    Scaling,
+}
+
+/// One component of a bone override, as UZDoom's `BoneOverrideComponent`:
+/// `mode` 0 = none, 1 = `SB_ADD`, 2 = `SB_REPLACE`; the renderer eases from
+/// `prev` / `prev_mode` to `cur` over `interp_len` tics after `switch_tic`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BoneComponent {
+    /// Mode.
+    pub mode: i32,
+    /// Mode eased out of.
+    pub prev_mode: i32,
+    /// Tic of the last set.
+    pub switch_tic: f64,
+    /// Ease length in tics.
+    pub interp_len: f64,
+    /// Value eased out of.
+    pub prev: [f64; 4],
+    /// Value.
+    pub cur: [f64; 4],
+}
+
+fn default_value(part: BonePart) -> [f64; 4] {
+    match part {
+        BonePart::Rotation => [0.0, 0.0, 0.0, 1.0],
+        BonePart::Translation | BonePart::Scaling => [0.0; 4],
+    }
+}
+
+/// UZDoom `InterpolateQuat` / vector lerp.
+fn lerp_part(part: BonePart, a: [f64; 4], b: [f64; 4], t: f64) -> [f64; 4] {
+    let i = 1.0 - t;
+    if part != BonePart::Rotation {
+        return [a[0] * i + b[0] * t, a[1] * i + b[1] * t, a[2] * i + b[2] * t, 0.0];
+    }
+    let mut r = [a[0] * i, a[1] * i, a[2] * i, a[3] * i];
+    let dot = r[0] * b[0] * t + r[1] * b[1] * t + r[2] * b[2] * t + r[3] * b[3] * t;
+    if dot < 0.0 {
+        r = [-r[0], -r[1], -r[2], -r[3]];
+    }
+    let q = [r[0] + b[0] * t, r[1] + b[1] * t, r[2] + b[2] * t, r[3] + b[3] * t];
+    let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    if len < 1e-12 {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    [q[0] / len, q[1] / len, q[2] / len, q[3] / len]
+}
+
+impl BoneComponent {
+    /// UZDoom `BoneOverrideComponent::Set`.
+    pub fn set(&mut self, part: BonePart, value: [f64; 4], tic: f64, interp_len: f64, mode: i32) {
+        let amt = if self.interp_len > 0.0 {
+            ((tic - self.switch_tic) / self.interp_len).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        self.prev = if self.mode > 0 {
+            lerp_part(part, self.prev, self.cur, amt)
+        } else {
+            default_value(part)
+        };
+        self.prev_mode = if self.mode == 0 && self.prev_mode != 0 && 1.0 - amt > 0.0 {
+            1
+        } else {
+            self.mode
+        };
+        self.cur = if mode == 0 { default_value(part) } else { value };
+        self.switch_tic = tic;
+        self.interp_len = interp_len.max(0.0);
+        self.mode = mode;
+    }
+}
+
+/// Overrides of one bone, by index or by name (`SetNamedBone*`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BoneOffset {
+    /// Bone index (`None` = by name).
+    pub index: Option<i32>,
+    /// Bone name (empty = by index).
+    pub name: String,
+    /// Translation.
+    pub translation: BoneComponent,
+    /// Rotation.
+    pub rotation: BoneComponent,
+    /// Scaling.
+    pub scaling: BoneComponent,
+}
+
+impl ActorModelState {
+    /// `SetBone*` / `SetNamedBone*` at `tic`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_bone(
+        &mut self,
+        index: Option<i32>,
+        name: &str,
+        part: BonePart,
+        value: [f64; 4],
+        tic: f64,
+        interp_len: f64,
+        mode: i32,
+    ) {
+        let pos = self.bones.iter().position(|b| {
+            (index.is_some() && b.index == index) || (!name.is_empty() && b.name.eq_ignore_ascii_case(name))
+        });
+        let slot = match pos {
+            Some(p) => &mut self.bones[p],
+            None => {
+                self.bones.push(BoneOffset {
+                    index,
+                    name: name.to_owned(),
+                    ..BoneOffset::default()
+                });
+                let last = self.bones.len() - 1;
+                &mut self.bones[last]
+            }
+        };
+        let comp = match part {
+            BonePart::Rotation => &mut slot.rotation,
+            BonePart::Translation => &mut slot.translation,
+            BonePart::Scaling => &mut slot.scaling,
+        };
+        comp.set(part, value, tic, interp_len, mode);
+    }
 }
 
 /// Per-actor state for actions that UZDoom keeps on `AActor` and Room did not.
@@ -100,6 +243,7 @@ impl ActorExt {
         };
         Self {
             sprite_rotation: c.stored_f64("spriterotation").unwrap_or(0.0),
+            sprite_angle: c.stored_f64("spriteangle").unwrap_or(0.0),
             visible_angles: pair("visibleangles"),
             visible_pitch: pair("visiblepitch"),
             ..Self::default()
@@ -244,6 +388,8 @@ pub struct Actor {
     pub chase_goal: bool,
     /// Flee from target when set (`APROP_Frightened` / `+FRIGHTENED`).
     pub frightened: bool,
+    /// UZDoom `FastChaseStrafeCount`: tics left of a `CHF_FASTCHASE` strafe.
+    pub fast_chase_strafe: i32,
     /// Thing special (`A_SetSpecial`).
     pub special: u16,
     /// Thing special args (`A_SetArg`).

@@ -24,10 +24,12 @@ pub use duke::{
 pub use error::ProtoError;
 pub use ftr2::{
     BinaryMsg, FTR2_MAGIC, MAX_BINARY_PAYLOAD, MAX_TIC_BATCH_FRAMES, MAX_TIC_BATCH_PAYLOAD,
-    MSG_CHECKSUM, MSG_DUKE_TIC_CMD, MSG_DUKE_TIC_FRAME, MSG_PING, MSG_PONG, MSG_TIC_BATCH,
-    MSG_TIC_CMD, MSG_TIC_FRAME, MSG_VOICE_LEGACY, encode_binary, parse_binary,
+    MAX_WIDE_FRAME_PAYLOAD, MSG_CHECKSUM, MSG_DUKE_TIC_CMD, MSG_DUKE_TIC_FRAME, MSG_PING,
+    MSG_PONG, MSG_TIC_BATCH, MSG_TIC_BATCH_WIDE, MSG_TIC_CMD, MSG_TIC_FRAME, MSG_TIC_FRAME_WIDE,
+    MSG_VOICE_LEGACY, PROTOCOL_VERSION, encode_binary, parse_binary,
 };
 pub use tic::{
-    NetTicCmd, TicChecksum, TicCmdMsg, TicFrameMsg, decode_net_tic_cmd, encode_net_tic_cmd,
-    encode_tic_cmd, encode_tic_frame, parse_tic_checksum, parse_tic_cmd, parse_tic_frame,
+    NetTicCmd, TicChecksum, TicCmdMsg, TicFrameMsg, V2_FRAME_SEATS, decode_net_tic_cmd,
+    encode_net_tic_cmd, encode_tic_cmd, encode_tic_frame, parse_tic_checksum, parse_tic_cmd,
+    parse_tic_frame, parse_tic_frame_wide, tic_frame_is_wide, tic_frame_len,
 };

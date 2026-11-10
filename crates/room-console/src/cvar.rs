@@ -304,6 +304,39 @@ impl CvarStore {
         reg_b(self, "r_softparticles", false);
         reg_b(self, "r_outlines", false);
         reg_b(self, "r_hitflash", false);
+        // UZ12: draw the local player where its unreleased netplay input puts it.
+        reg_b(self, "cl_predict", false);
+        // UZ4: UZDoom's alternative HUD (`shared_hud.cpp` names and defaults).
+        reg_b(self, "hud_althud", false);
+        reg_f(self, "hud_scalefactor", 1.0);
+        reg_b(self, "hud_aspectscale", false);
+        for (name, v) in [
+            ("hud_health_red", 25),
+            ("hud_health_yellow", 50),
+            ("hud_health_green", 100),
+            ("hud_armor_red", 25),
+            ("hud_armor_yellow", 50),
+            ("hud_armor_green", 100),
+            ("hud_ammo_red", 25),
+            ("hud_ammo_yellow", 50),
+            ("hud_ammo_order", 0),
+            ("hud_berserk_health", 1),
+            ("hud_showweapons", 1),
+            ("hud_showammo", 2),
+            ("hud_showtime", 0),
+            ("hud_showtimestat", 0),
+            ("hud_timecolor", 5),
+            ("hud_showlag", 0),
+            ("hud_swaphealtharmor", 0),
+            ("hud_showsecrets", 1),
+            ("hud_showmonsters", 1),
+            ("hud_showitems", 0),
+            ("hud_showstats", 0),
+            ("hud_showscore", 0),
+            ("hud_showangles", 0),
+        ] {
+            reg_i(self, name, v);
+        }
         reg_b(self, "r_colorgrade", false);
         reg_b(self, "r_damagefx", false);
         reg_b(self, "r_menublur", false);
@@ -324,7 +357,10 @@ impl CvarStore {
         reg_b(self, "r_decalfx", false);
         reg_b(self, "r_particlefx", false);
         reg_b(self, "r_dissolve", false);
-        reg_b(self, "r_actorspriteshadow", false);
+        // UZDoom: 0 off, 1 `+CASTSPRITESHADOW` actors, 2 also monsters / players.
+        reg_i(self, "r_actorspriteshadow", 1);
+        reg_f(self, "r_actorspriteshadowalpha", 0.5);
+        reg_f(self, "r_actorspriteshadowfadeheight", 0.0);
         reg_b(self, "r_autoexposure", false);
         reg_b(self, "r_powerupfx", false);
         reg_b(self, "r_underwaterfx", false);

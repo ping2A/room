@@ -449,10 +449,85 @@ mod browser {
         Ok(())
     }
 
-    /// Mount a PWAD (e.g. a WASM mod) after the IWAD on single-player starts.
+    /// Mount a PWAD / PK3 / PK7 / ZIP (a WASM mod, a content pack or a user
+    /// file) after the IWAD on single-player starts. A second add under the
+    /// same name replaces the first in place, so reloading a file keeps its
+    /// load order.
     #[wasm_bindgen(js_name = roomAddPwad)]
     pub fn room_add_pwad(name: &str, data: &[u8]) {
-        PWADS.with(|p| p.borrow_mut().push((name.to_owned(), data.to_vec())));
+        PWADS.with(|p| {
+            let mut list = p.borrow_mut();
+            if let Some(slot) = list.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
+                slot.1 = data.to_vec();
+            } else {
+                list.push((name.to_owned(), data.to_vec()));
+            }
+        });
+    }
+
+    /// Unmount the PWAD added as `name` (from the next start). Returns whether
+    /// it was mounted.
+    #[wasm_bindgen(js_name = roomRemovePwad)]
+    pub fn room_remove_pwad(name: &str) -> bool {
+        PWADS.with(|p| {
+            let mut list = p.borrow_mut();
+            let before = list.len();
+            list.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
+            list.len() != before
+        })
+    }
+
+    /// Maps of the running single-player game as JSON
+    /// `[{"name":"MAP01","title":"Entryway"}, …]` (`[]` when none is running).
+    #[wasm_bindgen(js_name = roomMapList)]
+    pub fn room_map_list() -> String {
+        let list = APP.with(|app| {
+            let app = app.borrow();
+            let state = app.as_ref()?;
+            let s = state.try_borrow().ok()?;
+            match &s.mode {
+                Mode::Play(play) => Some(play.map_list()),
+                _ => None,
+            }
+        })
+        .unwrap_or_default();
+        let rows: Vec<serde_json::Value> = list
+            .into_iter()
+            .map(|(name, title)| serde_json::json!({ "name": name, "title": title }))
+            .collect();
+        serde_json::Value::Array(rows).to_string()
+    }
+
+    /// Map being played (`""` outside a single-player game).
+    #[wasm_bindgen(js_name = roomCurrentMap)]
+    pub fn room_current_map() -> String {
+        APP.with(|app| {
+            let app = app.borrow();
+            let state = app.as_ref()?;
+            let s = state.try_borrow().ok()?;
+            match &s.mode {
+                Mode::Play(play) => Some(play.current_map_name()),
+                _ => None,
+            }
+        })
+        .unwrap_or_default()
+    }
+
+    /// Names of the mounted PWADs, in load order.
+    #[wasm_bindgen(js_name = roomPwadNames)]
+    pub fn room_pwad_names() -> Vec<String> {
+        PWADS.with(|p| p.borrow().iter().map(|(n, _)| n.clone()).collect())
+    }
+
+    /// Whether `data` is a resource archive Room can mount as a PWAD: a
+    /// `PWAD` / `IWAD` WAD, or a ZIP-based PK3 / PK7 / IPK3 / PKE.
+    #[wasm_bindgen(js_name = roomIsResourceArchive)]
+    pub fn room_is_resource_archive(data: &[u8]) -> bool {
+        data.len() >= 4
+            && (&data[..4] == b"PWAD"
+                || &data[..4] == b"IWAD"
+                || &data[..4] == b"PK\x03\x04"
+                || &data[..4] == b"7z\xbc\xaf")
     }
 
     /// Override the root CON script used by browser native Duke sessions.
@@ -770,7 +845,7 @@ mod browser {
         let players = room_url_param("players")
             .and_then(|s| s.parse::<u8>().ok())
             .unwrap_or(2)
-            .clamp(2, 8);
+            .clamp(2, 64);
         // index.html refuses to load the IWAD for coop until a callsign is set.
         let Some(name) = room_url_param("name")
             .map(|s| s.trim().to_owned())
@@ -950,6 +1025,12 @@ mod browser {
 
     fn enter_play_mode(state: &Shared, mut play: PlaySession) -> Result<(), JsValue> {
         input_hub::set_duke_mode(false);
+        // Sound environments (`snd_reverb`, `snd_waterreverb`, both on by
+        // default); `?reverb=0` / `?waterreverb=0` turn them off.
+        play.set_reverb(
+            room_url_param("reverb").is_none_or(|v| v != "0"),
+            room_url_param("waterreverb").is_none_or(|v| v != "0"),
+        );
         {
             let mut s = state.borrow_mut();
             play.preload_materials(&s.gpu.device, &s.gpu.queue);
@@ -1703,6 +1784,8 @@ mod browser {
             }
         };
         play.attach_net(net);
+        // Client prediction of the local view (`docs/38`); `?predict=0` turns it off.
+        play.set_predict(room_url_param("predict").is_none_or(|v| v != "0"));
         stop_lobby_pump();
         hide_lobby_overlay();
         enter_play_mode(state, play)
@@ -2733,6 +2816,15 @@ mod browser {
         };
         s.camera.eye = eye;
         s.camera.forward = forward;
+        // `SetViewPos(…, VPSF_ORTHOGRAPHIC)`: orthographic projection.
+        s.camera.ortho = match &s.mode {
+            Mode::Play(play)
+            | Mode::Lobby {
+                prepared: Some(play),
+                ..
+            } => play.view_ortho(),
+            _ => None,
+        };
         {
             let FrameState { gpu, mode, .. } = &mut *s;
             match mode {
@@ -2919,6 +3011,8 @@ mod browser {
         };
         s.pass.inverse_colormap = inverse_colormap;
         let mut voxel_uploads = Vec::new();
+        let mut particle_uploads = Vec::new();
+        let particle_stretch = s.render_settings.particle_fx;
         let scene: SceneLists = match &mut s.mode {
             Mode::Demo { map, .. } => build_scene_with_sky(map, cam, None, None),
             Mode::Lobby {
@@ -2940,6 +3034,8 @@ mod browser {
                 lists.dyn_lights = play.collect_dyn_lights();
                 room_render::apply_dyn_lights(&mut lists);
                 voxel_uploads = play.append_voxel_poses(&mut lists);
+                play.append_particles(&mut lists, cam, particle_stretch);
+                particle_uploads = play.particle_texture_uploads();
                 lists
             }
             Mode::Lobby { demo, .. } => build_scene_with_sky(demo, cam, None, None),
@@ -2954,6 +3050,17 @@ mod browser {
             } = mode
             {
                 play.upload_voxel_palettes(gpu, &voxel_uploads);
+            }
+        }
+        if !particle_uploads.is_empty() {
+            let FrameState { gpu, mode, .. } = &mut *s;
+            if let Mode::Play(play)
+            | Mode::Lobby {
+                prepared: Some(play),
+                ..
+            } = mode
+            {
+                play.upload_particle_textures(gpu, &particle_uploads);
             }
         }
 

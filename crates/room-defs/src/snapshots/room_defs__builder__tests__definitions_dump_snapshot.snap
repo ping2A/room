@@ -31,7 +31,9 @@ Definitions {
         episodes: [],
         clusters: {},
         skills: [],
+        damage_types: {},
         event_handlers: [],
+        statusbar_class: None,
     },
     sounds: SoundRegistry {
         sounds: {
@@ -46,6 +48,7 @@ Definitions {
         map_music: {},
         rolloffs: {},
         pitchshifts: {},
+        player_sounds: {},
         warnings: [],
     },
     sndseq: SoundSeqRegistry {

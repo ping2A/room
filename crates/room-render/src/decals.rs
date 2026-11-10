@@ -392,6 +392,7 @@ pub fn append_decals(
                     orient: crate::sprites::SpriteOrient::Flat { yaw },
                     additive: false,
                     roll: 0.0,
+                    fx: Default::default(),
                 },
                 camera.forward,
             );
@@ -400,6 +401,7 @@ pub fn append_decals(
                 name: d.name.clone(),
                 start,
                 count: 6,
+                flags: 0,
             });
             continue;
         }
@@ -419,6 +421,7 @@ pub fn append_decals(
                 orient: crate::sprites::SpriteOrient::Billboard,
                 additive: false,
                 roll: 0.0,
+                fx: Default::default(),
             },
             camera.forward,
         );
@@ -427,6 +430,7 @@ pub fn append_decals(
             name: d.name.clone(),
             start,
             count: 6,
+            flags: 0,
         });
     }
 }
@@ -562,6 +566,7 @@ fn emit_wall_decal(
         name: d.name.clone(),
         start,
         count: 6,
+        flags: 0,
     });
     true
 }
@@ -582,6 +587,7 @@ pub fn emit_decal_quad(d: &DecalInstance, forward: Vec3) -> [WallVertex; 6] {
             orient: crate::sprites::SpriteOrient::Billboard,
             additive: false,
             roll: 0.0,
+            fx: Default::default(),
         },
         forward,
     )

@@ -96,11 +96,61 @@ pub struct SpriteView {
     /// `+SPRITEANGLE`: use [`Self::rotation_angle_deg`] instead of the
     /// (interpolated) facing.
     pub fixed_rotation: bool,
-    /// In-plane spin in radians (`SpriteRotation`, plus `roll` for `+ROLLSPRITE`).
+    /// `SpriteRotation` in degrees: added to the actor's (interpolated)
+    /// facing when picking the rotation frame. UZDoom's hardware renderer
+    /// uses it only there (`hw_sprites.cpp`), it does not spin the quad.
+    pub rotation_offset_deg: f64,
+    /// In-plane spin in radians: the actor's `roll`, with `+ROLLSPRITE` only.
     pub roll_rad: f64,
     /// `Scale` already applies; this is the actor's own light override
     /// (`LightLevel`), `None` = sector light.
     pub light_level: Option<i32>,
+    /// `+SPRITEFLIP`: pick the mirrored rotation and draw it mirrored.
+    pub sprite_flip: bool,
+    /// `+XFLIP`: mirror left to right.
+    pub flip_x: bool,
+    /// `+YFLIP`: upside down.
+    pub flip_y: bool,
+    /// `+ROLLCENTER`: roll about the sprite centre instead of the origin.
+    pub roll_center: bool,
+    /// Extra sprite scale `(x, y)`: `(√1.2, 1/√1.2)` for `+ROLLSPRITE` or
+    /// `+SQUAREPIXELS` without `+STRETCHPIXELS` (UZDoom keeps those square
+    /// against the 1.2 pixel ratio), else `(1, 1)`.
+    pub pixel_scale: (f64, f64),
+    /// `+NODYNAMICLIGHTING`.
+    pub no_dynlight: bool,
+    /// `+ISOMETRICSPRITES`: drawn for an orthographic camera (see
+    /// [`isometric_sprite`]).
+    pub isometric: bool,
+}
+
+/// UZDoom's level pixel ratio (`Level->pixelstretch`, MAPINFO default).
+pub const PIXEL_STRETCH: f64 = 1.2;
+
+/// UZDoom `isoscaleY` / `isotheta` for a `+ISOMETRICSPRITES` actor seen by an
+/// orthographic camera at `yaw_deg` / `pitch_deg` (UZDoom pitch: positive
+/// looks down): returns the vertical scale and the tilt (degrees) toward the
+/// camera. `(1, pitch)` unless a tilt keeps the sprite inside its radius.
+/// `floordistfact` / `cotfloor` are `FRenderViewpoint::SetViewAngle`'s.
+#[must_use]
+pub fn isometric_sprite(radius: f64, width: f64, height: f64, yaw_deg: f64, pitch_deg: f64) -> (f64, f64) {
+    let (ys, yc) = yaw_deg.to_radians().sin_cos();
+    let (ps, pc) = pitch_deg.to_radians().sin_cos();
+    let (big, small) = if yc.abs() > ys.abs() { (yc.abs(), ys.abs()) } else { (ys.abs(), yc.abs()) };
+    let floordistfact = std::f64::consts::SQRT_2 + 1.0 / big.max(1e-9);
+    let cotfloor = small / big.max(1e-9);
+    let mut scale_y = 1.0;
+    let mut theta = pitch_deg;
+    if height > 0.0 {
+        let floordist = radius * floordistfact - 0.5 * width * cotfloor;
+        let sine = floordist / height;
+        let scl = (1.0 + sine * sine - 2.0 * ps * sine).sqrt();
+        if radius > 0.0 && scl > pc.abs() {
+            scale_y = scl / pc.abs().max(0.01);
+            theta = (sine / scale_y).clamp(-1.0, 1.0).asin().to_degrees();
+        }
+    }
+    (scale_y, theta)
 }
 
 fn wrap180(mut d: f64) -> f64 {
@@ -182,15 +232,107 @@ pub fn sprite_view(
     } else {
         facing
     };
-    let mut roll = a.ext.sprite_rotation;
-    if a.extra_flags.get_name("ROLLSPRITE") {
-        roll += a.roll.degrees();
-    }
+    let roll = if a.extra_flags.get_name("ROLLSPRITE") {
+        a.roll.degrees()
+    } else {
+        0.0
+    };
     let light_level = class.ext.stored_i32("lightlevel").filter(|&l| l >= 0);
+    let flag = |n: &str| a.extra_flags.get_name(n);
+    let square = (flag("ROLLSPRITE") || flag("SQUAREPIXELS")) && !flag("STRETCHPIXELS");
+    let pixel_scale = if square {
+        // `r.Scale(mult * ps, mult)` with `mult = 1/√ps`.
+        let m = 1.0 / PIXEL_STRETCH.sqrt();
+        (m * PIXEL_STRETCH, m)
+    } else {
+        (1.0, 1.0)
+    };
     Some(SpriteView {
         rotation_angle_deg,
-        fixed_rotation: a.extra_flags.get_name("SPRITEANGLE"),
+        fixed_rotation: flag("SPRITEANGLE"),
+        rotation_offset_deg: a.ext.sprite_rotation,
         roll_rad: roll.to_radians(),
         light_level,
+        sprite_flip: flag("SPRITEFLIP"),
+        flip_x: flag("XFLIP"),
+        flip_y: flag("YFLIP"),
+        roll_center: flag("ROLLCENTER"),
+        pixel_scale,
+        no_dynlight: flag("NODYNAMICLIGHTING"),
+        isometric: flag("ISOMETRICSPRITES"),
     })
+}
+
+/// UZDoom `R_ShouldDrawSpriteShadow` for `r_actorspriteshadow` `mode`: 1
+/// draws `+CASTSPRITESHADOW` actors, 2 also monsters and players unless
+/// `+NOSPRITESHADOW`. Wall and flat sprites never cast one, and unless the
+/// actor forces it neither do additive, subtractive or other non-blending
+/// styles.
+#[must_use]
+pub fn casts_sprite_shadow(world: &crate::world::World, id: crate::ActorId, mode: u8) -> bool {
+    use crate::class::{FLAG_COUNTKILL, FLAG_FLATSPRITE, FLAG_ISMONSTER, FLAG_WALLSPRITE, RenderStyle};
+    let Some(a) = world.actors.get(id) else {
+        return false;
+    };
+    let class_flags = world.classes.get(a.class).map_or(0, |c| c.flags);
+    let flags = a.flags | class_flags;
+    if flags & (FLAG_FLATSPRITE | FLAG_WALLSPRITE) != 0 {
+        return false;
+    }
+    let forced = a.extra_flags.get_name("CASTSPRITESHADOW");
+    let player = world.players.iter().flatten().any(|p| p.mo == Some(id));
+    let doit = match mode {
+        1 => forced,
+        2 => {
+            forced
+                || (!a.extra_flags.get_name("NOSPRITESHADOW")
+                    && (flags & (FLAG_ISMONSTER | FLAG_COUNTKILL) != 0 || player))
+        }
+        _ => false,
+    };
+    if !doit || forced {
+        return doit;
+    }
+    // `BlendOp` Add or Shadow with `DestAlpha` Zero / InvSrc.
+    matches!(
+        a.render_style,
+        RenderStyle::Normal
+            | RenderStyle::Translucent
+            | RenderStyle::SoulTrans
+            | RenderStyle::Fuzzy
+            | RenderStyle::OptFuzzy
+            | RenderStyle::Stencil
+            | RenderStyle::TranslucentStencil
+            | RenderStyle::Shaded
+            | RenderStyle::Shadow
+    )
+}
+
+/// Camera eye of `a` for a view at `eye_z`, as UZDoom's `R_SetupFrame`:
+/// `SetViewPos` offsets apply, the eye stays 4 units inside the view
+/// sector's floor and ceiling unless `VPSF_ALLOWOUTOFBOUNDS` (8), and
+/// `VPSF_ORTHOGRAPHIC` (16) returns the offset length for an orthographic
+/// projection.
+#[must_use]
+pub fn view_eye(
+    world: &crate::world::World,
+    a: &crate::actor::Actor,
+    eye_z: f64,
+) -> ((f64, f64, f64), Option<f64>) {
+    let (x, y, mut z) = a.camera_eye(eye_z);
+    let flags = a.view_pos.map_or(0, |v| v.3);
+    if a.view_pos.is_some() && flags & 8 == 0 {
+        if let Some(s) = crate::physics::sector_at_xy(world, x, y).and_then(|i| world.sectors.get(i)) {
+            let (floor, ceil) = (s.floor_z + 4.0, s.ceiling_z - 4.0);
+            if ceil >= floor {
+                z = z.clamp(floor, ceil);
+            }
+        }
+    }
+    let ortho = a
+        .view_pos
+        .filter(|v| v.3 & 16 != 0)
+        .map(|(ox, oy, oz, _)| (ox * ox + oy * oy + oz * oz).sqrt())
+        .filter(|d| *d > 0.0);
+    ((x, y, z), ortho)
 }

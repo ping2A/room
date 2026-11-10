@@ -548,6 +548,14 @@ fn change_model(w: &mut World, id: ActorId, args: &[String]) -> ActionResult {
         if !(entry.1.is_empty() && entry.2.is_empty() && entry.3.is_empty() && entry.4.is_empty()) {
             m.models.push(entry);
         }
+        // `animationindex`, `animationpath`, `animation` (UZDoom 4.11+).
+        let anim_path = sarg(args, 10, "");
+        let anim_file = sarg(args, 11, "");
+        if !anim_file.is_empty() {
+            m.animation_file = Some((iarg(args, 9, 0), anim_path, anim_file));
+        } else if args.len() > 11 {
+            m.animation_file = None;
+        }
     }
     ActionResult::Continue
 }
@@ -556,6 +564,14 @@ fn set_animation(w: &mut World, id: ActorId, args: &[String]) -> ActionResult {
     let name = sarg(args, 0, "");
     let now = w.level.maptime;
     if let Some(a) = w.actors.get_mut(id) {
+        // Keep what was playing so the renderer can blend out of it
+        // (`interpolateTics`, UZDoom `prevAnim`).
+        a.ext.model.prev_animation = a
+            .ext
+            .model
+            .animation
+            .take()
+            .map(|prev| (prev, a.ext.model.animation_start, now));
         a.ext.model.animation = (!name.is_empty()).then(|| {
             (
                 name,

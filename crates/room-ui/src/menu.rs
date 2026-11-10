@@ -947,10 +947,12 @@ mod tests {
             room_defs::SkillDef {
                 id: "easy".into(),
                 name: Some("Piece Of Cake".into()),
+                armor_factor: None,
             },
             room_defs::SkillDef {
                 id: "normal".into(),
                 name: None,
+                armor_factor: None,
             },
         ];
         let mut stack = MenuStack::doom_main().with_skills(&skills);

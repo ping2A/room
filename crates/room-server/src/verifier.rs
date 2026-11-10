@@ -228,8 +228,8 @@ fn frame_to_cmds(frame: &TicFrameMsg, max_players: u8) -> Vec<TicCmd> {
     let n = usize::from(max_players).clamp(1, MAX_PLAYERS);
     let mut cmds = vec![TicCmd::default(); n];
     let mut idx = 0usize;
-    for seat in 0..8u8 {
-        if frame.seat_mask & (1 << seat) == 0 {
+    for seat in 0..64u8 {
+        if frame.seat_mask & (1u64 << seat) == 0 {
             continue;
         }
         if let Some(net) = frame.cmds.get(idx) {

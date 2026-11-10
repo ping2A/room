@@ -53,7 +53,9 @@ pub use keyconf::{KeyConf, KeyConfCmd, parse_keyconf};
 pub use language::{Language, parse_language};
 pub use loadacs::{LoadAcs, parse_loadacs};
 pub use lockdefs::{LockDef, LockDefs, LockKeyReq, parse_lockdefs};
-pub use mapinfo::{ClusterDef, EpisodeDef, MapDef, MapInfo, SkillDef, parse_mapinfo};
+pub use mapinfo::{
+    ClusterDef, DamageTypeDef, EpisodeDef, MapDef, MapInfo, SkillDef, parse_mapinfo,
+};
 
 impl Definitions {
     /// ZScript event handler class names from MAPINFO `gameinfo` + GAMEINFO lump.
