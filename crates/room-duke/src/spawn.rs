@@ -134,6 +134,38 @@ pub fn classify_map_sprites(
     picnum_out: &mut Vec<i16>,
     skill: u8,
 ) {
+    classify_map_sprites_stats(lists, sprites, actorscrptr, actortype, picnum_out, skill);
+    hide_map_markers(lists, sprites);
+}
+
+/// Chocolate `spawn()` hides the editor-only marker tiles it keeps alive:
+/// `cstat |= 32768` for MUSICANDSFX/RESPAWN, LOCATORS, MASTERSWITCH,
+/// TOUCHPLATE and WATERBUBBLEMAKER; `cstat = 32768` for ACTIVATOR(LOCKED).
+fn hide_map_markers(lists: &SpriteLists, sprites: &mut [SpriteT]) {
+    for (i, sprite) in sprites.iter_mut().enumerate() {
+        if lists.sprite_stat.get(i).copied() == Some(room_build_engine::world::MAXSTATUS as i16)
+            || sprite.xrepeat == 0
+        {
+            continue;
+        }
+        match sprite.picnum {
+            MUSICANDSFX | RESPAWN | LOCATORS | MASTERSWITCH | TOUCHPLATE | WATERBUBBLEMAKER => {
+                sprite.cstat |= 32768;
+            }
+            ACTIVATOR | ACTIVATORLOCKED => sprite.cstat = 32768,
+            _ => {}
+        }
+    }
+}
+
+fn classify_map_sprites_stats(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    actorscrptr: &[i32],
+    actortype: &[u8],
+    picnum_out: &mut Vec<i16>,
+    skill: u8,
+) {
     picnum_out.clear();
     picnum_out.resize(sprites.len().max(lists.sprite_stat.len()), 0);
     for i in 0..sprites.len() {
@@ -224,6 +256,19 @@ pub fn classify_map_sprites(
             }
             sprites[i].picnum = CAMERA1;
             picnum_out[i] = CAMERA1;
+            let _ = lists.changespritestat(i as i16, STAT_ACTOR);
+            continue;
+        }
+
+        // DUKECAR / HELECOPT (E1L1 intro shuttle): Chocolate `spawn()`
+        // falls through to the BLIMP case → cstat 257, clipdist 128, STAT_ACTOR.
+        if sprites[i].picnum == crate::actors::DUKECAR || sprites[i].picnum == crate::actors::HELECOPT {
+            picnum_out[i] = sprites[i].picnum;
+            sprites[i].cstat = 257;
+            sprites[i].extra = 1;
+            sprites[i].xvel = 292;
+            sprites[i].zvel = 360;
+            sprites[i].clipdist = 128;
             let _ = lists.changespritestat(i as i16, STAT_ACTOR);
             continue;
         }

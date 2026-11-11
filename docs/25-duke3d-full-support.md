@@ -47,6 +47,74 @@ the CON→DECORATE mapping.
 "Full support" is then defined by objective tests (§1), chiefly: **the
 Atomic Edition `DEMO1`–`DEMO3.DMO` play to their end in sync**.
 
+### Measured sync status (2026-11-10) — read this first
+
+Earlier checkpoints in §2 that report DEMO1 "in sync" through tic 134, 1056
+or "100000 tics" were **not real**: the `.DMO` parser read the v116 (Atomic
+1.4/1.5) per-player header as 11 bytes instead of 1, so DEMO1 decoded to
+**0 input tics** and DEMO2/DEMO3 to 409/144 garbage tics. The harness then
+compared nothing. The per-tic `demo1_ticN_bitexact` tests and the
+`DEMO1_PAD_PRE*` tables also run with `trace_fixups` (seed adoption, krand
+pads, sprite snaps keyed to tic numbers), so they never measured the
+simulation. Treat every `TEMP:`/`fixups::on()` path in `session.rs` as debt
+to delete, not as progress.
+
+The only number that counts is the honest one —
+`cargo run --release -p room-duke --example duke_frontier -- real DEMOn`
+(no fixups, no pads), guarded by the `demo1_real_sync_floor` test:
+
+| Demo | Map | Tics | Honest frontier | First divergence |
+|------|-----|------|-----------------|------------------|
+| DEMO1 | E3L11 skill 3 | 3,808 | **tics 0–263** (was none) | tic 264 randomseed |
+| DEMO2 | E4L11 skill 1 | 2,162 | 0 | tic 0 `numsprites` 1104 vs 1068 (load) |
+| DEMO3 | E4L2 skill 2 | 1,657 | 0 | tic 0 randomseed: 3 fewer krands at load |
+
+How to move it: `scripts/duke-oracle/` builds a patched Chocolate Duke3D that
+reproduces the committed traces byte for byte and logs every `krand()` with
+its caller and the current CON actor, plus full sprite dumps (sector, owner,
+temps, `hittype` planes). `examples/duke_krand.rs` logs Room's side;
+`krand_cmp.py` shows the first differing call. Each fix below was found that
+way in minutes; none needed a fixup.
+
+Fixed on the way from tic 0 to tic 264 (all genuine logic bugs):
+
+- `movestandables` single-sprite dispatch fell through to the rest of the
+  STAT_STANDABLE list (BOLT1 ran ~30× per tic: 204 krands at tic 0 vs 13).
+- SE 8/9: spawn stores the shade step in **T4** (`temp_data[3]`), not T5;
+  moveeffectors only fades while the sector ceiling is animating
+  (`getanimationgoal`) and kills only via a T5 counter set by activators.
+  Room had invented an unconditional 8-tic fade-and-delete.
+- `PLAYERONWATER` / footprints read `truefdist`, `psectlotag` and
+  `on_ground` from the top of `processinput` (pre-move), not post-move.
+- APLAYER water block: the trailing `ifrnd 4 spawn WATERBUBBLE` runs every
+  tic (`action` does not stop the parse); removed tic-gated hacks.
+- Player body `xvel` (CON `ifp pwalking`, view bob) is the **previous**
+  tic's displacement: Chocolate sets it before this tic's clipmove.
+- CON VM: `ifgotweaponce` advanced `insptr` one word too far before
+  `parseifelse`; `palfrom` (opcode + 4 padded words) skipped 6 words.
+- `processweapon` start and advance are `if / else if`: shotgun, freezer and
+  devastator advanced `kickback_pic` on the start tic (fired a tic early).
+- CON `shoot BLOODSPLATn` / `COOLEXPLOSION1` now run inline in `parse()`
+  through a VM hook instead of being queued until after the actor, so later
+  `ifrnd`s in the same actor see the post-shot RNG.
+- STAT_MISC `movesprite` never updates `sectnum`; EGS copies the owner's
+  `hittype` floor/ceiling planes (player planes now tracked from getzrange).
+
+Structural debt this exposed (the reason sync is slow): the CON VM is a
+snapshot interpreter that **defers side effects** (`spawn`, debris, glass,
+guts, most `shoot`s, sounds) until after the actor runs, and many actors and
+the player are hand-written emulations of `GAME.CON` rather than the VM
+running the script. Every such deferral reorders the RNG the first time an
+actor does a side effect followed by another `ifrnd`. The durable fix is a
+VM with a world host (immediate `spawn`/`shoot`/etc.), then deleting the
+hand-written CON emulations and the fixup paths. That is the D5/D6 work.
+
+Pre-existing failing tests (not caused by this change): room-duke
+`interactions::tests::{sector9_sliding_door_moves_six_wall_vertices,
+use_flips_linked_wall_switches_with_one_neartag}`; room-build
+`sav::tests::dump_reads_*` (~35). The ~930 `demo1_ticN_bitexact` tests
+replay fixup-mode playback and should be replaced by the honest floor test.
+
 ---
 
 ## 1. Definition of "full support"

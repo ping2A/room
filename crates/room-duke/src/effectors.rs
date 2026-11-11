@@ -3539,21 +3539,24 @@ pub(crate) fn move_light_effectors(
     }
 }
 
-/// Advance Chocolate's one-shot elevator shade effectors (SE 8 and SE 9).
+/// Chocolate SE 8 / SE 9 (`game.c::spawn` + `actors.c::moveeffectors`):
+/// elevator / door lights that fade linked sectors while the effector's
+/// sector ceiling is animating.
 ///
-/// `game.c::spawn` snapshots each sector's floor/ceiling/wall shades and sets
-/// T4 to one. `actors.c::moveeffectors` applies the linked shade step for the
-/// first seven ticks, then removes the effector on tick eight.
+/// `spawn` stores T1/T2 = floor/ceiling shade, T3 = brightest wall shade
+/// (at least 0) and T4 = 1 (the per-tic shade step). `moveeffectors` only
+/// acts while `getanimationgoal(&ceilingz) >= 0`, or while T5 (set by
+/// activators for other effector kinds, never by stock SE 8/9 spawn) counts
+/// up to its kill at 9.
 pub(crate) fn move_elevator_shade_effectors(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
     sectors: &mut [SectorT],
     walls: &mut [WallT],
     temps: &mut Vec<ActorConTemps>,
+    ceiling_animating: &dyn Fn(usize) -> bool,
 ) {
-    // Chocolate's `spawn` initializes every effector before the first
-    // `moveeffectors` pass. Do that as a separate pass so linked sectors read
-    // fully initialized shade bounds regardless of sprite-list order.
+    // Spawn-time snapshot, done once per effector before its first move.
     let mut scan = lists.headspritestat[STAT_EFFECTOR as usize];
     while scan >= 0 {
         let index = scan as usize;
@@ -3577,7 +3580,7 @@ pub(crate) fn move_elevator_shade_effectors(
             temps[index].g_t[0] = i32::from(sector.floorshade);
             temps[index].g_t[1] = i32::from(sector.ceilingshade);
             temps[index].g_t[2] = sector_shades(sector, walls);
-            temps[index].g_t[4] = 1;
+            temps[index].g_t[3] = 1;
             temps[index].g_t[5] = i32::MIN + i32::from(marker.lotag);
             if marker.lotag == 9 && sector.lotag != 0 && sector.ceilingz.abs_diff(marker.z) > 1024 {
                 sectors[si].lotag |= i16::MIN;
@@ -3598,26 +3601,32 @@ pub(crate) fn move_elevator_shade_effectors(
         let Ok(sector_index) = usize::try_from(marker.sectnum) else {
             continue;
         };
-        if sectors.get(sector_index).is_none() {
+        let Some(sector) = sectors.get(sector_index).copied() else {
             continue;
-        }
-        if temps.len() <= index {
-            temps.resize_with(index + 1, ActorConTemps::default);
-        }
-        temps[index].g_t[4] += 1;
-        if temps[index].g_t[4] > 8 {
-            let _ = lists.deletesprite(index as i16);
-            if let Some(sprite) = sprites.get_mut(index) {
-                sprite.statnum = room_build_engine::world::MAXSTATUS as i16;
+        };
+        let active = if temps[index].g_t[4] != 0 {
+            temps[index].g_t[4] += 1;
+            if temps[index].g_t[4] > 8 {
+                let _ = lists.deletesprite(index as i16);
+                if let Some(sprite) = sprites.get_mut(index) {
+                    sprite.statnum = room_build_engine::world::MAXSTATUS as i16;
+                }
+                continue;
             }
+            true
+        } else {
+            ceiling_animating(sector_index)
+        };
+        if !active {
             continue;
         }
-
-        // `j = 1` while T4 is non-zero, so Chocolate runs the color update
-        // through this one-shot fade even if the ceiling animation has ended.
-        let mut step = -temps[index].g_t[2];
+        let mut x = if (sector.lotag as u16 & 0x8000) != 0 || temps[index].g_t[4] != 0 {
+            -temps[index].g_t[3]
+        } else {
+            temps[index].g_t[3]
+        };
         if marker.lotag == 9 {
-            step = -step;
+            x = -x;
         }
         let mut linked = lists.headspritestat[STAT_EFFECTOR as usize];
         while linked >= 0 {
@@ -3632,21 +3641,11 @@ pub(crate) fn move_elevator_shade_effectors(
             let Ok(si) = usize::try_from(other.sectnum) else {
                 continue;
             };
-            let Some(target) = sectors.get_mut(si) else {
+            let m = other.shade;
+            let lt = temps.get(linked_index).map_or([0; 6], |t| t.g_t);
+            let Some(target) = sectors.get(si).copied() else {
                 continue;
             };
-            target.floorshade = shade_step(
-                target.floorshade,
-                step,
-                other.shade,
-                temps[linked_index].g_t[0],
-            );
-            target.ceilingshade = shade_step(
-                target.ceilingshade,
-                step,
-                other.shade,
-                temps[linked_index].g_t[1],
-            );
             let start = usize::try_from(target.wallptr).unwrap_or(usize::MAX);
             let end = start
                 .saturating_add(usize::try_from(target.wallnum).unwrap_or_default())
@@ -3655,12 +3654,7 @@ pub(crate) fn move_elevator_shade_effectors(
                 if walls[wi].hitag == 1 {
                     continue;
                 }
-                let shade = shade_step(
-                    walls[wi].shade,
-                    step,
-                    other.shade,
-                    temps[linked_index].g_t[2],
-                );
+                let shade = choc_shade_add(walls[wi].shade, x, m, lt[2]);
                 walls[wi].shade = shade;
                 if let Ok(peer) = usize::try_from(walls[wi].nextwall)
                     && let Some(peer_wall) = walls.get_mut(peer)
@@ -3669,7 +3663,23 @@ pub(crate) fn move_elevator_shade_effectors(
                     peer_wall.shade = shade;
                 }
             }
+            let target = &mut sectors[si];
+            target.floorshade = choc_shade_add(target.floorshade, x, m, lt[0]);
+            target.ceilingshade = choc_shade_add(target.ceilingshade, x, m, lt[1]);
         }
+    }
+}
+
+/// Chocolate `shade += x; if (shade < m) shade = m; else if (shade > t) shade = t;`
+/// on a signed-char shade (the add wraps, `t` truncates on store).
+fn choc_shade_add(current: i8, x: i32, m: i8, t: i32) -> i8 {
+    let next = (i32::from(current) + x) as i8;
+    if next < m {
+        m
+    } else if i32::from(next) > t {
+        t as i8
+    } else {
+        next
     }
 }
 

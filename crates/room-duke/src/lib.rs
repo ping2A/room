@@ -29,6 +29,7 @@ pub mod fixups {
 }
 
 pub mod actors;
+pub mod animate;
 pub mod audio;
 pub mod badguy;
 pub mod campaign;

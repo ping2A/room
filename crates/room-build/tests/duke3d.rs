@@ -717,7 +717,7 @@ fn grp_dmo_headers_name_a_map() {
         };
         let d = room_build::DmoDemo::parse(raw).unwrap();
         assert!(
-            d.map_name().starts_with('E') && d.map_name().contains('M'),
+            d.map_name().starts_with('E') && d.map_name().contains('L'),
             "{name} -> {}",
             d.map_name()
         );

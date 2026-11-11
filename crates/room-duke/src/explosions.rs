@@ -724,18 +724,9 @@ fn step_waterbubble(
             let (sin, cos) = sincos_q14(ang);
             sprites[iu].x += (xvel * cos) >> 14;
             sprites[iu].y += (xvel * sin) >> 14;
+            // Chocolate `movesprite` on STAT_MISC only offsets x/y/z; it
+            // never calls updatesector/setsprite, so `sectnum` is kept.
             sprites[iu].z += zvel;
-            let mut sect = sprites[iu].sectnum;
-            updatesector(
-                sprites[iu].x,
-                sprites[iu].y,
-                &mut sect,
-                sector_walls,
-                wall_xy,
-            );
-            if sect >= 0 {
-                sprites[iu].sectnum = sect;
-            }
         }
     }
 }
@@ -816,21 +807,21 @@ mod tests {
             ..Default::default()
         }];
         let mut seed = 1;
-        let mut temps = Vec::new();
-        let mut players = [];
-        let mut owners = [];
+        let mut temps: Vec<crate::con::vm::ActorConTemps> = Vec::new();
+        let mut players: [crate::player::Player; 0] = [];
+        let mut owners: [Option<i16>; 0] = [];
         let mut sounds = Vec::new();
         moveexplosions(
             &mut lists,
             &mut sprites,
-            &mut players,
-            &mut owners,
-            &mut sounds,
+            &[],
             &[],
             &mut seed,
             &mut temps,
             None,
-            &[],
+            &mut players,
+            &mut owners,
+            &mut sounds,
         );
         assert!(sprites[0].z > -20480);
         assert_eq!(temps[0].g_t[0], 1);

@@ -2497,7 +2497,10 @@ mod browser {
                 while *tic_accum >= 1.0 / 30.0 {
                     *tic_accum -= 1.0 / 30.0;
                     if let Some(net) = network.as_mut() {
-                        let input = input_hub::take_duke_network_input();
+                        let ang = session
+                            .player_for_seat(net.local_seat)
+                            .map_or(session.player.ang, |p| p.ang);
+                        let input = input_hub::take_duke_network_input(ang);
                         net.submit(input);
                         if let Some(inputs) = net.take_frame(*network_tic) {
                             if let Some(audio) = audio.as_ref()
@@ -2517,7 +2520,7 @@ mod browser {
                             session.set_active_sound_owners(&mixer.duke_active_sound_owners());
                         }
                         input_hub::apply_duke_weapon(&mut session.player);
-                        let input = input_hub::take_duke_input();
+                        let input = input_hub::take_duke_input(session.player.ang);
                         session.tick(input);
                         sound_events.extend(session.drain_sound_events());
                         campaign_transition = session.take_campaign_exit_request();
@@ -2928,9 +2931,9 @@ mod browser {
                 Mode::Play(play) => Some(play.build_hud_canvas(fb_w, fb_h)),
                 Mode::NativeDuke {
                     session, renderer, ..
-                } => session.world.as_ref().map(|world| {
+                } => session.render_world().map(|world| {
                     let pixels = renderer.render_rgba_at_with_quake_view(
-                        world,
+                        &world,
                         &session.player,
                         native_fb_width,
                         native_fb_height,

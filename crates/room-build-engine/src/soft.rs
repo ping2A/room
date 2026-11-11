@@ -23,6 +23,8 @@ pub struct SoftTiles {
     sprite_offsets: BTreeMap<i16, (i8, i8)>,
     /// Per-sky 45-degree ART tile offsets (`prelevel`'s `pskyoff[]`).
     sky_offsets: BTreeMap<i16, [i16; 8]>,
+    /// Per-sky Duke `parallaxyscale` (16.16; absent = 65536).
+    sky_yscale: BTreeMap<i16, i32>,
 }
 
 impl SoftTiles {
@@ -79,6 +81,37 @@ impl SoftTiles {
     #[must_use]
     pub fn sample(&self, picnum: i16, u: u32, v: u32) -> Option<u8> {
         self.sample_at(picnum, u, v, 0)
+    }
+
+    /// Resolve a tile (with its ART animation frame) once, for span drawing.
+    pub(crate) fn resolve(&self, picnum: i16, clock_120hz: u32) -> Option<TileRef<'_>> {
+        let resolved = self
+            .animations
+            .get(&picnum)
+            .map_or(picnum, |(frames, step)| {
+                let frame = (clock_120hz / (*step).max(1)) as usize % frames.len();
+                frames[frame]
+            });
+        let (w, h, pix) = self.tiles.get(&resolved)?;
+        (*w != 0 && *h != 0).then_some(TileRef {
+            w: usize::from(*w),
+            h: usize::from(*h),
+            pix,
+        })
+    }
+
+    /// `LOOKUP.DAT` remap for `pal` (`None` = identity).
+    pub(crate) fn pal_table(&self, pal: u8) -> Option<&[u8; 256]> {
+        self.palette_lookups.get(&pal)
+    }
+
+    /// Shade row for `shade` (`None` without shade tables).
+    pub(crate) fn shade_row(&self, shade: i8) -> Option<&[u8]> {
+        if self.shade_count == 0 {
+            return None;
+        }
+        let row = usize::from(shade.max(0) as u8).min(self.shade_count - 1);
+        self.shade_tables.get(row * 256..row * 256 + 256)
     }
 
     /// Sample a tile at a 120 Hz Build animation clock.
@@ -185,6 +218,74 @@ impl SoftTiles {
         self.sky_offsets.insert(base, offsets);
     }
 
+    /// Set Duke `parallaxyscale` (16.16) for a parallax base tile: how far
+    /// the sky follows the view horizon when looking up or down.
+    pub fn set_sky_yscale(&mut self, base: i16, scale: i32) {
+        self.sky_yscale.insert(base, scale);
+    }
+
+    /// Per-column part of [`Self::sample_sky_parascan`]: the sky tile for
+    /// this view angle, its texel column and the horizon the sky follows.
+    pub(crate) fn sky_column(
+        &self,
+        base: i16,
+        angle: i16,
+        col: i32,
+        width: i32,
+        height: i32,
+        horizon: i32,
+        clock_120hz: u32,
+    ) -> Option<(TileRef<'_>, i64, i64)> {
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        let look = (i32::from(angle) + ((col - width / 2) * 512) / width).rem_euclid(2048);
+        let slot = (look >> 8) as usize;
+        let offset = self.sky_offsets.get(&base).map_or(0, |o| o[slot]);
+        let tile = self.resolve(base.saturating_add(offset), clock_120hz)?;
+        let u = i64::from(look & 255) * tile.w as i64 / 256;
+        let yscale = i64::from(self.sky_yscale.get(&base).copied().unwrap_or(65536));
+        let half = i64::from(height / 2);
+        let sky_horizon = half + ((i64::from(horizon) - half) * yscale >> 16);
+        Some((tile, u, sky_horizon))
+    }
+
+    /// Build `parascan`: the sky is a wall at fixed distance whose middle
+    /// texel row sits on the (scaled) horizon at one texel per 200-line row,
+    /// wrapping vertically. `row` and `horizon` are framebuffer rows.
+    #[allow(clippy::too_many_arguments)]
+    fn sample_sky_parascan(
+        &self,
+        base: i16,
+        angle: i16,
+        col: i32,
+        width: i32,
+        height: i32,
+        row: i32,
+        horizon: i32,
+        ypanning: u8,
+        clock_120hz: u32,
+    ) -> Option<u8> {
+        let (tile_width, tile_height) = self.dimensions(base)?;
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        let look = (i32::from(angle) + ((col - width / 2) * 512) / width).rem_euclid(2048);
+        let slot = (look >> 8) as usize;
+        let offset = self.sky_offsets.get(&base).map_or(0, |o| o[slot]);
+        let pic = base.saturating_add(offset);
+        let u = ((look & 255) * i32::from(tile_width) / 256) as u32;
+        let yscale = i64::from(self.sky_yscale.get(&base).copied().unwrap_or(65536));
+        let half = i64::from(height / 2);
+        let sky_horizon = half + ((i64::from(horizon) - half) * yscale >> 16);
+        let th = i64::from(tile_height.max(1));
+        let v = th / 2 + (i64::from(row) - sky_horizon) * 200 / i64::from(height)
+            + i64::from(ypanning) * th / 256;
+        let v = v.rem_euclid(th) as u32;
+        self.sample_at(pic, u, v, clock_120hz)
+            .filter(|&p| p != room_build::art::TRANSPARENT)
+    }
+
     fn sample_sky_at(
         &self,
         base: i16,
@@ -213,6 +314,24 @@ impl SoftTiles {
         };
         self.sample_at(pic, u, v, clock_120hz)
             .filter(|&p| p != room_build::art::TRANSPARENT)
+    }
+}
+
+/// A resolved ART tile (column-major pixels) for per-span sampling.
+#[derive(Clone, Copy)]
+pub(crate) struct TileRef<'a> {
+    pub w: usize,
+    pub h: usize,
+    pub pix: &'a [u8],
+}
+
+impl TileRef<'_> {
+    /// Texel at wrapped `(u, v)`.
+    #[inline]
+    pub fn at(&self, u: i64, v: i64) -> u8 {
+        let x = u.rem_euclid(self.w as i64) as usize;
+        let y = v.rem_euclid(self.h as i64) as usize;
+        self.pix.get(x * self.h + y).copied().unwrap_or(room_build::art::TRANSPARENT)
     }
 }
 
@@ -269,6 +388,22 @@ impl SoftFrame {
 ///
 /// Fills floor / ceiling / parallax sky from the camera sector first, then
 /// draws solid walls.
+#[path = "soft_portal.rs"]
+mod portal;
+
+/// Build distance fog for a sprite pixel (see `portal::Ctx::fog_shade`).
+fn sprite_fog_shade(world: Option<&BuildWorld>, shade: i8, depth: i64, sect: i16) -> i8 {
+    let v = world
+        .and_then(|w| w.sectors.get(sect as usize))
+        .map_or(0, |s| s.visibility);
+    let globvis = if v == 0 {
+        512_i64
+    } else {
+        (512 * i64::from(v.wrapping_add(16))) >> 4
+    };
+    (i64::from(shade) + ((depth.max(0) * globvis) >> 18)).clamp(0, 127) as i8
+}
+
 pub fn render_fp_textured(
     world: &BuildWorld,
     view: &BuildView,
@@ -298,9 +433,11 @@ fn render_fp_textured_without_mirrors_at(
     tiles: &SoftTiles,
     clock_120hz: u32,
 ) -> Vec<i32> {
-    fill_fp_flats_sky_at(world, view, frame, Some(tiles), clock_120hz);
-    let mut zbuf = render_fp_walls_at(world, view, frame, Some(tiles), clock_120hz);
-    render_fp_sprites_at(world, view, frame, Some(tiles), &mut zbuf, clock_120hz);
+    let (mut zbuf, drawn) = portal::render(world, view, frame, tiles, clock_120hz);
+    // Sprites are drawn for every sector the portal pass actually reached.
+    let mut sprite_view = view.clone();
+    sprite_view.visible_sectors = drawn;
+    render_fp_sprites_at(world, &sprite_view, frame, Some(tiles), &mut zbuf, clock_120hz);
     zbuf
 }
 
@@ -716,39 +853,48 @@ fn project_plane_pixel(
         return flat;
     }
     let flat_dz = (i64::from(view.posz) - i64::from(plane_z)) >> 4;
-    if flat_dz == 0 || (dy_screen > 0) != (flat_dz < 0) {
+    let sloped = plane_stat & 2 != 0;
+    if !sloped && (flat_dz == 0 || (dy_screen > 0) != (flat_dz < 0)) {
         return flat;
     }
-    let mut plane_z = plane_z;
     let mut depth = (i64::from(focal_y) * flat_dz.abs()) / i64::from(dy_screen.abs());
-    if depth <= 0 {
+    if depth <= 0 && !sloped {
         return flat;
     }
 
-    // Camera forward is (-sin, cos); screen-right is (cos, sin). Rays stay
-    // fixed-point so the soft renderer uses the same integer camera basis as
-    // wall projection.
+    // Camera forward is (cos, sin); screen-right is (-sin, cos) (Build Y
+    // points south). Rays stay fixed-point so the soft renderer uses the same
+    // integer camera basis as wall projection.
     let side_q14 = (i64::from(col - focal_x) << 14) / i64::from(focal_x);
-    let ray_x = -i64::from(sin) + ((i64::from(cos) * side_q14) >> 14);
-    let ray_y = i64::from(cos) + ((i64::from(sin) * side_q14) >> 14);
-    // The intersection of a screen ray and a Build slope is linear. A few
-    // fixed-point refinements converge to the same plane hit without floats.
-    for _ in 0..3 {
-        let wx = (i64::from(view.posx) + ((ray_x * depth) >> 14))
-            .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
-        let wy = (i64::from(view.posy) + ((ray_y * depth) >> 14))
-            .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
-        if let Some((ceiling_z, floor_z)) = sectors
-            .get(sectnum as usize)
-            .map(|_| crate::geom::getzsofslope(sectnum, wx, wy, sectors, walls))
-        {
-            plane_z = if ceiling { ceiling_z } else { floor_z };
-        }
-        let dz = (i64::from(view.posz) - i64::from(plane_z)) >> 4;
-        if dz == 0 || (dy_screen > 0) != (dz < 0) {
+    let ray_x = i64::from(cos) - ((i64::from(sin) * side_q14) >> 14);
+    let ray_y = i64::from(sin) + ((i64::from(cos) * side_q14) >> 14);
+    // A Build slope is a plane, z = z_cam + gx*(x-posx) + gy*(y-posy): sample
+    // it under the eye and solve the ray/plane intersection exactly (the old
+    // fixed-point iteration diverged on steep slopes and fell back to `flat`).
+    if plane_stat & 2 != 0 && (sectnum as usize) < sectors.len() {
+        let z_at = |x: i32, y: i32| {
+            let (c, f) = crate::geom::getzsofslope(sectnum, x, y, sectors, walls);
+            f64::from(if ceiling { c } else { f })
+        };
+        const STEP: i32 = 4096;
+        let z0 = z_at(view.posx, view.posy);
+        let gx = (z_at(view.posx.saturating_add(STEP), view.posy) - z0) / f64::from(STEP);
+        let gy = (z_at(view.posx, view.posy.saturating_add(STEP)) - z0) / f64::from(STEP);
+        // Ray direction per unit of forward depth.
+        let (rx, ry) = (ray_x as f64 / 16384.0, ray_y as f64 / 16384.0);
+        let g = gx * rx + gy * ry;
+        let fy = f64::from(focal_y);
+        // Row below the horizon for plane height z at depth t:
+        // dy = fy * (z - posz) / 16 / t, with z = z0 + g*t.
+        let denom = f64::from(dy_screen) - g * fy / 16.0;
+        if denom == 0.0 {
             return flat;
         }
-        depth = (i64::from(focal_y) * dz.abs()) / i64::from(dy_screen.abs());
+        let t = (z0 - f64::from(view.posz)) * fy / 16.0 / denom;
+        if !(t > 0.0) || !t.is_finite() {
+            return flat;
+        }
+        depth = t.min(1.0e9) as i64;
         if depth <= 0 {
             return flat;
         }
@@ -812,14 +958,10 @@ fn project_plane_pixel(
     // dimensions affect world texel density. Sector bit 3 doubles physical
     // texel size. Keep texture coordinates in Q8 until the panning fraction
     // has been added: xpanning/ypanning are 1/256-tile values, not texels.
-    let scale_q8 = |dimension: u16| {
-        let numerator = if plane_stat & 8 != 0 {
-            512_i64
-        } else {
-            1024_i64
-        };
-        numerator / i64::from(dimension.max(1))
-    };
+    // Chocolate `hlineasm4` takes the top log2(size) bits of a coordinate
+    // pre-shifted by `8 - log2(size)`: one texel per 16 world units for any
+    // tile size, twice as dense with sector bit 3.
+    let scale_q8 = |_dimension: u16| if plane_stat & 8 != 0 { 32_i64 } else { 16_i64 };
     let u = ((tex_x * scale_q8(tile_width) + i64::from(xpanning) * i64::from(tile_width)) >> 8)
         .rem_euclid(1 << 30) as u32;
     let v = ((tex_y * scale_q8(tile_height) + i64::from(ypanning) * i64::from(tile_height)) >> 8)
@@ -1074,6 +1216,15 @@ pub fn render_fp_sprites_at(
         if !view.visible_sectors.contains(&sp.sectnum) {
             continue;
         }
+        // Build `drawsprite` skips zero-repeat sprites and tiles without art.
+        if sp.xrepeat == 0 || sp.yrepeat == 0 {
+            continue;
+        }
+        if let Some(ts) = tiles
+            && ts.dimensions(sp.picnum).is_none_or(|(tw, th)| tw == 0 || th == 0)
+        {
+            continue;
+        }
         if sp.cstat & CSTAT_WALL_ALIGN != 0 {
             render_wall_aligned_sprite(view, frame, tiles, zbuf, sp, clock_120hz);
             continue;
@@ -1097,10 +1248,12 @@ pub fn render_fp_sprites_at(
         let (tile_w, tile_h) = tiles
             .and_then(|ts| ts.dimensions(sp.picnum))
             .unwrap_or((64, 64));
+        // Build: a sprite is tilesize*repeat/4 world units across (and
+        // tilesize*repeat*4 Z units tall, i.e. /4 in XY-equivalent units).
         let half_w =
-            (i64::from(tile_w) * i64::from(xrep) * i64::from(focal_x) / (64 * rz)).max(1) as i32;
+            (i64::from(tile_w) * i64::from(xrep) * i64::from(focal_x) / (8 * rz)).max(1) as i32;
         let half_h =
-            (i64::from(tile_h) * i64::from(yrep) * i64::from(focal_y) / (64 * rz)).max(1) as i32;
+            (i64::from(tile_h) * i64::from(yrep) * i64::from(focal_y) / (8 * rz)).max(1) as i32;
         let (tile_xoff, tile_yoff) = tiles.map_or((0, 0), |ts| ts.sprite_offset(sp.picnum));
         let mut xoff = i32::from(tile_xoff) + i32::from(sp.xoffset);
         let mut yoff = i32::from(tile_yoff) + i32::from(sp.yoffset);
@@ -1110,39 +1263,47 @@ pub fn render_fp_sprites_at(
         if sp.cstat & CSTAT_YFLIP != 0 {
             yoff = -yoff;
         }
-        let x_shift = (i64::from(xoff) * i64::from(xrep) * i64::from(focal_x) / (64 * rz)) as i32;
-        let y_shift = (i64::from(yoff) * i64::from(yrep) * i64::from(focal_y) / (64 * rz)) as i32;
-        let left = sx as i32 + x_shift - half_w;
-        let right = sx as i32 + x_shift + half_w;
-        let top = sy as i32 - y_shift - half_h;
-        let bot = sy as i32 - y_shift + half_h;
+        let x_shift = (i64::from(xoff) * i64::from(xrep) * i64::from(focal_x) / (4 * rz)) as i32;
+        let y_shift = (i64::from(yoff) * i64::from(yrep) * i64::from(focal_y) / (4 * rz)) as i32;
+        // Build `drawsprite`: a positive x offset moves the sprite left.
+        let left = sx as i32 - x_shift - half_w;
+        let right = sx as i32 - x_shift + half_w;
+        // Build: a face sprite stands on its z (feet), unless cstat 128
+        // centres it there.
+        let (top, bot) = if sp.cstat & 128 != 0 {
+            (sy as i32 - y_shift - half_h, sy as i32 - y_shift + half_h)
+        } else {
+            (sy as i32 - y_shift - 2 * half_h, sy as i32 - y_shift)
+        };
         let flat = wall_color(sp.picnum, sp.shade);
-        let span_x = (right - left).max(1);
-        let span_y = (bot - top).max(1);
+        let span_x = i64::from((right - left).max(1));
+        let span_y = i64::from((bot - top).max(1));
+        let tile = tiles.and_then(|ts| ts.resolve(sp.picnum, clock_120hz));
+        let (tw, th) = tile.map_or((64, 64), |t| (t.w as i64, t.h as i64));
+        let fog = sprite_fog_shade(Some(world), sp.shade, i64::from(z), sp.sectnum);
+        let pal_table = tiles.and_then(|ts| ts.pal_table(sp.pal));
+        let shade_row = tiles.and_then(|ts| ts.shade_row(fog));
         for col in left.max(0)..right.min(w) {
             let cu = col as usize;
-            let u = (((col - left) as i64 * 64) / i64::from(span_x)) as u32;
-            let u = if sp.cstat & CSTAT_XFLIP != 0 {
-                63 - u.min(63)
-            } else {
-                u
-            };
+            let mut u = (i64::from(col - left) * tw) / span_x;
+            if sp.cstat & CSTAT_XFLIP != 0 {
+                u = tw - 1 - u.min(tw - 1);
+            }
             for y in top.max(0)..bot.min(h) {
                 let depth_index = y as usize * w as usize + cu;
                 if depth_index >= zbuf.len() || z >= zbuf[depth_index] {
                     continue;
                 }
-                let v = (((y - top) as i64 * 64) / i64::from(span_y)) as u32;
-                let v = if sp.cstat & CSTAT_YFLIP != 0 {
-                    63 - v.min(63)
-                } else {
-                    v
-                };
-                let pix = match tiles.and_then(|ts| ts.sample_at(sp.picnum, u, v, clock_120hz)) {
+                let mut v = (i64::from(y - top) * th) / span_y;
+                if sp.cstat & CSTAT_YFLIP != 0 {
+                    v = th - 1 - v.min(th - 1);
+                }
+                let pix = match tile.map(|t| t.at(u, v)) {
                     Some(pixel) if pixel == room_build::art::TRANSPARENT => continue,
-                    Some(pixel) => tiles.map_or(pixel, |ts| {
-                        ts.shade_palette(sp.shade, ts.remap_palette(sp.pal, pixel))
-                    }),
+                    Some(pixel) => {
+                        let p = pal_table.map_or(pixel, |t| t[usize::from(pixel)]);
+                        shade_row.map_or(p, |r| r[usize::from(p)])
+                    }
                     None => flat,
                 };
                 frame.put(
@@ -1182,8 +1343,10 @@ fn render_floor_aligned_sprite(
         // Build floor sprites may be one-sided; Y-flip reverses their visible side.
         return;
     }
-    let half_width = i32::from(tile_width) * i32::from(sprite.xrepeat) * 2;
-    let half_height = i32::from(tile_height) * i32::from(sprite.yrepeat) * 2;
+    // Build floor sprites: half extents (tilesize/2)*repeat/4 XY units; the
+    // tile x axis runs along (sin, -cos), its y axis along (cos, sin).
+    let half_width = i32::from(tile_width) * i32::from(sprite.xrepeat) / 8;
+    let half_height = i32::from(tile_height) * i32::from(sprite.yrepeat) / 8;
     let (sin, cos) = crate::helpers::approx_sincos_q14(i32::from(sprite.ang));
     let (sin_view, cos_view) = crate::helpers::approx_sincos_q14(i32::from(view.ang));
     let center_x = frame.width as i32 / 2;
@@ -1200,19 +1363,19 @@ fn render_floor_aligned_sprite(
     if sprite.cstat & CSTAT_YFLIP != 0 {
         yoff = -yoff;
     }
-    let shift_x = xoff.wrapping_mul(i32::from(sprite.xrepeat)).wrapping_mul(4);
-    let shift_y = yoff.wrapping_mul(i32::from(sprite.yrepeat)).wrapping_mul(4);
+    let shift_x = xoff.wrapping_mul(i32::from(sprite.xrepeat)) / 4;
+    let shift_y = yoff.wrapping_mul(i32::from(sprite.yrepeat)) / 4;
     let center_x_world = sprite.x.wrapping_add(
-        ((i64::from(cos) * i64::from(shift_x) - i64::from(sin) * i64::from(shift_y)) >> 14) as i32,
-    );
-    let center_y_world = sprite.y.wrapping_add(
         ((i64::from(sin) * i64::from(shift_x) + i64::from(cos) * i64::from(shift_y)) >> 14) as i32,
     );
-    // Right and forward axes of the tile, rotated by the Build sprite angle.
-    let axis_x = ((i64::from(cos) * i64::from(half_width)) >> 14) as i32;
-    let axis_y = ((i64::from(sin) * i64::from(half_width)) >> 14) as i32;
-    let depth_x = ((-i64::from(sin) * i64::from(half_height)) >> 14) as i32;
-    let depth_y = ((i64::from(cos) * i64::from(half_height)) >> 14) as i32;
+    let center_y_world = sprite.y.wrapping_add(
+        ((-i64::from(cos) * i64::from(shift_x) + i64::from(sin) * i64::from(shift_y)) >> 14) as i32,
+    );
+    // Tile x axis (sin, -cos) and y axis (cos, sin), as Build `drawsprite`.
+    let axis_x = ((i64::from(sin) * i64::from(half_width)) >> 14) as i32;
+    let axis_y = ((-i64::from(cos) * i64::from(half_width)) >> 14) as i32;
+    let depth_x = ((i64::from(cos) * i64::from(half_height)) >> 14) as i32;
+    let depth_y = ((i64::from(sin) * i64::from(half_height)) >> 14) as i32;
     let corners = [
         (
             center_x_world - axis_x - depth_x,
@@ -1300,6 +1463,8 @@ fn draw_sprite_triangle(
         (x1, y1, z1, u1, v1),
         (x2, y2, z2, u2, v2),
     ] = vertices;
+    let tile = tiles.resolve(sprite.picnum, clock_120hz);
+    let pal_table = tiles.pal_table(sprite.pal);
     let edge = |ax: i32, ay: i32, bx: i32, by: i32, px: i32, py: i32| {
         i64::from(px - ax) * i64::from(by - ay) - i64::from(py - ay) * i64::from(bx - ax)
     };
@@ -1327,14 +1492,18 @@ fn draw_sprite_triangle(
             if index >= zbuf.len() || depth >= zbuf[index] {
                 continue;
             }
+            // Vertex u/v are in a 64×64 parameter space; map onto the tile.
             let u = ((w0 * i64::from(u0) + w1 * i64::from(u1) + w2 * i64::from(u2)) / area)
-                .clamp(0, 63) as u32;
+                .clamp(0, 63);
             let v = ((w0 * i64::from(v0) + w1 * i64::from(v1) + w2 * i64::from(v2)) / area)
-                .clamp(0, 63) as u32;
-            let pixel = match tiles.sample_at(sprite.picnum, u, v, clock_120hz) {
+                .clamp(0, 63);
+            let pixel = match tile.map(|t| t.at(u * t.w as i64 / 64, v * t.h as i64 / 64)) {
                 Some(pixel) if pixel == room_build::art::TRANSPARENT => continue,
                 Some(pixel) => {
-                    tiles.shade_palette(sprite.shade, tiles.remap_palette(sprite.pal, pixel))
+                    let p = pal_table.map_or(pixel, |t| t[usize::from(pixel)]);
+                    let shade =
+                        sprite_fog_shade(None, sprite.shade, i64::from(depth), sprite.sectnum);
+                    tiles.shade_row(shade).map_or(p, |r| r[usize::from(p)])
                 }
                 None => flat,
             };
@@ -1367,14 +1536,18 @@ fn render_wall_aligned_sprite(
     let Some((tile_width, tile_height)) = tiles.dimensions(sprite.picnum) else {
         return;
     };
+    let wall_tile = tiles.resolve(sprite.picnum, clock_120hz);
     if tile_width == 0 || tile_height == 0 || sprite.xrepeat == 0 || sprite.yrepeat == 0 {
         return;
     }
-    let half_width = i32::from(tile_width) * i32::from(sprite.xrepeat) * 2;
+    // Build `drawsprite` (cstat 16): the tile spans tilesizx*xrepeat/4 XY
+    // units along (sin, -cos) — across the sprite's facing — and
+    // tilesizy*yrepeat*4 Z units.
+    let half_width = i32::from(tile_width) * i32::from(sprite.xrepeat) / 8;
     let world_height = i32::from(tile_height) * i32::from(sprite.yrepeat) * 4;
     let (sin, cos) = crate::helpers::approx_sincos_q14(i32::from(sprite.ang));
-    let dx = ((i64::from(cos) * i64::from(half_width)) >> 14) as i32;
-    let dy = ((i64::from(sin) * i64::from(half_width)) >> 14) as i32;
+    let dx = ((i64::from(sin) * i64::from(half_width)) >> 14) as i32;
+    let dy = ((-i64::from(cos) * i64::from(half_width)) >> 14) as i32;
     let (tile_xoff, tile_yoff) = tiles.sprite_offset(sprite.picnum);
     let mut xoff = i32::from(tile_xoff) + i32::from(sprite.xoffset);
     let mut yoff = i32::from(tile_yoff) + i32::from(sprite.yoffset);
@@ -1384,9 +1557,9 @@ fn render_wall_aligned_sprite(
     if sprite.cstat & CSTAT_YFLIP != 0 {
         yoff = -yoff;
     }
-    let x_shift = xoff.wrapping_mul(i32::from(sprite.xrepeat)).wrapping_mul(4);
-    let shift_x = ((i64::from(cos) * i64::from(x_shift)) >> 14) as i32;
-    let shift_y = ((i64::from(sin) * i64::from(x_shift)) >> 14) as i32;
+    let x_shift = xoff.wrapping_mul(i32::from(sprite.xrepeat)) / 4;
+    let shift_x = ((i64::from(sin) * i64::from(x_shift)) >> 14) as i32;
+    let shift_y = ((-i64::from(cos) * i64::from(x_shift)) >> 14) as i32;
     let center_x = sprite.x.wrapping_add(shift_x);
     let center_y = sprite.y.wrapping_add(shift_y);
     let left_x = center_x.wrapping_sub(dx);
@@ -1474,19 +1647,22 @@ fn render_wall_aligned_sprite(
             if index >= zbuf.len() || depth >= zbuf[index] {
                 continue;
             }
-            let u0 = ((i64::from(col - a_top.0) << 6) / screen_width).clamp(0, 63) as u32;
-            let u = if reverse_u { 63 - u0 } else { u0 };
-            let v0 = ((i64::from(y - top) << 6) / yspan).clamp(0, 63) as u32;
+            let tw = i64::from(tile_width);
+            let th = i64::from(tile_height);
+            let u0 = ((i64::from(col - a_top.0) * tw) / screen_width).clamp(0, tw - 1);
+            let u = if reverse_u { tw - 1 - u0 } else { u0 };
+            let v0 = ((i64::from(y - top) * th) / yspan).clamp(0, th - 1);
             let v = if sprite.cstat & CSTAT_YFLIP != 0 {
-                63 - v0
+                th - 1 - v0
             } else {
                 v0
             };
-            let pix = match tiles.sample_at(sprite.picnum, u, v, clock_120hz) {
+            let pix = match wall_tile.map(|t| t.at(u, v)) {
                 Some(pixel) if pixel == room_build::art::TRANSPARENT => continue,
-                Some(pixel) => {
-                    tiles.shade_palette(sprite.shade, tiles.remap_palette(sprite.pal, pixel))
-                }
+                Some(pixel) => tiles.shade_palette(
+                    sprite_fog_shade(None, sprite.shade, i64::from(depth), sprite.sectnum),
+                    tiles.remap_palette(sprite.pal, pixel),
+                ),
                 None => flat,
             };
             zbuf[index] = depth;
@@ -1589,9 +1765,11 @@ fn cam_project(
 ) -> Option<(i64, i64, i64)> {
     let dx = i64::from(x) - i64::from(view.posx);
     let dy = i64::from(y) - i64::from(view.posy);
-    // Rotate by -ang into camera forward (+Z).
-    let rx = (dx * i64::from(cos) + dy * i64::from(sin)) >> 14;
-    let rz = (-dx * i64::from(sin) + dy * i64::from(cos)) >> 14;
+    // Build heading `ang` faces (cos, sin); with Y pointing south, screen
+    // right is (-sin, cos). (The old basis swapped them: the view looked 90°
+    // to the right of the player and was mirrored, so turning felt inverted.)
+    let rz = (dx * i64::from(cos) + dy * i64::from(sin)) >> 14;
+    let rx = (-dx * i64::from(sin) + dy * i64::from(cos)) >> 14;
     let ry = (i64::from(view.posz) - i64::from(z)) >> 4; // Build z→rough world
     if rz <= 0 {
         return None;
@@ -1974,7 +2152,7 @@ mod tests {
                 ..WallT::default()
             },
         ];
-        // Soft cam: ang 0 looks +Y (`cam_project` rz = dy).
+        // Build heading 512 looks +Y (south).
         let sprites = vec![SpriteT {
             x: 1000,
             y: 1400,
@@ -1989,7 +2167,7 @@ mod tests {
         }];
         let w = BuildWorld::load_arrays(sectors, walls, &sprites, [1000, 400, -(32 << 8)], 0, 0, 1)
             .unwrap();
-        let v = w.build_view(1000, 400, -(32 << 8), 0, 100, 0);
+        let v = w.build_view(1000, 400, -(32 << 8), 512, 100, 0);
         let mut f = SoftFrame::new(128, 96);
         render_fp_solid(&w, &v, &mut f);
         let sprite_flat = (99i16.wrapping_mul(37).wrapping_add(17) as u8).max(32);
@@ -2090,8 +2268,8 @@ mod tests {
         ];
         let world = BuildWorld::load_arrays(sectors, walls, &[], [500, 500, -4096], 0, 0, 1)
             .expect("two adjacent portal sectors");
-        let view = world.build_view(500, 500, -4096, 0, 100, 0);
-        assert!(view.visible_sectors.contains(&1));
+        // Build heading 512 looks +Y, through the portal wall at y = 1000.
+        let view = world.build_view(500, 500, -4096, 512, 100, 0);
         let mut frame = SoftFrame::new(128, 96);
         render_fp_textured(&world, &view, &mut frame, &SoftTiles::new());
         let portal_wall = wall_color(5, 0);

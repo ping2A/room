@@ -415,6 +415,7 @@ pub(crate) fn spawn_maker_bubble(
         actor_temps[iu] = ActorConTemps::default();
     }
     actor_temps[iu].hit_picnum = sprites[fu].picnum;
+    crate::con::vm::inherit_hit_planes(actor_temps, iu, from);
     i
 }
 
@@ -435,11 +436,14 @@ pub fn movestandables(
     };
     let mut i = only_sprite.unwrap_or(lists.headspritestat[STAT_STANDABLE as usize]);
     while i >= 0 {
-        let next = lists.nextspritestat[i as usize];
+        // One-sprite calls (Chocolate's per-sprite `movestandables` dispatch)
+        // must not fall through to the rest of the stat list.
+        let next = if only_sprite.is_some() {
+            -1
+        } else {
+            lists.nextspritestat[i as usize]
+        };
         let iu = i as usize;
-        if only_sprite.is_some() {
-            i = -1;
-        }
         if iu >= sprites.len() {
             i = next;
             continue;

@@ -396,6 +396,110 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/duke")
     }
 
+    /// Honest-mode floor: native DEMO1 playback (no fixups, no RNG pads)
+    /// matches the Chocolate trace for at least this many tics. Raise it as
+    /// the frontier moves; never lower it to make a change pass.
+    const DEMO1_REAL_SYNC_TICS: usize = 264;
+
+    /// E1L1 as a player would play it: walk to the rooftop fan vent, throw
+    /// the pipe bomb picked up on the way at the gas tanks (SEENINE chain,
+    /// hitag 253), drop through the broken fan and get transported (SE7)
+    /// down to the street in front of the cinema.
+    #[test]
+    fn e1l1_vent_drop_reaches_the_street() {
+        let root = duke_root();
+        let grp_path = root.join("duke3d.grp");
+        if !grp_path.is_file() {
+            return;
+        }
+        let grp = std::fs::read(grp_path).unwrap();
+        let mut s = session_from_grp_map(&grp, "E1L1.MAP", 2).unwrap();
+        let w = |s: &DukeSession, i: usize| s.world.as_ref().unwrap().sprites[i];
+        let aim = |s: &mut DukeSession, x: i32, y: i32, z: i32| {
+            let dx = f64::from(x - s.player.posx);
+            let dy = f64::from(y - s.player.posy);
+            let ang = dy.atan2(dx) * 1024.0 / std::f64::consts::PI;
+            s.player.ang = (ang.round() as i32).rem_euclid(2048) as i16;
+            let slope = f64::from(z - s.player.posz) / dx.hypot(dy).max(1.0);
+            s.player.horiz = (100.0 - slope * 8.0).round() as i16;
+        };
+        let dist = |s: &DukeSession, x: i32, y: i32| {
+            f64::from(x - s.player.posx).hypot(f64::from(y - s.player.posy))
+        };
+        for _ in 0..30 {
+            s.tick(DukeInput::default());
+        }
+        let tank = w(&s, 562);
+        assert_eq!(tank.picnum, crate::spawn::SEENINE);
+        for _ in 0..400 {
+            if dist(&s, tank.x, tank.y) < 2500.0 {
+                break;
+            }
+            aim(&mut s, tank.x, tank.y, tank.z);
+            let ang = s.player.ang;
+            s.tick(DukeInput::from_local(40, 0, ang, 0, 0, 0));
+        }
+        assert!(dist(&s, tank.x, tank.y) < 2500.0, "walk to the vent");
+        let mut exploded = false;
+        for k in 0..240 {
+            let intact = w(&s, 562).picnum == crate::spawn::SEENINE;
+            if intact {
+                aim(&mut s, tank.x, tank.y, tank.z - (12 << 8));
+            }
+            let fire = intact && k % 12 == 0;
+            s.tick(DukeInput {
+                bits: if fire { 1 << 2 } else { 0 },
+                ..DukeInput::default()
+            });
+            exploded |= !intact;
+        }
+        assert!(exploded, "gas tank chain reaction");
+        let se7 = w(&s, 554);
+        for _ in 0..200 {
+            if s.player.cursectnum == 269 {
+                break;
+            }
+            aim(&mut s, se7.x, se7.y, se7.z);
+            let ang = s.player.ang;
+            s.tick(DukeInput::from_local(40, 0, ang, 0, 0, 0));
+        }
+        s.player.horiz = 100;
+        for _ in 0..120 {
+            s.tick(DukeInput::default());
+        }
+        assert_eq!(s.player.cursectnum, 256, "SE7 drop lands on the street");
+        assert!(s.player.extra > 0);
+    }
+
+    #[test]
+    fn local_input_rotates_into_world_momentum() {
+        // Heading 512 faces +Y: walking forward is all `svel` (world Y).
+        let f = DukeInput::from_local(40, 0, 512, 0, 0, 0);
+        assert_eq!(f.fvel, 0);
+        assert!(f.svel > 1200, "{f:?}");
+        // Heading 0, strafing left (+svel) moves toward -Y.
+        let l = DukeInput::from_local(0, 40, 0, 0, 0, 0);
+        assert_eq!(l.fvel, 0);
+        assert!(l.svel < -1200, "{l:?}");
+    }
+
+    #[test]
+    fn demo1_real_sync_floor() {
+        let root = duke_root();
+        let grp = root.join("duke3d.grp");
+        if !grp.is_file() {
+            return;
+        }
+        let diff = demo1_frontier_real(
+            &grp,
+            &root.join("demos/DEMO1.DMO"),
+            &root.join("traces/DEMO1.trace"),
+            DEMO1_REAL_SYNC_TICS,
+        )
+        .unwrap();
+        assert!(diff.is_none(), "DEMO1 native sync regressed: {diff:?}");
+    }
+
     #[test]
     fn demo1_tic39_bitexact() {
         use crate::player::DukeInput;
@@ -6905,6 +7009,7 @@ mod tests {
                             &[],
                             &[],
                             &mut [],
+                            None,
                         );
                         let after = VM_TRANDS.load(std::sync::atomic::Ordering::Relaxed);
                         if after != before {
@@ -6947,6 +7052,7 @@ mod tests {
                 session.global_random,
                 &mut session.actor_temps,
                 session.script.as_ref(),
+                None,
             );
             eprintln!("after standables: seed={}", session.randomseed);
         }

@@ -557,6 +557,10 @@ pub struct ConVm<'a> {
     sound_defs: Option<&'a [Option<super::SoundDef>]>,
     /// First active owner by Atomic sound ID, matching `SoundOwner[id][0]`.
     active_sound_owners: Option<&'a mut [Option<i16>]>,
+    /// Immediate `shoot PN` handler `(pn, current g_sp->ang, &mut randomseed)
+    /// -> handled`. Chocolate's `shoot()` runs inline inside `parse()`, so
+    /// any later `ifrnd` in the same actor tic sees the RNG after the shot.
+    pub shoot_now: Option<&'a mut (dyn FnMut(i16, i16, &mut i32) -> bool + 'a)>,
     /// Mutable sprite repeats for sequential CON `sizeat` / `sizeto` commands.
     sprite_xrepeat: u8,
     sprite_yrepeat: u8,
@@ -707,6 +711,7 @@ impl<'a> ConVm<'a> {
             sprite_i: -1,
             sound_defs: None,
             active_sound_owners: None,
+            shoot_now: None,
             sprite_xrepeat: 0,
             sprite_yrepeat: 0,
         }
@@ -1019,6 +1024,11 @@ impl<'a> ConVm<'a> {
             return 1;
         }
         let op = self.word(self.insptr);
+        if let Some(want) = con_op_trace_sprite()
+            && want == i32::from(self.sprite_i)
+        {
+            eprintln!("CONOP sprite={} pc={} op={} arg={}", self.sprite_i, self.insptr, op, self.word(self.insptr + 1));
+        }
         match op {
             // ifrnd
             3 => {
@@ -1514,7 +1524,14 @@ impl<'a> ConVm<'a> {
             13 => {
                 self.insptr += 1;
                 let pn = self.word(self.insptr) as i16;
-                self.temps.pending_shoots.push(pn);
+                let ang = self.sprite_ang;
+                let handled = match self.shoot_now.as_mut() {
+                    Some(hook) => hook(pn, ang, &mut self.randomseed),
+                    None => false,
+                };
+                if !handled {
+                    self.temps.pending_shoots.push(pn);
+                }
                 self.insptr += 1;
             }
             // CON `print N` — Chocolate writes the operand as a decimal line
@@ -1720,8 +1737,8 @@ impl<'a> ConVm<'a> {
             // Chocolate co-op weapon reservation lookup/registration.
             94 => {
                 self.insptr += 1;
+                // Chocolate leaves `insptr` on the argument for `parseifelse`.
                 let register = self.word(self.insptr) != 0;
-                self.insptr += 1;
                 let mut condition = false;
                 if let Some(env) = self.env.as_mut() {
                     if env.coop_mode && env.multimode > 1 {
@@ -2228,7 +2245,8 @@ impl<'a> ConVm<'a> {
                     self.word(self.insptr + 3).clamp(0, 255) as u8,
                 ];
                 self.temps.pending_player_palette.push((channels, tics));
-                self.insptr += 5;
+                // `palfrom` compiles to opcode + 4 words (missing args padded).
+                self.insptr += 4;
             }
             _ => {
                 // Unknown / unhandled: advance one word to avoid infinite loops.
@@ -2401,23 +2419,24 @@ fn getincangle(a: i16, na: i16) -> i16 {
 }
 
 /// Chocolate `execute` for STAT_ACTOR: player dist / `ifp` / `ifcanseetarget`.
-pub fn execute_actor(
-    image: &ScriptImage,
+pub fn execute_actor<'a>(
+    image: &'a ScriptImage,
     entry: usize,
     randomseed: &mut i32,
-    temps: &mut ActorConTemps,
+    temps: &'a mut ActorConTemps,
     sprite: &mut SpriteT,
     sprite_i: i16,
     sector: &SectorT,
     hit_floorz: i32,
     hit_ceilingz: i32,
     env_player: ConSpriteEnv,
-    cansee_sectors: &[SectorZ],
-    cansee_walls: &[WallXY],
-    cansee_sprites: &[SpriteHit],
-    cansee_picnums: &[i16],
-    projectiles: &[ConProjectile],
-    active_sound_owners: &mut [Option<i16>],
+    cansee_sectors: &'a [SectorZ],
+    cansee_walls: &'a [WallXY],
+    cansee_sprites: &'a [SpriteHit],
+    cansee_picnums: &'a [i16],
+    projectiles: &'a [ConProjectile],
+    active_sound_owners: &'a mut [Option<i16>],
+    shoot_now: Option<&'a mut (dyn FnMut(i16, i16, &mut i32) -> bool + 'a)>,
 ) -> ConStop {
     tick_action_frames(&image.script, temps, &mut sprite.lotag);
     let env = ConSpriteEnv {
@@ -2445,6 +2464,7 @@ pub fn execute_actor(
     let mut vm = ConVm::new(&image.script, entry, *randomseed, temps);
     vm.sound_defs = Some(&image.sounds);
     vm.active_sound_owners = Some(active_sound_owners);
+    vm.shoot_now = shoot_now;
     vm.env = Some(env);
     vm.cansee_sectors = Some(cansee_sectors);
     vm.cansee_walls = Some(cansee_walls);
@@ -2659,5 +2679,27 @@ ends\n\
             ..ActorConTemps::default()
         };
         assert_eq!(execute(&img, entry, &mut 1, &mut hit_temps), ConStop::Break);
+    }
+}
+
+/// Debug: `ROOM_CON_OP_TRACE=<sprite>` prints every CON opcode that sprite runs.
+fn con_op_trace_sprite() -> Option<i32> {
+    static WANT: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
+    *WANT.get_or_init(|| std::env::var("ROOM_CON_OP_TRACE").ok().and_then(|v| v.parse().ok()))
+}
+
+/// Chocolate `EGS`: `hittype[i].floorz/ceilingz = hittype[owner].floorz/ceilingz`.
+/// Room caches these planes in `warp_floorz`/`warp_ceilingz`; an owner without
+/// a cached plane leaves the child on its current-sector fallback.
+pub(crate) fn inherit_hit_planes(temps: &mut [ActorConTemps], child: usize, owner: i16) {
+    let Some(owner) = usize::try_from(owner).ok().and_then(|o| temps.get(o)) else {
+        return;
+    };
+    let (fz, cz) = (owner.warp_floorz, owner.warp_ceilingz);
+    if let Some(child) = temps.get_mut(child) {
+        if fz.is_some() {
+            child.warp_floorz = fz;
+            child.warp_ceilingz = cz;
+        }
     }
 }

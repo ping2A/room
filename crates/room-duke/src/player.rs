@@ -44,6 +44,26 @@ pub struct DukeInput {
 }
 
 impl DukeInput {
+    /// Chocolate `getinput`: build a sync record from player-relative
+    /// movement. `vel` is forward and `svel` is strafe-left, in key units
+    /// (`NORMALKEYMOVE` 40, doubled when running). Duke's sync stores
+    /// world-space momentum, so both are rotated by the current heading:
+    /// `fvel = vel·cos + svel·sin`, `svel = vel·sin − svel·cos` (mulscale9).
+    #[must_use]
+    pub fn from_local(vel: i32, svel: i32, ang: i16, avel: i8, horz: i8, bits: u32) -> Self {
+        let (sin, cos) = room_build_engine::helpers::approx_sincos_q14(i32::from(ang));
+        let ms9 = |a: i32, b: i32| ((i64::from(a) * i64::from(b)) >> 9) as i32;
+        let momx = ms9(vel, cos) + ms9(svel, sin);
+        let momy = ms9(vel, sin) - ms9(svel, cos);
+        Self {
+            fvel: momx.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+            svel: momy.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+            avel,
+            horz,
+            bits,
+        }
+    }
+
     /// Map a parsed `.DMO` player record onto Room sync fields.
     #[must_use]
     pub fn from_dmo(d: &room_build::DmoInput) -> Self {
@@ -155,6 +175,14 @@ pub struct Player {
     pub pycount: i16,
     /// Chocolate `bobpos*` — previous-tic pre-clip pose for walk `xvel`.
     pub bobposx: i32,
+    /// Chocolate `hittype[p->i].floorz` / `ceilingz` from processinput's getzrange.
+    #[serde(default)]
+    pub hit_floorz: i32,
+    #[serde(default)]
+    pub hit_ceilingz: i32,
+    /// Chocolate player-body `sprite[p->i].xvel`, set early in `processinput`.
+    #[serde(default)]
+    pub body_xvel: i16,
     pub bobposy: i32,
     pub cursectnum: i16,
     pub posxv: i32,
@@ -476,6 +504,9 @@ impl Default for Player {
             pyoff: 0,
             pycount: 0,
             bobposx: 0,
+            hit_floorz: 0,
+            hit_ceilingz: 0,
+            body_xvel: 0,
             bobposy: 0,
             cursectnum: 0,
             posxv: 0,
@@ -766,6 +797,25 @@ pub fn processinput_move_with_lists_clipping(
             1
         };
 
+    // Chocolate `processinput` sets the body sprite's `xvel` from the
+    // distance since `bobpos` *before* this tic's clipmove — i.e. the
+    // previous tic's horizontal displacement — advances `bobcounter` with the
+    // previous tic's `on_ground`, then refreshes `bobpos`. CON `ifp pwalking`
+    // and the view bob read this value.
+    {
+        let dx_bob = p.posx.wrapping_sub(p.bobposx);
+        let dy_bob = p.posy.wrapping_sub(p.bobposy);
+        let dist2_bob = dx_bob
+            .saturating_mul(dx_bob)
+            .saturating_add(dy_bob.saturating_mul(dy_bob));
+        p.body_xvel = room_build_engine::numeric::ksqrt(dist2_bob) as i16;
+        if p.on_ground {
+            p.bob_counter = p.bob_counter.wrapping_add(i32::from(p.body_xvel) >> 1);
+        }
+        p.bobposx = p.posx;
+        p.bobposy = p.posy;
+    }
+
     // Chocolate `findplayer` (movefta / standables) reads `opos` after processinput.
     // Atomic snapshots `opos` mid-function *before* the main clipmove / late Z, so
     // movers still see the previous-tic pose. Snapshot at entry to match that.
@@ -794,17 +844,23 @@ pub fn processinput_move_with_lists_clipping(
         };
         p.ang = ((i32::from(p.ang) + angvel) & 2047) as i16;
     }
-    if sync.horz != 0 {
-        p.horiz = (i32::from(p.horiz) + i32::from(sync.horz) * 2).clamp(-99, 299) as i16;
-    }
     // Chocolate `return_to_center`: pull horiz toward ~100 each tic.
     if p.return_to_center > 0 {
         p.return_to_center -= 1;
         p.horiz = (i32::from(p.horiz) + 33 - (i32::from(p.horiz) / 3)).clamp(-99, 299) as i16;
     }
-    // Chocolate non-`aim_mode`: snap near-center horiz to 100.
-    if p.horiz > 95 && p.horiz < 105 {
-        p.horiz = 100;
+    if p.aim_mode != 0 {
+        // Chocolate mouse aiming: `p->horiz += sync.horz >> 1`.
+        p.horiz = (i32::from(p.horiz) + (i32::from(sync.horz) >> 1)).clamp(-99, 299) as i16;
+    } else {
+        if sync.horz != 0 {
+            // Room keeps the legacy free-look delta when aim mode is off.
+            p.horiz = (i32::from(p.horiz) + i32::from(sync.horz) * 2).clamp(-99, 299) as i16;
+        }
+        // Chocolate non-`aim_mode`: snap near-center horiz to 100.
+        if p.horiz > 95 && p.horiz < 105 {
+            p.horiz = 100;
+        }
     }
 
     // Chocolate: getzrange + fall/ceiling clamp happen *before* XY clipmove.
@@ -912,20 +968,8 @@ pub fn processinput_move_with_lists_clipping(
         );
     }
 
-    // Chocolate sets player-body xvel from the post-move displacement since
-    // bobpos, advances bobcounter, then refreshes bobpos for the next tic.
-    // `pyoff` uses this same speed later in processinput.
-    let dx_bob = p.posx.wrapping_sub(p.bobposx);
-    let dy_bob = p.posy.wrapping_sub(p.bobposy);
-    let dist2_bob = dx_bob
-        .saturating_mul(dx_bob)
-        .saturating_add(dy_bob.saturating_mul(dy_bob));
-    let walk_xvel = room_build_engine::numeric::ksqrt(dist2_bob) as i32;
-    if p.on_ground {
-        p.bob_counter = p.bob_counter.wrapping_add(walk_xvel >> 1);
-    }
-    p.bobposx = p.posx;
-    p.bobposy = p.posy;
+    // `s->xvel` was set near the top of processinput (see `body_xvel`).
+    let walk_xvel = i32::from(p.body_xvel);
 
     // Chocolate walk view-bob (`pyoff`) — feeds shotgun `sz = posz+pyoff+(4<<8)`.
     let psectlotag = sectors
@@ -1046,6 +1090,9 @@ pub fn apply_player_fall_z(
     );
     let mut cz = zr.ceilz;
     let fz = zr.florz;
+    // Chocolate `hittype[pi].floorz = fz; hittype[pi].ceilingz = cz;`
+    p.hit_floorz = fz;
+    p.hit_ceilingz = cz;
     let mut psectlotag = sectors[p.cursectnum as usize].lotag;
     let truefz = sectors[p.cursectnum as usize].floorz;
     let truefdist = (p.posz - truefz).abs();
@@ -1211,11 +1258,7 @@ pub fn sync_player_sprite(p: &Player, sprites: &mut [SpriteT]) {
     if i >= sprites.len() {
         return;
     }
-    let dx = p.posx.wrapping_sub(p.oposx);
-    let dy = p.posy.wrapping_sub(p.oposy);
-    // ksqrt arg is i32; distance squared can overflow for huge deltas — clamp.
-    let dist2 = dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy));
-    let xvel = room_build_engine::numeric::ksqrt(dist2) as i16;
+    let xvel = p.body_xvel;
     let s = &mut sprites[i];
     // Chocolate `setsprite(pi, pos…)` updates x/y/z/sect only — not `ang`.
     // `moveplayers` assigns `s->ang = p->ang` *after* APLAYER `execute` so

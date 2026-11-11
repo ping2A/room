@@ -608,11 +608,14 @@ fn main() {
         } else {
             (None, None, SampleBank::new(), None, None)
         };
-    let fonts = vfs
+    let mut fonts = vfs
         .as_ref()
         .map(FontRegistry::load_doom_fonts)
         .unwrap_or_default();
-    let patches = vfs.as_ref().map(PatchCache::from_vfs).unwrap_or_default();
+    let mut patches = vfs.as_ref().map(PatchCache::from_vfs).unwrap_or_default();
+    if let Some(renderer) = duke_renderer.as_ref() {
+        install_duke_ui_art(renderer, &mut fonts, &mut patches);
+    }
     let menu = play
         .as_ref()
         .filter(|g| g.state == GameState::Title)
@@ -778,6 +781,9 @@ fn main() {
         last_player_hp: 100,
         fixed_colormap: 0,
         mouse_yaw_accum: 0,
+        duke_turn_residual: 0.0,
+        duke_turn_held: 0,
+        duke_horiz_residual: 0.0,
         mouse_pitch_accum: 0,
         console: {
             let mut con = Console::with_defaults();
@@ -1345,6 +1351,121 @@ fn duke_sound_is_occluded(
         sectors,
         walls,
     )
+}
+
+/// Atomic tile bases for the menu (`menutext`) and message (`gametext`) fonts.
+const DUKE_BIGALPHANUM: i16 = 2940;
+const DUKE_STARTALPHANUM: i16 = 2822;
+const DUKE_SPINNINGNUKEICON: i16 = 2813;
+
+/// Register Duke's own ART fonts and menu cursor in the shared UI caches, so
+/// the generic list menus and quotes render with Duke's look instead of
+/// missing Doom `STCFN`/`DBIGFONT` lumps (drawn as grey boxes).
+fn install_duke_ui_art(
+    renderer: &room_duke::DukeSoftRenderer,
+    fonts: &mut FontRegistry,
+    patches: &mut PatchCache,
+) {
+    let palette = renderer.ui_palette_rgb();
+    // Fon2 reserves index 0 for transparency: shift Duke indices up by one.
+    let mut fon_palette = vec![[0u8, 0, 0]];
+    fon_palette.extend_from_slice(&palette[..255]);
+    let glyph = |pic: i16| {
+        renderer.tile_indices(pic).map(|(w, h, idx)| room_formats::FontGlyph {
+            width: w,
+            height: h,
+            indices: idx
+                .into_iter()
+                .map(|i| if i == room_build::art::TRANSPARENT { 0 } else { i + 1 })
+                .collect(),
+        })
+    };
+    let make_font = |map: &dyn Fn(u8) -> Option<i16>, kerning: i16| {
+        let glyphs: Vec<Option<room_formats::FontGlyph>> =
+            (32u8..=126).map(|c| map(c).and_then(&glyph)).collect();
+        let height = glyphs
+            .iter()
+            .flatten()
+            .map(|g| g.height)
+            .max()
+            .unwrap_or(0);
+        (height > 0).then(|| {
+            room_ui::SoftFont::Fon2(room_formats::Fon2 {
+                font_height: height,
+                first_char: 32,
+                last_char: 126,
+                constant_width: false,
+                kerning,
+                palette: fon_palette.clone(),
+                glyphs,
+            })
+        })
+    };
+    // Chocolate `menutext`: A–Z (lowercase folded), digits, a few symbols.
+    let big = |c: u8| -> Option<i16> {
+        let c = c.to_ascii_uppercase();
+        match c {
+            b'A'..=b'Z' => Some(DUKE_BIGALPHANUM + i16::from(c - b'A')),
+            b'0'..=b'9' => Some(DUKE_BIGALPHANUM - 10 + i16::from(c - b'0')),
+            b'-' => Some(DUKE_BIGALPHANUM - 11),
+            b'.' => Some(3002),
+            b',' => Some(3003),
+            b'!' => Some(3004),
+            b'?' => Some(3005),
+            b';' | b':' => Some(3006),
+            b'\'' => Some(3022),
+            _ => None,
+        }
+    };
+    // Chocolate `gametext`: STARTALPHANUM + (c - '!').
+    let small = |c: u8| -> Option<i16> {
+        (b'!'..=b'~')
+            .contains(&c)
+            .then(|| DUKE_STARTALPHANUM + i16::from(c - b'!'))
+    };
+    if let Some(font) = make_font(&big, 0) {
+        fonts.insert(room_ui::FontId::BIG, font);
+    }
+    if let Some(font) = make_font(&small, 1) {
+        fonts.insert(room_ui::FontId::SMALL, font);
+    }
+    // Dense menus draw `STCFNxxx` patches directly: alias them to `gametext`
+    // glyphs. The list-menu cursor (`M_SKULL1/2`) becomes the spinning nuke.
+    let mut art: Vec<(String, i16)> = vec![
+        ("M_SKULL1".into(), DUKE_SPINNINGNUKEICON),
+        ("M_SKULL2".into(), DUKE_SPINNINGNUKEICON + 3),
+    ];
+    for c in b'!'..=b'_' {
+        if let Some(pic) = small(c) {
+            art.push((format!("STCFN{c:03}"), pic));
+        }
+    }
+    for (name, pic) in art {
+        let name = name.as_str();
+        let Some((w, h, idx)) = renderer.tile_indices(pic) else {
+            continue;
+        };
+        let mut rgba = Vec::with_capacity(idx.len() * 4);
+        let mut alpha = Vec::with_capacity(idx.len());
+        for &i in &idx {
+            let solid = i != room_build::art::TRANSPARENT;
+            let [r, g, b] = palette[usize::from(i)];
+            rgba.extend_from_slice(&[r, g, b, if solid { 255 } else { 0 }]);
+            alpha.push(if solid { 255 } else { 0 });
+        }
+        patches.insert(
+            name,
+            room_ui::SoftPatch {
+                width: w,
+                height: h,
+                left_offset: 0,
+                top_offset: 0,
+                indices: idx,
+                alpha,
+                rgba: Some(rgba),
+            },
+        );
+    }
 }
 
 fn duke_audio_menu(cvars: &room_console::CvarStore) -> ListMenu {
@@ -2274,6 +2395,12 @@ struct ViewerApp {
     fixed_colormap: u8,
     /// Mouse yaw delta accumulated since last tic.
     mouse_yaw_accum: i32,
+    /// Native Duke: sub-tic mouse yaw (Build angle units) not yet sent.
+    duke_turn_residual: f64,
+    /// Native Duke: Chocolate `turnheldtime` (120 Hz ticks).
+    duke_turn_held: u32,
+    /// Native Duke: sub-unit mouse pitch (horiz units) not yet sent.
+    duke_horiz_residual: f64,
     /// Accumulated mouse pitch for the next play tic (`InputSample::mouse_pitch`).
     mouse_pitch_accum: i32,
     /// Console (cheats / CVars in play mode).
@@ -4600,7 +4727,62 @@ impl ViewerApp {
             .flatten()
             .and_then(|session| {
                 let renderer = self.duke_renderer.as_ref()?;
-                let world = session.world.as_ref()?;
+                let world = session.render_world()?;
+                renderer.set_overlay_quote(session.active_quote());
+                // Mouse look between 30 Hz tics: show the not-yet-sent mouse
+                // motion so the view follows the mouse at the display rate.
+                let mut view_player = session.player.clone();
+                if self.mouse_look
+                    && self.duke_demo_playback.is_none()
+                    && self.duke_atomic_demo_playback.is_none()
+                    && session.player.dead_flag == 0
+                {
+                    let pending_yaw = -(self.mouse_yaw_accum as f64) * MOUSE_DEG_PER_COUNT * 2048.0
+                        / 360.0
+                        + self.duke_turn_residual;
+                    view_player.ang =
+                        ((i32::from(view_player.ang) + pending_yaw.round() as i32) & 2047) as i16;
+                    let pending_horiz = self.mouse_pitch_accum as f64
+                        * MOUSE_DEG_PER_COUNT
+                        * 160.0
+                        * std::f64::consts::PI
+                        / 180.0
+                        + self.duke_horiz_residual;
+                    view_player.horiz = (f64::from(view_player.horiz) + pending_horiz.round())
+                        .clamp(-99.0, 299.0) as i16;
+                }
+                // Chocolate `smoothratio`: draw the camera between the previous
+                // and current tic positions (skipped across teleports).
+                {
+                    let frac = f64::from((self.tic_accum / (1.0 / 30.0)).clamp(0.0, 1.0));
+                    let p = &session.player;
+                    let (dx, dy, dz) = (p.posx - p.oposx, p.posy - p.oposy, p.posz - p.oposz);
+                    if p.remote_camera.is_none()
+                        && dx.abs() + dy.abs() < 2048
+                        && dz.abs() < (64 << 8)
+                        && (dx != 0 || dy != 0 || dz != 0)
+                    {
+                        let lerp = |a: i32, d: i32| a - ((f64::from(d) * (1.0 - frac)).round() as i32);
+                        view_player.posx = lerp(p.posx, dx);
+                        view_player.posy = lerp(p.posy, dy);
+                        view_player.posz = lerp(p.posz, dz);
+                        let mut sect = p.cursectnum;
+                        room_build_engine::geom::updatesector(
+                            view_player.posx,
+                            view_player.posy,
+                            &mut sect,
+                            &world.sector_walls(),
+                            &world.wall_xy(),
+                        );
+                        if sect >= 0 {
+                            view_player.cursectnum = sect;
+                        } else {
+                            view_player.posx = p.posx;
+                            view_player.posy = p.posy;
+                            view_player.posz = p.posz;
+                        }
+                    }
+                }
                 let (width, height) = self
                     .config
                     .as_ref()
@@ -4609,8 +4791,8 @@ impl ViewerApp {
                     width,
                     height,
                     renderer.render_rgba_interpolated(
-                        world,
-                        &session.player,
+                        &world,
+                        &view_player,
                         width,
                         height,
                         session.tic,
@@ -4874,7 +5056,10 @@ impl ViewerApp {
                         } else {
                             draw_automap(&self.map, &view, &mut ui);
                         }
-                    } else {
+                    } else if self.duke_session.is_none() {
+                        // Doom psprites/crosshair: the native Duke renderer
+                        // draws its own weapon; a missing Doom weapon lump
+                        // here showed as a grey 16x16 placeholder box.
                         if let Some(vfs) = self.vfs.as_ref() {
                             if !self.hud.weapon_patch.is_empty() {
                                 let _ = self.patches.ensure(vfs, &self.hud.weapon_patch);
@@ -5662,27 +5847,9 @@ impl ViewerApp {
             if self.duke_bonus_panel.is_none()
                 && let Some(session) = &self.duke_session
             {
-                // Native Duke has no Doom status bar. Keep the first playable
-                // shell legible while the Duke-specific HUD is implemented.
-                hud.text(
-                    12.0,
-                    20.0,
-                    format!(
-                        "HEALTH {}  AMMO {}  WEAPON {}",
-                        session.player.extra.max(0),
-                        session.player.ammo[session.player.curr_weapon.clamp(0, 11) as usize],
-                        session.player.curr_weapon
-                    ),
-                    [1.0, 1.0, 1.0, 1.0],
-                );
-                if let Some(quote) = session.active_quote() {
-                    let quote_width =
-                        f32::from(u16::try_from(quote.chars().count()).unwrap_or(u16::MAX)) * 8.0;
-                    let x = ((fb_w - quote_width) * 0.5).max(8.0);
-                    let y = (fb_h - 52.0).max(8.0);
-                    hud.text(x + 1.0, y + 1.0, quote, [0.0, 0.0, 0.0, 1.0]);
-                    hud.text(x, y, quote, [1.0, 0.88, 0.2, 1.0]);
-                }
+                // Health/ammo/inventory are drawn by `DukeSoftRenderer`'s
+                // Atomic mini status bar inside the frame.
+                // Quotes are drawn in-frame by the renderer (Duke `gametext`).
                 let rts_playing = self.audio.as_ref().is_some_and(|audio| {
                     audio.shared.lock().is_ok_and(|shared| {
                         shared.mixer.voices.iter().any(|voice| {
@@ -7578,16 +7745,47 @@ impl ViewerApp {
                     self.console.cvars.get("cl_run"),
                     Some(room_console::CvarValue::Bool(true))
                 );
-            let speed = if run { 2047 } else { 1280 };
-            let fvel = (i16::from(self.keys.w) - i16::from(self.keys.s)) * speed;
-            let svel =
-                (i16::from(self.keys.d) - i16::from(self.keys.a)) * if run { 1536 } else { 1024 };
-            let key_turn = (i16::from(self.keys.right) - i16::from(self.keys.left)) * 4;
-            let mouse_turn =
-                (-(sample.mouse_yaw as f64) * MOUSE_DEG_PER_COUNT * 2048.0 / 360.0 / 8.0).round()
-                    as i16;
-            let turn = (key_turn + mouse_turn).clamp(-127, 127) as i8;
-            let horz = (sample.mouse_pitch / 4).clamp(-127, 127) as i8;
+            // Chocolate `getinput`: NORMALKEYMOVE (40), doubled when running;
+            // strafe is positive to the left. Rotated to world space below.
+            let keymove = if run { 80 } else { 40 };
+            let vel = (i32::from(self.keys.w) - i32::from(self.keys.s)) * keymove;
+            let svel = (i32::from(self.keys.a) - i32::from(self.keys.d)) * keymove;
+            // Chocolate `getinput`: PREAMBLETURN (5) for the first
+            // TURBOTURNTIME (15 of 120 Hz) ticks, then NORMALTURN (15), doubled
+            // when running.
+            let turn_dir = i16::from(self.keys.right) - i16::from(self.keys.left);
+            if turn_dir == 0 {
+                self.duke_turn_held = 0;
+            } else {
+                self.duke_turn_held = self.duke_turn_held.saturating_add(4);
+            }
+            let turn_amount = if self.duke_turn_held >= 15 {
+                if run { 30 } else { 15 }
+            } else {
+                5
+            };
+            let key_turn = turn_dir * turn_amount;
+            // Chocolate `processinput`: `ang += avel << 1`. Mouse yaw maps
+            // 1:1 to view degrees; the sub-step remainder (and anything past
+            // the i8 clamp) carries to the next tic so slow and fast moves
+            // both stay exact.
+            let yaw_units = -(sample.mouse_yaw as f64) * MOUSE_DEG_PER_COUNT * 2048.0 / 360.0
+                + self.duke_turn_residual;
+            let turn = (f64::from(key_turn) + (yaw_units / 2.0).trunc()).clamp(-127.0, 127.0) as i16;
+            self.duke_turn_residual =
+                (yaw_units - f64::from(turn - key_turn) * 2.0).clamp(-2048.0, 2048.0);
+            let turn = turn as i8;
+            // Chocolate mouse aiming adds `horz >> 1` to `horiz`; one horiz
+            // unit is ~1/160 rad at the 320x200 reference projection, so a
+            // mouse pitch of d degrees maps to horz = 2 * d * 160 * pi/180.
+            let pitch_deg = sample.mouse_pitch as f64 * room_input::MOUSE_DEG_PER_COUNT;
+            let horiz_units = pitch_deg * 160.0 * std::f64::consts::PI / 180.0
+                + self.duke_horiz_residual;
+            // `horiz += horz >> 1`: send even values so both directions move
+            // by the same amount, keep the remainder for the next tic.
+            let half = horiz_units.trunc().clamp(-63.0, 63.0);
+            self.duke_horiz_residual = (horiz_units - half).clamp(-200.0, 200.0);
+            let horz = (half as i8) * 2;
             let mut bits = 0_u32;
             // Chocolate's `ud.auto_aim = 2` is full; mode 1 is bullet-only.
             // Keep it as an archived console setting so the mode survives runs.
@@ -7651,13 +7849,19 @@ impl ViewerApp {
             let mut incoming_duke_rts = Vec::new();
             if let Some(session) = self.duke_session.as_mut() {
                 session.set_active_sound_owners(&active_duke_sound_owners);
-                let duke_input = room_duke::DukeInput {
-                    fvel,
+                if self.duke_demo_playback.is_none() && self.duke_atomic_demo_playback.is_none() {
+                    // Desktop mouselook is Chocolate's mouse-aiming mode: no
+                    // snap-to-centre dead zone around horiz 100.
+                    session.player.aim_mode = u8::from(self.mouse_look);
+                }
+                let duke_input = room_duke::DukeInput::from_local(
+                    vel,
                     svel,
-                    avel: turn,
+                    session.player.ang,
+                    turn,
                     horz,
                     bits,
-                };
+                );
                 if let Some(playback) = self.duke_demo_playback.as_mut() {
                     if let Err(error) = playback.playback_next(session) {
                         self.messages.push(format!("playdemo: {error}"), 70);

@@ -271,6 +271,8 @@ pub struct NetReady {
 pub struct DukeNetPlay {
     transport: CoopSocket,
     pub peer_count: u8,
+    /// This client's seat (its player's heading rotates local input).
+    pub local_seat: usize,
     spectator: bool,
     next_send_tic: u32,
     frames: BTreeMap<u32, Vec<room_duke::DukeInput>>,
@@ -282,6 +284,7 @@ impl DukeNetPlay {
         Self {
             transport: ready.transport,
             peer_count: ready.peer_count,
+            local_seat: usize::from(ready.local.0),
             spectator: ready.spectator,
             next_send_tic: 0,
             frames: BTreeMap::new(),

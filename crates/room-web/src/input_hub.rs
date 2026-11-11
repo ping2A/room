@@ -294,7 +294,8 @@ pub fn duke_shoulder_view() -> bool {
 }
 
 /// Consume browser input as one native Duke command.
-pub fn take_duke_input() -> room_duke::DukeInput {
+/// `ang` is the local player's heading: Duke sync momentum is world-space.
+pub fn take_duke_input(ang: i16) -> room_duke::DukeInput {
     let held = HELD.with(|h| h.borrow().clone());
     let mut bits = 0_u32;
     // Chocolate's default auto-aim mode is full (2).
@@ -323,23 +324,18 @@ pub fn take_duke_input() -> room_duke::DukeInput {
     let turn = (i16::from(held.contains("right")) - i16::from(held.contains("left"))) * 4;
     let turn = turn.saturating_add((MOUSE_YAW.replace(0) / 8) as i16);
     let horiz = (MOUSE_PITCH.replace(0) / 4).clamp(-127, 127) as i8;
-    let speed = if held.contains("shift") { 2047 } else { 1280 };
-    let side_speed = if held.contains("shift") { 1536 } else { 1024 };
-    let fvel = (i16::from(held.contains("w")) - i16::from(held.contains("s"))) * speed;
-    let svel = (i16::from(held.contains("d")) - i16::from(held.contains("a"))) * side_speed;
-    room_duke::DukeInput {
-        fvel,
-        svel,
-        avel: turn.clamp(-127, 127) as i8,
-        horz: horiz,
-        bits,
-    }
+    // Chocolate `getinput`: NORMALKEYMOVE (40), doubled when running;
+    // strafe positive = left; rotated into world space by the heading.
+    let keymove = if held.contains("shift") { 80 } else { 40 };
+    let vel = (i32::from(held.contains("w")) - i32::from(held.contains("s"))) * keymove;
+    let svel = (i32::from(held.contains("a")) - i32::from(held.contains("d"))) * keymove;
+    room_duke::DukeInput::from_local(vel, svel, ang, turn.clamp(-127, 127) as i8, horiz, bits)
 }
 
 /// Consume one native Duke command with weapon hotkey / wheel requests packed
 /// into Chocolate's `sync.bits`, so remote seats make the same selection.
-pub fn take_duke_network_input() -> room_duke::DukeInput {
-    let mut input = take_duke_input();
+pub fn take_duke_network_input(ang: i16) -> room_duke::DukeInput {
+    let mut input = take_duke_input(ang);
     let key = WEAPON.replace(0);
     let cycle = WHEEL.replace(0);
     let choice = if cycle != 0 {

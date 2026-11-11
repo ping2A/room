@@ -4927,6 +4927,23 @@ impl DukeSession {
         }
     }
 
+    /// Render copy of the world with Chocolate `animatesprites` applied
+    /// (CON action frames, rotation views, scrap tumbling).
+    #[must_use]
+    pub fn render_world(&self) -> Option<BuildWorld> {
+        let mut view = self.world.as_ref()?.clone();
+        crate::animate::animatesprites(
+            &mut view,
+            &self.actor_temps,
+            self.script.as_ref(),
+            &self.tile_meta,
+            self.player.posx,
+            self.player.posy,
+            self.player.ang,
+        );
+        Some(view)
+    }
+
     /// Active Atomic `definequote` text requested by CON `quote`.
     #[must_use]
     pub fn active_quote(&self) -> Option<&str> {
@@ -5186,9 +5203,20 @@ impl DukeSession {
                     world.sprites[i].yrepeat = 40;
                     world.sprites[i].clipdist = 80;
                 }
-                let (extra, _) = crate::con::init_actor_temps_from_script(script, pic);
+                let (extra, header) = crate::con::init_actor_temps_from_script(script, pic);
                 if extra != 0 {
                     world.sprites[i].extra = extra;
+                }
+                // Chocolate `spawn()` map path: T5 = actor action, T2 = move,
+                // hitag = header flags (when unset). Without these, enemies
+                // start with no action/ai and stand still until shot.
+                {
+                    self.actor_temps[i].g_t[4] = header.g_t[4];
+                    self.actor_temps[i].g_t[1] = header.g_t[1];
+                    self.actor_temps[i].script_pointer_mask |= header.script_pointer_mask;
+                    if world.sprites[i].hitag == 0 {
+                        world.sprites[i].hitag = crate::con::actor_header_hitag(script, pic) as i16;
+                    }
                 }
             }
         }
@@ -5689,6 +5717,20 @@ impl DukeSession {
     /// seat commands are treated as neutral, matching a timed-out lockstep
     /// input frame; excess commands are ignored because the roster is fixed.
     pub fn tick_inputs(&mut self, inputs: &[DukeInput]) {
+        self.tick_inputs_sim(inputs);
+        self.publish_render_lists();
+    }
+
+    /// The renderer walks `world.lists` to find live sprites; the simulation
+    /// keeps its own `self.lists`. Mirror them after each tic so sprites
+    /// spawned, deleted or moved between sectors show up on screen.
+    pub fn publish_render_lists(&mut self) {
+        if let Some(world) = self.world.as_mut() {
+            world.lists.clone_from(&self.lists);
+        }
+    }
+
+    fn tick_inputs_sim(&mut self, inputs: &[DukeInput]) {
         let mut sync_inputs: Vec<DukeInput> = (0..=self.coop_players.len())
             .map(|seat| inputs.get(seat).copied().unwrap_or_default())
             .collect();
@@ -5909,6 +5951,7 @@ impl DukeSession {
             }
             let mut pstomp_kills = Vec::new();
             let quick_kick_before = self.player.quick_kick;
+            let pre_move = PreMovePlayer::of(&self.player);
             let player_move_hit = if self.player.extra > 0 {
                 processinput_move_with_lists_clipping(
                     &mut self.player,
@@ -5924,6 +5967,12 @@ impl DukeSession {
             } else {
                 0
             };
+            sync_player_hit_planes(&self.player, &mut self.actor_temps);
+            // Chocolate ends processinput with `setsprite(pi, …)`, which
+            // relinks the body into its new sector's sprite list.
+            let _ = self
+                .lists
+                .changespritesect(self.player.sprite_i, self.player.cursectnum);
             check_player_wall_hurt(
                 &mut self.player,
                 player_move_hit,
@@ -6055,6 +6104,7 @@ impl DukeSession {
                     &mut self.actor_temps,
                     &mut self.randomseed,
                     self.script.as_ref(),
+                    pre_move,
                 );
             }
             let player_lotag = world
@@ -6111,6 +6161,7 @@ impl DukeSession {
                     DukeInput::default()
                 };
                 let quick_kick_before = player.quick_kick;
+                let pre_move = PreMovePlayer::of(player);
                 let player_move_hit = if player.extra > 0 {
                     processinput_move_with_lists(
                         player,
@@ -6125,6 +6176,8 @@ impl DukeSession {
                 } else {
                     0
                 };
+                sync_player_hit_planes(player, &mut self.actor_temps);
+                let _ = self.lists.changespritesect(player.sprite_i, player.cursectnum);
                 check_player_wall_hurt(
                     player,
                     player_move_hit,
@@ -6257,6 +6310,7 @@ impl DukeSession {
                         &mut self.actor_temps,
                         &mut self.randomseed,
                         self.script.as_ref(),
+                        pre_move,
                     );
                 }
                 let player_lotag = world
@@ -7047,6 +7101,9 @@ impl DukeSession {
                 self.actor_toggle,
                 self.global_random,
             );
+            if crate::actors::take_pending_earthquake() {
+                self.earthquake_time = 16;
+            }
             let mut solo_restart = false;
             let mut pending_respawns = Vec::new();
             for temps in &mut self.actor_temps {
@@ -7290,12 +7347,14 @@ impl DukeSession {
                 self.script.as_ref(),
                 &mut self.randomseed,
             );
+            let motions = &self.sector_motions;
             move_elevator_shade_effectors(
                 &mut self.lists,
                 world.sprites.as_mut(),
                 &mut world.sectors[..world.numsectors as usize],
                 &mut world.walls[..world.numwalls as usize],
                 &mut self.actor_temps,
+                &|sector| crate::interactions::ceiling_animating(motions, sector),
             );
             move_reactor_effectors(
                 &mut self.lists,
@@ -52855,6 +52914,42 @@ fn collect_actor_sound_events(
     }
 }
 
+/// Player state at the top of Chocolate `processinput`, before this tic's
+/// movement: the water / footprint block reads `truefdist`, `psectlotag`
+/// and `on_ground` from here.
+#[derive(Clone, Copy)]
+pub(crate) struct PreMovePlayer {
+    posx: i32,
+    posy: i32,
+    posz: i32,
+    cursectnum: i16,
+    on_ground: bool,
+}
+
+impl PreMovePlayer {
+    fn of(player: &Player) -> Self {
+        Self {
+            posx: player.posx,
+            posy: player.posy,
+            posz: player.posz,
+            cursectnum: player.cursectnum,
+            on_ground: player.on_ground,
+        }
+    }
+}
+
+/// Mirror Chocolate `hittype[p->i].floorz/ceilingz` into the body's CON temps.
+fn sync_player_hit_planes(player: &Player, temps: &mut Vec<ActorConTemps>) {
+    let Ok(i) = usize::try_from(player.sprite_i) else {
+        return;
+    };
+    if temps.len() <= i {
+        temps.resize_with(i + 1, ActorConTemps::default);
+    }
+    temps[i].warp_floorz = Some(player.hit_floorz);
+    temps[i].warp_ceilingz = Some(player.hit_ceilingz);
+}
+
 fn tick_player_footprints(
     player: &mut Player,
     lists: &mut SpriteLists,
@@ -52863,6 +52958,7 @@ fn tick_player_footprints(
     actor_temps: &mut Vec<ActorConTemps>,
     randomseed: &mut i32,
     script: Option<&ScriptImage>,
+    pre: PreMovePlayer,
 ) {
     if player.cursectnum < 0 {
         if player.dummy_player_sprite >= 0 {
@@ -52889,9 +52985,25 @@ fn tick_player_footprints(
             let _ = lists.deletesprite(player.dummy_player_sprite);
             player.dummy_player_sprite = -1;
         }
-        if player.on_ground
+        // Chocolate: `truefdist = klabs(posz - getflorzofslope(psect, posx, posy))`
+        // with the pre-move position, and the previous tic's `on_ground`.
+        let pre_floor = usize::try_from(pre.cursectnum)
+            .ok()
+            .and_then(|si| world.sectors.get(si))
+            .map_or(sector.floorz, |pre_sector| {
+                let walls: Vec<_> = world.walls.iter().map(|w| w.xy()).collect();
+                let zs: Vec<_> = world.sectors.iter().map(|s| s.z()).collect();
+                let _ = pre_sector;
+                room_build_engine::geom::getzsofslope(pre.cursectnum, pre.posx, pre.posy, &zs, &walls).1
+            });
+        let pre_lotag = usize::try_from(pre.cursectnum)
+            .ok()
+            .and_then(|si| world.sectors.get(si))
+            .map_or(0, |s| s.lotag);
+        if pre_lotag == 1
+            && pre.on_ground
             && player_body.is_some_and(|sprite| sprite.yrepeat >= 32)
-            && (player.posz - sector.floorz).saturating_abs() <= crate::player::PHEIGHT
+            && (pre.posz - pre_floor).saturating_abs() <= crate::player::PHEIGHT
         {
             player.footprint_count = 6;
             player.footprint_pal = if sector.floorpicnum == 200 { 8 } else { 0 };

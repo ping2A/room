@@ -181,7 +181,7 @@ pub(crate) fn spawn_sprite_glass(
 /// Apply the simple, native `sector.c::checkhitsprite` object transitions
 /// shared by direct projectile impacts. `true` means the source's switch arm
 /// handled the hit and the generic badguy damage path must not run.
-fn checkhitsprite_object(
+pub(crate) fn checkhitsprite_object(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
     sectors: &mut [SectorT],
@@ -2126,6 +2126,7 @@ pub fn moveweapons(
             &[],
             &[],
             &mut [],
+            None,
         );
         // CON `spawn WATERBUBBLE` (ifactioncount 3 + ifinwater on SHOTSPARK1).
         let spawns: Vec<i16> = actor_temps[iu].pending_spawns.drain(..).collect();

@@ -68,6 +68,8 @@ pub struct DukeSoftRenderer {
     weapon_tiles: [Option<i16>; 12],
     access_hand_tile: Option<i16>,
     laser_hand_tile: Option<i16>,
+    /// Active `fta_quotes` text for this frame (Chocolate `operatefta`).
+    overlay_quote: RefCell<Option<String>>,
 }
 
 #[derive(Clone)]
@@ -162,6 +164,18 @@ impl DukeSoftRenderer {
                     .map(|offset| i16::try_from(offset).unwrap_or(0));
                 tiles.set_sky_offsets(base_tile, offsets);
             }
+            // Chocolate `setupbackdrop`: LA follows the horizon least,
+            // CLOUDYOCEAN fully, every other sky at half (`parallaxyscale`).
+            for (name, scale) in [("LA", 16384 + 1024), ("CLOUDYOCEAN", 65536)] {
+                if let Some(base) = defs.value(name).and_then(|b| i16::try_from(b).ok()) {
+                    tiles.set_sky_yscale(base, scale);
+                }
+            }
+            for name in ["MOONSKY1", "BIGORBIT1"] {
+                if let Some(base) = defs.value(name).and_then(|b| i16::try_from(b).ok()) {
+                    tiles.set_sky_yscale(base, 32768);
+                }
+            }
         }
         let weapon_names = [
             "KNEE",
@@ -205,6 +219,7 @@ impl DukeSoftRenderer {
             weapon_tiles,
             access_hand_tile,
             laser_hand_tile,
+            overlay_quote: RefCell::new(None),
         })
     }
 
@@ -662,7 +677,18 @@ impl DukeSoftRenderer {
         } else {
             player.rotscrnang
         };
-        let palette_pixels = rotate_palette_frame(&frame.pixels, width, height, screen_roll);
+        let mut palette_pixels =
+            rotate_palette_frame(&frame.pixels, width, height, screen_roll);
+        // The status HUD is screen space: it never rolls with the view.
+        if player.remote_camera.is_none() {
+            let mut hud = SoftFrame {
+                width,
+                height,
+                pixels: std::mem::take(&mut palette_pixels),
+            };
+            self.draw_mini_hud(&mut hud, player);
+            palette_pixels = hud.pixels;
+        }
         // Chocolate `player.c::setpal` chooses the screen DAC palette from
         // heat vision, the FLOORSLIME ceiling, or an underwater sector.
         // Keep this render-only: the snapshot and playsim remain untouched.
@@ -701,6 +727,39 @@ impl DukeSoftRenderer {
         let mut view_player = player.clone();
         view_player.over_shoulder_on = shoulder_view;
         self.render_rgba_at_with_quake(world, &view_player, width, height, tic, earthquake_time)
+    }
+
+    /// Set the on-screen message drawn with the next frames (`None` clears).
+    pub fn set_overlay_quote(&self, quote: Option<&str>) {
+        *self.overlay_quote.borrow_mut() = quote.map(str::to_owned);
+    }
+
+    /// Native-size palette indices of an ART tile, row-major
+    /// (`room_build::art::TRANSPARENT` = hole). For shells that build UI
+    /// fonts/patches from Duke's own art (menus, quotes).
+    #[must_use]
+    pub fn tile_indices(&self, picnum: i16) -> Option<(u16, u16, Vec<u8>)> {
+        let tiles = self.tiles.borrow();
+        let (w, h) = tiles.dimensions(picnum)?;
+        let mut out = Vec::with_capacity(usize::from(w) * usize::from(h));
+        for y in 0..u32::from(h) {
+            for x in 0..u32::from(w) {
+                out.push(tiles.sample(picnum, x, y).unwrap_or(room_build::art::TRANSPARENT));
+            }
+        }
+        Some((w as u16, h as u16, out))
+    }
+
+    /// The game palette (with the current brightness) as RGB triples.
+    #[must_use]
+    pub fn ui_palette_rgb(&self) -> [[u8; 3]; 256] {
+        std::array::from_fn(|i| {
+            [
+                self.brighten_channel(self.palette.rgb[i * 3]),
+                self.brighten_channel(self.palette.rgb[i * 3 + 1]),
+                self.brighten_channel(self.palette.rgb[i * 3 + 2]),
+            ]
+        })
     }
 
     /// Rasterize a palette-indexed Atomic UI tile into framebuffer-sized RGBA8.
@@ -767,6 +826,157 @@ impl DukeSoftRenderer {
             }
         }
         Some((width, height, rgba))
+    }
+
+    /// Chocolate `coolgaugetext` full-screen mini status bar (`screen_size`
+    /// 4): health and ammo boxes with DIGITALNUM counters, plus the selected
+    /// inventory item with its THREEBYFIVE amount. Coordinates are Atomic's
+    /// 320×200 `rotatesprite` plane with top-left anchoring (flag 16).
+    fn draw_mini_hud(&self, frame: &mut SoftFrame, player: &Player) {
+        const HEALTHBOX: i16 = 30;
+        const AMMOBOX: i16 = 31;
+        const INVENTORYBOX: i16 = 33;
+        const DIGITALNUM: i16 = 2472;
+        const THREEBYFIVE: i16 = 3010;
+        const HANDBOMB_WEAPON: usize = 5;
+        const HANDREMOTE_WEAPON: i16 = 10;
+        let tiles = self.tiles.borrow();
+        let sx = f64::from(frame.width) / 320.0;
+        let sy = f64::from(frame.height) / 200.0;
+        let blit = |frame: &mut SoftFrame, pic: i16, x: i32, y: i32, shade: i8, pal: u8| {
+            let Some((tw, th)) = tiles.dimensions(pic) else {
+                return;
+            };
+            let left = (f64::from(x) * sx).round() as i32;
+            let top = (f64::from(y) * sy).round() as i32;
+            let dw = (f64::from(tw) * sx).round().max(1.0) as i32;
+            let dh = (f64::from(th) * sy).round().max(1.0) as i32;
+            for yy in 0..dh {
+                let dy = top + yy;
+                if dy < 0 || dy >= frame.height as i32 {
+                    continue;
+                }
+                let v = (i64::from(yy) * i64::from(th) / i64::from(dh)) as u32;
+                for xx in 0..dw {
+                    let dx = left + xx;
+                    if dx < 0 || dx >= frame.width as i32 {
+                        continue;
+                    }
+                    let u = (i64::from(xx) * i64::from(tw) / i64::from(dw)) as u32;
+                    let Some(p) = tiles.sample(pic, u, v) else {
+                        continue;
+                    };
+                    if p == room_build::art::TRANSPARENT {
+                        continue;
+                    }
+                    let p = tiles.shade_palette(shade, tiles.remap_palette(pal, p));
+                    frame.pixels[dy as usize * frame.width as usize + dx as usize] = p;
+                }
+            }
+        };
+        // Chocolate `ud.crosshair`: CROSSHAIR centred at (160 - look_ang/2, 100).
+        if player.dead_flag == 0 {
+            const CROSSHAIR: i16 = 2523;
+            if let Some((tw, th)) = tiles.dimensions(CROSSHAIR) {
+                let cx = 160 - (i32::from(player.look_ang) >> 1);
+                blit(frame, CROSSHAIR, cx - i32::from(tw) / 2, 100 - i32::from(th) / 2, 0, 0);
+            }
+        }
+        // `digitalnumber`: centred on x, glyph advance = width + 1.
+        let digital = |frame: &mut SoftFrame, x: i32, y: i32, n: i32| {
+            let text = n.to_string();
+            let glyph = |c: u8| {
+                if c == b'-' {
+                    None
+                } else {
+                    Some(DIGITALNUM + i16::from(c - b'0'))
+                }
+            };
+            let width: i32 = text
+                .bytes()
+                .filter_map(glyph)
+                .map(|p| tiles.dimensions(p).map_or(0, |(w, _)| i32::from(w)) + 1)
+                .sum();
+            let mut cx = x - (width >> 1);
+            for p in text.bytes().filter_map(glyph) {
+                blit(frame, p, cx, y, -16, 0);
+                cx += tiles.dimensions(p).map_or(0, |(w, _)| i32::from(w)) + 1;
+            }
+        };
+        if player.inventory_icon != 0 {
+            blit(frame, INVENTORYBOX, 69, 200 - 30, 0, 21);
+        }
+        blit(frame, HEALTHBOX, 5, 200 - 28, 0, 21);
+        digital(frame, 20, 200 - 17, i32::from(player.last_extra.max(0)));
+        blit(frame, AMMOBOX, 37, 200 - 28, 0, 21);
+        let weapon = if player.curr_weapon == HANDREMOTE_WEAPON {
+            HANDBOMB_WEAPON
+        } else {
+            player.curr_weapon.clamp(0, 11) as usize
+        };
+        digital(frame, 53, 200 - 17, i32::from(player.ammo[weapon]));
+        if player.inventory_icon != 0 {
+            let o = 158;
+            let icon = match player.inventory_icon {
+                1 => Some(2460), // FIRSTAID_ICON
+                2 => Some(2469), // STEROIDS_ICON
+                3 => Some(2470), // HOLODUKE_ICON
+                4 => Some(2467), // JETPACK_ICON
+                5 => Some(2461), // HEAT_ICON
+                6 => Some(2468), // AIRTANK_ICON
+                7 => Some(2463), // BOOT_ICON
+                _ => None,
+            };
+            if let Some(icon) = icon {
+                blit(frame, icon, 231 - o, 200 - 21, 0, 0);
+            }
+            let amount = match player.inventory_icon {
+                1 => i32::from(player.firstaid_amount),
+                2 => (i32::from(player.steroids_amount) + 3) >> 2,
+                3 => (i32::from(player.holoduke_amount) + 15) / 24,
+                4 => (i32::from(player.jetpack_amount) + 15) >> 4,
+                5 => i32::from(player.heat_amount) / 12,
+                6 => (i32::from(player.scuba_amount) + 63) >> 6,
+                7 => i32::from(player.boot_amount) >> 1,
+                _ => 0,
+            };
+            // `invennum`: THREEBYFIVE digits, 4 px apart, right-aligned at x+4.
+            let digits = (amount.clamp(0, 255) as u8).to_string();
+            let x = 284 - 30 - o;
+            let start = match digits.len() {
+                3 => x - 4,
+                2 => x,
+                _ => x + 4,
+            };
+            for (k, c) in digits.bytes().enumerate() {
+                blit(frame, THREEBYFIVE + i16::from(c - b'0'), start + 4 * k as i32, 200 - 6, 0, 0);
+            }
+        }
+        // Chocolate `operatefta` → `gametext(160, 0, quote)`: STARTALPHANUM
+        // glyphs, centred, digits on an 8 px pitch, spaces 5 px.
+        if let Some(quote) = self.overlay_quote.borrow().as_deref() {
+            const STARTALPHANUM: i16 = 2822;
+            let glyph = |c: u8| (b'!'..=b'~').contains(&c).then(|| STARTALPHANUM + i16::from(c - b'!'));
+            let advance = |c: u8| -> i32 {
+                if c == b' ' {
+                    5
+                } else if c.is_ascii_digit() {
+                    8
+                } else {
+                    glyph(c)
+                        .and_then(|p| tiles.dimensions(p))
+                        .map_or(0, |(w, _)| i32::from(w))
+                }
+            };
+            let width: i32 = quote.bytes().map(advance).sum();
+            let mut x = 160 - (width >> 1);
+            for c in quote.bytes() {
+                if let Some(p) = glyph(c) {
+                    blit(frame, p, x, 0, 0, 0);
+                }
+                x += advance(c);
+            }
+        }
     }
 
     /// Draw the selected Atomic weapon from its GRP ART tiles.

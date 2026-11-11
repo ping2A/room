@@ -297,6 +297,13 @@ pub(crate) struct WallMotion {
     velocity: i32,
 }
 
+/// Chocolate `getanimationgoal(&sector[sector].ceilingz) >= 0`.
+pub(crate) fn ceiling_animating(motions: &[SectorMotion], sector: usize) -> bool {
+    motions
+        .iter()
+        .any(|m| m.sector == sector && m.ceiling_goal.is_some())
+}
+
 /// Advance active plane animations at Atomic's 120 Hz interpolation scale.
 pub(crate) fn tick_sector_motions(
     motions: &mut Vec<SectorMotion>,
@@ -3423,6 +3430,7 @@ mod tests {
                 &mut motions,
                 &mut world,
                 &lists,
+                &mut Vec::new(),
                 -1,
                 &mut player_z,
                 &mut player_zv,
@@ -3450,6 +3458,7 @@ mod tests {
                 &mut motions,
                 &mut world,
                 &lists,
+                &mut Vec::new(),
                 -1,
                 &mut player_z,
                 &mut player_zv,
@@ -3590,6 +3599,7 @@ mod tests {
                 &mut motions,
                 &mut world,
                 &lists,
+                &mut Vec::new(),
                 -1,
                 &mut player_z,
                 &mut player_zv,
@@ -3617,6 +3627,7 @@ mod tests {
                 &mut motions,
                 &mut world,
                 &lists,
+                &mut Vec::new(),
                 -1,
                 &mut player_z,
                 &mut player_zv,

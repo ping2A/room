@@ -35,6 +35,13 @@ const ORGANTIC: i16 = 2420;
 const STRIPEBALL: i16 = 901;
 const QUEBALL: i16 = 902;
 const POOLBALLHIT: i16 = 8;
+/// Atomic `DUKECAR` — the E1L1 intro shuttle.
+pub(crate) const DUKECAR: i16 = 2491;
+/// Atomic `HELECOPT`.
+pub(crate) const HELECOPT: i16 = 1346;
+const SCRAP6: i16 = 2390;
+const WAR_AMBIENCE2: i16 = 232;
+const RPG_EXPLODE: i16 = 9;
 
 /// Chocolate `moveactors` STAT_DEFAULT cases for QUEBALL/STRIPEBALL.
 pub(crate) fn tick_poolballs(
@@ -666,6 +673,11 @@ pub fn moveactors_with_skill(
         temps[iu].pending_operate = false;
         // Chocolate: snapshot bpos* before execute/fall (skill gate uses bposz).
         temps[iu].bposz = sprites[iu].z;
+        if pic_i == DUKECAR || pic_i == HELECOPT {
+            move_dukecar(lists, sprites, sectors, walls, picnum, temps, script, randomseed, iu);
+            i = next;
+            continue;
+        }
         if tick_frozen_slime(
             lists, sprites, sectors, &sec_z, &wxy, picnum, temps, script, players, randomseed, iu,
         ) {
@@ -842,24 +854,75 @@ pub fn moveactors_with_skill(
             });
             projectile_i = lists.nextspritestat[projectile_index];
         }
-        let stop = execute_actor(
-            script,
-            body,
-            randomseed,
-            &mut temps[iu],
-            &mut sprites[iu],
-            i as i16,
-            &sec,
-            hit_floorz,
-            hit_ceilingz,
-            env_player,
-            &sec_z,
-            &wxy,
-            &cansee_sprs,
-            &cansee_picnums,
-            &projectiles,
-            active_sound_owners,
-        );
+        // Run the actor on local copies so `shoot` can act on the live world
+        // mid-parse (Chocolate `shoot()` is inline), then write them back.
+        let mut actor_t = std::mem::take(&mut temps[iu]);
+        let mut actor_s = sprites[iu];
+        let stop = {
+            let sectors_ro: &[SectorT] = sectors;
+            let walls_ro: &[WallT] = walls;
+            let players_ro: &[Player] = players;
+            let mut shoot_now = |pn: i16, ang: i16, seed: &mut i32| -> bool {
+                let bloodsplat = pn == BLOODSPLAT1
+                    || pn == BLOODSPLAT2
+                    || pn == BLOODSPLAT3
+                    || pn == BLOODSPLAT4;
+                if !bloodsplat && pn != COOLEXPLOSION1 {
+                    return false;
+                }
+                sprites[iu].ang = ang;
+                if bloodsplat {
+                    shoot_bloodsplat_enemy(
+                        lists,
+                        sprites,
+                        sectors_ro,
+                        walls_ro,
+                        picnum,
+                        temps,
+                        tile_meta,
+                        Some(script),
+                        seed,
+                        i,
+                        pn,
+                    );
+                } else {
+                    shoot_coolexplosion_enemy(
+                        lists,
+                        sprites,
+                        picnum,
+                        temps,
+                        tile_meta,
+                        Some(script),
+                        script.actortype.as_slice(),
+                        players_ro,
+                        seed,
+                        i,
+                    );
+                }
+                true
+            };
+            execute_actor(
+                script,
+                body,
+                randomseed,
+                &mut actor_t,
+                &mut actor_s,
+                i as i16,
+                &sec,
+                hit_floorz,
+                hit_ceilingz,
+                env_player,
+                &sec_z,
+                &wxy,
+                &cansee_sprs,
+                &cansee_picnums,
+                &projectiles,
+                active_sound_owners,
+                Some(&mut shoot_now),
+            )
+        };
+        temps[iu] = actor_t;
+        sprites[iu] = actor_s;
         for low in temps[iu].pending_respawn_hitags.drain(..) {
             let mut marker_i = lists.headspritestat[crate::stat::STAT_FX as usize];
             while marker_i >= 0 {
@@ -1292,6 +1355,11 @@ pub fn moveactors_with_skill(
                     players,
                     randomseed,
                     i,
+                );
+            } else {
+                let _ = crate::shoot::shoot_enemy(
+                    lists, sprites, sectors, walls, picnum, temps, tile_meta, script, players,
+                    randomseed, i, pn,
                 );
             }
         }
@@ -2150,4 +2218,181 @@ enda\n\
             room_build_engine::world::MAXSTATUS as i16
         );
     }
+}
+
+thread_local! {
+    /// Set when an actor requested Chocolate's global `earthquaketime = 16`.
+    static PENDING_EARTHQUAKE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Take (and clear) a pending actor earthquake request.
+pub(crate) fn take_pending_earthquake() -> bool {
+    PENDING_EARTHQUAKE.with(|q| q.replace(false))
+}
+
+/// Chocolate `moveactors` `case HELECOPT: case DUKECAR:` — the E1L1 intro
+/// shuttle descends, trails EXPLOSION2 every 4 tics, then bursts into 32
+/// RANDOMSCRAP shards after 208 tics.
+#[allow(clippy::too_many_arguments)]
+fn move_dukecar(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    picnum: &mut Vec<i16>,
+    temps: &mut Vec<ActorConTemps>,
+    script: &ScriptImage,
+    randomseed: &mut i32,
+    iu: usize,
+) {
+    let i = iu as i16;
+    if temps[iu].hit_floorz == 0 && temps[iu].hit_ceilingz == 0 {
+        if let Some(sector) = usize::try_from(sprites[iu].sectnum)
+            .ok()
+            .and_then(|s| sectors.get(s))
+        {
+            temps[iu].hit_floorz = sector.floorz;
+            temps[iu].hit_ceilingz = sector.ceilingz;
+        }
+    }
+    sprites[iu].z = sprites[iu].z.wrapping_add(i32::from(sprites[iu].zvel));
+    temps[iu].g_t[0] += 1;
+    let t0 = temps[iu].g_t[0];
+    if t0 == 4 {
+        temps[iu].pending_actor_sounds.push(WAR_AMBIENCE2);
+    }
+    if t0 > 26 * 8 {
+        temps[iu].pending_actor_sounds.push(RPG_EXPLODE);
+        // Chocolate `earthquaketime = 16`.
+        PENDING_EARTHQUAKE.with(|q| q.set(true));
+        let src = sprites[iu];
+        for _ in 0..32 {
+            let x = src.x + (krand_step(randomseed) & 255) - 128;
+            let y = src.y + (krand_step(randomseed) & 255) - 128;
+            let z = src.z - (8 << 8) - (krand_step(randomseed) & 8191);
+            let pn = SCRAP6 + (krand_step(randomseed) & 15) as i16;
+            let ang = (krand_step(randomseed) & 2047) as i16;
+            let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
+            let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+            let _ = crate::shoot::egs(
+                lists,
+                sprites,
+                picnum,
+                temps,
+                Some(script),
+                src.sectnum,
+                x,
+                y,
+                z,
+                pn,
+                -8,
+                48,
+                48,
+                ang,
+                xvel,
+                zvel,
+                i,
+                crate::stat::STAT_MISC,
+            );
+        }
+        let _ = lists.deletesprite(i);
+        return;
+    } else if t0 & 3 == 0 {
+        spawn_explosion2_from(lists, sprites, sectors, walls, picnum, temps, script, randomseed, iu);
+    }
+    // Chocolate `ssp(i, CLIPMASK0)` → non-badguy `movesprite`.
+    let sp = sprites[iu];
+    let (sin, cos) = sincos_q14(i32::from(sp.ang));
+    let xvel = i32::from(sp.xvel);
+    let dx = (((xvel * cos) >> 14) * TICSPERFRAME) >> 3;
+    let dy = (((xvel * sin) >> 14) * TICSPERFRAME) >> 3;
+    let sec: Vec<SectorWalls> = sectors.iter().map(SectorT::walls).collect();
+    let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+    let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+    let mut x = sp.x;
+    let mut y = sp.y;
+    let mut sect = sp.sectnum;
+    let retval = clipmove_xy_at_z_sprites_with_lists(
+        &mut x,
+        &mut y,
+        sp.z,
+        &mut sect,
+        dx,
+        dy,
+        i32::from(sp.clipdist) << 2,
+        4 << 8,
+        4 << 8,
+        &sec,
+        &wxy,
+        Some(&sec_z),
+        &[],
+        1,
+        Some(lists),
+    );
+    let _ = retval;
+    sprites[iu].x = x;
+    sprites[iu].y = y;
+    if sect >= 0 && sect != sp.sectnum {
+        sprites[iu].sectnum = sect;
+        let _ = lists.changespritesect(i, sect);
+    }
+    let daz = sprites[iu].z + ((i32::from(sp.zvel) * TICSPERFRAME) >> 3);
+    if daz > temps[iu].hit_ceilingz && daz <= temps[iu].hit_floorz {
+        sprites[iu].z = daz;
+    }
+}
+
+/// Chocolate `spawn(j, EXPLOSION2)` for a parent sprite.
+#[allow(clippy::too_many_arguments)]
+fn spawn_explosion2_from(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    picnum: &mut Vec<i16>,
+    temps: &mut Vec<ActorConTemps>,
+    script: &ScriptImage,
+    randomseed: &mut i32,
+    from: usize,
+) {
+    let src = sprites[from];
+    let e = crate::shoot::egs(
+        lists,
+        sprites,
+        picnum,
+        temps,
+        Some(script),
+        src.sectnum,
+        src.x,
+        src.y,
+        src.z,
+        EXPLOSION2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        from as i16,
+        STAT_DEFAULT,
+    );
+    if e < 0 {
+        return;
+    }
+    let eu = e as usize;
+    sprites[eu].ang = src.ang;
+    sprites[eu].cstat = 128 | ((krand_step(randomseed) & 4) as u16);
+    sprites[eu].xrepeat = 48;
+    sprites[eu].yrepeat = 48;
+    sprites[eu].shade = -127;
+    sprites[eu].cstat |= 128;
+    if src.sectnum >= 0 && (src.sectnum as usize) < sectors.len() {
+        let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+        let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+        let floorz = getzsofslope(src.sectnum, sprites[eu].x, sprites[eu].y, &sec_z, &wxy).1;
+        if sprites[eu].z > floorz - (12 << 8) {
+            sprites[eu].z = floorz - (12 << 8);
+        }
+    }
+    let _ = lists.changespritestat(e, crate::stat::STAT_MISC);
 }

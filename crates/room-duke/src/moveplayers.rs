@@ -175,6 +175,8 @@ fn spawn_aplayer_water_bubble(
         actor_temps[iu].warp_floorz = Some(sectors[sect as usize].floorz);
         actor_temps[iu].warp_ceilingz = Some(sectors[sect as usize].ceilingz);
     }
+    // Chocolate EGS copies the APLAYER owner's getzrange planes.
+    crate::con::vm::inherit_hit_planes(actor_temps, iu, from);
     i
 }
 
@@ -394,10 +396,7 @@ pub fn moveplayers(
         } else if pstanding || pwalkingback || prunningback {
             set_action(&mut actor_temps[iu], ptred);
         } else if action == pswim {
-            let live = actor_temps[iu].swim_pswim_ifrnd_live
-                && (!crate::fixups::on()
-                    || (emit_tic >= 143 && emit_tic != 160 && emit_tic != 190 && emit_tic != 220));
-            if live && rnd(randomseed, 4, "APLAYER PSWIMMING nested ifrnd") {
+            if rnd(randomseed, 4, "APLAYER PSWIMMING ifrnd") {
                 let _ = spawn_aplayer_water_bubble(
                     lists,
                     sprites,
@@ -408,45 +407,24 @@ pub fn moveplayers(
                     Some(img),
                 );
             }
-            actor_temps[iu].swim_pswim_ifrnd_live = true;
             if actor_temps[iu].g_t[2] >= 4 {
                 set_action(&mut actor_temps[iu], pswim_wait);
-                actor_temps[iu].swim_wait_ifrnd_pending = true;
             }
         } else if action == pswim_wait {
-            if actor_temps[iu].swim_wait_ifrnd_pending {
-                actor_temps[iu].swim_wait_ifrnd_pending = false;
-                if rnd(randomseed, 4, "APLAYER first PSWIMMINGWAIT ifrnd") {
-                    let _ = spawn_aplayer_water_bubble(
-                        lists,
-                        sprites,
-                        sectors,
-                        picnum,
-                        actor_temps,
-                        i,
-                        Some(img),
-                    );
-                }
-            }
             if actor_temps[iu].g_t[2] >= 2 {
                 set_action(&mut actor_temps[iu], pswim_go);
             }
         } else if action == pswim_go {
             if actor_temps[iu].g_t[2] >= 2 {
                 set_action(&mut actor_temps[iu], pswim);
-                actor_temps[iu].swim_pswim_ifrnd_live = false;
             }
         } else {
             set_action(&mut actor_temps[iu], ptred);
         }
 
-        // The Atomic APLAYER CON's trailing bubble test is part of the
-        // current action branch. An `action` command resets the action count
-        // and transfers execution to the new action on the next actor tic;
-        // do not evaluate the old branch's trailing `ifrnd` on that edge.
-        if actor_temps[iu].g_t[4] == action
-            && rnd(randomseed, 4, "APLAYER trailing WATERBUBBLE ifrnd")
-        {
+        // GAME.CON: `ifrnd 4 spawn WATERBUBBLE` closes the `ifinwater` block
+        // and runs every tic in water (`action` does not stop the parse).
+        if rnd(randomseed, 4, "APLAYER trailing WATERBUBBLE ifrnd") {
             let _ = spawn_aplayer_water_bubble(
                 lists,
                 sprites,

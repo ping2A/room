@@ -71,6 +71,7 @@ fn spawn_water_bubble(
     } else {
         actor_temps[iu] = ActorConTemps::default();
     }
+    crate::con::vm::inherit_hit_planes(actor_temps, iu, from);
     i
 }
 
@@ -379,7 +380,6 @@ pub fn movetransports(
                 1 | 2 => {
                     let old_sect = sprites[ju].sectnum;
                     if pic == WATERBUBBLE
-                        && (!crate::fixups::on() || emit_tic >= 70)
                         && old_sect >= 0
                         && (old_sect as usize) < sectors.len()
                     {
@@ -390,11 +390,10 @@ pub fn movetransports(
                             // Preserve the source hit-plane cache across a warp.
                             // Water bubbles initialize this cache at spawn, matching
                             // their stale `hittype.floorz`/`ceilingz` in Chocolate.
-                            let cache_sect = if crate::fixups::on() && emit_tic >= 70 {
-                                old_sect as usize
-                            } else {
-                                osect as usize
-                            };
+                            // Chocolate never refreshes a STAT_MISC sprite's
+                            // `hittype.floorz`; the pre-warp plane is the
+                            // closest stand-in when no spawn value was cached.
+                            let cache_sect = osect as usize;
                             actor_temps[ju].warp_floorz = Some(sectors[cache_sect].floorz);
                             actor_temps[ju].warp_ceilingz = Some(sectors[cache_sect].ceilingz);
                         }

@@ -81,11 +81,18 @@ impl DmoDemo {
                     return Err(BuildError::Invalid("DMO player count"));
                 }
                 let players = player_count as u8;
+                // v116 stores one aim-mode byte per player; v117 adds the
+                // ten-slot weapon-choice table (`ud.wchoice`).
+                let per_player = if bytes[4] == ATOMIC_15_DEMO_VERSION {
+                    ATOMIC_15_PLAYER_HEADER_BYTES
+                } else {
+                    1
+                };
                 let volume = bytes[5];
                 let level = bytes[6];
                 let skill = bytes[7];
                 let player_header = usize::from(players)
-                    .checked_mul(ATOMIC_15_PLAYER_HEADER_BYTES)
+                    .checked_mul(per_player)
                     .ok_or(BuildError::Invalid("DMO player header length"))?;
                 let start = 0x2A2usize
                     .checked_add(player_header)
@@ -97,11 +104,13 @@ impl DmoDemo {
                 let mut aim_modes = Vec::with_capacity(usize::from(players));
                 let mut weapon_choices = Vec::with_capacity(usize::from(players));
                 for seat in 0..usize::from(players) {
-                    let offset = 0x2A2 + seat * ATOMIC_15_PLAYER_HEADER_BYTES;
+                    let offset = 0x2A2 + seat * per_player;
                     aim_modes.push(bytes[offset]);
-                    let mut choices = [0u8; 10];
-                    choices.copy_from_slice(&bytes[offset + 1..offset + 11]);
-                    weapon_choices.push(choices);
+                    if per_player == ATOMIC_15_PLAYER_HEADER_BYTES {
+                        let mut choices = [0u8; 10];
+                        choices.copy_from_slice(&bytes[offset + 1..offset + 11]);
+                        weapon_choices.push(choices);
+                    }
                 }
                 (
                     volume,
@@ -605,21 +614,21 @@ mod tests {
     #[test]
     fn v13_header_names_e1m1() {
         let d = DmoDemo::parse(&v13_header(0, 0, 2, 1)).unwrap();
-        assert_eq!(d.map_name(), "E1M1");
+        assert_eq!(d.map_name(), "E1L1");
         assert_eq!(d.skill, 2);
         assert!(d.tics.is_empty());
     }
 
     #[test]
     fn v15_header_names_e2m3() {
-        let mut b = vec![0u8; 0x2A2 + 1];
+        let mut b = vec![0u8; 0x2A2 + 11];
         b[4] = 117;
         b[5] = 1;
         b[6] = 2;
         b[7] = 3;
         b[0x0A] = 1;
         let d = DmoDemo::parse(&b).unwrap();
-        assert_eq!(d.map_name(), "E2M3");
+        assert_eq!(d.map_name(), "E2L3");
         assert_eq!(d.skill, 3);
     }
 
@@ -640,11 +649,28 @@ mod tests {
     }
 
     #[test]
+    fn atomic_v116_demos_decode_every_record() {
+        // v116 (the Atomic retail demos) has a one-byte player header; the
+        // body must decode to exactly `reccnt` records.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/duke/demos");
+        for (name, map) in [("DEMO1", "E3L11"), ("DEMO2", "E4L11"), ("DEMO3", "E4L2")] {
+            let Ok(b) = std::fs::read(dir.join(format!("{name}.DMO"))) else {
+                return;
+            };
+            let reccnt = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+            let d = DmoDemo::parse(&b).unwrap();
+            assert_eq!(d.map_name(), map, "{name}");
+            assert_eq!(d.tics.len(), reccnt, "{name}");
+            assert!(d.weapon_choices.is_empty(), "{name}: v116 has no weapon table");
+        }
+    }
+
+    #[test]
     fn lzw_looking_body_stays_header_only() {
         let mut b = v13_header(0, 1, 0, 1);
         b.extend_from_slice(&[8, 0, 20, 0, 9, 0, 1]);
         let d = DmoDemo::parse(&b).unwrap();
-        assert_eq!(d.map_name(), "E1M2");
+        assert_eq!(d.map_name(), "E1L2");
         assert!(d.tics.is_empty());
     }
 }
