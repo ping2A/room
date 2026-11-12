@@ -826,6 +826,17 @@ fn checkhitsprite_shotgun(
             sprites[iu].sectnum = sect;
         }
     }
+    // Chocolate `checkhitsprite`: a sleeping badguy (stat 2) is woken into
+    // STAT_ACTOR with `timetosleep = SLEEPTIME` *before* the damage record,
+    // so the same hit counts. Without this, shots at dormant enemies were
+    // lost and the enemy never woke (nor fell, if placed mid-air).
+    if lists.sprite_stat.get(iu).copied() == Some(2) {
+        let _ = lists.changespritestat(hitspr, 1);
+        if actor_temps.len() <= iu {
+            actor_temps.resize_with(iu + 1, ActorConTemps::default);
+        }
+        actor_temps[iu].timetosleep = crate::fta::SLEEPTIME;
+    }
     // Chocolate: queue `hittype` damage (CON `ifhitweapon` → `spawn BLOOD`).
     // Do not subtract `sprite.extra` here — `ifhitbyweapon` applies it later.
     let st = lists.sprite_stat.get(iu).copied().unwrap_or(0);

@@ -423,8 +423,13 @@ pub fn render_fp_textured_at(
     tiles: &SoftTiles,
     clock_120hz: u32,
 ) {
-    let zbuf = render_fp_textured_without_mirrors_at(world, view, frame, tiles, clock_120hz);
-    render_fp_mirror_at(world, view, frame, tiles, &zbuf, clock_120hz, 560);
+    let (zbuf, drawn) =
+        render_fp_textured_without_mirrors_at(world, view, frame, tiles, clock_120hz);
+    // Mirrors are searched among the sectors the portal pass reached, not
+    // the (camera-only) `visible_sectors` of the incoming view.
+    let mut mirror_view = view.clone();
+    mirror_view.visible_sectors = drawn;
+    render_fp_mirror_at(world, &mirror_view, frame, tiles, &zbuf, clock_120hz, 560);
 }
 
 fn render_fp_textured_without_mirrors_at(
@@ -433,13 +438,13 @@ fn render_fp_textured_without_mirrors_at(
     frame: &mut SoftFrame,
     tiles: &SoftTiles,
     clock_120hz: u32,
-) -> Vec<i32> {
+) -> (Vec<i32>, Vec<i16>) {
     let (mut zbuf, drawn) = portal::render(world, view, frame, tiles, clock_120hz);
     // Sprites are drawn for every sector the portal pass actually reached.
     let mut sprite_view = view.clone();
     sprite_view.visible_sectors = drawn;
     render_fp_sprites_at(world, &sprite_view, frame, Some(tiles), &mut zbuf, clock_120hz);
-    zbuf
+    (zbuf, sprite_view.visible_sectors)
 }
 
 /// Draw the nearest visible Atomic planar mirror from a reflected camera.
@@ -530,6 +535,9 @@ fn render_fp_mirror_at(
             }
         }
     }
+    if std::env::var_os("ROOM_MIRROR_DEBUG").is_some() {
+        eprintln!("mirror: visible {} nearest {nearest:?}", view.visible_sectors.len());
+    }
     let Some((_, wall_index, owner_sector)) = nearest else {
         return;
     };
@@ -567,7 +575,7 @@ fn render_fp_mirror_at(
         wall.nextsector,
     );
     let mut reflected_frame = SoftFrame::new(frame.width, frame.height);
-    render_fp_textured_without_mirrors_at(
+    let _ = render_fp_textured_without_mirrors_at(
         world,
         &reflected_view,
         &mut reflected_frame,

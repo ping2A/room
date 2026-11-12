@@ -349,6 +349,24 @@ fn kill_all(map: &str, out: &Path) {
         println!("#{t} pic {} stat {} extra {start_extra} -> {now} dead {dead} | {first_hit}", sp.picnum, run.s.lists.sprite_stat.get(t).copied().unwrap_or(-1));
     }
     println!("targets {} killed {killed} hurt {hurt} untouched {:?}", targets.len(), untouched);
+    for _ in 0..90 {
+        run.step(DukeInput::default());
+    }
+    let w = run.s.world.as_ref().unwrap();
+    for (i, &st) in run.s.lists.sprite_stat.iter().enumerate() {
+        if st == MAXSTATUS as i16 || st > 2 {
+            continue;
+        }
+        let sp = w.sprites[i];
+        if sp.sectnum < 0 || sp.xrepeat == 0 {
+            continue;
+        }
+        let fz = w.sectors[sp.sectnum as usize].floorz;
+        if fz - sp.z > 4096 && sp.extra <= 0 && room_duke::badguy::badguy_pic(sp.picnum, &actortype) {
+            let t = &run.s.actor_temps[i];
+            println!("FLOATING #{i} pic {} stat {st} z {} floor {} zvel {} hit_floorz {} cgg {} g_t {:?}", sp.picnum, sp.z, fz, sp.zvel, t.hit_floorz, t.cgg, &t.g_t[..6]);
+        }
+    }
 }
 
 /// `use-at MAP X Y ANG`: stand at (X, Y) facing ANG, render, press USE,
@@ -775,6 +793,36 @@ fn main() {
             let over = run.r.render_menu(640, 400, &g, 40, false);
             let mixed: Vec<u8> = game.chunks(4).zip(over.chunks(4)).flat_map(|(a, b)| if b[3] == 0 { [a[0], a[1], a[2], 255] } else { [b[0], b[1], b[2], 255] }).collect();
             save("menu_ingame", mixed);
+        }
+        "airkill" => {
+            // Lift an enemy, shoot it dead in the air, watch it fall.
+            let mut run = load("E1L1", &out);
+            for _ in 0..5 {
+                run.step(DukeInput::default());
+            }
+            let t: usize = a.get(3).and_then(|v| v.parse().ok()).unwrap_or(514);
+            let lift: i32 = std::env::var("ROOM_LIFT").ok().and_then(|v| v.parse().ok()).unwrap_or(20000);
+            let sp = run.sprite(t);
+            let w = run.s.world.as_ref().unwrap();
+            let fz = w.sectors[sp.sectnum as usize].floorz;
+            run.s.world.as_mut().unwrap().sprites[t].z = sp.z - lift;
+            let p = &mut run.s.player;
+            p.posx = sp.x - 600; p.posy = sp.y; p.posz = fz - (40 << 8); p.oposx = p.posx; p.oposy = p.posy; p.oposz = p.posz;
+            p.cursectnum = sp.sectnum; p.curr_weapon = 1; p.ammo[1] = 200;
+            println!("target #{t} pic {} floor {fz} start z {}", sp.picnum, sp.z - lift);
+            for k in 0..120 {
+                let cur = run.sprite(t);
+                run.aim(cur.x, cur.y, cur.z - (24 << 8));
+                run.s.player.extra = 100;
+                let fire = k % 6 == 0 && cur.extra > 0;
+                run.step(DukeInput { bits: if fire { FIRE } else { 0 }, ..DukeInput::default() });
+                let c = run.sprite(t);
+                let tt = &run.s.actor_temps[t];
+                if k % 6 == 0 || !run.alive(t) {
+                    println!("k{k} alive {} stat {} pic {} z {} zvel {} extra {} hitfz {} cgg {} action {}", run.alive(t), run.s.lists.sprite_stat[t], c.picnum, c.z, c.zvel, c.extra, tt.hit_floorz, tt.cgg, tt.g_t[4]);
+                }
+                if !run.alive(t) { break; }
+            }
         }
         "use-at" => use_at(&a[3..], &out),
         "open-all" => open_all(a.get(3).map_or("E1L1", String::as_str), &out),
