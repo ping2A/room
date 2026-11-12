@@ -1150,7 +1150,15 @@ pub(crate) fn use_near_sector(
         if switch_driven(world, t) {
             return true;
         }
-        operate_sector_motion(world, motions, wall_motions, t, actor_temps, Some(player), None);
+        operate_sector_motion(
+            world,
+            motions,
+            wall_motions,
+            t,
+            actor_temps,
+            Some(player),
+            None,
+        );
         return true;
     }
     let own = world.sectors[start as usize];
@@ -1158,7 +1166,15 @@ pub(crate) fn use_near_sector(
         if switch_driven(world, start) {
             return true;
         }
-        operate_sector_motion(world, motions, wall_motions, start, actor_temps, Some(player), None);
+        operate_sector_motion(
+            world,
+            motions,
+            wall_motions,
+            start,
+            actor_temps,
+            Some(player),
+            None,
+        );
         return true;
     }
     false
@@ -2427,10 +2443,23 @@ pub(crate) fn use_wall_switch(
         })
         .collect();
     let tags: Vec<_> = world.walls.iter().map(|w| w.lotag).collect();
-    let wall_target = neartag_wall(x, y, z, sector, angle, USE_RANGE, &sectors, &walls, &tags);
-    let sprite_target = nearest_tagged_sprite_switch(
-        world, x, y, z, sector, angle, USE_RANGE, tile_meta, &sector_z, &walls, false,
-    );
+    // Chocolate `checksectors` retries `neartag` at the eye (`posz`), then
+    // `posz + 8<<8`, then `posz + 16<<8` until something tagged is found.
+    // Callers pass the last of these heights.
+    let mut wall_target = None;
+    let mut sprite_target = None;
+    for dz in [-(16 << 8), -(8 << 8), 0] {
+        let probe_z = z + dz;
+        wall_target = neartag_wall(
+            x, y, probe_z, sector, angle, USE_RANGE, &sectors, &walls, &tags,
+        );
+        sprite_target = nearest_tagged_sprite_switch(
+            world, x, y, probe_z, sector, angle, USE_RANGE, tile_meta, &sector_z, &walls, false,
+        );
+        if wall_target.is_some() || sprite_target.is_some() {
+            break;
+        }
+    }
     let use_sprite = sprite_target.is_some_and(|(_, distance)| {
         wall_target.is_none_or(|(_, wall_distance)| distance < wall_distance)
     });

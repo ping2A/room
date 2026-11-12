@@ -128,6 +128,12 @@ pub(super) fn render(
         return (ctx.zbuf, Vec::new());
     }
     ctx.draw_sector(view.sect, 0, w, 0);
+    if std::env::var_os("ROOM_PORTAL_DEBUG").is_some() {
+        eprintln!(
+            "portal: start sect {} pos ({}, {}, {}) visits {} drawn {:?}",
+            view.sect, view.posx, view.posy, view.posz, ctx.visits, ctx.drawn
+        );
+    }
     ctx.draw_masked();
     (ctx.zbuf, ctx.drawn)
 }
@@ -187,6 +193,37 @@ impl Ctx<'_> {
             let (mut ax, mut az) = self.to_cam(a.x, a.y);
             let (mut bx, mut bz) = self.to_cam(b.x, b.y);
             let (mut ta, mut tb) = (0_i64, 1_i64 << 16);
+            // A portal line through the eye projects to zero width. When the
+            // camera stands on a two-sided wall (inside its span) and looks
+            // across it, the portal is the whole screen: Build keeps drawing
+            // the next sector there instead of going black.
+            if a.nextsector >= 0 {
+                let (ex, ez) = (bx - ax, bz - az);
+                let len2 = ex * ex + ez * ez;
+                let cross_eye = ex * (-az) - ez * (-ax);
+                let along = (-ax) * ex + (-az) * ez;
+                let forward = ex * (NEAR - az) - ez * (-ax);
+                if len2 > 0
+                    && cross_eye.abs() * cross_eye.abs() <= 4 * len2
+                    && along > 0
+                    && along < len2
+                    && forward > 0
+                {
+                    let iz = (1_i64 << 30) / NEAR;
+                    segs.push(Seg {
+                        wall: wi,
+                        x0: 0,
+                        x1: self.w,
+                        sxa: 0,
+                        sxb: i64::from(self.w) << 16,
+                        iza: iz,
+                        izb: iz,
+                        ta: 0,
+                        tb: 1 << 16,
+                    });
+                    continue;
+                }
+            }
             if az < NEAR && bz < NEAR {
                 continue;
             }
@@ -235,7 +272,8 @@ impl Ctx<'_> {
         let p = (((i64::from(col) << 16) + 0x8000 - seg.sxa) << 16) / span;
         let p = p.clamp(0, 1 << 16);
         let iz = seg.iza + (((seg.izb - seg.iza) * p) >> 16);
-        let tz = (seg.ta * seg.iza >> 16) + ((((seg.tb * seg.izb >> 16) - (seg.ta * seg.iza >> 16)) * p) >> 16);
+        let tz = (seg.ta * seg.iza >> 16)
+            + ((((seg.tb * seg.izb >> 16) - (seg.ta * seg.iza >> 16)) * p) >> 16);
         let iz = iz.max(1);
         let depth = (1_i64 << 30) / iz;
         let t = ((tz << 16) / iz).clamp(0, 1 << 16);
@@ -307,13 +345,20 @@ impl Ctx<'_> {
             self.fill_planes(sect, &sec, col, top, bottom, cy, fy);
             let depth_i = d.min(i64::from(i32::MAX - 1)) as i32;
             let wall_len = crate::helpers::length2d(
-                self.world.walls[wall.point2 as usize].x.wrapping_sub(wall.x),
-                self.world.walls[wall.point2 as usize].y.wrapping_sub(wall.y),
+                self.world.walls[wall.point2 as usize]
+                    .x
+                    .wrapping_sub(wall.x),
+                self.world.walls[wall.point2 as usize]
+                    .y
+                    .wrapping_sub(wall.y),
             );
             let next = wall.nextsector;
             // cstat 32 = one-way wall: drawn solid even with a neighbour.
             if next < 0 || next >= self.world.numsectors || wall.cstat & 32 != 0 {
-                let zref = match (next >= 0 && next < self.world.numsectors, wall.cstat & 4 != 0) {
+                let zref = match (
+                    next >= 0 && next < self.world.numsectors,
+                    wall.cstat & 4 != 0,
+                ) {
                     (true, false) => self.world.sectors[next as usize].ceilingz,
                     (true, true) | (false, false) => sec.ceilingz,
                     (false, true) => sec.floorz,
@@ -338,13 +383,17 @@ impl Ctx<'_> {
             let (ncz, nfz) = self.planes_at(next, px, py);
             let ncy = self.row_of(ncz, d).clamp(-1, i64::from(self.h) + 1) as i32;
             let nfy = self.row_of(nfz, d).clamp(-1, i64::from(self.h) + 1) as i32;
-            let both_sky_ceiling = sec.ceilingstat & STAT_PARALLAX != 0
-                && nsec.ceilingstat & STAT_PARALLAX != 0;
+            let both_sky_ceiling =
+                sec.ceilingstat & STAT_PARALLAX != 0 && nsec.ceilingstat & STAT_PARALLAX != 0;
             let both_sky_floor =
                 sec.floorstat & STAT_PARALLAX != 0 && nsec.floorstat & STAT_PARALLAX != 0;
             // Upper band: this ceiling down to the neighbour's.
             if ncy > cy && !both_sky_ceiling {
-                let zref = if wall.cstat & 4 != 0 { sec.ceilingz } else { nsec.ceilingz };
+                let zref = if wall.cstat & 4 != 0 {
+                    sec.ceilingz
+                } else {
+                    nsec.ceilingz
+                };
                 self.draw_wall_span(
                     col,
                     cy.max(top),
@@ -371,7 +420,11 @@ impl Ctx<'_> {
                 } else {
                     wall
                 };
-                let zref = if wall.cstat & 4 != 0 { sec.ceilingz } else { nsec.floorz };
+                let zref = if wall.cstat & 4 != 0 {
+                    sec.ceilingz
+                } else {
+                    nsec.floorz
+                };
                 self.draw_wall_span(
                     col,
                     nfy.max(top),
@@ -388,7 +441,11 @@ impl Ctx<'_> {
             }
             // Parallax on both sides: no wall band, and the neighbour's sky
             // continues this one, so the opening keeps the sky rows.
-            let open_top = if both_sky_ceiling { top } else { top.max(cy).max(ncy) };
+            let open_top = if both_sky_ceiling {
+                top
+            } else {
+                top.max(cy).max(ncy)
+            };
             let open_bottom = if both_sky_floor {
                 bottom
             } else {
@@ -440,7 +497,14 @@ impl Ctx<'_> {
         fy: i32,
     ) {
         self.plane_span(sect, sec, col, top.max(0), cy.min(bottom).min(self.h), true);
-        self.plane_span(sect, sec, col, fy.max(top).max(0), bottom.min(self.h), false);
+        self.plane_span(
+            sect,
+            sec,
+            col,
+            fy.max(top).max(0),
+            bottom.min(self.h),
+            false,
+        );
     }
 
     /// One column of a floor or ceiling: everything that does not depend on
@@ -487,16 +551,27 @@ impl Ctx<'_> {
             // Sky: column → angle → tile/u, row → v (Build parascan). Drawn
             // unshaded: per-sector sky shades show as seams between sectors.
             let column = tiles.sky_column(
-                picnum, self.view.ang, col, self.w, self.h, self.horizon, self.clock,
+                picnum,
+                self.view.ang,
+                col,
+                self.w,
+                self.h,
+                self.horizon,
+                self.clock,
             );
             let height = i64::from(self.h.max(1));
             for y in y0..y1 {
                 let p = column.map_or(flat, |(tile, u, sky_horizon)| {
                     let th = tile.h as i64;
-                    let v = th / 2 + (i64::from(y) - sky_horizon) * 200 / height
+                    let v = th / 2
+                        + (i64::from(y) - sky_horizon) * 200 / height
                         + i64::from(ypan) * th / 256;
                     let p = tile.at(u, v);
-                    if p == room_build::art::TRANSPARENT { flat } else { p }
+                    if p == room_build::art::TRANSPARENT {
+                        flat
+                    } else {
+                        p
+                    }
                 });
                 self.zbuf[y as usize * w + col as usize] = i32::MAX - 1;
                 self.frame.put(col, y, p);
@@ -527,11 +602,14 @@ impl Ctx<'_> {
             };
             const STEP: i32 = 4096;
             let z0 = z_at(self.view.posx, self.view.posy);
-            let gx = (z_at(self.view.posx.saturating_add(STEP), self.view.posy) - z0)
-                / f64::from(STEP);
-            let gy = (z_at(self.view.posx, self.view.posy.saturating_add(STEP)) - z0)
-                / f64::from(STEP);
-            (z0, gx * (ray_x as f64 / 16384.0) + gy * (ray_y as f64 / 16384.0))
+            let gx =
+                (z_at(self.view.posx.saturating_add(STEP), self.view.posy) - z0) / f64::from(STEP);
+            let gy =
+                (z_at(self.view.posx, self.view.posy.saturating_add(STEP)) - z0) / f64::from(STEP);
+            (
+                z0,
+                gx * (ray_x as f64 / 16384.0) + gy * (ray_y as f64 / 16384.0),
+            )
         });
         // Relative alignment (stat 64): axes from the sector's first wall.
         let basis = (stat & 64 != 0)
@@ -549,8 +627,15 @@ impl Ctx<'_> {
         // the tile size (the `8 - log2(size)` shift cancels it), doubled
         // density with stat 8; panning (`<<24`, unshifted) is in 1/256ths
         // of the tile.
-        let (su, sv) = if stat & 8 != 0 { (32_i64, 32_i64) } else { (16_i64, 16_i64) };
-        let (pu, pv) = (i64::from(xpan) * tile.w as i64, i64::from(ypan) * tile.h as i64);
+        let (su, sv) = if stat & 8 != 0 {
+            (32_i64, 32_i64)
+        } else {
+            (16_i64, 16_i64)
+        };
+        let (pu, pv) = (
+            i64::from(xpan) * tile.w as i64,
+            i64::from(ypan) * tile.h as i64,
+        );
         for y in y0..y1 {
             let idx = y as usize * w + col as usize;
             let dy = i64::from(y - self.horizon);
@@ -722,4 +807,3 @@ impl Ctx<'_> {
         }
     }
 }
-
