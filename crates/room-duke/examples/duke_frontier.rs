@@ -470,6 +470,9 @@ fn main() {
         s.trace_fixups = false;
         let mut choc_cursor = 0;
         for (t, inp) in demo.tics.iter().take(tics).enumerate() {
+            if std::env::var_os("ROOM_FTA_DEBUG").is_some() {
+                eprintln!("== tic {t}");
+            }
             s.tick(room_duke::player::DukeInput::from_dmo(inp));
             let room = room_build_engine::numeric::krand_log::drain();
             let choc = &choc_calls[choc_cursor.min(choc_calls.len())..];
@@ -525,6 +528,35 @@ fn main() {
             choc_cursor += room.len();
         }
         println!("krand calls identical for {tics} tics");
+        return;
+    }
+    if mode == "dump" {
+        // duke_frontier dump DEMO1 <tic> <out>: oracle-format sprite dump
+        // (`i pic stat x y z` + extras) after `tic` (oracle's dump tic).
+        let n: usize = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let out = a.get(4).map_or("/tmp/room_dump.txt", String::as_str);
+        let g = std::fs::read(&grp).unwrap();
+        let d = std::fs::read(&dmo).unwrap();
+        let (mut s, demo) = room_duke::demo_sync::session_from_grp_demo(&g, &d).unwrap();
+        s.trace_fixups = false;
+        for inp in demo.tics.iter().take(n + 1) {
+            s.tick(room_duke::DukeInput::from_dmo(inp));
+        }
+        let w = s.world.as_ref().unwrap();
+        let mut txt = String::new();
+        for (i, sp) in w.sprites.iter().enumerate() {
+            let st = s.lists.sprite_stat.get(i).copied().unwrap_or(1024);
+            if st == 1024 {
+                continue;
+            }
+            let t = s.actor_temps.get(i).map(|t| t.g_t).unwrap_or_default();
+            txt.push_str(&format!(
+                "{i} {} {st} {} {} {} sect={} ang={} xv={} zv={} ext={} own={} xr={} yr={} cs={} t={:?}\n",
+                sp.picnum, sp.x, sp.y, sp.z, sp.sectnum, sp.ang, sp.xvel, sp.zvel, sp.extra, sp.owner,
+                sp.xrepeat, sp.yrepeat, sp.cstat, t
+            ));
+        }
+        std::fs::write(out, txt).unwrap();
         return;
     }
     if mode == "sprites" {

@@ -612,6 +612,12 @@ pub(crate) fn tick_detonables(
             } else {
                 false
             };
+            if hit && crate::shoot::hit_debug_enabled() {
+                crate::shoot::push_hit_log(format!(
+                    "hit: SEENINE/OOZFILTER #{sprite_index} took {hit_extra} damage -> detonating (hitag {})",
+                    thing.hitag
+                ));
+            }
             if hit || thing.shade == -31 {
                 if hit {
                     thing.lotag = 0;

@@ -1083,13 +1083,105 @@ fn near_tagged_sector(
     angle: i16,
     tile_meta: &[crate::player::TileZMeta],
 ) -> Option<i16> {
+    near_tagged_sector_range(world, x, y, z, start_sector, angle, tile_meta, 768)
+}
+
+/// Chocolate `checksectors` tail for the player's open key: operate the
+/// tagged sector in front (`isanearoperator`), or the sector the player
+/// stands in (`isanunderoperator`). Sectors holding an ACTIVATOR or
+/// MASTERSWITCH are switch-driven and ignore the key. Returns true when a
+/// sector was operated or the key was consumed by such a sector.
+pub(crate) fn use_near_sector(
+    world: &mut BuildWorld,
+    motions: &mut Vec<SectorMotion>,
+    wall_motions: &mut Vec<WallMotion>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    player: &Player,
+    tile_meta: &[crate::player::TileZMeta],
+) -> bool {
+    let is_near = |lotag: i16| matches!(lotag & 0xff, 9 | 15..=23 | 25 | 26 | 29);
+    let is_under = |lotag: i16| matches!(lotag & 0xff, 15..=19 | 22 | 26);
+    let switch_driven = |world: &BuildWorld, sector: i16| {
+        let mut i = world.lists.headspritesect[sector as usize];
+        while i >= 0 {
+            let index = i as usize;
+            if index >= world.sprites.len() {
+                break;
+            }
+            let pic = world.sprites[index].picnum;
+            if pic == crate::spawn::ACTIVATOR || pic == crate::spawn::MASTERSWITCH {
+                return true;
+            }
+            i = world.lists.nextspritesect[index];
+        }
+        false
+    };
+    let start = player.cursectnum;
+    if start < 0 || start as usize >= world.sectors.len() {
+        return false;
+    }
+    let mut target = None;
+    for dz in [0, 8 << 8, 16 << 8] {
+        target = near_tagged_sector_range(
+            world,
+            player.posx,
+            player.posy,
+            player.posz + dz,
+            start,
+            player.ang,
+            tile_meta,
+            1280,
+        );
+        if target.is_some() {
+            break;
+        }
+    }
+    if std::env::var_os("ROOM_USE_DEBUG").is_some() {
+        eprintln!(
+            "use: pos ({}, {}, {}) sect {start} ang {} -> near sector {target:?}",
+            player.posx, player.posy, player.posz, player.ang
+        );
+    }
+    if let Some(t) = target
+        && let Some(sector) = world.sectors.get(t as usize).copied()
+        && sector.lotag & 16384 == 0
+        && is_near(sector.lotag)
+    {
+        if switch_driven(world, t) {
+            return true;
+        }
+        operate_sector_motion(world, motions, wall_motions, t, actor_temps, Some(player), None);
+        return true;
+    }
+    let own = world.sectors[start as usize];
+    if own.lotag & 16384 == 0 && is_under(own.lotag) {
+        if switch_driven(world, start) {
+            return true;
+        }
+        operate_sector_motion(world, motions, wall_motions, start, actor_temps, Some(player), None);
+        return true;
+    }
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn near_tagged_sector_range(
+    world: &BuildWorld,
+    x: i32,
+    y: i32,
+    z: i32,
+    start_sector: i16,
+    angle: i16,
+    tile_meta: &[crate::player::TileZMeta],
+    range: i32,
+) -> Option<i16> {
     let start = usize::try_from(start_sector).ok()?;
     if start >= world.sectors.len() {
         return None;
     }
     let (sin, cos) = approx_sincos_q14(i32::from(angle));
-    let vx = ((i64::from(cos) * 768) >> 14) as i32;
-    let vy = ((i64::from(sin) * 768) >> 14) as i32;
+    let vx = ((i64::from(cos) * i64::from(range)) >> 14) as i32;
+    let vy = ((i64::from(sin) * i64::from(range)) >> 14) as i32;
     let mut queue = vec![start_sector];
     let mut head = 0;
     let mut nearest: Option<(i64, Option<i16>)> = None;
@@ -1367,22 +1459,20 @@ fn operate_sector_motion(
         return;
     }
     if kind == 25 {
-        let Some(activator_hitag) = activator_hitag else {
-            return;
-        };
-        let mut local = world.lists.headspritesect[sector_index];
+        // Chocolate `operatesectors` case 25: the first SE15 (stat 3 order)
+        // in this sector names the group; every SE15 sharing its hitag
+        // toggles. Player use, activators and CON all take this path.
+        let mut scan = world.lists.headspritestat[crate::stat::STAT_EFFECTOR as usize];
         let mut group_tag = None;
-        while local >= 0 {
-            let index = local as usize;
-            local = world.lists.nextspritesect[index];
-            if world.lists.sprite_stat[index] != crate::stat::STAT_EFFECTOR
-                || world.sprites[index].lotag != 15
-                || world.sprites[index].hitag != activator_hitag
+        while scan >= 0 {
+            let index = scan as usize;
+            scan = world.lists.nextspritestat[index];
+            if world.sprites[index].lotag == 15
+                && usize::try_from(world.sprites[index].sectnum).ok() == Some(sector_index)
             {
-                continue;
+                group_tag = Some(world.sprites[index].hitag);
+                break;
             }
-            group_tag = Some(world.sprites[index].hitag);
-            break;
         }
         if let Some(group_tag) = group_tag {
             let mut marker = world.lists.headspritestat[crate::stat::STAT_EFFECTOR as usize];
@@ -1976,7 +2066,21 @@ pub(crate) fn tick_respawns(
                     let tile = marker.hitag as usize;
                     let actor_entry = image.actorscrptr.get(tile).copied().unwrap_or(0);
                     let actor_type = image.actortype.get(tile).copied().unwrap_or(0);
-                    if actor_entry > 0 {
+                    if crate::badguy::badguy_pic(marker.hitag, image.actortype.as_slice()) {
+                        // Chocolate `spawn()` badguy case: full size, hitscan
+                        // cstat, clipdist, pal from the RESPAWN marker.
+                        crate::spawn_rt::init_spawned_badguy(
+                            &mut world.lists,
+                            world.sprites.as_mut(),
+                            &world.sectors,
+                            &world.walls,
+                            actor_temps,
+                            tile_meta,
+                            image,
+                            spawned,
+                            index as i16,
+                        );
+                    } else if actor_entry > 0 {
                         let badguy = actor_type & 3 != 0;
                         let sprite = &mut world.sprites[child];
                         sprite.xrepeat = sprite.xrepeat.max(1);

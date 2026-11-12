@@ -34,6 +34,11 @@ const TIRE: i16 = 990;
 const WATERSPLASH2: i16 = 1380;
 const EXPLOSION2: i16 = 1890;
 const FRAMEEFFECT1: i16 = 4095;
+const SCRAP6: i16 = 2390;
+const GLASSPIECES: i16 = 1031;
+const FOURSLEIGHT: i32 = 1 << 8;
+const FIRELASER_TRAIL: i16 = 1625;
+const SCRAP5: i16 = 2416;
 
 /// Atomic `move BUBMOVE -10 -36` / `BUBMOVEFAST -10 -52` (GAME.CON).
 const BUBMOVE_H: i32 = -10;
@@ -74,6 +79,119 @@ pub fn moveexplosions(
         let s = sprites[iu];
         if s.sectnum < 0 || s.xrepeat == 0 {
             let _ = lists.deletesprite(i);
+            continue;
+        }
+        if s.picnum == FIRELASER_TRAIL {
+            // Chocolate `moveexplosions` `case FIRELASER`: trail copies live
+            // one tic (`s->extra` 999 marker), then KILLIT.
+            if sprites[iu].extra != 999 {
+                sprites[iu].extra = 999;
+            } else {
+                let _ = lists.deletesprite(i);
+            }
+            continue;
+        }
+        if (GLASSPIECES..=GLASSPIECES + 2).contains(&s.picnum) {
+            // Chocolate `moveexplosions` `case GLASSPIECES..+2`: fall with
+            // raw sector bounds, bounce three times (halving size), slide
+            // with xvel drag, then `ssp` (stat 5: plain add, no sector update).
+            if actor_temps.len() <= iu {
+                actor_temps.resize_with(iu + 1, ActorConTemps::default);
+            }
+            let mut sp = s;
+            crate::spawn::makeitfall(&mut sp, sectors, walls, &[], &[], crate::player::DUKE_GC, false);
+            if sp.zvel > 4096 {
+                sp.zvel = 4096;
+            }
+            let Some(sec) = sectors.get(sp.sectnum as usize).copied() else {
+                let _ = lists.deletesprite(i);
+                continue;
+            };
+            let t0 = actor_temps[iu].g_t[0];
+            if sp.z == sec.floorz - FOURSLEIGHT && t0 < 3 {
+                let r = krand_step(randomseed) & 511;
+                let mut zvel = -((3 - t0) << 8) - r;
+                if sec.lotag == 2 {
+                    zvel >>= 1;
+                }
+                sp.zvel = zvel as i16;
+                sp.xrepeat >>= 1;
+                sp.yrepeat >>= 1;
+                // `rnd(96)` → `setsprite` (refresh sector).
+                if (krand_step(randomseed) >> 8) >= 255 - 96 {
+                    let mut ns = sp.sectnum;
+                    updatesector(sp.x, sp.y, &mut ns, &sector_walls, &wall_xy);
+                    if ns >= 0 && ns != sp.sectnum {
+                        let _ = lists.changespritesect(i, ns);
+                        sp.sectnum = ns;
+                    }
+                }
+                actor_temps[iu].g_t[0] = t0 + 1;
+            } else if t0 == 3 {
+                let _ = lists.deletesprite(i);
+                continue;
+            }
+            if sp.xvel > 0 {
+                sp.xvel -= 2;
+                sp.cstat = ((sp.xvel & 3) << 2) as u16;
+            } else {
+                sp.xvel = 0;
+            }
+            let (sin, cos) = sincos_q14(i32::from(sp.ang));
+            sp.x += (((i32::from(sp.xvel) * cos) >> 14) * 4) >> 2;
+            sp.y += (((i32::from(sp.xvel) * sin) >> 14) * 4) >> 2;
+            sp.z += (i32::from(sp.zvel) * 4) >> 2;
+            sprites[iu] = sp;
+            continue;
+        }
+        if (SCRAP6..=SCRAP5 + 3).contains(&s.picnum) {
+            // Chocolate `moveexplosions` `IFWITHIN(SCRAP6, SCRAP5+3)`.
+            if actor_temps.len() <= iu {
+                actor_temps.resize_with(iu + 1, ActorConTemps::default);
+            }
+            let mut sp = s;
+            if sp.xvel > 0 {
+                sp.xvel -= 1;
+            } else {
+                sp.xvel = 0;
+            }
+            let mut sect = sp.sectnum;
+            if sp.zvel > 1024 && sp.zvel < 1280 {
+                // `setsprite`: refresh the sector for the current position.
+                let mut ns = sect;
+                updatesector(sp.x, sp.y, &mut ns, &sector_walls, &wall_xy);
+                if ns >= 0 && ns != sect {
+                    let _ = lists.changespritesect(i, ns);
+                    sp.sectnum = ns;
+                    sect = ns;
+                }
+            }
+            let floorz = sectors.get(sect as usize).map_or(i32::MAX, |sc| sc.floorz);
+            if sp.z < floorz - (2 << 8) {
+                let t = &mut actor_temps[iu].g_t;
+                if t[1] < 1 {
+                    t[1] += 1;
+                } else {
+                    t[1] = 0;
+                    let wrap = if sp.picnum < SCRAP6 + 8 { 6 } else { 2 };
+                    if t[0] > wrap {
+                        t[0] = 0;
+                    } else {
+                        t[0] += 1;
+                    }
+                }
+                if sp.zvel < 4096 {
+                    sp.zvel = sp.zvel.saturating_add((crate::player::DUKE_GC - 50) as i16);
+                }
+                let (sin, cos) = sincos_q14(i32::from(sp.ang));
+                sp.x += (i32::from(sp.xvel) * cos) >> 14;
+                sp.y += (i32::from(sp.xvel) * sin) >> 14;
+                sp.z += i32::from(sp.zvel);
+                sprites[iu] = sp;
+            } else {
+                sprites[iu] = sp;
+                let _ = lists.deletesprite(i);
+            }
             continue;
         }
         if (BLOODSPLAT1..=BLOODSPLAT4).contains(&s.picnum) {

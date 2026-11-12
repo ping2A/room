@@ -762,6 +762,7 @@ fn main() {
         },
         duke_music_quote_tics: 0,
         duke_bonus_panel: None,
+        duke_menu: None,
         duke_music_key_down: false,
         duke_rts_key_down: None,
         duke_environment_music_active: false,
@@ -1250,11 +1251,6 @@ fn duke_map_coordinates(map: &str) -> (u8, u8) {
     duke_campaign_coordinates(map).unwrap_or((0, 0))
 }
 
-fn duke_time_string(tics: u32) -> String {
-    let seconds = tics / u32::from(room_duke::DUKE_TIC_RATE);
-    format!("{:02}:{:02}", seconds / 60, seconds % 60)
-}
-
 fn duke_campaign_coordinates(map: &str) -> Option<(u8, u8)> {
     let bytes = map.as_bytes();
     if !(4..=5).contains(&bytes.len())
@@ -1595,26 +1591,6 @@ fn duke_quit_confirm_menu() -> ListMenu {
         scroll: 0,
         visible_rows: 0,
         origin: Vec2::new(80.0, 80.0),
-        dim_background: true,
-        line_spacing: 18.0,
-        show_title: true,
-    }
-}
-
-fn duke_pause_menu() -> ListMenu {
-    ListMenu {
-        title: "GAME MENU".into(),
-        items: vec![
-            MenuItem::text("RESUME", "duke_pause_resume"),
-            MenuItem::text("SAVE GAME", "duke_pause_save"),
-            MenuItem::text("LOAD GAME", "duke_pause_load"),
-            MenuItem::text("SOUND SETUP", "duke_pause_audio"),
-            MenuItem::text("QUIT", "duke_pause_quit"),
-        ],
-        selected: 0,
-        scroll: 0,
-        visible_rows: 0,
-        origin: Vec2::new(84.0, 48.0),
         dim_background: true,
         line_spacing: 18.0,
         show_title: true,
@@ -2170,9 +2146,18 @@ struct Keys {
     wheel_remainder: f32,
 }
 
+/// Native Chocolate `menues.c` pages (menus 0/50/100/110/990/501–503).
+struct DukeMenuState {
+    menu: room_duke::menu::DukeMenu,
+    /// 120 Hz `totalclock` for the spinning cursor and logo pulse.
+    clock: f32,
+    /// Draw over the MENUSCREEN backdrop (title mode) instead of the game.
+    backdrop: bool,
+}
+
+/// Chocolate `dobonus` between two campaign maps.
 struct DukeBonusPanel {
-    stats: room_duke::DukeLevelBonusStats,
-    remaining_tics: u16,
+    screen: room_duke::bonus::BonusScreen,
     transition: room_duke::DukeCampaignTransition,
 }
 
@@ -2354,6 +2339,7 @@ struct ViewerApp {
     duke_music_quote_tics: u16,
     /// Frozen native intermission overlay shown after a solo campaign exit.
     duke_bonus_panel: Option<DukeBonusPanel>,
+    duke_menu: Option<DukeMenuState>,
     /// Suppress OS key-repeat events while the music shortcut is held.
     duke_music_key_down: bool,
     /// Alt+F1..F10 edge latch for Atomic remote-ridicule sounds.
@@ -3231,6 +3217,32 @@ impl ApplicationHandler for ViewerApp {
                 if down && self.try_skip_title_splash() {
                     return;
                 }
+                // Native Duke menu navigation (Chocolate `probe`).
+                if down && self.duke_menu.is_some() {
+                    use room_duke::menu::MenuKey;
+                    let key = match code {
+                        KeyCode::ArrowUp | KeyCode::PageUp | KeyCode::Numpad8 | KeyCode::KeyW => Some(MenuKey::Up),
+                        KeyCode::ArrowDown | KeyCode::PageDown | KeyCode::Numpad2 | KeyCode::KeyS => Some(MenuKey::Down),
+                        KeyCode::ArrowLeft | KeyCode::Numpad4 => Some(MenuKey::Left),
+                        KeyCode::ArrowRight | KeyCode::Numpad6 => Some(MenuKey::Right),
+                        KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => Some(MenuKey::Enter),
+                        KeyCode::Escape => Some(MenuKey::Escape),
+                        KeyCode::KeyY => Some(MenuKey::Yes),
+                        KeyCode::KeyN => Some(MenuKey::No),
+                        _ => None,
+                    };
+                    if let Some(key) = key {
+                        self.duke_menu_key(key, event_loop);
+                    }
+                    return;
+                }
+                // `dobonus`: any key skips the count-up, then ends the screen.
+                if down && !repeat && let Some(panel) = self.duke_bonus_panel.as_mut() {
+                    panel.screen.key();
+                    let labels = panel.screen.take_sounds();
+                    self.play_duke_bonus_sounds(&labels);
+                    return;
+                }
                 let rts_index = match code {
                     KeyCode::F1 => Some(0),
                     KeyCode::F2 => Some(1),
@@ -3796,7 +3808,9 @@ impl ApplicationHandler for ViewerApp {
                     }
                     KeyCode::Escape if down => {
                         if self.duke_session.is_some() {
-                            if self.menu.is_some() {
+                            if self.duke_menu.is_some() {
+                                self.duke_menu_key(room_duke::menu::MenuKey::Escape, event_loop);
+                            } else if self.menu.is_some() {
                                 self.close_duke_menu();
                             } else {
                                 self.open_duke_pause_menu();
@@ -4031,6 +4045,16 @@ impl ApplicationHandler for ViewerApp {
 }
 
 impl ViewerApp {
+    /// Native Duke vertical mouse-look gain (`m_pitch` cvar, default 1.25):
+    /// Build's y-shearing view needs more horiz per degree than true pitch
+    /// for the look to feel as quick as horizontal turning.
+    fn duke_pitch_scale(&self) -> f64 {
+        match self.console.cvars.get("m_pitch") {
+            Some(room_console::CvarValue::Float(f)) => f64::from(*f).clamp(0.1, 10.0),
+            _ => 1.25,
+        }
+    }
+
     /// Per-frame audio state: pause (`S_PauseSound`; menus over a running
     /// single-player game count) and the listener's sound environment.
     fn update_audio_frame(&mut self) {
@@ -4744,6 +4768,7 @@ impl ViewerApp {
                         ((i32::from(view_player.ang) + pending_yaw.round() as i32) & 2047) as i16;
                     let pending_horiz = self.mouse_pitch_accum as f64
                         * MOUSE_DEG_PER_COUNT
+                        * self.duke_pitch_scale()
                         * 160.0
                         * std::f64::consts::PI
                         / 180.0
@@ -4862,6 +4887,7 @@ impl ViewerApp {
             if let Some((width, height, rgba)) = duke_frame {
                 hud.blit_rgba(0.0, 0.0, width, height, rgba);
             }
+
             // Build UI draw list (status bar + optional automap) then blit to canvas.
             let mut ui = UiDrawList::new();
             // SBARINFO bar: its commands, own screen placement, and where in
@@ -6027,51 +6053,19 @@ impl ViewerApp {
                     );
                 }
             }
-            if let Some(panel) = &self.duke_bonus_panel {
-                let left = fb_w * 0.18;
-                let top = fb_h * 0.18;
-                let width = fb_w * 0.64;
-                let height = fb_h * 0.64;
-                hud.fill_rect(left, top, width, height, [0.02, 0.02, 0.025, 0.94]);
-                let title = "BONUS";
-                hud.text(
-                    fb_w * 0.46,
-                    top + fb_h * 0.07,
-                    title,
-                    [1.0, 0.82, 0.12, 1.0],
-                );
-                let stats = panel.stats;
-                let countup_tics = 30_u32.saturating_sub(u32::from(panel.remaining_tics.min(30)));
-                let countup = |value: u32| value.saturating_mul(countup_tics) / 30;
-                let lines = [
-                    format!(
-                        "KILLS       {:>3} / {:>3}",
-                        countup(u32::from(stats.kills)),
-                        stats.total_kills
-                    ),
-                    format!(
-                        "SECRETS     {:>3} / {:>3}",
-                        countup(u32::from(stats.secrets_found)),
-                        stats.total_secrets
-                    ),
-                    format!(
-                        "YOUR TIME   {}",
-                        duke_time_string(countup(stats.elapsed_tics))
-                    ),
-                    format!("PAR TIME    {}", duke_time_string(countup(stats.par_tics))),
-                    format!(
-                        "3D REALMS   {}",
-                        duke_time_string(countup(stats.designer_tics))
-                    ),
-                ];
-                for (index, line) in lines.iter().enumerate() {
-                    hud.text(
-                        left + width * 0.16,
-                        top + fb_h * (0.19 + index as f32 * 0.075),
-                        line,
-                        [0.95, 0.93, 0.78, 1.0],
-                    );
-                }
+            if let Some(state) = &self.duke_menu
+                && let Some(renderer) = self.duke_renderer.as_ref()
+            {
+                let (w, h) = (fb_w.max(1.0) as u32, fb_h.max(1.0) as u32);
+                let rgba = renderer.render_menu(w, h, &state.menu, state.clock as i64, state.backdrop);
+                hud.blit_rgba(0.0, 0.0, w, h, rgba);
+            }
+            if let Some(panel) = &self.duke_bonus_panel
+                && let Some(renderer) = self.duke_renderer.as_ref()
+            {
+                let (w, h) = (fb_w.max(1.0) as u32, fb_h.max(1.0) as u32);
+                let rgba = renderer.render_bonus_screen(w, h, &panel.screen);
+                hud.blit_rgba(0.0, 0.0, w, h, rgba);
             }
             if self.duke_help_page != 0
                 && let Some(renderer) = self.duke_renderer.as_ref()
@@ -6729,6 +6723,7 @@ impl ViewerApp {
                     msgs = world.drain_messages();
                     for line in world.drain_debug() {
                         eprintln!("room: {line}");
+                        self.messages.push(line.clone(), 105);
                         self.console.print(line);
                     }
                     if let Some(name) = world.take_slideshow_request() {
@@ -7699,6 +7694,10 @@ impl ViewerApp {
 
     /// Drive the native Build playsim from desktop input at Duke's 30 Hz.
     fn tick_duke(&mut self, dt: f32) {
+        if let Some(state) = self.duke_menu.as_mut() {
+            state.clock += dt * 120.0;
+            return;
+        }
         if self.menu.is_some() || self.duke_help_page != 0 {
             return;
         }
@@ -7708,10 +7707,12 @@ impl ViewerApp {
         while self.tic_accum >= TIC {
             self.tic_accum -= TIC;
             if self.duke_bonus_panel.is_some() {
-                let transition = self.duke_bonus_panel.as_mut().and_then(|panel| {
-                    panel.remaining_tics = panel.remaining_tics.saturating_sub(1);
-                    (panel.remaining_tics == 0).then_some(panel.transition)
+                // Chocolate `totalclock` runs at 120 Hz: four clocks per tic.
+                let (transition, labels) = self.duke_bonus_panel.as_mut().map_or((None, Vec::new()), |panel| {
+                    panel.screen.tick(4);
+                    (panel.screen.done().then_some(panel.transition), panel.screen.take_sounds())
                 });
+                self.play_duke_bonus_sounds(&labels);
                 if let Some(transition) = transition {
                     self.duke_bonus_panel = None;
                     self.advance_duke_campaign(transition, None);
@@ -7778,7 +7779,9 @@ impl ViewerApp {
             // Chocolate mouse aiming adds `horz >> 1` to `horiz`; one horiz
             // unit is ~1/160 rad at the 320x200 reference projection, so a
             // mouse pitch of d degrees maps to horz = 2 * d * 160 * pi/180.
-            let pitch_deg = sample.mouse_pitch as f64 * room_input::MOUSE_DEG_PER_COUNT;
+            let pitch_deg = sample.mouse_pitch as f64
+                * room_input::MOUSE_DEG_PER_COUNT
+                * self.duke_pitch_scale();
             let horiz_units = pitch_deg * 160.0 * std::f64::consts::PI / 180.0
                 + self.duke_horiz_residual;
             // `horiz += horz >> 1`: send even values so both directions move
@@ -7849,6 +7852,18 @@ impl ViewerApp {
             let mut incoming_duke_rts = Vec::new();
             if let Some(session) = self.duke_session.as_mut() {
                 session.set_active_sound_owners(&active_duke_sound_owners);
+                // `duke_hitdebug 1`: echo what each player bullet hit.
+                room_duke::shoot::set_hit_debug(!matches!(
+                    self.console.cvars.get("duke_hitdebug"),
+                    Some(room_console::CvarValue::Int(0)) | Some(room_console::CvarValue::Bool(false))
+                ));
+                // `duke_statusbar 0` switches to Atomic's full-screen mini HUD.
+                if let Some(renderer) = self.duke_renderer.as_ref() {
+                    renderer.set_full_status_bar(!matches!(
+                        self.console.cvars.get("duke_statusbar"),
+                        Some(room_console::CvarValue::Int(0)) | Some(room_console::CvarValue::Bool(false))
+                    ));
+                }
                 if self.duke_demo_playback.is_none() && self.duke_atomic_demo_playback.is_none() {
                     // Desktop mouselook is Chocolate's mouse-aiming mode: no
                     // snap-to-centre dead zone around horiz 100.
@@ -7906,9 +7921,13 @@ impl ViewerApp {
                         room_duke::weapons::cycle_weapon(&mut session.player, -1);
                     }
                     session.tick(duke_input);
+                    for line in room_duke::shoot::take_hit_log() {
+                        eprintln!("room: {line}");
+                        self.console.print(line);
+                    }
                     duke_restart_requested = session.take_player_restart_request();
                     if self.duke_demo_recorder.is_none() {
-                        let bonus_stats = session.level_bonus_stats();
+                        let bonus_stats = session.bonus_screen();
                         duke_campaign_transition = session.take_campaign_exit_request();
                         if duke_campaign_transition.is_some() {
                             duke_campaign_bonus_stats = Some(bonus_stats);
@@ -7994,13 +8013,9 @@ impl ViewerApp {
                 ) && self.net.is_none()
                     && self.duke_demo_playback.is_none()
                     && self.duke_atomic_demo_playback.is_none()
-                    && let Some(stats) = duke_campaign_bonus_stats
+                    && let Some(screen) = duke_campaign_bonus_stats
                 {
-                    self.duke_bonus_panel = Some(DukeBonusPanel {
-                        stats,
-                        remaining_tics: 150,
-                        transition,
-                    });
+                    self.duke_bonus_panel = Some(DukeBonusPanel { screen, transition });
                 } else {
                     self.advance_duke_campaign(transition, None);
                 }
@@ -8074,6 +8089,36 @@ impl ViewerApp {
                 self.messages
                     .push(format!("Duke: entered E{}L{}", volume + 1, level + 1), 100);
             }
+        }
+    }
+
+    /// Play `dobonus` cues (CON labels) as centred global sounds.
+    fn play_duke_bonus_sounds(&mut self, labels: &[&'static str]) {
+        let Some(script) = self.duke_session.as_ref().and_then(|session| session.script.as_ref()) else {
+            return;
+        };
+        let events: Vec<room_duke::DukeSoundEvent> = labels
+            .iter()
+            .filter_map(|label| script.labels.get(*label))
+            .filter_map(|label| u16::try_from(label.value).ok())
+            .map(|sound_id| room_duke::DukeSoundEvent {
+                sound_id,
+                position: [0; 3],
+                source_id: None,
+                play_once: false,
+                loop_sound: false,
+                voice_limit: 0,
+                exclusive: false,
+                ambience: false,
+                priority: 255,
+                global: true,
+                no_attenuation: true,
+                stop: false,
+                stop_source_sound: false,
+            })
+            .collect();
+        if !events.is_empty() {
+            self.play_duke_sounds(&events, (0, 0, 0, 0));
         }
     }
 
@@ -9803,9 +9848,18 @@ impl ViewerApp {
     }
 
     fn open_duke_pause_menu(&mut self) {
-        self.menu = Some(MenuStack {
-            stack: vec![duke_pause_menu()],
-            ..MenuStack::default()
+        // Chocolate menu 50 drawn with Duke art (`room_duke::menu`).
+        let (volumes, skills) = self
+            .duke_session
+            .as_ref()
+            .and_then(|session| session.script.as_ref())
+            .map(|script| (script.volume_names.to_vec(), script.skill_names.to_vec()))
+            .unwrap_or_default();
+        self.menu = None;
+        self.duke_menu = Some(DukeMenuState {
+            menu: room_duke::menu::DukeMenu::new(true, volumes, skills),
+            clock: 0.0,
+            backdrop: false,
         });
         self.keys.attack.clear();
         self.set_play_look(false);
@@ -9824,8 +9878,55 @@ impl ViewerApp {
         self.start_duke_environment_music();
     }
 
+    /// Feed one key to the native Duke menu and carry out its action.
+    fn duke_menu_key(&mut self, key: room_duke::menu::MenuKey, event_loop: &ActiveEventLoop) {
+        use room_duke::menu::MenuAction;
+        let Some(state) = self.duke_menu.as_mut() else {
+            return;
+        };
+        let action = state.menu.key(key);
+        let labels = state.menu.take_sounds();
+        if action == MenuAction::QuitToTitle {
+            state.backdrop = true;
+        }
+        self.play_duke_bonus_sounds(&labels);
+        match action {
+            MenuAction::None | MenuAction::QuitToTitle => {}
+            MenuAction::Resume => self.close_duke_menu(),
+            MenuAction::QuitGame => event_loop.exit(),
+            MenuAction::OpenHelp => {
+                self.close_duke_menu();
+                self.duke_help_page = 1;
+            }
+            MenuAction::OpenSave | MenuAction::OpenLoad => {
+                let load = action == MenuAction::OpenLoad;
+                self.duke_menu = None;
+                self.menu = Some(MenuStack {
+                    stack: vec![duke_save_menu(load, self.duke_last_save_slot.unwrap_or(0))],
+                    ..MenuStack::default()
+                });
+            }
+            MenuAction::OpenOptions => {
+                self.duke_menu = None;
+                self.open_duke_audio_menu();
+            }
+            MenuAction::NewGame { volume, skill } => {
+                if let Some(session) = self.duke_session.as_mut() {
+                    session.campaign = room_duke::DukeCampaignProgress::new(volume, 0);
+                }
+                self.close_duke_menu();
+                self.duke_bonus_panel = None;
+                self.advance_duke_campaign(
+                    room_duke::DukeCampaignTransition::NextLevel { volume, level: 0 },
+                    Some(skill),
+                );
+            }
+        }
+    }
+
     fn close_duke_menu(&mut self) {
         self.menu = None;
+        self.duke_menu = None;
         self.keys.attack.clear();
         self.set_play_look(true);
         if self.duke_environment_music_active {

@@ -70,7 +70,8 @@ impl SoftTiles {
         out
     }
 
-    fn sprite_offset(&self, picnum: i16) -> (i8, i8) {
+    #[must_use]
+    pub fn sprite_offset(&self, picnum: i16) -> (i8, i8) {
         self.sprite_offsets
             .get(&picnum)
             .copied()
@@ -401,7 +402,7 @@ fn sprite_fog_shade(world: Option<&BuildWorld>, shade: i8, depth: i64, sect: i16
     } else {
         (512 * i64::from(v.wrapping_add(16))) >> 4
     };
-    (i64::from(shade) + ((depth.max(0) * globvis) >> 18)).clamp(0, 127) as i8
+    (i64::from(shade) + ((depth.max(0) * globvis) >> 19)).clamp(0, 127) as i8
 }
 
 pub fn render_fp_textured(
@@ -636,7 +637,7 @@ fn project_mirror_quad(
         let cy = height as i64 / 2;
         let fx = cx.max(1);
         let fy = cy.max(1);
-        let horizon = (i32::from(view.horiz) - 100) / 2;
+        let horizon = -horiz_pixel_offset(view.horiz, fy);
         Some((
             i32::try_from(cx + fx * i64::from(rx) / i64::from(rz)).ok()?,
             i32::try_from(cy - fy * i64::from(ry) / i64::from(rz) - i64::from(horizon)).ok()?,
@@ -706,6 +707,16 @@ const STAT_PARALLAX: u16 = 1;
 
 /// Horizon-split floor / ceiling / sky fill for the camera sector (bootstrap).
 ///
+/// Build `horiz` → screen rows of horizon shift for a projection with
+/// vertical focal length `focal_y` (pixels). Chocolate's hitscan slope for
+/// `horiz` is `(horiz-100)/128` (in xy-equivalent units), so this keeps the
+/// screen centre on the bullet path. `horiz > 100` looks up: the horizon row
+/// moves down the screen.
+#[must_use]
+pub fn horiz_pixel_offset(horiz: i16, focal_y: i64) -> i32 {
+    ((i64::from(horiz) - 100) * focal_y / 128) as i32
+}
+
 /// Not pixel-exact Build: one sector, flat horizon, optional tile sample.
 /// Parallax ceiling (`ceilingstat & 1`) draws a sky strip keyed by `ang`.
 pub fn fill_fp_flats_sky(
@@ -732,7 +743,7 @@ pub fn fill_fp_flats_sky_at(
     }
     let cy = h / 2;
     // Build horiz ~100 at eye level; shift horizon with look.
-    let horizon = (cy - (i32::from(view.horiz) - 100) / 2).clamp(0, h);
+    let horizon = (cy + horiz_pixel_offset(view.horiz, i64::from(cy.max(1)))).clamp(0, h);
 
     let sec = if view.sect >= 0 && view.sect < world.numsectors {
         &world.sectors[view.sect as usize]
@@ -1018,7 +1029,7 @@ fn render_fp_walls_at(
     let cy = h / 2;
     let focal_x = (w / 2).max(1);
     let focal_y = (h / 2).max(1);
-    let horiz_off = (i32::from(view.horiz) - 100) / 2;
+    let horiz_off = -horiz_pixel_offset(view.horiz, i64::from((frame.height as i32 / 2).max(1)));
     // A column-only depth buffer hides every sector behind the first portal
     // surface. Keep depth per pixel so upper/lower portal bands occlude while
     // the opening remains available for the next visible sector.
@@ -1206,7 +1217,7 @@ pub fn render_fp_sprites_at(
     let cy = h / 2;
     let focal_x = (w / 2).max(1);
     let focal_y = (h / 2).max(1);
-    let horiz_off = (i32::from(view.horiz) - 100) / 2;
+    let horiz_off = -horiz_pixel_offset(view.horiz, i64::from((frame.height as i32 / 2).max(1)));
 
     for i in 0..crate::world::MAXSPRITES {
         let sp = &world.sprites[i];
@@ -1353,7 +1364,7 @@ fn render_floor_aligned_sprite(
     let center_y = frame.height as i32 / 2;
     let focal_x = (frame.width as i32 / 2).max(1);
     let focal_y = (frame.height as i32 / 2).max(1);
-    let horizon_off = (i32::from(view.horiz) - 100) / 2;
+    let horizon_off = -horiz_pixel_offset(view.horiz, i64::from((frame.height as i32 / 2).max(1)));
     let (tile_xoff, tile_yoff) = tiles.sprite_offset(sprite.picnum);
     let mut xoff = i32::from(tile_xoff) + i32::from(sprite.xoffset);
     let mut yoff = i32::from(tile_yoff) + i32::from(sprite.yoffset);
@@ -1585,73 +1596,86 @@ fn render_wall_aligned_sprite(
         )
     };
     let (sin_view, cos_view) = crate::helpers::approx_sincos_q14(i32::from(view.ang));
-    let focal_x = (frame.width as i32 / 2).max(1);
-    let focal_y = (frame.height as i32 / 2).max(1);
-    let center_x = frame.width as i32 / 2;
-    let center_y = frame.height as i32 / 2;
-    let horizon_off = (i32::from(view.horiz) - 100) / 2;
-    let project = |x: i32, y: i32, z: i32| -> Option<(i32, i32, i32)> {
-        let (rx, ry, rz) = cam_project(view, sin_view, cos_view, x, y, z)?;
-        if rz <= 16 {
-            return None;
-        }
-        Some((
-            center_x + ((i64::from(focal_x) * rx) / rz) as i32,
-            center_y - ((i64::from(focal_y) * ry) / rz) as i32 - horizon_off,
-            rz as i32,
-        ))
+    let focal_x = f64::from((frame.width as i32 / 2).max(1));
+    let focal_y = f64::from((frame.height as i32 / 2).max(1));
+    let center_x = f64::from(frame.width as i32 / 2);
+    let center_y = f64::from(frame.height as i32 / 2);
+    let horizon_off =
+        f64::from(-horiz_pixel_offset(view.horiz, i64::from((frame.height as i32 / 2).max(1))));
+    // Camera space (same basis as `cam_project`), without its behind-camera
+    // rejection: the segment is clipped against a near plane instead, so a
+    // poster whose one end is behind the eye still draws its visible part.
+    let to_cam = |x: i32, y: i32| -> (f64, f64) {
+        let dx = (i64::from(x) - i64::from(view.posx)) as f64;
+        let dy = (i64::from(y) - i64::from(view.posy)) as f64;
+        let (s, c) = (f64::from(sin_view) / 16384.0, f64::from(cos_view) / 16384.0);
+        (-dx * s + dy * c, dx * c + dy * s)
     };
-    let Some(mut a_top) = project(left_x, left_y, top_z) else {
+    const NEAR: f64 = 16.0;
+    let (lrx, lrz) = to_cam(left_x, left_y);
+    let (rrx, rrz) = to_cam(right_x, right_y);
+    if lrz <= NEAR && rrz <= NEAR {
         return;
-    };
-    let Some(mut a_bottom) = project(left_x, left_y, bottom_z) else {
-        return;
-    };
-    let Some(mut b_top) = project(right_x, right_y, top_z) else {
-        return;
-    };
-    let Some(mut b_bottom) = project(right_x, right_y, bottom_z) else {
-        return;
-    };
+    }
+    let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
+    if lrz < NEAR {
+        t0 = (NEAR - lrz) / (rrz - lrz);
+    }
+    if rrz < NEAR {
+        t1 = (NEAR - lrz) / (rrz - lrz);
+    }
+    let at = |t: f64| (lrx + (rrx - lrx) * t, lrz + (rrz - lrz) * t);
+    let (mut ax, mut az) = at(t0);
+    let (mut bx, mut bz) = at(t1);
+    let (mut ua, mut ub) = (t0, t1);
+    let ry_top = (f64::from(view.posz) - f64::from(top_z)) / 16.0;
+    let ry_bottom = (f64::from(view.posz) - f64::from(bottom_z)) / 16.0;
+    let mut sxa = center_x + focal_x * ax / az;
+    let mut sxb = center_x + focal_x * bx / bz;
     let mut reverse_u = sprite.cstat & CSTAT_XFLIP != 0;
-    if a_top.0 > b_top.0 {
+    if sxa > sxb {
         // A one-sided Build wall sprite is culled when viewed from its back.
         if sprite.cstat & CSTAT_ONE_SIDED != 0 {
             return;
         }
-        std::mem::swap(&mut a_top, &mut b_top);
-        std::mem::swap(&mut a_bottom, &mut b_bottom);
-        reverse_u = !reverse_u;
+        std::mem::swap(&mut sxa, &mut sxb);
+        std::mem::swap(&mut ax, &mut bx);
+        std::mem::swap(&mut az, &mut bz);
+        std::mem::swap(&mut ua, &mut ub);
     }
-    let left = a_top.0.max(0);
-    let right = b_top.0.min(frame.width as i32);
-    if right <= left || b_top.0 == a_top.0 {
+    let _ = (ax, bx);
+    let left = (sxa.ceil() as i32).max(0);
+    let right = (sxb.ceil() as i32).min(frame.width as i32);
+    if right <= left || sxb - sxa < 1e-6 {
         return;
     }
-    let screen_width = i64::from(b_top.0 - a_top.0);
     let flat = wall_color(sprite.picnum, sprite.shade);
+    let tw = i64::from(tile_width);
+    let th = i64::from(tile_height);
+    let (iza, izb) = (1.0 / az, 1.0 / bz);
     for col in left..right {
-        let t = (i64::from(col - a_top.0) << 16) / screen_width;
-        let interp = |a: i32, b: i32| a + (((i64::from(b - a) * t) >> 16) as i32);
-        let top = interp(a_top.1, b_top.1);
-        let bottom = interp(a_bottom.1, b_bottom.1);
-        let depth = interp(a_top.2, b_top.2).max(1);
+        // Perspective-correct: 1/z and u/z are linear in screen space.
+        let s = ((f64::from(col) + 0.5 - sxa) / (sxb - sxa)).clamp(0.0, 1.0);
+        let inv_z = iza + (izb - iza) * s;
+        let u_frac = (ua * iza + (ub * izb - ua * iza) * s) / inv_z;
+        let depth = (1.0 / inv_z) as i32;
+        let top = center_y - focal_y * ry_top * inv_z - horizon_off;
+        let bottom = center_y - focal_y * ry_bottom * inv_z - horizon_off;
         if bottom <= top {
             continue;
         }
-        let y0 = top.max(0);
-        let y1 = bottom.min(frame.height as i32);
-        let yspan = i64::from(bottom - top);
+        // Posters sit flush on walls: win depth ties against the wall.
+        let test_depth = depth - (depth >> 7) - 2;
+        let y0 = (top.ceil() as i32).max(0);
+        let y1 = (bottom.ceil() as i32).min(frame.height as i32);
+        let u0 = ((u_frac * tw as f64) as i64).clamp(0, tw - 1);
+        let u = if reverse_u { tw - 1 - u0 } else { u0 };
         for y in y0..y1 {
             let index = y as usize * frame.width as usize + col as usize;
-            if index >= zbuf.len() || depth >= zbuf[index] {
+            if index >= zbuf.len() || test_depth >= zbuf[index] {
                 continue;
             }
-            let tw = i64::from(tile_width);
-            let th = i64::from(tile_height);
-            let u0 = ((i64::from(col - a_top.0) * tw) / screen_width).clamp(0, tw - 1);
-            let u = if reverse_u { tw - 1 - u0 } else { u0 };
-            let v0 = ((i64::from(y - top) * th) / yspan).clamp(0, th - 1);
+            let v0 = (((f64::from(y) + 0.5 - top) / (bottom - top) * th as f64) as i64).clamp(0, th - 1);
             let v = if sprite.cstat & CSTAT_YFLIP != 0 {
                 th - 1 - v0
             } else {
@@ -1673,6 +1697,7 @@ fn render_wall_aligned_sprite(
             );
         }
     }
+    let _ = &mut reverse_u;
 }
 
 fn lists_stat_free(world: &BuildWorld, i: usize) -> bool {

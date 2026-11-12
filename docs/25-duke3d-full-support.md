@@ -115,6 +115,40 @@ use_flips_linked_wall_switches_with_one_neartag}`; room-build
 `sav::tests::dump_reads_*` (~35). The ~930 `demo1_ticN_bitexact` tests
 replay fixup-mode playback and should be replaced by the honest floor test.
 
+### Milestone status (2026-11-11) — single source of truth for D0–D11
+
+Two numbers per milestone. **Work %** is an estimate of how much of the
+milestone's deliverables exist in code. **Acceptance** is the milestone's own
+pass/fail test from §11, measured honestly (no `trace_fixups`, no pads). A
+milestone is `done` only when its acceptance passes; work % alone never
+closes one. Keep `docs/21-milestone-progress.md` §0 in step with this table.
+
+| # | Milestone | Status | Work % | Acceptance (§11) | Measured now |
+|---|-----------|--------|--------|------------------|--------------|
+| D0 | ADR + scaffolding | **done** | 100% | met | ADR 0004, crates, `GameRuntime`, wasm CI |
+| D1 | Reference traces | **done** | 100% | met | `scripts/duke-oracle/` patched Chocolate reproduces committed DEMO1–3 traces; per-call `krand` logs |
+| D2 | Engine primitives | **done** | 100% | met | specs in `docs/build-engine-primitives/`; golden vectors for the newer sprite-clip / sloped-fallback paths still wanted |
+| D3 | World load + static view | in progress | 87% | not met (no golden captures yet) | portal renderer with per-column clip, distance fog, parallax sky with `parallaxyscale`, masked walls, face/wall/floor sprites, `animatesprites` (action frames, rotations), size-independent floor texel scale, portal walls lying exactly on the entry portal line are kept when front-facing (Build's closed swing/stall doors are built that way; they were see-through from one side), perspective-correct wall sprites clipped at the near plane and winning depth ties against their wall (posters no longer stripe or vanish at an angle), Build `wallscan` distance-shade rate (1 shade / 1024 units at visibility 512; was twice too dark). Missing: golden screenshots vs reference, all-maps render sweep, translucency/palette edge cases |
+| D4 | CON compiler | **done** | 100% | met | Atomic script image hash = Chocolate |
+| D5 | Core sim loop | in progress | 72% | not met | DEMO1 honest frontier **270 / 3,808 tics (7%)** (was 264: OCTABRAIN COOLEXPLOSION1 trailing TRANDs, CON `fall` now runs mid-parse like Chocolate, COOLEXPLOSION1 moves with `movesprite` clipmove instead of an unbounded hitscan; next divergence: tic-270 shotgun `tracers` bubbles a few units off, i.e. the pellet hit point); DEMO2/3 diverge at tic 0. Map enemies now get Chocolate's spawn header (action/move/hitag) and wake, hunt and fight; CON `spawn` creates real sprites for enemies, blood pools, effects, item drops and generic CON actors. Still deferred side effects in the VM, hand-written CON emulations, and the `fixups::on()` paths to delete |
+| D6 | Weapons + damage | in progress | 79% | not met (needs DEMO1 to the end) | player weapons, hitscan/projectiles, `hitradius`, `checkhitwall`, object `checkhitsprite` cases for bullets, enemy `shoot` (FIRELASER, SPIT, RPG, FREEZEBLAST, SHRINKER, MORTER/BOUNCEMINE, enemy hitscan, KNEE); projectiles step with `movesprite` per tic; `duke_play kill-all` sweep kills 30/33, 53/56, 53/56 enemies on E1L1–E1L3; breakable props (HYDRENT, PANNEL, BOTTLE, CHAIR, VASE, PIPE…) get Chocolate's `cstat 257`/clipdist 32 so bullets hit them (`duke_play break-all`); GLASSPIECES fall and bounce (`moveexplosions`), broken hydrant spawns the animated TOILETWATER CON actor, `EGS` children inherit the parent's hit planes and map sprites seed them from their sector; first-person weapons drawn by a port of `displayweapon` (pistol reload, shotgun pump, chaingun, RPG, pipebomb throw, devastator, freezer, shrinker/expander, tripbomb, quick kick, shrunk fists) |
+| D7 | Sectors + effectors | in progress | 84% | not met (DEMO2/DEMO3 at 0 tics) | SEs, doors/elevators (TOUCHPLATE `spawn` init: `T3` = original floor, floor starts at the plate z — the plate no longer sinks its floor to z 0 and leaves an unclimbable ledge; Chocolate `prelevel` now defaults every sector `extra` to 256 — the SE `yvel` speed — so SE11 swing doors turn 90° in 8 tics in the right direction and SE15 sliders travel (they were driven by the map's -1, i.e. slow/reversed or not at all); open lotag 20/22 doors get their toggle bit; SE15 sliding doors keyed by the sector's own SE15 group as in Chocolate, no activator hitag needed; player USE now reaches `operatesectors` via Chocolate's `checksectors` near/under-operator tail — the open key previously only drove switches; `duke_play open-all` sweep), transports (E1L1 vent→street works), switches, respawns, mirrors, intro DUKECAR/HELECOPT + earthquake |
+| D8 | Audio + front end | in progress | 66% | not met | CON sounds, native Chocolate menus drawn with Duke art (`room_duke::menu`: main 0, in-game 50, episode 100, skill 110 with its skill cue, Atomic credits pages, quit / quit-to-title confirms; save/load/sound pages still the generic list), faithful `dobonus` single-player intermission (`room_duke::bonus`: BONUSSCREEN art and Duke animation, `menutext`/`gametext` layout, 120 Hz count-up stages with PIPEBOMB/FLY_BY/speech cues, two-key skip, level totals preserved across the player reset), HUD (full BOTTOMSTATUSBAR, weapon/inventory digits centre-anchored like Chocolate's flag-less `rotatesprite` with health/armor/weapon ammo list/inventory/keys by default, `duke_statusbar 0` for the mini HUD; crosshair, quotes), Duke fonts. Missing: multiplayer frag bonus page, native save/load/options pages, title-screen flow (LOGO/ANM → menu 0), ANM cue audit, full UI checklist + golden screenshots |
+| D9 | Saves + demos | in progress | 75% | not met | `.fsave` / `.fdem`, Atomic `.DMO` record/playback, Atomic SAV import/export. Missing: SAV round-trip proof, recorded DMO verified in reference engine |
+| D10 | Multiplayer + server | in progress | 70% | not met | Duke input codec, 30 Hz server frames, coop/DukeMatch rules, roster, deaths/frags. Missing: lockstep validation, respawn/spectator, server checksum test |
+| D11 | Campaign + user content | in progress | 45% | not met | native runtime is the default shell; level transitions, user maps/CON, add-on GRPs. Missing: per-map route DMOs (T1.3), bonus/end-game flow, map-route audit |
+
+Tier-1 criteria at a glance: T1.1 (demo sync) **7%** of DEMO1 (270 tics), 0% of
+DEMO2/3 · T1.2 load sweep not run · T1.3 not started · T1.4 compiles 100%,
+runtime coverage partial · T1.5 partial · T1.6 no goldens · T1.7 partial ·
+T1.8 not verified · T1.9 partial · T1.10 not run for Duke · T1.11 partial.
+
+Overall: 4 of 12 milestones done; weighted work ≈ 80%; **acceptance-wise the
+project is gated on D5** (honest DEMO1 sync), which blocks D6/D7 closure.
+Playability of E1L1 in the desktop app (`./scripts/play-duke3d.sh`) is ahead of
+demo sync: intro shuttle, gas-tank chain, vent drop, street fight and cinema
+are reachable with enemies that hunt and shoot.
+
 ---
 
 ## 1. Definition of "full support"

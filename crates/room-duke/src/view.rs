@@ -70,6 +70,10 @@ pub struct DukeSoftRenderer {
     laser_hand_tile: Option<i16>,
     /// Active `fta_quotes` text for this frame (Chocolate `operatefta`).
     overlay_quote: RefCell<Option<String>>,
+    /// Chocolate `ud.screen_size`: `true` draws the full BOTTOMSTATUSBAR
+    /// (health, armor, weapon ammo list, inventory, keys); `false` the
+    /// full-screen mini HUD.
+    full_status_bar: Cell<bool>,
 }
 
 #[derive(Clone)]
@@ -220,6 +224,7 @@ impl DukeSoftRenderer {
             access_hand_tile,
             laser_hand_tile,
             overlay_quote: RefCell::new(None),
+            full_status_bar: Cell::new(true),
         })
     }
 
@@ -657,7 +662,7 @@ impl DukeSoftRenderer {
         // the TIP tile, so the weapon is hidden for the complete tip pose.
         if player.tip_timer == 0 && !player.over_shoulder_on && player.remote_camera.is_none() {
             if !self.draw_access_hand(&mut frame, render_world, player) {
-                self.draw_weapon(&mut frame, player);
+                self.draw_weapon(&mut frame, render_world, player);
             }
         }
         // Chocolate's dead-player `processinput` keeps the camera tilted by
@@ -727,6 +732,110 @@ impl DukeSoftRenderer {
         let mut view_player = player.clone();
         view_player.over_shoulder_on = shoulder_view;
         self.render_rgba_at_with_quake(world, &view_player, width, height, tic, earthquake_time)
+    }
+
+    /// Draw a full-screen 2D page (bonus screen, front-end pages) in
+    /// Chocolate's 320×200 `rotatesprite` plane and return it as RGBA8.
+    #[must_use]
+    pub fn render_ui_page(
+        &self,
+        width: u32,
+        height: u32,
+        draw: impl FnOnce(&mut crate::ui_page::UiPage<'_>),
+    ) -> Vec<u8> {
+        let tiles = self.tiles.borrow();
+        let mut frame = SoftFrame {
+            width,
+            height,
+            pixels: vec![0; (width as usize) * (height as usize)],
+        };
+        {
+            let mut page = crate::ui_page::UiPage::new(&tiles, &mut frame);
+            draw(&mut page);
+        }
+        let mut rgba = Vec::with_capacity(frame.pixels.len() * 4);
+        for index in frame.pixels {
+            let i = usize::from(index) * 3;
+            rgba.extend_from_slice(&[
+                self.brighten_channel(self.palette.rgb[i]),
+                self.brighten_channel(self.palette.rgb[i + 1]),
+                self.brighten_channel(self.palette.rgb[i + 2]),
+                255,
+            ]);
+        }
+        rgba
+    }
+
+    /// Like [`Self::render_ui_page`] but transparent where nothing was drawn,
+    /// for menus laid over the game view.
+    #[must_use]
+    pub fn render_ui_overlay(
+        &self,
+        width: u32,
+        height: u32,
+        draw: impl FnOnce(&mut crate::ui_page::UiPage<'_>),
+    ) -> Vec<u8> {
+        let tiles = self.tiles.borrow();
+        let mut frame = SoftFrame {
+            width,
+            height,
+            pixels: vec![room_build::art::TRANSPARENT; (width as usize) * (height as usize)],
+        };
+        {
+            let mut page = crate::ui_page::UiPage::new(&tiles, &mut frame);
+            draw(&mut page);
+        }
+        let mut rgba = Vec::with_capacity(frame.pixels.len() * 4);
+        for index in frame.pixels {
+            if index == room_build::art::TRANSPARENT {
+                rgba.extend_from_slice(&[0, 0, 0, 0]);
+                continue;
+            }
+            let i = usize::from(index) * 3;
+            rgba.extend_from_slice(&[
+                self.brighten_channel(self.palette.rgb[i]),
+                self.brighten_channel(self.palette.rgb[i + 1]),
+                self.brighten_channel(self.palette.rgb[i + 2]),
+                255,
+            ]);
+        }
+        rgba
+    }
+
+    /// Render one frame of the native Duke menu over the game (`in_game`)
+    /// or over the MENUSCREEN backdrop at the title.
+    #[must_use]
+    pub fn render_menu(&self, width: u32, height: u32, menu: &crate::menu::DukeMenu, clock: i64, backdrop: bool) -> Vec<u8> {
+        let draw = |page: &mut crate::ui_page::UiPage<'_>| {
+            if backdrop {
+                page.clear(0);
+                // Chocolate title backdrop: MENUSCREEN, shade 16, centred.
+                page.sprite(160, 100, 2456, 16, 0, false, true);
+            }
+            menu.draw(page, clock);
+        };
+        if backdrop {
+            self.render_ui_page(width, height, draw)
+        } else {
+            self.render_ui_overlay(width, height, draw)
+        }
+    }
+
+    /// Render one frame of the single-player bonus screen as RGBA8.
+    #[must_use]
+    pub fn render_bonus_screen(&self, width: u32, height: u32, bonus: &crate::bonus::BonusScreen) -> Vec<u8> {
+        self.render_ui_page(width, height, |page| bonus.draw(page))
+    }
+
+    /// Choose the full status bar (`true`) or the mini HUD (`false`).
+    pub fn set_full_status_bar(&self, on: bool) {
+        self.full_status_bar.set(on);
+    }
+
+    /// Whether the full status bar is drawn.
+    #[must_use]
+    pub fn full_status_bar(&self) -> bool {
+        self.full_status_bar.get()
     }
 
     /// Set the on-screen message drawn with the next frames (`None` clears).
@@ -903,6 +1012,165 @@ impl DukeSoftRenderer {
                 cx += tiles.dimensions(p).map_or(0, |(w, _)| i32::from(w)) + 1;
             }
         };
+        // `minitext`: MINIFONT glyphs, 4 px advance, spaces 5 px.
+        let minitext = |frame: &mut SoftFrame, mut x: i32, y: i32, text: &str, pal: u8| {
+            const MINIFONT: i16 = 3072;
+            for c in text.bytes().map(|c| c.to_ascii_uppercase()) {
+                if c == b' ' {
+                    x += 5;
+                    continue;
+                }
+                blit(frame, MINIFONT + i16::from(c) - i16::from(b'!'), x, y, 0, pal);
+                x += 4;
+            }
+        };
+        let inv_icon = |icon: u8| match icon {
+            1 => Some(2460), // FIRSTAID_ICON
+            2 => Some(2469), // STEROIDS_ICON
+            3 => Some(2470), // HOLODUKE_ICON
+            4 => Some(2467), // JETPACK_ICON
+            5 => Some(2461), // HEAT_ICON
+            6 => Some(2468), // AIRTANK_ICON
+            7 => Some(2463), // BOOT_ICON
+            _ => None,
+        };
+        let inv_amount = |icon: u8| match icon {
+            1 => i32::from(player.firstaid_amount),
+            2 => (i32::from(player.steroids_amount) + 3) >> 2,
+            3 => (i32::from(player.holoduke_amount) + 15) / 24,
+            4 => (i32::from(player.jetpack_amount) + 15) >> 4,
+            5 => i32::from(player.heat_amount) / 12,
+            6 => (i32::from(player.scuba_amount) + 63) >> 6,
+            7 => i32::from(player.boot_amount) >> 1,
+            _ => 0,
+        };
+        // Chocolate `invennum`: THREEBYFIVE digits right-aligned at x+4,
+        // drawn without flag 16 (centre-anchored).
+        let invennum = |frame: &mut SoftFrame, x: i32, y: i32, amount: i32| {
+            let digits = (amount.clamp(0, 255) as u8).to_string();
+            let start = match digits.len() {
+                3 => x - 4,
+                2 => x,
+                _ => x + 4,
+            };
+            for (k, c) in digits.bytes().enumerate() {
+                let pic = THREEBYFIVE + i16::from(c - b'0');
+                let (w, h) = tiles.dimensions(pic).map_or((0, 0), |(w, h)| (i32::from(w), i32::from(h)));
+                let (ox, oy) = tiles.sprite_offset(pic);
+                blit(frame, pic, start + 4 * k as i32 - (w >> 1) - i32::from(ox), y - (h >> 1) - i32::from(oy), 0, 0);
+            }
+        };
+        let inv_on = |icon: u8| -> Option<bool> {
+            match icon {
+                3 => Some(player.holoduke_on >= 0),
+                4 => Some(player.jetpack_on != 0),
+                5 => Some(player.heat_on),
+                _ => None,
+            }
+        };
+        if self.full_status_bar.get() {
+            // Chocolate `coolgaugetext` full status bar (`screen_size` 8).
+            const BOTTOMSTATUSBAR: i16 = 2462;
+            const ACCESS_ICON: i16 = 2471;
+            let bar_h = tiles.dimensions(BOTTOMSTATUSBAR).map_or(34, |(_, h)| i32::from(h));
+            blit(frame, BOTTOMSTATUSBAR, 0, 200 - bar_h, 0, 0);
+            if player.got_access & 4 != 0 {
+                blit(frame, ACCESS_ICON, 275, 182, 0, 23);
+            }
+            if player.got_access & 2 != 0 {
+                blit(frame, ACCESS_ICON, 288, 182, 0, 21);
+            }
+            if player.got_access & 1 != 0 {
+                blit(frame, ACCESS_ICON, 281, 189, 0, 0);
+            }
+            // `weapon_amounts` (x 96, y 182): index digit in pal 7, current
+            // weapon bright, unowned weapons dimmed.
+            let cw = player.curr_weapon;
+            let shade = |w: i16, bright: i32| -> i32 {
+                let owned = player.gotweapon.get(w as usize).copied().unwrap_or(false);
+                let cur = cw == w || (w == 5 && cw == 10);
+                (if owned || w == 1 { 0 } else { 9 }) + 12 - if cur { bright } else { 0 }
+            };
+            // `weaponnum` draws with flags 10+128 (no 16): (x, y) is the
+            // glyph centre plus its picanm offset, not its top-left corner.
+            let tbf = |frame: &mut SoftFrame, d: u8, x: i32, y: i32, ha: i32, pal: u8| {
+                let pic = THREEBYFIVE + i16::from(d);
+                let (w, h) = tiles.dimensions(pic).map_or((0, 0), |(w, h)| (i32::from(w), i32::from(h)));
+                let (ox, oy) = tiles.sprite_offset(pic);
+                blit(
+                    frame,
+                    pic,
+                    x - (w >> 1) - i32::from(ox),
+                    y - (h >> 1) - i32::from(oy),
+                    ha.clamp(-128, 127) as i8,
+                    pal,
+                );
+            };
+            let num = |frame: &mut SoftFrame, n: i32, x: i32, y: i32, ha: i32, slots: i32| {
+                let t = n.max(0).to_string();
+                let x0 = x + 4 * (slots - t.len() as i32);
+                for (k, c) in t.bytes().enumerate() {
+                    tbf(frame, c - b'0', x0 + 4 * k as i32, y, ha, 0);
+                }
+            };
+            let weaponnum = |frame: &mut SoftFrame, ind: i32, x: i32, y: i32, n1: i32, n2: i32, ha: i32, wide: bool| {
+                tbf(frame, (ind + 1) as u8, x - 7, y, ha - 10, 7);
+                if wide {
+                    tbf(frame, 10, x - 4, y, ha, 0);
+                    tbf(frame, 11, x + 13, y, ha, 0);
+                    num(frame, n1, x, y, ha, 3);
+                    num(frame, n2, x + 17, y, ha, 3);
+                } else {
+                    tbf(frame, 10, x - 3, y, ha, 0);
+                    tbf(frame, 11, x + 9, y, ha, 0);
+                    let (a, b) = (n1.min(99), n2.min(99));
+                    num(frame, a, x, y, ha, 2);
+                    let t = b.to_string();
+                    for (k, c) in t.bytes().enumerate() {
+                        tbf(frame, c - b'0', x + 13 + 4 * k as i32, y, ha, 0);
+                    }
+                }
+            };
+            let am = |w: usize| i32::from(player.ammo.get(w).copied().unwrap_or(0));
+            let mx = |w: i16| i32::from(crate::weapons::max_ammo_amount(w));
+            let (x, y) = (96, 182);
+            weaponnum(frame, 1, x, y, am(1), mx(1), 12 - 20 * i32::from(cw == 1), true);
+            weaponnum(frame, 2, x, y + 6, am(2), mx(2), shade(2, 18), true);
+            weaponnum(frame, 3, x, y + 12, am(3), mx(3), shade(3, 18), true);
+            weaponnum(frame, 4, x + 39, y, am(4), mx(4), shade(4, 19), false);
+            let bomb_dim = if am(5) == 0 { 9 } else { 0 };
+            weaponnum(frame, 5, x + 39, y + 6, am(5), mx(5), shade(5, 19).max(12 - 19 * i32::from(cw == 5 || cw == 10)) + bomb_dim * i32::from(player.gotweapon[5]), false);
+            if cw == 11 {
+                weaponnum(frame, 6, x + 39, y + 12, am(11), mx(11), shade(11, 18), false);
+            } else {
+                weaponnum(frame, 6, x + 39, y + 12, am(6), mx(6), shade(6, 18), false);
+            }
+            weaponnum(frame, 7, x + 70, y, am(7), mx(7), shade(7, 18), false);
+            weaponnum(frame, 8, x + 70, y + 6, am(8), mx(8), shade(8, 18), false);
+            weaponnum(frame, -1, x + 70, y + 12, am(9), mx(9), shade(9, 18), false);
+            // Health, armor, current ammo.
+            digital(frame, 32, 200 - 17, i32::from(player.last_extra.max(0)));
+            digital(frame, 64, 200 - 17, i32::from(player.shield_amount.max(0)));
+            if cw != 0 {
+                let w = if cw == HANDREMOTE_WEAPON { HANDBOMB_WEAPON } else { cw.clamp(0, 11) as usize };
+                digital(frame, 230 - 22, 200 - 17, i32::from(player.ammo[w]));
+            }
+            if player.inventory_icon != 0 {
+                if let Some(icon) = inv_icon(player.inventory_icon) {
+                    blit(frame, icon, 231, 200 - 21, 0, 0);
+                }
+                minitext(frame, 292 - 30, 190, "%", 6);
+                if player.inventory_icon >= 6 {
+                    minitext(frame, 284 - 35, 180, "AUTO", 2);
+                }
+                match inv_on(player.inventory_icon) {
+                    Some(true) => minitext(frame, 288 - 30, 180, "ON", 0),
+                    Some(false) => minitext(frame, 284 - 30, 180, "OFF", 2),
+                    None => {}
+                }
+                invennum(frame, 284 - 30, 200 - 6, inv_amount(player.inventory_icon));
+            }
+        } else {
         if player.inventory_icon != 0 {
             blit(frame, INVENTORYBOX, 69, 200 - 30, 0, 21);
         }
@@ -940,17 +1208,9 @@ impl DukeSoftRenderer {
                 7 => i32::from(player.boot_amount) >> 1,
                 _ => 0,
             };
-            // `invennum`: THREEBYFIVE digits, 4 px apart, right-aligned at x+4.
-            let digits = (amount.clamp(0, 255) as u8).to_string();
-            let x = 284 - 30 - o;
-            let start = match digits.len() {
-                3 => x - 4,
-                2 => x,
-                _ => x + 4,
-            };
-            for (k, c) in digits.bytes().enumerate() {
-                blit(frame, THREEBYFIVE + i16::from(c - b'0'), start + 4 * k as i32, 200 - 6, 0, 0);
-            }
+            invennum(frame, 284 - 30 - o, 200 - 6, amount);
+            minitext(frame, 292 - 30 - o, 190, "%", 6);
+        }
         }
         // Chocolate `operatefta` → `gametext(160, 0, quote)`: STARTALPHANUM
         // glyphs, centred, digits on an 8 px pitch, spaces 5 px.
@@ -980,106 +1240,69 @@ impl DukeSoftRenderer {
     }
 
     /// Draw the selected Atomic weapon from its GRP ART tiles.
-    fn draw_weapon(&self, frame: &mut SoftFrame, player: &Player) {
-        // `last_weapon` stays selected visually while `weapon_pos` is negative;
-        // at -9 the simulation switches to the new weapon and starts its rise
-        // from `weapon_pos == 10`.
-        let weapon = if player.weapon_pos < 0 && (0..=11).contains(&player.last_weapon) {
-            player.last_weapon
-        } else {
-            player.curr_weapon
+    fn draw_weapon(&self, frame: &mut SoftFrame, world: &BuildWorld, player: &Player) {
+        let body = usize::try_from(player.sprite_i)
+            .ok()
+            .and_then(|index| world.sprites.get(index))
+            .copied()
+            .unwrap_or_default();
+        let floorpal = world
+            .sectors
+            .get(usize::try_from(player.cursectnum).unwrap_or(usize::MAX))
+            .map_or(0, |sector| sector.floorpal);
+        let env = crate::weapon_view::WeaponViewEnv {
+            body_shade: body.shade,
+            body_pal: body.pal,
+            body_xrepeat: if player.sprite_i < 0 { 42 } else { body.xrepeat },
+            body_xvel: player.body_xvel,
+            body_extra: if player.sprite_i < 0 { player.extra } else { body.extra },
+            floorpal,
+            rand: u32::from(player.kickback_pic as u16).wrapping_mul(2_654_435_761),
         };
-        let slot = weapon.clamp(0, 11) as usize;
-        let Some(base) = self.weapon_tiles[slot] else {
-            return;
-        };
-        let kick = player.kickback_pic.max(0);
-        let tile = match slot {
-            0 => base + if (5..=9).contains(&kick) { 1 } else { 0 },
-            1 => match kick {
-                1 => base + 1,
-                2 => base + 2,
-                5..=9 => base + 4,
-                _ => base,
-            },
-            2 => match kick {
-                1 | 2 => base + 2,
-                3..=12 => base + 3,
-                13..=15 | 28..=30 => base + 4,
-                16..=19 | 24..=27 => base + 5,
-                20..=23 => base + 6,
-                _ => base,
-            },
-            3 => {
-                if kick == 0 {
-                    base + 1
-                } else {
-                    base + 2 + (kick / 5).min(1)
-                }
-            }
-            4 => base + (kick / 2).clamp(0, 3),
-            5 => base + if (5..=20).contains(&kick) { 1 } else { 0 },
-            6 | 11 | 7 | 9 => base + if kick > 0 { 1 } else { 0 },
-            8 => base + (kick / 4).clamp(0, 3),
-            10 => base + if (1..=5).contains(&kick) { 1 } else { 0 },
-            _ => base,
-        };
+        let draws = crate::weapon_view::display_weapon(player, &env);
+        // With the full status bar Chocolate's view window is 34 px shorter;
+        // `rotatesprite` flag 2 recentres psprites in it (17 px higher).
+        let y_shift = if self.full_status_bar.get() { -17 } else { 0 };
         let tiles = self.tiles.borrow();
-        let tile = if tiles.dimensions(tile).is_some() {
-            tile
-        } else {
-            base
-        };
-        let Some((source_w, source_h)) = tiles.dimensions(tile) else {
-            return;
-        };
-        // `DukeContent` uses these FIRSTGUN HUD centers for its desktop view.
-        let (virtual_x, virtual_y) = match slot {
-            0 => (160.0, 186.0),
-            1 => (195.0, 164.0),
-            2 => (150.0, 122.0),
-            3 => (180.0, 180.0),
-            4 => (176.0, 96.0),
-            5 => (190.0, 164.0),
-            6 | 11 => (196.0, 160.0),
-            7 => (150.0, 158.0),
-            8 => (140.0, 175.0),
-            9 => (210.0, 165.0),
-            10 => (150.0, 170.0),
-            _ => (195.0, 164.0),
-        };
-        let (scale_x, scale_y) = (
-            f64::from(frame.width) / 320.0,
-            f64::from(frame.height) / 200.0,
-        );
-        let center_x = (virtual_x * scale_x).round() as i32;
-        // Chocolate keeps the previous weapon on screen while lowering it,
-        // moves the newly selected weapon up from below the viewport, then
-        // returns `weapon_pos` to zero. The simulation encodes the lower and
-        // raise phases as -1..=-9 and 10..=1 respectively.
-        let weapon_transition = i32::from(player.weapon_pos).unsigned_abs().min(10);
-        let transition_y = (weapon_transition as f64 * 10.0 * scale_y).round() as i32;
-        let center_y = (virtual_y * scale_y).round() as i32 + transition_y;
-        let dest_w = (f64::from(source_w) * scale_x).round().max(1.0) as i32;
-        let dest_h = (f64::from(source_h) * scale_y).round().max(1.0) as i32;
-        let left = center_x - dest_w / 2;
-        let top = center_y - dest_h / 2;
-        for y in 0..dest_h {
-            let sy = (y as i64 * i64::from(source_h) / i64::from(dest_h)) as u32;
-            let dy = top + y;
-            if dy < 0 || dy >= frame.height as i32 {
+        let sx = f64::from(frame.width) / 320.0;
+        let sy = f64::from(frame.height) / 200.0;
+        for d in draws {
+            let Some((tw, th)) = tiles.dimensions(d.tile) else {
                 continue;
-            }
-            for x in 0..dest_w {
-                let dx = left + x;
-                if dx < 0 || dx >= frame.width as i32 {
+            };
+            let (ox, oy) = tiles.sprite_offset(d.tile);
+            let (tw_i, th_i) = (i32::from(tw), i32::from(th));
+            let xoff = i32::from(ox) + (tw_i >> 1);
+            let yoff = i32::from(oy) + (th_i >> 1);
+            let left = if d.flip { d.x - (tw_i - xoff) } else { d.x - xoff };
+            let top = d.y + y_shift - yoff;
+            let x0 = (f64::from(left) * sx).round() as i32;
+            let y0 = (f64::from(top) * sy).round() as i32;
+            let x1 = (f64::from(left + tw_i) * sx).round() as i32;
+            let y1 = (f64::from(top + th_i) * sy).round() as i32;
+            let (dw, dh) = ((x1 - x0).max(1), (y1 - y0).max(1));
+            for yy in 0..dh {
+                let dy = y0 + yy;
+                if dy < 0 || dy >= frame.height as i32 {
                     continue;
                 }
-                let sx = (x as i64 * i64::from(source_w) / i64::from(dest_w)) as u32;
-                let Some(pixel) = tiles.sample(tile, sx, sy) else {
-                    continue;
-                };
-                if pixel != room_build::art::TRANSPARENT {
+                let v = (i64::from(yy) * i64::from(th) / i64::from(dh)) as u32;
+                for xx in 0..dw {
+                    let dx = x0 + xx;
+                    if dx < 0 || dx >= frame.width as i32 {
+                        continue;
+                    }
+                    let mut u = (i64::from(xx) * i64::from(tw) / i64::from(dw)) as u32;
+                    if d.flip {
+                        u = u32::from(tw) - 1 - u;
+                    }
+                    let Some(pixel) = tiles.sample(d.tile, u, v) else {
+                        continue;
+                    };
+                    if pixel == room_build::art::TRANSPARENT {
+                        continue;
+                    }
+                    let pixel = tiles.shade_palette(d.shade, tiles.remap_palette(d.pal, pixel));
                     frame.pixels[dy as usize * frame.width as usize + dx as usize] = pixel;
                 }
             }

@@ -188,6 +188,24 @@ impl CvarStore {
             CvarFlags::ARCHIVE,
         );
         self.register(
+            "m_pitch",
+            CvarType::Float,
+            CvarValue::Float(1.25),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
+            "duke_statusbar",
+            CvarType::Bool,
+            CvarValue::Bool(true),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
+            "duke_hitdebug",
+            CvarType::Bool,
+            CvarValue::Bool(true),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
             "duke_autoaim",
             CvarType::Int,
             CvarValue::Int(2),

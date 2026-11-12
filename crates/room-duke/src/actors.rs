@@ -862,7 +862,24 @@ pub fn moveactors_with_skill(
             let sectors_ro: &[SectorT] = sectors;
             let walls_ro: &[WallT] = walls;
             let players_ro: &[Player] = players;
+            // `shoot` and `fall` both act on the live sprite array mid-parse.
+            let sprites_cell = std::cell::RefCell::new(&mut *sprites);
+            let mut fall_now = |t: &mut ActorConTemps, z: &mut i32, zvel: &mut i16| {
+                let mut guard = sprites_cell.borrow_mut();
+                let sprites: &mut [SpriteT] = &mut guard;
+                let peers: Vec<SpriteT> = sprites.to_vec();
+                let mut me = sprites[iu];
+                me.z = *z;
+                me.zvel = *zvel;
+                con_fall(&mut me, sectors_ro, walls_ro, &peers, tile_meta, DUKE_GC, t);
+                sprites[iu].z = me.z;
+                sprites[iu].zvel = me.zvel;
+                *z = me.z;
+                *zvel = me.zvel;
+            };
             let mut shoot_now = |pn: i16, ang: i16, seed: &mut i32| -> bool {
+                let mut guard = sprites_cell.borrow_mut();
+                let sprites: &mut [SpriteT] = &mut guard;
                 let bloodsplat = pn == BLOODSPLAT1
                     || pn == BLOODSPLAT2
                     || pn == BLOODSPLAT3
@@ -919,6 +936,7 @@ pub fn moveactors_with_skill(
                 &projectiles,
                 active_sound_owners,
                 Some(&mut shoot_now),
+                Some(&mut fall_now),
             )
         };
         temps[iu] = actor_t;
@@ -1322,8 +1340,14 @@ pub fn moveactors_with_skill(
         for pn in spawns {
             if pn == BLOOD {
                 let _ = con_spawn_blood(lists, sprites, picnum, temps, Some(script), i);
+            } else if pn == EXPLOSION2 {
+                spawn_explosion2_from(lists, sprites, sectors, walls, picnum, temps, script, randomseed, iu);
+            } else {
+                let _ = crate::spawn_rt::spawn_from(
+                    lists, sprites, sectors, walls, picnum, temps, tile_meta, script, randomseed,
+                    i, pn,
+                );
             }
-            // Other spawn pics: deferred until needed for bitexact.
         }
         for pn in shoots {
             if matches!(

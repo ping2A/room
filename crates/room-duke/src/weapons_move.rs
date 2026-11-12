@@ -819,7 +819,29 @@ pub(crate) fn checkhitsprite_object(
         );
     }
 
-    if let Some(pn) = spawn_tile {
+    if let Some(pn) = spawn_tile
+        && pn == tile("TOILETWATER").unwrap_or(-1)
+        && let Some(image) = script
+    {
+        // Chocolate `spawn(i, TOILETWATER)`: a CON actor (animated
+        // TOILETWATERFRAMES, `sizeto` growth, gurgle sound), shade -16.
+        let water = crate::spawn_rt::spawn_from(
+            lists,
+            sprites,
+            &*sectors,
+            walls,
+            picnum,
+            actor_temps,
+            tile_meta,
+            image,
+            randomseed,
+            target as i16,
+            pn,
+        );
+        if water >= 0 {
+            sprites[water as usize].shade = -16;
+        }
+    } else if let Some(pn) = spawn_tile {
         let effect = crate::shoot::egs(
             lists,
             sprites,
@@ -1200,6 +1222,12 @@ pub fn moveweapons(
                 &sprite_hits,
                 Some(&sec_z),
             );
+            // Chocolate `movesprite`: a hit beyond this tic's step is no hit.
+            let hit = if hit_beyond_step(&hit, source.x, source.y, source.z, dx, dy, dz) {
+                room_build_engine::geom::HitScan { hitsect: -1, hitwall: -1, hitsprite: -1, hitx: 0, hity: 0, hitz: 0 }
+            } else {
+                hit
+            };
             if hit.hitsect >= 0 {
                 sprites[iu].x = hit.hitx;
                 sprites[iu].y = hit.hity;
@@ -1341,6 +1369,12 @@ pub fn moveweapons(
                 &sprite_hits,
                 Some(&sec_z),
             );
+            // Chocolate `movesprite`: a hit beyond this tic's step is no hit.
+            let hit = if hit_beyond_step(&hit, source.x, source.y, source.z, dx, dy, dz) {
+                room_build_engine::geom::HitScan { hitsect: -1, hitwall: -1, hitsprite: -1, hitx: 0, hity: 0, hitz: 0 }
+            } else {
+                hit
+            };
             if hit.hitsect >= 0 {
                 sprites[iu].x = hit.hitx;
                 sprites[iu].y = hit.hity;
@@ -1428,39 +1462,54 @@ pub fn moveweapons(
             let dx = (((xv * cos) >> 14) * TICSPERFRAME) >> 3;
             let dy = (((xv * sin) >> 14) * TICSPERFRAME) >> 3;
             let dz = (zv * TICSPERFRAME) >> 3;
-            let sprite_hits: Vec<SpriteHit> = sprites
+            // Chocolate `movesprite` (non-badguy, STAT_PROJECTILE): clipmove
+            // with walldist 8 at `z - height`, then the z step if it stays
+            // between the cached planes; otherwise a sector hit.
+            let height = tile_meta
+                .get(source.picnum.max(0) as usize)
+                .map_or(0, |m| i32::from(m.height));
+            let clip_z = source.z - ((height * i32::from(source.yrepeat)) << 1);
+            let mut sprite_clips: Vec<_> = sprites
                 .iter()
-                .enumerate()
-                .map(|(index, sprite)| {
-                    let mut hit = SpriteHit::cylinder(
-                        sprite.x,
-                        sprite.y,
-                        sprite.z,
-                        sprite.sectnum,
-                        i32::from(sprite.clipdist) << 2,
-                        sprite.cstat,
-                    );
-                    if index == iu {
-                        hit.cstat = 0;
-                    }
-                    hit
-                })
+                .map(|sprite| crate::player::sprite_z_clip(sprite, tile_meta))
                 .collect();
-            let hit = hitscan_full(
-                source.x,
-                source.y,
-                source.z,
-                source.sectnum,
+            if let Some(me) = sprite_clips.get_mut(iu) {
+                me.cstat = 0;
+            }
+            let (mut nx, mut ny, mut nsect) = (source.x, source.y, source.sectnum);
+            let retval = room_build_engine::geom::clipmove_xy_at_z_sprites_with_lists(
+                &mut nx,
+                &mut ny,
+                clip_z,
+                &mut nsect,
                 dx,
                 dy,
-                dz,
-                (256 << 16) + 64,
+                8,
+                4 << 8,
+                4 << 8,
                 &sec_w,
                 &wxy,
-                &sprite_hits,
                 Some(&sec_z),
+                &sprite_clips,
+                256,
+                Some(&*lists),
             );
-            if hit.hitsect >= 0 {
+            let sect_for_planes = if nsect >= 0 { nsect } else { source.sectnum };
+            let (ceilz, florz) =
+                room_build_engine::geom::getzsofslope(sect_for_planes, nx, ny, &sec_z, &wxy);
+            let daz = source.z + dz;
+            let z_ok = daz > ceilz && daz <= florz;
+            let nz = if z_ok { daz } else { source.z };
+            let hit = room_build_engine::geom::HitScan {
+                hitsect: sect_for_planes,
+                hitwall: if retval & 49152 == 32768 { (retval & 32767) as i16 } else { -1 },
+                hitsprite: if retval & 49152 == 49152 { (retval & 4095) as i16 } else { -1 },
+                hitx: nx,
+                hity: ny,
+                hitz: nz,
+            };
+            let within_step = retval != 0 || !z_ok;
+            if hit.hitsect >= 0 && within_step {
                 sprites[iu].x = hit.hitx;
                 sprites[iu].y = hit.hity;
                 sprites[iu].z = hit.hitz;
@@ -1609,6 +1658,12 @@ pub fn moveweapons(
                 &spr_hits,
                 Some(&sec_z),
             );
+            // Chocolate `movesprite`: a hit beyond this tic's step is no hit.
+            let hit = if hit_beyond_step(&hit, sprites[iu].x, sprites[iu].y, sprites[iu].z, dx, dy, dz) {
+                room_build_engine::geom::HitScan { hitsect: -1, hitwall: -1, hitsprite: -1, hitx: 0, hity: 0, hitz: 0 }
+            } else {
+                hit
+            };
             let plane_hit = hit.hitsect >= 0 && hit.hitwall < 0 && hit.hitsprite < 0;
             if hit.hitwall >= 0 || hit.hitsprite >= 0 || plane_hit {
                 sprites[iu].x = hit.hitx;
@@ -1842,6 +1897,11 @@ pub fn moveweapons(
                 &sprite_hits,
                 Some(&sec_z),
             );
+            if hit_beyond_step(&hit, source.x, source.y, source.z, dx, dy, dz) {
+                // Chocolate `movesprite`: no collision within this tic's step.
+                step_projectile(lists, sprites, i, dx, dy, dz, &sec_w, &wxy);
+                continue;
+            }
             if hit.hitsprite >= 0 {
                 let target = hit.hitsprite as usize;
                 let freeze_immune = source.picnum == FREEZEBLAST
@@ -2126,6 +2186,7 @@ pub fn moveweapons(
             &[],
             &[],
             &mut [],
+            None,
             None,
         );
         // CON `spawn WATERBUBBLE` (ifactioncount 3 + ifinwater on SHOTSPARK1).
@@ -4461,5 +4522,55 @@ mod tests {
         assert!((70..105).contains(&middle));
         let outer = rpg_radius_damage(RPG_BLAST_RADIUS * 2 / 3, &mut seed, 140);
         assert!((35..70).contains(&outer));
+    }
+}
+
+
+/// True when a projectile's hitscan probe hit something past this tic's
+/// `movesprite` step `(dx, dy, dz)` — i.e. no collision this tic.
+fn hit_beyond_step(
+    hit: &room_build_engine::geom::HitScan,
+    sx: i32,
+    sy: i32,
+    sz: i32,
+    dx: i32,
+    dy: i32,
+    dz: i32,
+) -> bool {
+    if hit.hitsect < 0 {
+        return false;
+    }
+    let step2 = i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy);
+    if step2 > 0 {
+        let hx = i64::from(hit.hitx - sx);
+        let hy = i64::from(hit.hity - sy);
+        hx * hx + hy * hy > step2
+    } else {
+        (hit.hitz - sz).abs() > dz.abs()
+    }
+}
+
+/// Advance a projectile by one unobstructed step and refresh its sector.
+#[allow(clippy::too_many_arguments)]
+fn step_projectile(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    i: i16,
+    dx: i32,
+    dy: i32,
+    dz: i32,
+    sec_w: &[SectorWalls],
+    wxy: &[WallXY],
+) {
+    let iu = i as usize;
+    let old_sect = sprites[iu].sectnum;
+    sprites[iu].x = sprites[iu].x.wrapping_add(dx);
+    sprites[iu].y = sprites[iu].y.wrapping_add(dy);
+    sprites[iu].z = sprites[iu].z.wrapping_add(dz);
+    let mut next = old_sect;
+    room_build_engine::geom::updatesector(sprites[iu].x, sprites[iu].y, &mut next, sec_w, wxy);
+    if next >= 0 && next != old_sect {
+        let _ = lists.changespritesect(i, next);
+        sprites[iu].sectnum = next;
     }
 }

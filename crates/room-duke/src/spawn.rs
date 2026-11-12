@@ -273,6 +273,27 @@ fn classify_map_sprites_stats(
             continue;
         }
 
+        // Chocolate `spawn()`: breakable props (HYDRENT, PANNEL*, BOTTLE*,
+        // CHAIR*, VASE, PIPE*, ...) become solid and hitscan-hittable with
+        // clipdist 32 on STAT_DEFAULT; FEMMAG loses both bits.
+        if is_solid_prop_tile(sprites[i].picnum) {
+            picnum_out[i] = sprites[i].picnum;
+            sprites[i].clipdist = 32;
+            sprites[i].cstat |= 257;
+            if lists.sprite_stat[i] != 0 {
+                let _ = lists.changespritestat(i as i16, 0);
+            }
+            continue;
+        }
+        if matches!(sprites[i].picnum, 568 | 577) {
+            picnum_out[i] = sprites[i].picnum;
+            sprites[i].cstat &= !257;
+            if lists.sprite_stat[i] != 0 {
+                let _ = lists.changespritestat(i as i16, 0);
+            }
+            continue;
+        }
+
         // Inventory SP pal / over-skill → STAT_MISC zero size.
         if soft_cull_pickup(&sprites[i], skill) {
             soft_cull_to_misc(lists, sprites, picnum_out, i);
@@ -289,6 +310,36 @@ fn classify_map_sprites_stats(
         let want = classify_stat(&sprites[i], actorscrptr, actortype);
         if lists.sprite_stat[i] != want {
             let _ = lists.changespritestat(i as i16, want);
+        }
+    }
+}
+
+/// Chocolate `spawn()` TOUCHPLATE: `T3` keeps the sector's floor height at
+/// spawn (the plate's lowered position) and, outside water sectors, the floor
+/// starts at the plate sprite's z. Without `T3` the plate sank its floor
+/// toward z 0 the first time the player stepped on it.
+pub(crate) fn init_touchplates(
+    lists: &SpriteLists,
+    sprites: &[SpriteT],
+    sectors: &mut [SectorT],
+    temps: &mut Vec<ActorConTemps>,
+) {
+    for (index, sprite) in sprites.iter().enumerate() {
+        if sprite.picnum != TOUCHPLATE
+            || lists.sprite_stat.get(index).copied().unwrap_or(room_build_engine::world::MAXSTATUS as i16)
+                == room_build_engine::world::MAXSTATUS as i16
+        {
+            continue;
+        }
+        let Some(sector) = usize::try_from(sprite.sectnum).ok().and_then(|s| sectors.get_mut(s)) else {
+            continue;
+        };
+        if temps.len() <= index {
+            temps.resize_with(index + 1, ActorConTemps::default);
+        }
+        temps[index].g_t[2] = sector.floorz;
+        if sector.lotag != 1 && sector.lotag != 2 {
+            sector.floorz = sprite.z;
         }
     }
 }
@@ -317,6 +368,18 @@ pub(crate) fn init_faller_sprites(
             }
         }
     }
+}
+
+/// Chocolate `spawn()` HYDRENT…PIPE6 case: `clipdist = 32; cstat |= 257`.
+pub(crate) fn is_solid_prop_tile(pic: i16) -> bool {
+    matches!(
+        pic,
+        981 | 342 | 343 | 516 | 517 | 602 | 607 | 595 | 556 | 557 | 680 | 954 | 955 | 956 | 957
+            | 1012 | 1013 | 1025 | 1014 | 1157..=1166 | 971 | 972 | 973 | 975 | 1352 | 1355
+            | 1354 | 4943 | 678 | 669 | 407 | 911 | 939 | 979 | 1358 | 1359 | 685 | 686 | 689
+            | 694 | 695 | 697 | 4444 | 768 | 769 | 774 | 779 | 792 | 716 | 765 | 619 | 616
+            | 618 | 996 | 994 | 995
+    )
 }
 
 /// Chocolate `wallswitchcheck()` tile set, used by the early `spawn()` path.

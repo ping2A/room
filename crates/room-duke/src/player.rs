@@ -204,6 +204,9 @@ pub struct Player {
     /// Chocolate `player_struct::bobcounter`, reset when a warp elevator transfers the player.
     #[serde(default)]
     pub bob_counter: i32,
+    /// Chocolate `player_struct::weapon_sway` (view-only weapon bob phase).
+    #[serde(default)]
+    pub weapon_sway: i32,
     /// Chocolate `return_to_center` — recenters `horiz` toward 100.
     pub return_to_center: i16,
     /// Sprite index for the player body (`ps[].i`), or `-1`.
@@ -517,6 +520,7 @@ impl Default for Player {
             true_floor_z: 0,
             true_ceiling_z: 0,
             bob_counter: 0,
+            weapon_sway: 0,
             return_to_center: 9,
             sprite_i: -1,
             extra: 100,
@@ -802,6 +806,19 @@ pub fn processinput_move_with_lists_clipping(
     // previous tic's horizontal displacement — advances `bobcounter` with the
     // previous tic's `on_ground`, then refreshes `bobpos`. CON `ifp pwalking`
     // and the view bob read this value.
+    // Chocolate `processinput`: `weapon_sway` eases back to 1024 when the
+    // body is slow or airborne, otherwise follows `bobcounter` (view only).
+    if p.body_xvel < 32 || !p.on_ground || p.bob_counter == 1024 {
+        if (p.weapon_sway & 2047) > 1024 + 96 {
+            p.weapon_sway -= 96;
+        } else if (p.weapon_sway & 2047) < 1024 - 96 {
+            p.weapon_sway += 96;
+        } else {
+            p.weapon_sway = 1024;
+        }
+    } else {
+        p.weapon_sway = p.bob_counter;
+    }
     {
         let dx_bob = p.posx.wrapping_sub(p.bobposx);
         let dy_bob = p.posy.wrapping_sub(p.bobposy);

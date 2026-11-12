@@ -399,7 +399,7 @@ mod tests {
     /// Honest-mode floor: native DEMO1 playback (no fixups, no RNG pads)
     /// matches the Chocolate trace for at least this many tics. Raise it as
     /// the frontier moves; never lower it to make a change pass.
-    const DEMO1_REAL_SYNC_TICS: usize = 264;
+    const DEMO1_REAL_SYNC_TICS: usize = 270;
 
     /// E1L1 as a player would play it: walk to the rooftop fan vent, throw
     /// the pipe bomb picked up on the way at the gas tanks (SEENINE chain,
@@ -7009,6 +7009,7 @@ mod tests {
                             &[],
                             &[],
                             &mut [],
+                            None,
                             None,
                         );
                         let after = VM_TRANDS.load(std::sync::atomic::Ordering::Relaxed);

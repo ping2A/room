@@ -92,6 +92,16 @@ pub(crate) fn prelevel_sprites_with_state(
     skill: u8,
 ) -> Vec<ShadeCycler> {
     let _ = skill;
+    // Chocolate `prelevel` sector pass: every sector's `extra` (the SE
+    // `yvel` speed source, e.g. SE11 swing-door rate `SP>>3`) defaults to
+    // 256 before GPSPEED overrides it; already-open lotag 20/22 doors get
+    // their toggle bit so the first use closes them.
+    for sector in sectors.iter_mut() {
+        sector.extra = 256;
+        if matches!(sector.lotag, 20 | 22) && sector.floorz > sector.ceilingz {
+            sector.lotag |= i16::MIN;
+        }
+    }
     let mut cyclers = Vec::new();
     // Chocolate: `i = headspritestat[0]; while (i >= 0) { nexti = …; switch GPSPEED/CYCLER }`.
     let mut i = lists.headspritestat[STAT_DEFAULT as usize];

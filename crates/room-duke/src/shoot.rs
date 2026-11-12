@@ -647,6 +647,10 @@ pub(crate) fn shoot_coolexplosion_enemy(
         actor_temps.resize_with(ku + 1, ActorConTemps::default);
     }
     actor_temps[ku] = temps;
+    // Chocolate `shoot()` loop tail: `sa = s->ang+32-(TRAND&63);
+    // zvel = oldzvel+512-(TRAND&1023);` run even for the last shot.
+    let _ = krand_step(randomseed);
+    let _ = krand_step(randomseed);
 }
 
 fn checkhitsprite_shotgun(
@@ -1249,6 +1253,37 @@ pub fn shoot_shotgun_player(
         );
     }
     sprites[bu].cstat = old_cstat;
+    if hit_debug_enabled() {
+        let what = if hit.hitsprite >= 0 {
+            let t = &sprites[hit.hitsprite as usize];
+            format!(
+                "sprite #{} pic {} stat {} cstat {} extra {}",
+                hit.hitsprite,
+                t.picnum,
+                lists.sprite_stat.get(hit.hitsprite as usize).copied().unwrap_or(-1),
+                t.cstat,
+                t.extra
+            )
+        } else if hit.hitwall >= 0 {
+            let w = &walls[hit.hitwall as usize];
+            format!(
+                "wall #{} pic {} over {} cstat {} next {}",
+                hit.hitwall, w.picnum, w.overpicnum, w.cstat, w.nextsector
+            )
+        } else if hit.hitsect >= 0 {
+            format!("sector #{} floor/ceiling", hit.hitsect)
+        } else {
+            "nothing".to_string()
+        };
+        let dist = f64::from(hit.hitx - sx).hypot(f64::from(hit.hity - sy));
+        push_hit_log(format!(
+            "hit: weapon pic {weapon_picnum} -> {what} at ({}, {}, {}) dist {dist:.0} aim {}",
+            hit.hitx,
+            hit.hity,
+            hit.hitz,
+            if j >= 0 { format!("locked on #{j}") } else { "free".to_string() }
+        ));
+    }
     if hit.hitsect < 0 {
         return false;
     }
@@ -3841,4 +3876,33 @@ pub(crate) fn shoot_enemy(
         sprites[j as usize].clipdist = 32;
     }
     true
+}
+
+thread_local! {
+    static HIT_DEBUG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static HIT_LOG: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Enable/disable the player hitscan debug log (`duke_hitdebug`).
+pub fn set_hit_debug(on: bool) {
+    HIT_DEBUG.with(|d| d.set(on));
+}
+
+pub(crate) fn hit_debug_enabled() -> bool {
+    HIT_DEBUG.with(std::cell::Cell::get)
+}
+
+pub(crate) fn push_hit_log(line: String) {
+    HIT_LOG.with(|l| {
+        let mut l = l.borrow_mut();
+        if l.len() < 256 {
+            l.push(line);
+        }
+    });
+}
+
+/// Drain player hitscan debug lines recorded since the last call.
+#[must_use]
+pub fn take_hit_log() -> Vec<String> {
+    HIT_LOG.with(|l| std::mem::take(&mut *l.borrow_mut()))
 }

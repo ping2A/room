@@ -98,7 +98,7 @@ pub(super) fn render(
     let w = frame.width as i32;
     let h = frame.height as i32;
     let (sin, cos) = crate::helpers::approx_sincos_q14(i32::from(view.ang));
-    let horiz_off = (i32::from(view.horiz) - 100) / 2;
+    let horiz_off = crate::soft::horiz_pixel_offset(view.horiz, i64::from((h / 2).max(1)));
     let mut ctx = Ctx {
         world,
         view,
@@ -115,7 +115,7 @@ pub(super) fn render(
         cx: w / 2,
         focal_x: i64::from((w / 2).max(1)),
         focal_y: i64::from((h / 2).max(1)),
-        horizon: h / 2 - horiz_off,
+        horizon: h / 2 + horiz_off,
         clock: clock_120hz,
         sector_z: world.sector_z(),
         wall_xy: world.wall_xy(),
@@ -157,7 +157,9 @@ impl Ctx<'_> {
         } else {
             (512 * (i64::from(v.wrapping_add(16)))) >> 4
         };
-        let add = (depth.max(0) * globvis) >> 18;
+        // Build `wallscan`: `swall ≈ 32·depth`, so `mulscale16(swall, globvis) >> 8`
+        // adds one shade per 1024 units at visibility 512.
+        let add = (depth.max(0) * globvis) >> 19;
         (i64::from(shade) + add).clamp(0, 127) as i8
     }
 
@@ -280,7 +282,12 @@ impl Ctx<'_> {
                     continue;
                 }
                 let (d, t) = Self::seg_at(seg, col);
-                if d <= self.entry[ci] {
+                // Walls clearly nearer than the entry portal belong to an
+                // earlier pass of a concave sector. A front-facing wall lying
+                // *on* the portal line is kept: Build maps put closed swing
+                // doors and stall doors exactly there (the portal's own back
+                // side is already culled as a back face).
+                if d + 2 < self.entry[ci] {
                     continue;
                 }
                 if best.is_none_or(|(_, bd, _)| d < bd) {

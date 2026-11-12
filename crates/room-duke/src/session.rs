@@ -4941,6 +4941,18 @@ impl DukeSession {
             self.player.posy,
             self.player.ang,
         );
+        // Chocolate `animatesprites`: the viewing player's own APLAYER sprite
+        // is never drawn (with camera interpolation it would sit just in
+        // front of the eye as a screen-filling blow-up).
+        if let Some(own) = usize::try_from(self.player.sprite_i)
+            .ok()
+            .and_then(|i| view.sprites.get_mut(i))
+        {
+            // Zero height hides it; `xrepeat` stays so the HUD can still
+            // tell a shrunk player (Chocolate's `xrepeat < 40` fists).
+            own.yrepeat = 0;
+            own.cstat |= 32768;
+        }
         Some(view)
     }
 
@@ -5112,6 +5124,36 @@ impl DukeSession {
                 }
             }
         }
+        // Chocolate map `spawn()` (j < 0) seeds every sprite's
+        // `hittype.floorz/ceilingz` from its sector; runtime children inherit
+        // them through EGS (e.g. TOILETWATER's `sizeto` height test).
+        for index in 0..world.sprites.len() {
+            if world.lists.sprite_stat.get(index).copied().unwrap_or(MAXSTATUS as i16)
+                == MAXSTATUS as i16
+            {
+                continue;
+            }
+            let Some(sector) = usize::try_from(world.sprites[index].sectnum)
+                .ok()
+                .and_then(|sector| world.sectors.get(sector))
+            else {
+                continue;
+            };
+            if self.actor_temps.len() <= index {
+                self.actor_temps.resize_with(index + 1, ActorConTemps::default);
+            }
+            let temps = &mut self.actor_temps[index];
+            if temps.hit_floorz == 0 && temps.hit_ceilingz == 0 {
+                temps.hit_floorz = sector.floorz;
+                temps.hit_ceilingz = sector.ceilingz;
+            }
+        }
+        crate::spawn::init_touchplates(
+            &world.lists,
+            &world.sprites[..],
+            &mut world.sectors[..world.numsectors as usize],
+            &mut self.actor_temps,
+        );
         crate::spawn::init_faller_sprites(
             &world.lists,
             world.sprites.as_mut(),
@@ -5194,6 +5236,12 @@ impl DukeSession {
                         self.actor_temps[i].g_t[1] = actor_temps.g_t[1];
                         world.sprites[i].hitag = crate::con::actor_header_hitag(script, pic) as i16;
                     }
+                    continue;
+                }
+                // Chocolate `spawn()` badguy case: over-skill / monsters-off
+                // enemies were zero-sized onto STAT_MISC (`break`, no sizing)
+                // and get deleted by `moveexplosions` on the first tic.
+                if world.lists.sprite_stat.get(i).copied() == Some(crate::stat::STAT_MISC) {
                     continue;
                 }
                 world.sprites[i].cstat |= 257;
@@ -5296,7 +5344,12 @@ impl DukeSession {
             world.start_ang,
             world.start_sector,
         );
+        // The prelevel totals (counted above) survive the player reset.
+        let (max_secret_rooms, max_actors_killed) =
+            (self.player.max_secret_rooms, self.player.max_actors_killed);
         self.player = Player {
+            max_secret_rooms,
+            max_actors_killed,
             posx,
             posy,
             posz,
@@ -6761,7 +6814,7 @@ impl DukeSession {
                             &self.tile_meta,
                             &mut self.actor_temps,
                         );
-                    if !used_nuke_button
+                    let switched = !used_nuke_button
                         && crate::interactions::use_wall_switch(
                             world,
                             &mut self.sector_motions,
@@ -6784,14 +6837,25 @@ impl DukeSession {
                             &mut self.picnum,
                             self.script.as_ref(),
                         )
-                        .is_some()
-                        && let Some(id) = self
+                        .is_some();
+                    if switched {
+                        if let Some(id) = self
                             .script
                             .as_ref()
                             .and_then(|script| script.labels.get("SWITCH_ON"))
                             .and_then(|label| u16::try_from(label.value).ok())
-                    {
-                        self.pending_sound_ids.push(id);
+                        {
+                            self.pending_sound_ids.push(id);
+                        }
+                    } else if !used_nuke_button {
+                        crate::interactions::use_near_sector(
+                            world,
+                            &mut self.sector_motions,
+                            &mut self.wall_motions,
+                            &mut self.actor_temps,
+                            &self.player,
+                            &self.tile_meta,
+                        );
                     }
                 }
                 self.open_was_down = open_down;
@@ -52289,6 +52353,20 @@ impl DukeSession {
         }
     }
 
+    /// Build the single-player `dobonus` intermission for the level just
+    /// finished (CON level name, episode art, skill), from the live stats.
+    #[must_use]
+    pub fn bonus_screen(&self) -> crate::bonus::BonusScreen {
+        let (volume, level) = self.campaign.map_or((0, 0), |c| (c.volume, c.level));
+        let name = self
+            .script
+            .as_ref()
+            .and_then(|script| script.levels.get(usize::from(volume) * 11 + usize::from(level)))
+            .map(|level| level.name.clone())
+            .unwrap_or_default();
+        crate::bonus::BonusScreen::new(self.level_bonus_stats(), name, volume, self.skill)
+    }
+
     /// Consume a solo CON `resetplayer` request for a host to restart the map.
     pub fn take_player_restart_request(&mut self) -> bool {
         std::mem::take(&mut self.player_restart_ready)
@@ -52384,7 +52462,9 @@ fn queue_player_sound(
         .and_then(|label| i16::try_from(label.value).ok())
     {
         if let Ok(sprite_index) = usize::try_from(player.sprite_i) {
-            actor_temps.resize_with(sprite_index + 1, ActorConTemps::default);
+            if actor_temps.len() <= sprite_index {
+                actor_temps.resize_with(sprite_index + 1, ActorConTemps::default);
+            }
             actor_temps[sprite_index].pending_actor_sounds.push(sound);
         }
     }
@@ -52440,7 +52520,9 @@ fn tick_player_inventory(
             check_available_inventory(player);
             queue_player_sound(script, "DUKE_JETPACK_OFF", player, actor_temps);
             if let Ok(sprite_index) = usize::try_from(player.sprite_i) {
-                actor_temps.resize_with(sprite_index + 1, ActorConTemps::default);
+                if actor_temps.len() <= sprite_index {
+                    actor_temps.resize_with(sprite_index + 1, ActorConTemps::default);
+                }
                 for name in ["DUKE_JETPACK_IDLE", "DUKE_JETPACK_ON"] {
                     if let Some(sound) = script
                         .and_then(|image| image.labels.get(name))
@@ -53574,3 +53656,5 @@ mod tests {
         assert_eq!(s.tic, 1);
     }
 }
+
+

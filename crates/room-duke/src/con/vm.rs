@@ -561,6 +561,12 @@ pub struct ConVm<'a> {
     /// -> handled`. Chocolate's `shoot()` runs inline inside `parse()`, so
     /// any later `ifrnd` in the same actor tic sees the RNG after the shot.
     pub shoot_now: Option<&'a mut (dyn FnMut(i16, i16, &mut i32) -> bool + 'a)>,
+    /// Chocolate `fall` runs `makeitfall` mid-parse: (temps, z, zvel).
+    pub fall_now: Option<&'a mut (dyn FnMut(&mut ActorConTemps, &mut i32, &mut i16) + 'a)>,
+    /// Set when `fall_now` changed the actor's z/zvel.
+    pub fell: bool,
+    /// Actor `zvel` mirror for `fall_now`.
+    pub sprite_zvel: i16,
     /// Mutable sprite repeats for sequential CON `sizeat` / `sizeto` commands.
     sprite_xrepeat: u8,
     sprite_yrepeat: u8,
@@ -712,6 +718,9 @@ impl<'a> ConVm<'a> {
             sound_defs: None,
             active_sound_owners: None,
             shoot_now: None,
+            fall_now: None,
+            fell: false,
+            sprite_zvel: 0,
             sprite_xrepeat: 0,
             sprite_yrepeat: 0,
         }
@@ -1170,7 +1179,19 @@ impl<'a> ConVm<'a> {
             }
             // fall — Chocolate `makeitfall` applied by `moveactors` after execute
             16 => {
-                self.temps.fall_requested = true;
+                if let Some(hook) = self.fall_now.as_mut() {
+                    let mut z = self.env.as_ref().map_or(0, |e| e.sprite_z);
+                    hook(&mut *self.temps, &mut z, &mut self.sprite_zvel);
+                    if let Some(env) = self.env.as_mut() {
+                        env.sprite_z = z;
+                        // `makeitfall` refreshed `hittype[].floorz/ceilingz`.
+                        env.floorz = self.temps.hit_floorz;
+                        env.ceilingz = self.temps.hit_ceilingz;
+                    }
+                    self.fell = true;
+                } else {
+                    self.temps.fall_requested = true;
+                }
                 self.insptr += 1;
             }
             // pstomp / … nullary stubs (resetcount handled below)
@@ -2437,6 +2458,7 @@ pub fn execute_actor<'a>(
     projectiles: &'a [ConProjectile],
     active_sound_owners: &'a mut [Option<i16>],
     shoot_now: Option<&'a mut (dyn FnMut(i16, i16, &mut i32) -> bool + 'a)>,
+    fall_now: Option<&'a mut (dyn FnMut(&mut ActorConTemps, &mut i32, &mut i16) + 'a)>,
 ) -> ConStop {
     tick_action_frames(&image.script, temps, &mut sprite.lotag);
     let env = ConSpriteEnv {
@@ -2465,6 +2487,8 @@ pub fn execute_actor<'a>(
     vm.sound_defs = Some(&image.sounds);
     vm.active_sound_owners = Some(active_sound_owners);
     vm.shoot_now = shoot_now;
+    vm.fall_now = fall_now;
+    vm.sprite_zvel = sprite.zvel;
     vm.env = Some(env);
     vm.cansee_sectors = Some(cansee_sectors);
     vm.cansee_walls = Some(cansee_walls);
@@ -2503,6 +2527,12 @@ pub fn execute_actor<'a>(
     sprite.pal = vm.sprite_pal.clamp(0, i16::from(u8::MAX)) as u8;
     sprite.xrepeat = vm.sprite_xrepeat;
     sprite.yrepeat = vm.sprite_yrepeat;
+    if vm.fell {
+        if let Some(env) = vm.env.as_ref() {
+            sprite.z = env.sprite_z;
+        }
+        sprite.zvel = vm.sprite_zvel;
+    }
     stop
 }
 
@@ -2696,7 +2726,11 @@ pub(crate) fn inherit_hit_planes(temps: &mut [ActorConTemps], child: usize, owne
         return;
     };
     let (fz, cz) = (owner.warp_floorz, owner.warp_ceilingz);
+    // Chocolate `EGS`: `hittype[i].floorz/ceilingz = hittype[s_ow].…`.
+    let (hf, hc) = (owner.hit_floorz, owner.hit_ceilingz);
     if let Some(child) = temps.get_mut(child) {
+        child.hit_floorz = hf;
+        child.hit_ceilingz = hc;
         if fz.is_some() {
             child.warp_floorz = fz;
             child.warp_ceilingz = cz;

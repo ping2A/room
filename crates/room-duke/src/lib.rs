@@ -30,6 +30,7 @@ pub mod fixups {
 
 pub mod actors;
 pub mod animate;
+mod spawn_rt;
 pub mod audio;
 pub mod badguy;
 pub mod campaign;
@@ -54,6 +55,10 @@ pub mod trace;
 pub mod transports;
 pub mod view;
 pub(crate) mod wall_animations;
+pub mod weapon_view;
+pub mod ui_page;
+pub mod bonus;
+pub mod menu;
 pub mod weapons;
 pub mod weapons_move;
 

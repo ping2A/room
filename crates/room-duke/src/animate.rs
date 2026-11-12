@@ -64,7 +64,7 @@ pub fn animatesprites(
                 sprite.picnum = s.picnum + k as i16;
                 continue;
             }
-            p if (SCRAP6..=SCRAP6 + 7).contains(&p) || (SCRAP1..=SCRAP5).contains(&p) => {
+            p if (SCRAP6..=SCRAP6 + 7).contains(&p) || [SCRAP1, 2404, 2408, 2412, SCRAP5].contains(&p) => {
                 let hit_pic = t.map_or(-1, |t| t.hit_picnum);
                 if !(hit_pic == BLIMP && p == SCRAP1 && s.yvel >= 0) {
                     sprite.picnum = p.wrapping_add(t0 as i16);
