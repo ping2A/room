@@ -1,6 +1,8 @@
 # 37 — ZScript → WebAssembly compiler (`room-zvm-wasm`)
 
-Status: proposal (2026-11-03). Audience: an engineer or LLM implementing the
+Status: **ZW0–ZW9 implemented (2026-11-13)**, with the §6 design replaced by
+the engine-side heap design of §0.2; ZW4 not yet run in a browser. See §0.1.
+Originally a proposal (2026-11-03). Audience: an engineer or LLM implementing the
 crate. Builds on `docs/34` (ZScript front end and VM), `docs/12` (WASM mod
 ABI v1) and `docs/31` (mod API extensions). It amends ADR
 `docs/decisions/0005-zscript-vm.md`: the dropped ZScript→WASM transpiler
@@ -44,6 +46,133 @@ implementation (ADR `0006`).
 5. Input is bytecode, not AST, so DECORATE expressions compiled to ZVM
    (`deco_zvm.rs`, ZS5) can also be AOT-compiled at no extra cost.
 6. Milestones **ZW0–ZW9** are in §9.
+
+### 0.1 Implementation status (2026-11-13)
+
+| ID | Status | What exists |
+|---|---|---|
+| ZW0 | **done** | `room_zvm::has_ext`, `block_costs` / `jump_target` / `next_insn` (`program.rs`); the interpreter charges fuel per basic block on entry; `i64::MIN / -1` and `% -1` trap `Trap::Overflow`; `Zvm::native_call` shared by both tiers; heap opcodes moved to `room-zvm/src/ops.rs` and used by the interpreter and the AOT imports |
+| ZW1 | **done** | `crates/room-zvm-wasm`: decoder, basic blocks from the shared leader set, CFG, reverse postorder, Cooper–Harvey–Kennedy dominators, reducibility check, Ramsey structuring (`loop`/`block`/`if` + `br`), every opcode except legacy `CallStatic`/`CallNative`, fuel per block, depth limit, `wasmparser` validation, `--wat` via `wasmprinter` |
+| ZW2 | **done** | `Arg` snapshots in temps, static `Call` (register image, `write_value` resolved at compile time), `CallVirt` through `zvm.vcall` + `call_indirect`, return slots as tagged cells in linear memory, `CallNat` through argument cells, `zvm.call_interp` bridge into the interpreter for unsupported callees, the interpreter's `Return`→caller `i[0]` quirk |
+| ZW3 | **done** (perf gate partly) | `room-zvm` features `aot` (wasmi) and `aot-wasmtime` (wasmtime 26 / Cranelift): `src/aot.rs` holds the engine-neutral imports and run logic, `src/aot/{wasmi,wasmtime}_backend.rs` the engine glue. `Zvm::attach_aot`, tier switch in `run_with_result`, module/artifact caches keyed by content digest. `ROOM_ZVM_TIER=aot` in `room-sim` (features `zvm-aot` / `zvm-aot-jit`; `room-app` uses `zvm-aot-jit`); `ROOM_ZVM_ENGINE=wasmi` forces wasmi. ZS9 is superseded. The "≥ 5× on trivial tick" gate is **not met**: see the timings below |
+| ZW4 | **implemented, not run in a browser** | `room-zvm` feature `aot-web` (`src/aot/web_backend.rs`): the module is instantiated asynchronously by the browser's `WebAssembly` (its JIT); the `"zvm"` imports are JS closures calling the same engine-neutral import bodies; guest memory is mirrored through a 16 KiB scratch copy. `room-web/src/zvm_web.rs` compiles the play program (or takes a converted mod's shipped module) when the page has `?zvm=aot` (`aot-all` = every function), interprets until the instance is ready, then attaches it through `room_zvm::set_aot_provider` / `ZscriptRuntime::refresh_aot`. Type-checked on the host only: this environment has no wasm32 standard library and no browser |
+| ZW5 | **partial** | (1) `lower.rs` loaded every library global at every function entry: the UZDoom library made each function start with ~65 native calls; it now loads only globals the function can name (stdlib bytecode 421k → 139k instructions, wasm 11.3 MB → 3.1 MB, same `stdlib_probe` and test results); (2) `auto` entry policy: only functions with a loop or > 48 instructions are entered through wasm from the host, short ones stay on the cheaper interpreter entry (`ROOM_ZVM_TIER=aot-all` / `AotPolicy::All` enters everything); (3) the VM is swapped, not reallocated, around a call and `ZvmPlayHost` is boxed (VM 1,728 → 648 bytes); entry masks cached; module/artifact caches. Open: heap view (inline field access), peephole |
+| ZW6 | **done (§0.2 design)** | `Target::RoomMod`: the AOT module of the *unlinked* program (native ids = `native_imports` indices, mapped at attach by `Zvm::attach_shipped`) plus custom sections `room.zvm.program` (`CompiledProgram::to_bytes`, `room-zvm/src/program_codec.rs`), `room.zvm.flags`, `room.zvm.abi` and `room.zvm.sources`. `read_room_mod` validates the module, its imports and sections; `register_shipped` / `shipped_for` hand it to the VM. No `room-zrt` |
+| ZW7 | **done** | `room zscript wasm … --report <md>` (`room-zvm-wasm/src/report.rs`): natives referenced, implemented or missing, call sites, functions left interpreted. Checked in as `docs/qa/zscript-wasm-coverage.md` for Brutal Doom (28 natives, 0 missing, 32/32 functions) and the UZDoom library (968 natives, 0 missing, 2,181/2,182 functions) |
+| ZW8 | **done (§0.2 design)** | No `zs_native` ABI import or host-object table is needed: compiled code calls every ZVM native through `zvm.native`, against the engine's own objects. Brutal Doom converts with 0 unavailable natives. Registration order is the existing ZScript pipeline's (the program's `States`/`Default` bodies merge into the class registry as before). UI scope: when the mod sets `GameInfo.StatusBarClass`, `room mod convert` also writes `room/zscript_ui.wasm` (UZDoom library + mod), which `load_status_bar_program` uses |
+| ZW9 | **done** | `room mod convert in.pk3|dir -o out.pk3 [--iwad] [--map] [--verify N] [--skill] [--keep-zscript] [--allow-missing-natives]` (`room-game/src/mod_convert.rs`): writes every input entry except the ZScript sources, `room/zscript.wasm`, optionally `room/zscript_ui.wasm` and `room/zscript-src/*.src`, and `room/convert.json`; verification plays the original (interpreter) and the converted package (shipped wasm, every function entered through wasm) headless with scripted input, saves and reloads both halfway, and compares world and ZScript checksums every tic. `load_zscript_from_vfs` loads converted packages without compiling ZScript and warns when the record does not say `"verified": true`. Brutal Doom: 32/32 functions, 2,000 tics on Freedoom E1M1 at skill 6 identical, 3,158 calls as wasm |
+
+### 0.2 Amendment: engine-side heap instead of `room-zrt` (2026-11-13)
+
+§6 (`Target::RoomMod` as a standalone ABI v1 mod with its own guest runtime)
+is **not** what was built. The project owner chose to keep the heap,
+strings, arrays, natives and actor proxies in the engine for converted mods,
+exactly as the AOT tier uses them:
+
+- A converted package ships `room/zscript.wasm`: the AOT code plus the
+  program image (functions, constants, classes, vtables, native names,
+  `States`/`Default` bodies). The game reads the program from the module
+  instead of compiling ZScript, and runs the shipped code through the AOT
+  tier (wasmtime on desktop, the browser engine with `?zvm=aot`, the
+  interpreter otherwise). The module imports only the `"zvm"` runtime, is
+  validated before use, and is fuel- and depth-limited by its own code.
+- Consequences: one semantics end to end (the converted mod *is* the
+  interpreter's program), saves and checksums work unchanged, and
+  verification compares raw checksums (no semantic digest needed). The
+  module is not an ABI v1 ROOMMOD: no `room.toml`, it does not run on the
+  `room-script` host, and it depends on the Room build's native table (the
+  `room.zvm.abi` section rejects modules built against another import list).
+- ZScript is compiled as one program per game. The module records the
+  sources outside the package that went into it (the engine's own
+  `room.pk3` ZScript); if the game loads other ZScript too (another
+  unconverted mod), the module cannot be used and the loader says to convert
+  again. Converting several ZScript mods together is not supported.
+- `zs_native_find`/`zs_native_call`, the host-object table and
+  `room_register_late` (§6.6.1, §6.6.2 step 5) are unnecessary in this
+  design and were not added.
+
+Differences from the plan, decided while implementing:
+- **Calling convention.** Every compiled function has the wasm type `() -> ()`.
+  Arguments go through a register image at `IMG` in the module's own memory
+  (zeroed, then the parameters written with the interpreter's `write_value`
+  rules). The prologue loads parameter registers plus a fixed entry window
+  (`i[0..8]`, `f[0..4]`, `s[0..4]`, `a[0..8]`); every other register starts at
+  zero. A host entry whose frame has a non-zero register outside that set runs
+  on the interpreter. One function type makes `CallVirt` a plain
+  `call_indirect`; the host builds the callee image in `zvm.vcall`.
+- **Return slots** are eight tagged 16-byte cells (`aot_abi::RETS`), not
+  globals: natives and the interpreter bridge write them directly.
+- **Exit record.** The outermost AOT frame writes `kind` (Ret / Return /
+  implicit), the value cell, `i[0..4]`, `s[0]`, `f[0]` at `aot_abi::EXIT`, so
+  `last_i` / `last_s` / `last_f` / the result match the interpreter exactly.
+- **Traps** raised inside imports (null, bounds, natives, unbound virtual
+  slot) are recorded in the store and abort the wasm call; generated code
+  traps through `zvm.trap(kind, func, pc, extra)` for divide, overflow,
+  explicit `Trap`, fuel and depth.
+- **Host safety.** During a call the `Zvm` is swapped into the wasm store
+  (which keeps a placeholder VM between calls) and swapped back afterwards,
+  so imports reach it without `unsafe`.
+- The shared contract (memory layout, cell tags, import list, image layout)
+  is `room_zvm::aot_abi`, used by both the code generator and the host.
+
+Evidence (2026-11-13, local runs):
+- `cargo test -p room-zvm-wasm`: differential tests on hand-written bytecode
+  (arithmetic, loops, divide-by-zero, `MIN/-1`, fuel exhaustion at nine fuel
+  budgets, NaN / ±0 / infinity / `F2I` saturation, `CmpF`, calls, `Return`
+  quirk, `GetRet` bank mismatches, recursion with stack overflow at four limits,
+  objects, arrays, strings, virtual calls, null and bounds traps, explicit
+  `Trap`, legacy fallback through the bridge) and on ZScript source (loops,
+  `switch` with fall-through and `continue`, `&&`/`||`/`?:`, nested calls).
+  Results, traps (kind, function, line), fuel left, heap digest and the whole
+  play-host state must be equal.
+- UZDoom stdlib (`wadsrc/uzdoom`): 2,181 / 2,182 functions compile (one
+  `ArgAcrossBlocks`), 11.3 MB of wasm, ~0.7 s codegen.
+  `room-sim/tests/stdlib_probe` (351 stdlib loads, every stdlib action run on
+  a live world) prints the same effect report on both tiers.
+- `room-sim` tests (`zscript_play`, `skill_levels`, `weapon_timeline`, …) give
+  the same pass/fail set with `ROOM_ZVM_TIER=aot` as on the interpreter.
+- **Brutal Doom** (`brutal22test6`): all 32 functions compile (28 KB).
+  `room zscript wasm <bd.pk3|dir> --bd` runs 2,318 calls identically on both
+  tiers: `ZC_IntStrMap` against a Rust model of BD's algorithm (duplicates
+  included), BD's `ZandroCompat` lump API reading SNDINFO/KEYCONF/CVARINFO back
+  byte by byte, and every function with seeded arguments.
+  `room-game/tests/bd_zscript_aot.rs` runs BD on Freedoom E1M1 at skill 6 for
+  2,100 tics twice (interpreter, AOT): `World::checksum` and the ZScript
+  checksum are equal every tic, 2,855 ZScript calls served by wasm, on both
+  wasmi and wasmtime.
+- All of the above also pass with `--features wasmtime` (and with
+  `ROOM_ZVM_ENGINE=wasmi` on that build).
+
+Timings (`cargo run --release -p room-zvm-wasm --features wasmtime --example
+aot_bench`, x86-64 container, wasmtime 26):
+
+| Workload | Interpreter | AOT (wasmtime) | |
+|---|---|---|---|
+| Collatz sweep 1..30000 (one call, loops + calls) | 924 ms | 24 ms | ×39 |
+| float polynomial, 2·10⁶ iterations | 763 ms | 3.2 ms | ×239 |
+| 10,000 calls of a one-line function | 1.8 ms | 3.4 ms | ×0.5 |
+| Brutal Doom workloads (2,318 calls) | 13.5 ms | 5.7 ms | ×2.4 |
+
+Compiled loops are 40–240× faster. Each top-level call into wasm costs
+about 0.3 µs of fixed host overhead (VM swap, register image, return cells,
+globals). Since ZW5's `auto` policy, short straight-line functions keep the
+interpreter's cheaper entry, so 10,000 calls of a one-line function now take
+the same 1.6 ms on both tiers (they were ×0.5 before). The UZDoom library is
+3.1 MB of wasm after the ZW5 global-load fix (was 11.3 MB); it is compiled
+once per process and cached.
+
+Commands:
+
+```
+room mod convert brutal22test6.pk3 -o bd-converted.pk3 --iwad doom2.wad --skill 6
+room zscript wasm brutal22test6.pk3 --report coverage.md
+room zscript wasm --stdlib --report stdlib-coverage.md
+room zscript wasm brutal22test6.pk3 -o bd.wasm --wat bd.wat --check
+room zscript wasm brutal22test6.pk3 --bd
+ROOM_ZVM_TIER=aot ./target/release/room ...        # desktop game, AOT tier
+ROOM_BRUTALDOOM_PK3=… cargo test -p room-game --features zvm-aot-jit --test bd_zscript_aot
+cargo run --release -p room-zvm-wasm --features wasmtime --example aot_bench [bd.pk3]
+```
 
 ---
 

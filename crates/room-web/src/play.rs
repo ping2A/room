@@ -24,8 +24,7 @@ use room_render::{
 };
 use room_sim::mod_hud::layer as mod_hud_layer;
 use room_sim::{
-    Buttons, FLAG_DONTDRAW, FLAG_DROPPED, FLAG_FLOAT, FLAG_NOGRAVITY,
-    FLAG_SPAWNCEILING, TicCmd,
+    Buttons, FLAG_DONTDRAW, FLAG_DROPPED, FLAG_FLOAT, FLAG_NOGRAVITY, FLAG_SPAWNCEILING, TicCmd,
 };
 use room_ui::{
     CanvasSink, DoomStatusBar, DrawCmd, DukeStatusBar, HudState, MenuCommand, MenuStack,
@@ -379,6 +378,13 @@ impl PlaySession {
         }
         let zs = room_game::load_zscript_from_vfs(&vfs);
         room_game::log_zscript_report(&zs, &zscript_handlers);
+        // `?zvm=aot`: compile ZScript for the browser's WebAssembly engine.
+        if let (Some(program), Some(all)) = (
+            zs.program.as_ref(),
+            crate::zvm_web::requested(crate::browser::room_url_param("zvm").as_deref()),
+        ) {
+            crate::zvm_web::prepare(program, all);
+        }
         game.set_zscript(zs.program, zscript_handlers);
 
         game.set_defs(data.classes, data.states);
@@ -939,6 +945,7 @@ impl PlaySession {
 
     /// Advance sim at [`GameRuntime::tic_rate`]; returns `true` if at least one tic ran.
     pub fn tick_play(&mut self, dt: f32) -> bool {
+        crate::zvm_web::refresh(&mut self.game);
         let tic = 1.0 / self.game.tic_rate() as f32;
         if self.edit_cam.is_some() {
             self.fly_edit_cam(dt);
@@ -1082,7 +1089,8 @@ impl PlaySession {
         let frozen = world.level.frozen;
         let events = world.drain_particle_events();
         if !quiet {
-            self.particles.ingest_ex(events.into_iter().map(particle_spawn));
+            self.particles
+                .ingest_ex(events.into_iter().map(particle_spawn));
         }
         self.particles.tick_with_freeze(frozen);
     }
@@ -1117,7 +1125,9 @@ impl PlaySession {
             need.insert(name.to_owned(), [255u8, 255, 255]);
         }
         for p in &self.particles.particles {
-            let q = p.color.map(|c| ((c.clamp(0.0, 1.0) * 31.0).round() as u8).saturating_mul(8));
+            let q = p
+                .color
+                .map(|c| ((c.clamp(0.0, 1.0) * 31.0).round() as u8).saturating_mul(8));
             if !(q[0] > 240 && q[1] > 240 && q[2] > 240) {
                 need.insert(particle_tint_tex_name(q), q);
             }
@@ -1491,9 +1501,13 @@ impl PlaySession {
             // shell (`update_audio_frame`).
             let in_level = self.game.state == GameState::Level;
             let paused = in_level
-                && self.game.world().is_some_and(|w| w.paused || w.level.frozen_power);
+                && self
+                    .game
+                    .world()
+                    .is_some_and(|w| w.paused || w.level.frozen_power);
             let heard = if in_level {
-                self.game.listener_sound(self.local_seat, self.water_reverb && self.reverb)
+                self.game
+                    .listener_sound(self.local_seat, self.water_reverb && self.reverb)
             } else {
                 room_game::ListenerSound::default()
             };
@@ -1541,7 +1555,9 @@ impl PlaySession {
         if show_bar {
             self.draw_player_hud(&mut ui);
         }
-        let sbarinfo = self.sbarinfo_slot.and_then(|at| Some((at, self.sbarinfo_output(fb_w, fb_h)?)));
+        let sbarinfo = self
+            .sbarinfo_slot
+            .and_then(|at| Some((at, self.sbarinfo_output(fb_w, fb_h)?)));
         let overlay = self.build_overlay(fb_w, fb_h, panes.as_deref(), show_bar);
 
         // Prefetch every patch the draw lists need (STBAR, STTNUM*, mugshot, keys, STCFN).
@@ -1587,7 +1603,9 @@ impl PlaySession {
         }
         // The SBARINFO bar has its own placement: `ui` up to its slot, the
         // bar, then the rest.
-        let at = sbarinfo.as_ref().map_or(ui.cmds.len(), |(at, _)| (*at).min(ui.cmds.len()));
+        let at = sbarinfo
+            .as_ref()
+            .map_or(ui.cmds.len(), |(at, _)| (*at).min(ui.cmds.len()));
         let mut over = UiDrawList::new();
         over.cmds = ui.cmds.split_off(at);
         let mut sink = OffsetSink {
@@ -1595,15 +1613,36 @@ impl PlaySession {
             ox,
             oy,
         };
-        blit_draw_list_full(&ui, 320.0 * scale, 200.0 * scale, None, Some(&self.patches), &mut sink);
+        blit_draw_list_full(
+            &ui,
+            320.0 * scale,
+            200.0 * scale,
+            None,
+            Some(&self.patches),
+            &mut sink,
+        );
         if let Some((_, bar)) = &sbarinfo {
             sink.ox = bar.origin.0;
             sink.oy = bar.origin.1;
-            blit_draw_list_full(&bar.list, bar.size.0, bar.size.1, None, Some(&self.patches), &mut sink);
+            blit_draw_list_full(
+                &bar.list,
+                bar.size.0,
+                bar.size.1,
+                None,
+                Some(&self.patches),
+                &mut sink,
+            );
             sink.ox = ox;
             sink.oy = oy;
         }
-        blit_draw_list_full(&over, 320.0 * scale, 200.0 * scale, None, Some(&self.patches), &mut sink);
+        blit_draw_list_full(
+            &over,
+            320.0 * scale,
+            200.0 * scale,
+            None,
+            Some(&self.patches),
+            &mut sink,
+        );
         if panes.is_none() {
             for [r, g, b, a] in self.screen_tints() {
                 canvas.fill_rect(0.0, 0.0, fb_w, fb_h, [r, g, b, a]);
@@ -1644,13 +1683,22 @@ impl PlaySession {
                 weapons: items
                     .weapons
                     .into_iter()
-                    .map(|(class, slot, ammo1, ammo2)| room_ui::SbarWeapon { class, slot, ammo1, ammo2 })
+                    .map(|(class, slot, ammo1, ammo2)| room_ui::SbarWeapon {
+                        class,
+                        slot,
+                        ammo1,
+                        ammo2,
+                    })
                     .collect(),
                 spawn_sprites: items.spawn_sprites,
                 max_amounts: items.max_amounts,
                 power_tics: items.power_tics,
             };
-            (snap, world.deathmatch, world.players.iter().flatten().count() > 1)
+            (
+                snap,
+                world.deathmatch,
+                world.players.iter().flatten().count() > 1,
+            )
         };
         let bar = self.sbarinfo_bar.as_ref()?;
         for name in bar.wanted_patches(&snap) {
@@ -2115,7 +2163,11 @@ impl PlaySession {
                 Some(&map_hud_ctx),
             );
         }
-        let kind = if hud.fullscreen { "fullscreen" } else { "normal" };
+        let kind = if hud.fullscreen {
+            "fullscreen"
+        } else {
+            "normal"
+        };
         if self
             .sbarinfo_bar
             .as_ref()
@@ -2364,7 +2416,11 @@ impl PlaySession {
         let (px, py, pz) = moved.camera_eye(pv.view_z);
         #[allow(clippy::cast_possible_truncation)]
         let offset = Vec3::new((px - cx) as f32, (py - cy) as f32, (pz - cz) as f32);
-        Some((offset, moved.camera_yaw().radians(), moved.camera_pitch().radians()))
+        Some((
+            offset,
+            moved.camera_yaw().radians(),
+            moved.camera_pitch().radians(),
+        ))
     }
 
     /// Interpolated eye + sim look for any seat (no local mouse preview).
@@ -2602,12 +2658,16 @@ impl PlaySession {
                     .state
                     .and_then(|sid| world.states.get(sid))
                     .is_some_and(|st| st.bright);
-                let mut light = (room_sim::actor_light_level(world, a) as f32 / 255.0).clamp(0.2, 1.0);
+                let mut light =
+                    (room_sim::actor_light_level(world, a) as f32 / 255.0).clamp(0.2, 1.0);
                 if bright {
                     light = 1.0;
                 }
                 let style = (
-                    matches!(a.render_style, room_sim::RenderStyle::Fuzzy | room_sim::RenderStyle::OptFuzzy),
+                    matches!(
+                        a.render_style,
+                        room_sim::RenderStyle::Fuzzy | room_sim::RenderStyle::OptFuzzy
+                    ),
                     matches!(
                         a.render_style,
                         room_sim::RenderStyle::Add
@@ -2727,11 +2787,13 @@ impl PlaySession {
             } else {
                 SpriteOrient::Billboard
             };
-            if view.isometric && camera.ortho.is_some() && matches!(orient, SpriteOrient::Billboard) {
+            if view.isometric && camera.ortho.is_some() && matches!(orient, SpriteOrient::Billboard)
+            {
                 let fwd = Vec3::new(camera.forward.x, camera.forward.y, 0.0).normalize_or_zero();
                 let pitch = (-camera.forward.z).clamp(-1.0, 1.0).asin().to_degrees();
                 let yaw_deg = f64::from(camera.forward.y.atan2(camera.forward.x)).to_degrees();
-                let (scale_iso, theta) = room_sim::isometric_sprite(radius, w, h, yaw_deg, f64::from(pitch));
+                let (scale_iso, theta) =
+                    room_sim::isometric_sprite(radius, w, h, yaw_deg, f64::from(pitch));
                 h *= scale_iso;
                 let t = (theta as f32).to_radians();
                 let up = (Vec3::Z * t.cos() + fwd * t.sin()).normalize_or_zero();
@@ -2756,7 +2818,8 @@ impl PlaySession {
                 roll: view.roll_rad as f32,
                 fx: room_render::SpriteFx {
                     flip_v: view.flip_y,
-                    roll_pivot: (!view.roll_center).then(|| Vec3::new(x as f32, y as f32, z as f32)),
+                    roll_pivot: (!view.roll_center)
+                        .then(|| Vec3::new(x as f32, y as f32, z as f32)),
                     no_dynlight: view.no_dynlight,
                     subtract,
                 },

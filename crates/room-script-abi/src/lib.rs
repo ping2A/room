@@ -585,6 +585,96 @@ impl ActionPayload {
     }
 }
 
+/// `reg_class_virtual` slots (mirror `room_script::VirtualSlot`).
+pub mod virtual_slot {
+    /// `Tick`.
+    pub const TICK: u32 = 1;
+    /// `PostBeginPlay`.
+    pub const POST_BEGIN_PLAY: u32 = 2;
+    /// `DamageMobj`.
+    pub const DAMAGE_MOBJ: u32 = 3;
+    /// `Die`.
+    pub const DIE: u32 = 4;
+    /// `Inventory.ModifyDamage` ([`super::ModifyDamageV1`] payload; the
+    /// callback returns the new damage).
+    pub const MODIFY_DAMAGE: u32 = 5;
+}
+
+/// Payload of an `Inventory.ModifyDamage` virtual (`docs/39` §3).
+///
+/// Layout (little-endian, 40 bytes, then `dtype_len` bytes of damage type
+/// name): `item: u64` (the inventory item's owner — Room keeps inventory as
+/// owner-side records, so this is the actor carrying the item), `inflictor:
+/// u64`, `source: u64` (0 = none), `damage: i32`, `passive: i32` (1 when
+/// the owner is being hurt, 0 when it deals the damage), `flags: i32`
+/// (`DMG_*`), `dtype_len: i32`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModifyDamageV1 {
+    /// Actor carrying the item.
+    pub owner: u64,
+    /// Projectile / puff (0 = none).
+    pub inflictor: u64,
+    /// Attacker (0 = none).
+    pub source: u64,
+    /// Damage so far (after earlier items).
+    pub damage: i32,
+    /// 1 = the owner takes the damage; 0 = the owner deals it.
+    pub passive: i32,
+    /// `DMG_*` flags.
+    pub flags: i32,
+    /// Length of the damage type name that follows.
+    pub dtype_len: i32,
+}
+
+impl ModifyDamageV1 {
+    /// Fixed header size (the damage type name follows).
+    pub const SIZE: usize = 40;
+    /// Longest damage type name carried.
+    pub const MAX_DTYPE: usize = 64;
+
+    /// Pack header + `dtype` (truncated to [`Self::MAX_DTYPE`]) into `out`;
+    /// returns the bytes written, or 0 when `out` is too small.
+    pub fn write_le(mut self, dtype: &[u8], out: &mut [u8]) -> usize {
+        let d = &dtype[..dtype.len().min(Self::MAX_DTYPE)];
+        let n = Self::SIZE + d.len();
+        if out.len() < n {
+            return 0;
+        }
+        self.dtype_len = d.len() as i32;
+        out[0..8].copy_from_slice(&self.owner.to_le_bytes());
+        out[8..16].copy_from_slice(&self.inflictor.to_le_bytes());
+        out[16..24].copy_from_slice(&self.source.to_le_bytes());
+        out[24..28].copy_from_slice(&self.damage.to_le_bytes());
+        out[28..32].copy_from_slice(&self.passive.to_le_bytes());
+        out[32..36].copy_from_slice(&self.flags.to_le_bytes());
+        out[36..40].copy_from_slice(&self.dtype_len.to_le_bytes());
+        out[40..n].copy_from_slice(d);
+        n
+    }
+
+    /// Unpack; returns the header and the damage type bytes.
+    #[must_use]
+    pub fn read_le(bytes: &[u8]) -> Option<(Self, &[u8])> {
+        if bytes.len() < Self::SIZE {
+            return None;
+        }
+        let u = |o: usize| u64::from_le_bytes(bytes[o..o + 8].try_into().unwrap_or([0; 8]));
+        let i = |o: usize| i32::from_le_bytes(bytes[o..o + 4].try_into().unwrap_or([0; 4]));
+        let h = Self {
+            owner: u(0),
+            inflictor: u(8),
+            source: u(16),
+            damage: i(24),
+            passive: i(28),
+            flags: i(32),
+            dtype_len: i(36),
+        };
+        let len = usize::try_from(h.dtype_len).ok()?.min(bytes.len() - Self::SIZE);
+        Some((h, &bytes[Self::SIZE..Self::SIZE + len]))
+    }
+}
+
 /// `reg_class_flag` ids.
 pub mod class_flag {
     /// SOLID.

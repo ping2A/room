@@ -4834,6 +4834,7 @@ dependencies = [
  "room-map",
  "room-nodebuild",
  "room-vfs",
+ "serde",
  "thiserror 2.0.21",
 ]
 
@@ -4870,6 +4871,7 @@ dependencies = [
  "room-vfs",
  "room-zscript",
  "room-zvm",
+ "room-zvm-wasm",
 ]
 
 [[package]]
@@ -4982,6 +4984,9 @@ dependencies = [
  "room-vfs",
  "room-zscript",
  "room-zvm",
+ "room-zvm-wasm",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "wat",
  "xxhash-rust",
@@ -5217,6 +5222,7 @@ dependencies = [
  "room-testkit",
  "room-zscript",
  "room-zvm",
+ "room-zvm-wasm",
  "thiserror 2.0.21",
  "wat",
  "xxhash-rust",
@@ -5296,6 +5302,8 @@ dependencies = [
  "room-ui",
  "room-vfs",
  "room-zscript",
+ "room-zvm",
+ "room-zvm-wasm",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -5328,8 +5336,26 @@ name = "room-zvm"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "js-sys",
  "room-core",
  "thiserror 2.0.21",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasmi",
+ "wasmtime",
+]
+
+[[package]]
+name = "room-zvm-wasm"
+version = "0.1.0"
+dependencies = [
+ "room-zscript",
+ "room-zvm",
+ "thiserror 2.0.21",
+ "wasm-encoder 0.224.1",
+ "wasmparser 0.224.1",
+ "wasmprinter 0.224.1",
+ "zip",
 ]
 
 [[package]]
@@ -6934,6 +6960,16 @@ dependencies = [
 
 [[package]]
 name = "wasm-encoder"
+version = "0.224.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ab7a13a23790fe91ea4eb7526a1f3131001d874e3e00c2976c48861f2e82920"
+dependencies = [
+ "leb128",
+ "wasmparser 0.224.1",
+]
+
+[[package]]
+name = "wasm-encoder"
 version = "0.261.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2608e8bb6d67fd68f5a8d0eb1363d6e7bcbc1f8ded5a0bd3a1e382462b876b22"
@@ -7018,6 +7054,7 @@ checksum = "04f17a5917c2ddd3819e84c661fae0d6ba29d7b9c1f0e96c708c65a9c4188e11"
 dependencies = [
  "bitflags 2.13.2",
  "indexmap",
+ "semver",
 ]
 
 [[package]]
@@ -7040,6 +7077,17 @@ dependencies = [
  "anyhow",
  "termcolor",
  "wasmparser 0.218.1",
+]
+
+[[package]]
+name = "wasmprinter"
+version = "0.224.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0095b53a3b09cbc2f90f789ea44aa1b17ecc2dad8b267e657c7391f3ded6293d"
+dependencies = [
+ "anyhow",
+ "termcolor",
+ "wasmparser 0.224.1",
 ]
 
 [[package]]
@@ -7158,7 +7206,7 @@ dependencies = [
  "target-lexicon",
  "wasm-encoder 0.218.1",
  "wasmparser 0.218.1",
- "wasmprinter",
+ "wasmprinter 0.218.1",
 ]
 
 [[package]]

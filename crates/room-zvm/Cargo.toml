@@ -14,10 +14,22 @@ default = []
 ## Desktop Cranelift JIT (ZS9). Enables conformance + peephole Tier-1 path;
 ## full Cranelift codegen is feature-gated for later wiring.
 zvm-jit = []
+## AOT tier (`docs/37` ZW3): run `room-zvm-wasm` modules through wasmi.
+aot = ["dep:wasmi"]
+## AOT tier on wasmtime/Cranelift (desktop JIT); wasmi stays the fallback
+## (`ROOM_ZVM_ENGINE=wasmi`).
+aot-wasmtime = ["aot", "dep:wasmtime"]
+## AOT tier on the browser's own WebAssembly engine (room-web, `docs/37` ZW4).
+aot-web = ["aot", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 
 [dependencies]
 room-core = { path = "../room-core" }
 thiserror.workspace = true
+wasmi = { workspace = true, optional = true }
+wasmtime = { workspace = true, optional = true }
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [[bench]]
 name = "tick_override"

@@ -73,6 +73,32 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum ModCmd {
+    /// Replace a mod's ZScript by a WebAssembly module and verify it (`docs/37` ZW9)
+    Convert {
+        /// Input `.pk3` / `.zip` / directory
+        input: PathBuf,
+        /// Output `.pk3`
+        #[arg(short = 'o', long)]
+        out: PathBuf,
+        /// IWAD for verification (`ROOM_IWAD` if unset)
+        #[arg(long, env = "ROOM_IWAD")]
+        iwad: Option<PathBuf>,
+        /// Map for verification (default MAP01, else E1M1)
+        #[arg(long)]
+        map: Option<String>,
+        /// Tics to verify (0 skips verification)
+        #[arg(long, default_value_t = 2000)]
+        verify: u32,
+        /// Skill for verification
+        #[arg(long, default_value_t = 3)]
+        skill: u8,
+        /// Keep the sources in the package under `room/zscript-src/`
+        #[arg(long)]
+        keep_zscript: bool,
+        /// Convert even if the program calls natives this build lacks
+        #[arg(long)]
+        allow_missing_natives: bool,
+    },
     /// Report DECORATE / ACS / ZScript gaps for one or more archives
     Check {
         /// PWAD / PK3 / directory archives (load order)
@@ -101,10 +127,37 @@ enum ZscriptCmd {
     },
     /// Disassemble a compiled function (`Class.method`)
     Disasm {
-        /// Source files (same as `check`)
-        paths: Vec<PathBuf>,
         /// Qualified function name
         func: String,
+        /// Source files (same as `check`)
+        paths: Vec<PathBuf>,
+    },
+    /// Compile ZScript to WebAssembly (`docs/37`): the AOT module the VM runs
+    /// with `ROOM_ZVM_TIER=aot`
+    Wasm {
+        /// `.zs`/`.zc` files, or one PK3 / WAD / directory archive
+        paths: Vec<PathBuf>,
+        /// Target: `aot` (Tier 2 of the ZVM). `mod` (standalone ROOMMOD) is ZW6.
+        #[arg(long, default_value = "aot")]
+        target: String,
+        /// Write the module here
+        #[arg(short = 'o', long)]
+        out: Option<PathBuf>,
+        /// Write the text form here
+        #[arg(long)]
+        wat: Option<PathBuf>,
+        /// Run every function on the interpreter and on the module and compare
+        #[arg(long)]
+        check: bool,
+        /// Brutal Doom workloads (dictionary, lump API, all functions) on both tiers
+        #[arg(long)]
+        bd: bool,
+        /// Write a native / function coverage report (Markdown) here
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// Compile with the vendored UZDoom ZScript library (`wadsrc/uzdoom`)
+        #[arg(long)]
+        stdlib: bool,
     },
     /// Report native coverage for names referenced in sources (ZS8)
     Coverage {
@@ -415,6 +468,16 @@ fn run() -> Result<()> {
                     std::process::exit(1);
                 }
             }
+            ZscriptCmd::Wasm {
+                paths,
+                target,
+                out,
+                wat,
+                check,
+                bd,
+                report,
+                stdlib,
+            } => zscript_wasm(&paths, &target, out, wat, check, bd, report, stdlib)?,
             ZscriptCmd::Disasm { paths, func } => {
                 let sources = load_zscript_sources(&paths)?;
                 let result = room_zscript::check(&sources);
@@ -485,6 +548,60 @@ fn run() -> Result<()> {
             }
         }
         Commands::Mod { command } => match command {
+            ModCmd::Convert {
+                input,
+                out,
+                iwad,
+                map,
+                verify,
+                skill,
+                keep_zscript,
+                allow_missing_natives,
+            } => {
+                let opts = room_game::mod_convert::ConvertOptions {
+                    input,
+                    output: out.clone(),
+                    iwad,
+                    map,
+                    verify_tics: verify,
+                    skill,
+                    keep_zscript,
+                    allow_missing_natives,
+                };
+                let r = room_game::mod_convert::convert(&opts).map_err(anyhow::Error::msg)?;
+                println!(
+                    "converted {} ZScript file(s): {}/{} functions as WebAssembly ({} bytes), {} entries copied",
+                    r.sources.len(),
+                    r.compiled,
+                    r.functions,
+                    r.wasm_bytes,
+                    r.entries_copied
+                );
+                println!(
+                    "natives used: {} ({} missing in this build)",
+                    r.natives.len(),
+                    r.missing_natives.len()
+                );
+                if let Some(v) = &r.verify {
+                    match v.first_divergence {
+                        None => println!(
+                            "verified: {} {} tics at skill {skill}, save+load at tic {}: identical every tic; {} ZScript calls ran as wasm ({})",
+                            v.map, v.tics, v.save_load_tic, v.aot_calls, v.engine
+                        ),
+                        Some(t) => println!("NOT verified: {} diverges at tic {t}", v.map),
+                    }
+                    if v.aot_calls == 0 {
+                        println!("note: the converted session made no top-level wasm calls");
+                    }
+                }
+                for w in &r.warnings {
+                    println!("warning: {w}");
+                }
+                println!("wrote {}", out.display());
+                if r.verify.as_ref().is_some_and(|v| !v.passed()) {
+                    std::process::exit(2);
+                }
+            }
             ModCmd::Check {
                 archives,
                 iwad,
@@ -1318,6 +1435,143 @@ fn faceswap_anchors_estimate(iwad: PathBuf, prefix: String) -> Result<()> {
         }
         println!("}}");
         println!();
+    }
+    Ok(())
+}
+
+/// Sources for `zscript wasm`: one archive (PK3 / WAD / directory) mounted
+/// like the game does, else loose files.
+fn zscript_inputs(paths: &[PathBuf]) -> Result<(Vec<(String, String)>, Option<Vfs>)> {
+    if let [one] = paths {
+        let is_archive = one.is_dir()
+            || one.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                ["pk3", "pk7", "zip", "wad", "ipk3"]
+                    .iter()
+                    .any(|x| e.eq_ignore_ascii_case(x))
+            });
+        if is_archive {
+            let vfs = VfsBuilder::new()
+                .mount_path(one)
+                .with_context(|| format!("mount {}", one.display()))?
+                .build()?;
+            let (sources, _) = room_game::zscript_sources_from_vfs(&vfs);
+            return Ok((sources, Some(vfs)));
+        }
+    }
+    Ok((load_zscript_sources(paths)?, None))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zscript_wasm(
+    paths: &[PathBuf],
+    target: &str,
+    out: Option<PathBuf>,
+    wat: Option<PathBuf>,
+    check: bool,
+    bd: bool,
+    report: Option<PathBuf>,
+    stdlib: bool,
+) -> Result<()> {
+    let (mut sources, vfs) = if paths.is_empty() {
+        (Vec::new(), None)
+    } else {
+        zscript_inputs(paths)?
+    };
+    if stdlib {
+        let mut all = room_game::uzdoom_stdlib_sources();
+        if all.is_empty() {
+            bail!("wadsrc/uzdoom not found (run from the repository root)");
+        }
+        all.append(&mut sources);
+        sources = all;
+    }
+    if sources.is_empty() {
+        bail!("no ZScript sources found");
+    }
+    if bd {
+        let mut lumps = std::collections::BTreeMap::new();
+        if let Some(vfs) = &vfs {
+            for name in room_zvm_wasm::bd::BD_LUMPS {
+                if let Some(id) = vfs.find(name, Namespace::Global) {
+                    lumps.insert(name.to_owned(), vfs.read(id)?.to_vec());
+                }
+            }
+        }
+        let report = room_zvm_wasm::bd::run(&sources, &lumps).map_err(anyhow::Error::msg)?;
+        println!("{report}");
+        return Ok(());
+    }
+    let result = room_zscript::check(&sources);
+    if !result.ok() {
+        for d in &result.diagnostics {
+            eprintln!("{}", d.format_line());
+        }
+        bail!("compile failed");
+    }
+    let program = result.program.context("no program")?;
+    if let Some(path) = report {
+        let art = room_zvm_wasm::roommod::compile_room_mod(&program)?;
+        let label = if stdlib && paths.is_empty() {
+            "UZDoom ZScript library (wadsrc/uzdoom)".to_owned()
+        } else {
+            paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" + ")
+        };
+        let cov = room_zvm_wasm::report::coverage(&label, &program, &art);
+        std::fs::write(&path, cov.markdown()).with_context(|| format!("write {}", path.display()))?;
+        println!(
+            "report: {} natives ({} missing), {}/{} functions compiled → {}",
+            cov.natives.len(),
+            cov.missing().len(),
+            cov.compiled,
+            cov.functions,
+            path.display()
+        );
+    }
+    let target = match target {
+        "aot" => room_zvm_wasm::Target::Aot,
+        "mod" | "room-mod" => room_zvm_wasm::Target::RoomMod,
+        other => bail!("unknown target {other} (aot | mod)"),
+    };
+    // Link like the VM does (native ids remapped) so the module matches `vm.program`.
+    let vm = room_zvm::Zvm::new_with_stubs(program);
+    let opts = room_zvm_wasm::Options {
+        target,
+        ..Default::default()
+    };
+    let art = room_zvm_wasm::compile(&vm.program, &opts)?;
+    println!(
+        "functions {}/{} compiled, {} blocks, {} bytecode instructions, {} bytes of wasm",
+        art.stats.compiled, art.stats.functions, art.stats.blocks, art.stats.insns, art.stats.bytes
+    );
+    for (idx, why) in &art.unsupported {
+        println!(
+            "  interpreted: {} ({why})",
+            vm.program.functions[*idx as usize].name
+        );
+    }
+    if let Some(out) = out {
+        std::fs::write(&out, &art.bytes).with_context(|| format!("write {}", out.display()))?;
+        println!("wrote {}", out.display());
+    }
+    if let Some(wat) = wat {
+        std::fs::write(&wat, room_zvm_wasm::to_wat(&art.bytes)?)
+            .with_context(|| format!("write {}", wat.display()))?;
+        println!("wrote {}", wat.display());
+    }
+    if check {
+        let mut tiers =
+            room_zvm_wasm::check::Tiers::new(vm.program.clone()).map_err(anyhow::Error::msg)?;
+        tiers
+            .call_everything(4, 0x9e37_79b9_7f4a_7c15)
+            .map_err(anyhow::Error::msg)?;
+        println!(
+            "check: {} calls identical on interpreter and wasm ({} traps); interp {:.2} ms, aot {:.2} ms",
+            tiers.calls, tiers.traps, tiers.interp_ms, tiers.aot_ms
+        );
     }
     Ok(())
 }

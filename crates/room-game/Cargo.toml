@@ -9,6 +9,12 @@ description = "Game state machine: startup, levels, hubs, intermission, saves, d
 [lints]
 workspace = true
 
+[features]
+## ZScript AOT tier (`docs/37`): forwards `room-sim/zvm-aot`.
+zvm-aot = ["room-sim/zvm-aot"]
+## Same on wasmtime/Cranelift.
+zvm-aot-jit = ["room-sim/zvm-aot-jit"]
+
 [dependencies]
 bytes.workspace = true
 room-audio = { path = "../room-audio" }
@@ -19,12 +25,16 @@ room-duke = { path = "../room-duke" }
 room-formats = { path = "../room-formats" }
 room-map = { path = "../room-map" }
 room-music = { path = "../room-music" }
+room-nodebuild = { path = "../room-nodebuild" }
 room-script = { path = "../room-script" }
 room-sim = { path = "../room-sim" }
 room-ui = { path = "../room-ui" }
 room-vfs = { path = "../room-vfs" }
 room-zscript = { path = "../room-zscript" }
 room-zvm = { path = "../room-zvm" }
+room-zvm-wasm = { path = "../room-zvm-wasm" }
+serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 xxhash-rust.workspace = true
 zip.workspace = true

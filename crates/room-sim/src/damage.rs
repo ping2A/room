@@ -318,7 +318,8 @@ fn apply_inventory_modify_damage(
     damage: i32,
     dtype: Option<&str>,
 ) -> i32 {
-    if !world.zscript.is_active() || damage <= 0 {
+    let mods = crate::script_mods::has_modify_damage();
+    if (!world.zscript.is_active() && !mods) || damage <= 0 {
         return damage;
     }
     let dtype = dtype.unwrap_or("");
@@ -342,17 +343,29 @@ fn apply_inventory_modify_damage(
     if let Some(src) = source {
         for item in world.inventory.iter(src) {
             if let Some(c) = world.classes.get(item.class) {
-                names.push((c.name.clone(), false));
+                names.push((c.name.clone(), false, src));
             }
         }
     }
     for item in world.inventory.iter(target) {
         if let Some(c) = world.classes.get(item.class) {
-            names.push((c.name.clone(), true));
+            names.push((c.name.clone(), true, target));
         }
     }
     let mut damage = damage;
-    for (name, passive) in names {
+    for (name, passive, owner) in names {
+        // A WASM mod class (e.g. the Rust port of Brutal Doom) answers first.
+        if mods {
+            if let Some(d) = crate::script_mods::dispatch_modify_damage(
+                world, &name, owner, inflictor, source, damage, dtype, passive, 0,
+            ) {
+                damage = d;
+                if damage <= 0 {
+                    return 0;
+                }
+                continue;
+            }
+        }
         damage = world.zscript.modify_damage(
             &name,
             damage,

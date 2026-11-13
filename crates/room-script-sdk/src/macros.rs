@@ -2,8 +2,10 @@
 
 /// Emit the lifecycle exports for a [`crate::game::RoomMod`] type: registers
 /// its event handler (callbacks from [`crate::game::EVENT_CALLBACK_BASE`]),
-/// keeps one instance, and decodes every dispatch into an
-/// [`crate::game::Event`].
+/// keeps one instance, and routes every dispatch by callback id: state
+/// actions (`< 1000`), events (`1000..2000`), `ScriptCall` targets
+/// ([`crate::game::STATIC_CALLBACK_BASE`]) and `ModifyDamage` virtuals
+/// ([`crate::game::VIRTUAL_CALLBACK_BASE`]).
 ///
 /// ```ignore
 /// #[derive(Default)]
@@ -50,6 +52,24 @@ macro_rules! export_mod {
             if callback_id < $crate::game::EVENT_CALLBACK_BASE {
                 let payload = $crate::ActionPayload::read_le(bytes).unwrap_or_default();
                 return __ROOM_MOD.with(|m| m.on_state_action(payload)).unwrap_or(0);
+            }
+            if callback_id >= $crate::game::VIRTUAL_CALLBACK_BASE {
+                let index = callback_id - $crate::game::VIRTUAL_CALLBACK_BASE;
+                let Some(ev) = $crate::game::ModifyDamage::decode(bytes) else {
+                    return 0;
+                };
+                let damage = ev.damage;
+                return i64::from(
+                    __ROOM_MOD
+                        .with(|m| m.on_modify_damage(index, ev))
+                        .unwrap_or(damage),
+                );
+            }
+            if callback_id >= $crate::game::STATIC_CALLBACK_BASE {
+                let index = callback_id - $crate::game::STATIC_CALLBACK_BASE;
+                return __ROOM_MOD
+                    .with(|m| m.on_static_call(index, $crate::game::StaticCall))
+                    .unwrap_or(0);
             }
             let index = callback_id - $crate::game::EVENT_CALLBACK_BASE;
             if !(0..64).contains(&index) {

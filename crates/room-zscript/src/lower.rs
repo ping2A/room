@@ -824,10 +824,17 @@ pub fn lower(
                 cur = parent_of(&lx, &name);
             }
         }
+        // Globals are loaded once at entry, but only the ones the body (or a
+        // parameter default) can name: the UZDoom library has ~65 globals and
+        // loading all of them made every function start with 65 native calls
+        // (`docs/37` ZW5). Over-approximated from the AST text, so a global
+        // that is used is never skipped.
+        let mentioned = format!("{:?}{:?}", meth.body, meth.params).to_ascii_lowercase();
+        let mentions = |name: &str| mentioned.contains(&format!("\"{}\"", name.to_ascii_lowercase()));
         // Global objects live on struct `_` (`level`, `deh`, …).
         if let Some(fields) = lx.object_fields.get("_").cloned() {
             for (fname, (_slot, ty)) in fields {
-                if lx.locals_o.keys().any(|k| k.eq_ignore_ascii_case(&fname)) {
+                if lx.locals_o.keys().any(|k| k.eq_ignore_ascii_case(&fname)) || !mentions(&fname) {
                     continue;
                 }
                 let reg = lx.alloc_a();
@@ -839,7 +846,7 @@ pub fn lower(
         }
         let globals = lx.float_globals.clone();
         for fname in globals {
-            if lx.locals_f.keys().any(|k| k.eq_ignore_ascii_case(&fname)) {
+            if lx.locals_f.keys().any(|k| k.eq_ignore_ascii_case(&fname)) || !mentions(&fname) {
                 continue;
             }
             let reg = lx.alloc_f();
@@ -850,7 +857,7 @@ pub fn lower(
         }
         if let Some(fields) = lx.int_fields.get("_").cloned() {
             for fname in fields.into_keys() {
-                if lx.locals.keys().any(|k| k.eq_ignore_ascii_case(&fname)) {
+                if lx.locals.keys().any(|k| k.eq_ignore_ascii_case(&fname)) || !mentions(&fname) {
                     continue;
                 }
                 let reg = lx.alloc();
@@ -874,7 +881,7 @@ pub fn lower(
         // Global arrays live on struct `_` (`playeringame`, `players`, …).
         if let Some(fields) = lx.array_fields.get("_").cloned() {
             for (fname, _slot, string_elem) in fields {
-                if lx.locals_a.keys().any(|k| k.eq_ignore_ascii_case(&fname)) {
+                if lx.locals_a.keys().any(|k| k.eq_ignore_ascii_case(&fname)) || !mentions(&fname) {
                     continue;
                 }
                 let ar = lx.alloc_a();

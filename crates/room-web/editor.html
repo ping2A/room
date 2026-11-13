@@ -6,23 +6,23 @@
   <title>Room Editor</title>
   <link rel="stylesheet" href="./editor.css" />
 </head>
-<body>
+<body class="editor-start">
   <header id="toolbar">
-    <div class="brand">ROOM<span>editor</span></div>
+    <div class="brand">ROOM<span>editor</span><span id="editor-game-mode" class="game-mode" hidden></span></div>
     <div class="group">
-      <label class="btn" title="Replace the base game: Doom / Freedoom IWAD (.wad) or a PK3 / ZIP.">
-        IWAD…<input id="file-iwad" type="file" accept=".wad,.iwad,.pk3,.pk7,.zip,.ipk3,.ipk7,application/octet-stream,application/zip" hidden />
+      <label class="btn" title="Open a Doom WAD (IWAD or standalone PWAD), Duke Nukem 3D GRP, or PK3 / ZIP as the working base.">
+        Game…<input id="file-iwad" type="file" accept=".wad,.iwad,.grp,.pk3,.pk7,.zip,.ipk3,.ipk7,application/octet-stream,application/zip" hidden />
       </label>
-      <span id="iwad-label" class="iwad-label" title="Base IWAD">—</span>
-      <label class="btn" title="Add PWADs, PK3s, PK7s, or ZIPs on top of the base archive (or drop files anywhere)">
-        Open…<input id="file-open" type="file" accept=".wad,.pk3,.pk7,.zip,.ipk3,.ipk7,.pwad,.zs,.zc,.zsc,.txt,application/zip" multiple hidden />
+      <span id="iwad-label" class="iwad-label" title="Base game archive">—</span>
+      <label class="btn" title="Add PWADs, Duke Build .MAP files, PK3s, PK7s, or ZIPs on top of the base archive (or drop files anywhere)">
+        Open…<input id="file-open" type="file" accept=".wad,.grp,.map,.pk3,.pk7,.zip,.ipk3,.ipk7,.pwad,.zs,.zc,.zsc,.txt,application/zip" multiple hidden />
       </label>
-      <label id="btn-open-pk3" class="btn go" title="Import a PK3 / PK7 / ZIP / IPK3 as the working archive: browse its files, edit its ZScript, open its maps, then Export PK3. Works with or without an IWAD open (or drop the file anywhere).">
+      <label id="btn-open-pk3" class="btn go" title="Import a PK3 / PK7 / ZIP / IPK3 as the working archive: browse its files, edit its ZScript, open its maps, then Export PK3. Works with or without a game archive open (or drop the file anywhere).">
         📦 Open PK3…<input id="file-pk3" type="file" accept=".pk3,.pk7,.zip,.ipk3,.ipk7,application/zip,application/x-7z-compressed" multiple hidden />
       </label>
-      <select id="map-select" title="Map"></select>
+      <select id="map-select" title="Map" disabled><option value="">Choose map…</option></select>
       <button id="btn-new-map" class="btn" title="New map">New map</button>
-      <button id="btn-export" class="btn primary" title="Download every change as a PWAD (Ctrl+S)">Export WAD</button>
+      <button id="btn-export" class="btn primary" title="Download edited maps and resources (Ctrl+S)">Export WAD</button>
       <button id="btn-export-pk3" class="btn" title="Download the opened PK3 (or a new one) with every change: edited files, lumps, maps as maps/*.wad">Export PK3</button>
     </div>
     <div class="group">
@@ -45,6 +45,7 @@
       </label>
       <label title="Snap to grid (G)"><input id="snap" type="checkbox" checked /> Snap</label>
       <label title="Fill sectors with their floor flat"><input id="textured" type="checkbox" checked /> Flats</label>
+      <label id="duke-floor-toggle" title="Show each sector's floor height and ART tile on the map" hidden><input id="duke-floors" type="checkbox" checked /> Floors</label>
     </div>
     <div class="group">
       <button id="btn-copy" class="btn icon" title="Copy selection (Ctrl+C) · Ctrl+X cut · Ctrl+D duplicate">⧉</button>
@@ -59,7 +60,7 @@
         <option value="1">ITYTD</option><option value="2">HNTR</option>
         <option value="3" selected>HMP</option><option value="4">UV</option><option value="5">NM</option>
       </select>
-      <button id="btn-play" class="btn go" title="Play from the player start (F5)">▶ Play</button>
+      <button id="btn-play" class="btn go" title="Play the selected map in its native runtime (F5)">▶ Play</button>
       <button id="btn-play-here" class="btn go" title="Play from the 3D camera (F6)">▶ Here</button>
       <button id="btn-stop" class="btn" title="Back to the fly camera (F7)" disabled>■ Edit</button>
       <button id="btn-mute" class="btn icon" title="Mute game sound and music">🔊</button>
@@ -78,9 +79,32 @@
   </header>
 
   <main id="workspace">
+    <div id="editor-loading" class="editor-loading" role="status" aria-live="polite" aria-atomic="true" hidden>
+      <div class="editor-loading-card">
+        <span class="editor-loading-spinner" aria-hidden="true"></span>
+        <strong id="editor-loading-title">Loading file…</strong>
+        <span id="editor-loading-detail" class="muted"></span>
+      </div>
+    </div>
+    <section id="editor-start" aria-labelledby="editor-start-title">
+      <div class="editor-start-card">
+        <p class="editor-start-kicker">ROOM MAP EDITOR</p>
+        <h1 id="editor-start-title">Choose a game to edit</h1>
+        <p class="muted">Nothing is loaded yet. Open a Doom IWAD or a Duke Nukem 3D GRP to start the matching map editor.</p>
+        <div class="editor-start-options">
+          <button id="start-open-doom" type="button" class="btn primary">
+            <strong>Doom</strong><span>Open a Doom WAD (IWAD or standalone PWAD)</span>
+          </button>
+          <button id="start-open-duke" type="button" class="btn duke-start">
+            <strong>Duke Nukem 3D</strong><span>Open DUKE3D.GRP</span>
+          </button>
+        </div>
+        <button id="start-open-pk3" type="button" class="btn ghost">Open a PK3 / map pack</button>
+      </div>
+    </section>
     <aside id="browser">
       <nav class="tabs" id="browser-tabs">
-        <button data-tab="iwad" title="Loaded IWAD / game details">IWAD</button>
+        <button data-tab="iwad" title="Loaded game archive details">Game</button>
         <button data-tab="maps" class="active">Maps</button>
         <button data-tab="things">Things</button>
         <button data-tab="textures">Textures</button>

@@ -141,6 +141,10 @@ struct Editor {
     iwad: (String, Bytes),
     /// Duke Nukem 3D: the GRP and the user `.MAP` files converted with it.
     duke: Option<DukeSource>,
+    /// Native Build maps edited from the editor, keyed by their GRP filename.
+    duke_map_edits: BTreeMap<String, Vec<u8>>,
+    /// Native ART archives changed by the Duke tile painter.
+    duke_art_edits: BTreeMap<String, Vec<u8>>,
     pwads: Vec<(String, Bytes)>,
     /// Edited lumps: namespace (`global` / `flats` / `sprites` / `patches`) → name → bytes.
     overrides: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
@@ -287,6 +291,154 @@ fn duke_base(
     Ok((format!("{name}.wad"), Bytes::from(out.wad)))
 }
 
+fn duke_map_file(ed: &Editor, map_name: &str) -> Result<String, String> {
+    let Some((_, grp_bytes, maps)) = ed.duke.as_ref() else {
+        return Err("Duke GRP is not open".to_owned());
+    };
+    let name = map_name.to_ascii_uppercase();
+    if let Some((file, _)) = maps
+        .iter()
+        .find(|(file, _)| room_build::export::doom_map_name(file).as_deref() == Some(&name))
+    {
+        return Ok(file.clone());
+    }
+    if let Some((file, _)) = ed
+        .duke_map_edits
+        .iter()
+        .find(|(file, _)| room_build::export::doom_map_name(file).as_deref() == Some(&name))
+    {
+        return Ok(file.clone());
+    }
+    let grp = room_build::Grp::parse(grp_bytes).map_err(|e| e.to_string())?;
+    grp.names()
+        .find(|file| {
+            file.ends_with(".MAP")
+                && room_build::export::doom_map_name(file).as_deref() == Some(&name)
+        })
+        .map(str::to_owned)
+        .ok_or_else(|| format!("Duke map not found: {map_name}"))
+}
+
+fn duke_map_source(ed: &Editor, file: &str) -> Result<Vec<u8>, String> {
+    if let Some(bytes) = ed.duke_map_edits.get(file) {
+        return Ok(bytes.clone());
+    }
+    if let Some((_, _, maps)) = ed.duke.as_ref()
+        && let Some((_, bytes)) = maps.iter().find(|(n, _)| n.eq_ignore_ascii_case(file))
+    {
+        return Ok(bytes.clone());
+    }
+    let Some((_, grp_bytes, _)) = ed.duke.as_ref() else {
+        return Err("Duke GRP is not open".to_owned());
+    };
+    room_build::Grp::parse(grp_bytes)
+        .map_err(|e| e.to_string())?
+        .get(file)
+        .map(<[u8]>::to_vec)
+        .ok_or_else(|| format!("Duke map not found in GRP: {file}"))
+}
+
+fn validate_duke_map_editor(map: &room_build::BuildMap) -> Result<(), String> {
+    if map.start_sector < 0
+        || usize::try_from(map.start_sector).unwrap_or(usize::MAX) >= map.sectors.len()
+    {
+        return Err("player start sector is outside the sector table".to_owned());
+    }
+    for (index, sector) in map.sectors.iter().enumerate() {
+        let start = usize::try_from(sector.wallptr)
+            .map_err(|_| format!("sector {index} has a negative wallptr"))?;
+        let count = usize::try_from(sector.wallnum)
+            .map_err(|_| format!("sector {index} has a negative wallnum"))?;
+        if start
+            .checked_add(count)
+            .is_none_or(|end| end > map.walls.len())
+        {
+            return Err(format!(
+                "sector {index} wall range is outside the wall table"
+            ));
+        }
+    }
+    for (index, wall) in map.walls.iter().enumerate() {
+        if wall.point2 < 0 || usize::try_from(wall.point2).unwrap_or(usize::MAX) >= map.walls.len()
+        {
+            return Err(format!("wall {index} point2 is outside the wall table"));
+        }
+        if wall.nextwall < -1
+            || (wall.nextwall >= 0
+                && usize::try_from(wall.nextwall).unwrap_or(usize::MAX) >= map.walls.len())
+        {
+            return Err(format!("wall {index} nextwall is outside the wall table"));
+        }
+        if wall.nextsector < -1
+            || (wall.nextsector >= 0
+                && usize::try_from(wall.nextsector).unwrap_or(usize::MAX) >= map.sectors.len())
+        {
+            return Err(format!(
+                "wall {index} nextsector is outside the sector table"
+            ));
+        }
+    }
+    for (index, sprite) in map.sprites.iter().enumerate() {
+        if sprite.sectnum < 0
+            || usize::try_from(sprite.sectnum).unwrap_or(usize::MAX) >= map.sectors.len()
+        {
+            return Err(format!("sprite {index} sector is outside the sector table"));
+        }
+    }
+    Ok(())
+}
+
+fn encode_duke_grp(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, String> {
+    if files.len() > u32::MAX as usize {
+        return Err("too many files for a Duke GRP".to_owned());
+    }
+    let mut out = b"KenSilverman".to_vec();
+    out.extend_from_slice(&(files.len() as u32).to_le_bytes());
+    for (name, bytes) in files {
+        if name.len() > 12 || bytes.len() > u32::MAX as usize {
+            return Err(format!("GRP entry cannot be represented: {name}"));
+        }
+        let mut entry = [0; 12];
+        entry[..name.len()].copy_from_slice(name.as_bytes());
+        out.extend_from_slice(&entry);
+        out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    }
+    for bytes in files.values() {
+        out.extend_from_slice(bytes);
+    }
+    Ok(out)
+}
+
+fn build_duke_grp(ed: &Editor) -> Result<Vec<u8>, String> {
+    let Some((_, grp_bytes, _)) = ed.duke.as_ref() else {
+        return Err("Duke GRP is not open".to_owned());
+    };
+    let source = room_build::Grp::parse(grp_bytes).map_err(|e| e.to_string())?;
+    let mut files = BTreeMap::<String, Vec<u8>>::new();
+    for name in source.names() {
+        let bytes = source
+            .get(name)
+            .ok_or_else(|| format!("invalid GRP entry: {name}"))?;
+        files.insert(name.to_owned(), bytes.to_vec());
+    }
+    if let Some((_, _, maps)) = ed.duke.as_ref() {
+        for (name, bytes) in maps {
+            files.insert(name.to_ascii_uppercase(), bytes.clone());
+        }
+    }
+    for (file, bytes) in &ed.duke_map_edits {
+        files.insert(file.to_ascii_uppercase(), bytes.clone());
+    }
+    for (file, bytes) in &ed.duke_art_edits {
+        files.insert(file.to_ascii_uppercase(), bytes.clone());
+    }
+    encode_duke_grp(&files)
+}
+
+fn build_duke_overlay_grp(ed: &Editor) -> Result<Vec<u8>, String> {
+    encode_duke_grp(&ed.duke_art_edits)
+}
+
 impl Editor {
     fn new(iwad: (String, Bytes)) -> Result<Self, String> {
         let (iwad, duke) = if room_build::is_grp(&iwad.1) {
@@ -312,6 +464,8 @@ impl Editor {
         Ok(Self {
             iwad,
             duke,
+            duke_map_edits: BTreeMap::new(),
+            duke_art_edits: BTreeMap::new(),
             pwads: Vec::new(),
             overrides,
             paths: BTreeMap::new(),
@@ -1021,10 +1175,53 @@ pub fn room_editor_preview_lump(id: u32) -> Result<JsValue, JsValue> {
     })
 }
 
+fn duke_tile_preview(ed: &Editor, tile_num: u16) -> Option<(u32, u32, Vec<u8>)> {
+    let (_, grp_bytes, _) = ed.duke.as_ref()?;
+    let grp = room_build::Grp::parse(grp_bytes).ok()?;
+    for file in grp
+        .names()
+        .filter(|n| n.starts_with("TILES") && n.ends_with(".ART"))
+    {
+        let Some(art) = ed
+            .duke_art_edits
+            .get(file)
+            .map(Vec::as_slice)
+            .or_else(|| grp.get(file))
+        else {
+            continue;
+        };
+        let mut tiles = room_build::TileSet::new();
+        if tiles.add_art(art).is_err() {
+            continue;
+        }
+        let Some(tile) = tiles.get(i32::from(tile_num)) else {
+            continue;
+        };
+        let indices = tile.row_major();
+        let alpha: Vec<u8> = indices
+            .iter()
+            .map(|&pixel| u8::from(pixel != room_build::art::TRANSPARENT) * 255)
+            .collect();
+        let patch =
+            room_formats::encode_patch(tile.width, tile.height, 0, 0, &indices, &alpha).ok()?;
+        return lump_preview_rgba(&patch, ed.materials.playpal()).map(|(w, h, rgba)| (w, h, rgba));
+    }
+    None
+}
+
 /// Texture / flat / sprite / patch picture by name: `{w, h, rgba}` or `null`.
 #[wasm_bindgen(js_name = roomEditorPreview)]
 pub fn room_editor_preview(name: &str) -> Result<JsValue, JsValue> {
     with_editor(|ed| {
+        let upper = name.to_ascii_uppercase();
+        if ed.duke.is_some()
+            && let Some(tile_num) = upper
+                .strip_prefix("BT")
+                .and_then(|number| number.parse::<u16>().ok())
+            && let Some((w, h, rgba)) = duke_tile_preview(ed, tile_num)
+        {
+            return Ok(rgba_js(w, h, &rgba));
+        }
         if let Some((w, h, px)) = ed.materials.preview_rgba(&ed.vfs, name) {
             return Ok(rgba_js(w, h, &px));
         }
@@ -1166,6 +1363,306 @@ pub fn room_editor_load_map(name: &str) -> Result<String, JsValue> {
     })
 }
 
+/// Load a native Build map document for the Duke editor.
+#[wasm_bindgen(js_name = roomEditorDukeMapGet)]
+pub fn room_editor_duke_map_get(name: &str) -> Result<String, JsValue> {
+    with_editor(|ed| {
+        let file = duke_map_file(ed, name)?;
+        let bytes = duke_map_source(ed, &file)?;
+        let map = room_build::parse_map(&bytes).map_err(|e| e.to_string())?;
+        serde_json::to_string(&json!({ "file": file, "map": map })).map_err(|e| e.to_string())
+    })
+}
+
+/// Store an edited native Build map and return its version 7/8 bytes.
+#[wasm_bindgen(js_name = roomEditorDukeMapPut)]
+pub fn room_editor_duke_map_put(name: &str, document: &str) -> Result<Vec<u8>, JsValue> {
+    with_editor(|ed| {
+        let file = duke_map_file(ed, name)?;
+        let map: room_build::BuildMap =
+            serde_json::from_str(document).map_err(|e| e.to_string())?;
+        validate_duke_map_editor(&map)?;
+        if map.sectors.len() > u16::MAX as usize
+            || map.walls.len() > u16::MAX as usize
+            || map.sprites.len() > u16::MAX as usize
+        {
+            return Err("Build map exceeds the v7/v8 record limits".to_owned());
+        }
+        let bytes = map.to_bytes();
+        room_build::parse_map(&bytes).map_err(|e| e.to_string())?;
+        ed.duke_map_edits.insert(file, bytes.clone());
+        Ok(bytes)
+    })
+}
+
+/// Create a small editable Build map and mount it in the working Duke GRP.
+#[wasm_bindgen(js_name = roomEditorDukeMapCreate)]
+pub fn room_editor_duke_map_create(name: &str) -> Result<String, JsValue> {
+    let trimmed = name.trim();
+    let stem = trimmed
+        .rsplit_once('.')
+        .filter(|(_, extension)| extension.eq_ignore_ascii_case("MAP"))
+        .map_or(trimmed, |(stem, _)| stem)
+        .to_ascii_uppercase();
+    if stem.is_empty()
+        || stem.len() > 8
+        || !stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return Err(JsValue::from_str(
+            "Build map names must be 1–8 letters, digits, or underscores",
+        ));
+    }
+    with_editor(|ed| {
+        let Some((grp_name, grp_bytes, maps)) = ed.duke.as_ref() else {
+            return Err("Duke GRP is not open".to_owned());
+        };
+        let file = format!("{stem}.MAP");
+        if maps
+            .iter()
+            .any(|(existing, _)| existing.eq_ignore_ascii_case(&file))
+            || ed
+                .duke_map_edits
+                .keys()
+                .any(|existing| existing.eq_ignore_ascii_case(&file))
+        {
+            return Err(format!("Duke map already exists: {file}"));
+        }
+        let grp = room_build::Grp::parse(grp_bytes).map_err(|e| e.to_string())?;
+        if grp
+            .names()
+            .any(|existing| existing.eq_ignore_ascii_case(&file))
+        {
+            return Err(format!("Duke map already exists in the GRP: {file}"));
+        }
+        let name = grp_name.clone();
+        let map = room_build::BuildMap {
+            version: 7,
+            start: [0, 0, 0],
+            start_ang: 0,
+            start_sector: 0,
+            sectors: vec![room_build::Sector {
+                wallptr: 0,
+                wallnum: 4,
+                ceilingz: -16_384,
+                floorz: 16_384,
+                ceilingpicnum: 1,
+                floorpicnum: 1,
+                extra: -1,
+                ..Default::default()
+            }],
+            walls: vec![
+                room_build::Wall {
+                    x: -2048,
+                    y: -2048,
+                    point2: 1,
+                    nextwall: -1,
+                    nextsector: -1,
+                    picnum: 1,
+                    xrepeat: 8,
+                    yrepeat: 8,
+                    extra: -1,
+                    ..Default::default()
+                },
+                room_build::Wall {
+                    x: 2048,
+                    y: -2048,
+                    point2: 2,
+                    nextwall: -1,
+                    nextsector: -1,
+                    picnum: 1,
+                    xrepeat: 8,
+                    yrepeat: 8,
+                    extra: -1,
+                    ..Default::default()
+                },
+                room_build::Wall {
+                    x: 2048,
+                    y: 2048,
+                    point2: 3,
+                    nextwall: -1,
+                    nextsector: -1,
+                    picnum: 1,
+                    xrepeat: 8,
+                    yrepeat: 8,
+                    extra: -1,
+                    ..Default::default()
+                },
+                room_build::Wall {
+                    x: -2048,
+                    y: 2048,
+                    point2: 0,
+                    nextwall: -1,
+                    nextsector: -1,
+                    picnum: 1,
+                    xrepeat: 8,
+                    yrepeat: 8,
+                    extra: -1,
+                    ..Default::default()
+                },
+            ],
+            sprites: Vec::new(),
+        };
+        let bytes = map.to_bytes();
+        ed.duke_map_edits.insert(file, bytes);
+        let grp = build_duke_grp(ed)?;
+        ed.iwad = duke_base(&name, &grp, &[])?;
+        ed.rebuild()?;
+        Ok(ed.summary().to_string())
+    })
+}
+
+/// List native Build ART tiles that contain pixel data.
+#[wasm_bindgen(js_name = roomEditorDukeTiles)]
+pub fn room_editor_duke_tiles() -> Result<String, JsValue> {
+    with_editor(|ed| {
+        let Some((_, grp_bytes, _)) = ed.duke.as_ref() else {
+            return Err("Duke GRP is not open".to_owned());
+        };
+        let grp = room_build::Grp::parse(grp_bytes).map_err(|e| e.to_string())?;
+        let mut numbers = BTreeSet::new();
+        for file in grp
+            .names()
+            .filter(|n| n.starts_with("TILES") && n.ends_with(".ART"))
+        {
+            let art = ed
+                .duke_art_edits
+                .get(file)
+                .map(Vec::as_slice)
+                .or_else(|| grp.get(file));
+            let Some(art) = art else { continue };
+            let mut tiles = room_build::TileSet::new();
+            if tiles.add_art(art).is_ok() {
+                numbers.extend(tiles.tile_numbers());
+            }
+        }
+        let names: Vec<String> = numbers
+            .into_iter()
+            .map(|number| format!("BT{number:04}"))
+            .collect();
+        serde_json::to_string(&names).map_err(|e| e.to_string())
+    })
+}
+
+/// Return the native Build ART tile as palette indices and transparency.
+#[wasm_bindgen(js_name = roomEditorDukeTileGet)]
+pub fn room_editor_duke_tile_get(tile_num: u16) -> Result<JsValue, JsValue> {
+    with_editor(|ed| {
+        let Some((_, grp_bytes, _)) = ed.duke.as_ref() else {
+            return Err("Duke GRP is not open".to_owned());
+        };
+        let grp = room_build::Grp::parse(grp_bytes).map_err(|e| e.to_string())?;
+        for file in grp
+            .names()
+            .filter(|n| n.starts_with("TILES") && n.ends_with(".ART"))
+        {
+            let art = ed
+                .duke_art_edits
+                .get(file)
+                .map(Vec::as_slice)
+                .or_else(|| grp.get(file));
+            let Some(art) = art else { continue };
+            let mut tiles = room_build::TileSet::new();
+            tiles.add_art(art).map_err(|e| e.to_string())?;
+            if let Some(tile) = tiles.get(i32::from(tile_num)) {
+                let row_major = tile.row_major();
+                let alpha: Vec<u8> = row_major
+                    .iter()
+                    .map(|&index| {
+                        if index == room_build::art::TRANSPARENT {
+                            0
+                        } else {
+                            255
+                        }
+                    })
+                    .collect();
+                let value = json!({
+                    "file": file,
+                    "w": tile.width,
+                    "h": tile.height,
+                    "indices": row_major,
+                    "alpha": alpha,
+                    "picanm": tile.picanm,
+                });
+                return js_sys::JSON::parse(&value.to_string())
+                    .map_err(|_| "failed to serialize Duke ART tile metadata".to_owned());
+            }
+        }
+        Err(format!("Duke ART tile {tile_num} is not present"))
+    })
+}
+
+/// Update a native Build ART tile from row-major palette indices.
+#[wasm_bindgen(js_name = roomEditorDukeTilePut)]
+pub fn room_editor_duke_tile_put(
+    tile_num: u16,
+    width: u16,
+    height: u16,
+    indices: &[u8],
+    alpha: &[u8],
+) -> Result<(), JsValue> {
+    with_editor(|ed| {
+        if width == 0
+            || height == 0
+            || width > i16::MAX as u16
+            || height > i16::MAX as u16
+            || indices.len() != usize::from(width) * usize::from(height)
+            || alpha.len() != indices.len()
+        {
+            return Err("invalid Duke tile dimensions or pixel data".to_owned());
+        }
+        let Some((_, grp_bytes, _)) = ed.duke.as_ref() else {
+            return Err("Duke GRP is not open".to_owned());
+        };
+        let grp = room_build::Grp::parse(grp_bytes).map_err(|e| e.to_string())?;
+        for file in grp
+            .names()
+            .filter(|n| n.starts_with("TILES") && n.ends_with(".ART"))
+        {
+            let art = ed
+                .duke_art_edits
+                .get(file)
+                .map(Vec::as_slice)
+                .or_else(|| grp.get(file));
+            let Some(art) = art else { continue };
+            let mut tiles = room_build::TileSet::new();
+            tiles.add_art(art).map_err(|e| e.to_string())?;
+            if tiles.get(i32::from(tile_num)).is_some() {
+                let mut pixels = indices.to_vec();
+                for (pixel, &a) in pixels.iter_mut().zip(alpha) {
+                    if a == 0 {
+                        *pixel = room_build::art::TRANSPARENT;
+                    } else if *pixel == room_build::art::TRANSPARENT {
+                        *pixel = room_build::art::TRANSPARENT - 1;
+                    }
+                }
+                let updated = room_build::art::replace_tile(art, tile_num, width, height, &pixels)
+                    .map_err(|e| e.to_string())?;
+                ed.duke_art_edits.insert(file.to_owned(), updated);
+                return Ok(());
+            }
+        }
+        Err(format!("Duke ART tile {tile_num} is not present"))
+    })
+}
+
+/// Build a complete native Duke GRP containing native map and ART edits.
+#[wasm_bindgen(js_name = roomEditorDukeExport)]
+pub fn room_editor_duke_export() -> Result<Vec<u8>, JsValue> {
+    with_editor(|ed| build_duke_grp(ed))
+}
+
+/// Build a compact GRP overlay containing only ART changes for play-testing.
+#[wasm_bindgen(js_name = roomEditorDukeTestOverlay)]
+pub fn room_editor_duke_test_overlay() -> Result<Vec<u8>, JsValue> {
+    with_editor(|ed| build_duke_overlay_grp(ed))
+}
+
+/// Start the current Build map in the native Duke runtime.
+#[wasm_bindgen(js_name = roomEditorDukePlay)]
+pub fn room_editor_duke_play(grp: &[u8], map: &[u8], skill: u8) -> Result<(), JsValue> {
+    super::start_native_duke_map_for_editor(grp, map, skill)
+}
+
 /// Brand-new empty map document (`format`: `doom` / `hexen` / `udmf`).
 #[wasm_bindgen(js_name = roomEditorNewMap)]
 pub fn room_editor_new_map(name: &str, format: &str) -> Result<String, JsValue> {
@@ -1232,7 +1729,7 @@ pub fn room_editor_update_map(json: &str) -> Result<String, JsValue> {
 #[wasm_bindgen(js_name = roomEditorPlay)]
 pub fn room_editor_play(mode: &str) -> Result<(), JsValue> {
     let geom = with_editor(|ed| ed.geom.clone().ok_or_else(|| "no map loaded".to_owned()))?;
-    with_play(|play| -> Result<(), String> {
+    let changed = with_play(|play| -> Result<(), String> {
         match mode {
             "edit" => {
                 let cam = play.current_eye();
@@ -1248,18 +1745,21 @@ pub fn room_editor_play(mode: &str) -> Result<(), JsValue> {
                     )
                 });
                 play.set_edit_cam(None);
-                play.restart_level(geom, at)?;
+                play.restart_level(geom.clone(), at)?;
             }
             _ => {
                 play.set_edit_cam(None);
-                play.restart_level(geom, None)?;
+                play.restart_level(geom.clone(), None)?;
             }
         }
         play.ensure_audio();
         Ok(())
-    })
-    .ok_or_else(|| JsValue::from_str("no session"))?
-    .map_err(err)
+    });
+    match changed {
+        Some(result) => result.map_err(err),
+        None if mode == "edit" => with_editor(|ed| start_session(ed, geom, None)),
+        None => Err(JsValue::from_str("no session")),
+    }
 }
 
 /// Fly-camera mouse look (pixels).

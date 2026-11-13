@@ -204,6 +204,25 @@ game_fns! {
     PlayerName = "player_name"(I32, I32, I32) -> I32;
     /// `actor_hit_info(ActorRef, out_ptr) -> kind` — writes 6×f64 (pos xyz, normal xyz).
     ActorHitInfo = "actor_hit_info"(I64, I32) -> I32;
+    /// `script_arg_count() -> n` — arguments of the running static call
+    /// (ACS `ScriptCall`, `docs/39` §2; 0 outside one).
+    ScriptArgCount = "script_arg_count"() -> I32;
+    /// `script_arg_i32(i) -> v` — integer value of argument `i` (a string
+    /// argument reads as its ACS string handle; 0 when out of range).
+    ScriptArgI32 = "script_arg_i32"(I32) -> I32;
+    /// `script_arg_str(i, buf, cap) -> len` — text of string argument `i`
+    /// (-1 when it is not a string).
+    ScriptArgStr = "script_arg_str"(I32, I32, I32) -> I32;
+    /// `script_return_str(ptr, len)` — make the running static call return a
+    /// string (ACS receives a string handle) instead of its integer result.
+    ScriptReturnStr = "script_return_str"(I32, I32);
+    /// `player_gender(PlayerRef) -> 0 male, 1 female, 2 neutral, 3 other`.
+    PlayerGender = "player_gender"(I32) -> I32;
+    /// `player_cvar_i32(PlayerRef, name ptr, len) -> v` — the player's user
+    /// CVar, else the global CVar of that name, else 0.
+    PlayerCvarI32 = "player_cvar_i32"(I32, I32, I32) -> I32;
+    /// `actor_set_sound_class(ActorRef, name ptr, len)` (play; `SoundClass`).
+    ActorSetSoundClass = "actor_set_sound_class"(I64, I32, I32);
 }
 
 pub use room_script_abi::game::{
@@ -342,8 +361,9 @@ mod tests {
         );
         assert_eq!(GameFn::ActorSpawn.result(), Some(ValKind::I64));
         assert_eq!(GameFn::ActorDestroy.result(), None);
-        assert_eq!(GameFn::ALL.len(), 69);
-        assert_eq!(GameFn::ALL[GameFn::ALL.len() - 1], GameFn::ActorHitInfo);
+        assert_eq!(GameFn::ALL.len(), 76);
+        assert_eq!(GameFn::ALL[68], GameFn::ActorHitInfo);
+        assert_eq!(GameFn::ALL[GameFn::ALL.len() - 1], GameFn::ActorSetSoundClass);
         assert_eq!(
             GameFn::HudWidgetSet.params(),
             &[ValKind::I32, ValKind::I32, ValKind::I32, ValKind::I32]

@@ -6,8 +6,8 @@ import { install as installTools, HEXEN_LINE_SPECIALS } from "./editor-tools.js"
 import { install as installPaint, paintNs } from "./editor-paint.js";
 import { install as installScripts, highlight, textLang, includesOf, zscriptClosure } from "./editor-scripts.js";
 
-/** Flip to `true` to re-expose Duke Nukem 3D GRP / .MAP UI (code paths kept). */
-const ROOM_UI_SHOW_DUKE = false;
+/** Keep the native Duke editor separate from the Doom map/resource browser. */
+const ROOM_UI_SHOW_DUKE = true;
 const isDukeGrpBytes = (buf) =>
   buf && buf.length >= 12 && String.fromCharCode(...buf.slice(0, 12)) === "KenSilverman";
 
@@ -100,6 +100,16 @@ const CAT_ORDER = ["player", "monster", "weapon", "pickup", "obstacle", "decorat
 const S = {
   mod: null,
   summary: null,
+  dukeGrp: null,
+  dukeMap: null,
+  dukeMapBytes: null,
+  dukeMapFile: null,
+  dukeSelection: null,
+  dukeUndo: [],
+  dukeRedo: [],
+  dukePersistBefore: null,
+  dukeDragging: null,
+  dukeTesting: false,
   thingInfo: new Map(),
   doc: null,
   docs: {},
@@ -111,6 +121,7 @@ const S = {
   grid: 32,
   snap: true,
   textured: true,
+  dukeFloors: true,
   undo: [],
   redo: [],
   thingType: 3004,
@@ -152,6 +163,26 @@ function syncPill(kind, text) {
 }
 const errText = (e) => (typeof e === "string" ? e : e?.message || String(e));
 
+let editorLoadingDepth = 0;
+async function withEditorLoading(title, detail, work) {
+  const overlay = $("#editor-loading");
+  editorLoadingDepth++;
+  $("#editor-loading-title").textContent = title;
+  $("#editor-loading-detail").textContent = detail || "";
+  overlay.hidden = false;
+  try {
+    // Let the browser paint the overlay before synchronous archive parsing starts.
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return await work();
+  } catch (e) {
+    console.error("editor: file loading", e);
+    toast(`Loading failed: ${errText(e)}`, true);
+  } finally {
+    editorLoadingDepth--;
+    if (editorLoadingDepth === 0) overlay.hidden = true;
+  }
+}
+
 async function boot() {
   const ready = new Promise((res) => {
     window.addEventListener("room-ready", res, { once: true });
@@ -170,7 +201,7 @@ async function boot() {
       .then((b) => { if (b && b.byteLength > 64) mod.roomSetSoundfont(new Uint8Array(b)); })
       .catch(() => {});
   }
-  const urls = [params.get("iwad"), ...DEFAULT_IWADS].filter(Boolean);
+  const urls = [params.get("iwad")].filter(Boolean);
   for (const url of urls) {
     try {
       const res = await fetch(url, { cache: "no-cache" });
@@ -184,19 +215,28 @@ async function boot() {
         if (r2.ok) addPwad(new Uint8Array(await r2.arrayBuffer()), pwad.split("/").pop());
       }
       const want = params.get("map");
-      const maps = S.summary.maps;
-      const first = (want && maps.includes(want.toUpperCase()) && want.toUpperCase())
-        || maps.find((m) => m === "E1M1" || m === "MAP01") || maps[0];
-      if (first) loadMap(first);
+      if (want) {
+        const requested = engineMapName(want.toUpperCase());
+        if (S.summary.maps.includes(requested)) loadMap(requested);
+      }
       return;
     } catch (e) {
       console.warn("editor: autoload", url, e);
     }
   }
   setIwadLabel("");
-  status(ROOM_UI_SHOW_DUKE
-    ? "Choose IWAD…, 📦 Open PK3… (or drop a Doom / Freedoom / Duke file or a PK3) to start editing"
-    : "Choose IWAD…, 📦 Open PK3… (or drop a Doom / Freedoom WAD or a PK3) to start editing");
+  document.body.classList.add("editor-start");
+  status("Choose Doom or Duke Nukem 3D to start the matching map editor");
+}
+
+function displayMapName(name) {
+  if (!S.summary?.duke) return name;
+  return String(name).replace(/^E(\d+)M(\d+)$/i, "E$1L$2");
+}
+
+function engineMapName(name) {
+  if (!S.summary?.duke) return name;
+  return String(name).replace(/^E(\d+)L(\d+)$/i, "E$1M$2");
 }
 
 function setSummary(json) {
@@ -205,13 +245,78 @@ function setSummary(json) {
   S.thingInfo = new Map(S.summary.things.map((t) => [t.num, t]));
   const sel = $("#map-select");
   const cur = S.doc?.name;
-  sel.replaceChildren(...S.summary.maps.map((m) => el("option", { value: m, selected: m === cur }, m)));
+  const mapOptions = [el("option", { value: "", selected: !cur }, "Choose map…")];
+  mapOptions.push(...S.summary.maps.map((m) => el("option", { value: m, selected: m === cur }, displayMapName(m))));
   for (const name of Object.keys(S.docs)) {
-    if (!S.summary.maps.includes(name)) sel.append(el("option", { value: name, selected: name === cur }, `${name} (new)`));
+    if (!S.summary.maps.includes(name)) mapOptions.push(el("option", { value: name, selected: name === cur }, `${displayMapName(name)} (new)`));
   }
+  sel.replaceChildren(...mapOptions);
+  sel.disabled = !S.summary.maps.length && !Object.keys(S.docs).length;
+  document.body.classList.remove("editor-start");
   if (S.summary.decorateError) toast(`DECORATE: ${S.summary.decorateError}`, true);
   S.actors = null;
+  document.body.classList.toggle("duke-editor", !!S.summary.duke);
+  const modeBadge = $("#editor-game-mode");
+  modeBadge.hidden = false;
+  modeBadge.textContent = S.summary.duke ? "DUKE BUILD MAPS" : "DOOM MAPS";
+  const gameTab = $("#browser-tabs [data-tab=\"iwad\"]");
+  gameTab.textContent = S.summary.duke ? "GRP" : "Game";
+  if (S.summary.duke && !["iwad", "maps", "textures"].includes(S.tab)) S.tab = "maps";
+  for (const tab of document.querySelectorAll("#browser-tabs [data-tab]")) {
+    tab.hidden = !!S.summary.duke && !["iwad", "maps", "textures"].includes(tab.dataset.tab);
+  }
+  if (S.summary.duke) {
+    applyLayout("split");
+    $("#btn-export").textContent = "Export GRP";
+    $("#btn-export").title = "Download a native Duke GRP with Build map and ART tile edits (Ctrl+S)";
+    $("#btn-play").textContent = "▶ Native test";
+    $("#btn-play").title = "Play the selected Build map in the native Duke runtime (F5)";
+    $("#btn-play-here").hidden = true;
+    $("#btn-new-map").hidden = false;
+    $("#btn-new-map").textContent = "New Build map";
+    $("#btn-new-map").title = "Create an editable native Build .MAP in the working Duke GRP";
+    $("#btn-visual").hidden = true;
+    $("#btn-check").hidden = true;
+    $("#btn-composer").hidden = true;
+    $("#btn-export-pk3").hidden = true;
+    $("#btn-open-pk3").hidden = true;
+    document.querySelector(".packs").hidden = true;
+    document.querySelector(".layout").hidden = true;
+    $("#textured").parentElement.hidden = true;
+    $("#duke-floor-toggle").hidden = false;
+    ["#btn-copy", "#btn-paste", "#btn-rotate", "#btn-mirror"].forEach((id) => { $(id).hidden = true; });
+    const labels = { vertices: "Vertices", lines: "Walls", sectors: "Sectors", things: "Sprites", draw: "Draw" };
+    document.querySelectorAll("#modes .btn").forEach((b) => {
+      b.textContent = labels[b.dataset.mode] || b.textContent;
+      b.hidden = false;
+    });
+  } else {
+    $("#btn-export").textContent = "Export WAD";
+    $("#btn-export").title = "Download edited maps and resources as a PWAD (Ctrl+S)";
+    $("#btn-play").textContent = "▶ Play";
+    $("#btn-play").title = "Play from the player start (F5)";
+    $("#btn-play-here").hidden = false;
+    $("#btn-new-map").hidden = false;
+    $("#btn-new-map").textContent = "New map";
+    $("#btn-new-map").title = "New map";
+    $("#btn-visual").hidden = false;
+    $("#btn-check").hidden = false;
+    $("#btn-composer").hidden = false;
+    $("#btn-export-pk3").hidden = false;
+    $("#btn-open-pk3").hidden = false;
+    document.querySelector(".packs").hidden = false;
+    document.querySelector(".layout").hidden = false;
+    $("#textured").parentElement.hidden = false;
+    $("#duke-floor-toggle").hidden = true;
+    ["#btn-copy", "#btn-paste", "#btn-rotate", "#btn-mirror"].forEach((id) => { $(id).hidden = false; });
+    const labels = { vertices: "Vertices", lines: "Lines", sectors: "Sectors", things: "Things", draw: "Draw" };
+    document.querySelectorAll("#modes .btn").forEach((b) => {
+      b.textContent = labels[b.dataset.mode] || b.textContent;
+      b.hidden = false;
+    });
+  }
   syncPacksUi();
+  syncBrowserTab();
   renderBrowser();
 }
 
@@ -220,8 +325,8 @@ function setIwadLabel(name) {
   if (!label) return;
   label.textContent = name || "—";
   label.title = name
-    ? (ROOM_UI_SHOW_DUKE ? `Base IWAD / GRP: ${name} — click for details` : `Base IWAD: ${name} — click for details`)
-    : "No IWAD loaded — use IWAD…";
+    ? `${S.summary?.duke ? "Duke GRP" : "Doom IWAD / archive"}: ${name} — click for details`
+    : "No game archive loaded";
   label.style.cursor = name ? "pointer" : "";
   label.onclick = name ? () => { S.tab = "iwad"; syncBrowserTab(); renderBrowser(); openIwadPage(); } : null;
 }
@@ -236,12 +341,29 @@ function openIwadPage() {
   if (!S.summary) { toast("Open an IWAD first", true); return; }
   const id = "iwad-info";
   const view = buildIwadPage();
-  S.lumpTabs.set(id, { title: "IWAD", view });
+  S.lumpTabs.set(id, { title: S.summary.duke ? "GRP" : "IWAD", view });
   selectDocTab(id);
 }
 
 function buildIwadPage() {
   const sm = S.summary;
+  if (sm.duke) {
+    const wrap = el("div", { class: "iwad-page duke-grp-page" },
+      el("div", { class: "doc-head" },
+        el("h2", { class: "iwad-title" }, "Duke Nukem 3D"),
+        el("span", { class: "kind map" }, "Native Build")),
+      el("p", { class: "iwad-sub" }, sm.duke.grp || "Duke GRP"),
+      el("div", { class: "iwad-grid" },
+        el("div", { class: "iwad-stat" }, el("div", { class: "n" }, sm.maps.length), el("div", { class: "l" }, "Build maps")),
+        el("div", { class: "iwad-stat" }, el("div", { class: "n" }, sm.textures.length), el("div", { class: "l" }, "ART tiles"))),
+      el("fieldset", {}, el("legend", {}, "Native maps"),
+        el("div", { class: "iwad-maps" }, ...sm.maps.map((map) => el("button", {
+          class: "btn small",
+          onclick: () => { S.tab = "maps"; syncBrowserTab(); renderBrowser(); loadMap(map); },
+        }, displayMapName(map))))),
+      el("p", { class: "muted" }, "Duke maps use the Build editor. Doom map formats, flats, actor types and scripts are not shown in this workspace."));
+    return wrap;
+  }
   const det = sm.iwadDetected;
   const wrap = el("div", { class: "iwad-page" });
   wrap.append(
@@ -365,7 +487,7 @@ function buildIwadPage() {
         ...sm.maps.map((m) => el("button", {
           class: `btn small${S.doc?.name === m ? " active" : ""}`,
           onclick: () => loadMapOrDoc(m),
-        }, m)))));
+        }, displayMapName(m))))));
   }
 
   wrap.append(el("div", { class: "actions" },
@@ -376,33 +498,62 @@ function buildIwadPage() {
   return wrap;
 }
 
-const DEFAULT_IWADS = ["doom1.wad", "freedoom1.wad", "freedoom2.wad"];
-
-/** Open the IWAD served next to the editor (?iwad=, doom1.wad, Freedoom); false if none. */
-async function loadDefaultIwad() {
+/** Load only an IWAD explicitly named in the editor URL. */
+async function loadQueryIwad() {
   const params = new URLSearchParams(location.search);
-  for (const url of [params.get("iwad"), ...DEFAULT_IWADS].filter(Boolean)) {
-    try {
-      const res = await fetch(url, { cache: "no-cache" });
-      if (!res.ok) continue;
-      const buf = new Uint8Array(await res.arrayBuffer());
-      if (buf.length >= 12 && !isPk3Bytes(buf) && openIwad(buf, url.split("/").pop())) return true;
-    } catch (_) { /* try the next one */ }
+  const url = params.get("iwad");
+  if (!url) return false;
+  try {
+    const res = await fetch(url, { cache: "no-cache" });
+    if (!res.ok) return false;
+    const buf = new Uint8Array(await res.arrayBuffer());
+    return buf.length >= 12 && !isPk3Bytes(buf) && openIwad(buf, url.split("/").pop());
+  } catch (_) {
+    return false;
   }
-  return false;
 }
 
 function openIwad(bytes, name) {
   try {
-    setSummary(S.mod.roomEditorOpen(bytes, name));
+    if (S.playing) setPlaying(false);
+    const summary = S.mod.roomEditorOpen(bytes, name);
+    S.dukeGrp = isDukeGrpBytes(bytes) ? bytes.slice() : null;
+    S.dukeMap = null;
+    S.dukeMapBytes = null;
+    S.dukeMapFile = null;
+    S.dukeUndo = [];
+    S.dukeRedo = [];
+    S.dukePersistBefore = null;
+    S.dukeDragging = null;
+    S.dukeSelection = null;
+    S.drawPts = [];
+    S.doc = null;
     S.docs = {};
+    S.mode = "sectors";
+    S.sel.clear();
+    S.undo = [];
+    S.redo = [];
+    S.lumpTabs.clear();
+    S.docTab = "map";
+    S.tab = "maps";
+    S.workPk3 = null;
+    S.actorSel = null;
+    S.openDirs.clear();
+    document.body.classList.remove("duke-testing");
+    selectDocTab("map");
+    setSummary(summary);
     setIwadLabel(name);
     // Play-test skills 1–5 run as Duke 1, 1, 2, 3, 4 for a GRP.
     const labels = (ROOM_UI_SHOW_DUKE && S.summary.duke)
       ? ["Cake-", "Cake", "Rock", "Some", "Damn"]
       : ["ITYTD", "HNTR", "HMP", "UV", "NM"];
     [...$("#skill").options].forEach((o, i) => (o.textContent = labels[i]));
-    status(`Opened ${name} — ${S.summary.maps.length} maps, ${S.summary.lumps.length} lumps`);
+    syncModeButtons();
+    renderInspector();
+    render2d();
+    status(S.summary.duke
+      ? `Opened ${name} — choose a Build map from the Maps list`
+      : `Opened ${name} — choose a Doom map from the Maps list`);
     return true;
   } catch (e) {
     toast(`Open failed: ${errText(e)}`, true);
@@ -424,10 +575,10 @@ function isGamePack(name, bytes) {
 
 /**
  * Import a PK3 / PK7 / ZIP / IPK3 as the working archive, with or without a
- * base game open: no base yet → the served IWAD (doom1 / Freedoom) is opened
- * first for textures and palette (an IPK3, or no IWAD available, becomes the
- * base itself); then the pack is mounted on top, its files shown as a tree in
- * the Lumps tab, and its first map opened. Export PK3 rebuilds it.
+ * base game open: an explicitly supplied URL IWAD may provide palette / game
+ * data; otherwise the selected pack becomes the base. The pack is mounted on
+ * top when a base is already open, and its files are shown in the Lumps tab.
+ * Export PK3 rebuilds it.
  */
 async function importPk3Files(files) {
   if (!S.mod) { toast("The engine is still loading — try again in a moment", true); return; }
@@ -437,15 +588,10 @@ async function importPk3Files(files) {
     status(`Importing ${f.name} (${fmtSize(buf.length)})…`);
     let ok;
     let note = "";
-    if (!S.summary && !isGamePack(f.name, buf)) await loadDefaultIwad();
+    if (!S.summary && !isGamePack(f.name, buf)) await loadQueryIwad();
     if (!S.summary) {
       ok = openIwad(buf, f.name);
-      if (ok && !S.summary.iwadDetected && !/\.ipk[37]$/i.test(f.name)) note = `No IWAD found — ${f.name} opened on its own (textures it does not ship will be missing; use IWAD… to add a base game)`;
-      if (ok) {
-        const maps = S.summary.maps;
-        const first = maps.find((m) => m === "E1M1" || m === "MAP01") || maps[0];
-        if (first) loadMap(first);
-      }
+      if (ok && !S.summary.iwadDetected && !/\.ipk[37]$/i.test(f.name)) note = `No IWAD found — ${f.name} opened on its own (textures it does not ship will be missing; use Game… to add a base game)`;
     } else {
       if (S.summary.pwads.includes(f.name)) {
         // Re-import replaces the mounted copy.
@@ -490,27 +636,20 @@ async function openIwadFile(file) {
     // Chosen as the base game: replaces whatever is open.
     status(`Loading ${file.name}…`);
     if (!openIwad(buf, file.name)) return;
-    const maps = S.summary?.maps || [];
-    const first = maps.find((m) => m === "E1M1" || m === "MAP01") || maps[0];
-    if (first) loadMap(first);
     focusArchive(file.name);
     return;
   }
   if (!isGrp && magic4 !== "IWAD" && magic4 !== "PWAD") {
     toast(ROOM_UI_SHOW_DUKE
-      ? "Pick a Doom / Freedoom IWAD (.wad), a PK3, or Duke DUKE3D.GRP"
-      : "Pick a Doom / Freedoom IWAD (.wad) or a PK3", true);
+      ? "Pick a Doom WAD, a PK3, or Duke DUKE3D.GRP"
+      : "Pick a Doom WAD or a PK3", true);
     return;
   }
-  if (magic4 === "PWAD" && !isGrp) {
-    toast("That file is a PWAD — use Open… to mount it on top of an IWAD or PK3", true);
-    return;
-  }
+  // Game… explicitly replaces the working archive, so a user-selected PWAD
+  // is valid as a standalone editor base. Open… mounts it as an add-on when a
+  // base archive is already loaded.
   status(isGrp ? `Converting ${file.name}…` : `Loading ${file.name}…`);
   openIwad(buf, file.name);
-  const maps = S.summary?.maps || [];
-  const first = maps.find((m) => m === "E1M1" || m === "MAP01") || maps[0];
-  if (first) loadMap(first);
 }
 
 /** Archive that may carry VOXELDEF / extra content. */
@@ -590,7 +729,10 @@ function addPwad(bytes, name) {
     syncPacksUi();
     if (ROOM_UI_SHOW_DUKE && /\.map$/i.test(name) && S.summary.duke) {
       const added = S.summary.duke.userMaps.find((m) => !before.has(m)) || S.summary.duke.userMaps.at(-1);
-      if (added) loadMap(added);
+      if (added) {
+        loadMap(added);
+        toast("Native Build .MAP opened · edit geometry and properties, then run a native Duke test");
+      }
       return true;
     }
     // Maps of the pack itself and of its maps/*.wad ("pack.pk3:maps/x.wad").
@@ -618,7 +760,6 @@ function removePwad(name) {
     toast(`Unmounted ${name}`);
     syncPacksUi();
     if (mapBefore && (S.summary.maps || []).includes(mapBefore)) loadMap(mapBefore);
-    else if (S.summary.maps?.[0]) loadMap(S.summary.maps[0]);
     if (S.tab === "iwad" || S.lumpTabs.has("iwad-info")) openIwadPage();
   } catch (e) {
     toast(`Remove failed: ${errText(e)}`, true);
@@ -640,13 +781,8 @@ async function openFiles(files) {
       }
       status(`Converting ${f.name}…`);
       openIwad(buf, f.name);
-      const m = S.summary?.maps.find((x) => x === "E1M1") || S.summary?.maps[0];
-      if (m) loadMap(m);
     } else if (magic === "IWAD" || (!S.summary && magic === "PWAD")) {
-      if (magic === "PWAD") { toast("Open an IWAD or PK3 first, then add PWADs on top", true); continue; }
       openIwad(buf, f.name);
-      const m = S.summary.maps.find((x) => x === "E1M1" || x === "MAP01") || S.summary.maps[0];
-      if (m) loadMap(m);
     } else if (isPk3Bytes(buf) || isContentPackName(f.name)) {
       await importPk3Files([f]);
     } else if (!S.summary) {
@@ -666,15 +802,30 @@ function loadMap(name) {
   try {
     const json = S.mod.roomEditorLoadMap(name);
     S.doc = S.docs[name] ? S.docs[name] : JSON.parse(json);
+    if (S.summary?.duke) {
+      const native = JSON.parse(S.mod.roomEditorDukeMapGet(name));
+      S.dukeMap = native.map;
+      S.dukeMapFile = native.file;
+      S.dukeMapBytes = S.mod.roomEditorDukeMapPut(name, JSON.stringify(S.dukeMap));
+      S.dukeSelection = null;
+      S.dukeUndo = [];
+      S.dukeRedo = [];
+      S.dukePersistBefore = null;
+    } else {
+      S.dukeMap = null;
+      S.dukeMapBytes = null;
+      S.dukeMapFile = null;
+      S.dukePersistBefore = null;
+    }
     if (S.docs[name]) pushNow();
     S.undo = []; S.redo = []; S.sel.clear(); S.pick3d = null; S.drawPts = [];
     S.version++;
     $("#map-select").value = name;
     setPlaying(false);
-    fitView();
+    if (S.dukeMap) fitDukeView(); else fitView();
     renderInspector();
     render2d();
-    status(`${name} loaded`);
+    status(`${displayMapName(name)} loaded`);
     syncPill("live", "synced");
     selectDocTab("map");
   } catch (e) {
@@ -713,6 +864,7 @@ function commit({ push = true, inspector = true } = {}) {
   render2d();
 }
 function undo() {
+  if (S.dukeMap) return dukeUndoAction(false);
   if (!S.undo.length) return;
   S.redo.push(JSON.stringify(S.doc));
   S.doc = JSON.parse(S.undo.pop());
@@ -720,6 +872,7 @@ function undo() {
   commit();
 }
 function redo() {
+  if (S.dukeMap) return dukeUndoAction(true);
   if (!S.redo.length) return;
   S.undo.push(JSON.stringify(S.doc));
   S.doc = JSON.parse(S.redo.pop());
@@ -1152,6 +1305,186 @@ function fitView() {
   render2d();
 }
 
+function fitDukeView() {
+  const m = S.dukeMap;
+  if (!m?.walls?.length) return;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const w of m.walls) { x0 = Math.min(x0, w.x); x1 = Math.max(x1, w.x); y0 = Math.min(y0, w.y); y1 = Math.max(y1, w.y); }
+  S.view.x = (x0 + x1) / 2;
+  S.view.y = (y0 + y1) / 2;
+  S.view.scale = Math.min(cv.clientWidth / Math.max(64, x1 - x0), cv.clientHeight / Math.max(64, y1 - y0)) * 0.9;
+  render2d();
+}
+
+function dukeToScreen(wx, wy) {
+  return [(wx - S.view.x) * S.view.scale + cv.clientWidth / 2,
+    (wy - S.view.y) * S.view.scale + cv.clientHeight / 2];
+}
+
+function dukeToWorld(sx, sy) {
+  return [(sx - cv.clientWidth / 2) / S.view.scale + S.view.x,
+    (sy - cv.clientHeight / 2) / S.view.scale + S.view.y];
+}
+
+function dukeSectorLoops(sector) {
+  const m = S.dukeMap;
+  const begin = Math.max(0, sector.wallptr);
+  const end = Math.min(m.walls.length, begin + Math.max(0, sector.wallnum));
+  const found = new Set();
+  const loops = [];
+  for (let first = begin; first < end; first++) {
+    if (found.has(first)) continue;
+    const loop = [];
+    let at = first;
+    for (let n = 0; n <= end - begin; n++) {
+      if (at < begin || at >= end || found.has(at)) break;
+      found.add(at);
+      loop.push(m.walls[at]);
+      at = m.walls[at].point2;
+      if (at === first) break;
+    }
+    if (loop.length >= 3) loops.push(loop);
+  }
+  return loops;
+}
+
+function drawDuke2d(W, H, dpr) {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#0b0c0e";
+  ctx.fillRect(0, 0, W, H);
+  const m = S.dukeMap;
+  if (!m) return;
+  let grid = S.grid;
+  while (grid * S.view.scale < 8) grid *= 2;
+  const [wx0, wy0] = dukeToWorld(0, 0), [wx1, wy1] = dukeToWorld(W, H);
+  ctx.lineWidth = 1;
+  for (let pass = 0; pass < 2; pass++) {
+    const step = pass ? grid * 8 : grid;
+    ctx.strokeStyle = pass ? "#252a31" : "#171a1e";
+    ctx.beginPath();
+    for (let x = Math.floor(wx0 / step) * step; x <= wx1; x += step) {
+      const [sx] = dukeToScreen(x, 0); ctx.moveTo(sx, 0); ctx.lineTo(sx, H);
+    }
+    for (let y = Math.floor(wy0 / step) * step; y <= wy1; y += step) {
+      const [, sy] = dukeToScreen(0, y); ctx.moveTo(0, sy); ctx.lineTo(W, sy);
+    }
+    ctx.stroke();
+  }
+  for (let si = 0; si < m.sectors.length; si++) {
+    const loops = dukeSectorLoops(m.sectors[si]);
+    ctx.beginPath();
+    for (const loop of loops) {
+      loop.forEach((wall, i) => {
+        const [x, y] = dukeToScreen(wall.x, wall.y);
+        if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+      });
+      ctx.closePath();
+    }
+    ctx.fillStyle = S.dukeSelection?.kind === "sector" && S.dukeSelection.index === si
+      ? "rgba(255,204,51,.24)" : `rgba(${50 + (si * 37) % 45},${60 + (si * 23) % 40},${74 + (si * 17) % 42},.24)`;
+    ctx.fill("evenodd");
+  }
+  m.walls.forEach((wall, i) => {
+    const end = m.walls[wall.point2];
+    if (!end) return;
+    const [ax, ay] = dukeToScreen(wall.x, wall.y), [bx, by] = dukeToScreen(end.x, end.y);
+    const selected = S.dukeSelection?.kind === "wall" && S.dukeSelection.index === i;
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
+    ctx.strokeStyle = selected ? "#ffcc33" : wall.nextwall >= 0 ? "#7d8792" : "#d6d9de";
+    ctx.lineWidth = selected ? 2.5 : 1.35;
+    ctx.stroke();
+    if (S.mode === "vertices") {
+      const vertexSelected = S.dukeSelection?.kind === "vertex" && S.dukeSelection.x === wall.x && S.dukeSelection.y === wall.y;
+      const r = vertexSelected ? 3.5 : (S.view.scale > 0.12 ? 2.25 : 0);
+      if (r) { ctx.fillStyle = vertexSelected ? "#ffcc33" : "#9fb4ff"; ctx.fillRect(ax - r, ay - r, r * 2, r * 2); }
+    }
+  });
+  if (S.dukeFloors && (S.view.scale >= 0.18 || S.dukeSelection?.kind === "sector")) {
+    m.sectors.forEach((sector, si) => {
+      const loops = dukeSectorLoops(sector);
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      let centerX = 0, centerY = 0, largestArea = 0;
+      for (const loop of loops) for (const point of loop) {
+        x0 = Math.min(x0, point.x); y0 = Math.min(y0, point.y);
+        x1 = Math.max(x1, point.x); y1 = Math.max(y1, point.y);
+      }
+      if (!Number.isFinite(x0)) return;
+      for (const loop of loops) {
+        let twiceArea = 0, cx = 0, cy = 0;
+        for (let i = 0; i < loop.length; i++) {
+          const a = loop[i], b = loop[(i + 1) % loop.length];
+          const cross = a.x * b.y - b.x * a.y;
+          twiceArea += cross;
+          cx += (a.x + b.x) * cross;
+          cy += (a.y + b.y) * cross;
+        }
+        if (Math.abs(twiceArea) > largestArea) {
+          largestArea = Math.abs(twiceArea);
+          centerX = cx / (3 * twiceArea);
+          centerY = cy / (3 * twiceArea);
+        }
+      }
+      if (!largestArea) { centerX = (x0 + x1) / 2; centerY = (y0 + y1) / 2; }
+      const [sx, sy] = dukeToScreen(centerX, centerY);
+      const selected = S.dukeSelection?.kind === "sector" && S.dukeSelection.index === si;
+      const tile = sector.floorpicnum >= 0 ? `BT${String(sector.floorpicnum).padStart(4, "0")}` : "—";
+      const line1 = `S${si}  Z ${sector.floorz}`;
+      const line2 = tile;
+      ctx.font = "10px ui-monospace, monospace";
+      const width = Math.max(ctx.measureText(line1).width, ctx.measureText(line2).width) + 10;
+      const height = 27;
+      if (!selected && (Math.abs((x1 - x0) * S.view.scale) < width + 6 || Math.abs((y1 - y0) * S.view.scale) < height + 6)) return;
+      if (!selected && (sx < -width || sx > W + width || sy < -height || sy > H + height)) return;
+      ctx.fillStyle = selected ? "rgba(16,18,22,.94)" : "rgba(8,10,13,.82)";
+      ctx.fillRect(sx - width / 2, sy - height / 2, width, height);
+      ctx.strokeStyle = selected ? "#ffcc33" : "rgba(190,205,220,.35)";
+      ctx.lineWidth = selected ? 1.5 : 1;
+      ctx.strokeRect(sx - width / 2, sy - height / 2, width, height);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = selected ? "#ffdf82" : "#e4e9ef";
+      ctx.fillText(line1, sx, sy - 5);
+      ctx.fillStyle = "#aab8c8";
+      ctx.fillText(line2, sx, sy + 6);
+      ctx.textAlign = "start";
+    });
+  }
+  if (S.mode === "draw" && S.drawPts.length) {
+    ctx.strokeStyle = "#4cc38a";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    S.drawPts.forEach((p, i) => {
+      const [x, y] = dukeToScreen(p.x, p.y);
+      if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    });
+    if (mouse.world) {
+      const [x, y] = dukeToScreen(snap(mouse.world[0]), snap(mouse.world[1]));
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    S.drawPts.forEach((p) => {
+      const [x, y] = dukeToScreen(p.x, p.y);
+      ctx.fillStyle = "#4cc38a";
+      ctx.fillRect(x - 3, y - 3, 6, 6);
+    });
+  }
+  m.sprites.forEach((sprite, i) => {
+    const [x, y] = dukeToScreen(sprite.x, sprite.y);
+    const selected = S.dukeSelection?.kind === "sprite" && S.dukeSelection.index === i;
+    const r = selected ? 6 : 4;
+    ctx.fillStyle = selected ? "#ffcc33" : "#4cc38a";
+    ctx.strokeStyle = "#111";
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    const a = sprite.ang * Math.PI / 1024;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(a) * 10, y + Math.sin(a) * 10); ctx.stroke();
+  });
+  const [sx, sy] = dukeToScreen(m.start[0], m.start[1]);
+  ctx.strokeStyle = "#59aaff"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(sx - 6, sy); ctx.lineTo(sx + 6, sy); ctx.moveTo(sx, sy - 6); ctx.lineTo(sx, sy + 6); ctx.stroke();
+  const mode = { vertices: "vertices", lines: "walls", sectors: "sectors", things: "sprites" }[S.mode] || S.mode;
+  $("#hint2d").textContent = `Build ${mode} · click to select · drag vertices / sprites · wheel zoom · right-drag pan · F5 native test`;
+}
+
 let renderQueued = false;
 function render2d() {
   if (renderQueued) return;
@@ -1164,6 +1497,10 @@ function draw2d() {
   const W = cv.clientWidth, H = cv.clientHeight;
   if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
     cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  }
+  if (S.dukeMap) {
+    drawDuke2d(W, H, dpr);
+    return;
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#0b0c0e";
@@ -1304,6 +1641,13 @@ function draw2d() {
 const mouse = { down: -1, start: null, world: null, last: null, box: null, drag: null, pan: null, moved: false };
 
 function setHint() {
+  if (S.dukeMap) {
+    const mode = { vertices: "vertices", lines: "walls", sectors: "sectors", things: "sprites" }[S.mode] || S.mode;
+    $("#hint2d").textContent = S.mode === "draw"
+      ? "Build sector drawing · click points · click first point or press Enter to close · Esc cancels · right-drag pan"
+      : `Build ${mode} · click to select · drag vertices / sprites · wheel zoom · right-drag pan · Insert adds sprite · F5 native test`;
+    return;
+  }
   const hints = {
     vertices: "Click/drag vertices · Box-select on empty space · Del removes attached lines",
     lines: "Click/drag lines · X split · F flip · Del delete",
@@ -1314,19 +1658,282 @@ function setHint() {
   $("#hint2d").textContent = `${hints[S.mode]} · Wheel zoom · Right/middle-drag pan · Double-click: move 3D camera`;
 }
 
+function dukePointSegmentDistance(x, y, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
+  return Math.hypot(x - ax - t * dx, y - ay - t * dy);
+}
+
+function dukeSectorAt(x, y) {
+  for (let si = S.dukeMap.sectors.length - 1; si >= 0; si--) {
+    let inside = false;
+    for (const loop of dukeSectorLoops(S.dukeMap.sectors[si])) {
+      let hit = false;
+      for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
+        const a = loop[i], b = loop[j];
+        if ((a.y > y) !== (b.y > y) && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) hit = !hit;
+      }
+      if (hit) inside = !inside;
+    }
+    if (inside) return si;
+  }
+  return -1;
+}
+
+function finishDukeDraw() {
+  const points = S.drawPts;
+  S.drawPts = [];
+  if (points.length < 3) { render2d(); return; }
+  const pts = points.filter((p, i) => i === 0 || p.x !== points[i - 1].x || p.y !== points[i - 1].y);
+  if (pts.length > 2 && pts[0].x === pts.at(-1).x && pts[0].y === pts.at(-1).y) pts.pop();
+  if (pts.length < 3 || new Set(pts.map((p) => `${p.x},${p.y}`)).size < 3) {
+    toast("A Build sector needs at least three different points", true); render2d(); return;
+  }
+  const m = S.dukeMap;
+  if (pts.length > 512) { toast("A drawn sector is limited to 512 points", true); render2d(); return; }
+  if (m.walls.length + pts.length > 32767 || m.sectors.length >= 32767) {
+    toast("This map has reached the Build v7 wall or sector limit", true); render2d(); return;
+  }
+  let area = 0n;
+  pts.forEach((p, i) => {
+    const q = pts[(i + 1) % pts.length];
+    area += BigInt(p.x) * BigInt(q.y) - BigInt(q.x) * BigInt(p.y);
+  });
+  if (area === 0n) { toast("Sector outline is too small", true); render2d(); return; }
+  const cross = (a, b, c) => BigInt(b.x - a.x) * BigInt(c.y - a.y) - BigInt(b.y - a.y) * BigInt(c.x - a.x);
+  const intersects = (a, b, c, d) => {
+    const abC = cross(a, b, c), abD = cross(a, b, d);
+    const cdA = cross(c, d, a), cdB = cross(c, d, b);
+    const onSegment = (p, u, v) => p.x >= Math.min(u.x, v.x) && p.x <= Math.max(u.x, v.x)
+      && p.y >= Math.min(u.y, v.y) && p.y <= Math.max(u.y, v.y);
+    const opposite = (x, y) => (x < 0n && y > 0n) || (x > 0n && y < 0n);
+    return (opposite(abC, abD) && opposite(cdA, cdB))
+      || (abC === 0n && onSegment(c, a, b)) || (abD === 0n && onSegment(d, a, b))
+      || (cdA === 0n && onSegment(a, c, d)) || (cdB === 0n && onSegment(b, c, d));
+  };
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    for (let j = i + 1; j < pts.length; j++) {
+      if (j === i || j === (i + 1) % pts.length || i === (j + 1) % pts.length) continue;
+      if (intersects(a, b, pts[j], pts[(j + 1) % pts.length])) {
+        toast("Build sector outline cannot cross itself", true); render2d(); return;
+      }
+    }
+  }
+  // Build sectors use the same clockwise screen-space winding as the starter map.
+  if (area < 0n) pts.reverse();
+  const cx = pts.reduce((sum, p) => sum + p.x, 0) / pts.length;
+  const cy = pts.reduce((sum, p) => sum + p.y, 0) / pts.length;
+  const source = m.sectors[dukeSectorAt(cx, cy)] || m.sectors.at(-1);
+  const sector = source ? { ...source } : {
+    ceilingz: -16384, floorz: 16384, ceilingstat: 0, floorstat: 0,
+    ceilingpicnum: 1, floorpicnum: 1, ceilingheinum: 0, floorheinum: 0,
+    ceilingshade: 0, ceilingpal: 0, ceilingxpanning: 0, ceilingypanning: 0,
+    floorshade: 0, floorpal: 0, floorxpanning: 0, floorypanning: 0,
+    visibility: 0, lotag: 0, hitag: 0, extra: -1,
+  };
+  dukeSnapshot();
+  const first = m.walls.length;
+  const sectorIndex = m.sectors.length;
+  m.sectors.push({ ...sector, wallptr: first, wallnum: pts.length });
+  pts.forEach((p, i) => m.walls.push({
+    x: p.x, y: p.y, point2: first + (i + 1) % pts.length,
+    nextwall: -1, nextsector: -1, cstat: 0, picnum: 1, overpicnum: 0,
+    shade: 0, pal: 0, xrepeat: 8, yrepeat: 8, xpanning: 0, ypanning: 0,
+    lotag: 0, hitag: 0, extra: -1,
+  }));
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    const oldIndex = m.walls.slice(0, first).findIndex((wall) => {
+      const end = m.walls[wall.point2];
+      return end && wall.x === b.x && wall.y === b.y && end.x === a.x && end.y === a.y && wall.nextwall < 0;
+    });
+    if (oldIndex < 0) continue;
+    const owner = m.sectors.findIndex((s, sector) => sector !== sectorIndex
+      && oldIndex >= s.wallptr && oldIndex < s.wallptr + s.wallnum);
+    if (owner < 0) continue;
+    const newIndex = first + i;
+    m.walls[newIndex].nextwall = oldIndex;
+    m.walls[newIndex].nextsector = owner;
+    m.walls[oldIndex].nextwall = newIndex;
+    m.walls[oldIndex].nextsector = sectorIndex;
+  }
+  S.dukeSelection = { kind: "sector", index: sectorIndex };
+  dukePersist();
+  renderInspector();
+  render2d();
+  toast(`Build sector ${sectorIndex} created · edit heights and ART tiles in the inspector`);
+}
+
+function dukeNearestSector(x, y) {
+  let best = -1, bestDistance = Infinity;
+  S.dukeMap.sectors.forEach((sector, index) => {
+    const walls = dukeSectorLoops(sector).flat();
+    if (!walls.length) return;
+    const cx = walls.reduce((sum, wall) => sum + wall.x, 0) / walls.length;
+    const cy = walls.reduce((sum, wall) => sum + wall.y, 0) / walls.length;
+    const distance = (cx - x) ** 2 + (cy - y) ** 2;
+    if (distance < bestDistance) { best = index; bestDistance = distance; }
+  });
+  return best >= 0 ? best : 0;
+}
+
+function deleteDukeSector(index) {
+  const m = S.dukeMap;
+  if (!m || index < 0 || index >= m.sectors.length) return;
+  if (m.sectors.length <= 1) { toast("A Build map must keep at least one sector", true); return; }
+  const removed = m.sectors[index];
+  const first = removed.wallptr, count = removed.wallnum, end = first + count;
+  dukeSnapshot();
+  m.walls.splice(first, count);
+  m.sectors.splice(index, 1);
+  for (const wall of m.walls) {
+    if (wall.point2 >= end) wall.point2 -= count;
+    else if (wall.point2 >= first) wall.point2 = first;
+    if (wall.nextwall >= end) wall.nextwall -= count;
+    else if (wall.nextwall >= first) { wall.nextwall = -1; wall.nextsector = -1; }
+    if (wall.nextsector === index) { wall.nextsector = -1; wall.nextwall = -1; }
+    else if (wall.nextsector > index) wall.nextsector--;
+  }
+  for (const sector of m.sectors) if (sector.wallptr >= end) sector.wallptr -= count;
+  for (const sprite of m.sprites) {
+    if (sprite.sectnum > index) sprite.sectnum--;
+    else if (sprite.sectnum === index) {
+      const contained = dukeSectorAt(sprite.x, sprite.y);
+      sprite.sectnum = contained >= 0 ? contained : dukeNearestSector(sprite.x, sprite.y);
+    }
+  }
+  if (m.start_sector > index) m.start_sector--;
+  else if (m.start_sector === index) {
+    let contained = dukeSectorAt(m.start[0], m.start[1]);
+    if (contained < 0) {
+      contained = dukeNearestSector(m.start[0], m.start[1]);
+      const sector = m.sectors[contained];
+      const walls = dukeSectorLoops(sector).flat();
+      if (walls.length) {
+        m.start[0] = Math.round(walls.reduce((sum, wall) => sum + wall.x, 0) / walls.length);
+        m.start[1] = Math.round(walls.reduce((sum, wall) => sum + wall.y, 0) / walls.length);
+        m.start[2] = sector.floorz;
+      }
+    }
+    m.start_sector = contained;
+  }
+  S.dukeSelection = null;
+  dukePersist();
+  renderInspector();
+  render2d();
+}
+
+function dukeHit(wx, wy) {
+  const m = S.dukeMap;
+  const max = Math.max(6, 10 / S.view.scale);
+  if (S.mode === "vertices") {
+    let at = -1, best = max;
+    m.walls.forEach((w, i) => { const d = Math.hypot(wx - w.x, wy - w.y); if (d < best) { at = i; best = d; } });
+    if (at >= 0) { const w = m.walls[at]; return { kind: "vertex", index: at, x: w.x, y: w.y }; }
+  } else if (S.mode === "lines") {
+    let at = -1, best = max;
+    m.walls.forEach((w, i) => { const end = m.walls[w.point2]; if (!end) return; const d = dukePointSegmentDistance(wx, wy, w.x, w.y, end.x, end.y); if (d < best) { at = i; best = d; } });
+    if (at >= 0) return { kind: "wall", index: at };
+  } else if (S.mode === "sectors") {
+    const at = dukeSectorAt(wx, wy);
+    if (at >= 0) return { kind: "sector", index: at };
+  } else if (S.mode === "things") {
+    let at = -1, best = max;
+    m.sprites.forEach((s, i) => { const d = Math.hypot(wx - s.x, wy - s.y); if (d < best) { at = i; best = d; } });
+    if (at >= 0) return { kind: "sprite", index: at };
+  }
+  return null;
+}
+
+function dukeMouseDown(e) {
+  cv.focus();
+  const r = cv.getBoundingClientRect();
+  const sx = e.clientX - r.left, sy = e.clientY - r.top;
+  const [wx, wy] = dukeToWorld(sx, sy);
+  mouse.down = e.button; mouse.start = [sx, sy]; mouse.moved = false;
+  if (e.button === 1 || e.button === 2 || (e.button === 0 && keys.has("Space"))) {
+    mouse.pan = [sx, sy, S.view.x, S.view.y]; return;
+  }
+  if (e.button !== 0) return;
+  if (S.mode === "draw") {
+    const near = S.dukeMap.walls.find((wall) => Math.hypot(wall.x - wx, wall.y - wy) < 8 / S.view.scale);
+    const p = near ? { x: near.x, y: near.y } : { x: snap(wx), y: snap(wy) };
+    const first = S.drawPts[0];
+    if (first && S.drawPts.length >= 3 && Math.hypot(first.x - wx, first.y - wy) <= 8 / S.view.scale) {
+      finishDukeDraw();
+      return;
+    }
+    if (!S.drawPts.some((point) => point.x === p.x && point.y === p.y)) S.drawPts.push(p);
+    render2d();
+    return;
+  }
+  const hit = dukeHit(wx, wy);
+  S.dukeSelection = hit;
+  if (hit?.kind === "sprite") {
+    const s = S.dukeMap.sprites[hit.index];
+    S.dukeDragging = { kind: "sprite", index: hit.index, x: s.x, y: s.y, originX: wx, originY: wy };
+  } else if (hit?.kind === "vertex") {
+    S.dukeDragging = { kind: "vertex", x: hit.x, y: hit.y, originX: wx, originY: wy };
+  } else S.dukeDragging = null;
+  renderInspector(); render2d();
+}
+
+function dukeMouseMove(e) {
+  const r = cv.getBoundingClientRect();
+  const sx = e.clientX - r.left, sy = e.clientY - r.top;
+  const over = sx >= 0 && sy >= 0 && sx <= r.width && sy <= r.height;
+  const [wx, wy] = dukeToWorld(sx, sy);
+  if (over || mouse.down >= 0) {
+    mouse.world = [wx, wy];
+    $("#st-pos").textContent = `${Math.round(wx)}, ${Math.round(wy)} · Build units · zoom ${(S.view.scale * 100).toFixed(0)}%`;
+  }
+  if (mouse.start && Math.hypot(sx - mouse.start[0], sy - mouse.start[1]) > 3) mouse.moved = true;
+  if (mouse.pan) {
+    S.view.x = mouse.pan[2] - (sx - mouse.pan[0]) / S.view.scale;
+    S.view.y = mouse.pan[3] - (sy - mouse.pan[1]) / S.view.scale;
+    render2d(); return;
+  }
+  if (S.mode === "draw" && over) { render2d(); return; }
+  if (!mouse.moved || !S.dukeDragging) return;
+  const d = S.dukeDragging;
+  if (!d.undo) { dukeSnapshot(); d.undo = true; }
+  const x = Math.round(d.x + wx - d.originX), y = Math.round(d.y + wy - d.originY);
+  if (d.kind === "sprite") {
+    const s = S.dukeMap.sprites[d.index];
+    if (s) {
+      s.x = x; s.y = y;
+      const sector = dukeSectorAt(x, y);
+      if (sector >= 0) s.sectnum = sector;
+    }
+  } else {
+    for (const w of S.dukeMap.walls) if (w.x === d.x && w.y === d.y) { w.x = x; w.y = y; }
+    S.dukeSelection.x = x; S.dukeSelection.y = y;
+  }
+  render2d();
+}
+
+function dukeMouseUp() {
+  if (S.dukeDragging?.undo) { dukePersist(); renderInspector(); }
+  S.dukeDragging = null;
+  mouse.pan = null; mouse.down = -1; mouse.start = null;
+}
+
 cv.addEventListener("contextmenu", (e) => e.preventDefault());
 cv.addEventListener("wheel", (e) => {
   e.preventDefault();
   const r = cv.getBoundingClientRect();
-  const [wx, wy] = toWorld(e.clientX - r.left, e.clientY - r.top);
+  const mapToWorld = S.dukeMap ? dukeToWorld : toWorld;
+  const [wx, wy] = mapToWorld(e.clientX - r.left, e.clientY - r.top);
   const k = Math.exp(-e.deltaY * 0.0015);
   S.view.scale = Math.max(0.01, Math.min(16, S.view.scale * k));
-  const [nx, ny] = toWorld(e.clientX - r.left, e.clientY - r.top);
+  const [nx, ny] = mapToWorld(e.clientX - r.left, e.clientY - r.top);
   S.view.x += wx - nx; S.view.y += wy - ny;
   render2d();
 }, { passive: false });
 
 cv.addEventListener("mousedown", (e) => {
+  if (S.dukeMap) { dukeMouseDown(e); return; }
   if (!S.doc) return;
   cv.focus();
   const r = cv.getBoundingClientRect();
@@ -1374,6 +1981,7 @@ cv.addEventListener("mousedown", (e) => {
 });
 
 window.addEventListener("mousemove", (e) => {
+  if (S.dukeMap) { dukeMouseMove(e); return; }
   const r = cv.getBoundingClientRect();
   const sx = e.clientX - r.left, sy = e.clientY - r.top;
   const over = sx >= 0 && sy >= 0 && sx <= r.width && sy <= r.height;
@@ -1413,6 +2021,7 @@ window.addEventListener("mousemove", (e) => {
 });
 
 window.addEventListener("mouseup", () => {
+  if (S.dukeMap) { dukeMouseUp(); return; }
   if (mouse.box && S.doc) {
     const [x0, y0, x1, y1] = mouse.box;
     const [ax, ay] = toWorld(Math.min(x0, x1), Math.max(y0, y1));
@@ -1435,6 +2044,12 @@ window.addEventListener("mouseup", () => {
 });
 
 cv.addEventListener("dblclick", (e) => {
+  if (S.dukeMap) {
+    const r = cv.getBoundingClientRect();
+    const [wx, wy] = dukeToWorld(e.clientX - r.left, e.clientY - r.top);
+    if (S.mode === "things") addDukeSprite(snap(wx), snap(wy));
+    return;
+  }
   if (!S.doc) return;
   const r = cv.getBoundingClientRect();
   const [wx, wy] = toWorld(e.clientX - r.left, e.clientY - r.top);
@@ -1635,14 +2250,29 @@ function setPlaying(on, mode) {
   if (on) {
     try {
       S.mod.roomEditorSetSkill(Number($("#skill").value));
-      S.mod.roomEditorPlay(mode || "start");
+      if (S.dukeMap) {
+        S.dukeMapBytes = S.mod.roomEditorDukeMapPut(S.doc.name, JSON.stringify(S.dukeMap));
+        const overlayGrp = S.mod.roomEditorDukeTestOverlay();
+        S.mod.roomSetDukeEditorGrp(overlayGrp);
+        S.mod.roomEditorDukePlay(S.dukeGrp, S.dukeMapBytes, Number($("#skill").value));
+        S.dukeTesting = true;
+        document.body.classList.add("duke-testing");
+      } else {
+        S.mod.roomEditorPlay(mode || "start");
+      }
     } catch (e) { toast(errText(e), true); return; }
     S.playing = true;
     room.focus();
-    status("Play test — click the 3D view to capture the mouse · Esc releases · F7 back to edit");
+    status(S.dukeTesting
+      ? "Native Duke test · click the 3D view to capture the mouse · F7 returns to Build editing"
+      : "Play test — click the 3D view to capture the mouse · Esc releases · F7 back to edit");
   } else {
-    if (S.playing && S.mod) { try { S.mod.roomEditorPlay("edit"); } catch (_) {} }
+    if (S.playing && S.mod) {
+      try { S.mod.roomEditorPlay("edit"); } catch (e) { toast(errText(e), true); }
+    }
     S.playing = false;
+    S.dukeTesting = false;
+    document.body.classList.remove("duke-testing");
     if (document.pointerLockElement === room) document.exitPointerLock();
   }
   syncPlayUi();
@@ -1654,7 +2284,9 @@ function syncPlayUi() {
   b.textContent = S.playing ? "PLAYING" : (S.visual ? "VISUAL" : "EDIT");
   b.classList.toggle("playing", S.playing);
   $("#hint3d").textContent = S.playing
-    ? "Playing — WASD move · mouse look · wheel weapon · Ctrl/LMB fire · E/Space use · edits apply live"
+    ? S.dukeTesting
+      ? "Native Duke test — WASD move · mouse look · Ctrl/LMB fire · Space jump · F7 returns to Build editing"
+      : "Playing — WASD move · mouse look · wheel weapon · Ctrl/LMB fire · E/Space use · edits apply live"
     : S.visual
       ? "Visual mode (M exits) — Click: select · Double-click / P: edit pixels · Right-drag: look · WASD/Q/Z: fly · PgUp/PgDn height · T paint · +/- light"
       : "Click: select · Double-click / P: edit pixels · Right-drag: look · WASD/Q/Z: fly · Shift: fast · PgUp/PgDn height · T paint · +/- light · M visual";
@@ -1834,10 +2466,218 @@ function advanced(title, objs, skip) {
   return det;
 }
 
+function dukeSnapshot() {
+  if (!S.dukeMap) return;
+  const snapshot = JSON.stringify(S.dukeMap);
+  S.dukeUndo.push(snapshot);
+  if (S.dukeUndo.length > 120) S.dukeUndo.shift();
+  S.dukeRedo = [];
+  S.dukePersistBefore = snapshot;
+  return snapshot;
+}
+
+function dukePersist() {
+  const rollback = S.dukePersistBefore;
+  S.dukePersistBefore = null;
+  try {
+    S.dukeMapBytes = S.mod.roomEditorDukeMapPut(S.doc.name, JSON.stringify(S.dukeMap));
+    syncPill("live", "Build map saved in editor");
+    status(`${S.dukeMapFile} · native Build map · ${S.dukeMap.walls.length} walls · ${S.dukeMap.sprites.length} sprites`);
+    render2d();
+  } catch (e) {
+    if (rollback) {
+      S.dukeMap = JSON.parse(rollback);
+      S.dukeUndo.pop();
+      S.dukeSelection = null;
+    }
+    syncPill("error", "map error");
+    toast(`Build map: ${errText(e)}`, true);
+    renderInspector();
+    render2d();
+  }
+}
+
+function dukeUndoAction(redo = false) {
+  const from = redo ? S.dukeRedo : S.dukeUndo;
+  const to = redo ? S.dukeUndo : S.dukeRedo;
+  if (!from.length) return false;
+  to.push(JSON.stringify(S.dukeMap));
+  S.dukeMap = JSON.parse(from.pop());
+  dukePersist();
+  renderInspector();
+  return true;
+}
+
+function dukeEditField(obj, key, value, selection = S.dukeSelection) {
+  if (!obj || !selection) return;
+  const n = Number(value);
+  if (!Number.isFinite(n)) { renderInspector(); return; }
+  dukeSnapshot();
+  const v = Math.trunc(n);
+  if (selection.kind === "vertex" && (key === "x" || key === "y")) {
+    const old = obj[key];
+    for (const wall of S.dukeMap.walls) if (wall[key] === old && wall["xy"[key === "x" ? 0 : 1]] === selection[key === "x" ? "y" : "x"]) wall[key] = v;
+    selection[key] = v;
+  } else {
+    obj[key] = v;
+    if (selection.kind === "start") S.dukeMap[key] = v;
+  }
+  dukePersist();
+  renderInspector();
+}
+
+function dukeField(label, obj, key, selection, bounds = {}) {
+  const field = el("input", {
+    type: "number", value: obj[key], step: 1,
+    ...(bounds.min == null ? {} : { min: bounds.min }),
+    ...(bounds.max == null ? {} : { max: bounds.max }),
+    onchange: (e) => dukeEditField(obj, key, e.target.value, selection),
+  });
+  return rowEl(label, field);
+}
+
+function dukeTileField(label, obj, key, selection) {
+  const value = obj[key];
+  const name = value >= 0 ? `BT${String(value).padStart(4, "0")}` : "-";
+  const thumbCanvas = el("canvas", { width: 40, height: 40, title: value >= 0 ? `Pick ART tile ${value}` : "No tile" });
+  drawThumb(thumbCanvas, name, 40);
+  thumbCanvas.addEventListener("click", () => openPicker("textures", (tile) => {
+    const match = /^BT(\d{1,5})$/.exec(tile);
+    if (match) dukeEditField(obj, key, Number(match[1]), selection);
+  }));
+  const numeric = el("input", {
+    type: "number", value, step: 1,
+    onchange: (e) => dukeEditField(obj, key, e.target.value, selection),
+  });
+  const editButton = el("button", {
+    class: "btn small icon", title: value >= 0 ? `Edit ART tile ${value}` : "Choose a tile first",
+    disabled: value < 0, onclick: () => paint.open("textures", name),
+  }, "✎");
+  return rowEl(label, el("div", { class: "tex-field" }, thumbCanvas, numeric, editButton));
+}
+
+function renderDukeInspector(body, title) {
+  const m = S.dukeMap;
+  const sel = S.dukeSelection;
+  const fieldset = (legend, obj, keys, selection = sel) => {
+    const fs = el("fieldset", {}, el("legend", {}, legend));
+    for (const key of keys) {
+      if (!(key in obj)) continue;
+      if (["picnum", "overpicnum", "floorpicnum", "ceilingpicnum"].includes(key)) {
+        fs.append(dukeTileField(key, obj, key, selection));
+      } else fs.append(dukeField(key, obj, key, selection));
+    }
+    return fs;
+  };
+  const floorHeights = m.sectors.map((sector) => sector.floorz).filter(Number.isFinite);
+  const floorRange = floorHeights.length ? (() => {
+    const [min, max] = floorHeights.reduce(([lo, hi], value) => [Math.min(lo, value), Math.max(hi, value)], [Infinity, -Infinity]);
+    return `${min} to ${max} Build units`;
+  })() : "—";
+  body.append(
+    el("fieldset", {}, el("legend", {}, "Native Build map"),
+      rowEl("File", el("span", {}, S.dukeMapFile || "—")),
+      rowEl("Version", el("span", {}, m.version)),
+      rowEl("Sectors", el("span", {}, m.sectors.length)),
+      rowEl("Floor range", el("span", {}, floorRange)),
+      rowEl("Walls", el("span", {}, m.walls.length)),
+      rowEl("Sprites", el("span", {}, m.sprites.length)),
+      el("div", { class: "actions" },
+        el("button", { class: "btn small", onclick: () => setMode("draw") }, "+ Sector"),
+        el("button", { class: "btn small", onclick: () => addDukeSprite() }, "+ Sprite at start"),
+        el("button", { class: "btn small", onclick: () => download(S.dukeMapBytes, S.dukeMapFile || `${m.name || "MAP"}.MAP`) }, "Save .MAP"))),
+  );
+  if (!sel) {
+    title.textContent = "Build map";
+    const start = { x: m.start[0], y: m.start[1], z: m.start[2], ang: m.start_ang, sector: m.start_sector };
+    const fs = el("fieldset", {}, el("legend", {}, "Player start"));
+    for (const [key, label] of [["x", "X"], ["y", "Y"], ["z", "Z"], ["ang", "Angle"], ["sector", "Sector"]]) {
+      const input = el("input", { type: "number", value: start[key], step: 1, onchange: (e) => {
+        const v = Math.trunc(Number(e.target.value));
+        if (!Number.isFinite(v)) return;
+        dukeSnapshot();
+        if (key === "ang") m.start_ang = v; else if (key === "sector") m.start_sector = v; else m.start[({ x: 0, y: 1, z: 2 })[key]] = v;
+        dukePersist();
+      }});
+      fs.append(rowEl(label, input));
+    }
+    const floors = el("fieldset", { class: "duke-floor-overview" },
+      el("legend", {}, `Sector floors (${m.sectors.length})`),
+      el("p", { class: "muted" }, "Build Z is shown in native units. Click a row to edit that sector's floor and tile."),
+      el("div", { class: "duke-floor-list" }, ...m.sectors.map((sector, index) => {
+        const tile = sector.floorpicnum >= 0 ? `BT${String(sector.floorpicnum).padStart(4, "0")}` : "No tile";
+        const button = el("button", { class: "duke-floor-row", type: "button", title: `Edit sector ${index}`,
+          onclick: () => {
+            S.dukeSelection = { kind: "sector", index };
+            renderInspector();
+            render2d();
+          } },
+        el("strong", {}, `Sector ${index}`),
+        el("span", { class: "duke-floor-z" }, `Floor Z ${sector.floorz}`),
+        el("span", { class: "duke-floor-tile" }, tile));
+        return button;
+      })));
+    body.append(fs, floors,
+      el("p", { class: "muted" }, "This document is the native Build .MAP. Changes export into the original GRP format."));
+    return;
+  }
+  let obj;
+  let keys;
+  if (sel.kind === "vertex") {
+    obj = m.walls[sel.index];
+    title.textContent = `Build vertex (${sel.x}, ${sel.y})`;
+    keys = ["x", "y"];
+  } else if (sel.kind === "wall") {
+    obj = m.walls[sel.index];
+    title.textContent = `Build wall ${sel.index}`;
+    keys = ["point2", "nextwall", "nextsector", "cstat", "picnum", "overpicnum", "shade", "pal", "xrepeat", "yrepeat", "xpanning", "ypanning", "lotag", "hitag", "extra"];
+  } else if (sel.kind === "sector") {
+    obj = m.sectors[sel.index];
+    title.textContent = `Build sector ${sel.index}`;
+    keys = ["wallptr", "wallnum", "ceilingz", "floorz", "ceilingstat", "floorstat", "ceilingpicnum", "ceilingheinum", "ceilingshade", "ceilingpal", "ceilingxpanning", "ceilingypanning", "floorpicnum", "floorheinum", "floorshade", "floorpal", "floorxpanning", "floorypanning", "visibility", "lotag", "hitag", "extra"];
+  } else {
+    obj = m.sprites[sel.index];
+    title.textContent = `Build sprite ${sel.index}`;
+    keys = ["x", "y", "z", "cstat", "picnum", "shade", "pal", "clipdist", "xrepeat", "yrepeat", "xoffset", "yoffset", "sectnum", "statnum", "ang", "owner", "xvel", "yvel", "zvel", "lotag", "hitag", "extra"];
+  }
+  if (!obj) { S.dukeSelection = null; renderDukeInspector(body, title); return; }
+  const fs = fieldset(sel.kind[0].toUpperCase() + sel.kind.slice(1), obj, keys);
+  if (sel.kind === "sector") {
+    fs.append(el("button", { class: "btn small danger", onclick: () => deleteDukeSector(sel.index) }, "Delete sector"));
+  }
+  if (sel.kind === "sprite") {
+    fs.append(el("button", { class: "btn small danger", onclick: () => deleteDukeSprite(sel.index) }, "Delete sprite"));
+  }
+  body.append(fs);
+}
+
+function addDukeSprite(x = S.dukeMap.start[0], y = S.dukeMap.start[1]) {
+  dukeSnapshot();
+  const sector = dukeSectorAt(x, y);
+  const sectnum = sector >= 0 ? sector : S.dukeMap.start_sector;
+  const z = S.dukeMap.sectors[sectnum]?.floorz ?? S.dukeMap.start[2];
+  const sprite = { x: Math.round(x), y: Math.round(y), z, cstat: 0, picnum: 1405,
+    shade: 0, pal: 0, clipdist: 32, xrepeat: 32, yrepeat: 32, xoffset: 0, yoffset: 0,
+    sectnum, statnum: 0, ang: 0, owner: -1, xvel: 0, yvel: 0, zvel: 0, lotag: 0, hitag: 0, extra: -1 };
+  S.dukeMap.sprites.push(sprite);
+  S.dukeSelection = { kind: "sprite", index: S.dukeMap.sprites.length - 1 };
+  dukePersist();
+  renderInspector();
+}
+
+function deleteDukeSprite(index) {
+  dukeSnapshot();
+  S.dukeMap.sprites.splice(index, 1);
+  S.dukeSelection = null;
+  dukePersist();
+  renderInspector();
+}
+
 function renderInspector() {
   const body = $("#inspector-body");
   const title = $("#inspector-title");
   body.replaceChildren();
+  if (S.dukeMap) { renderDukeInspector(body, title); return; }
   if (S.actorSel) { renderActorInspector(body, title); return; }
   const d = S.doc;
   if (!d) { title.textContent = "Inspector"; return; }
@@ -2016,15 +2856,20 @@ function openPicker(kind, cb) {
   pickerCb = cb;
   const names = kind === "flats" ? S.summary.flats : S.summary.textures;
   const grid = el("div", { class: "thumbs" });
+  const notice = el("p", { class: "muted", style: "padding:6px 10px;margin:0" });
   const filter = $("#picker-filter");
   filter.value = "";
   const build = () => {
     const q = filter.value.trim().toUpperCase();
-    grid.replaceChildren(...names.filter((n) => !q || n.includes(q)).map((n) => thumbTile(n, () => { $("#picker").hidden = true; pickerCb?.(n); })));
+    const filtered = names.filter((n) => !q || n.includes(q));
+    const shown = S.summary.duke && kind === "textures" ? filtered.slice(0, 300) : filtered;
+    grid.replaceChildren(...shown.map((n) => thumbTile(n, () => { $("#picker").hidden = true; pickerCb?.(n); })));
+    notice.hidden = shown.length === filtered.length;
+    notice.textContent = `Showing ${shown.length} of ${filtered.length}. Filter by BT tile number to narrow the list.`;
   };
   filter.oninput = build;
   build();
-  $("#picker-grid").replaceChildren(grid);
+  $("#picker-grid").replaceChildren(notice, grid);
   $("#picker").hidden = false;
   filter.focus();
 }
@@ -2051,37 +2896,49 @@ function renderBrowser() {
   const q = $("#browser-filter").value.trim().toUpperCase();
   body.replaceChildren();
   S.actorSel = S.tab === "actors" ? S.actorSel : null;
-  if (!S.summary) { body.append(el("p", { class: "muted", style: "padding:10px" }, "No WAD open.")); return; }
+  if (!S.summary) { body.append(el("p", { class: "muted", style: "padding:10px" }, "No game archive open.")); return; }
   const sm = S.summary;
   if (S.tab === "iwad") {
     const det = sm.iwadDetected;
+    const title = sm.duke ? sm.duke.grp : det?.name || sm.iwad || "IWAD";
+    const subtitle = sm.duke ? "Duke Nukem 3D · Native Build editor" : det
+      ? `${det.game} · ${det.autoname || "—"}`
+      : "Undetected / custom";
     body.append(
-      el("p", { class: "muted", style: "padding:6px 10px;margin:0" }, "Game archive currently loaded. Open the details page for counts, MD5, and maps."),
+      el("p", { class: "muted", style: "padding:6px 10px;margin:0" }, sm.duke
+        ? "Native Duke GRP and Build map details."
+        : "Game archive currently loaded. Open the details page for counts, MD5, and maps."),
       el("div", { class: "list-item active", onclick: openIwadPage, title: "Open IWAD details" },
         el("div", {},
-          el("div", {}, det?.name || sm.iwad || "IWAD"),
-          el("div", { class: "sub" }, det
-            ? `${det.game} · ${det.autoname || "—"}`
-            : (ROOM_UI_SHOW_DUKE && sm.duke ? `Duke GRP · ${sm.duke.grp}` : "Undetected / custom"))),
-        el("span", { class: "meta" }, fmtSize(sm.iwadBytes || 0))),
+          el("div", {}, title),
+          el("div", { class: "sub" }, subtitle)),
+        el("span", { class: "meta" }, sm.duke ? "Build" : fmtSize(sm.iwadBytes || 0))),
       el("div", { class: "actions", style: "padding:8px 10px" },
         el("button", { class: "btn small primary", onclick: openIwadPage }, "Open details…"),
         el("button", { class: "btn small", onclick: () => { S.tab = "maps"; syncBrowserTab(); renderBrowser(); } }, "Maps")));
-    const kinds = Object.entries(sm.kindCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
-    if (kinds.length) {
-      body.append(el("div", { class: "section-head" }, "Lump kinds"));
-      for (const [k, n] of kinds) {
-        body.append(el("div", { class: "list-item", onclick: () => { S.tab = "lumps"; $("#browser-filter").value = k; syncBrowserTab(); renderBrowser(); } },
-          el("span", { class: `kind ${k}` }, k), el("span", { class: "meta" }, n)));
+    if (sm.duke) {
+      body.append(
+        el("div", { class: "section-head" }, "Native Build content"),
+        el("div", { class: "list-item" }, el("span", {}, "Build maps"), el("span", { class: "meta" }, sm.maps.length)),
+        el("div", { class: "list-item" }, el("span", {}, "ART tiles"), el("span", { class: "meta" }, sm.textures.length)));
+    } else {
+      const kinds = Object.entries(sm.kindCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
+      if (kinds.length) {
+        body.append(el("div", { class: "section-head" }, "Lump kinds"));
+        for (const [k, n] of kinds) {
+          body.append(el("div", { class: "list-item", onclick: () => { S.tab = "lumps"; $("#browser-filter").value = k; syncBrowserTab(); renderBrowser(); } },
+            el("span", { class: `kind ${k}` }, k), el("span", { class: "meta" }, n)));
+        }
       }
     }
   } else if (S.tab === "maps") {
     body.append(el("div", { class: "section-head" }, "Maps"));
     const names = [...new Set([...sm.maps, ...Object.keys(S.docs)])];
-    for (const m of names.filter((m) => !q || m.includes(q))) {
+    for (const m of names.filter((m) => !q || displayMapName(m).toUpperCase().includes(q))) {
       const src = sm.lumps.find((l) => l.name === m && l.kind === "map")?.src || "new";
       body.append(el("div", { class: `list-item${S.doc?.name === m ? " active" : ""}`, onclick: () => loadMapOrDoc(m) },
-        el("span", { class: "name" }, m), S.docs[m] ? el("span", { class: "kind map" }, "edited") : null, el("span", { class: "meta" }, src)));
+        el("span", { class: "name" }, displayMapName(m)), S.docs[m] ? el("span", { class: "kind map" }, "edited") : null,
+        el("span", { class: "meta" }, sm.duke ? "Build .MAP" : src)));
     }
   } else if (S.tab === "things") {
     body.append(el("p", { class: "muted", style: "padding:6px 10px;margin:0" },
@@ -2121,9 +2978,11 @@ function renderBrowser() {
     }
   } else if (S.tab === "textures" || S.tab === "flats") {
     const flats = S.tab === "flats";
-    const names = (flats ? sm.flats : sm.textures).filter((n) => !q || n.includes(q));
+    const allNames = (flats ? sm.flats : sm.textures).filter((n) => !q || n.includes(q));
+    const names = sm.duke && !flats ? allNames.slice(0, 300) : allNames;
     body.append(el("p", { class: "muted", style: "padding:6px 10px;margin:0" },
-      flats ? "Click: current flat · Double-click: apply to selected sectors' floor (Shift: ceiling) · Right-click: edit pixels · T / P in 3D paint / edit the picked plane"
+      sm.duke && !flats ? "Build ART tiles · Right-click or use the tile button in the map inspector to edit pixels · the next Native test uses saved ART edits"
+        : flats ? "Click: current flat · Double-click: apply to selected sectors' floor (Shift: ceiling) · Right-click: edit pixels · T / P in 3D paint / edit the picked plane"
         : "Click: current texture · Double-click: apply to selected lines · Right-click: edit pixels · T / P in 3D paint / edit the picked wall"));
     const grid = el("div", { class: "thumbs" });
     for (const n of names) {
@@ -2138,6 +2997,10 @@ function renderBrowser() {
       grid.append(tile);
     }
     body.append(grid);
+    if (names.length < allNames.length) {
+      body.append(el("p", { class: "muted", style: "padding:6px 10px;margin:0" },
+        `Showing ${names.length} of ${allNames.length} ART tiles. Filter by BT tile number to find more.`));
+    }
   } else if (S.tab === "actors") {
     if (!S.actors) {
       try { S.actors = JSON.parse(S.mod.roomEditorActors()); } catch (e) { toast(errText(e), true); S.actors = []; }
@@ -2432,7 +3295,7 @@ function selectDocTab(id) {
 
 function renderDocTabs() {
   const bar = $("#doc-tabs");
-  bar.replaceChildren(el("button", { class: S.docTab === "map" ? "active" : "", onclick: () => selectDocTab("map") }, `🗺 ${S.doc?.name || "Map"}`));
+  bar.replaceChildren(el("button", { class: S.docTab === "map" ? "active" : "", onclick: () => selectDocTab("map") }, `🗺 ${displayMapName(S.doc?.name || "Map")}`));
   for (const [id, t] of S.lumpTabs) {
     bar.append(el("button", { class: S.docTab === id ? "active" : "", onclick: () => selectDocTab(id) }, t.title,
       el("span", { class: "x", onclick: (e) => { e.stopPropagation(); S.lumpTabs.delete(id); if (S.docTab === id) selectDocTab("map"); else renderDocTabs(); } }, "✕")));
@@ -2845,6 +3708,15 @@ async function newLumpFromFile() {
 
 function exportWad() {
   if (!S.summary) return;
+  if (S.summary.duke) {
+    try {
+      const bytes = S.mod.roomEditorDukeExport();
+      const base = String(S.summary.duke.grp || "duke3d").replace(/\.[^.]+$/, "");
+      download(bytes, `${base}-room-edit.grp`);
+      toast(`Exported native GRP with ${S.dukeMapFile || "Build maps"} and ART tile edits`);
+    } catch (e) { toast(`Export GRP: ${errText(e)}`, true); }
+    return;
+  }
   if (S.doc) S.docs[S.doc.name] = S.doc;
   try {
     const bytes = S.mod.roomEditorExport(JSON.stringify(S.docs));
@@ -2878,6 +3750,29 @@ function exportPk3() {
 
 function newMap() {
   if (!S.summary) return;
+  if (S.summary.duke) {
+    let suffix = 1;
+    let stem = `ROOM${String(suffix).padStart(2, "0")}`;
+    while (S.summary.maps.includes(stem)) {
+      suffix++;
+      stem = `ROOM${String(suffix).padStart(2, "0")}`;
+    }
+    const requested = prompt("Native Build .MAP name (1–8 letters, digits, or underscores):", stem);
+    if (!requested) return;
+    const mapName = requested.trim().replace(/\.map$/i, "").toUpperCase();
+    const editorName = /^E([0-9])L([0-9]+)$/.test(mapName)
+      ? mapName.replace(/^E([0-9])L([0-9]+)$/, "E$1M$2")
+      : mapName;
+    try {
+      setSummary(S.mod.roomEditorDukeMapCreate(mapName));
+      S.mode = "sectors";
+      S.drawPts = [];
+      syncModeButtons();
+      loadMap(editorName);
+      toast(`${mapName}.MAP created in the working Duke GRP`);
+    } catch (e) { toast(errText(e), true); }
+    return;
+  }
   const name = prompt("Map name:", S.summary.maps.includes("MAP01") ? "MAP33" : "E1M9");
   if (!name) return;
   const fmt = (prompt("Format: doom, hexen or udmf", isUdmf() ? "udmf" : "doom") || "doom").toLowerCase();
@@ -2917,10 +3812,25 @@ document.querySelectorAll(".layout .btn[data-layout]").forEach((b) => b.addEvent
 }));
 $("#btn-visual")?.addEventListener("click", () => setVisualMode(!S.visual));
 $("#btn-add-pack")?.addEventListener("click", () => $("#file-pack")?.click());
-$("#file-pk3")?.addEventListener("change", (e) => { importPk3Files([...e.target.files]); e.target.value = ""; });
-$("#file-pack")?.addEventListener("change", (e) => {
-  addPackFiles([...e.target.files]);
+$("#file-pk3")?.addEventListener("change", (e) => {
+  const files = [...e.target.files];
   e.target.value = "";
+  if (files.length) withEditorLoading("Loading content pack…", files.map((f) => f.name).join(", "), () => importPk3Files(files));
+});
+const GAME_ARCHIVE_ACCEPT = ".wad,.iwad,.grp,.pk3,.pk7,.zip,.ipk3,.ipk7,application/octet-stream,application/zip";
+function chooseStartArchive(game) {
+  const input = $("#file-iwad");
+  input.accept = game === "duke" ? ".grp,application/octet-stream" : ".wad,.iwad,application/octet-stream";
+  input.dataset.startPicker = "1";
+  input.click();
+}
+$("#start-open-doom").addEventListener("click", () => chooseStartArchive("doom"));
+$("#start-open-duke").addEventListener("click", () => chooseStartArchive("duke"));
+$("#start-open-pk3").addEventListener("click", () => $("#file-pk3").click());
+$("#file-pack")?.addEventListener("change", (e) => {
+  const files = [...e.target.files];
+  e.target.value = "";
+  if (files.length) withEditorLoading("Loading content pack…", files.map((f) => f.name).join(", "), () => addPackFiles(files));
 });
 document.querySelectorAll("#browser-tabs button").forEach((b) => b.addEventListener("click", () => {
   S.tab = b.dataset.tab;
@@ -2934,10 +3844,22 @@ $("#browser-filter").addEventListener("input", () => { clearTimeout(filterTimer)
 $("#file-iwad").addEventListener("change", (e) => {
   const f = e.target.files && e.target.files[0];
   e.target.value = "";
-  openIwadFile(f);
+  e.target.accept = GAME_ARCHIVE_ACCEPT;
+  if (f) withEditorLoading("Loading game archive…", f.name, () => openIwadFile(f));
 });
-$("#file-open").addEventListener("change", (e) => { openFiles([...e.target.files]); e.target.value = ""; });
-$("#map-select").addEventListener("change", (e) => loadMapOrDoc(e.target.value));
+$("#file-iwad").addEventListener("click", (e) => {
+  if (e.currentTarget.dataset.startPicker) {
+    delete e.currentTarget.dataset.startPicker;
+    return;
+  }
+  e.currentTarget.accept = GAME_ARCHIVE_ACCEPT;
+});
+$("#file-open").addEventListener("change", (e) => {
+  const files = [...e.target.files];
+  e.target.value = "";
+  if (files.length) withEditorLoading("Opening selected files…", files.map((f) => f.name).join(", "), () => openFiles(files));
+});
+$("#map-select").addEventListener("change", (e) => { if (e.target.value) loadMapOrDoc(e.target.value); });
 $("#btn-new-map").addEventListener("click", newMap);
 $("#btn-export").addEventListener("click", exportWad);
 $("#btn-export-pk3").addEventListener("click", exportPk3);
@@ -2958,6 +3880,7 @@ $("#btn-mute").addEventListener("click", () => applyMute(!(S.mod && S.mod.roomMu
 $("#grid").addEventListener("change", (e) => { S.grid = Number(e.target.value); render2d(); });
 $("#snap").addEventListener("change", (e) => { S.snap = e.target.checked; });
 $("#textured").addEventListener("change", (e) => { S.textured = e.target.checked; render2d(); });
+$("#duke-floors").addEventListener("change", (e) => { S.dukeFloors = e.target.checked; render2d(); });
 $("#skill").addEventListener("change", (e) => { try { S.mod.roomEditorSetSkill(Number(e.target.value)); } catch (_) {} });
 
 const splitter = $("#splitter");
@@ -2997,6 +3920,24 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (!S.doc) return;
+  if (S.dukeMap) {
+    if (!mod && (e.code === "Enter" || e.code === "NumpadEnter") && S.mode === "draw") {
+      e.preventDefault(); finishDukeDraw(); return;
+    }
+    if (!mod && (e.code === "Delete" || e.code === "Backspace") && S.dukeSelection?.kind === "sector") {
+      deleteDukeSector(S.dukeSelection.index); e.preventDefault(); return;
+    }
+    if (!mod && e.code === "Insert" && mouse.world) { addDukeSprite(Math.round(mouse.world[0]), Math.round(mouse.world[1])); e.preventDefault(); return; }
+    if (!mod && (e.code === "Delete" || e.code === "Backspace") && S.dukeSelection?.kind === "sprite") {
+      deleteDukeSprite(S.dukeSelection.index); e.preventDefault(); return;
+    }
+    if (!mod && e.code === "Escape") {
+      if (S.drawPts.length) { S.drawPts = []; render2d(); }
+      else { S.dukeSelection = null; renderInspector(); render2d(); }
+      return;
+    }
+    if (!mod && e.code === "Home") { fitDukeView(); return; }
+  }
   if (tools.onKey(e, { mod, in3d: document.activeElement === room })) return;
   if (document.activeElement === room) {
     if (!S.playing && key3d(e)) e.preventDefault();
@@ -3053,7 +3994,8 @@ window.addEventListener("drop", (e) => {
   e.preventDefault();
   dragDepth = 0;
   document.body.classList.remove("dragging");
-  openFiles([...e.dataTransfer.files]);
+  const files = [...e.dataTransfer.files];
+  if (files.length) withEditorLoading("Opening dropped files…", files.map((f) => f.name).join(", "), () => openFiles(files));
 });
 
 const tools = installTools({

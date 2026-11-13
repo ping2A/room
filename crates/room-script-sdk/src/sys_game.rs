@@ -95,4 +95,11 @@ game_imports! {
     fn player_trace(player: i32, max_dist: f64, out_ptr: i32) -> i32;
     fn player_name(player: i32, buf: i32, cap: i32) -> i32;
     fn actor_hit_info(actor: i64, out_ptr: i32) -> i32;
+    fn script_arg_count() -> i32;
+    fn script_arg_i32(i: i32) -> i32;
+    fn script_arg_str(i: i32, buf: i32, cap: i32) -> i32;
+    fn script_return_str(ptr: i32, len: i32);
+    fn player_gender(player: i32) -> i32;
+    fn player_cvar_i32(player: i32, ptr: i32, len: i32) -> i32;
+    fn actor_set_sound_class(actor: i64, ptr: i32, len: i32);
 }

@@ -24,11 +24,12 @@ room-defs = { path = "../room-defs" }
 room-duke = { path = "../room-duke" }
 room-faceswap = { path = "../room-faceswap" }
 room-formats = { path = "../room-formats" }
-room-game = { path = "../room-game" }
+room-game = { path = "../room-game", features = ["zvm-aot-jit"] }
 room-map = { path = "../room-map" }
 room-nodebuild = { path = "../room-nodebuild" }
 room-sim = { path = "../room-sim" }
 room-vfs = { path = "../room-vfs" }
 room-zscript = { path = "../room-zscript" }
 room-zvm = { path = "../room-zvm" }
+room-zvm-wasm = { path = "../room-zvm-wasm", features = ["wasmtime"] }
 png.workspace = true

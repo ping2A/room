@@ -38,7 +38,7 @@ room-music = { path = "../room-music" }
 room-net = { path = "../room-net", features = ["noise"] }
 room-nodebuild = { path = "../room-nodebuild" }
 room-render = { path = "../room-render" }
-room-sim = { path = "../room-sim" }
+room-sim = { path = "../room-sim", features = ["zvm-aot-jit"] }
 room-core = { path = "../room-core" }
 room-testkit = { path = "../room-testkit" }
 room-ui = { path = "../room-ui" }

@@ -32,6 +32,28 @@ fn resolve_module(vfs: &Vfs, manifest: LumpId, file: &str) -> Option<LumpId> {
         .or_else(|| (path.len() <= 8 && !path.contains('/')).then(|| vfs.find_any_ns(&path))?)
 }
 
+/// ZScript files the mounted mods reimplement (`[mod] replaces_zscript`),
+/// lower-case, `/`-separated. [`crate::load_zscript_from_vfs`] leaves them
+/// out (`docs/39` §4).
+#[must_use]
+pub fn replaced_zscript(vfs: &Vfs) -> Vec<String> {
+    let mut out = Vec::new();
+    for id in vfs.iter_lumps().filter(|&id| is_manifest(vfs, id)) {
+        let Ok(bytes) = vfs.read(id) else {
+            continue;
+        };
+        if let Ok(m) = Manifest::parse(&String::from_utf8_lossy(&bytes)) {
+            for p in m.replaces_zscript {
+                let p = p.trim_start_matches("./").trim_start_matches('/').to_ascii_lowercase();
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    out
+}
+
 struct DiscoveredModule {
     name: String,
     scope: room_script::ModuleScope,

@@ -1,0 +1,14 @@
+[mod]
+id = "room.port.brutal-doom-zscript"
+name = "Brutal Doom ZScript (Rust port)"
+version = "0.1.0"
+abi = 1
+description = "Brutal Doom's ZScript (zscript/BD_WCS.zc, zscript/DamageHandler.zc) as a Rust WASM mod. Load it after Brutal Doom."
+# The ZScript files this mod replaces: Room drops them (and the `#include`s
+# that pull them in) from the mounted mods before compiling ZScript.
+replaces_zscript = ["zscript/BD_WCS.zc", "zscript/DamageHandler.zc"]
+
+[[module]]
+file = "BDZSCRPT"
+scope = "play"
+name = "brutal-zscript"

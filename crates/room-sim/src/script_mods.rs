@@ -40,6 +40,21 @@ thread_local! {
     static BORROWED_WORLD: Cell<*mut World> = const { Cell::new(ptr::null_mut()) };
 }
 
+/// Arguments and string result of the static call being served
+/// (`script_arg_*` / `script_return_str`, `docs/39` §2).
+#[derive(Default)]
+struct StaticCallCtx {
+    ints: Vec<i32>,
+    strs: Vec<Option<String>>,
+    ret_str: Option<String>,
+}
+
+thread_local! {
+    /// Innermost running static call (a stack: calls can nest through ACS).
+    static CALL_CTX: std::cell::RefCell<Vec<StaticCallCtx>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Sim-side event queued for mod handlers (drained after each tic).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScriptEvent {
@@ -1014,6 +1029,73 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
             }
             i32v(actor.hit_kind)
         }
+        GameFn::ScriptArgCount => i32v(CALL_CTX.with(|c| {
+            c.borrow()
+                .last()
+                .map_or(0, |ctx| i32::try_from(ctx.ints.len()).unwrap_or(0))
+        })),
+        GameFn::ScriptArgI32 => {
+            let i = usize::try_from(ai(a, 0)).ok()?;
+            i32v(CALL_CTX.with(|c| {
+                c.borrow()
+                    .last()
+                    .and_then(|ctx| ctx.ints.get(i).copied())
+                    .unwrap_or(0)
+            }))
+        }
+        GameFn::ScriptArgStr => {
+            let i = usize::try_from(ai(a, 0)).ok()?;
+            let text = CALL_CTX.with(|c| {
+                c.borrow()
+                    .last()
+                    .and_then(|ctx| ctx.strs.get(i).cloned().flatten())
+            });
+            match text {
+                Some(t) => i32v(mem.write_str(ai(a, 1), ai(a, 2), &t)),
+                None => i32v(-1),
+            }
+        }
+        GameFn::ScriptReturnStr => {
+            let text = mem.read_str(ai(a, 0), ai(a, 1));
+            CALL_CTX.with(|c| {
+                if let Some(ctx) = c.borrow_mut().last_mut() {
+                    ctx.ret_str = Some(text);
+                }
+            });
+            None
+        }
+        GameFn::PlayerGender => {
+            let slot = usize::try_from(ai(a, 0)).ok()?.checked_sub(1)?;
+            let p = world.players.get(slot)?.as_ref()?;
+            let g = p.gender.map_or_else(
+                || world.zscript.cvar_int("gender").unwrap_or(0).clamp(0, 3),
+                i32::from,
+            );
+            i32v(g)
+        }
+        GameFn::PlayerCvarI32 => {
+            let slot = usize::try_from(ai(a, 0)).ok()?.checked_sub(1)?;
+            let name = mem.read_str(ai(a, 1), ai(a, 2));
+            if name.is_empty() {
+                return i32v(0);
+            }
+            let key = format!("{}:{}", slot, name.to_ascii_lowercase());
+            let v = world
+                .acs_user_cvars
+                .get(&key)
+                .copied()
+                .or_else(|| world.zscript.cvar_int(&name))
+                .unwrap_or(0);
+            i32v(v)
+        }
+        GameFn::ActorSetSoundClass => {
+            let id = live(world, au(a, 0))?;
+            let name = mem.read_str(ai(a, 1), ai(a, 2));
+            if let Some(actor) = world.actors.get_mut(id) {
+                actor.sound_class = name;
+            }
+            None
+        }
     }
 }
 
@@ -1202,7 +1284,7 @@ pub fn dispatch_state_action(
     let Some(m) = rt.mods.get_mut(module_index) else {
         return None;
     };
-    if m.failed {
+    if m.failed || m.busy {
         return None;
     }
     let payload = ActionPayload {
@@ -1217,6 +1299,7 @@ pub fn dispatch_state_action(
     }
     BORROWED_WORLD.with(|c| c.set(world as *mut World));
     world.script_mod_index = module_index as u16;
+    m.busy = true;
     let result = (|| {
         m.instance.write_memory(m.scratch as usize, &bytes).ok()?;
         let mut budget = Budget::from_config(&m.cfg);
@@ -1229,6 +1312,7 @@ pub fn dispatch_state_action(
             )
             .ok()
     })();
+    m.busy = false;
     BORROWED_WORLD.with(|c| c.set(ptr::null_mut()));
     match result {
         Some(0) => Some(None),
@@ -1266,6 +1350,153 @@ pub fn dispatch_actor_state_action(
     )
 }
 
+/// Result of an ACS `ScriptCall` served by a WASM mod.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StaticCallResult {
+    /// The function returned an integer.
+    Int(i64),
+    /// The function returned a string (`script_return_str`).
+    Str(String),
+}
+
+/// Run a `reg_static_function` target (ACS `ScriptCall(class, func, …)`)
+/// in the bound [`ModRuntime`]. `args` are the call's arguments after the
+/// class and function names; `strings[i]` is `Some` when `args[i]` is a
+/// string. `None` when no runtime is bound, no mod registered that name,
+/// or the module trapped (it is then disabled, as for state actions).
+pub fn dispatch_static_call(
+    world: &mut World,
+    class_name: &str,
+    func_name: &str,
+    args: &[i32],
+    strings: &[Option<String>],
+) -> Option<StaticCallResult> {
+    let rt = ACTIVE_RT.get();
+    if rt.is_null() {
+        return None;
+    }
+    // SAFETY: `bind_active_runtime` keeps `rt` alive for the tic.
+    let rt = unsafe { &mut *rt };
+    let target = rt
+        .static_fns
+        .iter()
+        .find(|f| {
+            f.class_name.eq_ignore_ascii_case(class_name)
+                && f.func_name.eq_ignore_ascii_case(func_name)
+        })?
+        .clone();
+    let m = rt.mods.get_mut(target.module_index)?;
+    if m.failed || m.busy {
+        return None;
+    }
+    let mut strs = strings.to_vec();
+    strs.resize(args.len(), None);
+    CALL_CTX.with(|c| {
+        c.borrow_mut().push(StaticCallCtx {
+            ints: args.to_vec(),
+            strs,
+            ret_str: None,
+        });
+    });
+    let outer = BORROWED_WORLD.get();
+    BORROWED_WORLD.with(|c| c.set(world as *mut World));
+    let prev_index = world.script_mod_index;
+    world.script_mod_index = target.module_index as u16;
+    let mut budget = Budget::from_config(&m.cfg);
+    m.busy = true;
+    let result = m.instance.dispatch(target.callback_id, 0, 0, &mut budget);
+    m.busy = false;
+    world.script_mod_index = prev_index;
+    BORROWED_WORLD.with(|c| c.set(outer));
+    let ctx = CALL_CTX.with(|c| c.borrow_mut().pop()).unwrap_or_default();
+    match result {
+        Ok(v) => Some(match ctx.ret_str {
+            Some(text) => StaticCallResult::Str(text),
+            None => StaticCallResult::Int(v),
+        }),
+        Err(e) => {
+            m.failed = true;
+            let line = format!("[{}] disabled: {class_name}.{func_name}: {e}", m.name);
+            world.push_message(line.clone());
+            lock(&rt.log).push(line);
+            None
+        }
+    }
+}
+
+/// True when the bound [`ModRuntime`] has any `ModifyDamage` virtual.
+#[must_use]
+pub fn has_modify_damage() -> bool {
+    let rt = ACTIVE_RT.get();
+    // SAFETY: see `dispatch_static_call`.
+    !rt.is_null() && unsafe { !(*rt).modify_damage.is_empty() }
+}
+
+/// Run the `ModifyDamage` virtual a mod registered for `class_name` (an
+/// inventory item `owner` carries). Returns the new damage, or `None` when
+/// no mod class of that name has the virtual (the caller then tries
+/// ZScript).
+#[allow(clippy::too_many_arguments)]
+pub fn dispatch_modify_damage(
+    world: &mut World,
+    class_name: &str,
+    owner: ActorId,
+    inflictor: Option<ActorId>,
+    source: Option<ActorId>,
+    damage: i32,
+    dtype: &str,
+    passive: bool,
+    flags: i32,
+) -> Option<i32> {
+    let rt = ACTIVE_RT.get();
+    if rt.is_null() {
+        return None;
+    }
+    // SAFETY: see `dispatch_static_call`.
+    let rt = unsafe { &mut *rt };
+    let &(module_index, callback_id) = rt.modify_damage.get(&class_name.to_ascii_lowercase())?;
+    let m = rt.mods.get_mut(module_index)?;
+    if m.failed || m.busy {
+        return Some(damage);
+    }
+    let payload = room_script_abi::ModifyDamageV1 {
+        owner: actor_ref(owner),
+        inflictor: opt_ref(inflictor),
+        source: opt_ref(source),
+        damage,
+        passive: i32::from(passive),
+        flags,
+        dtype_len: 0,
+    };
+    let mut bytes = [0u8; room_script_abi::ModifyDamageV1::SIZE + room_script_abi::ModifyDamageV1::MAX_DTYPE];
+    let n = payload.write_le(dtype.as_bytes(), &mut bytes);
+    let outer = BORROWED_WORLD.get();
+    BORROWED_WORLD.with(|c| c.set(world as *mut World));
+    let prev_index = world.script_mod_index;
+    world.script_mod_index = module_index as u16;
+    m.busy = true;
+    let result = (|| {
+        m.instance.write_memory(m.scratch as usize, &bytes[..n]).ok()?;
+        let mut budget = Budget::from_config(&m.cfg);
+        m.instance
+            .dispatch(callback_id, m.scratch, n as i32, &mut budget)
+            .ok()
+    })();
+    m.busy = false;
+    world.script_mod_index = prev_index;
+    BORROWED_WORLD.with(|c| c.set(outer));
+    match result {
+        Some(v) => Some(i32::try_from(v.max(0)).unwrap_or(i32::MAX)),
+        None => {
+            m.failed = true;
+            let line = format!("[{}] disabled: {class_name}.ModifyDamage trap", m.name);
+            world.push_message(line.clone());
+            lock(&rt.log).push(line);
+            Some(damage)
+        }
+    }
+}
+
 /// One mod module to load.
 #[derive(Clone, Debug)]
 pub struct ModSource {
@@ -1287,6 +1518,9 @@ struct LoadedMod {
     cfg: ModuleConfig,
     scratch: i32,
     failed: bool,
+    /// Inside a guest call: a nested dispatch into the same instance (an
+    /// import that damages, which runs `ModifyDamage`) is skipped.
+    busy: bool,
 }
 
 /// Play-scope WASM mods for one game session.
@@ -1302,6 +1536,10 @@ pub struct ModRuntime {
     generated_wad: Vec<u8>,
     /// Weapon slots recorded during registration (`docs/31` MA4).
     weapon_slots: Vec<room_script::GeneratedWeaponSlot>,
+    /// ACS `ScriptCall` targets (`reg_static_function`).
+    static_fns: Vec<room_script::RegisteredStaticFunction>,
+    /// `ModifyDamage` virtuals: lower-case class name → (module, callback).
+    modify_damage: BTreeMap<String, (usize, i32)>,
 }
 
 /// Event bit index → `callback_base + index` dispatch id.
@@ -1483,6 +1721,7 @@ impl ModRuntime {
                 cfg,
                 scratch,
                 failed: false,
+                busy: false,
             });
         }
         let reg = lock(&host.reg);
@@ -1497,6 +1736,16 @@ impl ModRuntime {
         let gen_lumps = reg.lumps().to_vec();
         let gen_aliases = reg.sound_aliases().to_vec();
         let weapon_slots = reg.weapon_slots().to_vec();
+        let static_fns = reg.static_functions().to_vec();
+        let modify_damage = classes
+            .iter()
+            .flat_map(|c| {
+                c.virtuals
+                    .iter()
+                    .filter(|(slot, _)| *slot == room_script::VirtualSlot::ModifyDamage as u32)
+                    .map(|&(_, cb)| (c.name.to_ascii_lowercase(), (c.module_index, cb)))
+            })
+            .collect();
         let hash = hash ^ reg.fingerprint();
         drop(reg);
         let generated_wad = if gen_lumps.is_empty() && gen_aliases.is_empty() {
@@ -1515,6 +1764,8 @@ impl ModRuntime {
             hash,
             generated_wad,
             weapon_slots,
+            static_fns,
+            modify_damage,
         })
     }
 
@@ -1639,6 +1890,7 @@ impl ModRuntime {
             }
             let mut budget = Budget::from_config(&m.cfg);
             let len = i32::try_from(payload.len().min(SCRATCH_BYTES as usize)).unwrap_or(0);
+            m.busy = true;
             let res = m
                 .instance
                 .write_memory(m.scratch as usize, &payload[..len as usize])
@@ -1646,6 +1898,7 @@ impl ModRuntime {
                     m.instance
                         .dispatch(h.callback_base + idx, m.scratch, len, &mut budget)
                 });
+            m.busy = false;
             if let Err(e) = res {
                 m.failed = true;
                 let line = format!("[{}] disabled: {e}", m.name);
@@ -1668,7 +1921,7 @@ impl ModRuntime {
             w.script_events.clear();
         }
         self.with_world(slot, |rt| {
-            let (maptime, players) = {
+            let (maptime, players, things) = {
                 let g = lock(&rt.cell);
                 let Some(w) = g.as_ref() else {
                     return;
@@ -1679,8 +1932,24 @@ impl ModRuntime {
                     .enumerate()
                     .filter_map(|(i, p)| Some((i as i32 + 1, opt_ref(p.as_ref()?.mo))))
                     .collect();
-                (w.level.maptime as i32, players)
+                // Things the map placed spawned before any mod could listen:
+                // replay `WorldThingSpawned` for them (thinker order), as
+                // GZDoom does during level setup, before `WorldLoaded`.
+                let things: Vec<u64> = if rt.mask & event_mask::WORLD_THING_SPAWNED != 0 {
+                    w.thinkers
+                        .default
+                        .iter()
+                        .filter(|&&id| w.actors.get(id).is_some_and(|a| !a.destroyed))
+                        .map(|&id| actor_ref(id))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                (w.level.maptime as i32, players, things)
             };
+            for thing in things {
+                rt.fire(event_mask::WORLD_THING_SPAWNED, &thing.to_le_bytes());
+            }
             let mut p = Vec::new();
             p.extend_from_slice(&0i32.to_le_bytes());
             p.extend_from_slice(&maptime.to_le_bytes());
@@ -2126,5 +2395,96 @@ mod tests {
             "world keeps running"
         );
         assert_eq!(msgs.iter().filter(|m| m.contains("disabled")).count(), 1);
+    }
+
+    /// The Rust port of Brutal Doom's ZScript (`mods/brutal-zscript-rs`),
+    /// built module: skill-6 tokens from `WorldThingSpawned` replays and
+    /// `PlayerEntered`, its `ModifyDamage` virtual in `damage_mobj`, and the
+    /// ACS `ScriptCall` paths with string arguments and a string result.
+    #[test]
+    fn brutal_zscript_port_end_to_end() {
+        use room_acs::AcsHost as _;
+        let text = format!(
+            "{}\nactor GenderMale : Inventory {{}}\nactor GenderFemale : Inventory {{}}\n",
+            include_str!("../../../wadsrc/room/actors/doom.txt")
+        );
+        let ir = parse_decorate(&text).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let src = ModSource {
+            mod_id: "room.port.brutal-doom-zscript".into(),
+            name: "brutal-zscript".into(),
+            scope: ModuleScope::Play,
+            bytes: include_bytes!("../../../mods/brutal-zscript-rs/brutal-zscript.wasm").to_vec(),
+            options: Default::default(),
+        };
+        let lumps: (LumpFindFn, LumpBytesFn) = (
+            Arc::new(|name: &[u8], _ns| if name.eq_ignore_ascii_case(b"PLAYPAL") { 0 } else { -1 }),
+            Arc::new(|i| (i == 0).then(|| b"\x01\x02\x03\xc8".to_vec())),
+        );
+        let mut rt = ModRuntime::new_with_lumps(&[src], Arc::clone(&classes), Some(lumps)).unwrap();
+        let (classes, states) = rt.merge_classes(&classes, &states).unwrap();
+        let token = classes.find_name("Damage_Control").expect("port registers its token");
+        let mut world = World::from_map_with_classes(map_with_imp(), Arc::new(classes), Arc::new(states)).unwrap();
+        // Room plays skills 1-5; Brutal Doom's branch needs 6.
+        world.skill = 6;
+        let mut slot = Some(world);
+        rt.begin_map(&mut slot);
+        assert!(rt.drain_log().is_empty());
+        let w = slot.as_mut().unwrap();
+        let player = w.players[0].as_ref().and_then(|p| p.mo).unwrap();
+        let imp_class = w.classes.find_name("DoomImp").unwrap();
+        let imp = w
+            .thinkers
+            .default
+            .iter()
+            .copied()
+            .find(|&id| w.actors.get(id).is_some_and(|a| a.class == imp_class))
+            .unwrap();
+        let has = |w: &World, id, c| w.inventory.iter(id).any(|i| i.class == c);
+        assert!(has(w, player, token), "PlayerEntered gives the token");
+        assert!(has(w, imp, token), "map monsters get WorldThingSpawned");
+
+        bind_active_runtime(&mut rt);
+        let w = slot.as_mut().unwrap();
+        let hp = w.actors.get(player).unwrap().health;
+        crate::damage::damage_mobj(w, player, Some(imp), Some(imp), 3);
+        assert_eq!(w.actors.get(player).unwrap().health, hp - 21, "monster hits x7");
+        let hp = w.actors.get(imp).unwrap().health;
+        crate::damage::damage_mobj(w, imp, Some(player), Some(player), 2);
+        assert_eq!(w.actors.get(imp).unwrap().health, hp - 14, "player hits x7 too");
+
+        let mut host = crate::acs::WorldAcsHost { world: w };
+        // `ScriptCall(class, func, strings…, ints…)` as the ACS VM hands it
+        // over: string arguments resolved, the rest plain ints.
+        let call = |host: &mut crate::acs::WorldAcsHost<'_>, names: &[&str], ints: &[i32]| {
+            let mut args = vec![0; names.len()];
+            args.extend_from_slice(ints);
+            let strings: Vec<Option<String>> = (0..args.len())
+                .map(|i| names.get(i).map(|s| (*s).to_owned()))
+                .collect();
+            let v = host.script_call_resolved(&args, &strings, 0);
+            (v, host.take_script_call_string())
+        };
+        let lump = call(&mut host, &["ZandroCompat", "LumpOpen", "PLAYPAL"], &[-2, 0]).0;
+        assert_eq!(lump, 0);
+        assert_eq!(call(&mut host, &["ZandroCompat", "LumpGetInfoInt"], &[lump, 0]).0, 4);
+        assert_eq!(
+            call(&mut host, &["ZandroCompat", "LumpGetInfoStr"], &[lump, 1]).1.as_deref(),
+            Some("PLAYPAL")
+        );
+        assert_eq!(call(&mut host, &["ZandroCompat", "LumpRead"], &[lump, 3, 1]).0, 200);
+        assert_eq!(call(&mut host, &["ZandroCompat", "LumpOpen", "COLORMAP"], &[-2, 0]).0, -1);
+        call(&mut host, &["ZandroCompat", "SetPlayerTID"], &[0, 77]);
+        assert_eq!(call(&mut host, &["ZandroCompat", "GetPlayerTID"], &[0]).0, 77);
+        assert_eq!(call(&mut host, &["zandrocompat", "playeringame"], &[0]).0, 1);
+        call(&mut host, &["ZandroCompat", "GetGender"], &[0]);
+        unbind_active_runtime();
+        let w = slot.as_ref().unwrap();
+        let male = w.classes.find_name("GenderMale").unwrap();
+        assert!(has(w, player, male));
+        assert_eq!(w.actors.get(player).unwrap().sound_class, "player");
+        assert_eq!(w.actors.get(player).unwrap().tid, 77);
+        assert!(rt.drain_log().is_empty(), "{:?}", rt.drain_log());
     }
 }

@@ -9,6 +9,13 @@ description = "Playsim: World, thinkers, actors, physics, and specials."
 [lints]
 workspace = true
 
+[features]
+## ZScript AOT tier (`docs/37` ZW3): `ROOM_ZVM_TIER=aot` compiles the loaded
+## program to WebAssembly and runs it instead of the interpreter.
+zvm-aot = ["dep:room-zvm-wasm"]
+## Same, on wasmtime/Cranelift (desktop JIT) instead of wasmi.
+zvm-aot-jit = ["zvm-aot", "room-zvm-wasm/wasmtime"]
+
 [dependencies]
 room-acs = { path = "../room-acs" }
 room-core = { path = "../room-core" }
@@ -18,6 +25,7 @@ room-nodebuild = { path = "../room-nodebuild" }
 room-script = { path = "../room-script" }
 room-script-abi = { path = "../room-script-abi" }
 room-zvm = { path = "../room-zvm" }
+room-zvm-wasm = { path = "../room-zvm-wasm", optional = true }
 room-zscript = { path = "../room-zscript" }
 thiserror.workspace = true
 xxhash-rust.workspace = true

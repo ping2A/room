@@ -93,6 +93,7 @@ impl Editor {
             abi: room_script::ABI_VERSION,
             max_players: None,
             options: Default::default(),
+            replaces_zscript: Vec::new(),
             modules: m
                 .modules
                 .iter()

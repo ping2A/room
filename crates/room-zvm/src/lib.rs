@@ -3,14 +3,25 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 #![allow(clippy::module_name_repetitions)]
 
+#[cfg(feature = "aot")]
+mod aot;
+#[cfg(feature = "aot")]
+pub use aot::AotPolicy;
+#[cfg(feature = "aot-web")]
+pub use aot::web_backend;
+pub use provider::{AotProvider, provide_aot, set_aot_provider};
+mod provider;
+pub mod aot_abi;
 mod budget;
 mod coverage;
 mod heap;
 mod interp;
 mod natives;
 mod opcode;
+mod ops;
 mod peephole;
 mod program;
+mod program_codec;
 mod tier1;
 mod trap;
 mod uz3_natives;
@@ -21,12 +32,14 @@ pub use coverage::{CoverageRow, NativeStatus, bd_stub_map, coverage_percent, cov
 pub use heap::{HeapImage, HeapKindImage, HeapSlotImage, ObjHandle, ObjKind, StrHandle, ZvmHeap};
 pub use interp::{DEFAULT_FUEL, DEFAULT_STACK_LIMIT, Value, Zvm, ZvmConfig};
 pub use natives::{
-    NativeFn, NativeRegs, NativeTable, ZsActorOp, ZsLevelOp, ZsNativeOp, ZvmCtx, ZvmPlayHost, format_printf,
-    register_bd_natives, vararg_values,
+    NativeFn, NativeRegs, NativeTable, ZsActorOp, ZsLevelOp, ZsNativeOp, ZvmCtx, ZvmPlayHost,
+    format_printf, register_bd_natives, vararg_values,
 };
-pub use opcode::{Op, pack, unpack};
+pub use opcode::{Op, has_ext, pack, unpack};
 pub use peephole::{optimize_function, optimize_program};
-pub use program::{ClassLayout, CompiledFunction, CompiledProgram, FuncParam};
+pub use program::{
+    ClassLayout, CompiledFunction, CompiledProgram, FuncParam, block_costs, jump_target, next_insn,
+};
 pub use tier1::{ExecTier, conformance_call, jit_enabled};
 pub use trap::{Trap, TrapPolicy};
 pub use uz3_natives::{HOST_NATIVES, QUEUED_NATIVES, quat_from_ypr};

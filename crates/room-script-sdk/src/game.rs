@@ -40,6 +40,12 @@ impl Actor {
         (bits != 0).then_some(Self(ActorRef(bits as u64)))
     }
 
+    /// Set the `SoundClass` used for `$playersound` lookups.
+    pub fn set_sound_class(self, name: &str) {
+        // SAFETY: name slice lives for the call.
+        unsafe { sys::actor_set_sound_class(self.bits(), name.as_ptr() as i32, name.len() as i32) }
+    }
+
     /// Null handle.
     #[must_use]
     pub const fn is_null(self) -> bool {
@@ -809,10 +815,125 @@ pub trait RoomMod: Default {
     fn on_state_action(&mut self, _payload: crate::ActionPayload) -> i64 {
         0
     }
+
+    /// ACS `ScriptCall` target registered with
+    /// [`crate::reg::static_function`] under `STATIC_CALLBACK_BASE + index`.
+    /// Read the arguments with [`StaticCall`]; return the integer result
+    /// (or call [`StaticCall::return_str`]).
+    fn on_static_call(&mut self, _index: i32, _call: StaticCall) -> i64 {
+        0
+    }
+
+    /// `Inventory.ModifyDamage` virtual registered with
+    /// [`crate::reg::class_virtual`]`(virtual_slot::MODIFY_DAMAGE,
+    /// VIRTUAL_CALLBACK_BASE + index)`. Return the new damage.
+    fn on_modify_damage(&mut self, _index: i32, ev: ModifyDamage<'_>) -> i32 {
+        ev.damage
+    }
 }
 
 /// Callback id of event bit 0 for [`crate::export_mod!`] handlers.
 pub const EVENT_CALLBACK_BASE: i32 = 1000;
+/// First callback id of [`RoomMod::on_static_call`] targets.
+pub const STATIC_CALLBACK_BASE: i32 = 2000;
+/// First callback id of [`RoomMod::on_modify_damage`] virtuals.
+pub const VIRTUAL_CALLBACK_BASE: i32 = 3000;
+
+pub use room_script_abi::virtual_slot;
+
+/// Arguments of the ACS `ScriptCall` being served (after the class and
+/// function names), read through the `script_arg_*` imports.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StaticCall;
+
+impl StaticCall {
+    /// Number of arguments.
+    #[must_use]
+    pub fn len(self) -> usize {
+        // SAFETY: scalar import.
+        usize::try_from(unsafe { sys::script_arg_count() }).unwrap_or(0)
+    }
+
+    /// True when the call has no arguments.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    /// Integer argument `i` (0 when missing — ACS fills omitted arguments
+    /// with 0, so this doubles as the ZScript default for `int` parameters).
+    #[must_use]
+    pub fn int(self, i: usize) -> i32 {
+        // SAFETY: scalar import.
+        unsafe { sys::script_arg_i32(i as i32) }
+    }
+
+    /// String argument `i` copied into `buf` (`None` when it is not a
+    /// string; truncated to `buf`).
+    pub fn str_into(self, i: usize, buf: &mut [u8]) -> Option<&str> {
+        // SAFETY: buf pointer/len valid for the call.
+        let n = unsafe { sys::script_arg_str(i as i32, buf.as_mut_ptr() as i32, buf.len() as i32) };
+        let n = usize::try_from(n).ok()?.min(buf.len());
+        core::str::from_utf8(&buf[..n]).ok()
+    }
+
+    /// Make the call return `text` (ACS gets a string handle).
+    pub fn return_str(self, text: &str) {
+        // SAFETY: text slice lives for the call.
+        unsafe { sys::script_return_str(text.as_ptr() as i32, text.len() as i32) }
+    }
+}
+
+/// Decoded [`room_script_abi::ModifyDamageV1`] payload.
+#[derive(Clone, Copy, Debug)]
+pub struct ModifyDamage<'a> {
+    /// Actor carrying the item.
+    pub owner: Option<Actor>,
+    /// Projectile / puff.
+    pub inflictor: Option<Actor>,
+    /// Attacker.
+    pub source: Option<Actor>,
+    /// Damage so far.
+    pub damage: i32,
+    /// True when the owner is being hurt (target-side item).
+    pub passive: bool,
+    /// `DMG_*` flags.
+    pub flags: i32,
+    /// Damage type name (`""` = normal).
+    pub damage_type: &'a str,
+}
+
+impl<'a> ModifyDamage<'a> {
+    /// Decode a payload (`None` when short).
+    #[must_use]
+    pub fn decode(bytes: &'a [u8]) -> Option<Self> {
+        let (h, dtype) = room_script_abi::ModifyDamageV1::read_le(bytes)?;
+        let actor = |bits: u64| Actor::from_bits(bits as i64);
+        Some(Self {
+            owner: actor(h.owner),
+            inflictor: actor(h.inflictor),
+            source: actor(h.source),
+            damage: h.damage,
+            passive: h.passive != 0,
+            flags: h.flags,
+            damage_type: core::str::from_utf8(dtype).unwrap_or(""),
+        })
+    }
+}
+
+/// A player's userinfo gender (0 male, 1 female, 2 neutral, 3 other).
+#[must_use]
+pub fn player_gender(slot: i32) -> i32 {
+    // SAFETY: scalar import.
+    unsafe { sys::player_gender(slot + 1) }
+}
+
+/// A player's user CVar (falls back to the global CVar, then 0).
+#[must_use]
+pub fn player_cvar(slot: i32, name: &str) -> i32 {
+    // SAFETY: name slice lives for the call.
+    unsafe { sys::player_cvar_i32(slot + 1, name.as_ptr() as i32, name.len() as i32) }
+}
 
 /// Single-threaded mod state slot used by [`crate::export_mod!`].
 pub struct ModCell<T> {

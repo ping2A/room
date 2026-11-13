@@ -37,6 +37,10 @@ export function install(ctx) {
     if (!S.mod || !S.summary) { ctx.toast("Open a WAD first", true); return; }
     name = String(name || "").trim().toUpperCase();
     if (!name || name === "-") { ctx.toast("Nothing to edit here (no texture)", true); return; }
+    if (S.summary.duke && ns === "textures" && /^BT\d{4,5}$/.test(name)) {
+      ns = "duke";
+      name = String(Number(name.slice(2)));
+    }
     const id = `paint:${ns}:${name}`;
     if (S.lumpTabs.has(id)) {
       ctx.selectDocTab(id);
@@ -44,7 +48,11 @@ export function install(ctx) {
       return;
     }
     let img;
-    try { img = S.mod.roomEditorImageGet(ns, name); } catch (e) { ctx.toast(ctx.errText(e), true); return; }
+    try {
+      img = ns === "duke"
+        ? S.mod.roomEditorDukeTileGet(Number(name))
+        : S.mod.roomEditorImageGet(ns, name);
+    } catch (e) { ctx.toast(ctx.errText(e), true); return; }
     if (!img) { ctx.toast(`${name}: no picture found in ${ns}`, true); return; }
     const view = build(ns, name, img, opts);
     S.lumpTabs.set(id, { title: `🎨 ${name}`, view });
@@ -56,7 +64,7 @@ export function install(ctx) {
   function build(ns, name, img, opts) {
     const pal = S.mod.roomEditorPalette();
     const P = {
-      ns, name, w: img.w, h: img.h, left: img.left, top: img.top,
+      ns, name, w: img.w, h: img.h, left: img.left || 0, top: img.top || 0,
       idx: Uint8Array.from(img.indices), alpha: Uint8Array.from(img.alpha),
       fg: 0, bg: TRANSPARENT, tool: "pencil", size: 1, fillShapes: false,
       zoom: [16, 12, 8, 6, 4, 3, 2, 1].find((z) => z * Math.max(img.w, img.h) <= 512) || 1,
@@ -73,7 +81,7 @@ export function install(ctx) {
       P.fg = hist.indexOf(Math.max(...hist));
       if (P.opaque) P.bg = nearest(0, 0, 0);
     }
-    const live = LIVE_NS.has(ns);
+    const live = LIVE_NS.has(ns) || ns === "duke";
 
     // ---------------------------------------------------------------- DOM
     const view = el("div", { class: "painter" });
@@ -178,8 +186,17 @@ export function install(ctx) {
       clearTimeout(pushTimer);
       if (commit) clearTimeout(commitTimer);
       try {
-        const how = S.mod.roomEditorImagePut(P.ns, P.name, P.w, P.h, P.left, P.top, P.idx, P.opaque ? new Uint8Array() : P.alpha, commit);
-        if (how === "apply" && !commit) {
+        let how;
+        if (P.ns === "duke") {
+          S.mod.roomEditorDukeTilePut(Number(P.name), P.w, P.h, P.idx, P.alpha);
+          how = "duke";
+        } else {
+          how = S.mod.roomEditorImagePut(P.ns, P.name, P.w, P.h, P.left, P.top, P.idx, P.opaque ? new Uint8Array() : P.alpha, commit);
+        }
+        if (how === "duke") {
+          if (commit) { ctx.clearThumbs(); ctx.render2d(); }
+          setPill(commit ? "native ART saved" : "native ART editing", commit ? "live" : "warn");
+        } else if (how === "apply" && !commit) {
           setPill("unsaved — Save to apply", "warn");
         } else if (how === "apply") {
           ctx.setSummary(S.mod.roomEditorApplyLumps());
@@ -201,7 +218,9 @@ export function install(ctx) {
     function save() {
       clearTimeout(commitTimer);
       const how = push(true);
-      if (how) ctx.toast(how === "apply" ? `${P.name} saved — level restarted to show it` : `${P.name} saved · live in the 3D view · included in Export`);
+      if (how) ctx.toast(how === "duke"
+        ? `ART tile ${P.name} saved · included in native GRP export and play-test`
+        : how === "apply" ? `${P.name} saved — level restarted to show it` : `${P.name} saved · live in the 3D view · included in Export`);
     }
     function revert() {
       if (!confirm(`Drop all pixel edits to ${P.name} and reload the original?`)) return;
@@ -1233,6 +1252,7 @@ export function install(ctx) {
         kids.push(snd.box);
       }
       const where = {
+        duke: "Saved in the native Build ART archive; included in Export GRP and the next native Duke test.",
         textures: "Saved as a TX_START lump: it replaces the TEXTURE1 composite of the same name.",
         flats: "Saved as a raw flat (F_START).",
         patches: "Saved as a patch: every TEXTURE1 composite using it updates.",
@@ -1270,7 +1290,7 @@ export function install(ctx) {
           : []),
         el("button", { class: "btn small", onclick: exportPng }, "Export PNG"),
         el("button", { class: "btn small", onclick: () => { S[P.ns === "flats" ? "flat" : "texture"] = P.name; ctx.renderInspector(); ctx.toast(`Paint ${P.ns === "flats" ? "flat" : "texture"}: ${P.name}`); } }, "Use as paint"),
-        el("button", { class: "btn small danger", onclick: revert }, "Revert"),
+        ...(P.ns === "duke" ? [] : [el("button", { class: "btn small danger", onclick: revert }, "Revert")]),
         el("button", { class: "btn small go", onclick: save }, "Save (Ctrl+S)")),
       el("div", { class: "px-grid" }, wrap, side));
 

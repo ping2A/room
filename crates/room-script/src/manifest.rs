@@ -100,6 +100,11 @@ pub struct Manifest {
     pub max_players: Option<u8>,
     /// Shared `[options]` (identical on every client; `docs/31` MA4b).
     pub options: ManifestOptions,
+    /// `[mod] replaces_zscript = ["zscript/a.zs", …]`: ZScript files of the
+    /// mods mounted before this one that it reimplements (a WASM port).
+    /// Room leaves them, and the `#include`s naming them, out of the
+    /// ZScript it compiles.
+    pub replaces_zscript: Vec<String>,
     /// Modules in load order.
     pub modules: Vec<ManifestModule>,
 }
@@ -178,6 +183,19 @@ fn parse_value(raw: &str) -> Option<Value> {
     }
 }
 
+/// `["a", "b"]` (or a single `"a"`) → its strings.
+fn parse_str_list(raw: &str) -> Vec<String> {
+    let inner = raw.trim().trim_start_matches('[').trim_end_matches(']');
+    inner
+        .split(',')
+        .map(|s| {
+            // TOML `\\` is one backslash; paths use `/`.
+            s.trim().trim_matches('"').trim().replace("\\\\", "\\").replace('\\', "/")
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 impl Manifest {
     /// Parse manifest text.
     ///
@@ -241,6 +259,7 @@ impl Manifest {
                             out.abi = i32::try_from(n).unwrap_or(i32::MAX);
                         }
                     }
+                    "replaces_zscript" => out.replaces_zscript = parse_str_list(&value.text()),
                     "max_players" => {
                         if let Value::Int(n) = value {
                             out.max_players = Some(u8::try_from(n.clamp(2, 8)).unwrap_or(8));
@@ -316,6 +335,10 @@ impl Manifest {
             q(&self.version),
             self.abi
         );
+        if !self.replaces_zscript.is_empty() {
+            let list: Vec<String> = self.replaces_zscript.iter().map(|p| q(p)).collect();
+            s.push_str(&format!("replaces_zscript = [{}]\n", list.join(", ")));
+        }
         if !self.options.is_empty() {
             s.push_str("\n[options]\n");
             for (k, v) in &self.options {
@@ -418,5 +441,15 @@ file = "M.wasm"
         for s in ["[", "[[", "=", "\"=\"", "[mod]\n=\"\\", "a = \"\\"] {
             let _ = Manifest::parse(s);
         }
+    }
+
+    #[test]
+    fn parses_replaced_zscript_and_roundtrips() {
+        let text = "[mod]\nid = \"x\"\nreplaces_zscript = [\"zscript/BD_WCS.zc\", \"zscript\\\\DamageHandler.zc\"]\n\n[[module]]\nfile = \"BDZSCRPT\"\n";
+        let m = Manifest::parse(text).unwrap();
+        assert_eq!(m.replaces_zscript, ["zscript/BD_WCS.zc", "zscript/DamageHandler.zc"]);
+        assert_eq!(Manifest::parse(&m.to_toml()).unwrap(), m);
+        let one = Manifest::parse("[mod]\nreplaces_zscript = \"a.zs\"\n").unwrap();
+        assert_eq!(one.replaces_zscript, ["a.zs"]);
     }
 }

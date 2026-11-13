@@ -12,6 +12,7 @@ mod runtime;
 mod save;
 mod sound;
 mod vanilla_lmp;
+pub mod mod_convert;
 mod zscript_load;
 
 pub use demo::{
@@ -29,7 +30,7 @@ pub use headless::{
     apply_complevel_to_world, default_next_map_name, default_par_seconds, keyconf_alias_lines,
     keyconf_default_binds,
 };
-pub use mods::{MANIFEST_LUMP, discover_mods, discover_python_mods};
+pub use mods::{MANIFEST_LUMP, discover_mods, discover_python_mods, replaced_zscript};
 pub use music::{
     doom1_music_lump, doom2_music_lump, intermission_music_candidates, play_first_music_lump,
     play_map_music, play_music_lump, resolve_map_music, title_music_candidates,
@@ -44,6 +45,7 @@ pub use sound::{ListenerFilter, SoundSystem};
 pub use vanilla_lmp::VanillaLmp;
 pub use zscript_load::acs_library_pool;
 pub use zscript_load::{
-    ZscriptLoadReport, load_status_bar_program, load_zscript_from_vfs, log_zscript_report,
+    CONVERTED_MODULE, CONVERTED_RECORD, CONVERTED_UI_MODULE, ZscriptLoadReport, load_status_bar_program,
+    load_zscript_from_vfs, log_zscript_report, status_bar_mod_sources,
     uzdoom_stdlib_sources, zscript_sources_from_vfs,
 };

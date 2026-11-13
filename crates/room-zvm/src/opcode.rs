@@ -241,6 +241,15 @@ impl Op {
     }
 }
 
+/// True when `op` is followed by an extension word.
+///
+/// Shared by the interpreter, the peephole pass and the WASM code generator
+/// (`docs/37` §3) so they cannot disagree on instruction boundaries.
+#[must_use]
+pub fn has_ext(op: Op) -> bool {
+    op.needs_ext()
+}
+
 /// Pack `op | a | b | c` into one word.
 #[must_use]
 pub fn pack(op: Op, a: u8, b: u8, c: u8) -> u32 {

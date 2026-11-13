@@ -31,6 +31,8 @@ room-nodebuild = { path = "../room-nodebuild", optional = true }
 room-duke = { path = "../room-duke", optional = true }
 room-render = { path = "../room-render", optional = true }
 room-script = { path = "../room-script", optional = true }
+room-zvm = { path = "../room-zvm", optional = true, features = ["aot-web"] }
+room-zvm-wasm = { path = "../room-zvm-wasm", optional = true }
 room-sim = { path = "../room-sim", optional = true }
 room-ui = { path = "../room-ui", optional = true }
 room-vfs = { path = "../room-vfs", optional = true }
@@ -119,6 +121,8 @@ browser = [
     "dep:room-render",
     "dep:room-script",
     "dep:room-sim",
+    "dep:room-zvm",
+    "dep:room-zvm-wasm",
     "dep:room-ui",
     "dep:room-vfs",
     "dep:room-zscript",

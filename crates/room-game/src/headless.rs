@@ -250,6 +250,9 @@ pub struct Headless {
     mods: Option<room_sim::script_mods::ModRuntime>,
     /// PWAD of lumps generated during the last `set_script_mods` (MA3).
     generated_mod_wad: Vec<u8>,
+    /// `lump_find` / `lump_read` host data the mods were registered with;
+    /// kept so play-time calls see the same lumps (`restart_mods`).
+    mod_lumps: Option<(LumpFindFn, LumpBytesFn)>,
     /// Host-side play mods (desktop Python, tools).
     native_mods: Vec<Box<dyn crate::native_mods::NativePlayMod>>,
     /// Mod load / runtime errors not yet drained by the shell.
@@ -589,6 +592,7 @@ impl Headless {
             time_left: None,
             mods: None,
             generated_mod_wad: Vec::new(),
+            mod_lumps: None,
             native_mods: Vec::new(),
             mod_errors: Vec::new(),
             conevt: None,
@@ -663,7 +667,13 @@ impl Headless {
         if sources.is_empty() {
             return Ok(Vec::new());
         }
-        let lumps = vfs.as_ref().map(|v| snapshot_lump_host(v));
+        // Without a VFS (e.g. `set_defs` re-registering), keep the lumps
+        // the mods were first registered with.
+        let lumps = match vfs.as_ref() {
+            Some(v) => Some(snapshot_lump_host(v)),
+            None => self.mod_lumps.clone(),
+        };
+        self.mod_lumps.clone_from(&lumps);
         let rt = room_sim::script_mods::ModRuntime::new_with_lumps(
             &sources,
             Arc::clone(&self.classes),
@@ -736,8 +746,12 @@ impl Headless {
         );
         let mut next = None;
         if !sources.is_empty() {
-            let rt = room_sim::script_mods::ModRuntime::new(&sources, Arc::clone(&classes))
-                .map_err(err)?;
+            let rt = room_sim::script_mods::ModRuntime::new_with_lumps(
+                &sources,
+                Arc::clone(&classes),
+                self.mod_lumps.clone(),
+            )
+            .map_err(err)?;
             let (c, s) = rt.merge_classes(&classes, &states).map_err(err)?;
             classes = Arc::new(c);
             states = Arc::new(s);
@@ -837,7 +851,11 @@ impl Headless {
         if self.mod_sources.is_empty() {
             return;
         }
-        match room_sim::script_mods::ModRuntime::new(&self.mod_sources, Arc::clone(&self.classes)) {
+        match room_sim::script_mods::ModRuntime::new_with_lumps(
+            &self.mod_sources,
+            Arc::clone(&self.classes),
+            self.mod_lumps.clone(),
+        ) {
             Ok(rt) => self.mods = Some(rt),
             Err(e) => self.mod_errors.push(format!("mod: {e}")),
         }

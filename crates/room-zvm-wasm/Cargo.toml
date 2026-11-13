@@ -1,0 +1,23 @@
+[package]
+name = "room-zvm-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "ZScript VM bytecode → WebAssembly code generator (docs/37)."
+
+[lints]
+workspace = true
+
+[features]
+## Run the AOT tier on wasmtime/Cranelift instead of wasmi (desktop).
+wasmtime = ["room-zvm/aot-wasmtime"]
+
+[dependencies]
+room-zvm = { path = "../room-zvm", features = ["aot"] }
+thiserror.workspace = true
+wasm-encoder = "0.224"
+wasmparser.workspace = true
+wasmprinter = "0.224"
+room-zscript = { path = "../room-zscript" }
+zip.workspace = true

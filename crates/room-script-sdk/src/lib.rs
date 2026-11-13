@@ -39,7 +39,8 @@ pub mod mem {
 }
 
 pub use room_script_abi::{
-    ABI_VERSION as ABI_MAJOR, ActionPayload, ActorRef, ClassRef, NameRef, SessionKind,
+    ABI_VERSION as ABI_MAJOR, ActionPayload, ActorRef, ClassRef, ModifyDamageV1, NameRef, SessionKind,
+    lump_ns,
 };
 pub use room_script_sdk_macros::{actor, register_stub};
 

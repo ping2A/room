@@ -152,11 +152,121 @@ impl<'a> TileSet<'a> {
         self.tiles.len()
     }
 
+    /// Tile numbers with pixel data, in ascending order.
+    #[must_use]
+    pub fn tile_numbers(&self) -> impl Iterator<Item = u16> + '_ {
+        self.tiles.keys().copied()
+    }
+
     /// `true` when no tile has pixels.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.tiles.is_empty()
     }
+}
+
+/// Return an ART file with one tile replaced by row-major palette indices.
+/// The tile animation metadata and every other tile are preserved.
+pub fn replace_tile(
+    data: &[u8],
+    tile_num: u16,
+    width: u16,
+    height: u16,
+    pixels: &[u8],
+) -> Result<Vec<u8>, BuildError> {
+    let read_u32 = |at: usize| -> Result<u32, BuildError> {
+        data.get(at..at + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .ok_or(BuildError::Truncated("ART header"))
+    };
+    if read_u32(0)? != 1 {
+        return Err(BuildError::Invalid("ART version"));
+    }
+    let numtiles = read_u32(1)? as usize;
+    let start = read_u32(2)?;
+    let end = read_u32(3)?;
+    if end < start || end >= MAX_TILES || numtiles != (end - start + 1) as usize {
+        return Err(BuildError::Invalid("ART tile range"));
+    }
+    if width == 0
+        || height == 0
+        || width > i16::MAX as u16
+        || height > i16::MAX as u16
+        || pixels.len() != usize::from(width) * usize::from(height)
+    {
+        return Err(BuildError::Invalid("ART replacement dimensions"));
+    }
+    let target = u32::from(tile_num);
+    if target < start || target > end {
+        return Err(BuildError::Invalid("ART tile is outside this file"));
+    }
+    let table_end = 16usize
+        .checked_add(
+            numtiles
+                .checked_mul(8)
+                .ok_or(BuildError::Invalid("ART tile count"))?,
+        )
+        .ok_or(BuildError::Invalid("ART tile table"))?;
+    if data.len() < table_end {
+        return Err(BuildError::Truncated("ART tile table"));
+    }
+    let i16_at = |at: usize| -> i16 { i16::from_le_bytes([data[at], data[at + 1]]) };
+    let mut sizes = Vec::with_capacity(numtiles);
+    let mut anim = Vec::with_capacity(numtiles);
+    let mut bodies = Vec::with_capacity(numtiles);
+    let mut pos = table_end;
+    for i in 0..numtiles {
+        let w = i16_at(16 + i * 2);
+        let h = i16_at(16 + numtiles * 2 + i * 2);
+        let p = 16 + numtiles * 4 + i * 4;
+        let picanm = u32::from_le_bytes([data[p], data[p + 1], data[p + 2], data[p + 3]]);
+        if start + i as u32 == target {
+            sizes.push((width as i16, height as i16));
+            anim.push(picanm);
+            let mut col_major = vec![0; pixels.len()];
+            for x in 0..usize::from(width) {
+                for y in 0..usize::from(height) {
+                    col_major[x * usize::from(height) + y] = pixels[y * usize::from(width) + x];
+                }
+            }
+            bodies.push(col_major);
+            continue;
+        }
+        sizes.push((w, h));
+        anim.push(picanm);
+        let count = if w <= 0 || h <= 0 {
+            0
+        } else {
+            usize::from(w as u16) * usize::from(h as u16)
+        };
+        let body = data
+            .get(
+                pos..pos
+                    .checked_add(count)
+                    .ok_or(BuildError::Invalid("ART tile size"))?,
+            )
+            .ok_or(BuildError::Truncated("ART tile pixels"))?;
+        bodies.push(body.to_vec());
+        pos += count;
+    }
+    let mut out = Vec::with_capacity(data.len() + pixels.len());
+    for v in [1u32, numtiles as u32, start, end] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    for (w, _) in &sizes {
+        out.extend_from_slice(&w.to_le_bytes());
+    }
+    for (_, h) in &sizes {
+        out.extend_from_slice(&h.to_le_bytes());
+    }
+    for picanm in anim {
+        out.extend_from_slice(&picanm.to_le_bytes());
+    }
+    for body in bodies {
+        out.extend_from_slice(&body);
+    }
+    out.extend_from_slice(&data[pos..]);
+    Ok(out)
 }
 
 #[cfg(test)]

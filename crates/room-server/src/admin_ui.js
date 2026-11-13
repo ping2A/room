@@ -12,6 +12,7 @@
     metrics: {},
     modalResolve: null,
     selectedRoomId: null,
+    selectedPresetId: null,
     roomDetail: null,
     authMode: "open",
     csrf: "",
@@ -22,6 +23,7 @@
   const TITLES = {
     dashboard: ["Dashboard", "Cluster pulse for this node"],
     rooms: ["Rooms", "Live rooms on this node"],
+    presets: ["Presets", "Set up game files, map access, and room defaults"],
     bans: ["Bans", "IP · pseudo · fingerprint · ticket · TURN · auth keys"],
     audit: ["Audit", "Append-only operator actions"],
     settings: ["Settings", "Drain and session controls"],
@@ -199,9 +201,10 @@
       refreshMods().catch(() => {});
       refreshContent().catch(() => {});
     }
+    if (name === "presets") refreshContent().catch(() => {});
   }
 
-  function openModal({ title, bodyHtml, confirmLabel = "Confirm", danger = false }) {
+  function openModal({ title, bodyHtml, confirmLabel = "Confirm", danger = false, onReady }) {
     return new Promise((resolve) => {
       state.modalResolve = resolve;
       $("modal-title").textContent = title;
@@ -210,6 +213,7 @@
       conf.textContent = confirmLabel;
       conf.className = "btn " + (danger ? "danger" : "primary");
       $("modal").showModal();
+      if (onReady) onReady($("modal-body"));
     });
   }
 
@@ -281,9 +285,9 @@
         '<input name="seat" type="number" min="0" max="7" value="0" required/></label>' +
         (kind === "kick"
           ? '<label class="field"><span>Reason</span><input name="reason" placeholder="kicked"/></label>'
-          : '<label class="field"><span><input name="audio" type="checkbox" checked/> Mute audio</span></label>' +
-            '<label class="field"><span><input name="video" type="checkbox" checked/> Mute video</span></label>' +
-            '<label class="field"><span><input name="chat" type="checkbox"/> Freeze chat</span></label>'),
+        : '<label class="inline-check"><input name="audio" type="checkbox" checked/> Mute audio</label>' +
+            '<label class="inline-check"><input name="video" type="checkbox" checked/> Mute video</label>' +
+            '<label class="inline-check"><input name="chat" type="checkbox"/> Freeze chat</label>'),
     });
     if (!data) return;
     const seat = Number(data.seat);
@@ -323,20 +327,120 @@
   }
 
   async function createRoom() {
+    const presetConfig = await api("/admin/api/v1/presets");
+    const presets = presetConfig.presets || [];
+    const requirePreset = !!presetConfig.require_preset && presets.length > 0;
+    const presetOptions = [
+      ...(!requirePreset ? ['<option value="">Custom room</option>'] : []),
+      ...presets.map((p) => '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.title || p.id) + "</option>"),
+    ].join("");
     const data = await openModal({
       title: "Create room",
       confirmLabel: "Create",
       bodyHtml:
-        '<label class="field"><span>Map</span><input name="map" value="E1M1" required/></label>' +
-        '<label class="field"><span>Skill (1–5)</span><input name="skill" type="number" min="1" max="5" value="3"/></label>' +
+        '<div class="room-create-grid">' +
+        '<label class="field"><span>Game</span><select name="game" id="create-game"><option value="doom">Doom</option><option value="duke3d">Duke Nukem 3D</option></select></label>' +
+        '<label class="field" id="create-preset-field"><span>Room setup</span><select name="preset" id="create-preset">' +
+        (presetOptions || '<option value="">No presets configured</option>') + '</select></label>' +
+        '<div class="field" id="create-preset-summary" aria-live="polite"></div>' +
+        '<div class="field" id="create-map-field"></div>' +
+        '<label class="field"><span>Difficulty (1–5)</span><select name="skill" id="create-skill">' +
+        '<option value="1">1 · Easiest</option><option value="2">2 · Easy</option><option value="3" selected>3 · Normal</option>' +
+        '<option value="4">4 · Hard</option><option value="5">5 · Hardest</option></select></label>' +
         '<label class="field"><span>Max players</span><input name="max_players" type="number" min="2" max="64" value="2"/></label>' +
-        '<label class="field"><span><input name="enable_verifier" type="checkbox"/> Enable verifier</span></label>',
+        '<label class="field"><span>Visibility</span><select name="visibility"><option value="public">Public · listed in lobby</option><option value="private">Private · join by room id</option></select></label>' +
+        '<label class="field"><span>Time limit (minutes)</span><input name="time_limit" type="number" min="1" max="180" value="20"/></label>' +
+        '<div class="field" id="create-duke-options"><span>Duke match</span><select name="duke_game_mode"><option value="0">DukeMatch</option><option value="1">Co-op</option><option value="2">No enemies</option></select>' +
+        '<label class="inline-check"><input name="duke_friendly_fire" type="checkbox"/> Friendly fire</label></div>' +
+        '<label class="inline-check" id="create-verifier-field"><input name="enable_verifier" type="checkbox"/> Enable verifier</label>' +
+        '</div>',
+      onReady: (body) => {
+        const game = body.querySelector("#create-game");
+        const preset = body.querySelector("#create-preset");
+        const presetField = body.querySelector("#create-preset-field");
+        const summary = body.querySelector("#create-preset-summary");
+        const mapField = body.querySelector("#create-map-field");
+        const skill = body.querySelector("#create-skill");
+        const dukeOptions = body.querySelector("#create-duke-options");
+        const verifierField = body.querySelector("#create-verifier-field");
+        const findPreset = () => presets.find((p) => p.id === preset.value);
+        const update = () => {
+          const isDuke = game.value === "duke3d";
+          if (isDuke) preset.value = "";
+          else if (requirePreset && !preset.value) preset.value = presets[0]?.id || "";
+          preset.disabled = isDuke || !presets.length;
+          presetField.classList.toggle("hidden", isDuke || (!presets.length && !requirePreset));
+          summary.classList.toggle("hidden", !presets.length);
+          dukeOptions.classList.toggle("hidden", !isDuke);
+          verifierField.classList.toggle("hidden", isDuke);
+          mapField.replaceChildren();
+          const selected = isDuke ? null : findPreset();
+          const label = document.createElement("label");
+          label.className = "field";
+          const labelText = document.createElement("span");
+          labelText.textContent = selected ? "Map in this preset" : "Map";
+          label.append(labelText);
+          const allowedMaps = selected && Array.isArray(selected.maps) ? selected.maps : [];
+          if (selected && allowedMaps.length) {
+            const select = document.createElement("select");
+            select.name = "map";
+            select.required = true;
+            const initial = allowedMaps.includes(selected.default_map) ? selected.default_map : allowedMaps[0];
+            for (const name of allowedMaps) {
+              const option = document.createElement("option");
+              option.value = name;
+              option.textContent = name;
+              option.selected = name === initial;
+              select.append(option);
+            }
+            label.append(select);
+          } else {
+            const input = document.createElement("input");
+            input.name = "map";
+            input.value = selected?.default_map || (isDuke ? "E1L1" : "E1M1");
+            input.placeholder = isDuke ? "E1L1" : "E1M1 or MAP01";
+            input.required = true;
+            label.append(input);
+          }
+          mapField.append(label);
+          if (selected) {
+            const files = [selected.iwad, ...(selected.content || [])].filter(Boolean).join(" + ") || "server default game files";
+            const details = [files, allowedMaps.length ? `${allowedMaps.length} maps` : "any map", selected.mod ? `mod: ${selected.mod}` : ""].filter(Boolean).join(" · ");
+            summary.replaceChildren();
+            if (selected.description) {
+              const description = document.createElement("p");
+              description.className = "preset-blurb";
+              description.textContent = selected.description;
+              summary.append(description);
+            }
+            const meta = document.createElement("p");
+            meta.className = "preset-meta";
+            meta.textContent = details;
+            summary.append(meta);
+            skill.value = selected.skill >= 1 && selected.skill <= 5 ? String(selected.skill) : "3";
+          } else if (presets.length) {
+            skill.value = "3";
+            summary.textContent = isDuke
+              ? "Duke rooms use the native Duke game and can’t use Doom presets."
+              : "Custom room using the server’s default game files.";
+          }
+        };
+        game.addEventListener("change", update);
+        preset.addEventListener("change", update);
+        update();
+      },
     });
     if (!data) return;
     const body = {
-      map: data.map || "E1M1",
+      game: data.game || "doom",
+      preset: data.preset || null,
+      map: data.map || (data.game === "duke3d" ? "E1L1" : "E1M1"),
       skill: Number(data.skill) || 3,
       max_players: Number(data.max_players) || 2,
+      visibility: data.visibility || "public",
+      time_limit: Number(data.time_limit) || 20,
+      duke_game_mode: Number(data.duke_game_mode) || 0,
+      duke_friendly_fire: !!data.duke_friendly_fire,
       enable_verifier: !!data.enable_verifier,
     };
     const created = await api("/admin/api/v1/rooms", {
@@ -773,6 +877,7 @@
   function render() {
     if (state.view === "dashboard") renderDashboard();
     if (state.view === "rooms") renderRooms();
+    if (state.view === "presets") renderPresets();
     if (state.view === "bans") renderBans();
     if (state.view === "audit") renderAudit();
     if (state.view === "settings") renderDashboard();
@@ -1192,14 +1297,61 @@
     return Math.max(1, Math.round(n / 1024)) + " KB";
   }
 
+  function renderPresets() {
+    const ps = content.presets.presets || [];
+    const select = $("preset-select");
+    if (!select) return;
+    const selected = ps.find((p) => p.id === state.selectedPresetId) || ps[0] || null;
+    state.selectedPresetId = selected ? selected.id : null;
+    select.replaceChildren(
+      new Option(ps.length ? "Choose a preset…" : "No presets created", ""),
+      ...ps.map((p) => new Option(`${p.title || p.id} · ${p.id}`, p.id, false, p.id === state.selectedPresetId))
+    );
+    select.value = state.selectedPresetId || "";
+    select.disabled = ps.length === 0;
+    $("preset-edit").disabled = !selected;
+    $("preset-delete").disabled = !selected;
+    $("preset-require").checked = !!content.presets.require_preset;
+    $("presets-status").textContent = ps.length
+      ? `${ps.length} saved preset${ps.length === 1 ? "" : "s"} · ${content.presets.require_preset ? "players must choose one" : "custom rooms are also allowed"}`
+      : "No presets yet. Create one to give players a ready-to-use game and map setup.";
+
+    if (!selected) {
+      $("preset-preview").innerHTML = '<div class="preset-empty"><strong>Choose a starting point for room creation</strong><span>Create a preset with its game files, maps, and defaults. Players will see its name and description in the room picker.</span></div>';
+      return;
+    }
+    const files = [selected.iwad || "Server default game", ...(selected.content || [])];
+    const maps = selected.maps && selected.maps.length ? selected.maps.join(", ") : "Any map";
+    const defaultMap = selected.default_map || (selected.maps && selected.maps[0]) || "Server default";
+    const difficulty = Number(selected.skill) > 0
+      ? `${selected.skill} · ${["", "Easiest", "Easy", "Normal", "Hard", "Hardest"][Number(selected.skill)] || "Custom"}`
+      : "Use room default";
+    const details = [
+      ["Game files", files.join(" → ")],
+      ["Allowed maps", maps],
+      ["Default map", defaultMap],
+      ["Gameplay mod", selected.mod || "None"],
+      ["Difficulty", difficulty],
+    ];
+    $("preset-preview").innerHTML =
+      '<div class="preset-preview-heading"><div><span class="preset-kicker">SELECTED ROOM SETUP</span><h3>' + escapeHtml(selected.title || selected.id) + '</h3><p class="muted">' + escapeHtml(selected.description || "No player description set.") + '</p></div><code>' + escapeHtml(selected.id) + '</code></div>' +
+      '<dl class="preset-detail-grid">' + details.map(([label, value]) => '<div><dt>' + escapeHtml(label) + '</dt><dd>' + escapeHtml(value) + '</dd></div>').join("") + '</dl>';
+  }
+
   async function refreshContent() {
     let lib;
     try {
       lib = await api("/admin/api/v1/content");
       content.presets = await api("/admin/api/v1/presets");
       content.mods = await api("/admin/api/v1/mods").catch(() => []);
-    } catch (_) {
-      $("content-status").textContent = "—";
+    } catch (err) {
+      $("content-status").textContent = "Content library unavailable";
+      $("presets-status").textContent = "Could not load presets: " + (err.message || String(err));
+      $("preset-select").replaceChildren(new Option("Presets unavailable", ""));
+      $("preset-select").disabled = true;
+      $("preset-edit").disabled = true;
+      $("preset-delete").disabled = true;
+      $("preset-preview").innerHTML = '<p class="muted">Reload the page or check the admin API connection.</p>';
       return;
     }
     content.files = lib.files || [];
@@ -1234,37 +1386,7 @@
         return li;
       })
     );
-    $("preset-require").checked = !!content.presets.require_preset;
-    const ps = content.presets.presets || [];
-    $("presets-status").textContent = ps.length
-      ? ps.length + " preset(s)" + (content.presets.require_preset ? " · players must pick one" : " · custom rooms allowed too")
-      : "No presets: players type a map and play the server's default game";
-    $("presets-list").replaceChildren(
-      ...ps.map((p, idx) => {
-        const li = document.createElement("li");
-        const files = [p.iwad, ...(p.content || [])].filter(Boolean).join(" + ") || "default game";
-        const maps = p.maps && p.maps.length ? p.maps.join(" ") : "any map";
-        li.innerHTML =
-          "<span><strong>" + escapeHtml(p.title) + '</strong> <span class="muted">' + escapeHtml(p.id) + " · " +
-          escapeHtml(files) + " · " + escapeHtml(maps) + (p.mod ? " · mod " + escapeHtml(p.mod) : "") + "</span></span>";
-        const edit = document.createElement("button");
-        edit.type = "button";
-        edit.className = "btn";
-        edit.textContent = "Edit";
-        edit.addEventListener("click", () => editPreset(idx));
-        const del = document.createElement("button");
-        del.type = "button";
-        del.className = "btn";
-        del.textContent = "Delete";
-        del.addEventListener("click", async () => {
-          if (!confirm("Delete preset " + p.title + "?")) return;
-          const next = { ...content.presets, presets: ps.filter((_, i) => i !== idx) };
-          await savePresets(next);
-        });
-        li.append(edit, del);
-        return li;
-      })
-    );
+    renderPresets();
   }
 
   async function savePresets(cfg) {
@@ -1283,49 +1405,129 @@
     const iwads = content.files.filter((f) => f.kind === "iwad");
     const others = content.files.filter((f) => f.kind !== "iwad");
     const opt = (v, label, sel) => '<option value="' + escapeHtml(v) + '"' + (sel ? " selected" : "") + ">" + escapeHtml(label) + "</option>";
-    const fileRows = others
+    const orderedOthers = [
+      ...(p.content || []).map((file) => others.find((entry) => entry.file === file)).filter(Boolean),
+      ...others.filter((entry) => !(p.content || []).includes(entry.file)),
+    ];
+    const fileRows = orderedOthers
       .map((f) => {
         const pos = (p.content || []).indexOf(f.file);
-        return '<label class="field check"><span><input type="checkbox" name="content:' + escapeHtml(f.file) + '"' +
-          (pos >= 0 ? " checked" : "") + "/> " + escapeHtml(f.file) + ' <span class="muted">(' + fmtBytes(f.size) + ")</span></span>" +
-          '<input name="order:' + escapeHtml(f.file) + '" type="number" min="1" max="99" value="' + (pos >= 0 ? pos + 1 : 50) +
-          '" title="Load order (lower first)" style="width:5em"/></label>';
+        const initialOrder = pos >= 0 ? pos + 1 : orderedOthers.indexOf(f) + 1;
+        return '<div class="preset-file-row" data-file="' + escapeHtml(f.file) + '">' +
+          '<label class="preset-file-choice"><input type="checkbox" name="content:' + escapeHtml(f.file) + '"' +
+          (pos >= 0 ? " checked" : "") + '/><span><strong>' + escapeHtml(f.file) + '</strong><small>' + fmtBytes(f.size) + '</small></span></label>' +
+          '<input type="hidden" name="order:' + escapeHtml(f.file) + '" value="' + initialOrder + '"/>' +
+          '<span class="preset-position">' + (pos >= 0 ? "Load " + initialOrder : "") + '</span>' +
+          '<div class="preset-order-controls"><button type="button" class="btn small" data-move="up" title="Move earlier">↑</button>' +
+          '<button type="button" class="btn small" data-move="down" title="Move later">↓</button></div></div>';
       })
       .join("");
     const allMaps = [];
     for (const f of content.files) for (const m of f.maps || []) if (!allMaps.includes(m)) allMaps.push(m);
     const mapRows = allMaps
-      .map((m) => '<label class="check" style="display:inline-block;margin:2px 10px 2px 0"><input type="checkbox" name="map:' + escapeHtml(m) + '"' +
-        ((p.maps || []).includes(m) ? " checked" : "") + "/> " + escapeHtml(m) + "</label>")
+      .map((m) => '<label class="preset-map-option" data-map="' + escapeHtml(m.toLowerCase()) + '"><input type="checkbox" name="map:' + escapeHtml(m) + '"' +
+        ((p.maps || []).includes(m) ? " checked" : "") + '/><span>' + escapeHtml(m) + "</span></label>")
       .join("");
     const extra = (p.maps || []).filter((m) => !allMaps.includes(m)).join(" ");
     const data = await openModal({
       title: idx >= 0 ? "Edit preset" : "New preset",
       confirmLabel: "Save",
       bodyHtml:
-        '<label class="field"><span>Id (a-z 0-9 _ -)</span><input name="id" required maxlength="32" value="' + escapeHtml(p.id) + '"/></label>' +
-        '<label class="field"><span>Title</span><input name="title" maxlength="80" value="' + escapeHtml(p.title) + '"/></label>' +
-        '<label class="field"><span>Description</span><input name="description" maxlength="300" value="' + escapeHtml(p.description || "") + '"/></label>' +
-        '<label class="field"><span>Base game (IWAD)</span><select name="iwad">' + opt("", "Player default (doom1.wad)", !p.iwad) +
+        '<section class="preset-section"><h3>1 · Name this room setup</h3><p class="preset-help">Give players a clear name and a short description for the room picker.</p>' +
+        '<div class="preset-grid">' +
+        '<label class="field"><span>Preset id</span><input name="id" required maxlength="32" value="' + escapeHtml(p.id) + '" placeholder="brutal_doom"/></label>' +
+        '<label class="field"><span>Display name</span><input name="title" maxlength="80" value="' + escapeHtml(p.title) + '" placeholder="Brutal Doom co-op"/></label>' +
+        '<label class="field preset-span"><span>Player description</span><input name="description" maxlength="300" value="' + escapeHtml(p.description || "") + '" placeholder="One sentence shown before creating a room"/></label></div></section>' +
+        '<section class="preset-section"><h3>2 · Choose game files</h3><p class="preset-help">Set the base game, then select add-ons. Use the arrows to set load order; the top file loads first.</p>' +
+        '<label class="field"><span>Base game</span><select name="iwad">' + opt("", "Use the server default game", !p.iwad) +
         iwads.map((f) => opt(f.file, f.file, p.iwad === f.file)).join("") + "</select></label>" +
-        '<div class="field"><span>Content files (checked ones load in order, lowest number first)</span>' +
-        (fileRows || '<p class="muted">Upload PK3 / WAD files to the library first.</p>') + "</div>" +
-        '<div class="field"><span>Maps players may pick (none checked = any map)</span><div>' + (mapRows || '<span class="muted">No maps found in the library files</span>') + "</div></div>" +
-        '<label class="field"><span>Other maps (space separated, e.g. E1M1 MAP07)</span><input name="extra_maps" value="' + escapeHtml(extra) + '"/></label>' +
-        '<label class="field"><span>Default map</span><input name="default_map" value="' + escapeHtml(p.default_map || "") + '" placeholder="first allowed map"/></label>' +
-        '<label class="field"><span>Gameplay mod</span><select name="mod">' + opt("", "None", !p.mod) +
+        '<div class="preset-file-list" id="preset-content-files">' + (fileRows || '<p class="muted">Upload PK3 / WAD files to the content library first.</p>') + "</div></section>" +
+        '<section class="preset-section"><h3>3 · Choose maps</h3><p class="preset-help">Choose specific maps or turn on “Any map”. Add map names if they are not detected in the library.</p>' +
+        '<label class="inline-check"><input type="checkbox" name="any_map" id="preset-any-map"' + (!(p.maps || []).length ? " checked" : "") + '/> Allow any map</label>' +
+        '<div class="preset-map-tools"><input id="preset-map-filter" type="search" placeholder="Find a map…"/><span class="muted">' + allMaps.length + ' detected</span></div>' +
+        '<div class="preset-map-list" id="preset-map-list">' + (mapRows || '<p class="muted">No maps detected. You can still type a map name below.</p>') + "</div>" +
+        '<label class="field"><span>Additional map names</span><input name="extra_maps" value="' + escapeHtml(extra) + '" placeholder="E1M1 MAP07"/></label>' +
+        '<label class="field"><span>Default map</span><input name="default_map" value="' + escapeHtml(p.default_map || "") + '" placeholder="first selected map"/></label></section>' +
+        '<section class="preset-section"><h3>4 · Set room defaults</h3><div class="preset-grid">' +
+        '<label class="field"><span>Gameplay mod</span><select name="mod">' + opt("", "No gameplay mod", !p.mod) +
         content.mods.filter((m) => m.allowed).map((m) => opt(m.name, m.title || m.name, p.mod === m.name)).join("") + "</select></label>" +
-        '<label class="field"><span>Default skill (0 = lobby default)</span><input name="skill" type="number" min="0" max="5" value="' + (p.skill || 0) + '"/></label>',
+        '<label class="field"><span>Difficulty</span><select name="skill">' +
+        opt("0", "Use room default", !(p.skill)) + [1, 2, 3, 4, 5].map((n) => opt(String(n), `${n} · ${["", "Easiest", "Easy", "Normal", "Hard", "Hardest"][n]}`, p.skill === n)).join("") +
+        "</select></label></div></section>",
+      onReady: (body) => {
+        const fileList = body.querySelector("#preset-content-files");
+        const updateOrder = () => {
+          const rows = [...fileList.querySelectorAll(".preset-file-row")];
+          for (const [index, row] of rows.entries()) {
+            row.querySelector('input[name^="order:"]').value = String(index + 1);
+            const selected = row.querySelector('input[name^="content:"]').checked;
+            row.classList.toggle("selected", selected);
+            row.querySelector(".preset-position").textContent = selected ? `Load ${index + 1}` : "";
+            row.querySelector('[data-move="up"]').disabled = index === 0;
+            row.querySelector('[data-move="down"]').disabled = index === rows.length - 1;
+          }
+        };
+        fileList.addEventListener("click", (event) => {
+          const button = event.target.closest("button[data-move]");
+          if (!button) return;
+          const row = button.closest(".preset-file-row");
+          if (button.dataset.move === "up" && row.previousElementSibling) fileList.insertBefore(row, row.previousElementSibling);
+          if (button.dataset.move === "down" && row.nextElementSibling) fileList.insertBefore(row.nextElementSibling, row);
+          updateOrder();
+        });
+        fileList.addEventListener("change", (event) => {
+          if (event.target.matches('input[name^="content:"]')) updateOrder();
+        });
+        updateOrder();
+
+        const anyMap = body.querySelector("#preset-any-map");
+        const mapList = body.querySelector("#preset-map-list");
+        const mapFilter = body.querySelector("#preset-map-filter");
+        const mapInputs = [...mapList.querySelectorAll('input[name^="map:"]')];
+        const syncMapChoice = () => {
+          for (const input of mapInputs) input.disabled = anyMap.checked;
+          mapList.classList.toggle("disabled", anyMap.checked);
+          body.querySelector('input[name="extra_maps"]').disabled = anyMap.checked;
+        };
+        anyMap.addEventListener("change", syncMapChoice);
+        mapFilter.addEventListener("input", () => {
+          const filter = mapFilter.value.trim().toLowerCase();
+          for (const row of mapList.querySelectorAll(".preset-map-option")) {
+            row.classList.toggle("hidden", !row.dataset.map.includes(filter));
+          }
+        });
+        syncMapChoice();
+
+        body.closest("form").addEventListener("submit", (event) => {
+          if (event.submitter?.value !== "confirm" || anyMap.checked) return;
+          const chosen = mapInputs.filter((input) => input.checked).map((input) => input.name.slice(4));
+          const extraMaps = body.querySelector('input[name="extra_maps"]').value.split(/[\s,]+/).filter(Boolean).map((name) => name.toUpperCase());
+          const allowed = [...new Set([...chosen, ...extraMaps])];
+          if (!allowed.length) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            flash("Select at least one map or allow any map", "error");
+            return;
+          }
+          const defaultMap = body.querySelector('input[name="default_map"]');
+          if (!allowed.includes(defaultMap.value.trim().toUpperCase())) defaultMap.value = allowed[0];
+        }, true);
+      },
     });
     if (!data) return;
     const picked = [];
     const maps = [];
     for (const [k, v] of Object.entries(data)) {
       if (k.startsWith("content:") && v) picked.push({ file: k.slice(8), order: Number(data["order:" + k.slice(8)]) || 50 });
-      if (k.startsWith("map:") && v) maps.push(k.slice(4));
+      if (!data.any_map && k.startsWith("map:") && v) maps.push(k.slice(4));
     }
     picked.sort((a, b) => a.order - b.order);
-    for (const m of String(data.extra_maps || "").split(/[\s,]+/)) if (m) maps.push(m.toUpperCase());
+    if (!data.any_map) for (const m of String(data.extra_maps || "").split(/[\s,]+/)) if (m) maps.push(m.toUpperCase());
+    const defaultMap = String(data.default_map || "").trim().toUpperCase() || maps[0] || "";
+    if (!data.any_map && maps.length && !maps.includes(defaultMap)) {
+      flash("Choose a default map that is in the allowed map list", "error");
+      return;
+    }
     const next = {
       id: data.id,
       title: data.title,
@@ -1333,20 +1535,40 @@
       iwad: data.iwad || null,
       content: picked.map((x) => x.file),
       maps,
-      default_map: data.default_map,
+      default_map: defaultMap,
       mod: data.mod || null,
       skill: Number(data.skill) || 0,
     };
     const list = ps.slice();
     if (idx >= 0) list[idx] = next;
     else list.push(next);
+    state.selectedPresetId = next.id;
     await savePresets({ ...content.presets, presets: list });
   }
 
+  $("preset-select").addEventListener("change", (ev) => {
+    state.selectedPresetId = ev.target.value || null;
+    renderPresets();
+  });
   $("preset-add").addEventListener("click", () => editPreset(-1));
+  $("preset-edit").addEventListener("click", () => {
+    const idx = (content.presets.presets || []).findIndex((p) => p.id === state.selectedPresetId);
+    if (idx >= 0) editPreset(idx);
+  });
+  $("preset-delete").addEventListener("click", async () => {
+    const ps = content.presets.presets || [];
+    const idx = ps.findIndex((p) => p.id === state.selectedPresetId);
+    if (idx < 0) return;
+    const preset = ps[idx];
+    if (!confirm(`Delete preset “${preset.title || preset.id}”?`)) return;
+    const remaining = ps.filter((_, i) => i !== idx);
+    state.selectedPresetId = remaining[Math.min(idx, remaining.length - 1)]?.id || null;
+    await savePresets({ ...content.presets, presets: remaining });
+  });
   $("preset-require").addEventListener("change", (ev) =>
     savePresets({ ...content.presets, require_preset: ev.target.checked })
   );
+  document.querySelector('[data-go-settings="content"]').addEventListener("click", () => setView("settings"));
   $("content-rescan").addEventListener("click", async () => {
     try {
       await api("/admin/api/v1/content/rescan", { method: "POST" });

@@ -85,6 +85,87 @@ impl CompiledFunction {
     }
 }
 
+/// Absolute target of a relative jump whose extension word ends at `pc_after`.
+///
+/// Mirrors the interpreter: `pc_after + ext` (signed), clamped at zero. A
+/// target at or past the end of the code is an implicit return.
+#[must_use]
+pub fn jump_target(pc_after: usize, ext: u32) -> usize {
+    (pc_after as isize + ext as i32 as isize).max(0) as usize
+}
+
+/// Word index of the instruction after the one at `pc` (skips its ext word).
+#[must_use]
+pub fn next_insn(code: &[u32], pc: usize) -> usize {
+    let (op_b, _, _, _) = crate::opcode::unpack(code[pc]);
+    let ext = Op::from_u8(op_b).is_some_and(crate::opcode::has_ext);
+    pc + 1 + usize::from(ext)
+}
+
+/// Per-word fuel charge (`docs/37` §4.5): block leaders hold the number of
+/// instructions in their basic block, every other word holds zero.
+///
+/// Leaders are word 0, jump targets, and the instruction after a jump,
+/// `Ret`, `Return` or `Trap`. The interpreter and the WASM tier both charge a
+/// block's cost on entry, so fuel runs out at the same block on every tier.
+#[must_use]
+pub fn block_costs(code: &[u32]) -> Vec<u32> {
+    let n = code.len();
+    let mut leader = vec![false; n];
+    let mut start = vec![false; n];
+    if n > 0 {
+        leader[0] = true;
+    }
+    let mut pc = 0;
+    while pc < n {
+        start[pc] = true;
+        let (op_b, _, _, _) = crate::opcode::unpack(code[pc]);
+        let next = next_insn(code, pc);
+        match Op::from_u8(op_b) {
+            Some(Op::Jmp | Op::JmpIf | Op::JmpIfNot) => {
+                if pc + 1 < n {
+                    let t = jump_target(pc + 2, code[pc + 1]);
+                    if t < n {
+                        leader[t] = true;
+                    }
+                }
+                if next < n {
+                    leader[next] = true;
+                }
+            }
+            Some(Op::Ret | Op::Return | Op::Trap) => {
+                if next < n {
+                    leader[next] = true;
+                }
+            }
+            _ => {}
+        }
+        pc = next;
+    }
+    let mut costs = vec![0u32; n];
+    for l in 0..n {
+        if !leader[l] {
+            continue;
+        }
+        if !start[l] {
+            // A jump into an extension word: charge one so loops still burn fuel.
+            costs[l] = 1;
+            continue;
+        }
+        let mut k = 0u32;
+        let mut p = l;
+        loop {
+            k += 1;
+            p = next_insn(code, p);
+            if p >= n || leader[p] {
+                break;
+            }
+        }
+        costs[l] = k;
+    }
+    costs
+}
+
 /// Class layout known to the VM (script fields).
 #[derive(Clone, Debug, Default)]
 pub struct ClassLayout {

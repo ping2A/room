@@ -15,6 +15,10 @@ mod demo_map;
 
 #[cfg(feature = "browser")]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod zvm_web;
+
+#[cfg(feature = "browser")]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod editor_pick;
 
 #[cfg(feature = "browser")]
@@ -214,6 +218,11 @@ mod browser {
     fn duke_grp_layers(base: &[u8]) -> Vec<Vec<u8>> {
         let mut layers = vec![base.to_vec()];
         DUKE_ADDON_GRPS.with(|addons| layers.extend(addons.borrow().iter().cloned()));
+        DUKE_EDITOR_GRP.with(|grp| {
+            if let Some(grp) = grp.borrow().as_ref() {
+                layers.push(grp.clone());
+            }
+        });
         layers
     }
 
@@ -232,6 +241,8 @@ mod browser {
         static DUKE_CON_INCLUDES: RefCell<Vec<(String, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
         /// Native Duke add-on GRPs, in increasing override priority.
         static DUKE_ADDON_GRPS: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+        /// Current native editor overlay (replaced between preview runs).
+        static DUKE_EDITOR_GRP: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
         /// Browser host settings corresponding to Duke's native F4 audio controls.
         static DUKE_AUDIO_OPTIONS: Cell<DukeAudioOptions> = const {
             Cell::new(DukeAudioOptions {
@@ -481,16 +492,17 @@ mod browser {
     /// `[{"name":"MAP01","title":"Entryway"}, …]` (`[]` when none is running).
     #[wasm_bindgen(js_name = roomMapList)]
     pub fn room_map_list() -> String {
-        let list = APP.with(|app| {
-            let app = app.borrow();
-            let state = app.as_ref()?;
-            let s = state.try_borrow().ok()?;
-            match &s.mode {
-                Mode::Play(play) => Some(play.map_list()),
-                _ => None,
-            }
-        })
-        .unwrap_or_default();
+        let list = APP
+            .with(|app| {
+                let app = app.borrow();
+                let state = app.as_ref()?;
+                let s = state.try_borrow().ok()?;
+                match &s.mode {
+                    Mode::Play(play) => Some(play.map_list()),
+                    _ => None,
+                }
+            })
+            .unwrap_or_default();
         let rows: Vec<serde_json::Value> = list
             .into_iter()
             .map(|(name, title)| serde_json::json!({ "name": name, "title": title }))
@@ -563,6 +575,16 @@ mod browser {
         Ok(())
     }
 
+    /// Replace the current native editor GRP overlay used by live play tests.
+    #[wasm_bindgen(js_name = roomSetDukeEditorGrp)]
+    pub fn room_set_duke_editor_grp(data: &[u8]) -> Result<(), JsValue> {
+        if !room_build::is_grp(data) {
+            return Err(JsValue::from_str("Duke editor overlay must be a GRP"));
+        }
+        DUKE_EDITOR_GRP.with(|grp| *grp.borrow_mut() = Some(data.to_vec()));
+        Ok(())
+    }
+
     /// Start a native Duke session from a GRP resource archive and standalone
     /// Build `.MAP` bytes. Skill follows the 1..=5 Atomic user-facing range.
     #[wasm_bindgen(js_name = roomStartDukeMap)]
@@ -606,6 +628,17 @@ mod browser {
         let renderer = room_duke::DukeSoftRenderer::from_grp_layers(&layer_refs)
             .map_err(|error| JsValue::from_str(&format!("Duke renderer: {error}")))?;
         enter_native_duke_mode(state, session, renderer, grp_layers, "USER")
+    }
+
+    pub(super) fn start_native_duke_map_for_editor(
+        grp: &[u8],
+        map: &[u8],
+        skill: u8,
+    ) -> Result<(), JsValue> {
+        let state = APP
+            .with(|app| app.borrow().clone())
+            .ok_or_else(|| JsValue::from_str("native Duke renderer is not ready"))?;
+        begin_duke_user_map(&state, grp, map, skill.clamp(1, 5).saturating_sub(1))
     }
 
     /// Start (or restart) a Doom/Freedoom play session from IWAD bytes.

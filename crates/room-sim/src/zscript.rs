@@ -104,6 +104,8 @@ impl ZscriptRuntime {
     }
 
     fn load_program_inner(&mut self, program: CompiledProgram, stub_missing: bool) {
+        #[cfg(feature = "zvm-aot")]
+        let shipped = room_zvm_wasm::shipped_for(&program);
         let program = Arc::new(program);
         let mut vm = if stub_missing {
             Zvm::new_with_stubs((*program).clone())
@@ -111,6 +113,26 @@ impl ZscriptRuntime {
             Zvm::new((*program).clone())
         };
         vm.host = 0;
+        #[cfg(feature = "zvm-aot")]
+        if let Some(m) = shipped {
+            // A converted mod (`room mod convert`) runs its shipped module.
+            match vm.attach_shipped(&m.bytes, m.compiled.clone(), m.hot.clone()) {
+                Ok(()) => eprintln!(
+                    "zscript: converted mod module attached ({}, {} functions)",
+                    vm.aot_engine().unwrap_or("?"),
+                    m.compiled.iter().filter(|c| **c).count()
+                ),
+                Err(e) => eprintln!("zscript: converted module rejected, interpreting: {e}"),
+            }
+        } else {
+            Self::maybe_enable_aot(&mut vm);
+        }
+        #[cfg(not(feature = "zvm-aot"))]
+        Self::maybe_enable_aot(&mut vm);
+        // A host that builds modules out of band (the browser) attaches here.
+        if !vm.has_aot() {
+            room_zvm::provide_aot(&mut vm, &program);
+        }
         vm.play.class_names = program
             .classes
             .iter()
@@ -131,6 +153,83 @@ impl ZscriptRuntime {
         if let Some(vm) = self.vm.as_mut() {
             vm.play.actor_slots = slots;
         }
+    }
+
+    /// `ROOM_ZVM_TIER=aot`: compile the program to WebAssembly (`docs/37`
+    /// ZW3) and run compiled functions there. Falls back to the interpreter
+    /// (with a log line) when code generation fails.
+    #[cfg(feature = "zvm-aot")]
+    fn maybe_enable_aot(vm: &mut Zvm) {
+        let want = std::env::var("ROOM_ZVM_TIER")
+            .is_ok_and(|v| v.eq_ignore_ascii_case("aot") || v.eq_ignore_ascii_case("aot-all"));
+        if !want || vm.program.functions.is_empty() {
+            return;
+        }
+        match room_zvm_wasm::enable_aot(vm) {
+            Ok(stats) => eprintln!(
+                "zscript: aot tier on {} ({}/{} functions compiled, {} bytes of wasm)",
+                vm.aot_engine().unwrap_or("?"),
+                stats.compiled,
+                stats.functions,
+                stats.bytes
+            ),
+            Err(e) => eprintln!("zscript: aot tier unavailable, interpreting: {e}"),
+        }
+    }
+
+    #[cfg(not(feature = "zvm-aot"))]
+    fn maybe_enable_aot(_vm: &mut Zvm) {}
+
+    /// Enable the AOT tier for the loaded program regardless of
+    /// `ROOM_ZVM_TIER` (tests, tools). Returns false without the `zvm-aot`
+    /// feature or when code generation fails.
+    pub fn enable_aot(&mut self) -> bool {
+        #[cfg(feature = "zvm-aot")]
+        if let Some(vm) = self.vm.as_mut() {
+            if vm.aot_active() {
+                return true;
+            }
+            return room_zvm_wasm::enable_aot(vm).is_ok();
+        }
+        false
+    }
+
+    /// Ask the AOT provider again (`room_zvm::set_aot_provider`): attaches a
+    /// module that became ready after the map started. True when attached.
+    pub fn refresh_aot(&mut self) -> bool {
+        let (Some(vm), Some(program)) = (self.vm.as_mut(), self.program.as_ref()) else {
+            return false;
+        };
+        !vm.has_aot() && room_zvm::provide_aot(vm, program)
+    }
+
+    /// Send every compiled function through the AOT tier, not only the ones
+    /// with loops or long bodies (tests that compare tiers).
+    pub fn set_aot_all(&mut self) {
+        #[cfg(feature = "zvm-aot")]
+        if let Some(vm) = self.vm.as_mut() {
+            vm.set_aot_policy(room_zvm::AotPolicy::All);
+        }
+    }
+
+    /// Wasm engine of the AOT tier (`wasmtime` / `wasmi`), when attached.
+    #[must_use]
+    pub fn aot_engine(&self) -> Option<&'static str> {
+        #[cfg(feature = "zvm-aot")]
+        if let Some(vm) = self.vm.as_ref() {
+            return vm.aot_engine();
+        }
+        None
+    }
+
+    /// Top-level ZScript calls the AOT tier has served.
+    #[must_use]
+    pub fn aot_calls(&self) -> u64 {
+        #[cfg(feature = "zvm-aot")]
+        if let Some(vm) = self.vm.as_ref() {
+            return vm.aot_calls();
+        }
+        0
     }
 
     /// Per-call world answers for the typed natives (`CheckSight`, `CountInv`, …).
@@ -158,7 +257,9 @@ impl ZscriptRuntime {
             return *hit;
         }
         let found = walk_field(vm, object, name);
-        self.field_cache.borrow_mut().insert((class_id, name), found);
+        self.field_cache
+            .borrow_mut()
+            .insert((class_id, name), found);
         found
     }
 
@@ -424,6 +525,17 @@ impl ZscriptRuntime {
         }
     }
 
+    /// Integer value of a CVar the ZScript host knows (`None` when unset).
+    #[must_use]
+    pub fn cvar_int(&self, name: &str) -> Option<i32> {
+        let play = &self.vm.as_ref()?.play;
+        let key = name.to_ascii_lowercase();
+        (play.cvars.contains_key(&key)
+            || play.cvar_floats.contains_key(&key)
+            || play.cvar_strings.contains_key(&key))
+        .then(|| play.cvar(name))
+    }
+
     /// Selected player voice gender used by SNDINFO `$playersound` lookup.
     #[must_use]
     pub fn player_gender(&self) -> &'static str {
@@ -671,7 +783,7 @@ impl ZscriptRuntime {
     }
 
     fn play_mut(&mut self) -> Option<&mut room_zvm::ZvmPlayHost> {
-        self.vm.as_mut().map(|vm| &mut vm.play)
+        self.vm.as_mut().map(|vm| &mut *vm.play)
     }
 
     /// Player number a `players[n].mo` handle stands for (`players.at`
@@ -1009,7 +1121,8 @@ impl ZscriptRuntime {
             let handle = match other {
                 Some((index, generation, class)) => {
                     self.actor_gen.insert(*index, *generation);
-                    self.ensure_actor_object(*index, class).unwrap_or(ObjHandle::NULL)
+                    self.ensure_actor_object(*index, class)
+                        .unwrap_or(ObjHandle::NULL)
                 }
                 None => ObjHandle::NULL,
             };
@@ -1360,7 +1473,12 @@ impl ZscriptRuntime {
 
 /// Slots of the UZDoom `Actor` / `Inventory` native fields in this program.
 fn actor_slots_of(program: &CompiledProgram) -> room_zvm::ActorSlots {
-    let layout = |name: &str| program.classes.iter().find(|c| c.name.eq_ignore_ascii_case(name));
+    let layout = |name: &str| {
+        program
+            .classes
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
+    };
     let field = |class: &str, name: &str, bank: u8| {
         layout(class)
             .and_then(|l| l.fields.get(name).copied())

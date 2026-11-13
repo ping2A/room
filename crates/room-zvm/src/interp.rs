@@ -3,6 +3,7 @@
 use crate::heap::{ObjHandle, ObjKind, StrHandle, ZvmHeap};
 use crate::natives::{NativeRegs, NativeTable, ZvmCtx};
 use crate::opcode::{Op, unpack};
+use crate::ops::{self, HeapErr};
 use crate::program::CompiledProgram;
 use crate::trap::{Trap, TrapPolicy};
 
@@ -33,15 +34,15 @@ impl Default for ZvmConfig {
 }
 
 #[derive(Clone, Debug)]
-struct Frame {
-    func: u32,
-    pc: usize,
-    i: Vec<i64>,
-    f: Vec<f64>,
-    s: Vec<StrHandle>,
-    a: Vec<ObjHandle>,
+pub(crate) struct Frame {
+    pub(crate) func: u32,
+    pub(crate) pc: usize,
+    pub(crate) i: Vec<i64>,
+    pub(crate) f: Vec<f64>,
+    pub(crate) s: Vec<StrHandle>,
+    pub(crate) a: Vec<ObjHandle>,
     /// Where to store return: (bank 0=i 1=s 2=a, reg)
-    ret: Option<(u8, u8)>,
+    pub(crate) ret: Option<(u8, u8)>,
 }
 
 /// ZScript VM instance.
@@ -66,12 +67,24 @@ pub struct Zvm {
     /// `s[0]` of the last top-level return, as text.
     pub last_s: String,
     /// Play-scope natives (skill, lumps, grants). Not shared across VMs.
-    pub play: crate::natives::ZvmPlayHost,
+    pub play: Box<crate::natives::ZvmPlayHost>,
     /// Argument stack for [`Op::Arg`] / [`Op::Call`].
-    args: Vec<Value>,
+    pub(crate) args: Vec<Value>,
     /// Return slots written by [`Op::Ret`]. Index 0 is the result.
-    rets: [Option<Value>; 8],
-    fuel_left: u64,
+    pub(crate) rets: [Option<Value>; 8],
+    pub(crate) fuel_left: u64,
+    /// Interpreter bridge from AOT code: frames at or below this depth belong to the caller.
+    pub(crate) bridge_floor: usize,
+    /// Set when a bridged callee left through `Return` (the caller's `i[0]`).
+    pub(crate) bridge_rq: Option<i64>,
+    /// Per function, per word: block fuel charge ([`crate::program::block_costs`]).
+    costs: Vec<Vec<u32>>,
+    /// Frames already live outside this interpreter run (AOT callers), counted
+    /// against `stack_limit`.
+    pub(crate) depth_base: usize,
+    /// AOT tier (`docs/37` ZW3), when attached.
+    #[cfg(feature = "aot")]
+    pub(crate) aot: Option<Box<crate::aot::AotModule>>,
 }
 
 /// A register value on the argument / return stack (`docs/34` §14.3.3).
@@ -135,10 +148,40 @@ impl Zvm {
             last_f: 0.0,
             last_i: [0; 4],
             last_s: String::new(),
-            play,
+            play: Box::new(play),
             args: Vec::new(),
             rets: [None; 8],
             fuel_left: 0,
+            costs: Vec::new(),
+            depth_base: 0,
+            bridge_floor: 0,
+            bridge_rq: None,
+            #[cfg(feature = "aot")]
+            aot: None,
+        }
+    }
+
+    /// Placeholder left in place while the AOT tier holds the VM.
+    #[cfg(feature = "aot")]
+    pub(crate) fn empty() -> Self {
+        Self {
+            program: CompiledProgram::default(),
+            heap: ZvmHeap::new(),
+            natives: NativeTable::default(),
+            config: ZvmConfig::default(),
+            host: 0,
+            last_f: 0.0,
+            last_i: [0; 4],
+            last_s: String::new(),
+            play: Box::default(),
+            args: Vec::new(),
+            rets: [None; 8],
+            fuel_left: 0,
+            costs: Vec::new(),
+            depth_base: 0,
+            bridge_floor: 0,
+            bridge_rq: None,
+            aot: None,
         }
     }
 
@@ -188,7 +231,7 @@ impl Zvm {
     }
 
     /// Push a frame for [`Op::Call`] / [`Op::CallVirt`], filling `params` from `args`.
-    fn enter_call(
+    pub(crate) fn enter_call(
         &mut self,
         stack: &mut Vec<Frame>,
         func_idx: u32,
@@ -217,6 +260,36 @@ impl Zvm {
         }
         stack.push(nf);
         Ok(())
+    }
+
+    /// True when an AOT module is attached (enabled or not).
+    #[must_use]
+    pub fn has_aot(&self) -> bool {
+        #[cfg(feature = "aot")]
+        {
+            self.aot.is_some()
+        }
+        #[cfg(not(feature = "aot"))]
+        {
+            false
+        }
+    }
+
+    /// Fuel left after the last top-level call.
+    #[must_use]
+    pub fn fuel_left(&self) -> u64 {
+        self.fuel_left
+    }
+
+    /// Allocate an instance of script class `name` exactly as `new(...)` does
+    /// (array fields pre-allocated). `None` when the class is unknown.
+    pub fn new_object(&mut self, name: &str) -> Option<ObjHandle> {
+        let class = self
+            .program
+            .classes
+            .iter()
+            .position(|c| c.name.eq_ignore_ascii_case(name))?;
+        Some(ops::new_obj(&mut self.heap, &self.program, class as u32))
     }
 
     /// Remap helper exposed for tests that swap `program` after construction.
@@ -384,9 +457,20 @@ impl Zvm {
 
     /// Run until the stack unwinds; returns the top-level integer result.
     fn run_with_result(&mut self, stack: &mut Vec<Frame>) -> Result<i64, Trap> {
+        #[cfg(feature = "aot")]
+        if self.bridge_floor == 0 && stack.len() == 1 {
+            if let Some(r) = self.try_aot(&stack[0]) {
+                return r;
+            }
+        }
+        self.run_frames(stack)
+    }
+
+    /// Interpreter loop until the stack unwinds to `bridge_floor`.
+    pub(crate) fn run_frames(&mut self, stack: &mut Vec<Frame>) -> Result<i64, Trap> {
         let mut result = 0i64;
-        while !stack.is_empty() {
-            if stack.len() > self.config.stack_limit {
+        while stack.len() > self.bridge_floor {
+            if stack.len() + self.depth_base > self.config.stack_limit {
                 let name = self.fname(stack[stack.len() - 1].func);
                 return Err(Trap::StackOverflow { func: name });
             }
@@ -414,14 +498,17 @@ impl Zvm {
                 }
                 continue;
             }
-            if self.fuel_left == 0 {
-                return Err(Trap::FuelExhausted {
-                    func: self.fname(stack[top].func),
-                });
+            let cost = u64::from(self.block_cost(func_i, pc));
+            if cost > 0 {
+                if self.fuel_left < cost {
+                    return Err(Trap::FuelExhausted {
+                        func: self.fname(stack[top].func),
+                    });
+                }
+                self.fuel_left -= cost;
             }
-            self.fuel_left -= 1;
 
-            let word = code[pc];
+            let word = self.program.functions[func_i].code[pc];
             let (op_b, a, b, c) = unpack(word);
             let Some(op) = Op::from_u8(op_b) else {
                 return Err(Trap::BadOpcode {
@@ -503,17 +590,14 @@ impl Zvm {
                         Op::AddI => lb.wrapping_add(rc),
                         Op::SubI => lb.wrapping_sub(rc),
                         Op::MulI => lb.wrapping_mul(rc),
-                        Op::DivI => {
+                        Op::DivI | Op::ModI => {
                             if rc == 0 {
                                 return Err(Trap::DivZero { func: fname, line });
                             }
-                            lb / rc
-                        }
-                        Op::ModI => {
-                            if rc == 0 {
-                                return Err(Trap::DivZero { func: fname, line });
+                            if lb == i64::MIN && rc == -1 {
+                                return Err(Trap::Overflow { func: fname, line });
                             }
-                            lb % rc
+                            if op == Op::DivI { lb / rc } else { lb % rc }
                         }
                         Op::LtI => i64::from(lb < rc),
                         Op::LeI => i64::from(lb <= rc),
@@ -619,72 +703,8 @@ impl Zvm {
                 }
                 Op::CallNat => {
                     let ext = self.take_ext(stack, func_i)?;
-                    let f = self
-                        .natives
-                        .get(ext)
-                        .ok_or_else(|| Trap::Native(format!("unknown native id {ext}")))?;
-                    if let Some(name) = self.natives.name(ext) {
-                        self.play.native_name.clear();
-                        self.play.native_name.push_str(name);
-                    }
                     let pushed = std::mem::take(&mut self.args);
-                    // At least 8 / 4 / 4 / 4 slots (natives read missing
-                    // arguments as zero); more when a `vararg` call pushes more.
-                    let mut i: Vec<i64> = Vec::with_capacity(8);
-                    let mut fv: Vec<f64> = Vec::with_capacity(4);
-                    let mut s: Vec<StrHandle> = Vec::with_capacity(4);
-                    let mut ao: Vec<ObjHandle> = Vec::with_capacity(4);
-                    for v in pushed {
-                        match v {
-                            Value::I(x) => i.push(x),
-                            Value::F(x) => fv.push(x),
-                            Value::S(h) => s.push(h),
-                            Value::A(h) => ao.push(h),
-                        }
-                    }
-                    self.play.native_arg_counts = [i.len(), fv.len(), s.len(), ao.len()];
-                    i.resize(i.len().max(8), 0);
-                    fv.resize(fv.len().max(4), 0.0);
-                    s.resize(s.len().max(4), StrHandle::EMPTY);
-                    ao.resize(ao.len().max(4), ObjHandle::NULL);
-                    let mut regs = NativeRegs {
-                        i: &mut i,
-                        f: &mut fv,
-                        s: &mut s,
-                        a: &mut ao,
-                    };
-                    let host = self.host;
-                    let mut ctx = ZvmCtx {
-                        heap: &mut self.heap,
-                        host,
-                        play: &mut self.play,
-                    };
-                    ctx.play.multi_ret.clear();
-                    f(&mut ctx, &mut regs)?;
-                    self.rets = [None; 8];
-                    // `b == 4` — vector result in `f[0..4]`.
-                    if b == 4 {
-                        for (k, v) in fv.iter().take(4).enumerate() {
-                            self.rets[k] = Some(Value::F(*v));
-                        }
-                        continue;
-                    }
-                    // `b == 2` — string natives write the result into `s[1]`.
-                    self.rets[0] = if b == 2 {
-                        Some(Value::S(s.get(1).copied().unwrap_or_default()))
-                    } else if b == 3 {
-                        Some(Value::A(ao.first().copied().unwrap_or_default()))
-                    } else if b == 1 {
-                        Some(Value::F(fv.first().copied().unwrap_or(0.0)))
-                    } else {
-                        Some(Value::I(i.first().copied().unwrap_or(0)))
-                    };
-                    // Multi-return natives (`int, int F()`) fill `play.multi_ret`.
-                    for (k, v) in std::mem::take(&mut self.play.multi_ret).into_iter().enumerate() {
-                        if k < self.rets.len() {
-                            self.rets[k] = Some(v);
-                        }
-                    }
+                    self.native_call(ext, pushed, b)?;
                 }
                 Op::SetRet => {
                     // Extra results of `return a, b;` before the final `Ret`.
@@ -843,6 +863,9 @@ impl Zvm {
                     // Destination was recorded on this frame by CallStatic.
                     let dest = stack[top].ret.take();
                     stack.pop();
+                    if self.bridge_floor > 0 && stack.len() == self.bridge_floor && dest.is_none() {
+                        self.bridge_rq = Some(ret_i);
+                    }
                     if let Some(prev) = stack.last_mut() {
                         if let Some((bank, reg)) = dest {
                             if bank == 0 {
@@ -863,271 +886,104 @@ impl Zvm {
                 Op::IsClass => {
                     let ext = self.take_ext(stack, func_i)?;
                     let h = stack[top].a.get(b as usize).copied().unwrap_or_default();
-                    let ok = match self.heap.get(h) {
-                        Some(ObjKind::Object { class_id, .. }) => {
-                            class_is(&self.program, *class_id, ext)
-                        }
-                        _ => false,
-                    };
+                    let ok = ops::is_class(&self.heap, &self.program, h, ext);
                     set_i(&mut stack[top], a, i64::from(ok));
                 }
                 Op::NewObj => {
                     let ext = self.take_ext(stack, func_i)?;
-                    let layout = self
-                        .program
-                        .classes
-                        .get(ext as usize)
-                        .cloned()
-                        .unwrap_or_default();
-                    let h = self.heap.new_object_f(
-                        ext,
-                        layout.n_i,
-                        layout.n_a,
-                        layout.n_s,
-                        layout.n_f,
-                    );
-                    let made_i: Vec<_> = layout
-                        .array_i
-                        .iter()
-                        .map(|&idx| (idx, self.heap.new_array_i()))
-                        .collect();
-                    let made_s: Vec<_> = layout
-                        .array_s
-                        .iter()
-                        .map(|&idx| (idx, self.heap.new_array_s()))
-                        .collect();
-                    if let Some(ObjKind::Object { fields_a, .. }) = self.heap.get_mut(h) {
-                        for (idx, arr) in made_i.into_iter().chain(made_s) {
-                            if let Some(slot) = fields_a.get_mut(idx as usize) {
-                                *slot = arr;
-                            }
-                        }
-                    }
+                    let h = ops::new_obj(&mut self.heap, &self.program, ext);
                     set_a(&mut stack[top], a, h);
                 }
                 Op::LoadFieldI => {
                     let ext = self.take_ext(stack, func_i)? as usize;
                     let h = stack[top].a.get(b as usize).copied().unwrap_or_default();
-                    let v = match self.heap.get(h) {
-                        Some(ObjKind::Object { fields_i, .. }) => {
-                            fields_i.get(ext).copied().unwrap_or(0)
-                        }
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => 0,
-                    };
+                    let v = ops::ld_i(&self.heap, h, ext).map_err(|e| heap_trap(e, fname, line))?;
                     set_i(&mut stack[top], a, v);
                 }
                 Op::StoreFieldI => {
                     let ext = self.take_ext(stack, func_i)? as usize;
                     let h = stack[top].a.get(a as usize).copied().unwrap_or_default();
                     let v = stack[top].i.get(b as usize).copied().unwrap_or(0);
-                    match self.heap.get_mut(h) {
-                        Some(ObjKind::Object { fields_i, .. }) => {
-                            if let Some(slot) = fields_i.get_mut(ext) {
-                                *slot = v;
-                            }
-                        }
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => {}
-                    }
+                    ops::st_i(&mut self.heap, h, ext, v).map_err(|e| heap_trap(e, fname, line))?;
                 }
                 Op::LoadFieldA => {
                     let ext = self.take_ext(stack, func_i)? as usize;
                     let h = stack[top].a.get(b as usize).copied().unwrap_or_default();
-                    let v = match self.heap.get(h) {
-                        Some(ObjKind::Object { fields_a, .. }) => {
-                            fields_a.get(ext).copied().unwrap_or_default()
-                        }
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => ObjHandle::NULL,
-                    };
+                    let v = ops::ld_a(&self.heap, h, ext).map_err(|e| heap_trap(e, fname, line))?;
                     set_a(&mut stack[top], a, v);
                 }
                 Op::StoreFieldA => {
                     let ext = self.take_ext(stack, func_i)? as usize;
                     let h = stack[top].a.get(a as usize).copied().unwrap_or_default();
                     let v = stack[top].a.get(b as usize).copied().unwrap_or_default();
-                    match self.heap.get_mut(h) {
-                        Some(ObjKind::Object { fields_a, .. }) => {
-                            if let Some(slot) = fields_a.get_mut(ext) {
-                                *slot = v;
-                            }
-                        }
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => {}
-                    }
+                    ops::st_a(&mut self.heap, h, ext, v).map_err(|e| heap_trap(e, fname, line))?;
                 }
                 Op::LoadFieldS => {
                     let ext = self.take_ext(stack, func_i)? as usize;
                     let h = stack[top].a.get(b as usize).copied().unwrap_or_default();
-                    let v = match self.heap.get(h) {
-                        Some(ObjKind::Object { fields_s, .. }) => {
-                            fields_s.get(ext).copied().unwrap_or_default()
-                        }
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => StrHandle::EMPTY,
-                    };
+                    let v = ops::ld_s(&self.heap, h, ext).map_err(|e| heap_trap(e, fname, line))?;
                     set_s(&mut stack[top], a, v);
                 }
                 Op::StoreFieldS => {
                     let ext = self.take_ext(stack, func_i)? as usize;
                     let h = stack[top].a.get(a as usize).copied().unwrap_or_default();
                     let v = stack[top].s.get(b as usize).copied().unwrap_or_default();
-                    match self.heap.get_mut(h) {
-                        Some(ObjKind::Object { fields_s, .. }) => {
-                            if let Some(slot) = fields_s.get_mut(ext) {
-                                *slot = v;
-                            }
-                        }
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => {}
-                    }
+                    ops::st_s(&mut self.heap, h, ext, v).map_err(|e| heap_trap(e, fname, line))?;
                 }
                 Op::LoadFieldF => {
                     let ext = self.take_ext(stack, func_i)? as usize;
                     let h = stack[top].a.get(b as usize).copied().unwrap_or_default();
-                    let v = match self.heap.get(h) {
-                        Some(ObjKind::Object { fields_f, .. }) => {
-                            fields_f.get(ext).copied().unwrap_or(0.0)
-                        }
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => 0.0,
-                    };
+                    let v = ops::ld_f(&self.heap, h, ext).map_err(|e| heap_trap(e, fname, line))?;
                     set_f(&mut stack[top], a, v);
                 }
                 Op::StoreFieldF => {
                     let ext = self.take_ext(stack, func_i)? as usize;
                     let h = stack[top].a.get(a as usize).copied().unwrap_or_default();
                     let v = stack[top].f.get(b as usize).copied().unwrap_or(0.0);
-                    match self.heap.get_mut(h) {
-                        Some(ObjKind::Object { fields_f, .. }) => {
-                            // Objects made before a layout grew (event proxies) widen here.
-                            if fields_f.len() <= ext {
-                                fields_f.resize(ext + 1, 0.0);
-                            }
-                            fields_f[ext] = v;
-                        }
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => {}
-                    }
+                    ops::st_f(&mut self.heap, h, ext, v).map_err(|e| heap_trap(e, fname, line))?;
                 }
                 Op::ArrayLen => {
                     let h = stack[top].a.get(b as usize).copied().unwrap_or_default();
-                    let n = match self.heap.get(h) {
-                        Some(ObjKind::ArrayI(v)) => v.len() as i64,
-                        Some(ObjKind::ArrayS(v)) => v.len() as i64,
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => 0,
-                    };
+                    let n = ops::arr_len(&self.heap, h).map_err(|e| heap_trap(e, fname, line))?;
                     set_i(&mut stack[top], a, n);
                 }
                 Op::ArrayGetI => {
                     let h = stack[top].a.get(b as usize).copied().unwrap_or_default();
                     let idx = stack[top].i.get(c as usize).copied().unwrap_or(0);
-                    let v = match self.heap.get(h) {
-                        Some(ObjKind::ArrayI(items)) => {
-                            if idx < 0 || idx as usize >= items.len() {
-                                return Err(Trap::ArrayOob { func: fname, line });
-                            }
-                            items[idx as usize]
-                        }
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => 0,
-                    };
+                    let v = ops::arr_get_i(&self.heap, h, idx)
+                        .map_err(|e| heap_trap(e, fname, line))?;
                     set_i(&mut stack[top], a, v);
                 }
                 Op::ArraySetI => {
                     let h = stack[top].a.get(a as usize).copied().unwrap_or_default();
                     let idx = stack[top].i.get(b as usize).copied().unwrap_or(0);
                     let v = stack[top].i.get(c as usize).copied().unwrap_or(0);
-                    match self.heap.get_mut(h) {
-                        Some(ObjKind::ArrayI(items)) => {
-                            if idx < 0 || idx as usize >= items.len() {
-                                return Err(Trap::ArrayOob { func: fname, line });
-                            }
-                            items[idx as usize] = v;
-                        }
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => {}
-                    }
+                    ops::arr_set_i(&mut self.heap, h, idx, v)
+                        .map_err(|e| heap_trap(e, fname, line))?;
                 }
                 Op::ArrayPushI => {
                     let h = stack[top].a.get(a as usize).copied().unwrap_or_default();
                     let v = stack[top].i.get(b as usize).copied().unwrap_or(0);
-                    match self.heap.get_mut(h) {
-                        Some(ObjKind::ArrayI(items)) => items.push(v),
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => {}
-                    }
+                    ops::arr_push_i(&mut self.heap, h, v).map_err(|e| heap_trap(e, fname, line))?;
                 }
                 Op::ArraySetS => {
                     let h = stack[top].a.get(a as usize).copied().unwrap_or_default();
                     let idx = stack[top].i.get(b as usize).copied().unwrap_or(0);
                     let v = stack[top].s.get(c as usize).copied().unwrap_or_default();
-                    match self.heap.get_mut(h) {
-                        Some(ObjKind::ArrayS(items)) => {
-                            if idx < 0 || idx as usize >= items.len() {
-                                return Err(Trap::ArrayOob { func: fname, line });
-                            }
-                            items[idx as usize] = v;
-                        }
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => {}
-                    }
+                    ops::arr_set_s(&mut self.heap, h, idx, v)
+                        .map_err(|e| heap_trap(e, fname, line))?;
                 }
                 Op::ArrayGetS => {
                     let h = stack[top].a.get(b as usize).copied().unwrap_or_default();
                     let idx = stack[top].i.get(c as usize).copied().unwrap_or(0);
-                    let v = match self.heap.get(h) {
-                        Some(ObjKind::ArrayS(items)) => {
-                            if idx < 0 || idx as usize >= items.len() {
-                                return Err(Trap::ArrayOob { func: fname, line });
-                            }
-                            items[idx as usize]
-                        }
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => StrHandle::EMPTY,
-                    };
+                    let v = ops::arr_get_s(&self.heap, h, idx)
+                        .map_err(|e| heap_trap(e, fname, line))?;
                     set_s(&mut stack[top], a, v);
                 }
                 Op::ArrayPushS => {
                     let h = stack[top].a.get(a as usize).copied().unwrap_or_default();
                     let v = stack[top].s.get(b as usize).copied().unwrap_or_default();
-                    match self.heap.get_mut(h) {
-                        Some(ObjKind::ArrayS(items)) => items.push(v),
-                        None => {
-                            return Err(Trap::NullDeref { func: fname, line });
-                        }
-                        _ => {}
-                    }
+                    ops::arr_push_s(&mut self.heap, h, v).map_err(|e| heap_trap(e, fname, line))?;
                 }
                 Op::ConcatS => {
                     let lb = stack[top].s.get(b as usize).copied().unwrap_or_default();
@@ -1151,7 +1007,7 @@ impl Zvm {
                 }
                 Op::IsNull => {
                     let h = stack[top].a.get(b as usize).copied().unwrap_or_default();
-                    let null = h.is_null() || self.heap.get(h).is_none();
+                    let null = ops::is_null(&self.heap, h);
                     set_i(&mut stack[top], a, i64::from(null));
                 }
                 Op::Trap => {
@@ -1172,6 +1028,95 @@ impl Zvm {
         Ok(result)
     }
 
+    /// Run native `ext` on `pushed` arguments and fill the return slots.
+    ///
+    /// `b` is the result bank (0 = i, 1 = f, 2 = s, 3 = a, 4 = vector). Shared
+    /// by the interpreter's `CallNat` and the AOT tier's `zvm.native` import.
+    pub(crate) fn native_call(&mut self, ext: u32, pushed: Vec<Value>, b: u8) -> Result<(), Trap> {
+        let f = self
+            .natives
+            .get(ext)
+            .ok_or_else(|| Trap::Native(format!("unknown native id {ext}")))?;
+        if let Some(name) = self.natives.name(ext) {
+            self.play.native_name.clear();
+            self.play.native_name.push_str(name);
+        }
+        // At least 8 / 4 / 4 / 4 slots (natives read missing
+        // arguments as zero); more when a `vararg` call pushes more.
+        let mut i: Vec<i64> = Vec::with_capacity(8);
+        let mut fv: Vec<f64> = Vec::with_capacity(4);
+        let mut s: Vec<StrHandle> = Vec::with_capacity(4);
+        let mut ao: Vec<ObjHandle> = Vec::with_capacity(4);
+        for v in pushed {
+            match v {
+                Value::I(x) => i.push(x),
+                Value::F(x) => fv.push(x),
+                Value::S(h) => s.push(h),
+                Value::A(h) => ao.push(h),
+            }
+        }
+        self.play.native_arg_counts = [i.len(), fv.len(), s.len(), ao.len()];
+        i.resize(i.len().max(8), 0);
+        fv.resize(fv.len().max(4), 0.0);
+        s.resize(s.len().max(4), StrHandle::EMPTY);
+        ao.resize(ao.len().max(4), ObjHandle::NULL);
+        let mut regs = NativeRegs {
+            i: &mut i,
+            f: &mut fv,
+            s: &mut s,
+            a: &mut ao,
+        };
+        let host = self.host;
+        let mut ctx = ZvmCtx {
+            heap: &mut self.heap,
+            host,
+            play: &mut self.play,
+        };
+        ctx.play.multi_ret.clear();
+        f(&mut ctx, &mut regs)?;
+        self.rets = [None; 8];
+        // `b == 4` — vector result in `f[0..4]`.
+        if b == 4 {
+            for (k, v) in fv.iter().take(4).enumerate() {
+                self.rets[k] = Some(Value::F(*v));
+            }
+            return Ok(());
+        }
+        // `b == 2` — string natives write the result into `s[1]`.
+        self.rets[0] = if b == 2 {
+            Some(Value::S(s.get(1).copied().unwrap_or_default()))
+        } else if b == 3 {
+            Some(Value::A(ao.first().copied().unwrap_or_default()))
+        } else if b == 1 {
+            Some(Value::F(fv.first().copied().unwrap_or(0.0)))
+        } else {
+            Some(Value::I(i.first().copied().unwrap_or(0)))
+        };
+        // Multi-return natives (`int, int F()`) fill `play.multi_ret`.
+        for (k, v) in std::mem::take(&mut self.play.multi_ret)
+            .into_iter()
+            .enumerate()
+        {
+            if k < self.rets.len() {
+                self.rets[k] = Some(v);
+            }
+        }
+        Ok(())
+    }
+
+    /// Fuel charged when executing word `pc` of function `func_i` (0 unless a block leader).
+    fn block_cost(&mut self, func_i: usize, pc: usize) -> u32 {
+        let code = &self.program.functions[func_i].code;
+        if self.costs.len() < self.program.functions.len() {
+            self.costs.resize(self.program.functions.len(), Vec::new());
+        }
+        let entry = &mut self.costs[func_i];
+        if entry.len() != code.len() {
+            *entry = crate::program::block_costs(code);
+        }
+        entry.get(pc).copied().unwrap_or(0)
+    }
+
     fn take_ext(&self, stack: &mut [Frame], func_i: usize) -> Result<u32, Trap> {
         let top = stack.len() - 1;
         let pc = stack[top].pc;
@@ -1187,7 +1132,7 @@ impl Zvm {
         Ok(ext)
     }
 
-    fn fname(&self, idx: u32) -> String {
+    pub(crate) fn fname(&self, idx: u32) -> String {
         self.program
             .functions
             .get(idx as usize)
@@ -1195,7 +1140,7 @@ impl Zvm {
             .unwrap_or_else(|| format!("#{idx}"))
     }
 
-    fn note_last_i(&mut self, frame: &Frame) {
+    pub(crate) fn note_last_i(&mut self, frame: &Frame) {
         self.last_i = [0; 4];
         for (i, slot) in self.last_i.iter_mut().enumerate() {
             *slot = frame.i.get(i).copied().unwrap_or(0);
@@ -1210,6 +1155,14 @@ impl Zvm {
     }
 }
 
+/// Trap for a failed shared heap op.
+pub(crate) fn heap_trap(e: HeapErr, func: String, line: u32) -> Trap {
+    match e {
+        HeapErr::Null => Trap::NullDeref { func, line },
+        HeapErr::Oob => Trap::ArrayOob { func, line },
+    }
+}
+
 /// Rewrite `CallNative` extension words from import indices → runtime ids.
 fn lookup_func(program: &CompiledProgram, name: &str) -> Result<u32, Trap> {
     program
@@ -1220,7 +1173,7 @@ fn lookup_func(program: &CompiledProgram, name: &str) -> Result<u32, Trap> {
         .ok_or_else(|| Trap::Native(format!("unknown function {name}")))
 }
 
-fn class_is(program: &CompiledProgram, mut class_id: u32, want: u32) -> bool {
+pub(crate) fn class_is(program: &CompiledProgram, mut class_id: u32, want: u32) -> bool {
     for _ in 0..64 {
         if class_id == want {
             return true;
@@ -1323,7 +1276,7 @@ fn read_value(f: &Frame, bank: u8, reg: u8) -> Value {
     }
 }
 
-fn write_value(f: &mut Frame, bank: u8, reg: u8, v: Value) {
+pub(crate) fn write_value(f: &mut Frame, bank: u8, reg: u8, v: Value) {
     match (bank, v) {
         (1, Value::F(x)) => {
             if let Some(slot) = f.f.get_mut(reg as usize) {

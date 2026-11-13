@@ -29,6 +29,14 @@ pub enum Trap {
         /// Source line.
         line: u32,
     },
+    /// Integer division overflow (`i64::MIN / -1`, `i64::MIN % -1`).
+    #[error("integer overflow at {func}:{line}")]
+    Overflow {
+        /// Function name.
+        func: String,
+        /// Source line.
+        line: u32,
+    },
     /// Instruction fuel exhausted.
     #[error("fuel exhausted in {func}")]
     FuelExhausted {

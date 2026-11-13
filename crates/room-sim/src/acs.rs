@@ -49,6 +49,12 @@ pub(crate) fn report_unsupported_acs(kind: &str, index: i32) {
     }
 }
 
+thread_local! {
+    /// String result of the WASM `ScriptCall` that just returned.
+    static PENDING_CALL_STRING: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// World as ACS host (line specials, RNG, queries).
 pub(crate) struct WorldAcsHost<'a> {
     pub world: &'a mut World,
@@ -1142,10 +1148,33 @@ impl AcsHost for WorldAcsHost<'_> {
                 return i32::try_from(v).unwrap_or(i32::MAX);
             }
         }
+        // Content-loaded WASM mods (`reg_static_function`, `docs/39` §2):
+        // ints plus the strings the VM resolved, so a Rust port of a
+        // ZScript `ScriptCall` target sees the same arguments.
+        let rest_strings: Vec<Option<String>> = (0..rest.len())
+            .map(|k| strings.get(k + 2).cloned().flatten())
+            .collect();
+        if let Some(r) =
+            crate::script_mods::dispatch_static_call(self.world, &class, &func, rest, &rest_strings)
+        {
+            return match r {
+                crate::script_mods::StaticCallResult::Int(v) => {
+                    i32::try_from(v).unwrap_or(i32::MAX)
+                }
+                crate::script_mods::StaticCallResult::Str(text) => {
+                    PENDING_CALL_STRING.with(|c| *c.borrow_mut() = Some(text));
+                    0
+                }
+            };
+        }
         match self.world.scripts.call_static(&class, &func, rest) {
             Ok(v) => i32::try_from(v).unwrap_or(i32::MAX),
             Err(_) => 0,
         }
+    }
+
+    fn take_script_call_string(&mut self) -> Option<String> {
+        PENDING_CALL_STRING.with(|c| c.borrow_mut().take())
     }
 
     fn set_hud_clip_rect(&mut self, x: i32, y: i32, w: i32, h: i32) {

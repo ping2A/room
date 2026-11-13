@@ -20,10 +20,93 @@ pub struct ZscriptLoadReport {
 
 /// Collect `.zs` / `.zc` / `.zsc` / `ZSCRIPT` lumps from `vfs`, compile them, and
 /// return a report. Empty VFS → `ok` with no program.
+///
+/// A package made by `room mod convert` (`docs/37` ZW9) has no ZScript
+/// sources but a [`CONVERTED_MODULE`]: its program is read from the module and
+/// the module is registered as the program's compiled code, so the VM runs it
+/// (AOT tier) without the ZScript compiler.
 #[must_use]
 pub fn load_zscript_from_vfs(vfs: &Vfs) -> ZscriptLoadReport {
     let (sources, skipped) = zscript_sources_from_vfs(vfs);
+    if let Some(id) = vfs.find_full(CONVERTED_MODULE) {
+        return converted_report(vfs, id, sources, skipped);
+    }
     compile_report(sources, skipped)
+}
+
+/// Path of a converted mod's module inside its package (`room mod convert`).
+pub const CONVERTED_MODULE: &str = "room/zscript.wasm";
+/// A converted mod's status-bar program (UZDoom library + mod), when the mod
+/// sets `GameInfo.StatusBarClass`.
+pub const CONVERTED_UI_MODULE: &str = "room/zscript_ui.wasm";
+/// Conversion record next to [`CONVERTED_MODULE`].
+pub const CONVERTED_RECORD: &str = "room/convert.json";
+
+fn converted_report(
+    vfs: &Vfs,
+    id: room_vfs::LumpId,
+    sources: Vec<(String, String)>,
+    skipped: Vec<String>,
+) -> ZscriptLoadReport {
+    let files = vec![CONVERTED_MODULE.to_owned()];
+    let loaded = vfs
+        .read(id)
+        .map_err(|e| e.to_string())
+        .and_then(|b| room_zvm_wasm::read_room_mod(&b).map_err(|e| e.to_string()));
+    let m = match loaded {
+        Ok(m) => m,
+        Err(e) => {
+            return ZscriptLoadReport {
+                files,
+                program: None,
+                ok: false,
+                notes: vec![format!("{CONVERTED_MODULE}: {e}")],
+                skipped,
+            };
+        }
+    };
+    // The module's program already contains the ZScript of the other archives
+    // it was converted against (the engine's own). Any other set of sources
+    // means it cannot be used: GZDoom compiles all ZScript as one program.
+    if !m.matches_external(&sources) {
+        let mut report = compile_report(sources, skipped);
+        report.ok = false;
+        report.program = None;
+        report.notes.insert(
+            0,
+            format!(
+                "{CONVERTED_MODULE}: compiled against other ZScript sources than the ones \
+                 loaded now (another ZScript mod, or a different Room build); convert the mod \
+                 again"
+            ),
+        );
+        return report;
+    }
+    let verified = vfs
+        .find_full(CONVERTED_RECORD)
+        .and_then(|r| vfs.read(r).ok())
+        .map(|b| String::from_utf8_lossy(&b).replace([' ', '\n', '\t'], ""))
+        .is_some_and(|t| t.contains("\"verified\":true"));
+    let mut notes = vec![format!(
+        "converted mod: {} function(s) as WebAssembly, {} class(es), no ZScript compile",
+        m.program.functions.len(),
+        m.program.classes.len()
+    )];
+    if !verified {
+        notes.push(format!(
+            "warning: {CONVERTED_RECORD} does not say the conversion was verified; behaviour may \
+             differ from the original mod"
+        ));
+    }
+    let program = m.program.clone();
+    room_zvm_wasm::register_shipped(m);
+    ZscriptLoadReport {
+        files,
+        program: Some(program),
+        ok: true,
+        notes,
+        skipped,
+    }
 }
 
 /// The vendored UZDoom ZScript library (`wadsrc/uzdoom`) as `(path, text)`,
@@ -69,8 +152,23 @@ pub fn load_status_bar_program(vfs: &Vfs) -> Result<CompiledProgram, String> {
     if sources.is_empty() {
         return Err("wadsrc/uzdoom not found".into());
     }
-    let (mods, _) = zscript_sources_from_vfs(vfs);
-    sources.extend(mods);
+    sources.extend(status_bar_mod_sources(vfs));
+    // A converted mod ships its UI program (library + mod) precompiled.
+    if let Some(id) = vfs.find_full(CONVERTED_UI_MODULE) {
+        let m = vfs
+            .read(id)
+            .map_err(|e| e.to_string())
+            .and_then(|b| room_zvm_wasm::read_room_mod(&b).map_err(|e| e.to_string()))?;
+        if !m.matches_external(&sources) {
+            return Err(format!(
+                "{CONVERTED_UI_MODULE} was compiled against other ZScript sources; convert the \
+                 mod again"
+            ));
+        }
+        let program = m.program.clone();
+        room_zvm_wasm::register_shipped(m);
+        return Ok(program);
+    }
     let result = room_zscript::check(&sources);
     if !result.ok() {
         return Err(result
@@ -93,6 +191,23 @@ pub fn load_status_bar_program(vfs: &Vfs) -> Result<CompiledProgram, String> {
     })
 }
 
+/// The mounted ZScript a status-bar program adds to the UZDoom library: every
+/// source except the engine's own `room.pk3` stubs, which the library
+/// supersedes (compiling both fails on duplicate definitions).
+#[must_use]
+pub fn status_bar_mod_sources(vfs: &Vfs) -> Vec<(String, String)> {
+    let mut engine = std::collections::BTreeSet::new();
+    for (_, info) in vfs.iter() {
+        if vfs.container(info.container).is_some_and(|c| c.name == "room.pk3") {
+            engine.insert(info.full_path.to_ascii_lowercase());
+        }
+    }
+    let (mods, _) = zscript_sources_from_vfs(vfs);
+    mods.into_iter()
+        .filter(|(p, _)| !engine.contains(&p.to_ascii_lowercase()))
+        .collect()
+}
+
 /// ZScript sources of `vfs` as `(path, text)`, entry file (`zscript` /
 /// `zscript.zc`) first, plus the paths that were skipped.
 ///
@@ -103,9 +218,49 @@ pub fn load_status_bar_program(vfs: &Vfs) -> Result<CompiledProgram, String> {
 /// source with the same path.
 #[must_use]
 pub fn zscript_sources_from_vfs(vfs: &Vfs) -> (Vec<(String, String)>, Vec<String>) {
-    let (mut sources, skipped) = collect_zscript_sources(vfs);
+    let (mut sources, mut skipped) = collect_zscript_sources(vfs);
+    let replaced = crate::mods::replaced_zscript(vfs);
+    if !replaced.is_empty() {
+        drop_replaced_sources(&mut sources, &replaced, &mut skipped);
+    }
     sort_entry_first(&mut sources);
     (sources, skipped)
+}
+
+/// Remove the files a WASM port replaces (`[mod] replaces_zscript`) and
+/// comment out the `#include`s that name them, so the rest still compiles.
+fn drop_replaced_sources(
+    sources: &mut Vec<(String, String)>,
+    replaced: &[String],
+    notes: &mut Vec<String>,
+) {
+    let norm = |p: &str| {
+        p.replace('\\', "/")
+            .trim_start_matches("./")
+            .trim_start_matches('/')
+            .to_ascii_lowercase()
+    };
+    sources.retain(|(path, _)| {
+        let gone = replaced.contains(&norm(path));
+        if gone {
+            notes.push(format!("{path}: replaced by a WASM mod (replaces_zscript)"));
+        }
+        !gone
+    });
+    for (_, text) in sources.iter_mut() {
+        if !text.contains("#include") {
+            continue;
+        }
+        let mut out = String::with_capacity(text.len());
+        for line in text.split_inclusive('\n') {
+            let target = include_paths(line);
+            if target.first().is_some_and(|t| replaced.contains(&norm(t))) {
+                out.push_str("// replaced by a WASM mod: ");
+            }
+            out.push_str(line);
+        }
+        *text = out;
+    }
 }
 
 fn sort_entry_first(sources: &mut [(String, String)]) {
@@ -380,6 +535,41 @@ mod source_tests {
             .collect();
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].1, "class A2 {}");
+    }
+
+    #[test]
+    fn mod_manifest_replaces_zscript_files() {
+        let base = zip_from_files(&[
+            (
+                "zscript.zc",
+                b"version \"3.2.3\"\n#include \"zscript/BD_WCS.zc\"\n#include \"zscript/Keep.zc\"\n"
+                    .as_slice(),
+            ),
+            ("zscript/BD_WCS.zc", b"class ZandroCompat {}".as_slice()),
+            ("zscript/Keep.zc", b"class Keep {}".as_slice()),
+        ])
+        .unwrap();
+        let port = WadWriter::pwad()
+            .add(
+                "ROOMMOD",
+                b"[mod]\nid = \"p\"\nreplaces_zscript = [\"zscript/bd_wcs.zc\"]\n".to_vec(),
+            )
+            .finish()
+            .unwrap();
+        let vfs = VfsBuilder::new()
+            .mount_memory("bd.pk3", base)
+            .unwrap()
+            .mount_memory("port.wad", port)
+            .unwrap()
+            .build()
+            .unwrap();
+        let (sources, notes) = zscript_sources_from_vfs(&vfs);
+        let paths: Vec<_> = sources.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(paths, ["zscript.zc", "zscript/keep.zc"]); // zip paths are lower-cased
+        assert!(sources[0].1.contains("// replaced by a WASM mod: #include \"zscript/BD_WCS.zc\""));
+        assert!(sources[0].1.contains("\n#include \"zscript/Keep.zc\""));
+        assert!(notes.iter().any(|n| n.contains("replaces_zscript")));
+        assert!(load_zscript_from_vfs(&vfs).ok);
     }
 
     #[test]

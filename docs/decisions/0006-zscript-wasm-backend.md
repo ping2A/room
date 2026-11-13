@@ -1,6 +1,6 @@
 # ADR 0006 — ZScript bytecode → WebAssembly backend
 
-Date: 2026-11-03. Status: proposed. Amends: ADR 0005 (the "ZScript→WASM
+Date: 2026-11-03. Status: accepted; ZW0–ZW3 implemented 2026-11-13 (`docs/37` §0.1). Amends: ADR 0005 (the "ZScript→WASM
 transpiler stretch goal is dropped" line).
 
 ## Context
@@ -33,3 +33,9 @@ every change. ZS9 (custom Cranelift JIT) is superseded by ZW3.
   - import overhead for heap operations, mitigated by ZW5;
   - the interpreter changes its fuel accounting to per-block, which changes
     fuel-exhaustion points for existing tests.
+
+## Amendment (2026-11-13)
+`Target::RoomMod` keeps the heap and natives in the engine instead of a
+`room-zrt` guest runtime (`docs/37` §0.2, chosen by the project owner): a
+converted mod ships its compiled code and program image, runs through the
+AOT tier, and is not an ABI v1 ROOMMOD.

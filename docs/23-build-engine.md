@@ -77,6 +77,26 @@ cargo run -p room-app --release -- --iwad testdata/duke/duke3d.grp --map E1M1 --
 ./scripts/room-server.sh start
 ```
 
+### Native web editor
+
+Open `editor.html` to a game chooser; no IWAD or map is loaded by default.
+Choose **Doom** to open a Doom WAD (IWAD or standalone PWAD), or **Duke Nukem 3D** to open
+`DUKE3D.GRP`. A PWAD selected as the base opens on its own; with a base already loaded, **Open…** mounts it as an add-on. The map list and resource tabs then show only the selected game's
+editor data. Duke maps use a native Build 2D view: select and
+move vertices or sprites, inspect/edit wall, sector and sprite records, and add
+or remove sprites. **New Build map** creates a native `.MAP`; **Draw** creates
+sector polygons, links reversed shared edges as portals, and selected sectors
+can be removed. Floor labels show each sector's native Z and ART tile; turn
+them on or off in the toolbar, or use the per-map sector-floor list in the
+inspector to jump to a floor and edit it. The texture browser lists
+all tiles from loaded ART archives; map wall and plane properties can pick a
+tile and open it in the indexed pixel painter. **Native test** starts the
+selected edited map through `room-duke`; **Edit** / F7 returns to the map view.
+**Export GRP** writes the original GRP with edited native maps and ART archives.
+**Save .MAP** downloads the current map on its own.
+
+A native 3D visual editor and preserving add-on GRP layers are still open.
+
 A room's `game` (`doom` or `duke3d`, `POST /api/rooms` `"game"`) is listed in
 `GET /api/rooms`; the lobby adds `iwad=duke3d.grp` to the play URL. Doom mods
 cannot be combined with `duke3d`. Peers still compare content fingerprints, so

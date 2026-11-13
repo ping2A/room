@@ -967,6 +967,12 @@ pub trait AcsHost {
         let _ = strings;
         self.script_call(args, activator)
     }
+    /// String result of the [`Self::script_call_resolved`] that just
+    /// returned, if the target returned a string; the VM then hands ACS a
+    /// string handle instead of the integer result.
+    fn take_script_call_string(&mut self) -> Option<String> {
+        None
+    }
     /// ACSF `SpawnParticle(color [, fullbright, lifetime, size, x, y, z, …])`.
     fn spawn_particle(
         &mut self,
@@ -2522,7 +2528,11 @@ fn dispatch_acs_func(
                         .then(|| acs_string(state, v))
                 })
                 .collect();
-            host.script_call_resolved(args, &strings, activator)
+            let v = host.script_call_resolved(args, &strings, activator);
+            match host.take_script_call_string() {
+                Some(text) => add_dyn_string(state, text),
+                None => v,
+            }
         }
         pcd::acsf::START_SLIDESHOW => {
             let name = acs_string(state, args.first().copied().unwrap_or(0));

@@ -104,6 +104,10 @@ pub enum VirtualSlot {
     DamageMobj = 3,
     /// `Die`.
     Die = 4,
+    /// `Inventory.ModifyDamage` — dispatched with a `ModifyDamageV1`
+    /// payload whenever the item's owner deals (active) or takes (passive)
+    /// damage; the callback returns the new damage.
+    ModifyDamage = 5,
 }
 
 pub use room_script_abi::{event_handler_flags, event_mask};

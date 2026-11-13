@@ -69,6 +69,7 @@
       <nav class="nav" aria-label="Sections">
         <button type="button" class="nav-item active" data-view="dashboard">Dashboard</button>
         <button type="button" class="nav-item" data-view="rooms">Rooms</button>
+        <button type="button" class="nav-item" data-view="presets">Presets</button>
         <button type="button" class="nav-item" data-view="bans">Bans</button>
         <button type="button" class="nav-item" data-view="audit">Audit</button>
         <button type="button" class="nav-item" data-view="settings">Settings</button>
@@ -183,6 +184,45 @@
         </div>
       </section>
 
+      <section id="view-presets" class="view hidden">
+        <div class="panel preset-manager">
+          <div class="panel-head">
+            <div>
+              <h2>Room presets</h2>
+              <p class="muted">Choose the game, files, allowed maps, and defaults players can use when they create a room.</p>
+            </div>
+            <button type="button" id="preset-add" class="btn primary">New preset</button>
+          </div>
+          <div class="preset-manager-controls">
+            <label class="field">
+              <span>Select a preset</span>
+              <select id="preset-select" aria-describedby="presets-status"></select>
+            </label>
+            <div class="preset-actions">
+              <button type="button" id="preset-edit" class="btn">Edit preset</button>
+              <button type="button" id="preset-delete" class="btn danger">Delete preset</button>
+            </div>
+          </div>
+          <p id="presets-status" class="muted" role="status">Loading presets…</p>
+          <div id="preset-preview" class="preset-preview" aria-live="polite"></div>
+        </div>
+        <div class="panel preset-policy">
+          <div class="panel-head">
+            <h2>Room creation policy</h2>
+            <span class="muted">Controls whether players may create a custom room</span>
+          </div>
+          <label class="inline-check"><input type="checkbox" id="preset-require"/> Require players to choose a preset when creating a Doom room</label>
+          <p class="muted">When enabled, room creation must use one of the presets above. Otherwise players may also enter a custom map.</p>
+        </div>
+        <div class="panel preset-library-note">
+          <div class="panel-head">
+            <h2>Need another game file?</h2>
+            <span class="muted">Add it to the library before editing a preset</span>
+          </div>
+          <p class="muted">Upload or rescan WAD / PK3 files in <button type="button" class="text-button" data-go-settings="content">Settings → Content library</button>. The preset editor will then offer the game files and detected maps.</p>
+        </div>
+      </section>
+
       <section id="view-bans" class="view hidden">
         <div class="panel">
           <div class="panel-head"><h2>Add ban</h2></div>
@@ -290,18 +330,6 @@
             <p class="muted" id="content-status">—</p>
           </div>
           <ul id="content-list" class="keys-list mods-list"></ul>
-        </div>
-        <div class="panel">
-          <div class="panel-head">
-            <h2>Room presets</h2>
-            <span class="muted">Map / PK3 / WAD combinations players pick when they open a room</span>
-          </div>
-          <div class="row">
-            <button type="button" id="preset-add" class="btn primary">New preset</button>
-            <label class="field check"><span><input type="checkbox" id="preset-require"/> Rooms must use a preset</span></label>
-            <p class="muted" id="presets-status">—</p>
-          </div>
-          <ul id="presets-list" class="keys-list mods-list"></ul>
         </div>
         <div class="panel">
           <div class="panel-head"><h2>Security keys</h2>

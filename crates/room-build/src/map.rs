@@ -3,9 +3,10 @@
 //! sprites (44 bytes), all little-endian.
 
 use crate::error::BuildError;
+use serde::{Deserialize, Serialize};
 
 /// Build sector.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(missing_docs)]
 pub struct Sector {
     pub wallptr: i16,
@@ -33,7 +34,7 @@ pub struct Sector {
 }
 
 /// Build wall (one directed edge of a sector loop).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(missing_docs)]
 pub struct Wall {
     pub x: i32,
@@ -56,7 +57,7 @@ pub struct Wall {
 }
 
 /// Build sprite (actors, items, decorations, effectors).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(missing_docs)]
 pub struct Sprite {
     pub x: i32,
@@ -84,7 +85,7 @@ pub struct Sprite {
 }
 
 /// A parsed map.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildMap {
     /// File version (7 or 8).
     pub version: i32,
@@ -281,7 +282,8 @@ impl BuildMap {
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut o = Vec::new();
-        o.extend_from_slice(&7i32.to_le_bytes());
+        let version: i32 = if self.version == 8 { 8 } else { 7 };
+        o.extend_from_slice(&version.to_le_bytes());
         for v in self.start {
             o.extend_from_slice(&v.to_le_bytes());
         }
