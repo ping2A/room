@@ -1318,7 +1318,26 @@ impl PlaySession {
             return "null".into();
         };
         let closed = self.net.as_ref().and_then(NetPlay::closed_reason);
-        let rows: Vec<serde_json::Value> = if world.match_over.is_some() || closed.is_some() {
+        let ended = world.match_over.is_some() || closed.is_some();
+        // A mod's own standings (Battle Royale: place, kills, damage) win
+        // over the generic frag table.
+        let mod_rows = ended && !world.match_standings.is_empty();
+        let rows: Vec<serde_json::Value> = if mod_rows {
+            let mut list: Vec<_> = world.match_standings.iter().collect();
+            list.sort_by_key(|r| (r.place, r.seat));
+            list.iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "seat": r.seat,
+                        "name": self.seat_name(r.seat),
+                        "place": r.place,
+                        "frags": r.kills,
+                        "damage": r.damage,
+                        "alive": r.place == 1,
+                    })
+                })
+                .collect()
+        } else if ended {
             world
                 .standings()
                 .iter()
@@ -1348,6 +1367,7 @@ impl PlaySession {
             "over": over,
             "closed": closed,
             "rows": rows,
+            "columns": if mod_rows { "damage" } else { "deaths" },
             "local_seat": self.local_seat,
             "spectator": self.is_spectator(),
             "solo": self.net.is_none(),

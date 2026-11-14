@@ -386,7 +386,10 @@
     #matchover table { width: 100%; border-collapse: collapse; margin: 0 0 1.1rem; font-size: 0.92rem; }
     #matchover th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: #7a8494; font-weight: 600; padding: 0 0.4rem 0.35rem; }
     #matchover td { padding: 0.45rem 0.4rem; border-top: 1px solid rgba(60, 66, 82, 0.6); color: #d8dee9; font-variant-numeric: tabular-nums; }
-    #matchover td.name { text-align: left; }
+    #matchover th, #matchover td { text-align: right; white-space: nowrap; }
+    #matchover th.place, #matchover td.place { text-align: center; width: 2.2rem; }
+    #matchover th.name, #matchover td.name { text-align: left; width: 100%; overflow: hidden; text-overflow: ellipsis; max-width: 0; }
+    #matchover th.state, #matchover td.state { width: 3.2rem; }
     #matchover tr.me td { color: #fff; background: rgba(90, 140, 70, 0.18); }
     #matchover tr.first td.place { color: #ffd27a; font-weight: 700; }
     #matchover .out { color: #8a6a6a; }
@@ -759,7 +762,7 @@
       <h1 id="matchover-title">Match over</h1>
       <p class="sub" id="matchover-sub"></p>
       <table>
-        <thead><tr><th>#</th><th class="name">Player</th><th>Frags</th><th>Deaths</th><th></th></tr></thead>
+        <thead><tr><th class="place">#</th><th class="name">Player</th><th id="matchover-frags">Frags</th><th id="matchover-col">Deaths</th><th class="state"></th></tr></thead>
         <tbody id="matchover-rows"></tbody>
       </table>
       <div class="actions" id="matchover-actions"></div>
@@ -896,11 +899,18 @@
         if (st.closed) notes.push(`The server closed this room (${st.closed}).`);
         else if (!st.solo) notes.push("The room closes shortly.");
         sub.textContent = notes.join(" ");
+        // Mods with their own standings (Battle Royale) report damage, not deaths.
+        const byDamage = st.columns === "damage";
+        document.getElementById("matchover-col").textContent = byDamage ? "Damage" : "Deaths";
+        document.getElementById("matchover-frags").textContent = byDamage ? "Kills" : "Frags";
         rows.innerHTML = (st.rows || []).map((r) => {
           const cls = [r.seat === me ? "me" : "", r.place === 1 ? "first" : ""].join(" ");
-          const state = r.alive ? "alive" : '<span class="out">out</span>';
+          const state = byDamage
+            ? (r.place === 1 ? "winner" : "")
+            : (r.alive ? "alive" : '<span class="out">out</span>');
+          const extra = byDamage ? (r.damage ?? 0) : r.deaths;
           return `<tr class="${cls}"><td class="place">${r.place}</td><td class="name">${esc(r.name)}</td>` +
-            `<td>${r.frags}</td><td>${r.deaths}</td><td>${state}</td></tr>`;
+            `<td>${r.frags}</td><td>${extra}</td><td class="state">${state}</td></tr>`;
         }).join("");
         actions.innerHTML = ws
           ? `<a href="${esc(lobbyUrl)}">Back to lobby</a>`

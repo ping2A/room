@@ -3,7 +3,7 @@
 use core::fmt::Write;
 
 use room_script_sdk::game::{self, player_prop, Actor};
-use room_script_sdk::hud::{Hud, anchor, font, layer};
+use room_script_sdk::hud::{Hud, align, anchor, font, layer};
 
 use crate::host::Host;
 use crate::tables::{MAX_PLAYERS, TICRATE};
@@ -27,7 +27,13 @@ pub mod wid {
     pub const SPEC_HINT: u16 = 63;
     pub const TITLE: u16 = 64;
     pub const HINT: u16 = 65;
+    /// Stats grid: three labels, then three values.
+    pub const STAT_LABEL0: u16 = 66;
+    pub const STAT_VALUE0: u16 = 69;
 }
+
+/// Stats grid column centres (x from the screen centre).
+const STAT_X: [i16; 3] = [-84, 0, 84];
 
 /// Per-seat elimination stats screen + spectate (`BE9`).
 #[derive(Clone, Copy, Debug, Default)]
@@ -140,9 +146,7 @@ impl DeathExperience {
             }
             if !self.spectating[seat] {
                 self.panel_until[seat] = t;
-                for id in [wid::PANEL, wid::BODY, wid::TITLE, wid::HINT] {
-                    let _ = Hud::remove(seat as i32, id);
-                }
+                Self::clear_panel(seat);
                 self.spectating[seat] = true;
                 host.player_capture_input(seat as i32, bt::ATTACK | bt::MOD1);
                 let first = if self.killer_seat[seat] >= 0 {
@@ -203,15 +207,19 @@ impl DeathExperience {
         }
     }
 
+    fn clear_panel(seat: usize) {
+        for id in [wid::PANEL, wid::BODY, wid::TITLE, wid::HINT] {
+            let _ = Hud::remove(seat as i32, id);
+        }
+        for k in 0..3 {
+            let _ = Hud::remove(seat as i32, wid::STAT_LABEL0 + k);
+            let _ = Hud::remove(seat as i32, wid::STAT_VALUE0 + k);
+        }
+    }
+
     fn clear_widgets(seat: usize) {
-        for id in [
-            wid::PANEL,
-            wid::BODY,
-            wid::TITLE,
-            wid::HINT,
-            wid::SPEC_NAME,
-            wid::SPEC_HINT,
-        ] {
+        Self::clear_panel(seat);
+        for id in [wid::SPEC_NAME, wid::SPEC_HINT] {
             let _ = Hud::remove(seat as i32, id);
         }
     }
@@ -267,34 +275,59 @@ impl DeathExperience {
             .color("Red")
             .text("ELIMINATED")
             .show();
+        // Centred summary: place, then who did it.
         let mut body = crate::text::Msg::new();
         let _ = write!(body, "#{} OF {}\n", self.place[seat], self.of[seat]);
         let ks = self.killer_seat[seat];
         if ks >= 0 {
             let _ = write!(body, "KILLED BY ");
             crate::text::write_player_name(&mut body, usize::from(ks as u8));
-            let _ = write!(body, " ({} HP LEFT)\n", self.killer_hp[seat]);
+            let _ = write!(body, " - {} HP LEFT", self.killer_hp[seat]);
         } else {
-            let _ = write!(body, "THE ZONE GOT YOU\n");
+            let _ = write!(body, "THE ZONE GOT YOU");
         }
-        let secs = self.survived[seat] / TICRATE;
-        let _ = write!(
-            body,
-            "\nKILLS {}   DAMAGE {}   TIME {}:{:02}",
-            self.kills[seat],
-            self.damage[seat],
-            secs / 60,
-            secs % 60
-        );
         let _ = Hud::text(wid::BODY)
             .seat(seat_i)
             .anchor(anchor::CENTER)
-            .at(0, -18)
+            .at(0, -26)
             .font(font::SMALL)
+            .align(align::CENTER)
             .layer(layer::MODAL)
             .color("White")
             .text(body.as_str())
             .show();
+        // Stats grid: label over value, each column centred on its own x.
+        let secs = self.survived[seat] / TICRATE;
+        let mut values = [
+            crate::text::Msg::new(),
+            crate::text::Msg::new(),
+            crate::text::Msg::new(),
+        ];
+        let _ = write!(values[0], "{}", self.kills[seat]);
+        let _ = write!(values[1], "{}", self.damage[seat]);
+        let _ = write!(values[2], "{}:{:02}", secs / 60, secs % 60);
+        for (k, label) in ["KILLS", "DAMAGE", "TIME"].iter().enumerate() {
+            let _ = Hud::text(wid::STAT_LABEL0 + k as u16)
+                .seat(seat_i)
+                .anchor(anchor::CENTER)
+                .at(STAT_X[k], 2)
+                .font(font::SMALL)
+                .align(align::CENTER)
+                .layer(layer::MODAL)
+                .color("Gray")
+                .text(label)
+                .show();
+            let _ = Hud::text(wid::STAT_VALUE0 + k as u16)
+                .seat(seat_i)
+                .anchor(anchor::CENTER)
+                .at(STAT_X[k], 13)
+                .font(font::SMALL)
+                .align(align::CENTER)
+                .layer(layer::MODAL)
+                .color("Gold")
+                .text(values[k].as_str())
+                .show();
+        }
         let left = ((self.panel_until[seat] - t) + TICRATE - 1) / TICRATE;
         let mut hint = crate::text::Msg::new();
         let _ = write!(hint, "SPECTATING IN {} - FIRE TO SKIP", left.max(0));

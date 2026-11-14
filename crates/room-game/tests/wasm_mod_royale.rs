@@ -695,7 +695,7 @@ fn death_shows_stats_then_spectates_the_killer() {
     assert!(hud_text_has(w, 2, 64, "ELIMINATED"), "stats title");
     assert!(hud_text_has(w, 2, 61, "#3 OF 3"), "place");
     assert!(hud_text_has(w, 2, 61, "KILLED BY Player 1"), "killer");
-    assert!(hud_text_has(w, 2, 61, "KILLS 0"), "own stats");
+    assert!(hud_text_has(w, 2, 66, "KILLS") && hud_text_has(w, 2, 69, "0"), "own stats");
     assert!(hud_text_has(w, 2, 65, "FIRE TO SKIP"));
     assert_eq!(spectate_seat(w, 2), None, "stats first, no spectating yet");
     run(&mut game, 5 * 35, &idle, &mut msgs);

@@ -831,6 +831,9 @@ pub mod hud {
         pub const CENTER: u8 = 1;
         /// Right.
         pub const RIGHT: u8 = 2;
+        /// Left edge exactly at the anchor point, even on a centre anchor
+        /// (`LEFT` centres there): columns of a centred table.
+        pub const LEFT_EDGE: u8 = 3;
         /// Wrap at widget width.
         pub const WRAP: u8 = 1 << 2;
     }

@@ -4,7 +4,7 @@ use core::fmt::Write;
 
 use room_script_abi::MatchStandingV1;
 use room_script_sdk::game::{self, player_prop};
-use room_script_sdk::hud::{Hud, anchor, font, layer};
+use room_script_sdk::hud::{Hud, align, anchor, font, layer};
 
 use crate::announcer::Announcer;
 use crate::combat::CombatHud;
@@ -22,8 +22,21 @@ const ANN_DUEL: u8 = 8;
 mod wid {
     pub const VICTORY_TITLE: u16 = 80;
     pub const VICTORY_BODY: u16 = 81;
-    pub const STANDINGS: u16 = 83;
+    /// Table columns (place, name, kills, damage), then their headers.
+    pub const COL0: u16 = 83;
+    pub const HEAD0: u16 = 87;
+    pub const RULE: u16 = 91;
 }
+
+/// Victory table columns: header, x offset from the screen centre, align.
+const COLUMNS: [(&str, i16, u8); 4] = [
+    ("#", -124, align::LEFT_EDGE),
+    ("PLAYER", -100, align::LEFT_EDGE),
+    ("KILLS", 64, align::RIGHT),
+    ("DAMAGE", 128, align::RIGHT),
+];
+/// Longest name shown in the table (STCFN is 9 px a letter).
+const NAME_CHARS: usize = 12;
 
 /// Banners, music, victory MODAL, standings build (BR7).
 #[derive(Clone, Copy, Debug, Default)]
@@ -186,17 +199,23 @@ impl Moments {
                 let _ = write!(title, "MATCH OVER");
             }
         }
-        // Standings: place, name, kills, damage (best first).
-        let mut table = Msg::new();
+        // One multi-line text per column, so every column lines up.
+        let mut cols = [Msg::new(), Msg::new(), Msg::new(), Msg::new()];
         for row in &self.rows[..self.nrows] {
-            let _ = write!(table, "#{} ", row.place);
             let mut name = Msg::new();
             crate::text::write_player_name(&mut name, usize::from(row.seat));
-            let short: &str = name.as_str().get(..14).unwrap_or(name.as_str());
-            let _ = write!(table, "{short}  K {}  D {}\n", row.kills, row.damage);
+            let full = name.as_str();
+            let mut cut = full.len().min(NAME_CHARS);
+            while !full.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            let _ = write!(cols[0], "#{}\n", row.place);
+            let _ = write!(cols[1], "{}\n", &full[..cut]);
+            let _ = write!(cols[2], "{}\n", row.kills);
+            let _ = write!(cols[3], "{}\n", row.damage);
         }
         let rows_h = (self.nrows as i16) * 10;
-        let panel_h = 56 + rows_h;
+        let panel_h = 70 + rows_h;
         for seat in 0..MAX_PLAYERS {
             let s = seat as i32;
             let _ = Hud::panel(wid::VICTORY_TITLE)
@@ -231,15 +250,36 @@ impl Moments {
                 .color(if Some(seat) == winner { "Gold" } else { "White" })
                 .text(you.as_str())
                 .show();
-            let _ = Hud::text(wid::STANDINGS)
+            let _ = Hud::fill(wid::RULE)
                 .seat(s)
                 .anchor(anchor::CENTER)
-                .at(0, top + 46)
-                .font(font::SMALL)
+                .at(0, top + 56)
+                .size(256, 1)
                 .layer(layer::MODAL)
-                .color("Gray")
-                .text(table.as_str())
+                .rgba(0x5a64_74ff)
                 .show();
+            for (k, (head, x, al)) in COLUMNS.iter().enumerate() {
+                let _ = Hud::text(wid::HEAD0 + k as u16)
+                    .seat(s)
+                    .anchor(anchor::CENTER)
+                    .at(*x, top + 46)
+                    .font(font::SMALL)
+                    .align(*al)
+                    .layer(layer::MODAL)
+                    .color("Gray")
+                    .text(head)
+                    .show();
+                let _ = Hud::text(wid::COL0 + k as u16)
+                    .seat(s)
+                    .anchor(anchor::CENTER)
+                    .at(*x, top + 60)
+                    .font(font::SMALL)
+                    .align(*al)
+                    .layer(layer::MODAL)
+                    .color(if k == 1 { "White" } else { "Cream" })
+                    .text(cols[k].as_str())
+                    .show();
+            }
         }
     }
 }

@@ -1,6 +1,6 @@
 //! Retained Mod HUD drawing (`docs/27` §9 / MH1).
 
-use crate::doom_text::{draw_stcfn_string, measure_stcfn_string};
+use crate::doom_text::{draw_stcfn_prop as draw_stcfn_string, measure_stcfn_prop as measure_stcfn_string};
 use crate::draw::{Rect, Rgba, UiDrawList, Vec2};
 use room_map::MapGeometry;
 use room_sim::mod_hud::{HudWidget, ModHud, WidgetKey, flags, kind, layer, map as map_layers};
@@ -262,8 +262,8 @@ fn draw_one(
             let x0 = ax + f32::from(w.x);
             let mut y = ay + f32::from(w.y);
             // One row per `\n`; each row is aligned on its own.
-            // `align`: 1 = centre, 2 = right; otherwise follow the anchor
-            // column (centre anchors centre the text).
+            // `align`: 1 = centre, 2 = right, 3 = left edge at the anchor;
+            // 0 follows the anchor column (centre anchors centre the text).
             let line_h = 10.0 * scale;
             let start = list.cmds.len();
             for line in text.split('\n') {
@@ -271,6 +271,7 @@ fn draw_one(
                 let x = match w.align & 3 {
                     1 => x0 - width * 0.5,
                     2 => x0 - width,
+                    3 => x0,
                     _ if matches!(w.anchor, 1 | 4 | 7) => x0 - width * 0.5,
                     _ => x0,
                 };
