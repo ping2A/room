@@ -1,0 +1,88 @@
+diff --git a/Engine/src/engine.c b/Engine/src/engine.c
+index b910987..cfd0bca 100644
+--- a/Engine/src/engine.c
++++ b/Engine/src/engine.c
+@@ -7724,8 +7724,16 @@ void printext256(int32_t xpos, int32_t ypos, short col, short backcol, char*  na
+     _updateScreenRect(xpos, ypos, charxsiz * i, 8);
+ }
+ 
++#include <stdio.h>
++#include <stdlib.h>
++int room_krand_tic = -1;
++static FILE *room_krand_f = NULL; static int room_krand_init = 0;
++static void room_krand_open(void) { const char *p = getenv("ROOM_KRAND_LOG"); room_krand_init = 1; if (p) room_krand_f = fopen(p, "w"); }
++void room_krand_mark(const char *m) { if (!room_krand_init) room_krand_open(); if (room_krand_f) { fprintf(room_krand_f, "# %s %d\n", m, randomseed); fflush(room_krand_f); } }
+ int krand()
+ {
++    if (!room_krand_init) room_krand_open();
++    if (room_krand_f) { extern int room_cur_i(void); extern int room_cur_t(int); extern int room_cur_pic(void); fprintf(room_krand_f, "%d %p %d %d pic=%d t0=%d t2=%d t4=%d\n", room_krand_tic, __builtin_return_address(0), randomseed, room_cur_i(), room_cur_pic(), room_cur_t(0), room_cur_t(2), room_cur_t(4)); }
+     randomseed = (randomseed*27584621)+1;
+     return(((uint32_t )randomseed)>>16);
+ }
+diff --git a/Game/src/game.c b/Game/src/game.c
+index d80d954..980f09a 100644
+--- a/Game/src/game.c
++++ b/Game/src/game.c
+@@ -45,6 +45,7 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
+ #include "audiolib/sndcards.h"
+ 
+ #include "duke3d.h"
++#include "room_trace.h"
+ 
+ #include "console.h"
+ #include "cvars.h"
+@@ -9689,6 +9690,8 @@ uint8_t  domovethings(void)
+     }
+ 
+ 
++    room_trace_after_tic();
++
+     return 0;
+ }
+ 
+diff --git a/Game/src/gamedef.c b/Game/src/gamedef.c
+index 6b93c64..0945412 100644
+--- a/Game/src/gamedef.c
++++ b/Game/src/gamedef.c
+@@ -39,6 +39,9 @@ static short g_i,g_p;
+ static int32_t g_x;
+ static int32_t *g_t;
+ static spritetype *g_sp;
++int room_cur_i(void) { return g_i; }
++int room_cur_t(int k) { return g_t ? g_t[k] : -99999; }
++int room_cur_pic(void) { return g_sp ? g_sp->picnum : -1; }
+ 
+ #define NUMKEYWORDS     112
+ 
+diff --git a/Game/src/premap.c b/Game/src/premap.c
+index c28f39e..77188fb 100644
+--- a/Game/src/premap.c
++++ b/Game/src/premap.c
+@@ -1450,6 +1450,7 @@ void resetmys(void)
+ 
+ void enterlevel(uint8_t  g)
+ {
++    extern void room_krand_mark(const char *m); room_krand_mark("enterlevel");
+     short i;
+     int32_t l;
+     char  levname[256];
+diff --git a/Game/src/sounds.c b/Game/src/sounds.c
+index 4573613..4343b7c 100644
+--- a/Game/src/sounds.c
++++ b/Game/src/sounds.c
+@@ -52,6 +52,7 @@ int32_t backflag,numenvsnds;
+ void SoundStartup( void )
+    {
+    int32 status;
++   if (getenv("ROOM_NOSOUND")) { FXDevice = NumSoundCards; return; }
+ 
+    // if they chose None lets return
+    if (FXDevice == NumSoundCards) return;
+@@ -142,6 +143,7 @@ void SoundShutdown( void )
+ 
+ void MusicStartup( void )
+    {
++   if (getenv("ROOM_NOSOUND")) { MusicDevice = NumSoundCards; return; }
+    int32 status;
+ 
+    // if they chose None lets return
