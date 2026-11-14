@@ -358,23 +358,25 @@
         const game = body.querySelector("#create-game");
         const preset = body.querySelector("#create-preset");
         const presetField = body.querySelector("#create-preset-field");
+        const gameField = game.closest(".field");
         const summary = body.querySelector("#create-preset-summary");
         const mapField = body.querySelector("#create-map-field");
         const skill = body.querySelector("#create-skill");
         const dukeOptions = body.querySelector("#create-duke-options");
         const verifierField = body.querySelector("#create-verifier-field");
+        if (requirePreset && !preset.value) preset.value = presets[0]?.id || "";
         const findPreset = () => presets.find((p) => p.id === preset.value);
         const update = () => {
-          const isDuke = game.value === "duke3d";
-          if (isDuke) preset.value = "";
-          else if (requirePreset && !preset.value) preset.value = presets[0]?.id || "";
-          preset.disabled = isDuke || !presets.length;
-          presetField.classList.toggle("hidden", isDuke || (!presets.length && !requirePreset));
+          const selected = findPreset();
+          if (selected) game.value = selected.game || "doom";
+          const isDuke = selected ? selected.game === "duke3d" : game.value === "duke3d";
+          preset.disabled = !presets.length;
+          presetField.classList.toggle("hidden", !presets.length && !requirePreset);
+          gameField.classList.toggle("hidden", !!selected || requirePreset);
           summary.classList.toggle("hidden", !presets.length);
-          dukeOptions.classList.toggle("hidden", !isDuke);
+          dukeOptions.classList.toggle("hidden", !isDuke || !!selected);
           verifierField.classList.toggle("hidden", isDuke);
           mapField.replaceChildren();
-          const selected = isDuke ? null : findPreset();
           const label = document.createElement("label");
           label.className = "field";
           const labelText = document.createElement("span");
@@ -404,7 +406,7 @@
           }
           mapField.append(label);
           if (selected) {
-            const files = [selected.iwad, ...(selected.content || [])].filter(Boolean).join(" + ") || "server default game files";
+            const files = [selected.iwad?.file, ...(selected.content || []).map((f) => f.file)].filter(Boolean).join(" + ") || "server default game files";
             const details = [files, allowedMaps.length ? `${allowedMaps.length} maps` : "any map", selected.mod ? `mod: ${selected.mod}` : ""].filter(Boolean).join(" · ");
             summary.replaceChildren();
             if (selected.description) {
@@ -418,29 +420,42 @@
             meta.textContent = details;
             summary.append(meta);
             skill.value = selected.skill >= 1 && selected.skill <= 5 ? String(selected.skill) : "3";
+            if (selected.game === "duke3d") {
+              body.querySelector('select[name="duke_game_mode"]').value = String(selected.duke_game_mode ?? 1);
+              body.querySelector('input[name="duke_friendly_fire"]').checked = !!selected.duke_friendly_fire;
+            }
           } else if (presets.length) {
             skill.value = "3";
             summary.textContent = isDuke
-              ? "Duke rooms use the native Duke game and can’t use Doom presets."
+              ? "Custom Duke room using the server’s Duke GRP."
               : "Custom room using the server’s default game files.";
           }
         };
-        game.addEventListener("change", update);
+        game.addEventListener("change", () => {
+          const selected = findPreset();
+          if (selected && selected.game !== game.value) {
+            const matching = presets.find((p) => p.game === game.value);
+            preset.value = requirePreset ? (matching?.id || "") : "";
+          }
+          update();
+        });
         preset.addEventListener("change", update);
         update();
       },
     });
     if (!data) return;
+    const selectedPreset = presets.find((p) => p.id === data.preset);
+    const roomGame = selectedPreset?.game || data.game || "doom";
     const body = {
-      game: data.game || "doom",
+      game: roomGame,
       preset: data.preset || null,
-      map: data.map || (data.game === "duke3d" ? "E1L1" : "E1M1"),
-      skill: Number(data.skill) || 3,
+      map: data.map || (roomGame === "duke3d" ? "E1L1" : "E1M1"),
+      skill: Number(data.skill) || selectedPreset?.skill || 3,
+      duke_game_mode: selectedPreset?.duke_game_mode ?? Number(data.duke_game_mode) ?? 1,
+      duke_friendly_fire: selectedPreset ? !!selectedPreset.duke_friendly_fire : data.duke_friendly_fire === true,
       max_players: Number(data.max_players) || 2,
       visibility: data.visibility || "public",
       time_limit: Number(data.time_limit) || 20,
-      duke_game_mode: Number(data.duke_game_mode) || 0,
-      duke_friendly_fire: !!data.duke_friendly_fire,
       enable_verifier: !!data.enable_verifier,
     };
     const created = await api("/admin/api/v1/rooms", {
@@ -1305,7 +1320,7 @@
     state.selectedPresetId = selected ? selected.id : null;
     select.replaceChildren(
       new Option(ps.length ? "Choose a preset…" : "No presets created", ""),
-      ...ps.map((p) => new Option(`${p.title || p.id} · ${p.id}`, p.id, false, p.id === state.selectedPresetId))
+      ...ps.map((p) => new Option(`${p.title || p.id} · ${p.game === "duke3d" ? "Duke" : "Doom"} · ${p.id}`, p.id, false, p.id === state.selectedPresetId))
     );
     select.value = state.selectedPresetId || "";
     select.disabled = ps.length === 0;
@@ -1327,12 +1342,17 @@
       ? `${selected.skill} · ${["", "Easiest", "Easy", "Normal", "Hard", "Hardest"][Number(selected.skill)] || "Custom"}`
       : "Use room default";
     const details = [
+      ["Game", selected.game === "duke3d" ? "Duke Nukem 3D" : "Doom"],
       ["Game files", files.join(" → ")],
       ["Allowed maps", maps],
       ["Default map", defaultMap],
       ["Gameplay mod", selected.mod || "None"],
       ["Difficulty", difficulty],
     ];
+    if (selected.game === "duke3d") {
+      details.push(["Duke mode", ["DukeMatch", "Co-op", "DukeMatch (no spawn)"][Number(selected.duke_game_mode) || 0]]);
+      details.push(["Friendly fire", selected.duke_friendly_fire ? "On" : "Off"]);
+    }
     $("preset-preview").innerHTML =
       '<div class="preset-preview-heading"><div><span class="preset-kicker">SELECTED ROOM SETUP</span><h3>' + escapeHtml(selected.title || selected.id) + '</h3><p class="muted">' + escapeHtml(selected.description || "No player description set.") + '</p></div><code>' + escapeHtml(selected.id) + '</code></div>' +
       '<dl class="preset-detail-grid">' + details.map(([label, value]) => '<div><dt>' + escapeHtml(label) + '</dt><dd>' + escapeHtml(value) + '</dd></div>').join("") + '</dl>';
@@ -1401,9 +1421,9 @@
 
   async function editPreset(idx) {
     const ps = content.presets.presets || [];
-    const p = idx >= 0 ? ps[idx] : { id: "", title: "", description: "", iwad: null, content: [], maps: [], default_map: "", mod: null, skill: 0 };
-    const iwads = content.files.filter((f) => f.kind === "iwad");
-    const others = content.files.filter((f) => f.kind !== "iwad");
+    const p = idx >= 0 ? ps[idx] : { id: "", title: "", description: "", game: "doom", iwad: null, content: [], maps: [], default_map: "", mod: null, skill: 0, duke_game_mode: 1, duke_friendly_fire: false };
+    const baseFiles = (game) => content.files.filter((f) => f.kind === (game === "duke3d" ? "duke" : "iwad"));
+    const others = content.files.filter((f) => f.kind !== "iwad" && f.kind !== "duke");
     const opt = (v, label, sel) => '<option value="' + escapeHtml(v) + '"' + (sel ? " selected" : "") + ">" + escapeHtml(label) + "</option>";
     const orderedOthers = [
       ...(p.content || []).map((file) => others.find((entry) => entry.file === file)).filter(Boolean),
@@ -1422,12 +1442,20 @@
           '<button type="button" class="btn small" data-move="down" title="Move later">↓</button></div></div>';
       })
       .join("");
-    const allMaps = [];
-    for (const f of content.files) for (const m of f.maps || []) if (!allMaps.includes(m)) allMaps.push(m);
-    const mapRows = allMaps
-      .map((m) => '<label class="preset-map-option" data-map="' + escapeHtml(m.toLowerCase()) + '"><input type="checkbox" name="map:' + escapeHtml(m) + '"' +
-        ((p.maps || []).includes(m) ? " checked" : "") + '/><span>' + escapeHtml(m) + "</span></label>")
+    const getMapSources = () => {
+      const sources = new Map();
+      for (const f of content.files) for (const m of f.maps || []) {
+        if (!sources.has(m)) sources.set(m, []);
+        sources.get(m).push(f.file);
+      }
+      return sources;
+    };
+    const mapRowsHtml = (selected) => [...getMapSources()]
+      .map(([m, sources]) => '<label class="preset-map-option" data-map="' + escapeHtml(m.toLowerCase()) + '" data-sources="' + escapeHtml(JSON.stringify(sources)) + '"><input type="checkbox" name="map:' + escapeHtml(m) + '"' +
+        (selected.has(m) ? " checked" : "") + '/><span>' + escapeHtml(m) + "</span></label>")
       .join("");
+    const allMaps = [...getMapSources().keys()];
+    const mapRows = mapRowsHtml(new Set(p.maps || []));
     const extra = (p.maps || []).filter((m) => !allMaps.includes(m)).join(" ");
     const data = await openModal({
       title: idx >= 0 ? "Edit preset" : "New preset",
@@ -1437,12 +1465,14 @@
         '<div class="preset-grid">' +
         '<label class="field"><span>Preset id</span><input name="id" required maxlength="32" value="' + escapeHtml(p.id) + '" placeholder="brutal_doom"/></label>' +
         '<label class="field"><span>Display name</span><input name="title" maxlength="80" value="' + escapeHtml(p.title) + '" placeholder="Brutal Doom co-op"/></label>' +
+        '<label class="field"><span>Game</span><select name="game">' + opt("doom", "Doom", (p.game || "doom") === "doom") + opt("duke3d", "Duke Nukem 3D", p.game === "duke3d") + "</select></label>" +
         '<label class="field preset-span"><span>Player description</span><input name="description" maxlength="300" value="' + escapeHtml(p.description || "") + '" placeholder="One sentence shown before creating a room"/></label></div></section>' +
-        '<section class="preset-section"><h3>2 · Choose game files</h3><p class="preset-help">Set the base game, then select add-ons. Use the arrows to set load order; the top file loads first.</p>' +
-        '<label class="field"><span>Base game</span><select name="iwad">' + opt("", "Use the server default game", !p.iwad) +
-        iwads.map((f) => opt(f.file, f.file, p.iwad === f.file)).join("") + "</select></label>" +
-        '<div class="preset-file-list" id="preset-content-files">' + (fileRows || '<p class="muted">Upload PK3 / WAD files to the content library first.</p>') + "</div></section>" +
-        '<section class="preset-section"><h3>3 · Choose maps</h3><p class="preset-help">Choose specific maps or turn on “Any map”. Add map names if they are not detected in the library.</p>' +
+        '<section class="preset-section"><h3>2 · Choose game files</h3><p class="preset-help" id="preset-files-help">Doom presets use an IWAD and optional WAD / PK3 add-ons.</p>' +
+        '<label class="field"><span id="preset-base-label">Base game IWAD</span><select name="iwad" id="preset-iwad">' + opt("", "Select a base game", !p.iwad) +
+        baseFiles(p.game || "doom").map((f) => opt(f.file, f.file, p.iwad === f.file)).join("") + "</select></label>" +
+        '<label class="field"><span>Add a WAD / GRP from your computer</span><input id="preset-upload" type="file" accept=".wad,.grp,.pk3,.pk7,.zip,.ipk3,.ipk7"/><small class="muted">Uploads to this server’s content library, then adds the file to these choices.</small></label>' +
+        '<div class="preset-file-list" id="preset-content-files">' + (fileRows || '<p class="muted">Upload game files to the content library first.</p>') + "</div></section>" +
+        '<section class="preset-section"><h3>3 · Choose maps</h3><p class="preset-help" id="preset-map-help">Map choices follow the selected base game and checked add-ons. Add map names if they are not detected in the library.</p>' +
         '<label class="inline-check"><input type="checkbox" name="any_map" id="preset-any-map"' + (!(p.maps || []).length ? " checked" : "") + '/> Allow any map</label>' +
         '<div class="preset-map-tools"><input id="preset-map-filter" type="search" placeholder="Find a map…"/><span class="muted">' + allMaps.length + ' detected</span></div>' +
         '<div class="preset-map-list" id="preset-map-list">' + (mapRows || '<p class="muted">No maps detected. You can still type a map name below.</p>') + "</div>" +
@@ -1453,9 +1483,73 @@
         content.mods.filter((m) => m.allowed).map((m) => opt(m.name, m.title || m.name, p.mod === m.name)).join("") + "</select></label>" +
         '<label class="field"><span>Difficulty</span><select name="skill">' +
         opt("0", "Use room default", !(p.skill)) + [1, 2, 3, 4, 5].map((n) => opt(String(n), `${n} · ${["", "Easiest", "Easy", "Normal", "Hard", "Hardest"][n]}`, p.skill === n)).join("") +
-        "</select></label></div></section>",
+        "</select></label>" +
+        '<label class="field" id="preset-duke-mode-field"><span>Duke multiplayer mode</span><select name="duke_game_mode">' +
+        opt("1", "Co-op", (p.duke_game_mode ?? 1) === 1) + opt("0", "DukeMatch", p.duke_game_mode === 0) + opt("2", "DukeMatch (no spawn)", p.duke_game_mode === 2) +
+        '</select></label><label class="inline-check" id="preset-duke-ff-field"><input name="duke_friendly_fire" type="checkbox"' + (p.duke_friendly_fire ? " checked" : "") + '/> Friendly fire</label></div></section>',
       onReady: (body) => {
+        const gameSelect = body.querySelector('select[name="game"]');
+        const iwadSelect = body.querySelector("#preset-iwad");
         const fileList = body.querySelector("#preset-content-files");
+        const updateGameFields = () => {
+          const duke = gameSelect.value === "duke3d";
+          const selectedBase = iwadSelect.value;
+          const bases = baseFiles(gameSelect.value);
+          iwadSelect.replaceChildren(new Option(duke ? "Select a Duke GRP" : "Select a Doom IWAD", ""));
+          for (const f of bases) iwadSelect.add(new Option(f.file, f.file));
+          if (bases.some((f) => f.file === selectedBase)) iwadSelect.value = selectedBase;
+          else if (p.iwad && bases.some((f) => f.file === p.iwad)) iwadSelect.value = p.iwad;
+          body.querySelector("#preset-base-label").textContent = duke ? "Duke base GRP" : "Base game IWAD";
+          body.querySelector("#preset-files-help").textContent = duke
+            ? "Duke multiplayer presets use a Duke GRP. Maps are detected from that GRP; add map names below if needed."
+            : "Doom presets use an IWAD and optional WAD / PK3 add-ons.";
+          body.querySelector("#preset-content-files").classList.toggle("hidden", duke);
+          body.querySelector("#preset-duke-mode-field").classList.toggle("hidden", !duke);
+          body.querySelector("#preset-duke-ff-field").classList.toggle("hidden", !duke);
+          body.querySelector('select[name="mod"]').closest("label").classList.toggle("hidden", duke);
+          body.querySelector("#preset-map-help").textContent = duke
+            ? "Duke map choices follow the selected GRP. Doom add-ons and gameplay mods do not apply."
+            : "Map choices follow the selected Doom IWAD and checked WAD / PK3 add-ons. Gameplay mods apply to the Doom base game.";
+        };
+        gameSelect.addEventListener("change", updateGameFields);
+        updateGameFields();
+        iwadSelect.addEventListener("change", syncMapChoices);
+        const mapList = body.querySelector("#preset-map-list");
+        const mapFilter = body.querySelector("#preset-map-filter");
+        const anyMap = body.querySelector("#preset-any-map");
+        const selectedMapNames = () => new Set([...mapList.querySelectorAll('input[name^="map:"]:checked')].map((input) => input.name.slice(4)));
+        const syncMapChoices = () => {
+          const compatible = new Set(iwadSelect.value ? [iwadSelect.value] : []);
+          if (gameSelect.value === "doom") {
+            for (const row of fileList.querySelectorAll(".preset-file-row")) {
+              if (!row.classList.contains("hidden") && row.querySelector('input[name^="content:"]').checked) {
+                compatible.add(row.dataset.file);
+              }
+            }
+          }
+          let available = 0;
+          for (const row of mapList.querySelectorAll(".preset-map-option")) {
+            let sources = [];
+            try { sources = JSON.parse(row.dataset.sources || "[]"); } catch (_) { sources = []; }
+            const shown = sources.some((file) => compatible.has(file));
+            row.dataset.available = shown ? "1" : "0";
+            const filter = mapFilter.value.trim().toLowerCase();
+            row.classList.toggle("hidden", !shown || !row.dataset.map.includes(filter));
+            const input = row.querySelector("input");
+            if (!shown) input.checked = false;
+            input.disabled = anyMap.checked || !shown;
+            if (shown) available += 1;
+          }
+          mapList.classList.toggle("disabled", anyMap.checked);
+          body.querySelector("#preset-map-filter").parentElement.querySelector(".muted").textContent = `${available} available`;
+          const defaultInput = body.querySelector('input[name="default_map"]');
+          const base = content.files.find((file) => file.file === iwadSelect.value);
+          const availableNames = [...mapList.querySelectorAll('input[name^="map:"]')].filter((input) => !input.disabled).map((input) => input.name.slice(4));
+          const currentDefault = defaultInput.value.trim().toUpperCase();
+          if (!currentDefault || (!anyMap.checked && !availableNames.includes(currentDefault))) {
+            defaultInput.value = availableNames[0] || base?.maps?.[0] || (gameSelect.value === "duke3d" ? "E1L1" : "E1M1");
+          }
+        };
         const updateOrder = () => {
           const rows = [...fileList.querySelectorAll(".preset-file-row")];
           for (const [index, row] of rows.entries()) {
@@ -1476,31 +1570,72 @@
           updateOrder();
         });
         fileList.addEventListener("change", (event) => {
-          if (event.target.matches('input[name^="content:"]')) updateOrder();
+          if (event.target.matches('input[name^="content:"]')) {
+            updateOrder();
+            syncMapChoices();
+          }
         });
         updateOrder();
 
-        const anyMap = body.querySelector("#preset-any-map");
-        const mapList = body.querySelector("#preset-map-list");
-        const mapFilter = body.querySelector("#preset-map-filter");
-        const mapInputs = [...mapList.querySelectorAll('input[name^="map:"]')];
-        const syncMapChoice = () => {
-          for (const input of mapInputs) input.disabled = anyMap.checked;
-          mapList.classList.toggle("disabled", anyMap.checked);
-          body.querySelector('input[name="extra_maps"]').disabled = anyMap.checked;
-        };
-        anyMap.addEventListener("change", syncMapChoice);
         mapFilter.addEventListener("input", () => {
           const filter = mapFilter.value.trim().toLowerCase();
           for (const row of mapList.querySelectorAll(".preset-map-option")) {
-            row.classList.toggle("hidden", !row.dataset.map.includes(filter));
+            row.classList.toggle("hidden", row.dataset.available !== "1" || !row.dataset.map.includes(filter));
           }
         });
+        body.querySelector("#preset-upload").addEventListener("change", async (event) => {
+          const files = [...event.target.files];
+          event.target.value = "";
+          for (const file of files) {
+            const name = file.name.replace(/[^A-Za-z0-9._-]/g, "_");
+            try {
+              const entry = await api("/admin/api/v1/content/" + encodeURIComponent(name), {
+                method: "POST",
+                headers: { "Content-Type": "application/octet-stream" },
+                body: file,
+              });
+              const selectedMaps = selectedMapNames();
+              await refreshContent();
+              const baseMatches = (gameSelect.value === "duke3d" && entry.kind === "duke") || (gameSelect.value === "doom" && entry.kind === "iwad");
+              updateGameFields();
+              if (baseMatches) {
+                iwadSelect.value = entry.file;
+                flash(`Uploaded and selected ${entry.file} as the base game`);
+              } else if (gameSelect.value === "doom" && ["pwad", "archive"].includes(entry.kind)) {
+                if (!fileList.querySelectorAll(".preset-file-row").length) fileList.replaceChildren();
+                const exists = [...fileList.querySelectorAll(".preset-file-row")].some((row) => row.dataset.file === entry.file);
+                if (!exists) {
+                  const order = fileList.querySelectorAll(".preset-file-row").length + 1;
+                  fileList.insertAdjacentHTML("beforeend", '<div class="preset-file-row" data-file="' + escapeHtml(entry.file) + '">' +
+                    '<label class="preset-file-choice"><input type="checkbox" name="content:' + escapeHtml(entry.file) + '" checked/><span><strong>' + escapeHtml(entry.file) + '</strong><small>' + fmtBytes(entry.size) + '</small></span></label>' +
+                    '<input type="hidden" name="order:' + escapeHtml(entry.file) + '" value="' + order + '"/><span class="preset-position"></span>' +
+                    '<div class="preset-order-controls"><button type="button" class="btn small" data-move="up" title="Move earlier">↑</button><button type="button" class="btn small" data-move="down" title="Move later">↓</button></div></div>');
+                }
+                flash(`Uploaded ${entry.file} as a Doom add-on`);
+              } else {
+                flash(`${entry.file} uploaded. Choose Doom for WAD add-ons or Duke for a GRP base.`, "error");
+              }
+              mapList.innerHTML = mapRowsHtml(selectedMaps);
+              updateOrder();
+              syncMapChoice();
+            } catch (err) {
+              flash(`Upload of ${name} failed: ${err.message}`, "error");
+            }
+          }
+        });
+        const syncMapChoice = () => {
+          syncMapChoices();
+          mapList.classList.toggle("disabled", anyMap.checked);
+          body.querySelector('input[name="extra_maps"]').disabled = anyMap.checked;
+        };
+        gameSelect.addEventListener("change", syncMapChoice);
+        iwadSelect.addEventListener("change", syncMapChoice);
+        anyMap.addEventListener("change", syncMapChoice);
         syncMapChoice();
 
         body.closest("form").addEventListener("submit", (event) => {
           if (event.submitter?.value !== "confirm" || anyMap.checked) return;
-          const chosen = mapInputs.filter((input) => input.checked).map((input) => input.name.slice(4));
+          const chosen = [...mapList.querySelectorAll('input[name^="map:"]:checked')].map((input) => input.name.slice(4));
           const extraMaps = body.querySelector('input[name="extra_maps"]').value.split(/[\s,]+/).filter(Boolean).map((name) => name.toUpperCase());
           const allowed = [...new Set([...chosen, ...extraMaps])];
           if (!allowed.length) {
@@ -1523,7 +1658,8 @@
     }
     picked.sort((a, b) => a.order - b.order);
     if (!data.any_map) for (const m of String(data.extra_maps || "").split(/[\s,]+/)) if (m) maps.push(m.toUpperCase());
-    const defaultMap = String(data.default_map || "").trim().toUpperCase() || maps[0] || "";
+    const selectedBase = content.files.find((f) => f.file === data.iwad);
+    const defaultMap = String(data.default_map || "").trim().toUpperCase() || maps[0] || selectedBase?.maps?.[0] || (data.game === "duke3d" ? "E1L1" : "E1M1");
     if (!data.any_map && maps.length && !maps.includes(defaultMap)) {
       flash("Choose a default map that is in the allowed map list", "error");
       return;
@@ -1532,12 +1668,15 @@
       id: data.id,
       title: data.title,
       description: data.description,
+      game: data.game || "doom",
       iwad: data.iwad || null,
-      content: picked.map((x) => x.file),
+      content: data.game === "duke3d" ? [] : picked.map((x) => x.file),
       maps,
       default_map: defaultMap,
       mod: data.mod || null,
       skill: Number(data.skill) || 0,
+      duke_game_mode: Number(data.duke_game_mode ?? 1),
+      duke_friendly_fire: data.duke_friendly_fire === true,
     };
     const list = ps.slice();
     if (idx >= 0) list[idx] = next;

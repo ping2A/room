@@ -1391,7 +1391,532 @@ pub fn room_editor_duke_map_put(name: &str, document: &str) -> Result<Vec<u8>, J
         let bytes = map.to_bytes();
         room_build::parse_map(&bytes).map_err(|e| e.to_string())?;
         ed.duke_map_edits.insert(file, bytes.clone());
+        DUKE_PREVIEW.with(|preview| preview.borrow_mut().world = None);
         Ok(bytes)
+    })
+}
+
+/// Cached native Duke preview: the soft renderer (rebuilt after ART edits)
+/// and the parsed world of the map last edited (rebuilt after map edits).
+#[derive(Default)]
+struct DukePreview {
+    renderer: Option<room_duke::DukeSoftRenderer>,
+    world: Option<(String, room_build_engine::world::BuildWorld)>,
+    con: Option<DukeConAnim>,
+}
+
+thread_local! {
+    static DUKE_PREVIEW: RefCell<DukePreview> = RefCell::new(DukePreview::default());
+}
+
+/// Run `f` with the preview renderer and the parsed world of map `name`.
+fn with_duke_preview<T>(
+    name: &str,
+    f: impl FnOnce(&room_duke::DukeSoftRenderer, &room_build_engine::world::BuildWorld) -> T,
+) -> Result<T, JsValue> {
+    let (layers, file, bytes) = with_editor(|ed| {
+        let Some((_, grp_bytes, _)) = ed.duke.as_ref() else {
+            return Err("Duke GRP is not open".to_owned());
+        };
+        let file = duke_map_file(ed, name)?;
+        let bytes = duke_map_source(ed, &file)?;
+        let mut layers = vec![grp_bytes.to_vec()];
+        if !ed.duke_art_edits.is_empty() {
+            layers.push(build_duke_overlay_grp(ed)?);
+        }
+        Ok((layers, file, bytes))
+    })?;
+    DUKE_PREVIEW.with(|cell| {
+        let mut preview = cell.borrow_mut();
+        if preview.renderer.is_none() {
+            let refs: Vec<&[u8]> = layers.iter().map(Vec::as_slice).collect();
+            let renderer = room_duke::DukeSoftRenderer::from_grp_layers(&refs)
+                .map_err(|e| JsValue::from_str(&format!("Duke preview renderer: {e}")))?;
+            preview.renderer = Some(renderer);
+        }
+        if preview.world.as_ref().is_none_or(|(cached, _)| *cached != file) {
+            let world = room_build_engine::world::BuildWorld::load_map_bytes(&bytes)
+                .map_err(|e| JsValue::from_str(&format!("Duke preview map: {e:?}")))?;
+            preview.world = Some((file, world));
+        }
+        let (Some(renderer), Some((_, world))) = (preview.renderer.as_ref(), preview.world.as_ref())
+        else {
+            return Err(JsValue::from_str("Duke preview unavailable"));
+        };
+        Ok(f(renderer, world))
+    })
+}
+
+/// Render the edited Build map from a free editor camera (RGBA, no HUD).
+#[wasm_bindgen(js_name = roomEditorDukePreview)]
+#[allow(clippy::too_many_arguments)]
+pub fn room_editor_duke_preview(
+    name: &str,
+    x: i32,
+    y: i32,
+    z: i32,
+    ang: i32,
+    horiz: i32,
+    width: u32,
+    height: u32,
+    tic: u32,
+) -> Result<Vec<u8>, JsValue> {
+    let (width, height) = (width.clamp(16, 1920), height.clamp(16, 1200));
+    let con_text = DUKE_PREVIEW
+        .with(|cell| cell.borrow().con.is_none())
+        .then(|| with_editor(|ed| Ok::<_, String>(duke_con_text(ed))).ok())
+        .flatten();
+    if let Some(text) = con_text {
+        DUKE_PREVIEW.with(|cell| cell.borrow_mut().con = Some(DukeConAnim::parse(&text)));
+    }
+    // Actors play their default CON action (rotations face the camera).
+    let animated = DUKE_PREVIEW.with(|cell| {
+        let preview = cell.borrow();
+        let (Some(con), Some((_, world)), Some(renderer)) =
+            (preview.con.as_ref(), preview.world.as_ref(), preview.renderer.as_ref())
+        else {
+            return None;
+        };
+        let mut world = world.clone();
+        for sprite in world.sprites.iter_mut() {
+            let Some(action) = con.default_action.get(&i32::from(sprite.picnum)) else {
+                continue;
+            };
+            let eye = room_build_engine::helpers::getangle(sprite.x - x, sprite.y - y);
+            if let Some((tile, flip)) = con.frame(sprite.picnum, action, tic, sprite.ang, eye)
+                && renderer.tile_dimensions(tile).0 > 0
+            {
+                sprite.picnum = tile;
+                if flip {
+                    sprite.cstat |= 4;
+                } else {
+                    sprite.cstat &= !4;
+                }
+            }
+        }
+        Some(world)
+    });
+    with_duke_preview(name, |renderer, world| {
+        renderer.render_editor_view(
+            animated.as_ref().unwrap_or(world),
+            x,
+            y,
+            z,
+            (ang & 2047) as i16,
+            horiz.clamp(-99, 299) as i16,
+            -1,
+            width,
+            height,
+            tic,
+        )
+    })
+}
+
+/// Pick the wall, sector plane or sprite under normalized view coordinates
+/// (`nx`, `ny` in -1..1, up positive) of the editor camera. Returns JSON
+/// `{kind, index, x, y, z}` or an empty string for a miss.
+#[wasm_bindgen(js_name = roomEditorDukePick)]
+#[allow(clippy::too_many_arguments)]
+pub fn room_editor_duke_pick(
+    name: &str,
+    x: i32,
+    y: i32,
+    z: i32,
+    ang: i32,
+    horiz: i32,
+    nx: f64,
+    ny: f64,
+) -> Result<String, JsValue> {
+    with_duke_preview(name, |renderer, world| {
+        use room_build_engine::geom::{SpriteHit, hitscan_full, updatesector};
+        let sizes = |picnum: i16| renderer.tile_dimensions(picnum);
+        let sectors = world.sector_walls();
+        let walls = world.wall_xy();
+        let sector_z = world.sector_z();
+        let mut sect = -1;
+        updatesector(x, y, &mut sect, &sectors, &walls);
+        if sect < 0 {
+            return String::new();
+        }
+        let a = f64::from(ang & 2047) * std::f64::consts::TAU / 2048.0;
+        let (sin, cos) = a.sin_cos();
+        // Screen right is (-sin, cos); the soft renderer uses a 90° focal.
+        let (dx, dy) = (cos - nx * sin, sin + nx * cos);
+        let len = 16384.0;
+        let slope = ny + f64::from(horiz - 100) / 128.0;
+        let (vx, vy, vz) = (dx * len, dy * len, -slope * 16.0 * len * dx.hypot(dy));
+        let live = world.lists.sprite_stat.len();
+        let sprites: Vec<SpriteHit> = world
+            .sprites
+            .iter()
+            .enumerate()
+            .map(|(index, sprite)| SpriteHit {
+                x: sprite.x,
+                y: sprite.y,
+                z: sprite.z,
+                sectnum: if index < live
+                    && world.lists.sprite_stat[index]
+                        < room_build_engine::world::MAXSTATUS as i16
+                {
+                    sprite.sectnum
+                } else {
+                    -1
+                },
+                clipdist: 32,
+                cstat: sprite.cstat | 256,
+                face_span: i32::from(sizes(sprite.picnum).0) * i32::from(sprite.xrepeat),
+                face_height: (i32::from(sizes(sprite.picnum).1) * i32::from(sprite.yrepeat)) << 2,
+            })
+            .collect();
+        let hit = hitscan_full(
+            x,
+            y,
+            z,
+            sect,
+            vx as i32,
+            vy as i32,
+            vz as i32,
+            (256 << 16) | 64,
+            &sectors,
+            &walls,
+            &sprites,
+            Some(&sector_z),
+        );
+        let (kind, index) = if hit.hitsprite >= 0 {
+            ("sprite", i32::from(hit.hitsprite))
+        } else if hit.hitwall >= 0 {
+            ("wall", i32::from(hit.hitwall))
+        } else if hit.hitsect >= 0 {
+            ("sector", i32::from(hit.hitsect))
+        } else {
+            return String::new();
+        };
+        json!({ "kind": kind, "index": index, "x": hit.hitx, "y": hit.hity, "z": hit.hitz })
+            .to_string()
+    })
+}
+
+/// Actor animation data parsed from the GRP's CON scripts.
+#[derive(Default)]
+struct DukeConAnim {
+    /// `action NAME start frames views inc delay`.
+    actions: std::collections::HashMap<String, [i32; 5]>,
+    /// Actor tile → action named in its `actor`/`useractor` header.
+    default_action: std::collections::HashMap<i32, String>,
+    /// Actor tile → every action its body (and called states) can set.
+    actor_actions: std::collections::HashMap<i32, Vec<String>>,
+}
+
+impl DukeConAnim {
+    /// Parse `DEFS.CON` + `USER.CON` + `GAME.CON` text (enough of the CON
+    /// grammar to associate actions with actors; not a compiler).
+    fn parse(text: &str) -> Self {
+        let mut clean = String::with_capacity(text.len());
+        let mut rest = text;
+        while !rest.is_empty() {
+            if let Some(tail) = rest.strip_prefix("//") {
+                rest = tail.find('\n').map_or("", |at| &tail[at..]);
+            } else if let Some(tail) = rest.strip_prefix("/*") {
+                rest = tail.find("*/").map_or("", |at| &tail[at + 2..]);
+            } else {
+                let ch = rest.chars().next().unwrap_or(' ');
+                clean.push(ch);
+                rest = &rest[ch.len_utf8()..];
+            }
+        }
+        let tokens: Vec<&str> = clean.split_whitespace().collect();
+        let number = |t: &str| t.parse::<i32>().ok();
+        let mut defines = std::collections::HashMap::new();
+        let mut out = Self::default();
+        let mut states: std::collections::HashMap<String, (Vec<String>, Vec<String>)> =
+            std::collections::HashMap::new();
+        let mut actors: Vec<(i32, Vec<String>, Vec<String>)> = Vec::new();
+        enum Block {
+            None,
+            Actor,
+            State(String),
+            Event,
+        }
+        let mut block = Block::None;
+        let mut ais: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut i = 0;
+        while i < tokens.len() {
+            let t = tokens[i];
+            match t {
+                "define" if i + 2 < tokens.len() => {
+                    if let Some(v) = number(tokens[i + 2]) {
+                        defines.insert(tokens[i + 1].to_owned(), v);
+                    }
+                    i += 3;
+                    continue;
+                }
+                "action" if i + 1 < tokens.len() => {
+                    let name = tokens[i + 1].to_owned();
+                    let mut vals = [0i32; 5];
+                    let mut n = 0;
+                    while n < 5 && i + 2 + n < tokens.len() {
+                        match number(tokens[i + 2 + n]) {
+                            Some(v) => vals[n] = v,
+                            None => break,
+                        }
+                        n += 1;
+                    }
+                    if n > 0 && matches!(block, Block::None) {
+                        out.actions.insert(name, vals);
+                    } else {
+                        match &block {
+                            Block::Actor => {
+                                if let Some(actor) = actors.last_mut() {
+                                    actor.1.push(name);
+                                }
+                            }
+                            Block::State(state) => {
+                                states.entry(state.clone()).or_default().0.push(name);
+                            }
+                            _ => {}
+                        }
+                    }
+                    i += 2 + n;
+                    continue;
+                }
+                "ai" if i + 1 < tokens.len() => {
+                    let name = tokens[i + 1].to_owned();
+                    if matches!(block, Block::None) {
+                        if let Some(action) = tokens.get(i + 2).filter(|a| out.actions.contains_key(**a)) {
+                            ais.insert(name, (*action).to_owned());
+                            i += 3;
+                            continue;
+                        }
+                    } else if let Some(action) = ais.get(&name).cloned() {
+                        match &block {
+                            Block::Actor => {
+                                if let Some(actor) = actors.last_mut() {
+                                    actor.1.push(action);
+                                }
+                            }
+                            Block::State(state) => {
+                                states.entry(state.clone()).or_default().0.push(action);
+                            }
+                            _ => {}
+                        }
+                    }
+                    i += 2;
+                    continue;
+                }
+                "state" if i + 1 < tokens.len() => {
+                    let name = tokens[i + 1].to_owned();
+                    match &block {
+                        Block::None => block = Block::State(name),
+                        Block::Actor => {
+                            if let Some(actor) = actors.last_mut() {
+                                actor.2.push(name);
+                            }
+                        }
+                        Block::State(state) => {
+                            states.entry(state.clone()).or_default().1.push(name);
+                        }
+                        Block::Event => {}
+                    }
+                    i += 2;
+                    continue;
+                }
+                "ends" => block = Block::None,
+                "enda" | "endevent" => block = Block::None,
+                "onevent" | "eventloadactor" if matches!(block, Block::None) => block = Block::Event,
+                "actor" | "useractor" if matches!(block, Block::None) => {
+                    let name_at = if t == "useractor" { i + 2 } else { i + 1 };
+                    let Some(name) = tokens.get(name_at) else { break };
+                    let pic = number(name).or_else(|| defines.get(*name).copied());
+                    block = Block::Actor;
+                    actors.push((pic.unwrap_or(-1), Vec::new(), Vec::new()));
+                    // Header: NAME [strength [action [move [flags…]]]].
+                    let header = tokens.get(name_at + 2).and_then(|a| {
+                        if out.actions.contains_key(*a) { Some((*a).to_owned()) } else { ais.get(*a).cloned() }
+                    });
+                    if let Some(action) = header
+                        && let Some(pic) = pic
+                    {
+                        out.default_action.insert(pic, action.clone());
+                        if let Some(actor) = actors.last_mut() {
+                            actor.1.push(action);
+                        }
+                    }
+                    i = name_at + 1;
+                    continue;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        for (pic, mut used, calls) in actors {
+            if pic < 0 {
+                continue;
+            }
+            let mut seen = std::collections::HashSet::new();
+            let mut stack = calls;
+            while let Some(state) = stack.pop() {
+                if !seen.insert(state.clone()) {
+                    continue;
+                }
+                if let Some((acts, more)) = states.get(&state) {
+                    used.extend(acts.iter().cloned());
+                    stack.extend(more.iter().cloned());
+                }
+            }
+            used.retain(|name| out.actions.contains_key(name));
+            let mut unique = Vec::new();
+            for name in used {
+                if !unique.contains(&name) {
+                    unique.push(name);
+                }
+            }
+            if let Some(first) = unique.first() {
+                out.default_action.entry(pic).or_insert_with(|| first.clone());
+            }
+            out.actor_actions.entry(pic).or_default().extend(unique);
+        }
+        out
+    }
+
+    /// Frame tile for `pic` running `action` at `tic`, seen from `view_ang`
+    /// (`views` 5/7/8 rotations; mirrored rotations set `xflip`).
+    fn frame(&self, pic: i16, action: &str, tic: u32, sprite_ang: i16, eye_ang: i32) -> Option<(i16, bool)> {
+        let [start, frames, views, inc, delay] = *self.actions.get(action)?;
+        let period = (delay / 4 + 1).max(1) as u32;
+        let step = if frames > 1 { (tic / period) as i32 % frames } else { 0 };
+        let rel = (i32::from(sprite_ang) + 3072 + 128 - eye_ang) & 2047;
+        let (k, flip) = match views {
+            5 => {
+                let k = (rel >> 8) & 7;
+                if k > 4 { (8 - k, true) } else { (k, false) }
+            }
+            3 | 4 => {
+                let k = (rel >> 7) & 7;
+                if k > 3 { (7 - k, true) } else { (k, false) }
+            }
+            7 => {
+                let k = rel / 170;
+                if k > 6 { (12 - k, true) } else { (k, false) }
+            }
+            8 => ((rel >> 8) & 7, false),
+            2 => ((rel >> 8) & 1, false),
+            _ => (0, false),
+        };
+        let tile = i32::from(pic) + start + k + views * step * inc;
+        i16::try_from(tile).ok().filter(|&t| t > 0).map(|t| (t, flip))
+    }
+}
+
+/// Read the GRP's CON text (defines first so actor names resolve).
+fn duke_con_text(ed: &Editor) -> String {
+    let Some((_, grp_bytes, _)) = ed.duke.as_ref() else {
+        return String::new();
+    };
+    let Ok(grp) = room_build::Grp::parse(grp_bytes) else {
+        return String::new();
+    };
+    let mut text = String::new();
+    for name in ["DEFS.CON", "USER.CON", "GAME.CON"] {
+        if let Some(file) = grp.names().find(|n| n.eq_ignore_ascii_case(name)).and_then(|n| grp.get(n)) {
+            text.push_str(&String::from_utf8_lossy(file));
+            text.push('\n');
+        }
+    }
+    text
+}
+
+/// Animations of one sprite tile: its ART `picanm` cycle and every CON
+/// action its actor can use (JSON for the editor's animation viewer).
+#[wasm_bindgen(js_name = roomEditorDukeAnimations)]
+pub fn room_editor_duke_animations(picnum: i32) -> Result<String, JsValue> {
+    let (text, picanm) = with_editor(|ed| {
+        let text = duke_con_text(ed);
+        let Some((_, grp_bytes, _)) = ed.duke.as_ref() else {
+            return Ok((text, Vec::new()));
+        };
+        let grp = room_build::Grp::parse(grp_bytes).map_err(|e| e.to_string())?;
+        let mut tiles = room_build::TileSet::new();
+        for file in grp.names().filter(|n| n.starts_with("TILES") && n.ends_with(".ART")) {
+            let art = ed.duke_art_edits.get(file).map(Vec::as_slice).or_else(|| grp.get(file));
+            if let Some(art) = art {
+                let _ = tiles.add_art(art);
+            }
+        }
+        Ok((text, tiles.animation(picnum)))
+    })?;
+    let anim = DUKE_PREVIEW.with(|cell| {
+        let mut preview = cell.borrow_mut();
+        if preview.con.is_none() {
+            preview.con = Some(DukeConAnim::parse(&text));
+        }
+        let con = preview.con.as_ref().map(|con| {
+            let default = con.default_action.get(&picnum).cloned();
+            let actions: Vec<Value> = con
+                .actor_actions
+                .get(&picnum)
+                .into_iter()
+                .flatten()
+                .filter_map(|name| {
+                    let [start, frames, views, inc, delay] = *con.actions.get(name)?;
+                    Some(json!({
+                        "name": name, "start": start, "frames": frames, "views": views,
+                        "inc": inc, "delay": delay, "default": default.as_deref() == Some(name.as_str()),
+                    }))
+                })
+                .collect();
+            actions
+        });
+        con.unwrap_or_default()
+    });
+    Ok(json!({
+        "tile": picnum,
+        "picanm": picanm.iter().map(|(tile, dur)| json!([tile, dur])).collect::<Vec<_>>(),
+        "actions": anim,
+    })
+    .to_string())
+}
+
+/// Tile number → `define` name from the GRP's `DEFS.CON` tile block (the
+/// defines before Atomic's weapon/action section), as a JSON object.
+#[wasm_bindgen(js_name = roomEditorDukeTileNames)]
+pub fn room_editor_duke_tile_names() -> Result<String, JsValue> {
+    with_editor(|ed| {
+        let Some((_, grp_bytes, _)) = ed.duke.as_ref() else {
+            return Err("Duke GRP is not open".to_owned());
+        };
+        let grp = room_build::Grp::parse(grp_bytes).map_err(|e| e.to_string())?;
+        let Some(defs) = grp
+            .names()
+            .find(|name| name.eq_ignore_ascii_case("DEFS.CON"))
+            .and_then(|name| grp.get(name))
+        else {
+            return Ok("{}".to_owned());
+        };
+        let text = String::from_utf8_lossy(defs);
+        let mut names = serde_json::Map::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with("//") && line.contains("Defines weapon") {
+                break;
+            }
+            let mut parts = line.split_whitespace();
+            if parts.next() != Some("define") {
+                continue;
+            }
+            let (Some(name), Some(value)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            if name.eq_ignore_ascii_case("faceplayer") {
+                break;
+            }
+            let Ok(value) = value.parse::<u16>() else {
+                continue;
+            };
+            names
+                .entry(value.to_string())
+                .or_insert_with(|| Value::String(name.to_owned()));
+        }
+        Ok(Value::Object(names).to_string())
     })
 }
 
@@ -1638,6 +2163,7 @@ pub fn room_editor_duke_tile_put(
                 let updated = room_build::art::replace_tile(art, tile_num, width, height, &pixels)
                     .map_err(|e| e.to_string())?;
                 ed.duke_art_edits.insert(file.to_owned(), updated);
+                DUKE_PREVIEW.with(|preview| preview.borrow_mut().renderer = None);
                 return Ok(());
             }
         }

@@ -96,6 +96,11 @@ pub struct PlaySession {
     pub tic_accum: f32,
     /// Gun offset from the previous tic (`PSPF_INTERPOLATE`).
     weapon_bob_prev: (f32, f32),
+    /// Weapon bob of the latest simulated tic (interpolated from `weapon_bob_prev`).
+    weapon_bob_curr: (f32, f32),
+    /// Level tics run so far; the bob pair advances once per tic, not per frame.
+    level_tics: u64,
+    weapon_bob_tic: u64,
     /// Timestamp of last frame (ms).
     pub last_ms: f64,
     /// Camera yaw (radians), locked to sim after each tic.
@@ -228,6 +233,8 @@ pub struct PlayStartOpts {
     pub fill_bots: bool,
     /// First bot seat when [`Self::fill_bots`].
     pub bot_first_seat: u8,
+    /// Doom deathmatch netgame (room `doom_deathmatch`).
+    pub deathmatch: bool,
 }
 
 impl Default for PlayStartOpts {
@@ -245,6 +252,7 @@ impl Default for PlayStartOpts {
             session_names: Vec::new(),
             fill_bots: false,
             bot_first_seat: 0,
+            deathmatch: false,
         }
     }
 }
@@ -315,6 +323,7 @@ impl PlaySession {
             time_limit_tics: opts.time_limit_secs.saturating_mul(35),
             fill_bots: opts.fill_bots,
             bot_first_seat: opts.bot_first_seat,
+            deathmatch: opts.deathmatch,
             ..GameOptions::default()
         });
 
@@ -475,6 +484,9 @@ impl PlaySession {
             alt_attack: false,
             tic_accum: 0.0,
             weapon_bob_prev: (0.0, 0.0),
+            weapon_bob_curr: (0.0, 0.0),
+            level_tics: 0,
+            weapon_bob_tic: u64::MAX,
             last_ms: 0.0,
             yaw: 0.0,
             pitch: 0.0,
@@ -1005,6 +1017,7 @@ impl PlaySession {
                     self.tic_accum -= tic;
                     stepped = true;
                     self.game.tick(&cmds);
+                    self.level_tics = self.level_tics.wrapping_add(1);
                     self.process_tic_events(false);
                     self.pump_audio();
                     if matches!(self.game.state, GameState::Intermission) {
@@ -2005,7 +2018,18 @@ impl PlaySession {
             hud.weapon_bright = h.weapon_bright;
             hud.flash_bright = h.flash_bright;
             hud.weapon_fuzz = h.weapon_fuzz;
-            self.weapon_bob_prev = (hud.bob_x, hud.bob_y);
+            // `hud` is rebuilt every frame, so the previous bob must come from
+            // the last tic, not from the fresh default (that lerped from 0,0
+            // every tic and made the weapon shake while walking).
+            if self.weapon_bob_tic != self.level_tics {
+                self.weapon_bob_prev = if self.weapon_bob_tic == u64::MAX {
+                    (h.bob_x, h.bob_y)
+                } else {
+                    self.weapon_bob_curr
+                };
+                self.weapon_bob_curr = (h.bob_x, h.bob_y);
+                self.weapon_bob_tic = self.level_tics;
+            }
             hud.weapon_interpolate = h.weapon_interpolate;
             hud.bob_x = h.bob_x;
             hud.bob_y = h.bob_y;
@@ -2500,12 +2524,29 @@ impl PlaySession {
         a.camera_roll().radians()
     }
 
-    fn fill_voxel_poses(&mut self, seat: u8, eye: Vec3) {
+    fn fill_voxel_poses(&mut self, seat: u8, camera: &Camera) {
+        // Voxel meshes are expanded on the CPU into the wall buffer every
+        // frame, so only pose what can be seen: actors in BSP-visible
+        // subsectors, in front of the eye and close enough for the voxel to
+        // matter. Everything else keeps its (much cheaper) sprite.
+        const VOXEL_MAX_DIST: f32 = 2048.0;
+        const VOXEL_FRAME_BUDGET: usize = 300_000;
+        let eye = camera.eye;
+        let forward = camera.forward;
         self.voxel_poses.clear();
         self.voxel_pose_actors.clear();
         if self.voxeldefs.by_name.is_empty() {
             return;
         }
+        let visible = self.map.game_nodes.as_ref().map(|nodes| {
+            let mut seen = vec![false; nodes.subsectors.len()];
+            for ss in room_render::walk_bsp(&self.map, f64::from(eye.x), f64::from(eye.y)).subsectors {
+                if let Some(slot) = seen.get_mut(ss as usize) {
+                    *slot = true;
+                }
+            }
+            seen
+        });
         let Some(world) = self.game.world() else {
             return;
         };
@@ -2559,6 +2600,24 @@ impl PlaySession {
             #[allow(clippy::cast_possible_truncation)]
             let origin = Vec3::new(a.pos.x() as f32, a.pos.y() as f32, a.pos.z() as f32);
             let dist2 = origin.distance_squared(eye);
+            let to = origin - eye;
+            #[allow(clippy::cast_possible_truncation)]
+            let radius = (a.radius as f32).max(16.0) * 2.0;
+            if dist2 > VOXEL_MAX_DIST * VOXEL_MAX_DIST || to.dot(forward) < -radius {
+                continue;
+            }
+            if let (Some(seen), Some(nodes)) = (visible.as_ref(), self.map.game_nodes.as_ref()) {
+                let ss = point_in_subsector(nodes, a.pos.x(), a.pos.y());
+                if ss.is_some_and(|ss| !seen.get(ss).copied().unwrap_or(true)) {
+                    continue;
+                }
+            }
+            // Hidden behind walls from the viewer (REJECT + BSP sight line).
+            if let Some(viewer) = local_mo
+                && !room_sim::check_sight(world, viewer, id)
+            {
+                continue;
+            }
             let pose = VoxelActorPose {
                 file,
                 override_palette,
@@ -2578,7 +2637,7 @@ impl PlaySession {
         cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         let mut used = 0usize;
         for (_, id, cost, pose) in cands {
-            if used.saturating_add(cost) > MAX_VOXEL_WALL_VERTS_PER_FRAME {
+            if used.saturating_add(cost) > MAX_VOXEL_WALL_VERTS_PER_FRAME.min(VOXEL_FRAME_BUDGET) {
                 continue;
             }
             used += cost;
@@ -2617,7 +2676,7 @@ impl PlaySession {
 
     /// Like [`Self::collect_live_sprites`], hiding `seat`'s own body.
     pub fn collect_live_sprites_for(&mut self, camera: &Camera, seat: u8) -> Vec<SpriteInstance> {
-        self.fill_voxel_poses(seat, camera.eye);
+        self.fill_voxel_poses(seat, camera);
         let Some(world) = self.game.world() else {
             return Vec::new();
         };
@@ -3376,4 +3435,23 @@ fn particle_spawn(e: room_sim::SimParticleEvent) -> room_render::particles::Part
         roll: e.roll,
         texture: e.texture,
     }
+}
+
+
+/// Doom `R_PointInSubsector` over classic game nodes (root is the last node).
+fn point_in_subsector(nodes: &room_map::GameNodes, x: f64, y: f64) -> Option<usize> {
+    const NF_SUBSECTOR: u32 = 0x8000_0000;
+    if nodes.nodes.is_empty() {
+        return (!nodes.subsectors.is_empty()).then_some(0);
+    }
+    let mut index = (nodes.nodes.len() - 1) as u32;
+    for _ in 0..nodes.nodes.len() + 1 {
+        if index & NF_SUBSECTOR != 0 {
+            return Some((index & !NF_SUBSECTOR) as usize);
+        }
+        let node = nodes.nodes.get(index as usize)?;
+        let cross = f64::from(node.dx) * (y - f64::from(node.y)) - f64::from(node.dy) * (x - f64::from(node.x));
+        index = node.children[usize::from(cross >= 0.0)];
+    }
+    None
 }

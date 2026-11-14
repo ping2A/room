@@ -164,8 +164,10 @@ pub fn movefta(
                         i = next;
                         continue;
                     }
-                    let sz = s.z - (krand_step(randomseed) as u32 % (52 << 8)) as i32;
+                    // `cansee(…, s->z-(TRAND…), …, ps[p].oposz-(TRAND…), …)`: 32-bit gcc
+                    // evaluates the arguments right to left, so the player z draws first.
                     let pz = p.oposz - (krand_step(randomseed) as u32 % (32 << 8)) as i32;
+                    let sz = s.z - (krand_step(randomseed) as u32 % (52 << 8)) as i32;
                     cansee(
                         sx,
                         sy,
@@ -179,8 +181,10 @@ pub fn movefta(
                         &wxy,
                     )
                 } else {
-                    let sz = s.z - ((krand_step(randomseed) & 31) << 8);
+                    // `cansee(…, s->z-(TRAND…), …, ps[p].oposz-(TRAND…), …)`: 32-bit gcc
+                    // evaluates the arguments right to left, so the player z draws first.
                     let pz = p.oposz - ((krand_step(randomseed) & 31) << 8);
+                    let sz = s.z - ((krand_step(randomseed) & 31) << 8);
                     cansee(
                         s.x,
                         s.y,

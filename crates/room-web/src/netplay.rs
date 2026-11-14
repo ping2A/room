@@ -212,6 +212,8 @@ pub struct NetJoinConfig {
     pub duke_game_mode: u8,
     /// Atomic Duke friendly-fire setting from room welcome.
     pub duke_friendly_fire: bool,
+    /// Doom deathmatch from room welcome.
+    pub doom_deathmatch: bool,
     /// Host RNG seed (seat 0); joiners take seed from lobby Welcome/Start.
     pub rng_seed: u32,
     /// Optional minted join ticket (v2); defaults to room id from the URL.
@@ -264,6 +266,8 @@ pub struct NetReady {
     pub fill_bots: bool,
     /// First bot seat from server `start`.
     pub bot_first_seat: u8,
+    /// Doom deathmatch from `welcome`.
+    pub deathmatch: bool,
 }
 
 /// Native Duke v2 input/frame channel. The server frame is authoritative and
@@ -455,6 +459,12 @@ impl NetLobby {
         self.cfg.fill_bots
     }
 
+    /// Doom deathmatch from `welcome`.
+    #[must_use]
+    pub fn doom_deathmatch(&self) -> bool {
+        self.cfg.doom_deathmatch
+    }
+
     /// First bot seat from server `start`.
     #[must_use]
     pub fn bot_first_seat(&self) -> u8 {
@@ -620,6 +630,7 @@ impl NetLobby {
                 self.cfg.players = w.room.max_players;
                 self.cfg.duke_game_mode = w.room.duke_game_mode;
                 self.cfg.duke_friendly_fire = w.room.duke_friendly_fire;
+                self.cfg.doom_deathmatch = w.room.doom_deathmatch;
                 self.cfg.game_mod = w.room.game_mod.clone();
                 self.cfg.packs = w.room.packs.clone();
                 self.cfg.content = w.room.content.clone();
@@ -897,6 +908,7 @@ impl NetLobby {
                 time_limit: self.cfg.time_limit,
                 fill_bots: self.cfg.fill_bots,
                 bot_first_seat: self.cfg.bot_first_seat,
+                deathmatch: self.cfg.doom_deathmatch,
             }));
         }
         Ok(None)

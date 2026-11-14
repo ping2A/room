@@ -201,17 +201,19 @@ pub(crate) fn move_fallers(
                 sprite.z = sprite.z.saturating_add(i32::from(sprite.zvel));
             }
             if sector.floorz.saturating_sub(sprite.z) < 16 << 8 {
-                // Chocolate `RANDOMSCRAP`: count draw precedes seven ordered
-                // per-piece draws; `egs` initializes each STAT_MISC actor.
+                // Chocolate: the scrap count draws first; `egs` initializes each
+                // STAT_MISC actor.
                 let scraps = 1 + (krand_step(randomseed) & 7);
                 for _ in 0..scraps {
-                    let x = sprite.x + (krand_step(randomseed) & 255) - 128;
-                    let y = sprite.y + (krand_step(randomseed) & 255) - 128;
-                    let z = sprite.z - (8 << 8) - (krand_step(randomseed) & 8191);
-                    let tile = 2390 + (krand_step(randomseed) & 15) as i16;
-                    let angle = (krand_step(randomseed) & 2047) as i16;
-                    let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
+                    // Chocolate `RANDOMSCRAP`: 32-bit gcc evaluates the EGS arguments right
+                    // to left, so zvel draws first and x last.
                     let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+                    let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
+                    let angle = (krand_step(randomseed) & 2047) as i16;
+                    let tile = 2390 + (krand_step(randomseed) & 15) as i16;
+                    let z = sprite.z - (8 << 8) - (krand_step(randomseed) & 8191);
+                    let y = sprite.y + (krand_step(randomseed) & 255) - 128;
+                    let x = sprite.x + (krand_step(randomseed) & 255) - 128;
                     let _ = crate::shoot::egs(
                         lists,
                         sprites,

@@ -56,6 +56,10 @@ pub struct WelcomeRoom {
     /// Atomic Duke `ud.ffire`; ignored for Doom rooms.
     #[serde(default, skip_serializing_if = "is_false")]
     pub duke_friendly_fire: bool,
+    /// Doom deathmatch (PvP, DM starts) instead of co-op; ignored for Duke
+    /// rooms (they use `duke_game_mode`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub doom_deathmatch: bool,
     /// RNG seed.
     pub rng_seed: u32,
     /// Input delay tics.
@@ -79,8 +83,8 @@ pub struct WelcomeRoom {
     /// downloaded from `GET /api/content/{file}`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content: Vec<RoomContentRef>,
-    /// Base game (IWAD) every seat uses instead of its default one (from the
-    /// preset; absent = the client's IWAD).
+    /// Base game archive every seat uses instead of its default one (Doom IWAD
+    /// or Duke GRP; from the preset).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iwad: Option<RoomContentRef>,
     /// Title of the server preset the room was created from (display only).
@@ -115,7 +119,7 @@ pub fn is_valid_content_file(name: &str) -> bool {
     ok_chars
         && matches!(
             ext.as_deref(),
-            Some("wad" | "pk3" | "pk7" | "zip" | "ipk3" | "ipk7")
+            Some("wad" | "grp" | "pk3" | "pk7" | "zip" | "ipk3" | "ipk7")
         )
 }
 
@@ -456,6 +460,7 @@ mod tests {
             max_players: 2,
             duke_game_mode: 1,
             duke_friendly_fire: false,
+            doom_deathmatch: false,
             rng_seed: 7,
             delay: 0,
             game_mod: None,

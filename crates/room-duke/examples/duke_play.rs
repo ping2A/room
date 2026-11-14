@@ -59,7 +59,7 @@ impl Run {
         let (w, h) = (640, 400);
         let px = self
             .r
-            .render_rgba(&self.s.render_world().unwrap(), &self.s.player, w, h);
+            .render_rgba_at(&self.s.render_world().unwrap(), &self.s.player, w, h, self.tic as u32);
         let mut f = format!("P6\n{w} {h}\n255\n").into_bytes();
         for c in px.chunks(4) {
             f.extend_from_slice(&c[..3]);
@@ -1072,12 +1072,232 @@ fn street_fight(run: &mut Run) {
     run.shot("06_end");
 }
 
+/// E1L2: stand under the RECON patrol cars and log whether they hunt/shoot.
+fn recon(out: &Path) {
+    let mut run = load("E1L2", out);
+    for _ in 0..3 {
+        run.step(DukeInput::default());
+    }
+    {
+        let w = run.s.world.as_ref().unwrap();
+        let mut sect = 239;
+        room_build_engine::geom::updatesector(5600, 26800, &mut sect, &w.sector_walls(), &w.wall_xy());
+        let fz = w.sectors[sect.max(0) as usize].floorz;
+        run.s.player.posx = 5600;
+        run.s.player.posy = 26800;
+        run.s.player.posz = fz - (40 << 8);
+        run.s.player.cursectnum = sect;
+        run.s.player.ang = 512;
+    }
+    run.s.player.extra = 999;
+    let mut lasers = 0;
+    for k in 0..900 {
+        // Keep the player on the ground near RECON 371 so it can engage.
+        if k % 20 == 0 && run.s.lists.sprite_stat[371] == 1 {
+            let w = run.s.world.as_ref().unwrap();
+            let r = w.sprites[371];
+            let mut sect = r.sectnum;
+            let (x, y) = (r.x + 1500, r.y + 1500);
+            room_build_engine::geom::updatesector(x, y, &mut sect, &w.sector_walls(), &w.wall_xy());
+            if sect >= 0 {
+                let fz = w.sectors[sect as usize].floorz;
+                run.s.player.posx = x;
+                run.s.player.posy = y;
+                run.s.player.posz = fz - (40 << 8);
+                run.s.player.cursectnum = sect;
+            }
+        }
+        run.step(DukeInput::default());
+        let w = run.s.world.as_ref().unwrap();
+        lasers += w.sprites.iter().enumerate().filter(|(i, sp)| sp.picnum == 1625 && run.s.lists.sprite_stat[*i] == 4 && sp.owner >= 0 && w.sprites[sp.owner as usize].picnum == 1960).count();
+        if k % 60 == 0 {
+            let info: Vec<String> = [152usize, 371, 516]
+                .iter()
+                .map(|&i| {
+                    let sp = &w.sprites[i];
+                    let t = run.s.actor_temps.get(i).map(|t| t.g_t).unwrap_or_default();
+                    format!("#{i} stat{} ({},{},{}) t0={} t2={} xv={} own={} d={}", run.s.lists.sprite_stat[i], sp.x, sp.y, sp.z, t[0], t[2], sp.xvel, sp.owner, room_duke::fta::findplayer_dist(sp, std::slice::from_ref(&run.s.player)).1)
+                })
+                .collect();
+            println!("tic {} hp {} laser-tics {lasers} | {}", run.tic, run.s.player.extra, info.join(" | "));
+        }
+    }
+    run.shot("recon_end");
+}
+
+/// E1L1 bathroom: look into the mirror (wall 355, overpicnum MIRROR) and use
+/// the toilet (sprite 369).
+fn bathroom(out: &Path) {
+    let mut run = load("E1L1", out);
+    run.s.player.god_mode = true;
+    for _ in 0..5 {
+        run.step(DukeInput::default());
+    }
+    let place = |run: &mut Run, x: i32, y: i32, ang: i16, hint: i16| {
+        let w = run.s.world.as_ref().unwrap();
+        let mut sect = hint;
+        room_build_engine::geom::updatesector(x, y, &mut sect, &w.sector_walls(), &w.wall_xy());
+        let fz = w.sectors[sect.max(0) as usize].floorz;
+        run.s.player.posx = x;
+        run.s.player.posy = y;
+        run.s.player.posz = fz - (40 << 8);
+        run.s.player.ang = ang;
+        run.s.player.cursectnum = sect;
+        sect
+    };
+    let sect = place(&mut run, 28032, 39500, 1536, 310);
+    println!("mirror view from sector {sect}");
+    run.step(DukeInput::default());
+    run.shot("bath_0_mirror");
+    let sect = place(&mut run, 28032, 39100, 1536 - 128, 310);
+    run.step(DukeInput::default());
+    run.shot("bath_1_mirror_close");
+    // Walk toward the mirror: the reflected Duke should animate.
+    let _ = place(&mut run, 28032, 39400, 1536, 310);
+    for k in 0..24 {
+        run.step(DukeInput { fvel: -40, ..DukeInput::default() });
+        run.s.player.body_xvel = if k < 12 { 50 } else { 120 };
+        if k == 22 {
+            run.s.player.ang = 1536 + 384;
+        }
+        let rw = run.s.render_world().unwrap();
+        let me = run.s.player.sprite_i as usize;
+        println!("walk tic {} pic {} cstat {} body_xvel {} y {}", run.tic, rw.sprites[me].picnum, rw.sprites[me].cstat & 4, run.s.player.body_xvel, run.s.player.posy);
+        if k == 14 {
+            run.shot("bath_3_walk_a");
+        }
+        if k == 20 {
+            run.shot("bath_3_walk_b");
+        }
+    }
+    // Far back of the room: both mirror walls in view.
+    let _ = place(&mut run, 28032, 42800, 1536, 308);
+    run.step(DukeInput::default());
+    run.shot("bath_4_far");
+    let sect2 = place(&mut run, 29184, 44300, 512, 308);
+    let _ = sect;
+    let _ = run.s.lists.deletesprite(514); // LIZTROOPONTOILET sits in front
+    if let Some(w) = run.s.world.as_mut() {
+        let _ = w.lists.deletesprite(514);
+    }
+    let body = run.s.player.sprite_i as usize;
+    run.s.player.god_mode = false;
+    run.s.player.extra = 60;
+    run.s.world.as_mut().unwrap().sprites[body].extra = 60;
+    let hp = |run: &Run| run.s.player.extra;
+    println!("toilet sector {sect2} health {}", hp(&run));
+    for k in 0..40 {
+        run.step(DukeInput {
+            bits: if k == 1 { 1 << 29 } else { 0 },
+            ..DukeInput::default()
+        });
+    }
+    println!(
+        "after use health {} pissed {} holster {} weapon_pos {}",
+        hp(&run),
+        run.s.player.last_pissed_time,
+        run.s.player.holster_weapon,
+        run.s.player.weapon_pos
+    );
+    for _ in 0..60 {
+        run.step(DukeInput::default());
+    }
+    println!(
+        "later pissed {} holster {} weapon_pos {}",
+        run.s.player.last_pissed_time, run.s.player.holster_weapon, run.s.player.weapon_pos
+    );
+    run.shot("bath_2_toilet");
+}
+
+/// E1L1 cinema: stand in the projection booth, press the projector switch
+/// (sprite 340, lotag 135) and check the curtains open, the SE12 lights come
+/// on, the projector slot (SE31, sector 173) opens and the screen (tile 1280,
+/// 8-frame picanm) animates.
+fn cinema(out: &Path) {
+    let mut run = load("E1L1", out);
+    run.s.player.god_mode = true;
+    for _ in 0..5 {
+        run.step(DukeInput::default());
+    }
+    let place = |run: &mut Run, x: i32, y: i32, ang: i16, hint: i16| {
+        let w = run.s.world.as_ref().unwrap();
+        let mut sect = hint;
+        room_build_engine::geom::updatesector(x, y, &mut sect, &w.sector_walls(), &w.wall_xy());
+        let fz = w.sectors[sect.max(0) as usize].floorz;
+        let p = &mut run.s.player;
+        p.posx = x;
+        p.posy = y;
+        p.posz = fz - (40 << 8);
+        p.oposx = x;
+        p.oposy = y;
+        p.oposz = p.posz;
+        p.cursectnum = sect;
+        p.ang = ang;
+        p.horiz = 100;
+        sect
+    };
+    let sw = run.sprite(340);
+    let sect = place(&mut run, sw.x, sw.y - 300, 512, 11);
+    println!("booth sector {sect}, switch pic {} at ({}, {}, {})", sw.picnum, sw.x, sw.y, sw.z);
+    run.step(DukeInput::default());
+    run.shot("cine_0_booth");
+    let curtains = [1usize, 2, 21, 22, 147, 148];
+    let lights = [23usize, 24, 25, 102, 103, 104, 105, 302];
+    let report = |run: &Run, tag: &str| {
+        let w = run.s.world.as_ref().unwrap();
+        let lit: Vec<(u8, i8, i8)> = lights
+            .iter()
+            .map(|&i| (w.sectors[i].floorpal, w.sectors[i].floorshade, w.sectors[i].ceilingshade))
+            .collect();
+        let se: Vec<(usize, i32, i32, i32, i32)> = [345usize, 347, 432, 454]
+            .iter()
+            .map(|&i| {
+                let t = run.s.actor_temps.get(i).map(|t| t.g_t).unwrap_or_default();
+                (i, w.sprites[i].x, w.sprites[i].y, t[0], t[3])
+            })
+            .collect();
+        println!(
+            "{tag} tic {} switch pic {} curtains {:?} slot173 {:?} lights {:?} se {:?} wall87 {:?}",
+            run.tic,
+            run.sprite(340).picnum,
+            run.sectors(&curtains),
+            run.sectors(&[173]),
+            lit,
+            se,
+            (w.walls[87].x, w.walls[87].y)
+        );
+    };
+    report(&run, "before");
+    for k in 0..360 {
+        run.step(DukeInput {
+            bits: if k == 1 { 1 << 29 } else { 0 },
+            ..DukeInput::default()
+        });
+        if k % 90 == 0 || k == 359 {
+            report(&run, "after");
+        }
+    }
+    run.shot("cine_1_booth_after");
+    // Look at the screen from the middle of the hall.
+    let hall = place(&mut run, 22000, 55500, 512, 24);
+    println!("hall sector {hall}");
+    run.step(DukeInput::default());
+    run.shot("cine_2_hall_a");
+    for _ in 0..12 {
+        run.step(DukeInput::default());
+    }
+    run.shot("cine_3_hall_b");
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let scenario = a.get(1).map_or("e1l1-vent", String::as_str);
     let out = PathBuf::from(a.get(2).map_or("/tmp/duke_play", String::as_str));
     match scenario {
         "e1l1-vent" => e1l1_vent(&out),
+        "cinema" => cinema(&out),
+        "bathroom" => bathroom(&out),
+        "recon" => recon(&out),
         "kill-all" => kill_all(a.get(3).map_or("E1L1", String::as_str), &out),
         "reload" => {
             let mut run = load("E1L1", &out);

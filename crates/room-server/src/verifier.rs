@@ -54,6 +54,7 @@ pub fn spawn_verifier_with_output(
     rng_seed: u32,
     max_players: u8,
     time_limit_tics: u32,
+    deathmatch: bool,
 ) -> Result<(mpsc::Sender<TicFrameMsg>, mpsc::Receiver<VerifierChecksum>), String> {
     let (tx, mut rx) = mpsc::channel::<TicFrameMsg>(256);
     let (out_tx, out_rx) = mpsc::channel::<VerifierChecksum>(64);
@@ -66,6 +67,7 @@ pub fn spawn_verifier_with_output(
         rng_seed,
         max_players,
         time_limit_tics,
+        deathmatch,
     )?;
     info!(map = %map, "verifier Headless started");
     tokio::task::spawn_blocking(move || {
@@ -184,6 +186,7 @@ fn load_headless(
     rng_seed: u32,
     max_players: u8,
     time_limit_tics: u32,
+    deathmatch: bool,
 ) -> Result<Headless, String> {
     let mut builder = room_build::mount::mount_path(VfsBuilder::new(), iwad)
         .map_err(|e| format!("mount iwad: {e}"))?;
@@ -206,6 +209,7 @@ fn load_headless(
         record_demo: false,
         coop_players: max_players.clamp(1, MAX_PLAYERS as u8),
         time_limit_tics,
+        deathmatch,
         ..Default::default()
     });
     game.set_defs(classes, states);

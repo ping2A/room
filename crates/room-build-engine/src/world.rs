@@ -217,6 +217,9 @@ pub struct BuildWorld {
     pub start: [i32; 3],
     pub start_ang: i16,
     pub start_sector: i16,
+    /// Camera player's own sprite, hidden from the normal view but drawn in
+    /// mirrors (Chocolate `display_mirror`): `(sprite index, real yrepeat)`.
+    pub mirror_viewer: Option<(i16, u8)>,
 }
 
 impl Default for BuildWorld {
@@ -254,6 +257,7 @@ impl BuildWorld {
             start: [0; 3],
             start_ang: 0,
             start_sector: 0,
+            mirror_viewer: None,
         }
     }
 

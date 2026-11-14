@@ -146,13 +146,15 @@ pub(crate) fn spawn_sprite_glass(
             .map(|label| label.value as i16)
     });
     for shard in (0..count.max(0)).rev() {
+        // Chocolate `lotsofglass(i,-1,n)`: `a = …(TRAND&511)…;` then EGS arguments
+        // right to left: zvel before xvel.
         let angle = parent
             .ang
             .wrapping_sub(256)
             .wrapping_add((krand_step(randomseed) & 511) as i16)
             .wrapping_add(1024);
-        let xvel = (32 + (krand_step(randomseed) & 63)) as i16;
         let zvel = (1024 - (krand_step(randomseed) & 1023)) as i16;
+        let xvel = (32 + (krand_step(randomseed) & 63)) as i16;
         if let Some(glass) = glass {
             crate::shoot::egs(
                 lists,
@@ -268,11 +270,13 @@ pub(crate) fn checkhitsprite_object(
     } else if fragile_tech && heavy_projectile_hit {
         if let Some(sector) = sectors.get(target_sprite.sectnum.max(0) as usize) {
             for piece in 0..15_i32 {
+                // Chocolate `EGS(…, SCRAPn+(TRAND&…), -8, …, TRAND&2047, (TRAND&…)+64, -(TRAND&…)…)`:
+                // 32-bit gcc evaluates the arguments right to left, so zvel draws first.
+                let zvel = -((krand_step(randomseed) & 511) as i16) - 256;
+                let xvel = (krand_step(randomseed) & 127) as i16 + 64;
+                let angle = (krand_step(randomseed) & 2047) as i16;
                 let scrap_tile =
                     tile("SCRAP1").unwrap_or(2400) + (krand_step(randomseed) & 15) as i16;
-                let angle = (krand_step(randomseed) & 2047) as i16;
-                let xvel = (krand_step(randomseed) & 127) as i16 + 64;
-                let zvel = -((krand_step(randomseed) & 511) as i16) - 256;
                 crate::shoot::egs(
                     lists,
                     sprites,
@@ -299,14 +303,16 @@ pub(crate) fn checkhitsprite_object(
         delete_target = true;
     } else if is("CACTUS") && ignites_wood {
         for _ in 0..64 {
+            // Chocolate `EGS(…, SCRAPn+(TRAND&…), -8, …, TRAND&2047, (TRAND&…)+64, -(TRAND&…)…)`:
+            // 32-bit gcc evaluates the arguments right to left, so zvel draws first.
+            let zvel =
+                (-(krand_step(randomseed) & 4095) - (i32::from(target_sprite.zvel) >> 2)) as i16;
+            let xvel = (krand_step(randomseed) & 63) as i16 + 64;
+            let angle = (krand_step(randomseed) & 2047) as i16;
+            let scrap = tile("SCRAP3").unwrap_or(2402) + (krand_step(randomseed) & 3) as i16;
             let z = target_sprite
                 .z
                 .wrapping_sub(krand_step(randomseed) % (48 << 8));
-            let scrap = tile("SCRAP3").unwrap_or(2402) + (krand_step(randomseed) & 3) as i16;
-            let angle = (krand_step(randomseed) & 2047) as i16;
-            let xvel = (krand_step(randomseed) & 63) as i16 + 64;
-            let zvel =
-                (-(krand_step(randomseed) & 4095) - (i32::from(target_sprite.zvel) >> 2)) as i16;
             let shard = crate::shoot::egs(
                 lists,
                 sprites,
@@ -340,11 +346,13 @@ pub(crate) fn checkhitsprite_object(
         sprites[target].cstat &= !257;
     } else if is("HANGLIGHT") || is("GENERICPOLE2") {
         for _ in 0..6 {
-            let scrap = tile("SCRAP1").unwrap_or(2400) + (krand_step(randomseed) & 15) as i16;
-            let angle = (krand_step(randomseed) & 2047) as i16;
-            let xvel = (krand_step(randomseed) & 63) as i16 + 64;
+            // Chocolate `EGS(…, SCRAPn+(TRAND&…), -8, …, TRAND&2047, (TRAND&…)+64, -(TRAND&…)…)`:
+            // 32-bit gcc evaluates the arguments right to left, so zvel draws first.
             let zvel =
                 (-(krand_step(randomseed) & 4095) - (i32::from(target_sprite.zvel) >> 2)) as i16;
+            let xvel = (krand_step(randomseed) & 63) as i16 + 64;
+            let angle = (krand_step(randomseed) & 2047) as i16;
+            let scrap = tile("SCRAP1").unwrap_or(2400) + (krand_step(randomseed) & 15) as i16;
             crate::shoot::egs(
                 lists,
                 sprites,
@@ -395,10 +403,12 @@ pub(crate) fn checkhitsprite_object(
         // Chocolate `lotsofmoney`: count roll, then Z/angle/cstat per coin.
         let count = 4 + (krand_step(randomseed) & 3) as i16;
         for _ in 0..count {
+            // Chocolate `lotsofmoney`/`lotsofmail`/`lotsofpaper`: `EGS(…, z-(TRAND%(47<<8)), …,
+            // TRAND&2047, …)` — right-to-left arguments: the angle draws before z.
+            let angle = (krand_step(randomseed) & 2047) as i16;
             let z = target_sprite
                 .z
                 .wrapping_sub(krand_step(randomseed) % (47 << 8));
-            let angle = (krand_step(randomseed) & 2047) as i16;
             let coin = crate::shoot::egs(
                 lists,
                 sprites,
@@ -436,13 +446,16 @@ pub(crate) fn checkhitsprite_object(
             let xvel;
             let zvel;
             let pal;
+            // `lotsofcolourglass(i,-1,n)` / `lotsofglass(i,-1,n)`: the angle is
+            // its own statement, then the EGS arguments draw right to left
+            // (32-bit gcc): zvel, xvel, z; the colour roll comes after.
             if colored {
                 angle = (krand_step(randomseed) & 2047) as i16;
+                zvel = (1024 - (krand_step(randomseed) & 2047)) as i16;
+                xvel = (32 + (krand_step(randomseed) & 63)) as i16;
                 z = target_sprite
                     .z
                     .wrapping_sub(krand_step(randomseed) & (63 << 8));
-                xvel = (32 + (krand_step(randomseed) & 63)) as i16;
-                zvel = (1024 - (krand_step(randomseed) & 2047)) as i16;
                 pal = (krand_step(randomseed) & 15) as u8;
             } else {
                 angle = target_sprite
@@ -451,8 +464,8 @@ pub(crate) fn checkhitsprite_object(
                     .wrapping_add((krand_step(randomseed) & 511) as i16)
                     .wrapping_add(1024);
                 z = target_sprite.z;
-                xvel = (32 + (krand_step(randomseed) & 63)) as i16;
                 zvel = (1024 - (krand_step(randomseed) & 1023)) as i16;
+                xvel = (32 + (krand_step(randomseed) & 63)) as i16;
                 pal = 0;
             }
             if let Some(glass) = tile("GLASSPIECES") {
@@ -620,15 +633,16 @@ pub(crate) fn checkhitsprite_object(
     .iter()
     .any(|name| is(name))
     {
-        // Chocolate `RANDOMSCRAP`: seven ordered TRAND draws per shard.
         for _ in 0..16 {
-            let x = target_sprite.x + (krand_step(randomseed) & 255) - 128;
-            let y = target_sprite.y + (krand_step(randomseed) & 255) - 128;
-            let z = target_sprite.z - (8 << 8) - (krand_step(randomseed) & 8191);
-            let scrap = tile("SCRAP6").unwrap_or(2390) + (krand_step(randomseed) & 15) as i16;
-            let angle = (krand_step(randomseed) & 2047) as i16;
-            let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
+            // Chocolate `RANDOMSCRAP`: 32-bit gcc evaluates the EGS arguments right
+            // to left, so zvel draws first and x last.
             let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+            let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
+            let angle = (krand_step(randomseed) & 2047) as i16;
+            let scrap = tile("SCRAP6").unwrap_or(2390) + (krand_step(randomseed) & 15) as i16;
+            let z = target_sprite.z - (8 << 8) - (krand_step(randomseed) & 8191);
+            let y = target_sprite.y + (krand_step(randomseed) & 255) - 128;
+            let x = target_sprite.x + (krand_step(randomseed) & 255) - 128;
             let _ = crate::shoot::egs(
                 lists,
                 sprites,
@@ -1103,12 +1117,14 @@ fn spawn_civilian_guts(
                 |label| label.value as i16,
             );
         for _ in 0..count {
+            // Chocolate `guts`: `a = TRAND&2047;` first, then the EGS arguments
+            // right to left (32-bit gcc): zvel, xvel, z, y, x.
             let angle = (krand_step(randomseed) & 2047) as i16;
-            let x = body.x + (krand_step(randomseed) & 255) - 128;
-            let y = body.y + (krand_step(randomseed) & 255) - 128;
-            let z = gut_z - (krand_step(randomseed) & 8191);
-            let xvel = (48 + (krand_step(randomseed) & 31)) as i16;
             let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+            let xvel = (48 + (krand_step(randomseed) & 31)) as i16;
+            let z = gut_z - (krand_step(randomseed) & 8191);
+            let y = body.y + (krand_step(randomseed) & 255) - 128;
+            let x = body.x + (krand_step(randomseed) & 255) - 128;
             let repeat = if name == "JIBS2" {
                 repeats >> 2
             } else {
@@ -1519,6 +1535,19 @@ pub fn moveweapons(
                 sprites[iu].sectnum = hit.hitsect;
 
                 let mut stop = hit.hitwall >= 0 || (hit.hitwall < 0 && hit.hitsprite < 0);
+                // Chocolate `moveweapons`: a wall hit (`32768`, not a mirror) or a
+                // floor/ceiling hit (`16384`) calls `setsprite(i,dax,day,daz)`,
+                // putting the projectile back where it was before `movesprite`
+                // slid it. Sprite hits keep the moved position.
+                if hit.hitsprite < 0 {
+                    sprites[iu].x = source.x;
+                    sprites[iu].y = source.y;
+                    sprites[iu].z = source.z;
+                    if sprites[iu].sectnum != source.sectnum {
+                        let _ = lists.changespritesect(i, source.sectnum);
+                        sprites[iu].sectnum = source.sectnum;
+                    }
+                }
                 if hit.hitsprite >= 0 {
                     let target = hit.hitsprite as usize;
                     if target < sprites.len() && sprites[target].picnum == APLAYER {
@@ -1540,6 +1569,11 @@ pub fn moveweapons(
                     }
                     // `moveweapons` skips non-player sprite hits for this tile.
                 }
+                // A non-player sprite hit is `goto BOLT`: no velocity reset, no
+                // `checkhitsprite`, and no `shade++` fade this tic.
+                if hit.hitsprite >= 0 && !stop {
+                    continue;
+                }
 
                 if hit.hitwall >= 0 {
                     let wall_sounds = apply_checkhitwall(
@@ -1554,10 +1588,11 @@ pub fn moveweapons(
                         i,
                         source.picnum,
                         hit.hitwall as usize,
-                        hit.hitx,
-                        hit.hity,
-                        hit.hitz,
-                        hit.hitsect,
+                        // `checkhitwall(i,j,s->x,s->y,s->z,…)` after the restore.
+                        source.x,
+                        source.y,
+                        source.z,
+                        source.sectnum,
                         script,
                     );
                     if actor_temps.len() <= iu {
@@ -1565,7 +1600,8 @@ pub fn moveweapons(
                     }
                     actor_temps[iu].pending_actor_sounds.extend(wall_sounds);
                 } else if hit.hitsprite < 0 && source.zvel < 0 {
-                    let is_sky = sectors.get(hit.hitsect as usize).is_some_and(|sector| {
+                    // `checkhitceiling(s->sectnum)` after `setsprite` restored it.
+                    let is_sky = sectors.get(source.sectnum as usize).is_some_and(|sector| {
                         sector.ceilingstat & 1 != 0 && sector.ceilingpal == 0
                     });
                     if is_sky {
@@ -1582,7 +1618,7 @@ pub fn moveweapons(
                         actor_temps,
                         script,
                         randomseed,
-                        hit.hitsect,
+                        source.sectnum,
                         source.owner,
                         &mut ceiling_sounds,
                     );
@@ -3935,11 +3971,9 @@ fn spawn_radius_wall_glass(
         let Some(sector) = sectors.get(sector_index).copied() else {
             continue;
         };
-        let angle = if colored {
-            (krand_step(randomseed) & 2047) as i16
-        } else {
-            source.ang.wrapping_sub(1024)
-        };
+        // Both `lotsofglass` and `lotsofcolourglass` use `a = SA-1024` along a
+        // wall; neither draws a random angle there.
+        let angle = source.ang.wrapping_sub(1024);
         let height = sector.floorz.wrapping_sub(sector.ceilingz).saturating_abs();
         let mut z = sector.floorz.wrapping_sub(krand_step(randomseed) & height);
         if !(-32 << 8..=32 << 8).contains(&z) {
@@ -3948,8 +3982,9 @@ fn spawn_radius_wall_glass(
                 .wrapping_sub(32 << 8)
                 .wrapping_add(krand_step(randomseed) & (64 << 8) - 1);
         }
-        let xvel = (32 + (krand_step(randomseed) & 63)) as i16;
+        // EGS arguments draw right to left (32-bit gcc): zvel before xvel.
         let zvel = (-(krand_step(randomseed) & if colored { 2047 } else { 1023 })) as i16;
+        let xvel = (32 + (krand_step(randomseed) & 63)) as i16;
         let shard = crate::shoot::egs(
             lists,
             sprites,

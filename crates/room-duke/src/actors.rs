@@ -243,6 +243,11 @@ const LIZMAN: i16 = 2120;
 const BOSS1: i16 = 2630;
 const BOSS2: i16 = 2710;
 const COMMANDER: i16 = 1920;
+/// Atomic tiles with their own `move()` rules.
+const DRONE: i16 = 1880;
+const SHARK: i16 = 1550;
+const ROTATEGUN: i16 = 2360;
+const APLAYER: i16 = 1405;
 const BLIMP_WEAPON_SPRITES: [i16; 14] = [23, 22, 42, 44, 44, 57, 54, 53, 55, 44, 44, 23, 44, 24];
 const PIPEBOMB_BLAST_RADIUS_FALLBACK: i32 = 2500;
 const EXPLOSION2: i16 = 1890;
@@ -311,6 +316,12 @@ fn actor_con_move(
     player_x: i32,
     player_y: i32,
     randomseed: &mut i32,
+    // Chocolate `g_x`: `findplayer` distance for this actor's tic.
+    g_x: i32,
+    // `ps[g_p]`: pushed back by large close enemies; `actorsqu` never moves.
+    mut player: Option<&mut Player>,
+    single_player: bool,
+    self_i: i16,
 ) {
     let mut a = sp.hitag;
     if a == -1 {
@@ -400,50 +411,107 @@ fn actor_con_move(
     sp.xvel = xvel as i16;
     sp.zvel = zvel as i16;
 
+    // Chocolate `move()`: everything below runs only while the actor moves.
+    if xvel == 0 && zvel == 0 {
+        return;
+    }
     let is_bad = badguy_pic(sp.picnum, actortype);
-    // Chocolate `move()` floor/ceiling clamps run *before* the skill odd-frame
-    // return — so a freshly woken underwater OCTA with getv&lt;0 snaps to
-    // `ceilz+(66<<8)` even when movesprite is skipped (DEMO1 tic138).
-    if is_bad && sp.picnum != ORGANTIC {
-        if zvel > 0 && temps.hit_floorz < sp.z {
-            sp.z = temps.hit_floorz;
+    let plane_z = |sp: &SpriteT| -> (i32, i32) {
+        if sp.sectnum >= 0 && (sp.sectnum as usize) < sectors.len() {
+            let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+            let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+            getzsofslope(sp.sectnum, sp.x, sp.y, &sec_z, &wxy)
+        } else {
+            (temps.hit_ceilingz, temps.hit_floorz)
         }
-        if zvel < 0 {
-            let sect = sp.sectnum;
-            let ceilz = if sect >= 0 && (sect as usize) < sectors.len() {
-                let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
-                let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
-                getzsofslope(sect, sp.x, sp.y, &sec_z, &wxy).0
+    };
+    // Floor/ceiling clamps run *before* the skill odd-frame return — so a
+    // freshly woken underwater OCTA with getv<0 snaps to `ceilz+(66<<8)` even
+    // when movesprite is skipped (DEMO1 tic138).
+    if is_bad && sp.picnum != ROTATEGUN {
+        if (sp.picnum == DRONE || sp.picnum == COMMANDER) && sp.extra > 0 {
+            if sp.picnum == COMMANDER {
+                let (ceilz, florz) = plane_z(sp);
+                temps.hit_floorz = florz;
+                if sp.z > florz - (8 << 8) {
+                    sp.z = florz - (8 << 8);
+                    sp.zvel = 0;
+                }
+                temps.hit_ceilingz = ceilz;
+                if sp.z - ceilz < (80 << 8) {
+                    sp.z = ceilz + (80 << 8);
+                    sp.zvel = 0;
+                }
+            } else if sp.zvel > 0 {
+                let (_, florz) = plane_z(sp);
+                temps.hit_floorz = florz;
+                if sp.z > florz - (30 << 8) {
+                    sp.z = florz - (30 << 8);
+                }
             } else {
-                temps.hit_ceilingz
-            };
-            if sp.z - ceilz < (66 << 8) {
-                sp.z = ceilz + (66 << 8);
-                sp.zvel >>= 1;
-                zvel = i32::from(sp.zvel);
+                let (ceilz, _) = plane_z(sp);
+                temps.hit_ceilingz = ceilz;
+                if sp.z - ceilz < (50 << 8) {
+                    sp.z = ceilz + (50 << 8);
+                    sp.zvel = 0;
+                }
+            }
+            zvel = i32::from(sp.zvel);
+        } else if sp.picnum != ORGANTIC {
+            if zvel > 0 && temps.hit_floorz < sp.z {
+                sp.z = temps.hit_floorz;
+            }
+            if zvel < 0 {
+                let (ceilz, _) = plane_z(sp);
+                if sp.z - ceilz < (66 << 8) {
+                    sp.z = ceilz + (66 << 8);
+                    sp.zvel >>= 1;
+                    zvel = i32::from(sp.zvel);
+                }
             }
         }
+    } else if sp.picnum == APLAYER && sp.z - temps.hit_ceilingz < (32 << 8) {
+        sp.z = temps.hit_ceilingz + (32 << 8);
     }
 
     let mut daxvel = xvel;
-    let angdif = i32::from(sp.ang) & 2047;
-    if is_bad {
-        // DEMO skill < 2: odd `g_t[0]` skips movesprite (after alterang).
-        // Chocolate also uses the looser `&1` gate when `bposz != z` (fall moved us).
-        let z_moved = temps.bposz != sp.z;
-        if player_skill < 2 || z_moved {
-            if temps.g_t[0] & 1 != 0 {
-                return;
+    let mut angdif = i32::from(sp.ang) & 2047;
+    if is_bad && sp.picnum != ROTATEGUN {
+        let squished = player
+            .as_ref()
+            .is_some_and(|p| p.actorsqu >= 0 && p.actorsqu == self_i);
+        if g_x < 960 && sp.xrepeat > 16 {
+            // Too close to a big enemy: it pushes toward the player and the
+            // player's momentum is damped (`dukefriction-0x2000`).
+            daxvel = -(1024 - g_x);
+            angdif = getangle(player_x - sp.x, player_y - sp.y) & 2047;
+            if let Some(p) = player.as_mut() {
+                if g_x < 512 {
+                    p.posxv = 0;
+                    p.posyv = 0;
+                } else {
+                    let k = i64::from(crate::player::DUKE_FRICTION - 0x2000);
+                    p.posxv = ((i64::from(p.posxv) * k) >> 16) as i32;
+                    p.posyv = ((i64::from(p.posyv) * k) >> 16) as i32;
+                }
             }
-            daxvel <<= 1;
-        } else if temps.g_t[0] & 3 != 0 {
-            return;
-        } else {
-            daxvel <<= 2;
+        } else if sp.picnum != DRONE && sp.picnum != SHARK && sp.picnum != COMMANDER {
+            // Skill < 2 (single player) or a vertical change since the last
+            // tic: move every other tic at double speed, else every fourth
+            // tic at quadruple speed.
+            let z_moved = temps.bposz != sp.z;
+            if z_moved || (single_player && player_skill < 2) {
+                if temps.g_t[0] & 1 != 0 || squished {
+                    return;
+                }
+                daxvel <<= 1;
+            } else {
+                if temps.g_t[0] & 3 != 0 || squished {
+                    return;
+                }
+                daxvel <<= 2;
+            }
         }
-    }
-    if daxvel == 0 && zvel == 0 {
-        return;
     }
     let (sin, cos) = sincos_q14(angdif);
     // Chocolate movesprite args = (daxvel*sintable)>>14, then clipmove
@@ -614,6 +682,8 @@ pub fn moveactors_with_skill(
     global_random: i32,
 ) {
     let heavybomb_tile = crate::shoot::script_tile_or(Some(script), "HEAVYHBOMB", HEAVYHBOMB);
+    let morter_tile = crate::shoot::script_tile_or(Some(script), "MORTER", 1650);
+    let bouncemine_tile = crate::shoot::script_tile_or(Some(script), "BOUNCEMINE", 940);
     let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
     let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
     move_pipebombs(
@@ -629,6 +699,7 @@ pub fn moveactors_with_skill(
         Some(script),
         respawn_settings[2],
     );
+    let players_len = players.len();
     let mut i = lists.headspritestat[STAT_ACTOR as usize];
     while i >= 0 {
         let next = lists.nextspritestat[i as usize];
@@ -640,7 +711,7 @@ pub fn moveactors_with_skill(
         let pic_i = picnum[iu];
         // Chocolate handles HEAVYHBOMB in the C actor switch; it does not run
         // an actor CON body for this tile.
-        if pic_i == heavybomb_tile {
+        if pic_i == heavybomb_tile || pic_i == morter_tile || pic_i == bouncemine_tile {
             i = next;
             continue;
         }
@@ -683,6 +754,32 @@ pub fn moveactors_with_skill(
         ) {
             i = next;
             continue;
+        }
+        // Chocolate C-coded actors without a CON body (RECON, RAT, live
+        // GREENSLIME, OOZ, CAMERA1): run their `moveactors` case.
+        if crate::c_actors::is_c_actor(sprites[iu].picnum)
+            && lists.sprite_stat.get(iu).copied() == Some(STAT_ACTOR)
+        {
+            let mut ctx = crate::c_actors::CActorCtx {
+                lists,
+                sprites,
+                sectors,
+                walls,
+                picnum,
+                temps,
+                tile_meta,
+                script,
+                players,
+                sync_bits,
+                randomseed,
+                global_random,
+                single_player: players_len < 2,
+                actor_toggle,
+            };
+            if crate::c_actors::move_c_actor(&mut ctx, iu) {
+                i = next;
+                continue;
+            }
         }
         let pic = pic_i as usize;
         if pic >= actorscrptr.len() {
@@ -1216,11 +1313,13 @@ pub fn moveactors_with_skill(
         for count in glass_bursts {
             for shard in (1..=count.max(0)).rev() {
                 let parent = sprites[iu];
+                // Chocolate `spriteglass`: `a = TRAND&2047; z = SZ-((TRAND&16)<<8);` then the EGS
+                // arguments right to left: zvel, xvel, shade.
                 let angle = (krand_step(randomseed) & 2047) as i16;
                 let z = parent.z.wrapping_sub((krand_step(randomseed) & 16) << 8);
-                let shade = (krand_step(randomseed) & 15) as i8;
-                let xvel = (32 + (krand_step(randomseed) & 63)) as i16;
                 let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+                let xvel = (32 + (krand_step(randomseed) & 63)) as i16;
+                let shade = (krand_step(randomseed) & 15) as i8;
                 let glass = crate::shoot::egs(
                     lists,
                     sprites,
@@ -1306,8 +1405,10 @@ pub fn moveactors_with_skill(
         for (tile, count) in item_sprays {
             for _ in 0..count.max(0) {
                 let parent = sprites[iu];
-                let z_offset = krand_step(randomseed) % (47 << 8);
+                // Chocolate `lotsofmoney`/`lotsofmail`/`lotsofpaper`: `EGS(…, z-(TRAND%(47<<8)), …,
+                // TRAND&2047, …)` — right-to-left arguments: the angle draws before z.
                 let angle = (krand_step(randomseed) & 2047) as i16;
+                let z_offset = krand_step(randomseed) % (47 << 8);
                 let j = crate::shoot::egs(
                     lists,
                     sprites,
@@ -1404,11 +1505,6 @@ pub fn moveactors_with_skill(
                     )
                 })
                 .collect();
-            let mx = sprites[iu].x;
-            let my = sprites[iu].y;
-            // Fast movers resting on a peer L-face: Chocolate passes through on
-            // the next <<=2 step (DEMO1 #400 xv=76 vs #401); slow peers still clip.
-            let fast_rest = sprites[iu].xvel.abs() >= 48;
             let spr_clips: Vec<SpriteZClip> = sprites
                 .iter()
                 .enumerate()
@@ -1416,16 +1512,6 @@ pub fn moveactors_with_skill(
                     let mut z = sprite_z_clip(s, tile_meta);
                     if j == iu {
                         z.cstat = 0;
-                    } else if fast_rest
-                        && badguy_pic(s.picnum, script.actortype.as_slice())
-                        && badguy_pic(sprites[iu].picnum, script.actortype.as_slice())
-                    {
-                        let bsz = (i32::from(s.clipdist) << 2) + 192;
-                        let dx = (mx - s.x).abs();
-                        let dy = (my - s.y).abs();
-                        if dy < bsz && (-2..=2).contains(&(dx - bsz)) {
-                            z.cstat = 0;
-                        }
                     }
                     z
                 })
@@ -1435,6 +1521,7 @@ pub fn moveactors_with_skill(
                 .map(|p| (p.posx, p.posy))
                 .unwrap_or((temps[iu].lastvx, temps[iu].lastvy));
             let old_sect = sprites[iu].sectnum;
+            let single_player = players.len() < 2;
             actor_con_move(
                 lists,
                 &mut sprites[iu],
@@ -1450,6 +1537,10 @@ pub fn moveactors_with_skill(
                 px,
                 py,
                 randomseed,
+                dist,
+                players.get_mut(pidx),
+                single_player,
+                i,
             );
             // `clipmove` updates the actor's destination sector in the
             // temporary `dasectnum`; Chocolate only links it into that
@@ -1584,9 +1675,11 @@ fn tick_frozen_slime(
             .map_or(1031, |label| label.value as i16);
         for shard_index in (0..=16).rev() {
             let tile = glass_pieces + (shard_index % 3);
-            let angle = (krand_step(randomseed) & 2047) as i16;
-            let xvel = (32 + (krand_step(randomseed) & 63)) as i16;
+            // Chocolate `EGS(…, TRAND&2047, 32+(TRAND&63), 1024-(TRAND&1023), …)`:
+            // right-to-left arguments, zvel draws first.
             let zvel = (1024 - (krand_step(randomseed) & 1023)) as i16;
+            let xvel = (32 + (krand_step(randomseed) & 63)) as i16;
+            let angle = (krand_step(randomseed) & 2047) as i16;
             let shard = crate::shoot::egs(
                 lists,
                 sprites,
@@ -1805,6 +1898,8 @@ fn move_pipebombs(
     respawn_items: bool,
 ) {
     let heavybomb_tile = crate::shoot::script_tile_or(script, "HEAVYHBOMB", HEAVYHBOMB);
+    let morter_tile = crate::shoot::script_tile_or(script, "MORTER", 1650);
+    let bouncemine_tile = crate::shoot::script_tile_or(script, "BOUNCEMINE", 940);
     let respawn_item_time = script
         .and_then(|image| image.gamestartup.get(5).copied())
         .unwrap_or(0)
@@ -1879,11 +1974,31 @@ fn move_pipebombs(
             }
             continue;
         }
-        if sprites[iu].picnum != heavybomb_tile {
+        // Chocolate shares this C case between HEAVYHBOMB and the enemy
+        // projectiles MORTER (Battlelord) and BOUNCEMINE.
+        let pic_now = sprites[iu].picnum;
+        let is_morter = pic_now == morter_tile;
+        let is_bouncemine = pic_now == bouncemine_tile;
+        if pic_now != heavybomb_tile && !is_morter && !is_bouncemine {
             continue;
         }
         if iu >= temps.len() {
             temps.resize_with(iu + 1, ActorConTemps::default);
+        }
+        if (is_morter || is_bouncemine)
+            && let Some(script) = script
+            && let Some(trail) = script.labels.get("FRAMEEFFECT1").map(|label| label.value as i16)
+        {
+            let j = crate::spawn_rt::spawn_from(
+                lists, sprites, sectors, walls, picnum, temps, tile_meta, script, randomseed, i, trail,
+            );
+            if j >= 0 {
+                let ju = j as usize;
+                if temps.len() <= ju {
+                    temps.resize_with(ju + 1, ActorConTemps::default);
+                }
+                temps[ju].g_t[0] = 3;
+            }
         }
         if usize::try_from(sprites[iu].sectnum).unwrap_or(usize::MAX) >= sectors.len() {
             let _ = lists.deletesprite(i);
@@ -1930,12 +2045,15 @@ fn move_pipebombs(
         }
         temps[iu].g_t[0] += 1;
         let mut bounced = false;
+        let mut move_hit = 0;
         {
             let s = &mut sprites[iu];
             let sect = s.sectnum as usize;
             // `makeitfall` plus Chocolate's pipebomb floor bounce rule.
             let (ceilz, floorz) = getzsofslope(s.sectnum, s.x, s.y, &sec_z, &wall_xy);
-            if s.z < floorz - (4 << 8) {
+            if is_bouncemine {
+                // Chocolate: BOUNCEMINE skips makeitfall and the floor bounce.
+            } else if s.z < floorz - (4 << 8) {
                 let gravity = if sectors[sect].lotag == 2 {
                     DUKE_GC / 6
                 } else {
@@ -1954,7 +2072,7 @@ fn move_pipebombs(
                 s.z = floorz - (4 << 8);
                 s.zvel = 0;
             }
-            if s.z < ceilz {
+            if !is_bouncemine && s.z < ceilz {
                 s.z = ceilz + (3 << 8);
                 s.zvel = 0;
             }
@@ -1983,10 +2101,11 @@ fn move_pipebombs(
                 s.sectnum = newsect;
             }
             s.z = s.z.saturating_add((i32::from(s.zvel) * TICSPERFRAME) >> 3);
+            move_hit = hit;
             if s.xvel > 0 {
                 s.xvel = s.xvel.saturating_sub(5).max(0);
             }
-            if (hit & 0xc000) == 0x8000 {
+            if (hit & 0xc000) == 0x8000 && !(is_morter || is_bouncemine) {
                 let wi = (hit & 0x3fff) as usize;
                 if let Some(w) = walls.get(wi) {
                     let p2 = usize::try_from(w.point2).unwrap_or(usize::MAX);
@@ -2048,6 +2167,12 @@ fn move_pipebombs(
         } else {
             temps[iu].g_t[5] = 0;
         }
+        // MORTER / BOUNCEMINE detonate on any contact or next to a player.
+        if temps[iu].g_t[3] == 0 && (is_morter || is_bouncemine) && (move_hit != 0 || nearest_dist < 844) {
+            temps[iu].g_t[3] = 1;
+            temps[iu].g_t[4] = 0;
+            sprites[iu].xvel = 0;
+        }
         let owner = sprites[iu].owner;
         if players.iter().any(|p| p.sprite_i == owner && !p.hbomb_on) && temps[iu].g_t[3] == 0 {
             temps[iu].g_t[3] = 1;
@@ -2069,6 +2194,19 @@ fn move_pipebombs(
                     })
                     .unwrap_or(PIPEBOMB_BLAST_RADIUS_FALLBACK)
                     .max(1);
+                // gamestartup: …pipebomb, shrinker, tripbomb, morter, bouncemine.
+                let blast_offset = if is_morter { 3 } else if is_bouncemine { 4 } else { 0 };
+                let pipebomb_radius = if blast_offset == 0 {
+                    pipebomb_radius
+                } else {
+                    script
+                        .and_then(|image| {
+                            let base = if image.con_version == crate::con::ConVersion::V15 { 9 } else { 8 };
+                            image.gamestartup.get(base + blast_offset).copied()
+                        })
+                        .unwrap_or(pipebomb_radius)
+                        .max(1)
+                };
                 crate::weapons_move::apply_rpg_blast(
                     lists,
                     sprites,
@@ -2138,7 +2276,11 @@ fn move_pipebombs(
                 }
                 continue;
             }
-        } else if nearest_dist < 788 && temps[iu].g_t[0] > 7 && sprites[iu].xvel == 0 {
+        } else if pic_now == heavybomb_tile
+            && nearest_dist < 788
+            && temps[iu].g_t[0] > 7
+            && sprites[iu].xvel == 0
+        {
             let maximum = script
                 .and_then(|image| {
                     let index = if image.con_version == crate::con::ConVersion::V15 {
@@ -2291,13 +2433,15 @@ fn move_dukecar(
         PENDING_EARTHQUAKE.with(|q| q.set(true));
         let src = sprites[iu];
         for _ in 0..32 {
-            let x = src.x + (krand_step(randomseed) & 255) - 128;
-            let y = src.y + (krand_step(randomseed) & 255) - 128;
-            let z = src.z - (8 << 8) - (krand_step(randomseed) & 8191);
-            let pn = SCRAP6 + (krand_step(randomseed) & 15) as i16;
-            let ang = (krand_step(randomseed) & 2047) as i16;
-            let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
+            // Chocolate `RANDOMSCRAP`: 32-bit gcc evaluates the EGS arguments right
+            // to left, so zvel draws first and x last.
             let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+            let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
+            let ang = (krand_step(randomseed) & 2047) as i16;
+            let pn = SCRAP6 + (krand_step(randomseed) & 15) as i16;
+            let z = src.z - (8 << 8) - (krand_step(randomseed) & 8191);
+            let y = src.y + (krand_step(randomseed) & 255) - 128;
+            let x = src.x + (krand_step(randomseed) & 255) - 128;
             let _ = crate::shoot::egs(
                 lists,
                 sprites,

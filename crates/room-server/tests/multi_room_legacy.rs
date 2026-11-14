@@ -34,6 +34,7 @@ async fn legacy_two_peers_stamped_data() {
             fill_bots: false,
             quick_play: false,
             preset: None,
+            ..CreateRoomRequest::default()
         })
         .expect("create");
     let (addr, _server) = bind_ephemeral(registry).await.expect("bind");
@@ -131,6 +132,7 @@ async fn v2_tic_frame_two_seats() {
             fill_bots: false,
             quick_play: false,
             preset: None,
+            ..CreateRoomRequest::default()
         })
         .expect("create");
     let (addr, _server) = bind_ephemeral(registry).await.expect("bind");
@@ -241,6 +243,7 @@ async fn many_rooms_create_and_pair() {
                     fill_bots: false,
                     quick_play: false,
                     preset: None,
+                    ..CreateRoomRequest::default()
                 })
                 .expect("create"),
         );
@@ -303,6 +306,7 @@ async fn soak_1000_rooms_v2_tic_frames() {
                     fill_bots: false,
                     quick_play: false,
                     preset: None,
+                    ..CreateRoomRequest::default()
                 })
                 .expect("create")
                 .id,
@@ -444,6 +448,7 @@ async fn origin_allowlist_rejects_unknown() {
             fill_bots: false,
             quick_play: false,
             preset: None,
+            ..CreateRoomRequest::default()
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -487,6 +492,7 @@ async fn join_ticket_round_trip_and_replay_rejected() {
             fill_bots: false,
             quick_play: false,
             preset: None,
+            ..CreateRoomRequest::default()
         })
         .unwrap();
     let (ticket, _) = registry.issue_join_ticket(&created.id, "alice").unwrap();

@@ -243,6 +243,9 @@ pub struct RoomSettings {
     /// Atomic Duke `ud.ffire`; ignored for Doom rooms.
     #[serde(default)]
     pub duke_friendly_fire: bool,
+    /// Doom deathmatch instead of co-op; ignored for Duke rooms.
+    #[serde(default)]
+    pub doom_deathmatch: bool,
     /// Public listing (unused in M1).
     #[serde(default)]
     pub visibility: String,
@@ -270,7 +273,7 @@ pub struct RoomSettings {
     /// Library files every seat mounts after the IWAD (from the preset).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content: Vec<room_proto::RoomContentRef>,
-    /// Library IWAD replacing the seats' base game (from the preset).
+    /// Library base archive replacing the seats' game (Doom IWAD or Duke GRP).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iwad: Option<room_proto::RoomContentRef>,
     /// Preset title the room was created from (empty = none).
@@ -286,6 +289,7 @@ impl Default for RoomSettings {
             max_players: 2,
             duke_game_mode: 1,
             duke_friendly_fire: false,
+            doom_deathmatch: false,
             visibility: "public".into(),
             enable_verifier: false,
             game_mod: None,
@@ -334,6 +338,9 @@ pub struct CreateRoomRequest {
     /// Atomic Duke `ud.ffire`; ignored for Doom rooms.
     #[serde(default)]
     pub duke_friendly_fire: bool,
+    /// Doom deathmatch instead of co-op; ignored for Duke rooms.
+    #[serde(default)]
+    pub doom_deathmatch: bool,
     /// `public` (listed in lobby) or `private` (join by id only).
     #[serde(default = "default_visibility")]
     pub visibility: String,
@@ -372,6 +379,7 @@ impl Default for CreateRoomRequest {
             max_players: default_max_players(),
             duke_game_mode: default_duke_game_mode(),
             duke_friendly_fire: false,
+            doom_deathmatch: false,
             visibility: default_visibility(),
             enable_verifier: false,
             game_mod: None,
@@ -1192,6 +1200,7 @@ fn welcome_room(state: &RoomState) -> WelcomeRoom {
         max_players: state.settings.max_players,
         duke_game_mode: state.settings.duke_game_mode,
         duke_friendly_fire: state.settings.duke_friendly_fire,
+        doom_deathmatch: state.settings.doom_deathmatch,
         rng_seed: state.rng_seed,
         delay: 0,
         game_mod: state.settings.game_mod.clone(),
@@ -1667,6 +1676,7 @@ fn start_verifier_if_needed(state: &mut RoomState) {
             state.rng_seed,
             state.settings.max_players,
             u32::from(state.settings.time_limit) * 60 * 35,
+            state.settings.doom_deathmatch,
         ) {
             Ok((frames, checksums)) => {
                 state.verifier = Some(VerifierHandles {

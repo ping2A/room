@@ -7,7 +7,7 @@ use crate::condata::ConData;
 use crate::convert::{GameTiles, convert_map_with, doom_map_name, switch_name, tile_name};
 use crate::duke::Duke;
 use crate::error::BuildError;
-use crate::grp::Grp;
+use crate::grp::{Grp, GrpStack};
 use crate::lookup::Lookups;
 use crate::map::parse_map;
 use crate::palette::Palette;
@@ -49,6 +49,47 @@ pub struct GrpWad {
     pub maps: Vec<String>,
     /// Maps or tiles that could not be converted.
     pub warnings: Vec<String>,
+}
+
+/// List the native Build `.MAP` files in a base GRP and its optional add-ons.
+/// Campaign maps from `USER.CON` come first, followed by other map files in
+/// archive order. Later GRPs replace earlier files with the same name.
+pub fn list_grp_maps(layers: &[&[u8]]) -> Result<Vec<String>, BuildError> {
+    let grp = GrpStack::parse_layers(layers)?;
+    let user_con = grp
+        .get("USER.CON")
+        .map(String::from_utf8_lossy)
+        .unwrap_or_default();
+    let (levels, _) = parse_user_con(&user_con);
+    let mut files: Vec<String> = levels.iter().map(|level| level.file.clone()).collect();
+    files.extend(
+        grp.names()
+            .filter(|name| name.ends_with(".MAP"))
+            .map(str::to_owned),
+    );
+
+    let mut seen_files = BTreeSet::new();
+    files.retain(|file| grp.get(file).is_some() && seen_files.insert(file.to_ascii_uppercase()));
+
+    let mut maps = Vec::new();
+    for file in files {
+        let base = file.rsplit(['/', '\\']).next().unwrap_or(&file);
+        let Some(stem) = base.strip_suffix(".MAP") else {
+            continue;
+        };
+        if !stem.is_empty()
+            && stem.len() <= 8
+            && stem
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            && !maps
+                .iter()
+                .any(|map: &String| map.eq_ignore_ascii_case(stem))
+        {
+            maps.push(stem.to_owned());
+        }
+    }
+    Ok(maps)
 }
 
 /// Convert a Duke Nukem 3D GRP into a Room PWAD (see the crate docs).

@@ -24,6 +24,7 @@ async fn public_list_hides_private_and_serves_lobby() {
             fill_bots: false,
             quick_play: false,
             preset: None,
+            ..CreateRoomRequest::default()
         })
         .unwrap();
     let _priv = registry
@@ -40,6 +41,7 @@ async fn public_list_hides_private_and_serves_lobby() {
             fill_bots: false,
             quick_play: false,
             preset: None,
+            ..CreateRoomRequest::default()
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();

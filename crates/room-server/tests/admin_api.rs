@@ -30,6 +30,7 @@ async fn admin_summary_and_close_audited() {
             fill_bots: false,
             quick_play: false,
             preset: None,
+            ..CreateRoomRequest::default()
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry.clone()).await.unwrap();
@@ -150,6 +151,7 @@ async fn admin_notice_reaches_v2_client() {
             fill_bots: false,
             quick_play: false,
             preset: None,
+            ..CreateRoomRequest::default()
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -233,6 +235,7 @@ async fn ban_by_name_blocks_join_and_hello() {
             fill_bots: false,
             quick_play: false,
             preset: None,
+            ..CreateRoomRequest::default()
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();
@@ -320,6 +323,7 @@ async fn ban_name_regex_and_auth_key_scopes() {
             fill_bots: false,
             quick_play: false,
             preset: None,
+            ..CreateRoomRequest::default()
         })
         .unwrap();
     let (addr, _server) = bind_ephemeral(registry).await.unwrap();

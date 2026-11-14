@@ -15,7 +15,7 @@ async fn headless_verifier_produces_checksum() {
         return;
     }
     let _ = ServerConfig::default();
-    let (tx, mut rx) = room_server::spawn_verifier_for_test(wad, None, "MAP01", 3, 2026, 2, 0)
+    let (tx, mut rx) = room_server::spawn_verifier_for_test(wad, None, "MAP01", 3, 2026, 2, 0, false)
         .expect("spawn verifier");
     for tic in 0..36u32 {
         tx.send(TicFrameMsg {
@@ -50,7 +50,7 @@ async fn verifier_checksums(
     game_mod: Option<(String, bytes::Bytes)>,
     tics: u32,
 ) -> Vec<(u32, u64)> {
-    let (tx, mut rx) = room_server::spawn_verifier_for_test(iwad, game_mod, "E1M1", 4, 99, 2, 0)
+    let (tx, mut rx) = room_server::spawn_verifier_for_test(iwad, game_mod, "E1M1", 4, 99, 2, 0, false)
         .expect("verifier");
     for tic in 0..tics {
         tx.send(TicFrameMsg {

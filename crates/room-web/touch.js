@@ -2,7 +2,8 @@
 //
 // Left half: floating stick (forward / back / strafe; push to the rim to run).
 // Right half: drag to look. Buttons: FIRE (drag on it to aim while firing),
-// USE, previous / next weapon, scores, fullscreen, game menu.
+// USE, JUMP, DUCK, previous / next weapon, scores, fullscreen, game menu; Duke
+// adds KICK (quick kick) and ITEM (use the selected inventory item).
 //
 // Everything feeds the same input path as keyboard + mouse (`roomInputKey`,
 // `roomInputLook`, `roomInputWeaponCycle`), so solo, coop and mods behave the same.
@@ -62,6 +63,18 @@ body.touch #status { left: 50%; transform: translateX(-50%); bottom: auto; top: 
   right: calc(128px + env(safe-area-inset-right)); bottom: calc(22px + env(safe-area-inset-bottom));
 }
 #touch .wprev, #touch .wnext { width: 48px; height: 48px; font-size: 18px; }
+#touch .jump { width: 58px; height: 58px; font-size: 12px; right: calc(204px + env(safe-area-inset-right)); bottom: calc(86px + env(safe-area-inset-bottom)); }
+#touch .duck { width: 52px; height: 52px; font-size: 11px; right: calc(206px + env(safe-area-inset-right)); bottom: calc(18px + env(safe-area-inset-bottom)); }
+#touch .kick { width: 48px; height: 48px; font-size: 11px; right: calc(166px + env(safe-area-inset-right)); bottom: calc(158px + env(safe-area-inset-bottom)); }
+#touch .item { width: 48px; height: 48px; font-size: 11px; right: calc(230px + env(safe-area-inset-right)); bottom: calc(156px + env(safe-area-inset-bottom)); }
+#touch .duke-only { display: none; }
+#touch.duke .duke-only { display: flex; }
+/* Short landscape phones: tighten the cluster so it stays clear of the stick. */
+@media (max-height: 380px) {
+  #touch .fire { width: 78px; height: 78px; }
+  #touch .jump { bottom: calc(76px + env(safe-area-inset-bottom)); }
+  #touch .kick, #touch .item { bottom: calc(138px + env(safe-area-inset-bottom)); }
+}
 #touch .wnext { right: calc(36px + env(safe-area-inset-right)); bottom: calc(136px + env(safe-area-inset-bottom)); }
 #touch .wprev { right: calc(100px + env(safe-area-inset-right)); bottom: calc(112px + env(safe-area-inset-bottom)); }
 #touch .top {
@@ -100,6 +113,10 @@ export function initTouchControls(mod, params = new URLSearchParams(location.sea
     <div class="stick"><div class="knob"></div></div>
     <button type="button" class="fire" aria-label="Fire">FIRE</button>
     <button type="button" class="use" aria-label="Use / open">USE</button>
+    <button type="button" class="jump" aria-label="Jump">JUMP</button>
+    <button type="button" class="duck" aria-label="Crouch">DUCK</button>
+    <button type="button" class="kick duke-only" aria-label="Quick kick">KICK</button>
+    <button type="button" class="item duke-only" aria-label="Use inventory item">ITEM</button>
     <button type="button" class="wprev" aria-label="Previous weapon">‹</button>
     <button type="button" class="wnext" aria-label="Next weapon">›</button>
     <button type="button" class="top scores" aria-label="Scores">TAB</button>
@@ -264,6 +281,20 @@ export function initTouchControls(mod, params = new URLSearchParams(location.sea
   holdButton($(".fire"), "ControlLeft", { aim: true });
   holdButton($(".use"), "KeyE");
   holdButton($(".scores"), "Tab");
+  holdButton($(".jump"), "Space");
+  holdButton($(".duck"), "KeyC");
+  holdButton($(".kick"), "Slash");
+  holdButton($(".item"), "Quote");
+  // Duke-only buttons follow the running game.
+  if (typeof mod.roomInputDukeMode === "function") {
+    setInterval(() => {
+      try {
+        root.classList.toggle("duke", !!mod.roomInputDukeMode());
+      } catch (_) {
+        /* module not ready */
+      }
+    }, 1000);
+  }
   const tapButton = (btn, fn) => {
     btn.addEventListener("pointerdown", (ev) => {
       ev.preventDefault();

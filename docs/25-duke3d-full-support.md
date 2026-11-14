@@ -47,7 +47,7 @@ the CON→DECORATE mapping.
 "Full support" is then defined by objective tests (§1), chiefly: **the
 Atomic Edition `DEMO1`–`DEMO3.DMO` play to their end in sync**.
 
-### Measured sync status (2026-11-10) — read this first
+### Measured sync status (2026-11-13) — read this first
 
 Earlier checkpoints in §2 that report DEMO1 "in sync" through tic 134, 1056
 or "100000 tics" were **not real**: the `.DMO` parser read the v116 (Atomic
@@ -65,7 +65,7 @@ The only number that counts is the honest one —
 
 | Demo | Map | Tics | Honest frontier | First divergence |
 |------|-----|------|-----------------|------------------|
-| DEMO1 | E3L11 skill 3 | 3,808 | **tics 0–263** (was none) | tic 264 randomseed |
+| DEMO1 | E3L11 skill 3 | 3,808 | **tics 0–435** (2026-11-13; was 0–269) | tic 436 randomseed |
 | DEMO2 | E4L11 skill 1 | 2,162 | 0 | tic 0 `numsprites` 1104 vs 1068 (load) |
 | DEMO3 | E4L2 skill 2 | 1,657 | 0 | tic 0 randomseed: 3 fewer krands at load |
 
@@ -100,6 +100,56 @@ Fixed on the way from tic 0 to tic 264 (all genuine logic bugs):
 - STAT_MISC `movesprite` never updates `sectnum`; EGS copies the owner's
   `hittype` floor/ceiling planes (player planes now tracked from getzrange).
 
+Fixed on the way from tic 270 to tic 436 (2026-11-13, each found with the
+oracle's krand log, sprite dumps, and `fprintf` probes added to the oracle
+build only; no fixups):
+
+- **Argument evaluation order.** 32-bit gcc evaluates function arguments
+  right to left (and a single expression left to right), so
+  `EGS(…, 4+(TRAND&3), 4+(TRAND&3), TRAND&2047, …)` draws the *last* argument
+  first. Room had every multi-`TRAND` call in source order. Audited all 27
+  sites plus the `RANDOMSCRAP` macro: `tracers`, CON `debris`/`guts`,
+  `RANDOMSCRAP` (5 copies), `guts`/`gutsdir` (5), SCRAP1/SCRAP3 debris (4),
+  `lotsofmoney/mail/paper` (3), `spriteglass`, `lotsofglass`,
+  `lotsofcolourglass`, the `actors.c` glass burst (2) and both
+  `movefta` `cansee` probes. Wall-glass also dropped an extra angle `TRAND`
+  that Chocolate never draws.
+- `COOLEXPLOSION1`: spawned at shade 0 (not -127), so it fades out in 40 tics;
+  wall and plane hits restore the pre-move position (`setsprite(i,dax,…)`),
+  `checkhitwall`/`checkhitceiling` use it; a non-player sprite hit is
+  `goto BOLT` (no fade that tic).
+- Shallow water (`psectlotag == 1`) bobs the view: `pycount += 32`,
+  `pyoff = sintable>>6`, eye height 34 (12 when shrunk). Removed the
+  `pycount: 63` start bias that stood in for it.
+- Removed the "fast mover resting on a peer" clip hack (it let OCTABRAINs
+  pass through each other); badguy `move()` now follows Chocolate: DRONE,
+  SHARK and COMMANDER skip the skill odd-frame gate, DRONE/COMMANDER have
+  their own plane clamps, ROTATEGUN is excluded, big enemies within 960
+  units push toward the player and damp the player's momentum, `actorsqu`
+  never moves, and nothing runs unless `xvel || zvel`.
+- `badguy()` no longer counts OCTABRAINSTAYPUT or BOSS1STAYPUT (not in
+  Chocolate's list, plain `actor`s have `actortype` 0): their `movefta`
+  probe draws 2 numbers, not 6.
+- `movetransports`: the player's water-surface splash spawns
+  `WATERSPLASH2` (with its size `TRAND`); the non-player loop handles
+  statnum 1 (except live water monsters), 4, 5, 12 and 13 with Chocolate's
+  skip list and PLAYERONWATER rule. Splash spawning follows `spawn()`
+  (`EGS` defaults, slope-aware z, slime palette).
+- New `dummyplayers::movedummyplayers` (statnum 13) runs right after
+  `global_random`, as in Chocolate; PLAYERONWATER is moved by the player's
+  displacement instead of being snapped to the player each tic.
+- Footprints are evaluated with the start-of-tic sector and position
+  (Chocolate runs that code before the horizontal move), spawn into
+  statnum 0 and only move to statnum 5 on success or a failed fourth
+  corner probe; the corner probes chain the sector hint.
+
+Next divergence (tic 436): Room's hand-written APLAYER CON emulation
+(`moveplayers.rs`) draws the trailing swim-bubble `ifrnd` where Chocolate's
+real APLAYER script took another branch, and drone #63 skips its `cansee`
+path. The first needs APLAYER to run through the CON VM (the D5/D6
+structural item below). `insertspriteq` (the 64-entry decal queue) is also
+not ported yet.
+
 Structural debt this exposed (the reason sync is slow): the CON VM is a
 snapshot interpreter that **defers side effects** (`spawn`, debris, glass,
 guts, most `shoot`s, sounds) until after the actor runs, and many actors and
@@ -130,7 +180,7 @@ closes one. Keep `docs/21-milestone-progress.md` §0 in step with this table.
 | D2 | Engine primitives | **done** | 100% | met | specs in `docs/build-engine-primitives/`; golden vectors for the newer sprite-clip / sloped-fallback paths still wanted |
 | D3 | World load + static view | in progress | 87% | not met (no golden captures yet) | a portal wall crossing the near plane in front of the camera opens the full screen (no black view when pressed against a window); portal renderer with per-column clip, distance fog, parallax sky with `parallaxyscale`, masked walls, face/wall/floor sprites, `animatesprites` (action frames, rotations), size-independent floor texel scale, Atomic mirrors render (the mirror search now uses the sectors the portal pass drew; it only saw the camera sector before, so mirrors showed their raw tile — the player's own reflection is still missing), portal walls lying exactly on the entry portal line are kept when front-facing (Build's closed swing/stall doors are built that way; they were see-through from one side), perspective-correct wall sprites clipped at the near plane and winning depth ties against their wall (posters no longer stripe or vanish at an angle), Build `wallscan` distance-shade rate (1 shade / 1024 units at visibility 512; was twice too dark). Missing: golden screenshots vs reference, all-maps render sweep, translucency/palette edge cases |
 | D4 | CON compiler | **done** | 100% | met | Atomic script image hash = Chocolate |
-| D5 | Core sim loop | in progress | 72% | not met | DEMO1 honest frontier **270 / 3,808 tics (7%)** (was 264: OCTABRAIN COOLEXPLOSION1 trailing TRANDs, CON `fall` now runs mid-parse like Chocolate, COOLEXPLOSION1 moves with `movesprite` clipmove instead of an unbounded hitscan; next divergence: tic-270 shotgun `tracers` bubbles a few units off, i.e. the pellet hit point); DEMO2/3 diverge at tic 0. Map enemies now get Chocolate's spawn header (action/move/hitag) and wake, hunt and fight; CON `spawn` creates real sprites for enemies, blood pools, effects, item drops and generic CON actors. Still deferred side effects in the VM, hand-written CON emulations, and the `fixups::on()` paths to delete |
+| D5 | Core sim loop | in progress | 74% | not met | DEMO1 honest frontier **436 / 3,808 tics (11%)** (2026-11-13: argument-order audit of every multi-`TRAND` call, COOLEXPLOSION1 fade/restore, shallow-water bob, Chocolate badguy `move()`, `movetransports` statnums, `movedummyplayers`, footprint timing; next: APLAYER CON emulation at tic 436). Before that: 270 (was 264: OCTABRAIN COOLEXPLOSION1 trailing TRANDs, CON `fall` now runs mid-parse like Chocolate, COOLEXPLOSION1 moves with `movesprite` clipmove instead of an unbounded hitscan; next divergence: tic-270 shotgun `tracers` bubbles a few units off, i.e. the pellet hit point); DEMO2/3 diverge at tic 0. Map enemies now get Chocolate's spawn header (action/move/hitag) and wake, hunt and fight; CON `spawn` creates real sprites for enemies, blood pools, effects, item drops and generic CON actors. Still deferred side effects in the VM, hand-written CON emulations, and the `fixups::on()` paths to delete |
 | D6 | Weapons + damage | in progress | 79% | not met (needs DEMO1 to the end) | player weapons, hitscan/projectiles, `hitradius`, `checkhitwall`, object `checkhitsprite` cases for bullets, enemy `shoot` (FIRELASER, SPIT, RPG, FREEZEBLAST, SHRINKER, MORTER/BOUNCEMINE, enemy hitscan, KNEE); projectiles step with `movesprite` per tic; a hitscan on a dormant (stat 2) badguy now wakes it before recording the damage, like Chocolate `checkhitsprite` (shots at sleeping enemies were lost, so they never woke or fell); `duke_play kill-all` sweep kills 30/33, 53/56, 53/56 enemies on E1L1–E1L3; breakable props (HYDRENT, PANNEL, BOTTLE, CHAIR, VASE, PIPE…) get Chocolate's `cstat 257`/clipdist 32 so bullets hit them (`duke_play break-all`); GLASSPIECES fall and bounce (`moveexplosions`), broken hydrant spawns the animated TOILETWATER CON actor, `EGS` children inherit the parent's hit planes and map sprites seed them from their sector; first-person weapons drawn by a port of `displayweapon` (pistol reload, shotgun pump, chaingun, RPG, pipebomb throw, devastator, freezer, shrinker/expander, tripbomb, quick kick, shrunk fists) |
 | D7 | Sectors + effectors | in progress | 84% | not met (DEMO2/DEMO3 at 0 tics) | SEs, doors/elevators (player use retries `neartag` at eye, +8<<8 and +16<<8 like `checksectors`, so eye-height sprite switches such as the E1L1 projection-booth switch fire their ACTIVATORs and SE12 lights; TOUCHPLATE `spawn` init: `T3` = original floor, floor starts at the plate z — the plate no longer sinks its floor to z 0 and leaves an unclimbable ledge; Chocolate `prelevel` now defaults every sector `extra` to 256 — the SE `yvel` speed — so SE11 swing doors turn 90° in 8 tics in the right direction and SE15 sliders travel (they were driven by the map's -1, i.e. slow/reversed or not at all); open lotag 20/22 doors get their toggle bit; SE15 sliding doors keyed by the sector's own SE15 group as in Chocolate, no activator hitag needed; player USE now reaches `operatesectors` via Chocolate's `checksectors` near/under-operator tail — the open key previously only drove switches; `duke_play open-all` sweep), transports (E1L1 vent→street works), switches, respawns, mirrors, intro DUKECAR/HELECOPT + earthquake |
 | D8 | Audio + front end | in progress | 66% | not met | CON sounds, native Chocolate menus drawn with Duke art (`room_duke::menu`: main 0, in-game 50, episode 100, skill 110 with its skill cue, Atomic credits pages, quit / quit-to-title confirms; save/load/sound pages still the generic list), faithful `dobonus` single-player intermission (`room_duke::bonus`: BONUSSCREEN art and Duke animation, `menutext`/`gametext` layout, 120 Hz count-up stages with PIPEBOMB/FLY_BY/speech cues, two-key skip, level totals preserved across the player reset), HUD (full BOTTOMSTATUSBAR, weapon/inventory digits centre-anchored like Chocolate's flag-less `rotatesprite` with health/armor/weapon ammo list/inventory/keys by default, `duke_statusbar 0` for the mini HUD; crosshair, quotes), Duke fonts. Missing: multiplayer frag bonus page, native save/load/options pages, title-screen flow (LOGO/ANM → menu 0), ANM cue audit, full UI checklist + golden screenshots |
@@ -138,7 +188,7 @@ closes one. Keep `docs/21-milestone-progress.md` §0 in step with this table.
 | D10 | Multiplayer + server | in progress | 70% | not met | Duke input codec, 30 Hz server frames, coop/DukeMatch rules, roster, deaths/frags. Missing: lockstep validation, respawn/spectator, server checksum test |
 | D11 | Campaign + user content | in progress | 45% | not met | native runtime is the default shell; level transitions, user maps/CON, add-on GRPs. Missing: per-map route DMOs (T1.3), bonus/end-game flow, map-route audit |
 
-Tier-1 criteria at a glance: T1.1 (demo sync) **7%** of DEMO1 (270 tics), 0% of
+Tier-1 criteria at a glance: T1.1 (demo sync) **11%** of DEMO1 (436 tics), 0% of
 DEMO2/3 · T1.2 load sweep not run · T1.3 not started · T1.4 compiles 100%,
 runtime coverage partial · T1.5 partial · T1.6 no goldens · T1.7 partial ·
 T1.8 not verified · T1.9 partial · T1.10 not run for Duke · T1.11 partial.
@@ -190,7 +240,8 @@ because they changed behaviour.
   `definequote`, `setactor[]`/`getplayer[]` struct access, `DEF` files
   (hi-res replacement, models), `.mhk` map hacks, Polymost/Polymer-only
   features. Implement as a separate CON dialect flag; do not let it change
-  vanilla behaviour.
+  vanilla behaviour. Plan and milestones: §11.1 (target content: Brutal
+  Duke v0.2.0).
 - Other Build games (Blood, Shadow Warrior, Redneck Rampage, NAM/WW2GI).
   The architecture should make them *possible* (shared Build world and
   engine primitives, per-game logic crate). They are not part of this spec.
@@ -2097,6 +2148,99 @@ The vanilla game code to translate is on the order of 30–40k lines of C
 The engine primitives are a few thousand lines but carry the most risk (the
 clean-room process, plus `clipmove` exactness). The renderer path is
 comparable in size to the current `scene.rs`. Expect D2, D5 and D7 to dominate.
+
+### 11.1 Tier 3 track: EDuke32 dialect (target content: Brutal Duke)
+
+Tier 3 starts after D11, like tier 2. It is planned here so the D-track code
+does not close doors it will need (an event dispatcher, per-actor variable
+storage, a resource overlay). Track progress in `docs/21` in a new **ED**
+table when ED0 starts, the same way `docs/33` tracks Brutal Doom (BD0–BD9).
+
+#### Target content
+
+**Brutal Duke v0.2.0** (RPD Guy; `release-info.txt`: git `a39cabbd`, built
+2026-11-04), a mod for EDuke32 on the Atomic GRP. Local copy:
+`testdata/brutal-duke-v0.2.0/` (not committed; tests that need it read
+`ROOM_BRUTALDUKE_DIR` and skip when unset). Room only needs `brutal/`; the
+EDuke32/Mapster32 executables, configs and help files in the release are not
+used.
+
+Measured inventory (2026-11-14):
+
+| Part | Content | What Room has today |
+|---|---|---|
+| Entry | `brutal/eduke.con` → `scripts/BRUTAL.CON` → `GAME.CON` + 39 includes under `scripts/brutal/` (incl. `enemies/`, `weapons/`) | Root CON + named includes load (D11) |
+| `GAME.CON` / `DEFS.CON` / `USER.CON` | Atomic files with 64 / 0 / 14 lines changed (jib `guts` moved to `jibs.con`, blimp respawn fix, a few `ifrnd` removed) | Compiles (vanilla subset) |
+| Mod CON | ~34k lines; over 500 distinct command words outside the 108 vanilla keywords. Most used: `set` 4,953, `ife` 1,838, `var` 1,692, `case` 1,332, `add` 855, `sub` 604, `defstate` 577, `ifn`/`ifl`/`ifg`/`ifge`/`ifle`/`ifand`, `mul`, `div`, `and`/`or`/`xor`, `shiftl`/`shiftr`, `rand`, `mulscale`, `switch`/`endswitch`, `whilen`/`whilel`, `setarray`/`gamearray`, `defineprojectile` 273, `damageeventtile` 68, `spritenoshade`/`spritenopal`, `espawn`/`espawnvar`/`ezshoot`, `getflorzofslope`/`getceilzofslope`, `updatesector(z)`, `cansee`, `ldist`, `getangle`, `sin`/`cos`, `qsprintf`/`redefinequote`, `setgamepalette`, `inittimer`/`getticks`/`totalclock`, `changespritestat`, `headspritestat`/`nextspritestat`, `appendstate` | **0**: Room's compiler stops with **66,015 errors** |
+| Events | 126 `appendevent` blocks on 36 events: `EVENT_GAME` 18, `NEWGAME` 12, `ENTERLEVEL` 12, `KILLIT` 9, `SPAWN` 8, `EGS` 8, `POSTDAMAGESPRITE` 7, `SOUND` 6, `ANIMATESPRITES` 4, `WORLD`, `LOADGAME`, `PROCESSINPUT`, `RESETWEAPONS` 3 each, then `DISPLAYSTART`, `PRELOADGAME`, `FIRE`, `POSTWEAPONSHOOT`, `WEAPKEY`, `ACTIVATECHEAT`, `DISPLAYWEAPON`, `RESETPLAYER`, `PRELEVEL`, `DISPLAYREST`, `DISPLAYMENU`, `DISPLAYCROSSHAIR`, `NEXTWEAPON`/`PREVIOUSWEAPON`/`LASTWEAPON`/`SELECTWEAPON`, `DAMAGESPRITE`/`WALL`/`FLOOR`/`CEILING`, `DOFIRE`, `INCURDAMAGE`, `TURNAROUND` | None |
+| Struct access | `geta`/`seta`/`gets`/`getwall`/`getp`/`getuserdef`/`gettiledata` with ~104 members: sprite fields, `htflags`/`htg_t`/`htmovflag`/`htpicnum`/`htextra` (actor), `mdflags`/`alpha`/`blend` (spriteext / translucency), wall/sector fields incl. slopes, player `curr_weapon`/`ammo_amount`/`gotweapon`/`kickback_pic`/`weapon_pos`/`q16horiz`/`rotscrnang`, `userdef.vm_sprite` | Rust fields exist for the vanilla subset; no label table |
+| DEF | `duke3d.def` + 8 included files: 393 `tilefromtexture`, 100 `texture`, 22 `skybox`, 3 `animtilerange`, `copytile`, `blendtable`/`glblend`, `basepalette`, `dummytile(range)`, voxel `include`s with `tint` | None |
+| Art | 992 PNG + 499 BMP (new tiles 9000+ and replacements), 463 KVX voxels, 22 skyboxes | ART only |
+| Map hacks | 177 `.mhk` | None |
+| Audio | 164 WAV, 54 OGG, 20 VOC | VOC only |
+| Maps | `brutal/maps/box.map` (test map) | Build `.MAP` |
+
+Brutal Duke's CON comments state its rules: weapons/HUD effects run only in
+single player or local fake-multiplayer ("network sessions do not qualify"),
+so Room does not need lockstep-safe display code for the first pass.
+
+#### Principles
+
+- **Dialect flag.** `ConDialect::{Atomic, EDuke32}` chosen by the entry file
+  (`eduke.con`, or `-x` with EDuke32-only words) and recorded in saves and the
+  demo header. With `Atomic` the compiler, VM and every tic path behave exactly
+  as now: the DEMO1–3 sync tests and the Atomic script-image hash must stay
+  green at every ED milestone.
+- **One VM.** Extend the existing compiler and VM (`room-duke/src/con/`); do
+  not add a second interpreter. New opcodes live after the vanilla range so
+  Atomic images are unchanged.
+- **Hooks at Chocolate's call sites.** Each `EVENT_*` is dispatched from the
+  same place EDuke32 does it, inside the ported vanilla functions. A hook that
+  never fires costs one branch.
+- **References.** The EDuke32 build the mod targets is run as a black-box
+  reference (trace mode like §10.2, plus screenshots). EDuke32's game-side
+  code (`gamedef.cpp`, `gameexec.cpp`, `gamevars.cpp`, `events_defs.h`,
+  `actors.cpp`, `player.cpp`) may be read only where its licence header is
+  GPL-2.0-or-later; record each file in `THIRD_PARTY.md`. Anything derived
+  from the Build engine (`build/src/*`: `engine.cpp`, `polymost.cpp`,
+  `polymer.cpp`, `defs.cpp`, `mdsprite.cpp`, `voxmodel.cpp`) stays under the
+  §3 clean-room rule: spec first, from the public EDuke32 wiki and black-box
+  tests.
+- **No Polymost/Polymer.** DEF hi-res tiles, voxels and skyboxes render in
+  Room's own renderer (software Build view first, GPU path later). Model
+  formats (`md2`/`md3`) are out of scope until a mod needs them; Brutal Duke
+  does not.
+
+#### Milestones
+
+| ID | Scope | Acceptance (Brutal Duke unless noted) |
+|---|---|---|
+| **ED0** | `room-cli duke mod-check <dir>` harness: compiles the CON tree, parses DEF, lists unknown words/members/events/DEF tokens with file:line; gated `brutal_duke_gated` test; dialect flag plumbed (compile only) | Report runs on `brutal/`; counts above reproduced; Atomic image hash and DEMO1 floor unchanged |
+| **ED1** | Compiler: EDuke32 lexical rules (`defstate`/`appendstate`, `appendevent`/`onevent`/`endevent`, `switch`/`case`/`default`/`endswitch`, `while*`, `{}` blocks, labels and `define` overriding), `var`/`gamevar` with flags (global / per-player / per-actor, `0 2` etc.), `array`/`gamearray`, `definequote`/`redefinequote`, `defineprojectile`, `damageeventtile`, `spritenoshade`/`spritenopal`/`spriteflags` | **0** compile errors on Brutal Duke; unit tests per construct; Atomic hash unchanged |
+| **ED2** | VM core: var read/write (incl. per-actor/per-player storage, sized from `MAXSPRITES`/`MAXPLAYERS`), arithmetic/bitwise/`mulscale`/`scalevar`/`sin`/`cos`/`getangle`, all `if*` comparisons, `switch`, loops with an iteration cap, `state` calls, `rand`/`displayrand` (separate from `krand` like EDuke32), `qsprintf` | Fixture CON suite (one file per family) matches the EDuke32 reference value dump; `box.map` loads with every `EVENT_GAME`/`EVENT_SPAWN` hook running without VM faults |
+| **ED3** | Struct access: label tables for sprite / actor (`ht*`) / spriteext (`mdflags`, `alpha`, `blend`) / wall / sector / player / userdef / tiledata / input; `geta`/`seta`, `getactorvar`/`setactorvar`, bounds checks, read-only members | Every member Brutal Duke uses (~104) has a test; out-of-range ids log and do not crash |
+| **ED4** | Event dispatcher: the 36 events above at their EDuke32 call sites, `RETURN` semantics (e.g. `EVENT_DAMAGESPRITE` cancel, `EVENT_SOUND` replace), `EVENT_ANIMATESPRITES` with tsprite access, display events into the HUD draw list | Scenario: pistol shot on a LIZTROOP in `box.map` → blood decal sprites, shell casing, `EVENT_POSTDAMAGESPRITE` trace equal to the reference trace for 300 tics |
+| **ED5** | Engine queries and spawns: `espawn(var)`, `ezshoot`, custom projectiles (`defineprojectile` flags, trail, hit behaviour), `cansee`, `hitscan`, `getflorzofslope`/`getceilzofslope`, `updatesector(z)`, `ldist`/`dist`, stat-list walks, `changespritestat`, `setsprite` | Brutal weapons (pistol akimbo, MP5, magazines) fire, eject casings and hit; E1L1 kill-all sweep (`duke_play kill-all`) passes with Brutal Duke loaded |
+| **ED6** | Resources: DEF parser (`tilefromtexture`, `texture`, `copytile`, `dummytile(range)`, `animtilerange`, `skybox`, `basepalette`, `blendtable`/`glblend`, voxel `include`/`tint`), PNG/BMP tile import into the tile set at native size with `xoffset`/`yoffset`, `.mhk` map hacks applied at load, OGG/WAV sounds and music | Mod-check: **0** unknown DEF tokens; new tiles 9000+ render in the editor and in-game; E1L1 loads its `.mhk` |
+| **ED7** | Rendering: KVX voxels in the Build view (sprite `cstat` 48 + DEF voxels), translucency/`alpha`/`blend` tables, skyboxes, true-colour hi-res tiles in the software path | Golden captures of gore, decals, voxel props and the E1L1 skybox against reference screenshots (SSIM ≥ 0.9, same camera) |
+| **ED8** | Player/HUD layer: `EVENT_DISPLAYWEAPON`/`DISPLAYREST`/`DISPLAYCROSSHAIR` drawing (`rotatesprite`, `digitalnumber`, `gametext`, `screentext` subset), weapon sway/recoil, night vision palette, slow motion (`inittimer`), death cam | Brutal HUD screenshot set matches reference; slow-motion toggles without desync of the sim clock |
+| **ED9** | Performance and web: per-tic budget with 300+ decal/blood sprites (janitor limits respected), Brutal Duke as a web solo preset (DEF/PNG/KVX streamed from a directory or zip, cached like the Doom presets) | E1L1 full fight ≤ 2 ms/tic native, ≤ 4 ms/tic wasm; browser solo starts Brutal Duke from the lobby |
+| **ED10** | Saves and multiplayer scope: var/array/actor-var state in `.fsave`; Brutal Duke marked solo/local-coop only in the lobby (its own rule); generic EDuke32 lockstep deferred | Save/load mid-fight restores vars and decals; lobby refuses Brutal Duke for network rooms with a clear message |
+
+ED0–ED4 are the critical path; Brutal Duke is not playable before ED5 and
+does not look like Brutal Duke before ED7.
+
+#### Risks
+
+- **EDuke32 version drift.** Brutal Duke targets a recent EDuke32 (it uses
+  `q16horiz`, `htflags`, `appendstate`). Pin the reference build in ED0 and
+  record its revision next to the trace manifest.
+- **Event ordering** is where EDuke32 and vanilla differ most; every hook
+  call site needs a reference trace, not a guess.
+- **`EVENT_ANIMATESPRITES` and tsprites** need the renderer's per-frame
+  sprite copy to be writable from the VM without touching the sim state.
+- **Size.** ED1–ED5 are a CON language and VM roughly the size of D4 + the
+  VM half of D5; ED6–ED7 are a new resource and render path.
 
 ---
 

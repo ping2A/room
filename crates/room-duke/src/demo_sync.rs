@@ -399,7 +399,7 @@ mod tests {
     /// Honest-mode floor: native DEMO1 playback (no fixups, no RNG pads)
     /// matches the Chocolate trace for at least this many tics. Raise it as
     /// the frontier moves; never lower it to make a change pass.
-    const DEMO1_REAL_SYNC_TICS: usize = 270;
+    const DEMO1_REAL_SYNC_TICS: usize = 436;
 
     /// E1L1 as a player would play it: walk to the rooftop fan vent, throw
     /// the pipe bomb picked up on the way at the gas tanks (SEENINE chain,
@@ -6877,6 +6877,7 @@ mod tests {
                     &mut session.lists,
                     world.sprites.as_mut(),
                     &world.sectors[..world.numsectors as usize],
+                    &world.walls[..world.numwalls as usize],
                     &mut plist,
                     &mut session.actor_temps,
                     &mut session.picnum,
@@ -7482,28 +7483,23 @@ mod tests {
             }
             let _ = std::fs::write(&out, s);
         }
-        // Honest frontier (no `trace_fixups`): the native sim alone.
-        let diff = demo1_frontier_real(&grp, &demo, &trace, 300).expect("harness");
-        match &diff {
-            None => eprintln!("DEMO1: first 300 tics match Chocolate (unexpected this early)"),
-            Some(d) => {
-                eprintln!(
-                    "DEMO1 frontier @ tic {}: {} (room={} choc={})",
-                    d.tic, d.field, d.b, d.a
-                );
-                // Harness must surface a real field path, not a parse failure.
-                assert!(!d.field.is_empty());
-            }
-        }
+        // Honest frontier (no `trace_fixups`): the native sim alone. The
+        // floor itself is guarded by `demo1_real_sync_floor`; this checks the
+        // harness reports a real field once the run diverges.
+        let diff = demo1_frontier_real(&grp, &demo, &trace, 100_000).expect("harness");
         // Keep a serialised stub so format_trace stays wired.
         let _ = format_trace(&TraceFile::default());
-        assert!(
-            diff.is_some(),
-            "expected early divergence until sim catches up"
-        );
-        let diff = diff.expect("asserted above");
-        assert_eq!(diff.tic, 39, "first native-only divergence moved");
-        assert_eq!(diff.field, "randomseed");
+        if let Some(d) = &diff {
+            eprintln!(
+                "DEMO1 frontier @ tic {}: {} (room={} choc={})",
+                d.tic, d.field, d.b, d.a
+            );
+            assert!(!d.field.is_empty());
+            assert!(
+                d.tic as usize >= DEMO1_REAL_SYNC_TICS,
+                "first native-only divergence moved below the floor: {d:?}"
+            );
+        }
     }
 
     /// Honest D5 check: with no trace fix-ups, entering E3L11 must leave the

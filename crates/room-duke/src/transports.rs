@@ -1,13 +1,32 @@
 //! STAT_TRANSPORT movers — Chocolate `movetransports` (D5: SE7 water / floor links).
 
 use room_build_engine::numeric::krand_step;
-use room_build_engine::types::{SectorT, SpriteT};
+use room_build_engine::types::{SectorT, SpriteT, WallT};
 use room_build_engine::world::SpriteLists;
 
 use crate::con::ActorConTemps;
 use crate::player::{DukeInput, PHEIGHT, Player, sync_player_sprite};
 use crate::spawn::WATERBUBBLE;
-use crate::stat::{STAT_MISC, STAT_PLAYER, STAT_PROJECTILE, STAT_TRANSPORT};
+use crate::stat::{
+    STAT_ACTOR, STAT_DUMMYPLAYER, STAT_FALLER, STAT_MISC, STAT_PLAYER, STAT_PROJECTILE,
+    STAT_TRANSPORT,
+};
+
+// Atomic tiles named in Chocolate `movetransports`.
+const TRANSPORTERSTAR: i16 = 1630;
+const TRANSPORTERBEAM: i16 = 1261;
+const TRIPBOMB: i16 = 2566;
+const BULLETHOLE: i16 = 952;
+const BURNING: i16 = 2270;
+const BURNING2: i16 = 2310;
+const FIRE: i16 = 2271;
+const FIRE2: i16 = 2311;
+const TOILETWATER: i16 = 921;
+const LASERLINE: i16 = 2567;
+const PLAYERONWATER: i16 = 1420;
+const SHARK: i16 = 1550;
+const COMMANDER: i16 = 1920;
+const OCTABRAIN: i16 = 1820;
 
 /// Atomic `WATERSPLASH2`.
 const WATERSPLASH2: i16 = 1380;
@@ -75,59 +94,87 @@ fn spawn_water_bubble(
     i
 }
 
-/// Chocolate `spawn(j, WATERSPLASH2)` subset (owner in water → ceiling splash).
+/// Atomic `FLOORSLIME` (a slime floor or ceiling tints the splash, pal 7).
+const FLOORSLIME: i16 = 200;
+
+/// Chocolate `spawn(j, WATERSPLASH2)`: `EGS(sprite[j]…, pn, 0,0,0,0,0,0, j, 0)`,
+/// then `xrepeat = yrepeat = 8+(TRAND&7)`, shade -16, cstat 128, and the
+/// splash sits on the water ceiling (`lotag 2`, floor-aligned) or floor
+/// (`lotag 1`) of the spawner's sector; slime tints it; STAT_MISC.
+#[allow(clippy::too_many_arguments)]
 fn spawn_water_splash2(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
     sectors: &[SectorT],
+    walls: &[WallT],
     picnum: &mut Vec<i16>,
     actor_temps: &mut Vec<ActorConTemps>,
     randomseed: &mut i32,
     from: i16,
+    script: Option<&crate::con::ScriptImage>,
 ) -> i16 {
     let fu = from as usize;
     if fu >= sprites.len() {
         return -1;
     }
-    let sect = sprites[fu].sectnum;
-    let (x, y) = (sprites[fu].x, sprites[fu].y);
-    let mut z = sprites[fu].z;
-    if sect >= 0 && (sect as usize) < sectors.len() && sectors[sect as usize].lotag == 2 {
-        z = sectors[sect as usize].ceilingz + (16 << 8);
-    }
-    let i = lists.insertsprite(sect, STAT_MISC);
+    let src = sprites[fu];
+    let i = crate::shoot::egs(
+        lists,
+        sprites,
+        picnum,
+        actor_temps,
+        script,
+        src.sectnum,
+        src.x,
+        src.y,
+        src.z,
+        WATERSPLASH2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        from,
+        STAT_MISC,
+    );
     if i < 0 {
         return -1;
     }
     let iu = i as usize;
-    if iu >= sprites.len() {
-        let _ = lists.deletesprite(i);
-        return -1;
-    }
-    let xr = (8 + (krand_step(randomseed) & 7)) as u8;
-    sprites[iu] = SpriteT {
-        x,
-        y,
-        z,
-        ang: sprites[fu].ang,
-        sectnum: sect,
-        picnum: WATERSPLASH2,
-        xrepeat: xr,
-        yrepeat: xr,
-        shade: -16,
-        cstat: 128 | 8, // bit 7 + floor-align when underwater spawn
-        owner: from,
-        ..Default::default()
-    };
-    if picnum.len() <= iu {
-        picnum.resize(iu + 1, 0);
-    }
-    picnum[iu] = WATERSPLASH2;
     if actor_temps.len() <= iu {
         actor_temps.resize_with(iu + 1, ActorConTemps::default);
     }
-    actor_temps[iu] = ActorConTemps::default();
-    actor_temps[iu].hit_picnum = sprites[fu].picnum;
+    // `hittype[i].picnum = sprite[j].picnum`.
+    actor_temps[iu].hit_picnum = src.picnum;
+    let size = (8 + (krand_step(randomseed) & 7)) as u8;
+    let sprite = &mut sprites[iu];
+    sprite.xrepeat = size;
+    sprite.yrepeat = size;
+    sprite.shade = -16;
+    sprite.cstat |= 128;
+    if let Some(sector) = usize::try_from(src.sectnum).ok().and_then(|s| sectors.get(s)) {
+        let sec_z: Vec<room_build_engine::geom::SectorZ> = sectors.iter().map(SectorT::z).collect();
+        let wxy: Vec<room_build_engine::geom::WallXY> = walls.iter().map(WallT::xy).collect();
+        let (ceilz, florz) = room_build_engine::geom::getzsofslope(
+            sprite.sectnum,
+            sprite.x,
+            sprite.y,
+            &sec_z,
+            &wxy,
+        );
+        if sector.lotag == 2 {
+            sprite.z = ceilz + (16 << 8);
+            sprite.cstat |= 8;
+        } else if sector.lotag == 1 {
+            sprite.z = florz;
+        }
+    }
+    if let Some(own) = usize::try_from(sprite.sectnum).ok().and_then(|s| sectors.get(s)) {
+        if own.floorpicnum == FLOORSLIME || own.ceilingpicnum == FLOORSLIME {
+            sprite.pal = 7;
+        }
+    }
     i
 }
 
@@ -135,10 +182,12 @@ fn spawn_water_splash2(
 ///
 /// `emit_tic` is the DEMO1 emit index (`session.tic - 1`); retained for the
 /// assisted trace path's late-warp state capture.
+#[allow(clippy::too_many_arguments)]
 pub fn movetransports(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
     sectors: &[SectorT],
+    walls: &[WallT],
     players: &mut [Player],
     actor_temps: &mut Vec<ActorConTemps>,
     picnum: &mut Vec<i16>,
@@ -306,8 +355,20 @@ pub fn movetransports(
                     sprites[ju].sectnum = osect;
                 }
                 sync_player_sprite(p, sprites);
-                // Chocolate always rolls splash TRAND; spawn omitted until WATERSPLASH2.
-                let _ = krand_step(randomseed);
+                // Chocolate `if( (TRAND&255) < 32 ) spawn(j,WATERSPLASH2);`
+                if krand_step(randomseed) & 255 < 32 {
+                    let _ = spawn_water_splash2(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        picnum,
+                        actor_temps,
+                        randomseed,
+                        j,
+                        script,
+                    );
+                }
                 if sectlotag == 1 {
                     let body = p.sprite_i;
                     for _ in 0..9 {
@@ -338,7 +399,16 @@ pub fn movetransports(
                 continue;
             }
             let st = lists.sprite_stat[ju];
-            if st != STAT_MISC && st != STAT_PROJECTILE {
+            // Chocolate handles statnum 1 (actors; live water monsters stay),
+            // 4, 5, 12 and 13 here.
+            if !matches!(st, STAT_ACTOR | STAT_PROJECTILE | STAT_MISC | STAT_FALLER | STAT_DUMMYPLAYER) {
+                j = nextj;
+                continue;
+            }
+            if st == STAT_ACTOR
+                && matches!(sprites[ju].picnum, SHARK | COMMANDER | OCTABRAIN | 2370..=2377)
+                && sprites[ju].extra > 0
+            {
                 j = nextj;
                 continue;
             }
@@ -355,21 +425,47 @@ pub fn movetransports(
                 continue;
             }
             let pic = sprites[ju].picnum;
-            // Skip splash/FX that must not re-enter transporters.
-            if pic == WATERSPLASH2 {
+            // Effects that never cross a transporter (`goto JBOLT`).
+            if matches!(
+                pic,
+                TRANSPORTERSTAR
+                    | TRANSPORTERBEAM
+                    | TRIPBOMB
+                    | BULLETHOLE
+                    | WATERSPLASH2
+                    | BURNING
+                    | BURNING2
+                    | FIRE
+                    | FIRE2
+                    | TOILETWATER
+                    | LASERLINE
+            ) {
                 j = nextj;
                 continue;
             }
-            // WATERBUBBLE falls through default → splash + warp.
+            // `case PLAYERONWATER: if(sectlotag == 2) { cstat &= 32767; break; }`
+            if pic == PLAYERONWATER && sectlotag == 2 {
+                sprites[ju].cstat &= 32767;
+                j = nextj;
+                continue;
+            }
+            // `default: if(statnum == 5 && !(sectlotag == 1 || sectlotag == 2)) break;`
+            // (WATERBUBBLE skips this test.)
+            if pic != WATERBUBBLE && st == STAT_MISC && !(sectlotag == 1 || sectlotag == 2) {
+                j = nextj;
+                continue;
+            }
             if sectlotag > 0 {
                 let _ = spawn_water_splash2(
                     lists,
                     sprites,
                     sectors,
+                    walls,
                     picnum,
                     actor_temps,
                     randomseed,
                     j,
+                    script,
                 );
             }
             if osect < 0 || (osect as usize) >= sectors.len() {

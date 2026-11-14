@@ -91,6 +91,7 @@ async fn main() {
             max_players: args.players,
             duke_game_mode: 1,
             duke_friendly_fire: false,
+            doom_deathmatch: false,
             enable_verifier: false,
             visibility: "public".into(),
             game_mod: None,

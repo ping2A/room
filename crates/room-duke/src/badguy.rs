@@ -16,7 +16,7 @@ pub fn badguy_pic(picnum: i16, actortype: &[u8]) -> bool {
         1744 | // LIZTROOPDUCKING
         1681 | // LIZTROOPRUNNING
         1680 | // LIZTROOP
-        1820 | 1821 | // OCTABRAIN*
+        1820 | // OCTABRAIN (OCTABRAINSTAYPUT is not in Chocolate's list)
         1920 | 1921 | // COMMANDER*
         2000 | // PIGCOP
         675 | // EGG
@@ -27,7 +27,7 @@ pub fn badguy_pic(picnum: i16, actortype: &[u8]) -> bool {
         2160 | // LIZMANFEEDING
         2165 | // LIZMANJUMP
         2420 | // ORGANTIC
-        2630 | 2631 | // BOSS1*
+        2630 | // BOSS1 (BOSS1STAYPUT is not in Chocolate's list)
         2710 | // BOSS2
         2760 | // BOSS3
         4740 | // BOSS4

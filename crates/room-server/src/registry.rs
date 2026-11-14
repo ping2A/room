@@ -325,7 +325,7 @@ impl RoomRegistry {
         if req.duke_game_mode > 2 {
             return Err(RegistryError::InvalidDukeGameMode);
         }
-        let game = match req.game.as_deref().map(str::trim) {
+        let requested_game = match req.game.as_deref().map(str::trim) {
             None | Some("") => GAMES[0],
             Some(g) => GAMES
                 .into_iter()
@@ -338,18 +338,21 @@ impl RoomRegistry {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            Some(_) if game != GAMES[0] => return Err(RegistryError::ModNotAllowed),
             Some(id) => Some(
                 self.cfg
                     .content
                     .resolve(id, &req.map)
                     .map_err(RegistryError::Preset)?,
             ),
-            None if self.cfg.content.require_preset() && game == GAMES[0] => {
+            None if self.cfg.content.require_preset() => {
                 return Err(RegistryError::PresetRequired);
             }
             None => None,
         };
+        // The selected preset owns the game runtime as well as its files.
+        let game = preset
+            .as_ref()
+            .map_or_else(|| requested_game.to_owned(), |p| p.game.clone());
         // A preset's gameplay mod wins over the request's.
         let mod_name = preset
             .as_ref()
@@ -408,19 +411,41 @@ impl RoomRegistry {
             "private" => "private".into(),
             _ => "public".into(),
         };
-        let (map, preset_title, content, iwad) = match preset {
-            Some(p) => (p.map, p.title, p.content, p.iwad),
-            None => (req.map, String::new(), Vec::new(), None),
-        };
+        let (map, preset_title, content, iwad, preset_skill, duke_game_mode, duke_friendly_fire) =
+            match preset {
+                Some(p) => (
+                    p.map,
+                    p.title,
+                    p.content,
+                    p.iwad,
+                    p.skill,
+                    p.duke_game_mode,
+                    p.duke_friendly_fire,
+                ),
+                None => (
+                    req.map,
+                    String::new(),
+                    Vec::new(),
+                    None,
+                    0,
+                    req.duke_game_mode,
+                    req.duke_friendly_fire,
+                ),
+            };
         let settings = RoomSettings {
             map,
             content,
             iwad,
             preset: preset_title,
-            skill: req.skill.clamp(1, 5),
+            skill: if preset_skill == 0 {
+                req.skill.clamp(1, 5)
+            } else {
+                preset_skill.clamp(1, 5)
+            },
             max_players,
-            duke_game_mode: req.duke_game_mode,
-            duke_friendly_fire: req.duke_friendly_fire,
+            duke_game_mode,
+            duke_friendly_fire,
+            doom_deathmatch: req.doom_deathmatch && game == "doom",
             visibility,
             enable_verifier: want_verifier,
             game_mod,

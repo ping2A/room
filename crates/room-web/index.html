@@ -105,21 +105,64 @@
     #callsign button:disabled { opacity: 0.5; cursor: default; }
     #boot {
       position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-      background: rgba(8, 8, 14, 0.72); z-index: 2;
+      padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+      box-sizing: border-box; overflow: auto;
+      background:
+        radial-gradient(ellipse at 8% 0%, rgba(176, 16, 24, 0.38), transparent 46%),
+        radial-gradient(ellipse at 96% 100%, rgba(138, 58, 34, 0.18), transparent 40%),
+        repeating-linear-gradient(0deg, transparent 0 3px, rgba(0, 0, 0, 0.12) 3px 4px),
+        rgba(8, 2, 2, 0.88);
+      backdrop-filter: blur(8px); z-index: 2;
     }
+    #boot[hidden] { display: none !important; }
+    #boot [hidden] { display: none !important; }
     #boot .panel {
-      max-width: 28rem; padding: 1.5rem 1.75rem;
-      background: #16161f; border: 1px solid #2a2a38; border-radius: 8px;
+      box-sizing: border-box; width: min(66rem, calc(100vw - 2rem)); max-width: none;
+      padding: clamp(1.3rem, 4vw, 3.5rem); overflow: auto;
+      background: linear-gradient(155deg, rgba(32, 10, 10, 0.98), rgba(12, 4, 4, 0.98));
+      border: 1px solid #6a1c1c; border-radius: 4px;
+      box-shadow: 0 30px 90px rgba(0,0,0,0.78), 0 0 42px rgba(176, 16, 24, 0.12), inset 0 1px 0 rgba(255, 100, 100, 0.08);
     }
-    #boot h1 { margin: 0 0 0.5rem; font-size: 1.35rem; font-weight: 650; color: #eee; }
-    #boot p { margin: 0 0 1rem; line-height: 1.45; font-size: 0.95rem; color: #a8a8b8; }
-    #boot label {
-      display: inline-block; padding: 0.55rem 1rem; background: #3a5a2a; color: #e8ffe0;
-      border-radius: 4px; cursor: pointer; font-size: 0.95rem;
+    #boot .brand-row { display: flex; align-items: center; gap: 0.65rem; margin-bottom: clamp(2rem, 5vw, 4.5rem); padding-bottom: 0.8rem; border-bottom: 1px solid rgba(176, 16, 24, 0.38); }
+    #boot .brand-mark { width: 2.1rem; height: 2.1rem; display: grid; place-items: center; border: 1px solid #8a2022; border-radius: 2px; background: linear-gradient(145deg, #e02830, #5a080c); color: #f2e6e0; font-family: Impact, Haettenschweiler, "Arial Narrow", sans-serif; font-size: 1.35rem; font-weight: 400; text-shadow: 1px 2px #3a0808; }
+    #boot .brand-name { color: #e8d4c4; font-family: Impact, Haettenschweiler, "Arial Narrow", sans-serif; font-weight: 400; letter-spacing: 0.12em; font-size: 1.15rem; }
+    #boot .brand-edition { color: #9a7a72; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.65rem; letter-spacing: 0.12em; margin-left: auto; }
+    #boot .boot-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(17rem, 0.75fr); gap: clamp(2rem, 6vw, 5.5rem); align-items: center; }
+    #boot .eyebrow { margin: 0 0 0.9rem; color: #e01828; font: 700 0.7rem/1.4 "Arial Narrow", "Franklin Gothic Medium", sans-serif; letter-spacing: 0.2em; text-transform: uppercase; }
+    #boot h1 { max-width: 10ch; margin: 0 0 0.9rem; color: #f2e6e0; font-family: Impact, Haettenschweiler, "Arial Narrow", "Arial Black", sans-serif; font-size: clamp(2.8rem, 6vw, 5.4rem); line-height: 0.92; letter-spacing: 0.01em; font-weight: 400; text-transform: uppercase; text-shadow: 2px 3px 0 rgba(90, 10, 12, 0.8), 0 12px 32px rgba(176, 16, 24, 0.2); }
+    #boot .boot-lede { max-width: 34rem; margin: 0 0 1.8rem; line-height: 1.6; font: 1.02rem/1.6 "Arial Narrow", "Franklin Gothic Medium", "Helvetica Neue", sans-serif; color: #b99a90; }
+    #boot .boot-actions { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
+    #boot .file-pick, #boot .boot-secondary, #boot .boot-start {
+      display: inline-flex; align-items: center; justify-content: center; gap: 0.55rem;
+      min-height: 48px; padding: 0.75rem 1.15rem; border-radius: 3px; cursor: pointer;
+      border: 1px solid #6a1c1c; font: 700 0.9rem/1.2 "Arial Narrow", "Franklin Gothic Medium", sans-serif; letter-spacing: 0.06em; text-transform: uppercase;
+      transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
     }
-    #boot label:hover { background: #4a6e36; }
-    #boot input { display: none; }
-    #boot .hint { margin-top: 0.85rem; font-size: 0.8rem; color: #787888; }
+    #boot .file-pick { background: linear-gradient(180deg, #e02830, #8a0e14 70%, #5a080c); color: #fff0eb; border-color: #b01018; box-shadow: 0 8px 24px rgba(176, 16, 24, 0.24); }
+    #boot .boot-secondary, #boot .boot-start { background: linear-gradient(180deg, #221010, #120606); color: #e8d4c4; }
+    #boot .boot-actions label:hover, #boot .boot-actions button:hover { transform: translateY(-2px); border-color: #e01828; box-shadow: 0 10px 26px rgba(90, 10, 12, 0.45); }
+    #boot .boot-actions button:focus-visible, #boot .boot-actions label:focus-within { outline: 2px solid #ff2a2a; outline-offset: 3px; }
+    #boot .boot-start:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shadow: none; }
+    #boot input[type="file"] { display: none; }
+    #boot .boot-side { padding: 1.4rem; border-radius: 3px; background: linear-gradient(155deg, rgba(35, 10, 10, 0.92), rgba(15, 4, 4, 0.95)); border: 1px solid #3a1515; box-shadow: inset 0 1px 0 rgba(255, 90, 90, 0.05); }
+    #boot .boot-side .side-kicker { margin: 0 0 0.65rem; color: #b01018; font: 700 0.68rem/1.4 "Arial Narrow", "Franklin Gothic Medium", sans-serif; letter-spacing: 0.18em; text-transform: uppercase; }
+    #boot .boot-side h2 { margin: 0 0 0.55rem; color: #e8d4c4; font-family: Impact, Haettenschweiler, "Arial Narrow", sans-serif; font-size: 1.35rem; font-weight: 400; letter-spacing: 0.04em; text-transform: uppercase; }
+    #boot .boot-side p { margin: 0 0 1rem; color: #9a7a72; font: 0.88rem/1.55 "Arial Narrow", "Franklin Gothic Medium", "Helvetica Neue", sans-serif; }
+    #boot .boot-side label { display: block; margin-top: 1rem; color: #9a7a72; font: 700 0.7rem/1.4 "Arial Narrow", "Franklin Gothic Medium", sans-serif; letter-spacing: 0.12em; text-transform: uppercase; }
+    #boot select { box-sizing: border-box; width: 100%; min-height: 42px; margin-top: 0.45rem; padding: 0.5rem 0.7rem; color: #f2e6e0; background: #0e0404; border: 1px solid #6a1c1c; border-radius: 3px; font: 600 0.92rem/1.3 "Arial Narrow", "Franklin Gothic Medium", "Helvetica Neue", sans-serif; letter-spacing: 0.02em; }
+    #boot select:focus-visible { outline: none; border-color: #ff2a2a; box-shadow: 0 0 0 3px rgba(224, 24, 40, 0.18); }
+    #boot .map-help { margin: 0.45rem 0 0; color: #7a5550; font: 0.76rem/1.45 "Arial Narrow", "Franklin Gothic Medium", sans-serif; }
+    #boot .file-state { margin: 1rem 0 0; color: #b99a90; font: 0.8rem/1.45 "SF Mono", Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+    #boot .hint { margin: 2.4rem 0 0; padding-top: 1.1rem; border-top: 1px solid rgba(176, 16, 24, 0.35); font: 0.8rem/1.55 "Arial Narrow", "Franklin Gothic Medium", sans-serif; color: #7a5550; }
+    #boot .hint code { color: #c09088; }
+    @media (max-width: 720px) {
+      #boot .panel { border-radius: 3px; }
+      #boot .brand-row { margin-bottom: 2rem; }
+      #boot .boot-grid { grid-template-columns: 1fr; gap: 1.5rem; }
+      #boot h1 { max-width: 12ch; }
+      #boot .boot-side { padding: 1.1rem; }
+      #boot .hint { margin-top: 1.6rem; }
+    }
     #boot.error .panel { border-color: #833; }
     #voiceBar {
       position: fixed; right: 12px; bottom: 12px; z-index: 4;
@@ -343,6 +386,251 @@
       border: 1px solid #4a6e36; background: #3a5a2a; color: #e8ffe0; font: 0.95rem system-ui, sans-serif;
       display: inline-flex; align-items: center;
     }
+
+    /* ==== 90s status-bar theme ===========================================
+       Everything is part of the slab: raised gunmetal panels and buttons
+       (light top-left edge, dark bottom-right), recessed black wells for
+       inputs and numbers, square corners, hard shadows. Kept as an override
+       layer so layout rules above stay untouched. */
+    :root {
+      --r-face: #4b4b4b;
+      --r-face-2: #474747;
+      --r-hi: #8c8c8c;
+      --r-lo: #1c1c1c;
+      --r-well: #000;
+      --r-red: #c41010;
+      --r-red-hi: #ff3a2a;
+      --r-amber: #e8b040;
+      --r-bone: #d8ccb8;
+      --r-dim: #9c9282;
+      --r-display: Impact, Haettenschweiler, "Arial Narrow Bold", "Arial Black", sans-serif;
+      --r-ui: Verdana, Tahoma, Geneva, sans-serif;
+      --r-raised: 2px solid; --r-raised-c: var(--r-hi) var(--r-lo) var(--r-lo) var(--r-hi);
+      --r-sunk-c: var(--r-lo) var(--r-hi) var(--r-hi) var(--r-lo);
+      /* 4px stone dither on panel faces. */
+      --r-grain: repeating-conic-gradient(var(--r-face) 0 25%, var(--r-face-2) 0 50%) 0 0 / 4px 4px;
+    }
+    html, body { font-family: var(--r-ui); color: var(--r-bone); }
+
+    /* Raised slabs */
+    #gamebar, #gamebar-toggle, .settings-panel, #lobby .panel, #callsign form,
+    #matchover .panel, #voiceBar, #netGraph, #boot .panel {
+      background: var(--r-grain); border: var(--r-raised); border-color: var(--r-raised-c);
+      border-radius: 0; box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.75); color: var(--r-bone);
+      backdrop-filter: none;
+    }
+    #boot .panel { box-shadow: 8px 8px 0 rgba(0, 0, 0, 0.8); }
+    #boot .boot-side { background: rgba(0, 0, 0, 0.35); border: 2px solid; border-color: var(--r-sunk-c); border-radius: 0; box-shadow: none; }
+    #boot { background: repeating-linear-gradient(0deg, transparent 0 3px, rgba(0, 0, 0, 0.25) 3px 4px), #1a0505; backdrop-filter: none; }
+
+    /* Titles: the old menu lettering, red with a hard offset shadow */
+    #boot h1, #boot .brand-name, #boot .boot-side h2, .settings-head h2, #lobby h2,
+    #callsign h2, #matchover h1 {
+      font-family: var(--r-display); font-weight: 400; color: var(--r-red);
+      text-shadow: 2px 2px 0 #000, 3px 3px 0 #3a0000; letter-spacing: 0.03em;
+    }
+    #boot h1 { color: var(--r-red); text-shadow: 3px 3px 0 #000, 5px 5px 0 #3a0000; }
+    #boot .brand-mark { border-radius: 0; border: 2px solid; border-color: var(--r-raised-c); background: var(--r-red); box-shadow: none; }
+    #matchover h1 { color: var(--r-amber); }
+    #matchover h1.lost { color: var(--r-red); }
+    #boot .boot-lede, #boot .boot-side p, #boot .map-help, #boot .hint, #lobby .meta,
+    #callsign p, #matchover .sub, .settings-hint, #lobby .hint {
+      font-family: var(--r-ui); color: var(--r-dim);
+    }
+    #boot .boot-lede { font-size: 0.95rem; line-height: 1.6; color: var(--r-bone); }
+    #boot .eyebrow, #boot .side-kicker, #boot .boot-side label, .settings-body h3,
+    #lobby .invite-label, #netGraph .ng-title, #matchover th {
+      font-family: var(--r-ui); font-weight: 700; color: var(--r-amber); letter-spacing: 0.08em;
+    }
+    #boot .brand-row, #boot .hint, .settings-head, .settings-foot { border-color: var(--r-lo); box-shadow: 0 1px 0 var(--r-hi); }
+    .settings-foot { box-shadow: inset 0 1px 0 var(--r-hi); }
+
+    /* Buttons: raised, press to sink */
+    #boot .file-pick, #boot .boot-secondary, #boot .boot-start, .settings-btn, .settings-close,
+    #gamebar button.settings-open-btn, #callsign button, #lobby .invite-copy,
+    #matchover .actions a, #matchover .actions button, #voiceBar .voice-ptt, #voiceBar .voice-spk,
+    #gamebar-toggle {
+      position: relative; border-radius: 0; border: 2px solid; border-color: var(--r-raised-c);
+      background: var(--r-face); color: var(--r-bone); box-shadow: none; text-shadow: 1px 1px 0 #000;
+      font-family: var(--r-ui); font-weight: 700; transition: none; transform: none; filter: none;
+    }
+    #boot .file-pick, .settings-btn.primary, #callsign button, #matchover .actions a,
+    #matchover .actions button, #lobby .invite-copy {
+      background: var(--r-red); color: #fff;
+      border-color: #ff7060 #3a0000 #3a0000 #ff7060;
+    }
+    #boot .boot-actions label:hover, #boot .boot-actions button:hover, .settings-btn:hover,
+    #callsign button:hover, #matchover .actions a:hover, #matchover .actions button:hover,
+    #gamebar button.settings-open-btn:hover, #gamebar-toggle:hover, #lobby .invite-copy:hover {
+      transform: none; box-shadow: none; filter: brightness(1.15); border-color: var(--r-raised-c);
+    }
+    #boot .file-pick:hover, .settings-btn.primary:hover, #callsign button:hover,
+    #matchover .actions a:hover, #matchover .actions button:hover, #lobby .invite-copy:hover {
+      border-color: #ff7060 #3a0000 #3a0000 #ff7060;
+    }
+    #boot .boot-actions label:active, #boot .boot-actions button:active, .settings-btn:active,
+    .settings-close:active, #callsign button:active, #matchover .actions a:active,
+    #matchover .actions button:active, #gamebar button.settings-open-btn:active,
+    #gamebar-toggle:active, #lobby .invite-copy:active, #voiceBar .voice-ptt.active,
+    #voiceBar.is-talking .voice-ptt {
+      border-color: var(--r-sunk-c); filter: brightness(0.9);
+    }
+    #voiceBar .voice-ptt.active, #voiceBar.is-talking .voice-ptt { background: var(--r-red); color: #fff; }
+    #lobby .invite-copy.copied { background: var(--r-well); color: var(--r-amber); border-color: var(--r-sunk-c); }
+    #boot .boot-start:disabled, #callsign button:disabled { opacity: 1; color: #777; text-shadow: none; filter: grayscale(1) brightness(0.8); }
+
+    /* The menu cursor: a red pointer beside the focused / hovered action */
+    #boot .boot-actions > *::before, #matchover .actions > *::before, #callsign button::before {
+      content: "\25B8"; position: absolute; left: -0.8em; top: 50%;
+      transform: translateY(-50%); color: var(--r-red-hi); text-shadow: 2px 2px 0 #000;
+      font-size: 1.7em; line-height: 1; opacity: 0; pointer-events: none;
+    }
+    #boot .boot-actions > *:hover::before, #boot .boot-actions > *:focus-visible::before,
+    #boot .boot-actions > label:focus-within::before,
+    #matchover .actions > *:hover::before, #matchover .actions > *:focus-visible::before,
+    #callsign button:hover::before, #callsign button:focus-visible::before { opacity: 1; }
+    #boot .boot-actions { padding-left: 1.2em; }
+    #matchover .actions { padding-left: 1.2em; }
+    #callsign button { overflow: visible; }
+    @media (prefers-reduced-motion: no-preference) {
+      #boot .boot-actions > *::before, #matchover .actions > *::before, #callsign button::before {
+        transition: opacity 0s, left 90ms steps(2);
+      }
+    }
+
+    /* Recessed wells: inputs, selects, values */
+    #boot select, #gamebar select, .settings-row select, #callsign input, #lobby .invite-url,
+    .settings-bind-btn, #gamebar input[type="file"] {
+      border-radius: 0; border: 2px solid; border-color: var(--r-sunk-c);
+      background: var(--r-well); color: var(--r-amber); font-family: var(--r-ui); font-weight: 700;
+      box-shadow: none;
+    }
+    #gamebar input[type="file"] { padding: 1px 2px; font-weight: 400; color: var(--r-dim); }
+    #gamebar input[type="file"]::file-selector-button {
+      border-radius: 0; border: 2px solid; border-color: var(--r-raised-c); background: var(--r-face);
+      color: var(--r-bone); font: 700 11px var(--r-ui); padding: 1px 6px; margin-right: 6px; cursor: pointer;
+    }
+    .settings-bind-btn.listening { color: #fff; background: var(--r-red); border-color: var(--r-sunk-c); box-shadow: none; }
+    #boot select:focus-visible, #gamebar select:focus-visible, .settings-row select:focus-visible,
+    #callsign input:focus, .settings-bind-btn:focus-visible {
+      outline: 2px solid var(--r-amber); outline-offset: 1px; box-shadow: none; border-color: var(--r-sunk-c);
+    }
+    input[type="range"] { accent-color: var(--r-red); }
+    input[type="checkbox"] { accent-color: var(--r-red); }
+    :focus-visible { outline: 2px solid var(--r-amber); outline-offset: 2px; }
+
+    /* Game bar */
+    #gamebar { font: 11px/1.2 var(--r-ui); color: var(--r-bone); padding: 5px 8px; gap: 8px; }
+    #gamebar label { font-weight: 700; }
+    #gamebar a { color: var(--r-amber); font-weight: 700; }
+    #gamebar .pwad-chip { border-radius: 0; background: var(--r-well); border: 2px solid; border-color: var(--r-sunk-c); color: var(--r-amber); }
+    #gamebar .pwad-chip button { color: var(--r-red-hi); font-weight: 700; }
+    #gamebar-toggle { font: 400 20px/1 var(--r-display); width: 40px; height: 40px; }
+    body.drop-pwad::after {
+      background: rgba(0, 0, 0, 0.7); border: 4px solid var(--r-red); border-radius: 0;
+      font: 400 28px var(--r-display); color: var(--r-amber); text-shadow: 2px 2px 0 #000;
+    }
+
+    /* Status line, FPS and match clock: status-bar numerals in black wells */
+    #status, #fps, #matchclock {
+      border-radius: 0; background: var(--r-well); border: 2px solid; border-color: var(--r-sunk-c);
+      box-shadow: 0 0 0 2px var(--r-face);
+    }
+    #status { font: 700 12px/1.3 var(--r-ui); color: var(--r-amber); }
+    #fps, #matchclock { font: 400 18px/1 var(--r-display); color: var(--r-red-hi); letter-spacing: 0.04em; padding: 4px 8px; }
+    #matchclock.low { color: var(--r-amber); border-color: var(--r-sunk-c); }
+
+    /* Settings panel */
+    .settings-panel { font: 13px/1.45 var(--r-ui); }
+    .settings-close { width: 2rem; height: 2rem; font: 400 1.2rem/1 var(--r-display); }
+    .settings-head h2 { font-size: 1.7rem; letter-spacing: 0.04em; }
+    .settings-body h3 { text-transform: none; font-size: 0.85rem; letter-spacing: 0.02em; }
+    .settings-row, .settings-check, .settings-bind-label { color: var(--r-bone); }
+    #settings { background: rgba(0, 0, 0, 0.7); backdrop-filter: none; }
+    #settings-sens-val { color: var(--r-amber); font-weight: 700; }
+
+    /* Net lobby + callsign */
+    #lobby, #callsign { background: rgba(0, 0, 0, 0.72); }
+    #lobby li.seat { border-bottom: 1px solid var(--r-lo); box-shadow: 0 1px 0 rgba(140, 140, 140, 0.35); color: var(--r-dim); }
+    #lobby li.seat.on { color: var(--r-bone); }
+    #lobby li.seat.on .dot { color: var(--r-amber); }
+    #lobby .meta span { color: var(--r-amber); }
+    #lobby .err { color: var(--r-red-hi); }
+
+    /* Voice bar and net graph */
+    #voiceBar { font: 11px var(--r-ui); }
+    #voiceBar .voice-hear { color: var(--r-amber); }
+    #netGraph { font: 11px/1.35 var(--r-ui); }
+    #netGraph .ng-bars { background: var(--r-well); border: 2px solid; border-color: var(--r-sunk-c); padding: 2px; }
+    #netGraph .ng-bars i { border-radius: 0; background: var(--r-amber); }
+    #netGraph .ng-bars i.warn { background: #e87a20; }
+    #netGraph .ng-bars i.bad { background: var(--r-red-hi); }
+    #netGraph.is-stalling { border-color: var(--r-red) var(--r-lo) var(--r-lo) var(--r-red); }
+
+    /* Match over */
+    #matchover { background: rgba(0, 0, 0, 0.8); }
+    #matchover table { background: var(--r-well); border: 2px solid; border-color: var(--r-sunk-c); }
+    #matchover td { border-top: 1px solid #2a2a2a; color: var(--r-bone); }
+    #matchover tr.me td { background: rgba(196, 16, 16, 0.3); color: #fff; }
+    #matchover tr.first td.place { color: var(--r-amber); }
+
+    /* ---- Boot screen polish ------------------------------------------------ */
+    /* The settings bar stays behind ☰ until a game is running. */
+    body:has(#boot:not([hidden])):not(.menu-open) #gamebar { display: none; }
+    #boot-fire {
+      position: fixed; left: 0; bottom: 0; width: 100%; height: 34vh; z-index: 0;
+      image-rendering: pixelated; pointer-events: none; opacity: 0.9;
+      -webkit-mask-image: linear-gradient(to top, #000 55%, transparent);
+      mask-image: linear-gradient(to top, #000 55%, transparent);
+    }
+    #boot .panel { position: relative; z-index: 1; }
+    #boot .boot-side h2 { color: var(--r-bone); font-size: 1.2rem; text-shadow: 2px 2px 0 #000; }
+    #boot .boot-side .side-kicker, #boot .eyebrow { color: var(--r-amber); }
+    #boot .game-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1.2rem 0 0; padding: 0; list-style: none; }
+    #boot h1 { max-width: 13ch; font-size: clamp(2.6rem, 5.2vw, 4.6rem); }
+    #boot .brand-row { margin-bottom: clamp(1.4rem, 3.5vw, 3rem); }
+    #boot .hint { margin-top: 1.6rem; }
+    body:has(#boot:not([hidden])) #fps { display: none; }
+    #boot .game-chips li {
+      display: flex; flex-direction: column; gap: 2px; padding: 0.45rem 0.7rem; min-width: 8.5rem;
+      background: var(--r-well); border: 2px solid; border-color: var(--r-sunk-c);
+      font: 0.72rem/1.35 var(--r-ui); color: var(--r-dim);
+    }
+    #boot .game-chips b { font: 400 1rem/1 var(--r-display); letter-spacing: 0.06em; color: var(--r-amber); }
+    @media (max-width: 720px) {
+      #boot { padding: 0; align-items: stretch; }
+      #boot .panel {
+        width: 100%; min-height: 100%; max-width: none; max-height: none; overflow: visible;
+        border-width: 0; box-shadow: none;
+        padding: max(4.2rem, calc(env(safe-area-inset-top) + 3.6rem)) max(1.1rem, env(safe-area-inset-right))
+          calc(1.4rem + env(safe-area-inset-bottom)) max(1.1rem, env(safe-area-inset-left));
+      }
+      #boot .brand-row { margin-bottom: 1.4rem; }
+      #boot h1 { font-size: clamp(2.3rem, 12.5vw, 3.4rem); max-width: none; }
+      #boot .boot-actions > * { flex: 1 1 100%; }
+      #boot .game-chips li { flex: 1 1 40%; min-width: 0; }
+      #boot-fire { height: 22vh; opacity: 0.6; }
+    }
+    @media (max-height: 520px) and (orientation: landscape) {
+      #boot { padding: 0; align-items: stretch; }
+      #boot .panel {
+        width: 100%; min-height: 100%; max-width: none; max-height: none; overflow: visible; border-width: 0; box-shadow: none;
+        padding: 0.8rem max(4rem, calc(env(safe-area-inset-right) + 1rem)) calc(0.8rem + env(safe-area-inset-bottom)) max(4rem, calc(env(safe-area-inset-left) + 3.4rem));
+      }
+      #boot .brand-row { margin-bottom: 0.8rem; padding-bottom: 0.5rem; }
+      #boot .boot-grid { grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr); gap: 1.4rem; align-items: start; }
+      #boot h1 { font-size: 2.1rem; max-width: none; margin-bottom: 0.5rem; }
+      #boot h1 br { display: none; }
+      #boot .eyebrow { margin-bottom: 0.4rem; }
+      #boot .boot-lede { margin-bottom: 0.9rem; font-size: 0.85rem; }
+      #boot .game-chips { margin: 0.7rem 0 0; }
+      #boot .game-chips li { padding: 0.3rem 0.5rem; min-width: 0; }
+      #boot .boot-side { padding: 0.9rem; }
+      #boot .boot-side > p:not(.side-kicker):not(.map-help) { display: none; }
+      #boot .hint { display: none; }
+      #boot-fire { height: 30vh; opacity: 0.5; }
+    }
+    @media (prefers-reduced-motion: reduce) { #boot-fire { opacity: 0.55; } }
   </style>
   <link rel="icon" href="data:," />
 </head>
@@ -374,8 +662,8 @@
       <input id="game-voxel" type="checkbox" checked />
       Voxel sprites
     </label>
-    <label title="Load your own Doom / Freedoom IWAD (commercial WADs stay on your machine)">IWAD
-      <input id="game-iwad" type="file" accept=".wad,.ipk3,.iwad,application/octet-stream" />
+    <label title="Load your own Doom / Freedoom IWAD or Duke GRP (files stay on your machine)">Game file
+      <input id="game-iwad" type="file" accept=".wad,.grp,.ipk3,.iwad,application/octet-stream" />
     </label>
     <label id="game-map-label" title="Jump to any map of the IWAD and loaded PK3s / PWADs (restarts the game there)">Map
       <select id="game-map"><option value="">Title screen</option></select>
@@ -387,28 +675,46 @@
     <a href="editor.html" title="Map editor — Scripts tab for WASM mods">Editor ↗</a>
   </div>
   <div id="boot">
+    <canvas id="boot-fire" width="160" height="64" aria-hidden="true"></canvas>
     <div class="panel">
-      <h1>Room</h1>
-      <p>Load a Doom / Freedoom IWAD to play in the browser.</p>
-      <label>
-        Choose IWAD…
-        <input id="iwad" type="file" accept=".wad,.ipk3,.iwad,application/octet-stream" />
-      </label>
-      <label id="pwad-label">
-        Add PK3 / PWAD…
-        <input id="pwad" type="file" multiple accept=".pk3,.pk7,.pke,.zip,.wad,application/zip,application/octet-stream" />
-      </label>
-      <label>
-        Skill
-        <select id="skill-select">
-          <option value="1">I'm too young to die</option>
-          <option value="2">Hey, not too rough</option>
-          <option value="3" selected>Hurt me plenty</option>
-          <option value="4">Ultra-Violence</option>
-          <option value="5">Nightmare!</option>
-        </select>
-      </label>
-      <p class="hint">Packaged builds ship <code>doom1.wad</code> / <code>doom2.wad</code> / Freedoom and load the first that responds; voxels are on by default (<code>?voxel=0</code> to disable). Or pick a local IWAD above / via <strong>IWAD</strong> in the bar — files stay in the browser and are never uploaded. PK3 / PK7 / ZIP / PWAD mods: <strong>Add PK3</strong>, the <strong>PK3</strong> bar button, drag and drop, or <code>?pwad=url1,url2</code>; they are remembered in this browser until you remove them (✕). Coop: add <code>?ws=…&amp;players=2</code>. Press a key or click to unlock audio; click the canvas for mouse look.</p>
+      <div class="brand-row"><span class="brand-mark">R</span><span class="brand-name">ROOM</span><span class="brand-edition">WEB ENGINE</span></div>
+      <div class="boot-grid">
+        <section>
+          <p class="eyebrow">Play solo · classic worlds, ready to run</p>
+          <h1>Pick a world.<br/> Start playing.</h1>
+          <p class="boot-lede">Choose a Doom or Freedoom WAD, or a Duke Nukem 3D GRP. Your game files stay in this browser and are never uploaded.</p>
+          <div class="boot-actions">
+            <label class="file-pick" for="iwad">＋ Choose a WAD or GRP<input id="iwad" type="file" accept=".wad,.grp,.ipk3,.iwad,application/octet-stream" /></label>
+            <label id="pwad-label" class="boot-secondary" for="pwad">Add mods<input id="pwad" type="file" multiple accept=".pk3,.pk7,.pke,.zip,.wad,application/zip,application/octet-stream" /></label>
+            <button type="button" id="boot-play" class="boot-start" hidden>Play current game</button>
+          </div>
+          <p class="file-state" id="boot-current" aria-live="polite">Choose a game file to begin.</p>
+          <ul class="game-chips" aria-label="Supported games">
+            <li><b>DOOM</b>doom.wad · doom2.wad · Freedoom</li>
+            <li><b>DUKE 3D</b>duke3d.grp · shareware or full</li>
+            <li><b>MODS</b>.pk3 · .wad · .grp add-ons</li>
+          </ul>
+        </section>
+        <aside class="boot-side">
+          <p class="side-kicker">A quick setup</p>
+          <h2>Your local game setup</h2>
+          <p>Pick a difficulty, then choose the maps from your game once it loads. Add-on WADs and PK3s can be layered on afterward.</p>
+          <label id="boot-map-label" for="boot-map" hidden>Map
+            <select id="boot-map"><option value="">Load a game file to list maps</option></select>
+          </label>
+          <p id="boot-map-help" class="map-help">Map choices will fill automatically from the selected WAD or GRP.</p>
+          <label for="skill-select">Difficulty
+            <select id="skill-select">
+              <option value="1">I'm too young to die</option>
+              <option value="2">Hey, not too rough</option>
+              <option value="3" selected>Hurt me plenty</option>
+              <option value="4">Ultra-Violence</option>
+              <option value="5">Nightmare!</option>
+            </select>
+          </label>
+        </aside>
+      </div>
+      <p class="hint">Packaged installs can also start Doom / Freedoom automatically. Mods can be added here, from the game bar, or by dropping files onto the page. Voxels are on by default (<code>?voxel=0</code> to turn them off). Click the game view to lock the mouse and play.</p>
     </div>
   </div>
   <div id="lobby" aria-live="polite">
@@ -454,6 +760,12 @@
     const status = document.getElementById("status");
     const boot = document.getElementById("boot");
     const fileInput = document.getElementById("iwad");
+    const bootCurrent = document.getElementById("boot-current");
+    const bootPlay = document.getElementById("boot-play");
+    const bootMap = document.getElementById("boot-map");
+    const bootMapLabel = document.getElementById("boot-map-label");
+    const bootMapHelp = document.getElementById("boot-map-help");
+    bootPlay.addEventListener("click", () => { boot.hidden = true; });
     const lobbyEl = document.getElementById("lobby");
     const inviteCopyBtn = document.getElementById("lobby-invite-copy");
     const inviteUrlInput = document.getElementById("lobby-invite-url");
@@ -649,15 +961,6 @@
         sel.addEventListener("change", () => {
           if (sel.value) params.set(key, sel.value);
           else params.delete(key);
-          // Gameplay mods need a live map (title screen never runs their ticks).
-          if (
-            key === "mod" &&
-            sel.value &&
-            sel.value !== "voxel" &&
-            !(params.get("map") || "").trim()
-          ) {
-            params.set("map", "E1M1");
-          }
           location.search = params.toString();
         });
         // Keep game keys (arrows / WASD) away from a focused select.
@@ -791,7 +1094,10 @@
       };
       const isGrpBytes = (buf) =>
         buf.byteLength >= 12 && String.fromCharCode(...buf.subarray(0, 12)) === "KenSilverman";
-      const dukeUrl = ROOM_UI_SHOW_DUKE && /\.grp$/i.test(params.get("iwad") || "");
+      const dukeUrl = ROOM_UI_SHOW_DUKE && (
+        /\.grp$/i.test(params.get("iwad") || "") ||
+        (params.get("local") === "1" && params.get("game") === "duke3d")
+      );
       if (dukeUrl) useDukeUi();
 
       // Gameplay WASM mod (`?mod=survival`) plus optional content packs
@@ -1017,7 +1323,8 @@
           }
         }
         // Files picked in earlier visits (`?pwad` ones above win on a name clash).
-        try {
+        // Built-in presets define their own content.
+        if (!params.get("addon") && !/^bundled\//.test(params.get("iwad") || "")) try {
           const saved = (await pwadDb.all()) || [];
           saved.sort((a, b) => (a.order || 0) - (b.order || 0));
           for (const rec of saved) {
@@ -1115,6 +1422,37 @@
           .catch((e) => console.warn("room-web: SoundFont unavailable, using OPL", e));
       }
 
+      // Skill selects use the loaded game's own names (Duke has four).
+      const SKILL_NAMES = {
+        doom: ["I'm too young to die", "Hey, not too rough", "Hurt me plenty", "Ultra-Violence", "Nightmare!"],
+        freedoom: ["Please don't kill me!", "Will this hurt?", "Bring on the pain.", "Extreme carnage.", "MAYHEM!"],
+        duke3d: ["Piece of Cake", "Let's Rock", "Come Get Some", "Damn I'm Good"],
+      };
+      const isFreedoomWad = (bytes) => {
+        if (bytes.byteLength < 12) return false;
+        const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const n = dv.getInt32(4, true), off = dv.getInt32(8, true);
+        if (n <= 0 || off < 12 || off + n * 16 > bytes.byteLength) return false;
+        for (let i = 0; i < n; i++) {
+          const at = off + i * 16 + 8;
+          let name = "";
+          for (let k = 0; k < 8 && bytes[at + k]; k++) name += String.fromCharCode(bytes[at + k]);
+          if (name === "FREEDOOM") return true;
+        }
+        return false;
+      };
+      const relabelSkills = (bytes, label) => {
+        const kind = isGrpBytes(bytes) ? "duke3d" : /freedoom|freedm/i.test(label || "") || isFreedoomWad(bytes) ? "freedoom" : "doom";
+        for (const id of ["game-skill", "skill-select"]) {
+          const sel = document.getElementById(id);
+          if (!sel) continue;
+          // Duke menu skills are `ud.player_skill` 1–4 = Room skill 2–5.
+          const first = kind === "duke3d" ? 2 : 1;
+          const keep = Number(sel.value) || 3;
+          sel.replaceChildren(...SKILL_NAMES[kind].map((name, i) => new Option(name, String(i + first))));
+          sel.value = String(Math.min(Math.max(keep, first), first + SKILL_NAMES[kind].length - 1));
+        }
+      };
       const startWithBytes = (bytes, label) => {
         if (isGrpBytes(bytes) && !ROOM_UI_SHOW_DUKE) {
           status.textContent = "Duke Nukem 3D is hidden in this UI — choose a Doom IWAD";
@@ -1124,8 +1462,11 @@
         status.style.color = "";
         status.textContent = `Loading ${label}…`;
         if (isGrpBytes(bytes)) useDukeUi();
+        relabelSkills(bytes, label);
         mod.roomStartIwad(bytes);
         lastIwad = { bytes, label };
+        bootCurrent.textContent = `Ready to play · ${label}`;
+        bootPlay.hidden = false;
         afterStart();
         status.textContent = userPwads.size
           ? `Playing ${label} + ${[...userPwads.keys()].join(", ")}`
@@ -1134,8 +1475,9 @@
       };
 
       // ---- Map picker ---------------------------------------------------------
-      // Lists every map of the IWAD + PK3s / PWADs once a game runs; picking one
-      // restarts there in place (no page reload, so a locally picked IWAD stays).
+      // Lists maps from the active game: Doom reads the IWAD + mounted mods,
+      // while Duke reads native .MAP files from the GRP. Picking one restarts
+      // there in place, so a locally picked base archive stays loaded.
       {
         const mapSel = document.getElementById("game-map");
         const mapLabel = document.getElementById("game-map-label");
@@ -1144,6 +1486,23 @@
         } else {
           let listKey = "";
           let pollTimer = 0;
+          const syncBootMap = () => {
+            bootMap.replaceChildren(...[...mapSel.children].map((option) => option.cloneNode(true)));
+            bootMap.value = mapSel.value;
+            const hasMaps = mapSel.options.length > 1;
+            bootMapLabel.hidden = !hasMaps;
+            bootMap.disabled = !hasMaps;
+            const duke = !!lastIwad && isGrpBytes(lastIwad.bytes);
+            bootMapHelp.textContent = !hasMaps
+              ? mapSel.disabled
+                ? "Reading map list from the selected game file…"
+                : lastIwad
+                  ? "No maps were detected in this game file."
+                  : "Map choices will fill automatically from the selected WAD or GRP."
+              : duke
+                ? "Maps are read from the selected Duke GRP and use Build episode names."
+                : "Maps are read from the selected Doom IWAD and mounted add-ons.";
+          };
           const fillMaps = () => {
             let maps = [];
             try {
@@ -1152,19 +1511,24 @@
               maps = [];
             }
             if (!maps.length) return false;
-            const key = maps.map((m) => m.name).join(",");
+            const key = JSON.stringify(maps);
             if (key !== listKey) {
               listKey = key;
+              mapSel.disabled = false;
               const want = (params.get("map") || "").toUpperCase();
+              const duke = !!lastIwad && isGrpBytes(lastIwad.bytes);
+              const current = (mod.roomCurrentMap() || "").toUpperCase();
+              const hasGameplayMod = !!params.get("mod") && params.get("mod") !== "voxel";
               mapSel.textContent = "";
-              const title = document.createElement("option");
-              title.value = "";
-              title.textContent = "Title screen";
-              mapSel.appendChild(title);
+              const initial = document.createElement("option");
+              initial.value = "";
+              initial.textContent = duke ? "Choose a Duke map…" : "Title screen";
+              initial.disabled = duke;
+              mapSel.appendChild(initial);
               let group = null;
               let groupKey = "";
               for (const m of maps) {
-                const ep = /^E(\d)M\d$/.exec(m.name);
+                const ep = /^E(\d)(?:M|L)\d+$/i.exec(m.name);
                 const gk = ep ? `Episode ${ep[1]}` : /^MAP\d+$/.test(m.name) ? "Maps" : "Other";
                 if (gk !== groupKey) {
                   group = document.createElement("optgroup");
@@ -1177,17 +1541,32 @@
                 o.textContent = m.title ? `${m.name} — ${m.title}` : m.name;
                 group.appendChild(o);
               }
-              mapSel.value = want && maps.some((m) => m.name === want) ? want : "";
+              const desired = want && maps.some((m) => m.name.toUpperCase() === want)
+                ? want
+                : duke || hasGameplayMod
+                  ? (maps.some((m) => m.name.toUpperCase() === current) ? current : maps[0]?.name || "")
+                  : "";
+              mapSel.value = desired;
             }
+            syncBootMap();
             return true;
           };
           // The session may start after GPU init, so poll briefly after each start.
           afterStart = () => {
             clearInterval(pollTimer);
+            listKey = "";
+            mapSel.replaceChildren(new Option("Reading maps…", ""));
+            mapSel.disabled = true;
+            syncBootMap();
             let tries = 0;
             pollTimer = setInterval(() => {
               tries += 1;
-              if (fillMaps() || tries > 40) clearInterval(pollTimer);
+              if (fillMaps()) clearInterval(pollTimer);
+              else if (tries > 40) {
+                clearInterval(pollTimer);
+                mapSel.replaceChildren(new Option("No maps found", ""));
+                syncBootMap();
+              }
             }, 250);
           };
           // Follow level exits so the picker shows where you are.
@@ -1196,9 +1575,11 @@
             const cur = (mod.roomCurrentMap() || "").toUpperCase();
             if (cur && params.get("map") && [...mapSel.options].some((o) => o.value === cur)) {
               mapSel.value = cur;
+              syncBootMap();
             }
           }, 1000);
           mapSel.addEventListener("change", () => {
+            syncBootMap();
             const v = mapSel.value;
             if (v) params.set("map", v);
             else params.delete("map");
@@ -1215,6 +1596,10 @@
                 status.style.color = "#f66";
               }
             }
+          });
+          bootMap.addEventListener("change", () => {
+            mapSel.value = bootMap.value;
+            mapSel.dispatchEvent(new Event("change"));
           });
           mapSel.addEventListener("keydown", (ev) => ev.stopPropagation());
         }
@@ -1233,7 +1618,109 @@
       }
 
       let loaded = false;
+      if (params.get("local") === "1") {
+        try {
+          if (!window.indexedDB) throw new Error("Local game storage is unavailable");
+          const saved = await new Promise((resolve, reject) => {
+            const open = indexedDB.open("room-solo-game", 1);
+            open.onupgradeneeded = () => open.result.createObjectStore("game", { keyPath: "id" });
+            open.onerror = () => reject(open.error || new Error("Could not open local game storage"));
+            open.onsuccess = () => {
+              const db = open.result;
+              const request = db.transaction("game", "readonly").objectStore("game").get("current");
+              request.onsuccess = () => { resolve(request.result || null); db.close(); };
+              request.onerror = () => { reject(request.error || new Error("Could not read local game storage")); db.close(); };
+            };
+          });
+          if (!saved?.bytes) throw new Error("The selected local game file is no longer available; choose it again from Play solo");
+          // Stored as Blobs (large PK3s exceed IndexedDB's per-value limit);
+          // older records hold ArrayBuffers.
+          const toBytes = async (data) =>
+            data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : new Uint8Array(data);
+          const baseBytes = await toBytes(saved.bytes);
+          const addonList = [];
+          for (const addon of saved.addons || []) {
+            addonList.push({ name: addon.name, fileName: addon.fileName, bytes: await toBytes(addon.bytes) });
+          }
+          saved.addons = addonList;
+          for (const addon of saved.addons) {
+            const bytes = addon.bytes;
+            if (!mod.roomIsResourceArchive(bytes)) throw new Error(`${addon.fileName || addon.name || "A selected add-on"} is not a supported resource archive`);
+            addUserPwad(addon.name, bytes, false);
+          }
+          console.info("[Room solo] restoring local game", {
+            base: saved.fileName || "Local game",
+            bytes: baseBytes.byteLength,
+            addons: (saved.addons || []).map((addon) => ({ name: addon.name, bytes: addon.bytes?.byteLength || 0 })),
+            map: params.get("map") || "",
+          });
+          if (!startWithBytes(baseBytes, saved.fileName || "Local game")) {
+            throw new Error("Could not start the selected local game file");
+          }
+          loaded = true;
+        } catch (err) {
+          status.textContent = err.message || String(err);
+          status.style.color = "#f66";
+        }
+      }
+      // Built-in solo content (`?addon=bundled/brutal.pk3?v=…,…`, from the
+      // lobby's Play solo presets): same-origin files, fetched once and kept
+      // in the Cache API keyed by their versioned URL.
+      const cachedFetch = async (url) => {
+        const store = window.caches ? await caches.open("room-bundled-v1").catch(() => null) : null;
+        const hit = store ? await store.match(url) : null;
+        if (hit) return new Uint8Array(await hit.arrayBuffer());
+        status.textContent = `Downloading ${url.split("?")[0].split("/").pop()}…`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        if (store) {
+          // Drop older versions of the same file before keeping this one.
+          const path = new URL(url, location.href).pathname;
+          for (const key of await store.keys()) {
+            if (new URL(key.url).pathname === path) await store.delete(key);
+          }
+          await store.put(url, new Response(bytes)).catch((e) => console.warn("room-web: cache put failed", e));
+        }
+        return bytes;
+      };
+      const sameOrigin = (url) => {
+        try {
+          return new URL(url, location.href).origin === location.origin;
+        } catch (_) {
+          return false;
+        }
+      };
+      const bundledAddons = (params.get("addon") || "").split(",").map((u) => u.trim()).filter(Boolean).filter(sameOrigin);
+      if (!loaded && params.get("local") !== "1" && bundledAddons.length) {
+        try {
+          for (const url of bundledAddons) {
+            const bytes = await cachedFetch(url);
+            const name = url.split("?")[0].split("/").pop();
+            if (!mod.roomIsResourceArchive(bytes)) throw new Error(`${name} is not a supported resource archive`);
+            addUserPwad(name, bytes, false);
+          }
+          const want = params.get("iwad") || "";
+          if (want && sameOrigin(want)) {
+            const base = await cachedFetch(want);
+            if (startWithBytes(base, want.split("?")[0].split("/").pop())) loaded = true;
+          }
+        } catch (err) {
+          console.error(err);
+          status.textContent = `Could not load the built-in game files: ${err.message || err}`;
+          status.style.color = "#f66";
+        }
+      } else if (!loaded && params.get("local") !== "1" && /^bundled\//.test(params.get("iwad") || "")) {
+        // Freedoom-only preset: cache the IWAD too.
+        try {
+          const want = params.get("iwad");
+          if (startWithBytes(await cachedFetch(want), want.split("?")[0].split("/").pop())) loaded = true;
+        } catch (err) {
+          console.warn("room-web: bundled IWAD", err);
+        }
+      }
       for (const url of tryUrls) {
+        if (loaded || params.get("local") === "1") break;
         try {
           const res = await fetch(url, { cache: "no-cache" });
           if (!res.ok) continue;
@@ -1247,7 +1734,11 @@
         }
       }
       if (!loaded) {
-        status.textContent = "Choose a Doom IWAD to play in the browser";
+        status.textContent = "Choose a Doom WAD or Duke GRP to play in the browser";
+      } else if (params.has("iwad")) {
+        // An explicit URL is a direct-play link; packaged defaults leave the
+        // refreshed start screen available so users can choose another file.
+        boot.hidden = true;
       }
 
       const loadIwadFile = async (file, fromBoot) => {
@@ -1283,6 +1774,57 @@
       status.textContent = "Failed to start: " + (err && err.message ? err.message : err);
       status.style.color = "#f66";
     }
+  </script>
+  <script>
+    // Boot-screen "Doom fire": a tiny palette cellular automaton drawn at
+    // 160×64 and scaled up. Runs only while the boot screen is visible.
+    (() => {
+      const canvas = document.getElementById("boot-fire");
+      const boot = document.getElementById("boot");
+      if (!canvas || !boot) return;
+      const g = canvas.getContext("2d");
+      const W = canvas.width, H = canvas.height;
+      const PAL = [[7,7,7],[31,7,7],[47,15,7],[71,15,7],[87,23,7],[103,31,7],[119,31,7],[143,39,7],[159,47,7],[175,63,7],
+        [191,71,7],[199,71,7],[223,79,7],[223,87,7],[223,87,7],[215,95,7],[215,95,7],[215,103,15],[207,111,15],[207,119,15],
+        [207,127,15],[207,135,23],[199,135,23],[199,143,23],[199,151,31],[191,159,31],[191,159,31],[191,167,39],[191,167,39],
+        [191,175,47],[183,175,47],[183,183,47],[183,183,55],[207,207,111],[223,223,159],[239,239,199],[255,255,255]];
+      const fire = new Uint8Array(W * H);
+      for (let x = 0; x < W; x++) fire[(H - 1) * W + x] = PAL.length - 1;
+      const img = g.createImageData(W, H);
+      const step = () => {
+        for (let x = 0; x < W; x++) {
+          for (let y = 1; y < H; y++) {
+            const src = y * W + x;
+            const heat = fire[src];
+            if (!heat) { fire[src - W] = 0; continue; }
+            const r = (Math.random() * 3.6) | 0;
+            const dst = src - W - (r - 1);
+            fire[Math.max(0, Math.min(W * H - 1, dst))] = heat - (r & 1);
+          }
+        }
+      };
+      const paint = () => {
+        const d = img.data;
+        for (let i = 0; i < fire.length; i++) {
+          const c = PAL[fire[i]], o = i * 4;
+          d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = fire[i] ? 255 : 0;
+        }
+        g.putImageData(img, 0, 0);
+      };
+      const reduced = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (reduced) { for (let i = 0; i < H * 2; i++) step(); paint(); return; }
+      let last = 0, raf = 0;
+      const frame = (t) => {
+        raf = 0;
+        if (boot.hidden || document.hidden) return;
+        if (t - last > 33) { last = t; step(); paint(); }
+        raf = requestAnimationFrame(frame);
+      };
+      const start = () => { if (!raf && !boot.hidden) raf = requestAnimationFrame(frame); };
+      new MutationObserver(start).observe(boot, { attributes: true, attributeFilter: ["hidden"] });
+      document.addEventListener("visibilitychange", start);
+      start();
+    })();
   </script>
 </body>
 </html>

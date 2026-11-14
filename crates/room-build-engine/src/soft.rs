@@ -575,8 +575,17 @@ fn render_fp_mirror_at(
         wall.nextsector,
     );
     let mut reflected_frame = SoftFrame::new(frame.width, frame.height);
+    // Chocolate draws the viewing player in mirrors only.
+    let with_viewer = world.mirror_viewer.and_then(|(index, yrepeat)| {
+        let index = usize::try_from(index).ok()?;
+        world.sprites.get(index)?;
+        let mut copy = world.clone();
+        copy.sprites[index].yrepeat = yrepeat;
+        copy.sprites[index].cstat &= !0x8000;
+        Some(copy)
+    });
     let _ = render_fp_textured_without_mirrors_at(
-        world,
+        with_viewer.as_ref().unwrap_or(world),
         &reflected_view,
         &mut reflected_frame,
         tiles,
@@ -636,6 +645,32 @@ fn project_mirror_quad(
     bottom_z: i32,
 ) -> Option<[(i32, i32, i32); 4]> {
     let (sin, cos) = crate::helpers::approx_sincos_q14(i32::from(view.ang));
+    // Clip the mirror segment against the near plane: standing close to a
+    // mirror puts one end beside/behind the camera, and the whole mirror used
+    // to be rejected (leaving the bare MIRROR placeholder tile on screen).
+    const NEAR: i64 = 32;
+    let depth = |(x, y): (i32, i32)| {
+        let dx = i64::from(x) - i64::from(view.posx);
+        let dy = i64::from(y) - i64::from(view.posy);
+        (dx * i64::from(cos) + dy * i64::from(sin)) >> 14
+    };
+    let (da, db) = (depth(a), depth(b));
+    if da < NEAR && db < NEAR {
+        return None;
+    }
+    let toward = |from: (i32, i32), to: (i32, i32), d_from: i64, d_to: i64| {
+        let span = d_to - d_from;
+        let lerp = |p: i32, q: i32| {
+            let delta = i64::from(q) - i64::from(p);
+            i64::from(p) + (delta * (NEAR + 1 - d_from) + span - 1) / span
+        };
+        (
+            i32::try_from(lerp(from.0, to.0)).unwrap_or(from.0),
+            i32::try_from(lerp(from.1, to.1)).unwrap_or(from.1),
+        )
+    };
+    let a = if da < NEAR { toward(a, b, da, db) } else { a };
+    let b = if db < NEAR { toward(b, a, db, da) } else { b };
     let project = |x, y, z| {
         let (rx, ry, rz) = cam_project(view, sin, cos, x, y, z)?;
         if rz <= 16 {
@@ -689,13 +724,22 @@ fn draw_mirror_triangle(
             {
                 continue;
             }
-            let depth = ((w0 * i64::from(z0) + w1 * i64::from(z1) + w2 * i64::from(z2)) / area)
-                .max(1) as i32;
+            // Perspective-correct: 1/z, not z, is linear in screen space.
+            // Linear z overshoots between a near-clipped and a far vertex and
+            // used to reject the whole mirror when standing close to it.
+            let inv = (w0 as f64 / f64::from(z0.max(1))
+                + w1 as f64 / f64::from(z1.max(1))
+                + w2 as f64 / f64::from(z2.max(1)))
+                / area as f64;
+            let depth = if inv > 0.0 { (1.0 / inv) as i32 } else { i32::MAX }.max(1);
             let index = y as usize * width + x as usize;
             if index >= scene_depth.len() || scene_depth[index].saturating_add(2) < depth {
                 continue;
             }
-            target.pixels[index] = reflected.pixels[index];
+            // Chocolate `completemirror`: the reflected camera's image is
+            // mirrored left-right before it lands in the mirror window.
+            let source = y as usize * width + (width - 1 - x as usize);
+            target.pixels[index] = reflected.pixels[source];
         }
     }
 }

@@ -58,4 +58,4 @@ pub use sav::{
     SavWall, atomic_player_record_size, atomic_player_tail_offsets, identify_save,
 };
 pub use sprites::{Origin, SpriteLump, SpriteSet};
-pub use wad::{convert_grp_with_maps, grp_to_wad};
+pub use wad::{convert_grp_with_maps, grp_to_wad, list_grp_maps};

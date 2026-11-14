@@ -28,6 +28,8 @@ pub const DEFAULT_MAX_CONTENT_MB: u64 = 2048;
 pub enum ContentKind {
     /// Base game WAD (`IWAD` magic).
     Iwad,
+    /// Duke Nukem 3D Build engine base-game GRP.
+    Duke,
     /// Patch WAD (`PWAD` magic).
     Pwad,
     /// Zip / 7z archive (PK3, PK7, IPK3, …).
@@ -73,7 +75,10 @@ pub struct Preset {
     /// Short blurb for the lobby.
     #[serde(default)]
     pub description: String,
-    /// Library IWAD replacing the players' base game (`None` = their default).
+    /// Game runtime (`doom` or `duke3d`). Older presets default to Doom.
+    #[serde(default = "default_preset_game")]
+    pub game: String,
+    /// Library base game file (Doom IWAD or Duke GRP).
     #[serde(default)]
     pub iwad: Option<String>,
     /// Library files mounted after the IWAD, in this order.
@@ -91,6 +96,19 @@ pub struct Preset {
     /// Default skill 1..=5 (0 = lobby default).
     #[serde(default)]
     pub skill: u8,
+    /// Atomic Duke `ud.coop`: 0 = DukeMatch, 1 = co-op, 2 = no spawn.
+    #[serde(default = "default_duke_game_mode")]
+    pub duke_game_mode: u8,
+    /// Atomic Duke `ud.ffire`.
+    #[serde(default)]
+    pub duke_friendly_fire: bool,
+}
+
+fn default_preset_game() -> String {
+    "doom".into()
+}
+fn default_duke_game_mode() -> u8 {
+    1
 }
 
 /// `presets.json`.
@@ -113,7 +131,9 @@ pub struct PublicPreset {
     pub title: String,
     /// Blurb.
     pub description: String,
-    /// Base game file, if the preset sets one.
+    /// Game runtime (`doom` or `duke3d`).
+    pub game: String,
+    /// Base game file (Doom IWAD or Duke GRP), if the preset sets one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iwad: Option<RoomContentRef>,
     /// Content files, in mount order.
@@ -127,6 +147,10 @@ pub struct PublicPreset {
     pub game_mod: Option<String>,
     /// Default skill (0 = none).
     pub skill: u8,
+    /// Atomic Duke multiplayer mode.
+    pub duke_game_mode: u8,
+    /// Atomic Duke friendly-fire setting.
+    pub duke_friendly_fire: bool,
     /// Total download size (bytes).
     pub download_bytes: u64,
 }
@@ -145,7 +169,9 @@ pub struct PublicPresets {
 pub struct ResolvedPreset {
     /// Preset title.
     pub title: String,
-    /// Base game reference.
+    /// Game runtime (`doom` or `duke3d`).
+    pub game: String,
+    /// Base game reference (Doom IWAD or Duke GRP).
     pub iwad: Option<RoomContentRef>,
     /// Content references, in mount order.
     pub content: Vec<RoomContentRef>,
@@ -155,6 +181,10 @@ pub struct ResolvedPreset {
     pub game_mod: Option<String>,
     /// Skill when the request left it at the lobby default.
     pub skill: u8,
+    /// Atomic Duke multiplayer mode.
+    pub duke_game_mode: u8,
+    /// Atomic Duke friendly-fire setting.
+    pub duke_friendly_fire: bool,
 }
 
 /// The library and presets of this node.
@@ -272,7 +302,7 @@ impl ContentStore {
             .ok_or("content library disabled (no --content-dir / --data-dir)")?;
         if !is_valid_content_file(file) {
             return Err(format!(
-                "bad file name {file:?} (A-Z a-z 0-9 . _ -, .wad/.pk3/.pk7/.zip)"
+                "bad file name {file:?} (A-Z a-z 0-9 . _ -, .wad/.grp/.pk3/.pk7/.zip)"
             ));
         }
         Ok(dir.join(format!(".upload-{file}")))
@@ -347,6 +377,16 @@ impl ContentStore {
             for p in &mut cfg.presets {
                 p.id = p.id.trim().to_ascii_lowercase();
                 p.title = p.title.trim().to_owned();
+                p.game = p.game.trim().to_ascii_lowercase();
+                if !matches!(p.game.as_str(), "doom" | "duke3d") {
+                    return Err(format!("{}: game must be doom or duke3d", p.title));
+                }
+                if p.duke_game_mode > 2 {
+                    return Err(format!(
+                        "{}: Duke multiplayer mode must be 0, 1, or 2",
+                        p.title
+                    ));
+                }
                 if !room_proto::is_valid_mod_name(&p.id) {
                     return Err(format!("preset id {:?}: use a-z 0-9 _ - (1–32)", p.id));
                 }
@@ -358,14 +398,27 @@ impl ContentStore {
                 }
                 if let Some(iwad) = p.iwad.as_deref().filter(|s| !s.is_empty()) {
                     match lib.get(iwad) {
-                        Some(e) if e.kind == ContentKind::Iwad => {}
-                        Some(_) => return Err(format!("{}: {iwad} is not an IWAD", p.title)),
+                        Some(e) if p.game == "doom" && e.kind == ContentKind::Iwad => {}
+                        Some(e) if p.game == "duke3d" && e.kind == ContentKind::Duke => {}
+                        Some(_) if p.game == "duke3d" => {
+                            return Err(format!("{}: {iwad} is not a Duke GRP", p.title));
+                        }
+                        Some(_) => return Err(format!("{}: {iwad} is not a Doom IWAD", p.title)),
                         None => return Err(format!("{}: no library file {iwad}", p.title)),
                     }
                 } else {
                     p.iwad = None;
                 }
+                if p.game == "duke3d" && p.iwad.is_none() {
+                    return Err(format!("{}: Duke presets need a base GRP file", p.title));
+                }
                 p.content.retain(|c| !c.trim().is_empty());
+                if p.game == "duke3d" && !p.content.is_empty() {
+                    return Err(format!(
+                        "{}: Duke presets currently support a base GRP only",
+                        p.title
+                    ));
+                }
                 for c in &p.content {
                     if !lib.contains_key(c) {
                         return Err(format!("{}: no library file {c}", p.title));
@@ -401,6 +454,12 @@ impl ContentStore {
                 } else {
                     p.game_mod = None;
                 }
+                if p.game == "duke3d" && p.game_mod.is_some() {
+                    return Err(format!(
+                        "{}: Doom gameplay mods cannot be used in a Duke preset",
+                        p.title
+                    ));
+                }
                 p.skill = if p.skill == 0 { 0 } else { p.skill.clamp(1, 5) };
             }
         }
@@ -435,12 +494,15 @@ impl ContentStore {
                     id: p.id.clone(),
                     title: p.title.clone(),
                     description: p.description.clone(),
+                    game: p.game.clone(),
                     iwad,
                     content,
                     maps: p.maps.clone(),
                     default_map: p.default_map.clone(),
                     game_mod: p.game_mod.clone(),
                     skill: p.skill,
+                    duke_game_mode: p.duke_game_mode,
+                    duke_friendly_fire: p.duke_friendly_fire,
                     download_bytes,
                 })
             })
@@ -483,11 +545,14 @@ impl ContentStore {
         }
         Ok(ResolvedPreset {
             title: p.title,
+            game: p.game,
             iwad: p.iwad,
             content: p.content,
             map,
             game_mod: p.game_mod,
             skill: p.skill,
+            duke_game_mode: p.duke_game_mode,
+            duke_friendly_fire: p.duke_friendly_fire,
         })
     }
 
@@ -553,16 +618,30 @@ fn scan_file(path: &Path, file: &str) -> Result<ContentEntry, String> {
         }
         fp.update(&buf[..n]);
     }
-    let kind = match head.get(..4) {
-        Some(b"IWAD") => ContentKind::Iwad,
-        Some(b"PWAD") => ContentKind::Pwad,
-        Some(b"PK\x03\x04") | Some(b"PK\x05\x06") | Some(b"7z\xbc\xaf") => ContentKind::Archive,
-        _ => return Err("not a WAD, PK3/ZIP or PK7 file".into()),
+    let is_duke_grp = file
+        .rsplit_once('.')
+        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("grp"));
+    let kind = if is_duke_grp {
+        if head.get(..12) != Some(b"KenSilverman") {
+            return Err("not a Duke GRP (missing KenSilverman header)".into());
+        }
+        ContentKind::Duke
+    } else {
+        match head.get(..4) {
+            Some(b"IWAD") => ContentKind::Iwad,
+            Some(b"PWAD") => ContentKind::Pwad,
+            Some(b"PK\x03\x04") | Some(b"PK\x05\x06") | Some(b"7z\xbc\xaf") => ContentKind::Archive,
+            _ => return Err("not a WAD, PK3/ZIP or PK7 file".into()),
+        }
     };
     let maps = match kind {
         ContentKind::Iwad | ContentKind::Pwad => std::fs::read(path)
             .map(|b| wad_maps(&b))
             .unwrap_or_default(),
+        ContentKind::Duke => {
+            let bytes = std::fs::read(path).map_err(|e| format!("read Duke GRP: {e}"))?;
+            duke_grp_maps(&bytes).ok_or("invalid or truncated Duke GRP")?
+        }
         ContentKind::Archive => archive_maps(path),
     };
     Ok(ContentEntry {
@@ -573,6 +652,44 @@ fn scan_file(path: &Path, file: &str) -> Result<ContentEntry, String> {
         maps,
         url: format!("/api/content/{file}"),
     })
+}
+
+/// Read Build map names from a GRP directory without loading map bodies.
+fn duke_grp_maps(bytes: &[u8]) -> Option<Vec<String>> {
+    if bytes.len() < 16 || bytes.get(..12) != Some(b"KenSilverman") {
+        return None;
+    }
+    let count = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
+    let Some(dir_end) = count.checked_mul(16).and_then(|n| n.checked_add(16)) else {
+        return None;
+    };
+    if dir_end > bytes.len() || count > (bytes.len() - 16) / 16 {
+        return None;
+    }
+    let mut body_at = dir_end;
+    let mut maps = Vec::new();
+    for i in 0..count {
+        let at = 16 + i * 16;
+        let entry = &bytes[at..at + 16];
+        let name_end = entry[..12].iter().position(|&b| b == 0).unwrap_or(12);
+        let name = String::from_utf8_lossy(&entry[..name_end]).to_ascii_uppercase();
+        let size = u32::from_le_bytes([entry[12], entry[13], entry[14], entry[15]]) as usize;
+        let Some(next) = body_at.checked_add(size) else {
+            return None;
+        };
+        if next > bytes.len() {
+            return None;
+        }
+        body_at = next;
+        if let Some(stem) = name.strip_suffix(".MAP")
+            && (1..=8).contains(&stem.len())
+            && stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            && !maps.iter().any(|map| map == stem)
+        {
+            maps.push(stem.to_owned());
+        }
+    }
+    Some(maps)
 }
 
 fn rd_i32(b: &[u8], at: usize) -> Option<usize> {
@@ -725,12 +842,15 @@ mod tests {
                 id: "BD".into(),
                 title: "Brutal Doom".into(),
                 description: String::new(),
+                game: "doom".into(),
                 iwad: Some("base.wad".into()),
                 content: vec!["bd.pk3".into()],
                 maps: vec!["map01".into(), "bikerace".into()],
                 default_map: String::new(),
                 game_mod: None,
                 skill: 4,
+                duke_game_mode: 1,
+                duke_friendly_fire: false,
             }],
         };
         store.set_presets(cfg, &|_| false).unwrap();

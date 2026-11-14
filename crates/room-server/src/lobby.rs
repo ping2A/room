@@ -156,6 +156,12 @@ pub struct PublicRoom {
     pub time_limit: u16,
     /// `doom` or `duke3d`.
     pub game: String,
+    /// Netgame mode for the lobby card: `coop`, `deathmatch` (Doom, or Duke
+    /// DukeMatch with respawning items) or `dukematch_nospawn`.
+    pub mode: &'static str,
+    /// Duke friendly fire (co-op only).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub friendly_fire: bool,
     /// Preset title (empty = custom room).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub preset: String,
@@ -166,6 +172,21 @@ pub struct PublicRoom {
     pub ws_v2: String,
     /// Relative legacy WebSocket path.
     pub ws_legacy: String,
+}
+
+/// Netgame mode name shown in the lobby.
+fn room_mode(settings: &crate::room::RoomSettings) -> &'static str {
+    if settings.game == "duke3d" {
+        match settings.duke_game_mode {
+            0 => "deathmatch",
+            2 => "dukematch_nospawn",
+            _ => "coop",
+        }
+    } else if settings.doom_deathmatch {
+        "deathmatch"
+    } else {
+        "coop"
+    }
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -199,6 +220,8 @@ pub async fn list_public_rooms(
             packs: h.settings.packs.clone(),
             time_limit: h.settings.time_limit,
             game: h.settings.game.clone(),
+            mode: room_mode(&h.settings),
+            friendly_fire: h.settings.game == "duke3d" && h.settings.duke_friendly_fire,
             preset: h.settings.preset.clone(),
             download_bytes: h
                 .settings

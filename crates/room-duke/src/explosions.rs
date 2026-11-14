@@ -313,7 +313,7 @@ pub fn moveexplosions(
                 players,
                 i,
             );
-        } else if s.picnum == JIBS6 {
+        } else if s.picnum == JIBS6 || is_jib_piece(s.picnum) {
             step_jibs6(
                 lists,
                 sprites,
@@ -443,6 +443,23 @@ fn step_shell(
     }
 }
 
+/// Chocolate `moveexplosions` JIBS1..5 / HEADJIB1 / ARMJIB1 / LEGJIB1 /
+/// LIZMAN* / DUKE* body parts: same case as JIBS6 (they become a JIBS6 splat
+/// on landing). Without it they hung in the air where they spawned.
+fn is_jib_piece(pic: i16) -> bool {
+    matches!(
+        pic,
+        2245 | 2250 | 2255 | 2260 | 2265 // JIBS1..JIBS5
+            | 1768 | 1772 | 1776 // HEADJIB1 ARMJIB1 LEGJIB1
+            | 2201 | 2205 | 2209 // LIZMANHEAD1 LIZMANARM1 LIZMANLEG1
+            | DUKETORSO | DUKEGUN | DUKELEG
+    )
+}
+
+const DUKETORSO: i16 = 1520;
+const DUKEGUN: i16 = 1528;
+const DUKELEG: i16 = 1536;
+
 /// Chocolate `moveexplosions` JIBS6 ballistic and floor-contact step.
 fn step_jibs6(
     lists: &mut SpriteLists,
@@ -511,7 +528,8 @@ fn step_jibs6(
             actor_temps[iu].g_t[1] += 1;
         } else if sectors[sect as usize].lotag != 2 {
             actor_temps[iu].g_t[1] = 0;
-            if actor_temps[iu].g_t[0] > 2 {
+            let wrap = if matches!(sprites[iu].picnum, DUKELEG | DUKETORSO | DUKEGUN) { 6 } else { 2 };
+            if actor_temps[iu].g_t[0] > wrap {
                 actor_temps[iu].g_t[0] = 0;
             } else {
                 actor_temps[iu].g_t[0] += 1;
@@ -548,6 +566,13 @@ fn step_jibs6(
         let sp = &mut sprites[iu];
         sp.z = floorz - (2 << 8);
         sp.xvel = 0;
+        if sp.picnum != JIBS6 {
+            // A landed body part turns into a JIBS6 splat.
+            sp.picnum = JIBS6;
+            actor_temps[iu].g_t[0] = 0;
+            actor_temps[iu].g_t[1] = 0;
+            return;
+        }
         actor_temps[iu].g_t[1] += 1;
         if (actor_temps[iu].g_t[1] & 3) == 0 && actor_temps[iu].g_t[0] < 7 {
             actor_temps[iu].g_t[0] += 1;

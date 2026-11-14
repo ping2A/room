@@ -5,7 +5,7 @@
 
 use room_audio::{ENGINE_SAMPLE_RATE, Mixer};
 use room_music::{MidiDevice, MusicPlayer, SoftFont};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
@@ -56,6 +56,16 @@ pub fn set_muted(muted: bool) {
 /// Current [`set_muted`] state.
 pub fn muted() -> bool {
     MUTED.with(|m| *m.borrow())
+}
+
+fn untrack_master_gain(gain: &GainNode) {
+    MASTER_GAINS.with(|g| {
+        let gain: &JsValue = gain.as_ref();
+        g.borrow_mut().retain(|n| {
+            let n: &JsValue = n.as_ref();
+            n != gain
+        });
+    });
 }
 
 fn track_master_gain(gain: &GainNode) {
@@ -172,12 +182,15 @@ enum Backend {
     /// Waiting for AudioWorklet `addModule` (silent until ready / SP fallback).
     Pending,
     ScriptProcessor {
-        #[allow(dead_code)]
         node: ScriptProcessorNode,
+        /// Owned (not forgotten) so dropping the backend frees the mixer/music.
+        _onprocess: Closure<dyn FnMut(AudioProcessingEvent)>,
     },
     Worklet {
-        _node: AudioWorkletNode,
+        node: AudioWorkletNode,
         port: web_sys::MessagePort,
+        /// Owned (not forgotten) so dropping the backend frees the mixer/music.
+        _onmessage: Closure<dyn FnMut(MessageEvent)>,
     },
 }
 
@@ -186,7 +199,6 @@ pub struct WebAudio {
     /// Context (kept for `resume`).
     ctx: AudioContext,
     /// Master gain (0..=1.5 via [`Self::set_master_gain`]).
-    #[allow(dead_code)]
     gain: GainNode,
     /// Shared SFX mixer.
     pub mixer: Rc<RefCell<Mixer>>,
@@ -208,6 +220,10 @@ struct Feeder {
     scratch: Rc<RefCell<Scratch>>,
     mixer: Rc<RefCell<Mixer>>,
     music: Rc<RefCell<MusicPlayer>>,
+    /// Set when the owning [`WebAudio`] is dropped: stops all rendering, so a
+    /// replaced session (map change, restart) no longer runs its mixer and
+    /// music synth on the main thread.
+    closed: Rc<Cell<bool>>,
 }
 
 struct Scratch {
@@ -272,6 +288,7 @@ impl WebAudio {
             scratch: Rc::clone(&scratch),
             mixer: Rc::clone(&mixer),
             music: Rc::clone(&music),
+            closed: Rc::new(Cell::new(false)),
         };
         {
             let ctx_w = ctx.clone();
@@ -282,8 +299,18 @@ impl WebAudio {
             let music_w = Rc::clone(&music);
             let scratch_w = Rc::clone(&scratch);
             let feeder_w = feeder.clone();
+            let closed_w = Rc::clone(&feeder.closed);
             wasm_bindgen_futures::spawn_local(async move {
-                match install_worklet(&ctx_w, &gain_w).await {
+                let installed = install_worklet(&ctx_w, &gain_w).await;
+                // The session may have been replaced while `addModule` ran.
+                if closed_w.get() {
+                    if let Ok((node, port)) = installed {
+                        port.close();
+                        let _ = node.disconnect();
+                    }
+                    return;
+                }
+                match installed {
                     Ok((node, port)) => {
                         let clock_msg = Rc::clone(&clock_w);
                         let onmsg = Closure::wrap(Box::new(move |ev: MessageEvent| {
@@ -301,11 +328,16 @@ impl WebAudio {
                                 c.report(frames, underruns, now_ms());
                             }
                             // Audio-clock driven refill (rAF alone stalls on slow frames).
-                            feeder_w.feed();
+                            if !feeder_w.closed.get() {
+                                feeder_w.feed();
+                            }
                         }) as Box<dyn FnMut(_)>);
                         port.set_onmessage(Some(onmsg.as_ref().unchecked_ref()));
-                        onmsg.forget();
-                        *backend_w.borrow_mut() = Backend::Worklet { _node: node, port };
+                        *backend_w.borrow_mut() = Backend::Worklet {
+                            node,
+                            port,
+                            _onmessage: onmsg,
+                        };
                         web_sys::console::log_1(&"room-web: audio worklet playback active".into());
                     }
                     Err(e) => {
@@ -413,9 +445,45 @@ impl WebAudio {
     }
 }
 
+impl Drop for WebAudio {
+    /// Tear the graph down. Without this, every replaced session (each map
+    /// pick or level restart creates a new one) left its `AudioContext`
+    /// running: the worklet kept reporting to a forgotten closure that
+    /// rendered the old mixer and music synth on the main thread, so each
+    /// map change added another full audio render and the game slowed down.
+    fn drop(&mut self) {
+        self.feeder.closed.set(true);
+        let backend = self
+            .feeder
+            .backend
+            .try_borrow_mut()
+            .map(|mut b| std::mem::replace(&mut *b, Backend::Pending));
+        match backend {
+            Ok(Backend::Worklet { node, port, .. }) => {
+                port.set_onmessage(None);
+                port.close();
+                let _ = node.disconnect();
+            }
+            Ok(Backend::ScriptProcessor { node, .. }) => {
+                node.set_onaudioprocess(None);
+                let _ = node.disconnect();
+            }
+            Ok(Backend::Pending) | Err(_) => {}
+        }
+        let _ = self.gain.disconnect();
+        untrack_master_gain(&self.gain);
+        if self.ctx.state() != AudioContextState::Closed {
+            let _ = self.ctx.close();
+        }
+    }
+}
+
 impl Feeder {
     /// Top the worklet ring up to the adaptive target.
     fn feed(&self) {
+        if self.closed.get() {
+            return;
+        }
         let port = {
             let Ok(backend) = self.backend.try_borrow() else {
                 return;
@@ -528,8 +596,10 @@ fn start_script_processor(
     }) as Box<dyn FnMut(_)>);
     node.set_onaudioprocess(Some(cb.as_ref().unchecked_ref()));
     let _ = node.connect_with_audio_node(gain);
-    cb.forget();
-    Ok(Backend::ScriptProcessor { node })
+    Ok(Backend::ScriptProcessor {
+        node,
+        _onprocess: cb,
+    })
 }
 
 async fn install_worklet(

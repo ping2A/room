@@ -65,6 +65,10 @@ pub const GREENSLIME: i16 = 2370;
 pub const RECON: i16 = 1960;
 pub const CANWITHSOMETHING: i16 = 1232;
 pub const TREE1: i16 = 908;
+pub const WATERFOUNTAIN: i16 = 563;
+pub const TOILET: i16 = 569;
+pub const STALL: i16 = 571;
+pub const PLUG: i16 = 1069;
 pub const TREE2: i16 = 910;
 pub const TIRE: i16 = 990;
 pub const BOX: i16 = 951;
@@ -83,6 +87,7 @@ const SOFT_CULL_PICKUPS: &[i16] = &[
 const DUMMY_ENEMIES: &[i16] = &[
     GREENSLIME,
     RECON,
+    1267, // RAT (C-coded in `moveactors`, no CON body)
     CANWITHSOMETHING,
     1233,
     1234,
@@ -273,6 +278,33 @@ fn classify_map_sprites_stats(
             continue;
         }
 
+        // Chocolate `spawn()` TOILET/STALL: `lotag = 1` makes them
+        // `neartag`-usable; solid with a tight clipdist.
+        if matches!(sprites[i].picnum, TOILET | STALL) {
+            picnum_out[i] = sprites[i].picnum;
+            sprites[i].lotag = 1;
+            sprites[i].cstat |= 257;
+            sprites[i].clipdist = 8;
+            sprites[i].owner = i as i16;
+            continue;
+        }
+        // WATERFOUNTAIN (`SLT = 1`, falls into TREE1…BOX) and PLUG
+        // (`lotag = 9999`) both live on STAT_STANDABLE.
+        if matches!(sprites[i].picnum, WATERFOUNTAIN | PLUG) {
+            picnum_out[i] = sprites[i].picnum;
+            if sprites[i].picnum == WATERFOUNTAIN {
+                sprites[i].lotag = 1;
+                sprites[i].cstat = 257;
+                sprites[i].extra = 1;
+            } else {
+                sprites[i].lotag = 9999;
+            }
+            if lists.sprite_stat[i] != STAT_STANDABLE {
+                let _ = lists.changespritestat(i as i16, STAT_STANDABLE);
+            }
+            continue;
+        }
+
         // Chocolate `spawn()`: breakable props (HYDRENT, PANNEL*, BOTTLE*,
         // CHAIR*, VASE, PIPE*, ...) become solid and hitscan-hittable with
         // clipdist 32 on STAT_DEFAULT; FEMMAG loses both bits.
@@ -304,6 +336,17 @@ fn classify_map_sprites_stats(
         if sprites[i].picnum == RECON && sprites[i].lotag as u8 > skill {
             soft_cull_to_misc(lists, sprites, picnum_out, i);
             continue;
+        }
+        // Chocolate `spawn()` RECON: 130 health, hittable, single-player
+        // drops palette variants, then STAT_ZOMBIEACTOR until seen.
+        if sprites[i].picnum == RECON {
+            sprites[i].extra = 130;
+            sprites[i].cstat |= 257;
+            if sprites[i].pal != 0 {
+                soft_cull_to_misc(lists, sprites, picnum_out, i);
+                continue;
+            }
+            sprites[i].shade = -17;
         }
 
         picnum_out[i] = sprites[i].picnum;

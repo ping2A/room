@@ -16,6 +16,9 @@
 //! It returns that per-pixel depth buffer (camera-forward distance in Build
 //! XY units, `i32::MAX` = empty) for the sprite and mirror passes.
 
+/// Atomic `MIRROR` tile.
+const MIRROR_TILE: i16 = 560;
+
 use super::{SoftFrame, SoftTiles};
 use crate::geom::{SectorZ, WallXY, getzsofslope};
 use crate::soft::STAT_PARALLAX;
@@ -724,7 +727,14 @@ impl Ctx<'_> {
         if wall.cstat & 8 != 0 {
             u = tw - 1 - u.rem_euclid(tw);
         }
-        let flat = super::wall_color(picnum, wall.shade);
+        // A one-way MIRROR wall that is not the reflected mirror this frame
+        // (Chocolate reflects only the nearest one) shows dark glass, not the
+        // debug colour standing in for the tile's transparent texels.
+        let flat = if picnum == MIRROR_TILE && wall.cstat & 32 != 0 {
+            0
+        } else {
+            super::wall_color(picnum, wall.shade)
+        };
         let pal_table = tiles.pal_table(wall.pal);
         let shade_row = tiles.shade_row(shade);
         let w = self.w as usize;

@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="color-scheme" content="dark"/>
-  <title>ROOM — Enter the Fray</title>
+  <title>ROOM — Multiplayer</title>
   <link rel="stylesheet" href="/lobby/assets/app.css"/>
 </head>
 <body>
@@ -12,6 +12,7 @@
     <div class="bg-blood"></div>
     <div class="bg-grit"></div>
     <div class="bg-drips"></div>
+    <canvas id="bg-fire" width="160" height="64"></canvas>
   </div>
 
   <header class="top">
@@ -19,7 +20,7 @@
       <span id="node-pill" class="pill">node —</span>
       <span id="drain-pill" class="pill warn hidden">draining</span>
       <label class="name-field">
-        <span>Callsign</span>
+        <span>Player name</span>
         <input id="player-name" maxlength="24" placeholder="doomguy" autocomplete="nickname"/>
       </label>
     </div>
@@ -29,25 +30,33 @@
     <section class="hero-block">
       <p class="mark" aria-label="Room">ROOM</p>
       <h1 class="hero-line">Rip &amp; tear — online</h1>
-      <p class="lede">Public pits on this node. Create a slaughter, join by id, or watch the carnage.</p>
+      <p class="lede">Netgames on this server. Host a co-op or deathmatch game, join one by its ID, or spectate a match in progress.</p>
       <div class="hero-actions">
-        <button type="button" id="btn-create" class="btn primary">Open a pit</button>
+        <button type="button" id="btn-create" class="btn primary">Host game</button>
         <button type="button" id="btn-quick-br" class="btn primary" title="8-seat Battle Royale queue; bots fill empty seats after 60s">Quick play BR</button>
-        <button type="button" id="btn-join-id" class="btn">Join by id</button>
-        <button type="button" id="btn-solo" class="btn" title="Play alone in this browser: no room, no netplay">Play solo</button>
+        <button type="button" id="btn-join-id" class="btn">Join by ID</button>
+        <button type="button" id="btn-solo" class="btn" title="Single player in this browser: no server, no netplay">Play solo</button>
         <button type="button" id="btn-refresh" class="btn ghost">Refresh</button>
         <a id="btn-editor" class="btn ghost" href="/play/editor.html" target="_blank" rel="noopener">WAD editor</a>
       </div>
       <p id="flash" class="flash hidden" role="status"></p>
+      <aside class="hero-steps" aria-label="How a netgame starts">
+        <p class="steps-kicker">How a netgame starts</p>
+        <ol>
+          <li><b>Host a game</b><span>Pick Doom or Duke Nukem 3D, the map, skill and mode: co-op, deathmatch or DukeMatch. Your browser loads the game files locally.</span></li>
+          <li><b>Share the link</b><span>Friends join from any browser — phones included — with the game link or its ID.</span></li>
+          <li><b>Frag</b><span>Lockstep netplay, voice chat and live spectating. Bots fill empty Battle Royale slots.</span></li>
+        </ol>
+      </aside>
     </section>
 
     <section class="panel">
       <div class="panel-head">
-        <h2>Live pits</h2>
+        <h2>Netgames</h2>
         <span class="muted" id="room-count">—</span>
       </div>
       <div id="room-grid" class="room-grid"></div>
-      <p id="rooms-empty" class="empty">No blood spilled yet — open a pit.</p>
+      <p id="rooms-empty" class="empty">No games running. Host one and invite your friends.</p>
     </section>
 
     <section class="panel top-players">

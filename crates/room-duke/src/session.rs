@@ -4944,16 +4944,107 @@ impl DukeSession {
         // Chocolate `animatesprites`: the viewing player's own APLAYER sprite
         // is never drawn (with camera interpolation it would sit just in
         // front of the eye as a screen-filling blow-up).
+        let mirror_frame = usize::try_from(self.player.sprite_i)
+            .ok()
+            .and_then(|i| view.sprites.get(i).copied())
+            .and_then(|body| self.mirror_player_frame(&view, body));
         if let Some(own) = usize::try_from(self.player.sprite_i)
             .ok()
             .and_then(|i| view.sprites.get_mut(i))
         {
+            // Chocolate re-runs `animatesprites` for the mirror pass from the
+            // reflected camera; Room only uses this sprite in mirrors, so
+            // pick its action frame and rotation for that view here.
+            if let Some((picnum, xflip)) = mirror_frame {
+                own.picnum = picnum;
+                if xflip {
+                    own.cstat |= 4;
+                } else {
+                    own.cstat &= !4;
+                }
+            }
             // Zero height hides it; `xrepeat` stays so the HUD can still
             // tell a shrunk player (Chocolate's `xrepeat < 40` fists).
+            let real_yrepeat = own.yrepeat;
             own.yrepeat = 0;
             own.cstat |= 32768;
+            if self.player.extra > 0 || real_yrepeat > 0 {
+                view.mirror_viewer = Some((self.player.sprite_i, real_yrepeat));
+            }
         }
         Some(view)
+    }
+
+    /// Display frame of the local APLAYER as seen in the nearest mirror:
+    /// Atomic's `PSTAND`/`PWALK`/`PRUN`/`PWALKBACK`/`PJUMPING`/`PFALLING`
+    /// action (frames advance like CON `execute`: +4 lotag per tic, one step
+    /// past the action delay) and the 5-view rotation from the reflected eye.
+    fn mirror_player_frame(
+        &self,
+        view: &BuildWorld,
+        body: room_build_engine::types::SpriteT,
+    ) -> Option<(i16, bool)> {
+        const MIRROR: i16 = 560;
+        let script = self.script.as_ref()?;
+        let player = &self.player;
+        if player.extra <= 0 {
+            return None;
+        }
+        // Nearest one-way mirror wall (Chocolate's Manhattan choice).
+        let mut best: Option<(i64, usize)> = None;
+        for (index, wall) in view.walls.iter().enumerate() {
+            if wall.overpicnum != MIRROR || wall.cstat & 32 == 0 {
+                continue;
+            }
+            let d = (i64::from(wall.x) - i64::from(player.posx)).abs()
+                + (i64::from(wall.y) - i64::from(player.posy)).abs();
+            if best.is_none_or(|(b, _)| d < b) {
+                best = Some((d, index));
+            }
+        }
+        let wall = view.walls.get(best?.1)?;
+        let end = view.walls.get(usize::try_from(wall.point2).ok()?)?;
+        // Reflect the eye across the mirror line.
+        let (ax, ay) = (f64::from(wall.x), f64::from(wall.y));
+        let (dx, dy) = (f64::from(end.x) - ax, f64::from(end.y) - ay);
+        let len2 = dx * dx + dy * dy;
+        if len2 <= 0.0 {
+            return None;
+        }
+        let (px, py) = (f64::from(player.posx), f64::from(player.posy));
+        let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+        let (fx, fy) = (ax + dx * t, ay + dy * t);
+        let (cam_x, cam_y) = ((2.0 * fx - px) as i32, (2.0 * fy - py) as i32);
+
+        // `body_xvel` is Chocolate's `ksqrt` step length (a magnitude).
+        let speed = i32::from(player.body_xvel);
+        let name = if !player.on_ground {
+            if player.poszv < 0 { "PJUMPING" } else { "PFALLING" }
+        } else if speed >= 90 {
+            "PRUN"
+        } else if speed >= 8 {
+            "PWALK"
+        } else {
+            "PSTAND"
+        };
+        let label = script.labels.get(name)?;
+        let ptr = usize::try_from(label.value).ok()?;
+        let action = |k: usize| script.script.get(ptr + k).copied().unwrap_or(0);
+        let (start, frames, views, inc, delay) = (action(0), action(1), action(2), action(3), action(4));
+        let period = (delay / 4 + 1).max(1) as u32;
+        let frame = if frames > 1 { (self.tic / period) as i32 % frames } else { 0 };
+        let t3 = frame * inc;
+        let g = room_build_engine::helpers::getangle(body.x - cam_x, body.y - cam_y);
+        let mut k = (((i32::from(body.ang) + 3072 + 128 - g) & 2047) >> 8) & 7;
+        let mut xflip = false;
+        if views == 5 && k > 4 {
+            k = 8 - k;
+            xflip = true;
+        } else if views != 5 {
+            k = 0;
+        }
+        let pic = i32::from(body.picnum) + k + start + views * t3;
+        i16::try_from(pic).ok().filter(|&p| p > 0).map(|p| (p, xflip))
     }
 
     /// Active Atomic `definequote` text requested by CON `quote`.
@@ -5358,10 +5449,6 @@ impl DukeSession {
             oposz: posz,
             bobposx: posx,
             bobposy: posy,
-            // TEMP: DEMO1 tic135 shotgun floor miss needs pyoff=-126 (sin>>7);
-            // bias stands in for missing lotag-1 / walk `pycount` updates before dive.
-            // +4 vs 58 aligns underwater pyoff at shell eject (tic153/181 ±2 Z).
-            pycount: 63,
             ang,
             look_ang: 0,
             horiz: 140, // Chocolate `resetplayerstats`
@@ -5866,6 +5953,26 @@ impl DukeSession {
         // whatever `movefta` burns that tic.
         // Chocolate `short global_random` — truncate like a 16-bit store.
         self.global_random = krand_step(&mut self.randomseed) as i16 as i32;
+        // Chocolate: `movedummyplayers()` right after `global_random = TRAND`.
+        if let Some(world) = self.world.as_mut() {
+            let mut plist = Vec::with_capacity(1 + self.coop_players.len());
+            plist.push(self.player.clone());
+            plist.extend(self.coop_players.iter().cloned());
+            crate::dummyplayers::movedummyplayers(
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &world.sectors[..world.numsectors as usize],
+                &world.walls[..world.numwalls as usize],
+                &mut plist,
+                &mut self.actor_temps,
+            );
+            world.lists = self.lists.clone();
+            let mut it = plist.into_iter();
+            if let Some(p) = it.next() {
+                self.player = p;
+            }
+            self.coop_players = it.collect();
+        }
         if let Some(world) = self.world.as_mut() {
             let mut death_players = Vec::with_capacity(1 + self.coop_players.len());
             death_players.push(self.player.clone());
@@ -6754,11 +6861,13 @@ impl DukeSession {
                     .and_then(|label| i16::try_from(label.value).ok())
                     .unwrap_or(1233);
                 for _ in 0..2 {
+                    // Chocolate `lotsofmoney`/`lotsofmail`/`lotsofpaper`: `EGS(…, z-(TRAND%(47<<8)), …,
+                    // TRAND&2047, …)` — right-to-left arguments: the angle draws before z.
+                    let angle = (krand_step(&mut self.randomseed) & 2047) as i16;
                     let z = self
                         .player
                         .posz
                         .wrapping_sub(krand_step(&mut self.randomseed) % (47 << 8));
-                    let angle = (krand_step(&mut self.randomseed) & 2047) as i16;
                     let coin = crate::shoot::egs(
                         &mut self.lists,
                         world.sprites.as_mut(),
@@ -6814,6 +6923,35 @@ impl DukeSession {
                             &self.tile_meta,
                             &mut self.actor_temps,
                         );
+                    let max_health = self
+                        .script
+                        .as_ref()
+                        .and_then(|script| script.gamestartup.get(2).copied())
+                        .map_or(100, |health| health as i16);
+                    let utility = if used_nuke_button {
+                        None
+                    } else {
+                        crate::interactions::use_utility_sprite(
+                            world,
+                            self.player.posx,
+                            self.player.posy,
+                            self.player.posz + (16 << 8),
+                            self.player.ang,
+                            self.player.cursectnum,
+                            &mut self.player,
+                            &self.tile_meta,
+                            &mut self.actor_temps,
+                            max_health,
+                            &mut self.randomseed,
+                        )
+                    };
+                    queue_utility_sound(
+                        self.script.as_ref(),
+                        utility,
+                        &self.player,
+                        &mut self.actor_temps,
+                    );
+                    let used_nuke_button = used_nuke_button || utility.is_some();
                     let switched = !used_nuke_button
                         && crate::interactions::use_wall_switch(
                             world,
@@ -6900,6 +7038,30 @@ impl DukeSession {
                             &self.tile_meta,
                             &mut self.actor_temps,
                         );
+                    let max_health = self
+                        .script
+                        .as_ref()
+                        .and_then(|script| script.gamestartup.get(2).copied())
+                        .map_or(100, |health| health as i16);
+                    let utility = if used_nuke_button {
+                        None
+                    } else {
+                        crate::interactions::use_utility_sprite(
+                            world,
+                            player.posx,
+                            player.posy,
+                            player.posz + (16 << 8),
+                            player.ang,
+                            player.cursectnum,
+                            player,
+                            &self.tile_meta,
+                            &mut self.actor_temps,
+                            max_health,
+                            &mut self.randomseed,
+                        )
+                    };
+                    queue_utility_sound(self.script.as_ref(), utility, player, &mut self.actor_temps);
+                    let used_nuke_button = used_nuke_button || utility.is_some();
                     if !used_nuke_button
                         && crate::interactions::use_wall_switch(
                             world,
@@ -7010,6 +7172,7 @@ impl DukeSession {
                     &mut self.lists,
                     world.sprites.as_mut(),
                     &world.sectors[..world.numsectors as usize],
+                    &world.walls[..world.numwalls as usize],
                     &mut plist,
                     &mut self.actor_temps,
                     &mut self.picnum,
@@ -7132,6 +7295,7 @@ impl DukeSession {
                 &mut self.actor_temps,
                 script,
             );
+            crate::c_actors::set_everyothertime(self.everyothertime);
             crate::actors::moveactors_with_skill(
                 &mut self.lists,
                 world.sprites.as_mut(),
@@ -7553,6 +7717,14 @@ impl DukeSession {
                 &self.tile_meta,
                 self.script.as_ref(),
                 &mut self.randomseed,
+            );
+            crate::effectors::move_quake_debris_effectors(
+                world,
+                &mut self.actor_temps,
+                &mut self.picnum,
+                self.script.as_ref(),
+                &mut self.randomseed,
+                i32::from(self.earthquake_time),
             );
             move_true_drop_planes(world, &mut players, &mut self.actor_temps);
             crate::interactions::tick_bridge_effectors(world, &mut players, &mut self.actor_temps);
@@ -52470,6 +52642,24 @@ fn queue_player_sound(
     }
 }
 
+/// Sounds for [`crate::interactions::use_utility_sprite`] outcomes.
+fn queue_utility_sound(
+    script: Option<&ScriptImage>,
+    utility: Option<crate::interactions::UtilityUse>,
+    player: &Player,
+    actor_temps: &mut Vec<ActorConTemps>,
+) {
+    use crate::interactions::UtilityUse;
+    let name = match utility {
+        Some(UtilityUse::Urinate) => "DUKE_URINATE",
+        Some(UtilityUse::Flush) => "FLUSH_TOILET",
+        Some(UtilityUse::Drink) => "DUKE_DRINKING",
+        Some(UtilityUse::Shock) => "SHORT_CIRCUIT",
+        Some(UtilityUse::FountainFull) | None => return,
+    };
+    queue_player_sound(script, name, player, actor_temps);
+}
+
 fn set_player_quote(player: &mut Player, quote: i16) {
     if player.fta_enabled {
         player.quote_id = quote;
@@ -52487,6 +52677,19 @@ fn tick_player_inventory(
 ) {
     if player.inventory_display_timer > 0 {
         player.inventory_display_timer -= 1;
+    }
+    // Chocolate `doincrements`: flush + relief one tic into the toilet
+    // cooldown, then raise the holstered weapon again.
+    if player.last_pissed_time > 0 {
+        player.last_pissed_time -= 1;
+        if player.last_pissed_time == 26 * 219 {
+            queue_player_sound(script, "FLUSH_TOILET", player, actor_temps);
+            queue_player_sound(script, "DUKE_PISSRELIEF", player, actor_temps);
+        }
+        if player.last_pissed_time == 26 * 218 {
+            player.holster_weapon = 0;
+            player.weapon_pos = 10;
+        }
     }
     if player.steroids_amount > 0 && player.steroids_amount < 400 {
         player.steroids_amount -= 1;
@@ -53042,72 +53245,58 @@ fn tick_player_footprints(
     script: Option<&ScriptImage>,
     pre: PreMovePlayer,
 ) {
-    if player.cursectnum < 0 {
-        if player.dummy_player_sprite >= 0 {
-            let _ = lists.deletesprite(player.dummy_player_sprite);
-            player.dummy_player_sprite = -1;
-        }
+    // Chocolate `processinput` runs this in its vertical-movement block,
+    // before the horizontal clipmove: `psectlotag`, `psect`, `p->cursectnum`,
+    // `p->posx/posy/posz`, `p->on_ground` and the body sprite all still hold
+    // the start-of-tic values (`pre`). The PLAYERONWATER dummy is deleted and
+    // moved only by `crate::dummyplayers::movedummyplayers` (statnum 13).
+    let Ok(psect) = usize::try_from(pre.cursectnum) else {
+        return;
+    };
+    let Some(sector) = world.sectors.get(psect).copied() else {
+        return;
+    };
+    // Underwater (`psectlotag == 2`) and jetpack tics never get here.
+    if sector.lotag == 2 || player.jetpack_on > 0 {
         return;
     }
-    let Ok(sector_index) = usize::try_from(player.cursectnum) else {
-        return;
-    };
-    let Some(sector) = world.sectors.get(sector_index).copied() else {
-        if player.dummy_player_sprite >= 0 {
-            let _ = lists.deletesprite(player.dummy_player_sprite);
-            player.dummy_player_sprite = -1;
-        }
-        return;
-    };
+    let player_body = usize::try_from(player.sprite_i)
+        .ok()
+        .and_then(|index| world.sprites.get(index).copied());
+    let shrunk = player_body.is_some_and(|sprite| sprite.yrepeat < 32);
     if sector.lotag == 1 {
-        let player_body = usize::try_from(player.sprite_i)
-            .ok()
-            .and_then(|index| world.sprites.get(index).copied());
-        if player_body.is_none_or(|body| body.extra <= 0) && player.dummy_player_sprite >= 0 {
-            let _ = lists.deletesprite(player.dummy_player_sprite);
-            player.dummy_player_sprite = -1;
-        }
-        // Chocolate: `truefdist = klabs(posz - getflorzofslope(psect, posx, posy))`
-        // with the pre-move position, and the previous tic's `on_ground`.
-        let pre_floor = usize::try_from(pre.cursectnum)
-            .ok()
-            .and_then(|si| world.sectors.get(si))
-            .map_or(sector.floorz, |pre_sector| {
-                let walls: Vec<_> = world.walls.iter().map(|w| w.xy()).collect();
-                let zs: Vec<_> = world.sectors.iter().map(|s| s.z()).collect();
-                let _ = pre_sector;
-                room_build_engine::geom::getzsofslope(pre.cursectnum, pre.posx, pre.posy, &zs, &walls).1
-            });
-        let pre_lotag = usize::try_from(pre.cursectnum)
-            .ok()
-            .and_then(|si| world.sectors.get(si))
-            .map_or(0, |s| s.lotag);
-        if pre_lotag == 1
-            && pre.on_ground
-            && player_body.is_some_and(|sprite| sprite.yrepeat >= 32)
+        // Shallow water: `truefdist <= PHEIGHT` while standing spawns the
+        // PLAYERONWATER dummy and primes six wet footprints.
+        let walls: Vec<_> = world.walls.iter().map(|w| w.xy()).collect();
+        let zs: Vec<_> = world.sectors.iter().map(|s| s.z()).collect();
+        let pre_floor =
+            room_build_engine::geom::getzsofslope(pre.cursectnum, pre.posx, pre.posy, &zs, &walls).1;
+        if !shrunk
             && (pre.posz - pre_floor).saturating_abs() <= crate::player::PHEIGHT
+            && pre.on_ground
         {
-            player.footprint_count = 6;
-            player.footprint_pal = if sector.floorpicnum == 200 { 8 } else { 0 };
-            player.footprint_shade = 0;
             if player.dummy_player_sprite < 0
                 && let Some(parent) = player_body
             {
+                // Chocolate `spawn(pi,PLAYERONWATER)`: `EGS(…, 0,0,0,0,0,0, j, 0)`,
+                // then the player's repeats, `zvel = 128`, hidden unless under
+                // water, statnum 13.
                 let dummy = crate::shoot::egs(
                     lists,
                     world.sprites.as_mut(),
                     picnum,
                     actor_temps,
                     script,
-                    parent.sectnum,
-                    parent.x,
-                    parent.y,
-                    parent.z,
+                    // The body sprite still sits at the start-of-tic pose.
+                    pre.cursectnum,
+                    pre.posx,
+                    pre.posy,
+                    pre.posz + crate::player::PHEIGHT,
                     1420, // PLAYERONWATER
                     0,
                     parent.xrepeat,
                     parent.yrepeat,
-                    parent.ang,
+                    0,
                     0,
                     128,
                     player.sprite_i,
@@ -53115,43 +53304,29 @@ fn tick_player_footprints(
                 );
                 if dummy >= 0 {
                     player.dummy_player_sprite = dummy;
-                    let sprite = &mut world.sprites[dummy as usize];
-                    sprite.cstat |= 32768;
+                    let dummy_sector = world.sprites[dummy as usize].sectnum;
+                    let underwater = usize::try_from(dummy_sector)
+                        .ok()
+                        .and_then(|si| world.sectors.get(si))
+                        .is_some_and(|s| s.lotag == 2);
+                    if !underwater {
+                        world.sprites[dummy as usize].cstat |= 32768;
+                    }
                 }
             }
+            player.footprint_count = 6;
+            player.footprint_pal = if sector.floorpicnum == 200 { 8 } else { 0 };
+            player.footprint_shade = 0;
         }
-        if let Ok(dummy_index) = usize::try_from(player.dummy_player_sprite)
-            && let Some(dummy) = world.sprites.get_mut(dummy_index)
-        {
-            let _ = lists.changespritesect(player.dummy_player_sprite, player.cursectnum);
-            dummy.x = player.posx;
-            dummy.y = player.posy;
-            dummy.z = sector.floorz;
-            dummy.sectnum = player.cursectnum;
-            dummy.cstat |= 32768;
-        }
-        return;
-    }
-    if player.dummy_player_sprite >= 0 {
-        let _ = lists.deletesprite(player.dummy_player_sprite);
-        player.dummy_player_sprite = -1;
-    }
-    if !player.on_ground {
-        return;
-    }
-    if sector.lotag == 2 {
-        return;
-    }
-    if player.footprint_count == 0 {
-        return;
-    }
-    if sector.floorstat & 2 != 0 {
         return;
     }
 
+    // Dry ground: lay one of the primed footprints.
+    if player.footprint_count == 0 || !pre.on_ground || sector.floorstat & 2 != 0 {
+        return;
+    }
     const FOOTPRINT_TILES: [i16; 4] = [550, 672, 673, 674];
-    let mut nearby = lists.headspritesect[sector_index];
-    let mut already_near = false;
+    let mut nearby = lists.headspritesect[psect];
     while nearby >= 0 {
         let index = nearby as usize;
         if index >= world.sprites.len() || index >= lists.nextspritesect.len() {
@@ -53159,45 +53334,42 @@ fn tick_player_footprints(
         }
         let sprite = world.sprites[index];
         if FOOTPRINT_TILES.contains(&sprite.picnum)
-            && (sprite.x - player.posx).saturating_abs() < 384
-            && (sprite.y - player.posy).saturating_abs() < 384
+            && (sprite.x - pre.posx).saturating_abs() < 384
+            && (sprite.y - pre.posy).saturating_abs() < 384
         {
-            already_near = true;
-            break;
+            return;
         }
         nearby = lists.nextspritesect[index];
     }
-    if already_near {
-        return;
-    }
-
     player.footprint_count -= 1;
-    if sector.lotag != 0 || sector.hitag != 0 || player.sprite_i < 0 {
+    if sector.lotag != 0 || sector.hitag != 0 {
         return;
     }
     let tile = FOOTPRINT_TILES[(room_build_engine::numeric::krand_step(randomseed) & 3) as usize];
-    let Some(parent) = world.sprites.get(player.sprite_i as usize).copied() else {
+    let Some(parent) = player_body else {
         return;
     };
+    // `spawn(pi, FOOTPRINTSn)`: `EGS(…, 0,0,0,0,0,0, pi, 0)` into statnum 0.
     let index = crate::shoot::egs(
         lists,
         world.sprites.as_mut(),
         picnum,
         actor_temps,
         script,
-        parent.sectnum,
-        parent.x,
-        parent.y,
-        parent.z,
+        // The body sprite still sits at the start-of-tic pose.
+        pre.cursectnum,
+        pre.posx,
+        pre.posy,
+        pre.posz + crate::player::PHEIGHT,
         tile,
         0,
         0,
         0,
-        parent.ang,
+        0,
         0,
         0,
         player.sprite_i,
-        crate::stat::STAT_MISC,
+        crate::stat::STAT_DEFAULT,
     );
     let Ok(index) = usize::try_from(index) else {
         return;
@@ -53217,38 +53389,58 @@ fn tick_player_footprints(
         .take(world.numwalls as usize)
         .map(room_build_engine::types::WallT::xy)
         .collect();
-    let valid_floor = [(84, 84), (-84, -84), (84, -84), (-84, 84)]
-        .into_iter()
-        .all(|(dx, dy)| {
-            let mut sect = parent.sectnum;
-            room_build_engine::geom::updatesector(
-                parent.x + dx,
-                parent.y + dy,
-                &mut sect,
-                &sector_walls,
-                &wall_xy,
-            ) >= 0
-                && usize::try_from(sect)
-                    .ok()
-                    .and_then(|sect| world.sectors.get(sect))
-                    .is_some_and(|candidate| candidate.floorz == sector.floorz)
-        });
-    if !valid_floor {
-        world.sprites[index].xrepeat = 0;
-        world.sprites[index].yrepeat = 0;
-        return;
+    // Four corner probes, chaining the sector hint like Chocolate's `s1`.
+    // Failing one of the first three leaves an invisible statnum-0 sprite;
+    // failing the last moves it to statnum 5 (where `moveexplosions` drops it).
+    let own_sect = world.sprites[index].sectnum;
+    let own_floor = usize::try_from(own_sect)
+        .ok()
+        .and_then(|s| world.sectors.get(s))
+        .map_or(sector.floorz, |s| s.floorz);
+    let (fx, fy) = (world.sprites[index].x, world.sprites[index].y);
+    let mut s1 = own_sect;
+    let mut failed_at = None;
+    for (n, (dx, dy)) in [(84, 84), (-84, -84), (84, -84), (-84, 84)].into_iter().enumerate() {
+        room_build_engine::geom::updatesector(fx + dx, fy + dy, &mut s1, &sector_walls, &wall_xy);
+        let same_floor = usize::try_from(s1)
+            .ok()
+            .and_then(|s| world.sectors.get(s))
+            .is_some_and(|candidate| candidate.floorz == own_floor);
+        // The last probe only fails on a *different* floor, not on `s1 < 0`.
+        let ok = if n == 3 { s1 < 0 || same_floor } else { s1 >= 0 && same_floor };
+        if !ok {
+            failed_at = Some(n);
+            break;
+        }
     }
-
+    match failed_at {
+        Some(n) => {
+            world.sprites[index].xrepeat = 0;
+            world.sprites[index].yrepeat = 0;
+            if n == 3 {
+                let _ = lists.changespritestat(index as i16, crate::stat::STAT_MISC);
+            }
+        }
+        None => {
+            let footprint = &mut world.sprites[index];
+            footprint.cstat = 32 | ((u16::from(player.footprint_count) & 1) << 2);
+            footprint.ang = parent.ang;
+            let fsect = footprint.sectnum;
+            if let Some(fs) = usize::try_from(fsect).ok().and_then(|s| world.sectors.get(s)) {
+                footprint.z = fs.floorz;
+                if fs.lotag != 1 && fs.lotag != 2 {
+                    footprint.xrepeat = 32;
+                    footprint.yrepeat = 32;
+                }
+            }
+            // TODO(D5): Chocolate `insertspriteq(i)` (the 64-entry decal queue
+            // that hides the oldest footprint/blood pool) is not ported yet.
+            let _ = lists.changespritestat(index as i16, crate::stat::STAT_MISC);
+        }
+    }
     let footprint = &mut world.sprites[index];
     footprint.pal = player.footprint_pal;
     footprint.shade = player.footprint_shade;
-    footprint.cstat = 32 | (u16::from(player.footprint_count & 1) << 2);
-    footprint.ang = parent.ang;
-    footprint.z = sector.floorz;
-    if sector.lotag != 1 && sector.lotag != 2 {
-        footprint.xrepeat = 32;
-        footprint.yrepeat = 32;
-    }
 }
 
 fn apply_pstomp_impact(
@@ -53310,18 +53502,20 @@ fn apply_pstomp_impact(
         guts_z = guts_z.wrapping_sub(24 << 8);
     }
     for _ in 0..7 {
+        // Chocolate `guts`: `a = TRAND&2047;` first, then the EGS arguments
+        // right to left (32-bit gcc): zvel, xvel, z, y, x.
         let angle = (room_build_engine::numeric::krand_step(randomseed) & 2047) as i16;
-        let x = target
-            .x
-            .wrapping_add(room_build_engine::numeric::krand_step(randomseed) & 255)
-            .wrapping_sub(128);
+        let zvel = (-512 - (room_build_engine::numeric::krand_step(randomseed) & 2047)) as i16;
+        let xvel = (48 + (room_build_engine::numeric::krand_step(randomseed) & 31)) as i16;
+        let z = guts_z.wrapping_sub(room_build_engine::numeric::krand_step(randomseed) & 8191);
         let y = target
             .y
             .wrapping_add(room_build_engine::numeric::krand_step(randomseed) & 255)
             .wrapping_sub(128);
-        let z = guts_z.wrapping_sub(room_build_engine::numeric::krand_step(randomseed) & 8191);
-        let xvel = (48 + (room_build_engine::numeric::krand_step(randomseed) & 31)) as i16;
-        let zvel = (-512 - (room_build_engine::numeric::krand_step(randomseed) & 2047)) as i16;
+        let x = target
+            .x
+            .wrapping_add(room_build_engine::numeric::krand_step(randomseed) & 255)
+            .wrapping_sub(128);
         let shard = crate::shoot::egs(
             lists,
             world.sprites.as_mut(),
@@ -53445,20 +53639,22 @@ fn apply_pstomp_impact(
     if target.picnum == APLAYER {
         if !player.god_mode {
             for _ in 0..8 {
+                // Chocolate `guts`: `a = TRAND&2047;` first, then the EGS arguments
+                // right to left (32-bit gcc): zvel, xvel, z, y, x.
                 let angle = (room_build_engine::numeric::krand_step(randomseed) & 2047) as i16;
-                let x = target
-                    .x
-                    .wrapping_add(room_build_engine::numeric::krand_step(randomseed) & 255)
-                    .wrapping_sub(128);
+                let zvel =
+                    (-512 - (room_build_engine::numeric::krand_step(randomseed) & 2047)) as i16;
+                let xvel = (48 + (room_build_engine::numeric::krand_step(randomseed) & 31)) as i16;
+                let z =
+                    guts_z.wrapping_sub(room_build_engine::numeric::krand_step(randomseed) & 8191);
                 let y = target
                     .y
                     .wrapping_add(room_build_engine::numeric::krand_step(randomseed) & 255)
                     .wrapping_sub(128);
-                let z =
-                    guts_z.wrapping_sub(room_build_engine::numeric::krand_step(randomseed) & 8191);
-                let xvel = (48 + (room_build_engine::numeric::krand_step(randomseed) & 31)) as i16;
-                let zvel =
-                    (-512 - (room_build_engine::numeric::krand_step(randomseed) & 2047)) as i16;
+                let x = target
+                    .x
+                    .wrapping_add(room_build_engine::numeric::krand_step(randomseed) & 255)
+                    .wrapping_sub(128);
                 let _ = crate::shoot::egs(
                     lists,
                     world.sprites.as_mut(),

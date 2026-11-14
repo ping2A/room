@@ -29,6 +29,8 @@ pub mod fixups {
 }
 
 pub mod actors;
+mod c_actors;
+pub mod dummyplayers;
 pub mod animate;
 mod spawn_rt;
 pub mod audio;

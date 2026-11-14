@@ -94,6 +94,13 @@ pub struct UnlitPass {
     view_bgl: wgpu::BindGroupLayout,
     mat_bgl: wgpu::BindGroupLayout,
     mat_bind: wgpu::BindGroup,
+    /// `draw_ranges` material bind groups keyed by (albedo, brightmap,
+    /// sampler) GPU identity: building ~1.7k bind groups per frame (one per
+    /// material range) dominated web frame time.
+    mat_bind_cache: std::collections::HashMap<
+        (wgpu::TextureView, Option<wgpu::TextureView>, wgpu::Sampler),
+        wgpu::BindGroup,
+    >,
     /// Kept alive for the default material bind group.
     _default_tex: wgpu::Texture,
     _default_view: wgpu::TextureView,
@@ -789,6 +796,7 @@ impl UnlitPass {
             view_bgl,
             mat_bgl,
             mat_bind,
+            mat_bind_cache: std::collections::HashMap::new(),
             _default_tex: default_tex,
             _default_view: default_view,
             _black_bright_tex: black_bright_tex,
@@ -1438,20 +1446,36 @@ impl UnlitPass {
                 pass.draw(r.start..r.start + r.count, 0..1);
                 continue;
             };
-            let Some(albedo_gpu) = catalog.textures.get(id).and_then(|e| e.gpu.as_ref()) else {
+            let Some(albedo_view) = catalog
+                .textures
+                .get(id)
+                .and_then(|e| e.view.clone().or_else(|| {
+                    e.gpu.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+                }))
+            else {
                 pass.set_bind_group(1, &self.mat_bind, &[]);
                 pass.draw(r.start..r.start + r.count, 0..1);
                 continue;
             };
-            let albedo_view = albedo_gpu.create_view(&wgpu::TextureViewDescriptor::default());
             let bright_owned = bright_id.and_then(|bid| {
-                catalog
-                    .textures
-                    .get(bid)
-                    .and_then(|e| e.gpu.as_ref())
-                    .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+                catalog.textures.get(bid).and_then(|e| {
+                    e.view.clone().or_else(|| {
+                        e.gpu.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+                    })
+                })
             });
-            self.set_albedo_bright(&gpu.device, &albedo_view, samp, bright_owned.as_ref());
+            let key = (albedo_view, bright_owned, samp.clone());
+            if let Some(bind) = self.mat_bind_cache.get(&key) {
+                self.mat_bind = bind.clone();
+            } else {
+                // Replaced textures (camera canvases, palette strips) leave
+                // stale keys behind; bound the cache rather than track them.
+                if self.mat_bind_cache.len() >= 8192 {
+                    self.mat_bind_cache.clear();
+                }
+                self.set_albedo_bright(&gpu.device, &key.0, samp, key.1.as_ref());
+                self.mat_bind_cache.insert(key, self.mat_bind.clone());
+            }
             pass.set_bind_group(1, &self.mat_bind, &[]);
             pass.draw(r.start..r.start + r.count, 0..1);
         }

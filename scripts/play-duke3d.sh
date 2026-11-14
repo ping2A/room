@@ -73,6 +73,22 @@ else
   MAP="${ROOM_MAP:-E1M1}"
 fi
 SKILL="${ROOM_SKILL:-3}"
+# A --map / --skill given on the command line wins over the defaults above
+# (room-app rejects repeated flags), e.g. `play-duke3d.sh --map E1L2`.
+USER_MAP=0
+USER_SKILL=0
+for ((i = 0; i < ${#APP_ARGS[@]}; i++)); do
+  arg="${APP_ARGS[$i]}"
+  case "$arg" in
+    --map) USER_MAP=1; MAP="${APP_ARGS[$((i + 1))]:-$MAP}" ;;
+    --map=*) USER_MAP=1; MAP="${arg#--map=}" ;;
+    --skill) USER_SKILL=1; SKILL="${APP_ARGS[$((i + 1))]:-$SKILL}" ;;
+    --skill=*) USER_SKILL=1; SKILL="${arg#--skill=}" ;;
+  esac
+done
+DEFAULT_ARGS=()
+[[ "$USER_MAP" == 1 ]] || DEFAULT_ARGS+=(--map "$MAP")
+[[ "$USER_SKILL" == 1 ]] || DEFAULT_ARGS+=(--skill "$SKILL")
 EXTRA=()
 if [[ "$RUNTIME" == "converter" && "${ROOM_TITLE:-0}" == "1" ]]; then
   EXTRA+=(--title)
@@ -82,8 +98,7 @@ echo "room: Duke Nukem 3D — $IWAD  map=$MAP  skill=$SKILL"
 if [[ "$RUNTIME" == "native" ]]; then
   echo "room: runtime=native Build simulation"
   echo "  Add content with --grp addon.grp; --map may be a standalone .MAP path"
-  echo "  WASD move/strafe, mouse or Q/arrows turn, 1–0 weapons, Space jump, Ctrl/F/LMB fire, E tagged switches/doors (partial), L toggle mouse look"
-  echo "  Weapon SFX: pistol/shotgun/chaingun/RPG; Duke music/ambient audio, other use targets, level exits and most weapons remain unimplemented"
+  echo "  WASD move/strafe, mouse or Q/arrows turn, 1–0 weapons, Space jump, C crouch, Ctrl/F/LMB fire, E use, L toggle mouse look"
 else
   echo "room: runtime=converter (GRP → UDMF)"
   echo "  WASD move, mouse look, Ctrl/F/LMB fire, 1–9 weapons, E use, Esc pause"
@@ -99,8 +114,7 @@ fi
 exec cargo run -p room-app --release -- \
   ${NATIVE_ARGS[@]+"${NATIVE_ARGS[@]}"} \
   --iwad "$IWAD" \
-  --map "$MAP" \
   --play \
-  --skill "$SKILL" \
+  ${DEFAULT_ARGS[@]+"${DEFAULT_ARGS[@]}"} \
   ${EXTRA[@]+"${EXTRA[@]}"} \
   ${APP_ARGS[@]+"${APP_ARGS[@]}"}

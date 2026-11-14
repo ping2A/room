@@ -490,6 +490,8 @@ mod browser {
 
     /// Maps of the running single-player game as JSON
     /// `[{"name":"MAP01","title":"Entryway"}, …]` (`[]` when none is running).
+    /// Doom uses maps from the mounted IWAD/mod stack; Duke uses native GRP
+    /// Build map names such as `E1L1`.
     #[wasm_bindgen(js_name = roomMapList)]
     pub fn room_map_list() -> String {
         let list = APP
@@ -499,6 +501,12 @@ mod browser {
                 let s = state.try_borrow().ok()?;
                 match &s.mode {
                     Mode::Play(play) => Some(play.map_list()),
+                    Mode::NativeDuke { grp, .. } => {
+                        let layers: Vec<&[u8]> = grp.iter().map(Vec::as_slice).collect();
+                        room_build::list_grp_maps(&layers).ok().map(|maps| {
+                            maps.into_iter().map(|name| (name, String::new())).collect()
+                        })
+                    }
                     _ => None,
                 }
             })
@@ -519,6 +527,7 @@ mod browser {
             let s = state.try_borrow().ok()?;
             match &s.mode {
                 Mode::Play(play) => Some(play.current_map_name()),
+                Mode::NativeDuke { campaign_map, .. } => Some(campaign_map.clone()),
                 _ => None,
             }
         })
@@ -717,7 +726,8 @@ mod browser {
         let height = s.config.height.max(1);
         let mut backdrop = load_embedded_demo_map().map_err(|e| JsValue::from_str(&e))?;
         apply_nodes(&mut backdrop);
-        s.canvas = Some(CanvasGpu::new(&s.gpu, s.config.format, width, height));
+        let (hud_w, hud_h) = hud_dims(width, height);
+        s.canvas = Some(CanvasGpu::new(&s.gpu, s.config.format, hud_w, hud_h));
         s.mode = Mode::NativeDuke {
             session: Box::new(session),
             renderer: Box::new(renderer),
@@ -915,6 +925,7 @@ mod browser {
             skill,
             duke_game_mode: 1,
             duke_friendly_fire: false,
+            doom_deathmatch: false,
             rng_seed,
             ticket,
             spectate,
@@ -1087,12 +1098,8 @@ mod browser {
                 .into(),
             );
             let fmt = s.config.format;
-            s.canvas = Some(CanvasGpu::new(
-                &s.gpu,
-                fmt,
-                s.config.width.max(1),
-                s.config.height.max(1),
-            ));
+            let (hud_w, hud_h) = hud_dims(s.config.width.max(1), s.config.height.max(1));
+            s.canvas = Some(CanvasGpu::new(&s.gpu, fmt, hud_w, hud_h));
             if !s.input_bound {
                 bind_input(state.clone());
                 s.input_bound = true;
@@ -1262,6 +1269,7 @@ mod browser {
                     session_names: lobby.session_names(),
                     fill_bots: lobby.fill_bots(),
                     bot_first_seat: lobby.bot_first_seat(),
+                    deathmatch: lobby.doom_deathmatch(),
                     ..PlayStartOpts::default()
                 },
             )
@@ -1778,6 +1786,7 @@ mod browser {
         let time_limit_secs = ready.time_limit;
         let fill_bots = ready.fill_bots;
         let bot_first_seat = ready.bot_first_seat;
+        let deathmatch = ready.deathmatch;
         let net = NetPlay::from_ready(ready);
         let (iwad, prepared) = {
             let mut s = state.borrow_mut();
@@ -1806,6 +1815,7 @@ mod browser {
                     session_names: net.session_names(),
                     fill_bots,
                     bot_first_seat,
+                    deathmatch,
                     ..PlayStartOpts::default()
                 },
             ) {
@@ -2527,6 +2537,10 @@ mod browser {
                 if let Some(net) = network.as_mut() {
                     net.keepalive();
                 }
+                // The web build always looks with the mouse (pointer lock):
+                // Chocolate's mouse-aiming mode, without the snap-to-centre
+                // dead zone around horiz 100, as on the desktop.
+                session.player.aim_mode = 1;
                 while *tic_accum >= 1.0 / 30.0 {
                     *tic_accum -= 1.0 / 30.0;
                     if let Some(net) = network.as_mut() {
@@ -2960,8 +2974,12 @@ mod browser {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("hud") });
         // Weapon / HUD overlay (single colour target; Load the 3D result).
         if matches!(s.mode, Mode::Play(_) | Mode::NativeDuke { .. }) {
+            // The overlay is CPU-rasterized and uploaded every frame; keep it
+            // at most `HUD_MAX_WIDTH` wide and let the blit quad scale it up.
+            let (native_fb_width, native_fb_height) = hud_dims(native_fb_width, native_fb_height);
+            let (hud_fw, hud_fh) = (native_fb_width as f32, native_fb_height as f32);
             let hud_canvas = match &mut s.mode {
-                Mode::Play(play) => Some(play.build_hud_canvas(fb_w, fb_h)),
+                Mode::Play(play) => Some(play.build_hud_canvas(hud_fw, hud_fh)),
                 Mode::NativeDuke {
                     session, renderer, ..
                 } => session.render_world().map(|world| {
@@ -3352,7 +3370,20 @@ mod browser {
             chain.ensure_formats(&s.gpu, scene_format, fmt);
         }
         if s.canvas.is_some() {
-            s.canvas = Some(CanvasGpu::new(&s.gpu, fmt, w, h));
+            let (hud_w, hud_h) = hud_dims(w, h);
+            s.canvas = Some(CanvasGpu::new(&s.gpu, fmt, hud_w, hud_h));
+        }
+    }
+
+    /// Width cap for the CPU-rasterized HUD / native Duke canvas.
+    const HUD_MAX_WIDTH: u32 = 1280;
+
+    /// HUD canvas size for a `w`×`h` framebuffer (same aspect, ≤ [`HUD_MAX_WIDTH`]).
+    fn hud_dims(w: u32, h: u32) -> (u32, u32) {
+        if w <= HUD_MAX_WIDTH {
+            (w.max(1), h.max(1))
+        } else {
+            (HUD_MAX_WIDTH, ((u64::from(h) * u64::from(HUD_MAX_WIDTH) / u64::from(w)) as u32).max(1))
         }
     }
 
@@ -3615,6 +3646,14 @@ mod browser {
     #[wasm_bindgen(js_name = roomInputWeaponCycle)]
     pub fn room_input_weapon_cycle(steps: i32) {
         input_hub::add_weapon_wheel(-f64::from(steps));
+    }
+
+    /// On-screen controls: true while a native Duke session owns the input
+    /// (shows the Duke-only KICK / ITEM buttons).
+    #[wasm_bindgen(js_name = roomInputDukeMode)]
+    #[must_use]
+    pub fn room_input_duke_mode() -> bool {
+        input_hub::duke_mode()
     }
 
     /// Read a URL query parameter (`?map=MAP01&iwad=…`).

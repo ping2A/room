@@ -208,8 +208,6 @@ pub fn blit_draw_list_full(
                 recolor,
                 corners,
             } => {
-                let dest_w = if size.x > 0.0 { size.x } else { 16.0 };
-                let dest_h = if size.y > 0.0 { size.y } else { 16.0 };
                 if let Some(cache) = patches {
                     if let Some(patch) = cache.get(name) {
                         let pos = if *apply_offsets {
@@ -308,14 +306,9 @@ pub fn blit_draw_list_full(
                         continue;
                     }
                 }
-                // Placeholder until the lump is cached.
-                sink.fill_rect(
-                    pos.x * sx,
-                    pos.y * sy,
-                    dest_w * sx,
-                    dest_h * sy,
-                    [0.4, 0.4, 0.45, 0.9],
-                );
+                // Not in the patch cache: the shells prefetch every patch a
+                // draw list names before blitting, so this lump doesn't exist.
+                // Draw nothing, like GZDoom (a grey box used to show here).
             }
             DrawCmd::Line {
                 a,

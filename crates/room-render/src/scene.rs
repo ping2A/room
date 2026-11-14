@@ -331,6 +331,9 @@ pub fn build_scene_with_sky_ex_sized(
     let (vx, vy) = camera.map_xy();
     let vis = walk_bsp(map, vx, vy);
     let mut lists = build_scene_from_visible_ex(map, &vis, wall_tex_sizes);
+    // One draw (and bind) per material instead of one per subsector/seg.
+    coalesce_by_material(&mut lists.flats, &mut lists.flat_ranges);
+    coalesce_by_material(&mut lists.opaque_walls, &mut lists.wall_ranges);
     apply_sky(&mut lists, sky_texture, cubemap);
     // Keep the sky cylinder/cubemap centred on the eye so outdoor `F_SKY1` holes
     // always look into the shell (mesh is authored at the origin).
@@ -3103,6 +3106,50 @@ pub fn is_sky_flat(name: &str) -> bool {
     n.eq_ignore_ascii_case("F_SKY1")
         || n.eq_ignore_ascii_case("F_SKY")
         || n.eq_ignore_ascii_case("F_SKY001")
+}
+
+/// Regroup depth-tested vertices so every material is one contiguous range.
+///
+/// Opaque walls and flats are order-independent (depth buffer, alpha-tested
+/// masks), so drawing them grouped by `(name, flags)` turns ~1.5k per-subsector
+/// draws on a typical map into a few dozen. Skipped unless the ranges cover
+/// the vertex list exactly (nothing outside a range may be dropped).
+pub fn coalesce_by_material<V: Copy>(verts: &mut Vec<V>, ranges: &mut Vec<MaterialRange>) {
+    if ranges.len() < 2 {
+        return;
+    }
+    let covered: usize = ranges.iter().map(|r| r.count as usize).sum();
+    if covered != verts.len()
+        || ranges
+            .iter()
+            .any(|r| (r.start as usize).saturating_add(r.count as usize) > verts.len())
+    {
+        return;
+    }
+    let mut order: Vec<usize> = (0..ranges.len()).collect();
+    order.sort_by(|&a, &b| {
+        (ranges[a].name.as_str(), ranges[a].flags).cmp(&(ranges[b].name.as_str(), ranges[b].flags))
+    });
+    let mut out = Vec::with_capacity(verts.len());
+    let mut merged: Vec<MaterialRange> = Vec::new();
+    for index in order {
+        let r = &ranges[index];
+        let start = r.start as usize;
+        #[allow(clippy::cast_possible_truncation)]
+        let at = out.len() as u32;
+        out.extend_from_slice(&verts[start..start + r.count as usize]);
+        match merged.last_mut() {
+            Some(last) if last.name == r.name && last.flags == r.flags => last.count += r.count,
+            _ => merged.push(MaterialRange {
+                name: r.name.clone(),
+                start: at,
+                count: r.count,
+                flags: r.flags,
+            }),
+        }
+    }
+    *verts = out;
+    *ranges = merged;
 }
 
 fn push_range(ranges: &mut Vec<MaterialRange>, name: &str, start: u32, count: u32) {

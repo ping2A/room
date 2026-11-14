@@ -160,6 +160,8 @@ build_room_web() {
   if [[ -f testdata/duke/duke3d.grp ]]; then
     cp testdata/duke/duke3d.grp "$out/duke3d.grp"
   fi
+  # Default "Play solo" content: Freedoom + Brutal Doom (lobby presets).
+  ./scripts/bundle-solo-content.sh "$out" || echo "room-server: bundled solo content skipped" >&2
 }
 
 # Build each mods/<dir> with a room.toml manifest and pack it as a PWAD:

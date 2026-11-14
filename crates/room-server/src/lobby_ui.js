@@ -27,7 +27,7 @@
     const el = $("player-name");
     const n = playerName();
     if (!n) {
-      flash("Pick a callsign before joining — type a name, then Enter.", "error");
+      flash("Enter a player name before joining, then press Enter.", "error");
       if (el) {
         el.classList.add("need-name");
         el.focus();
@@ -68,7 +68,7 @@
     } catch (_) {
       /* ignore */
     }
-    flash("Joining room " + shortId(id) + "…");
+    flash("Joining game " + shortId(id) + "…");
     try {
       await playRoom(roomStub(id), { newTab: false, confirm: true });
     } catch (err) {
@@ -355,14 +355,14 @@
       .slice(0, 24);
   }
 
-  /** Always ask (pre-filled) — joining someone else's pit must not reuse a stale name silently. */
+  /** Always ask (pre-filled) — joining someone else's game must not reuse a stale name silently. */
   async function confirmCallsign({ title, confirmLabel, prefill, remember }) {
     const data = await openModal({
       title,
       confirmLabel,
       bodyHtml:
         "<p>Other players see this name on the scoreboard and in the kill feed.</p>" +
-        '<label class="field"><span>Callsign</span>' +
+        '<label class="field"><span>Player name</span>' +
         '<input name="name" required maxlength="24" autocomplete="nickname" autofocus value="' +
         escapeHtml(prefill || "") +
         '"/></label>',
@@ -370,7 +370,7 @@
     if (!data) return null;
     const n = cleanCallsign(data.name);
     if (!n) {
-      flash("Callsign required.", "error");
+      flash("Player name required.", "error");
       return null;
     }
     if (remember) {
@@ -414,22 +414,22 @@
   async function playRoom(room, { newTab = false, confirm = false, ticket = null, callsign = null } = {}) {
     try {
       if (room.occupied >= room.max_players) {
-        flash("Pit full — Spectate the slaughter, or open another pit", "error");
+        flash("Game full — spectate it, or host another game.", "error");
         return;
       }
       let callsign;
       if (newTab) {
         // Second local seat must pick its own pseudo (not reuse the host's).
         callsign = await confirmCallsign({
-          title: "Callsign for this seat",
+          title: "Name for this player",
           confirmLabel: "Join",
           prefill: "",
           remember: false,
         });
       } else if (confirm || (room.occupied || 0) > 0 || room.started) {
         callsign = await confirmCallsign({
-          title: "Pick your callsign",
-          confirmLabel: "Enter the pit",
+          title: "Your player name",
+          confirmLabel: "Join game",
           prefill: playerName(),
           remember: true,
         });
@@ -512,7 +512,7 @@
     const room = state.rooms.find((r) => r.id === state.watching);
     const body = $("watch-body");
     if (!room) {
-      body.innerHTML = "<p class='muted'>Room closed or no longer public.</p>";
+      body.innerHTML = "<p class='muted'>Game over or no longer listed.</p>";
       $("watch-play").disabled = true;
       return;
     }
@@ -524,8 +524,11 @@
       '<div class="row"><span class="k">Map</span><span>' +
       escapeHtml(room.map) +
       "</span></div>" +
+      '<div class="row"><span class="k">Mode</span><span>' +
+      escapeHtml(modeLabel(room)) +
+      "</span></div>" +
       '<div class="row"><span class="k">Skill</span><span>' +
-      escapeHtml(room.skill) +
+      escapeHtml(skillLabel(room.game, room.skill)) +
       "</span></div>" +
       (room.mod
         ? '<div class="row"><span class="k">Mod</span><span>' + escapeHtml(modLabel(room)) + "</span></div>"
@@ -535,7 +538,7 @@
           escapeHtml(room.packs.join(", ")) +
           "</span></div>"
         : "") +
-      '<div class="row"><span class="k">Seats</span><span>' +
+      '<div class="row"><span class="k">Players</span><span>' +
       room.occupied +
       " / " +
       room.max_players +
@@ -545,13 +548,13 @@
       (room.time_limit
         ? '<div class="row"><span class="k">Time limit</span><span>' + escapeHtml(room.time_limit) + " min</span></div>"
         : "") +
-      '<div class="row"><span class="k">State</span><span>' +
-      (room.started ? "in game" : "lobby") +
+      '<div class="row"><span class="k">Status</span><span>' +
+      (room.started ? "in progress" : "waiting for players") +
       "</span></div>" +
-      '<div class="row"><span class="k">Room</span><span class="id">' +
+      '<div class="row"><span class="k">Game ID</span><span class="id">' +
       escapeHtml(room.id) +
       "</span></div>" +
-      '<p class="muted">Watch live opens a spectator client: the whole match is replayed from tic 0, then every player is shown side by side (G toggles grid / follow, 1-4 or click picks a player, Tab shows scores). Join &amp; play takes a free seat.</p>';
+      '<p class="muted">Watch live opens a spectator client: the whole match is replayed from tic 0, then every player is shown side by side (G toggles grid / follow, 1-4 or click picks a player, Tab shows scores). Join &amp; play takes a free player slot.</p>';
     $("watch-play").disabled = openSeats === 0;
   }
 
@@ -561,6 +564,39 @@
   }
 
   const GAME_LABELS = { doom: "Doom", duke3d: "Duke Nukem 3D" };
+  const MODE_LABELS = {
+    doom: { coop: "Cooperative", deathmatch: "Deathmatch" },
+    duke3d: { coop: "Cooperative", deathmatch: "DukeMatch", dukematch_nospawn: "DukeMatch (no spawn)" },
+  };
+  // In-game skill names. Duke menu skills are `ud.player_skill` 1–4, which
+  // Room's skill 2–5 maps to.
+  const SKILL_LABELS = {
+    doom: ["I'm too young to die", "Hey, not too rough", "Hurt me plenty", "Ultra-Violence", "Nightmare!"],
+    duke3d: [null, "Piece of Cake", "Let's Rock", "Come Get Some", "Damn I'm Good"],
+  };
+
+  // Duke `ud.coop` value → lobby mode name.
+  const DUKE_MODE_VALUES = ["deathmatch", "coop", "dukematch_nospawn"];
+
+  function modeLabel(room) {
+    const game = room.game === "duke3d" ? "duke3d" : "doom";
+    const mode = MODE_LABELS[game][room.mode || "coop"] || MODE_LABELS[game].coop;
+    return room.friendly_fire ? mode + ", friendly fire" : mode;
+  }
+
+  function skillLabel(game, skill) {
+    const list = SKILL_LABELS[game === "duke3d" ? "duke3d" : "doom"];
+    return list[(Number(skill) || 3) - 1] || "skill " + skill;
+  }
+
+  function skillOptions(game, selected) {
+    const list = SKILL_LABELS[game === "duke3d" ? "duke3d" : "doom"];
+    return list
+      .map((label, i) =>
+        label ? '<option value="' + (i + 1) + '"' + (i + 1 === selected ? " selected" : "") + ">" + escapeHtml(label) + "</option>" : ""
+      )
+      .join("");
+  }
 
   function gameLabel(room) {
     return GAME_LABELS[room.game] || GAME_LABELS.doom;
@@ -589,7 +625,7 @@
     const opts =
       (pp.require_preset ? "" : '<option value="">Custom (type a map)</option>') +
       presets
-        .map((p) => '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.title) + "</option>")
+        .map((p) => '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.title) + ' · ' + (p.game === "duke3d" ? "Duke Nukem 3D" : "Doom") + "</option>")
         .join("");
     const html =
       '<label class="field"><span>Preset</span><select name="preset">' + opts + "</select></label>" +
@@ -601,7 +637,10 @@
       const mapRow = body.querySelector("[data-preset-map]");
       const mapSel = body.querySelector('select[name="preset_map"]');
       const custom = body.querySelectorAll("[data-custom]");
-      const skill = body.querySelector('input[name="skill"]');
+      const skill = body.querySelector('[name="skill"]');
+      const game = body.querySelector('select[name="game"]');
+      const modeSel = body.querySelector('select[name="mode"]');
+      const friendlyFire = body.querySelector('input[name="duke_friendly_fire"]');
       const refresh = () => {
         const p = presets.find((x) => x.id === sel.value);
         // `.field` sets display, which beats the `hidden` attribute: use style.
@@ -610,6 +649,15 @@
           el.style.display = on ? "" : "none";
         };
         for (const el of custom) show(el, !p);
+        if (game) {
+          game.value = p?.game || game.value || "doom";
+          game.dispatchEvent(new Event("change"));
+        }
+        if (modeSel && p && p.game === "duke3d") {
+          modeSel.value = DUKE_MODE_VALUES[p.duke_game_mode ?? 1] || "coop";
+          modeSel.dispatchEvent(new Event("change"));
+        }
+        if (friendlyFire && p) friendlyFire.checked = !!p.duke_friendly_fire;
         const free = body.querySelector('input[name="map"]');
         if (free) free.required = !p;
         if (!p) {
@@ -655,37 +703,64 @@
     const picker = modPickerHtml(mods, { voxelPack: true });
     const presetPicker = presetPickerHtml(pp);
     const data = await openModal({
-      title: "Open a pit",
-      confirmLabel: "Spill blood",
+      title: "Host a netgame",
+      confirmLabel: "Start game",
       bodyHtml:
         presetPicker.html +
         '<label class="field" data-custom><span>Game</span><select name="game"><option value="doom">Doom</option><option value="duke3d">Duke Nukem 3D (no mods)</option></select></label>' +
-        '<label class="field" data-custom data-duke><span>Duke multiplayer mode</span><select name="duke_game_mode"><option value="1">Co-op</option><option value="0">DukeMatch</option><option value="2">DukeMatch (no spawn)</option></select></label>' +
-        '<label class="field" data-custom data-duke><span>Friendly fire</span><input name="duke_friendly_fire" type="checkbox"/></label>' +
-        '<label class="field" data-custom data-free-map><span>Map</span><input name="map" value="E1M1"/></label>' +
-        '<label class="field"><span>Skill</span><input name="skill" type="number" min="1" max="5" value="3"/></label>' +
-        '<label class="field"><span>Max players</span><input name="max_players" type="number" min="2" max="64" value="2"/></label>' +
+        '<label class="field"><span>Game mode</span><select name="mode"></select></label>' +
+        '<label class="field check" data-duke-coop><span><input name="duke_friendly_fire" type="checkbox"/> Friendly fire</span></label>' +
+        '<label class="field" data-custom data-free-map><span>Map</span><input name="map" value="E1M1" autocomplete="off"/></label>' +
+        '<label class="field"><span>Skill</span><select name="skill"></select></label>' +
+        '<label class="field"><span>Players</span><input name="max_players" type="number" min="2" max="64" value="4"/></label>' +
         '<label class="field"><span>Time limit (minutes)</span><input name="time_limit" type="number" min="1" max="180" value="' +
         escapeHtml(state.config.room_time_limit_mins || 20) +
         '"/></label>' +
-        '<label class="field"><span>Visibility</span><select name="visibility"><option value="public">public</option><option value="private">private</option></select></label>' +
+        '<label class="field"><span>Listing</span><select name="visibility"><option value="public">Public — shown on this page</option><option value="private">Private — join by game ID only</option></select></label>' +
         '<div data-custom>' + picker.html + "</div>",
       onReady: (body) => {
+        const game = body.querySelector('select[name="game"]');
+        const mode = body.querySelector('select[name="mode"]');
+        const skill = body.querySelector('select[name="skill"]');
+        const map = body.querySelector('input[name="map"]');
+        const ffRow = body.querySelector("[data-duke-coop]");
+        const show = (el, on) => {
+          if (!el) return;
+          el.hidden = !on;
+          el.style.display = on ? "" : "none";
+        };
+        let lastGame = "";
+        const updateGame = () => {
+          const g = game && game.value === "duke3d" ? "duke3d" : "doom";
+          if (g !== lastGame) {
+            const keepMode = mode.value;
+            mode.innerHTML = Object.entries(MODE_LABELS[g])
+              .map(([v, label]) => '<option value="' + v + '">' + escapeHtml(label) + "</option>")
+              .join("");
+            if (MODE_LABELS[g][keepMode]) mode.value = keepMode;
+            const keepSkill = Number(skill.value) || 3;
+            skill.innerHTML = skillOptions(g, g === "duke3d" ? Math.max(2, keepSkill) : keepSkill);
+            // Swap the default start map between the games.
+            if (map && lastGame && (map.value === "" || /^(E1M1|MAP01|E1L1)$/i.test(map.value))) {
+              map.value = g === "duke3d" ? "E1L1" : "E1M1";
+            }
+            lastGame = g;
+          }
+          show(ffRow, g === "duke3d" && mode.value === "coop");
+        };
+        if (game) game.addEventListener("change", updateGame);
+        mode.addEventListener("change", updateGame);
+        updateGame();
         picker.wire(body);
         presetPicker.wire(body);
-        const game = body.querySelector('select[name="game"]');
-        const dukeFields = body.querySelectorAll("[data-duke]");
-        const updateDukeFields = () => {
-          for (const field of dukeFields) field.hidden = !game || game.value !== "duke3d";
-        };
-        if (game) game.addEventListener("change", updateDukeFields);
-        updateDukeFields();
       },
     });
     if (!data) return;
     try {
       const preset = data.preset || "";
-      const doom = preset || data.game !== "duke3d";
+      const selectedPreset = pp.presets.find((p) => p.id === preset);
+      const game = selectedPreset?.game || data.game || "doom";
+      const doom = game !== "duke3d";
       const created = await api("/api/rooms", {
         method: "POST",
         body: JSON.stringify({
@@ -695,14 +770,15 @@
           max_players: Number(data.max_players) || 2,
           visibility: data.visibility || "public",
           time_limit: Number(data.time_limit) || undefined,
-          game: preset ? "doom" : data.game || "doom",
-          duke_game_mode: Number(data.duke_game_mode) || 0,
-          duke_friendly_fire: data.duke_friendly_fire === true,
+          game,
+          duke_game_mode: Math.max(0, DUKE_MODE_VALUES.indexOf(data.mode || "coop")),
+          duke_friendly_fire: data.mode === "coop" && !!data.duke_friendly_fire,
+          doom_deathmatch: doom && data.mode === "deathmatch",
           mod: doom && !preset ? data.mod || undefined : undefined,
           packs: doom && !preset && data.voxel ? ["voxel"] : [],
         }),
       });
-      flash("Created " + shortId(created.id));
+      flash("Game " + shortId(created.id) + " created");
       await refresh();
       const room = {
         id: created.id,
@@ -729,18 +805,167 @@
     }
   }
 
+  function soloFileMaps(bytes, game, fileName) {
+    const view = new DataView(bytes);
+    const readName = (start, length) => {
+      const data = new Uint8Array(bytes, start, length);
+      let end = data.indexOf(0);
+      if (end < 0) end = data.length;
+      return String.fromCharCode(...data.subarray(0, end)).toUpperCase();
+    };
+    if (game === "duke3d") {
+      if (bytes.byteLength < 16 || readName(0, 12) !== "KENSILVERMAN") throw new Error("Choose a Duke Nukem 3D GRP file");
+      const count = view.getUint32(12, true);
+      const dirEnd = 16 + count * 16;
+      if (count > 65536 || dirEnd > bytes.byteLength) throw new Error("This GRP directory is invalid or truncated");
+      let bodyAt = dirEnd;
+      const maps = [];
+      for (let i = 0; i < count; i++) {
+        const at = 16 + i * 16;
+        const name = readName(at, 12);
+        const size = view.getUint32(at + 12, true);
+        bodyAt += size;
+        if (bodyAt > bytes.byteLength) throw new Error("This GRP file is truncated");
+        const stem = name.endsWith(".MAP") ? name.slice(0, -4) : "";
+        if (stem && stem.length <= 8 && /^[A-Z0-9_]+$/.test(stem) && !maps.includes(stem)) maps.push(stem);
+      }
+      if (!maps.length) throw new Error("No Build .MAP files were found in this GRP");
+      console.info("[Room solo] GRP map scan", { file: fileName, bytes: bytes.byteLength, entries: count, maps });
+      return maps;
+    }
+
+    const wadMagic = bytes.byteLength >= 4 ? readName(0, 4) : "";
+    console.info("[Room solo] WAD header", { file: fileName, game, bytes: bytes.byteLength, magic: wadMagic });
+    // Some complete local Doom data sets are packaged with a PWAD header even
+    // though they contain the base maps and resources needed for a solo run.
+    // The engine mounts either WAD kind as the selected base archive.
+    if (bytes.byteLength < 12 || (wadMagic !== "IWAD" && wadMagic !== "PWAD")) {
+      throw new Error(game === "doom-addon" ? "This is not a Doom WAD add-on" : "Choose a Doom WAD file");
+    }
+    const count = view.getUint32(4, true);
+    const directory = view.getUint32(8, true);
+    console.info("[Room solo] WAD directory", { file: fileName, magic: wadMagic, bytes: bytes.byteLength, lumps: count, directory });
+    if (count < 0 || count > 65536 || directory < 12 || directory + count * 16 > bytes.byteLength) {
+      throw new Error("This WAD directory is invalid or truncated");
+    }
+    const lumps = [];
+    for (let i = 0; i < count; i++) lumps.push(readName(directory + i * 16 + 8, 8));
+    const maps = [];
+    for (let i = 0; i + 1 < lumps.length; i++) {
+      const map = lumps[i];
+      const conventionalName = /^(?:E\dM\d+|MAP\d+)$/i.test(map);
+      const hasMapLumps = lumps[i + 1] === "THINGS" || lumps[i + 1] === "TEXTMAP";
+      if (!conventionalName && !hasMapLumps) continue;
+      if (map && !maps.includes(map)) maps.push(map);
+    }
+    // The stock shareware Doom 1 IWAD has exactly episode 1, maps 1–9. Some
+    // repacked copies omit or reorder marker lumps, so keep those selectable
+    // when its otherwise-valid IWAD directory has no recognizable markers.
+    if (!maps.length && game === "doom" && /^doom1\.wad$/i.test(fileName || "")) {
+      maps.push(...Array.from({ length: 9 }, (_, i) => `E1M${i + 1}`));
+      console.warn("[Room solo] no map markers found in doom1.wad; using the stock shareware episode map list");
+    }
+    if (!maps.length && game === "doom-addon") return [];
+    if (!maps.length) throw new Error("No Doom maps were found in this IWAD directory");
+    console.info("[Room solo] WAD map scan", { file: fileName, bytes: bytes.byteLength, lumps: count, directory, maps });
+    return maps;
+  }
+
+  function soloAddonMaps(bytes, fileName) {
+    const magic = String.fromCharCode(...new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength)));
+    if (magic === "PWAD" || magic === "IWAD") return soloFileMaps(bytes, "doom-addon", fileName);
+    if (magic.startsWith("PK")) {
+      const data = new Uint8Array(bytes);
+      const view = new DataView(bytes);
+      const min = Math.max(0, data.length - 65_557);
+      let eocd = -1;
+      for (let at = data.length - 22; at >= min; at--) {
+        if (view.getUint32(at, true) === 0x06054b50) { eocd = at; break; }
+      }
+      if (eocd < 0) return [];
+      const entries = view.getUint16(eocd + 10, true);
+      let at = view.getUint32(eocd + 16, true);
+      const maps = [];
+      for (let i = 0; i < entries && at + 46 <= data.length; i++) {
+        if (view.getUint32(at, true) !== 0x02014b50) break;
+        const nameLen = view.getUint16(at + 28, true);
+        const extraLen = view.getUint16(at + 30, true);
+        const commentLen = view.getUint16(at + 32, true);
+        const end = at + 46 + nameLen + extraLen + commentLen;
+        if (end > data.length) break;
+        const path = new TextDecoder().decode(data.subarray(at + 46, at + 46 + nameLen)).replace(/\\/g, "/");
+        const match = /(?:^|\/)maps\/([a-z0-9_]+)\.wad$/i.exec(path);
+        if (match && !maps.includes(match[1].toUpperCase())) maps.push(match[1].toUpperCase());
+        at = end;
+      }
+      console.info("[Room solo] ZIP add-on map scan", { file: fileName, bytes: bytes.byteLength, entries, maps });
+      return maps;
+    }
+    return [];
+  }
+
   /** Solo URL: the game client without `ws` runs a local single-player game. */
   function soloUrl(opts) {
     const base = clientBase();
     const q = new URLSearchParams();
-    q.set("map", opts.map || "E1M1");
+    q.set("map", opts.map);
     q.set("skill", String(opts.skill || 3));
-    if (opts.game === "duke3d") q.set("iwad", "duke3d.grp");
-    else {
-      if (opts.mod) q.set("mod", opts.mod);
-      if (opts.packs && opts.packs.length) q.set("pack", opts.packs.join(","));
+    q.set("game", opts.game);
+    if (opts.bundled) {
+      // Built-in content served by this server (play page fetches + caches it).
+      q.set("iwad", opts.bundled.iwad.url);
+      if (opts.bundled.addons.length) q.set("addon", opts.bundled.addons.map((a) => a.url).join(","));
+    } else {
+      q.set("local", "1");
+      q.set("iwad", opts.game === "duke3d" ? "solo-local.grp" : "solo-local.wad");
     }
+    if (opts.game !== "duke3d" && opts.mod) q.set("mod", opts.mod);
+    if (opts.game !== "duke3d" && opts.packs && opts.packs.length) q.set("pack", opts.packs.join(","));
+    // The play page turns voxels on when the URL says nothing, so an
+    // unchecked "Voxel sprites" box must be spelled out.
+    if (opts.game !== "duke3d") q.set("voxel", opts.packs && opts.packs.includes("voxel") ? "1" : "0");
     return base + "?" + q.toString();
+  }
+
+  /** Built-in solo presets (`/play/bundled/manifest.json`, written by bundle-solo-content.sh). */
+  async function loadBundledPresets() {
+    try {
+      const r = await fetch(clientBase() + "bundled/manifest.json", { cache: "no-store" });
+      if (!r.ok) return [];
+      const presets = (await r.json()).presets;
+      return Array.isArray(presets) ? presets : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  async function saveSoloGameFile(fileName, bytes, addons = []) {
+    if (!window.indexedDB) throw new Error("This browser does not support local game storage");
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("room-solo-game", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("game", { keyPath: "id" });
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("Could not open local game storage"));
+    });
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("game", "readwrite");
+      // Blobs, not ArrayBuffers: Chrome rejects one IndexedDB value over
+      // ~128 MiB ("serialized keys and/or value are too large"), and a large
+      // PK3 such as Brutal Doom (~160 MB) exceeds that alone. Blob contents are
+      // stored outside the serialized value, so their size is not limited.
+      const asBlob = (data) =>
+        data instanceof Blob ? data : new Blob([data], { type: "application/octet-stream" });
+      tx.objectStore("game").put({
+        id: "current",
+        fileName,
+        bytes: asBlob(bytes),
+        addons: addons.map((addon) => ({ ...addon, bytes: asBlob(addon.bytes) })),
+      });
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error || new Error("Could not store local game file"));
+      tx.onabort = () => reject(tx.error || new Error("Local game storage was interrupted"));
+    });
+    db.close();
   }
 
   async function playSolo() {
@@ -750,25 +975,228 @@
       (m) => m.solo !== false && m.name !== "royale"
     );
     const picker = modPickerHtml(soloMods, { voxelPack: true });
+    const bundled = await loadBundledPresets();
+    let selectedGameFile = null;
+    let selectedPreset = null;
     const data = await openModal({
       title: "Play solo",
       confirmLabel: "Start",
       bodyHtml:
-        '<p class="muted">A local game in this browser. Nothing is created on the server.</p>' +
+        '<label class="field"><span>Game files</span><select name="source" id="solo-source">' +
+        bundled.map((p) => '<option value="' + escapeHtml(p.id) + '"' + (p.default ? " selected" : "") + ">" + escapeHtml(p.label) + " (built-in)</option>").join("") +
+        '<option value="own"' + (bundled.length ? "" : " selected") + ">My own files…</option></select></label>" +
+        '<p class="muted" id="solo-source-note"></p>' +
+        '<div id="solo-own-files">' +
+        '<p class="muted">Choose a local game file. It stays in this browser and is never uploaded.</p>' +
         '<label class="field"><span>Game</span><select name="game"><option value="doom">Doom</option><option value="duke3d">Duke Nukem 3D (no mods)</option></select></label>' +
-        '<label class="field"><span>Map</span><input name="map" value="E1M1" required/></label>' +
-        '<label class="field"><span>Skill</span><input name="skill" type="number" min="1" max="5" value="3"/></label>' +
-        picker.html +
-        '<p class="muted">Duke maps are ExMy (E1M1 = E1L1). Mods and Voxel are Doom only.</p>',
-      onReady: picker.wire,
+        '<label class="field"><span>WAD / GRP</span><input id="solo-game-file" type="file" accept=".wad,.grp,application/octet-stream" required/></label>' +
+        '<label class="field" id="solo-addons-field"><span>Additional Doom WAD / PK3 mods</span><input id="solo-addons" type="file" accept=".wad,.pk3,.pk7,.zip,.pke,.ipk3,.ipk7,application/octet-stream" multiple/></label>' +
+        "</div>" +
+        '<label class="field"><span>Map <small id="solo-map-count" class="muted">Choose a game file to list maps</small></span><select name="map" id="solo-map" required disabled><option value="">Choose a game file first</option></select></label>' +
+        '<label class="field"><span>How challenging should this run be?</span><select name="skill" id="solo-skill"></select></label>' +
+        '<div id="solo-mod-picker">' + picker.html + "</div>" +
+        '<p class="muted">Doom maps are detected from the selected WAD; Duke uses the GRP’s Build map names. Gameplay mods and Voxel are Doom only.</p>',
+      onReady: (body) => {
+        picker.wire(body);
+        const game = body.querySelector('select[name="game"]');
+        const file = body.querySelector("#solo-game-file");
+        const addons = body.querySelector("#solo-addons");
+        const addonsField = body.querySelector("#solo-addons-field");
+        const map = body.querySelector("#solo-map");
+        const count = body.querySelector("#solo-map-count");
+        const skill = body.querySelector("#solo-skill");
+        let scanGeneration = 0;
+        // The game's own skill names (menu order). Duke has four menu skills,
+        // `ud.player_skill` 1–4; Room passes skill-1, so they are values 2–5.
+        const SKILLS = {
+          doom: ["I’m too young to die", "Hey, not too rough", "Hurt me plenty", "Ultra-Violence", "Nightmare!"],
+          freedoom: ["Please don’t kill me!", "Will this hurt?", "Bring on the pain.", "Extreme carnage.", "MAYHEM!"],
+          duke3d: ["Piece of Cake", "Let’s Rock", "Come Get Some", "Damn I’m Good"],
+        };
+        const skillSet = () => {
+          if (game.value === "duke3d") return "duke3d";
+          const name = selectedPreset ? selectedPreset.iwad.name : file.files?.[0]?.name || "";
+          return /freedoom|freedm/i.test(name) ? "freedoom" : "doom";
+        };
+        const skillNames = () => SKILLS[skillSet()];
+        // Relabel in place, keeping the chosen level when it still exists.
+        const relabelSkill = (fallback) => {
+          const keep = Number(skill.value) || fallback;
+          const names = skillNames();
+          const first = skillSet() === "duke3d" ? 2 : 1;
+          skill.replaceChildren(...names.map((label, index) => new Option(label, String(index + first))));
+          skill.value = String(Math.min(Math.max(keep, first), first + names.length - 1));
+        };
+        const paintMapOptions = (maps, sourceLabel) => {
+          const available = [...new Set(maps)];
+          map.replaceChildren(new Option("Select a map…", ""));
+          let group = "";
+          for (const name of available) {
+            const episode = /^E(\d)(?:M|L)\d+$/i.exec(name);
+            const nextGroup = episode ? `Episode ${episode[1]}` : /^MAP\d+$/i.test(name) ? "Maps" : "Other";
+            if (nextGroup !== group) {
+              const optgroup = document.createElement("optgroup");
+              optgroup.label = nextGroup;
+              map.appendChild(optgroup);
+              group = nextGroup;
+            }
+            map.lastElementChild.appendChild(new Option(name, name));
+          }
+          const initial = game.value === "doom"
+            ? available.find((name) => name === "E1M1") || available.find((name) => name === "MAP01") || available[0]
+            : available[0];
+          if (!initial) throw new Error("No maps were found in the selected game files");
+          map.value = initial;
+          map.disabled = false;
+          count.textContent = `${available.length} maps ready · ${sourceLabel}`;
+          return available;
+        };
+        const scanSelectedFiles = async () => {
+          relabelSkill(3);
+          const picked = file.files?.[0];
+          if (!picked) return;
+          const generation = ++scanGeneration;
+          const confirm = document.getElementById("modal-confirm");
+          selectedGameFile = null;
+          map.disabled = true;
+          file.disabled = true;
+          addons.disabled = true;
+          game.disabled = true;
+          skill.disabled = true;
+          if (confirm) confirm.disabled = true;
+          count.textContent = `Loading ${picked.name}…`;
+          map.replaceChildren(new Option("Loading map list…", ""));
+          console.info("[Room solo] game file selected", { game: game.value, file: picked.name, bytes: picked.size });
+          await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+          try {
+            const buffer = await picked.arrayBuffer();
+            count.textContent = `Scanning maps in ${picked.name}…`;
+            await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+            const maps = soloFileMaps(buffer, game.value, picked.name);
+            const selectedAddons = game.value === "doom" ? [...(addons.files || [])] : [];
+            const addonData = [];
+            for (const addon of selectedAddons) {
+              count.textContent = `Reading ${addon.name}…`;
+              await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+              const addonBytes = await addon.arrayBuffer();
+              const magic = String.fromCharCode(...new Uint8Array(addonBytes, 0, Math.min(4, addonBytes.byteLength)));
+              const zip = magic.startsWith("PK");
+              const sevenZip = addonBytes.byteLength >= 6 && Array.from(new Uint8Array(addonBytes, 0, 6)).join(",") === "55,122,188,175,39,28";
+              if (!zip && !sevenZip && magic !== "PWAD" && magic !== "IWAD") {
+                throw new Error(`${addon.name} is not a WAD, PK3, PK7, or ZIP archive`);
+              }
+              const extraMaps = soloAddonMaps(addonBytes, addon.name);
+              maps.push(...extraMaps);
+              addonData.push({ name: addon.name, bytes: addonBytes });
+              console.info("[Room solo] add-on scanned", { file: addon.name, bytes: addon.size, maps: extraMaps });
+            }
+            if (generation !== scanGeneration) return;
+            const available = paintMapOptions(maps, [picked.name, ...selectedAddons.map((addon) => addon.name)].join(" + "));
+            selectedGameFile = { name: picked.name, buffer, addons: addonData };
+            console.info("[Room solo] map list ready", { game: game.value, base: picked.name, addons: selectedAddons.map((addon) => addon.name), count: available.length, maps: available });
+          } catch (err) {
+            if (generation !== scanGeneration) return;
+            selectedGameFile = null;
+            map.replaceChildren(new Option("No maps available", ""));
+            map.disabled = true;
+            count.textContent = err.message || "Could not read game maps";
+            console.warn("[Room solo] map scan failed", { game: game.value, file: picked.name, bytes: picked.size, error: err });
+            flash(count.textContent, "error");
+          } finally {
+            if (generation === scanGeneration) {
+              file.disabled = false;
+              addons.disabled = false;
+              game.disabled = false;
+              skill.disabled = false;
+              if (confirm) confirm.disabled = false;
+            }
+          }
+        };
+        const updateGame = () => {
+          scanGeneration++;
+          selectedGameFile = null;
+          file.value = "";
+          addons.value = "";
+          file.accept = game.value === "duke3d" ? ".grp,application/octet-stream" : ".wad,application/octet-stream";
+          addonsField.hidden = game.value === "duke3d";
+          skill.value = "";
+          relabelSkill(3);
+          map.replaceChildren(new Option("Choose a matching game file", ""));
+          map.disabled = true;
+          count.textContent = "Choose a game file to list maps";
+          body.querySelector("#solo-mod-picker").hidden = game.value === "duke3d";
+        };
+        game.addEventListener("change", updateGame);
+        updateGame();
+        file.addEventListener("change", scanSelectedFiles);
+        addons.addEventListener("change", scanSelectedFiles);
+        const source = body.querySelector("#solo-source");
+        const own = body.querySelector("#solo-own-files");
+        const note = body.querySelector("#solo-source-note");
+        const updateSource = () => {
+          selectedPreset = bundled.find((p) => p.id === source.value) || null;
+          own.hidden = !!selectedPreset;
+          file.required = !selectedPreset;
+          if (selectedPreset) {
+            game.value = "doom";
+            updateGame();
+            const mb = (selectedPreset.bytes / 1048576).toFixed(0);
+            note.textContent = `${selectedPreset.note} Served by this Room server (${mb} MB, downloaded once and cached in this browser).`;
+            try {
+              paintMapOptions(selectedPreset.maps, selectedPreset.label);
+            } catch (err) {
+              count.textContent = err.message || String(err);
+            }
+          } else {
+            note.textContent = bundled.length ? "Use your own Doom WAD or Duke GRP instead of the built-in files." : "";
+            updateGame();
+          }
+        };
+        source.addEventListener("change", updateSource);
+        updateSource();
+      },
     });
     if (!data) return;
+    if (selectedPreset) {
+      if (!data.map) {
+        flash("Choose a map before starting", "error");
+        return;
+      }
+      if (!(await ensurePlayBase())) return;
+      goPlay(
+        soloUrl({
+          game: "doom",
+          map: data.map.trim().toUpperCase(),
+          skill: Number(data.skill) || 3,
+          mod: data.mod,
+          packs: data.voxel ? ["voxel"] : [],
+          bundled: selectedPreset,
+        })
+      );
+      return;
+    }
+    if (!selectedGameFile || !data.map) {
+      flash("Choose a WAD or GRP and a map before starting", "error");
+      return;
+    }
     if (!(await ensurePlayBase())) return;
     const doom = data.game !== "duke3d";
+    try {
+      await saveSoloGameFile(selectedGameFile.name, selectedGameFile.buffer, selectedGameFile.addons || []);
+      console.info("[Room solo] prepared local run", {
+        game: data.game,
+        base: selectedGameFile.name,
+        addons: (selectedGameFile.addons || []).map((addon) => addon.name),
+        map: data.map,
+      });
+    } catch (err) {
+      flash("Could not prepare the local game file: " + (err.message || String(err)), "error");
+      return;
+    }
     goPlay(
       soloUrl({
         game: data.game,
-        map: (data.map || "E1M1").trim().toUpperCase(),
+        map: data.map.trim().toUpperCase(),
         skill: Number(data.skill) || 3,
         mod: doom ? data.mod : "",
         packs: doom && data.voxel ? ["voxel"] : [],
@@ -778,10 +1206,10 @@
 
   async function joinById() {
     const data = await openModal({
-      title: "Join by pit id",
-      confirmLabel: "Enter the pit",
+      title: "Join by game ID",
+      confirmLabel: "Join game",
       bodyHtml:
-        '<label class="field"><span>Pit id</span><input name="id" required placeholder="hex room id"/></label>',
+        '<label class="field"><span>Game ID</span><input name="id" required placeholder="hex game ID"/></label>',
     });
     if (!data || !data.id) return;
     const id = data.id.trim();
@@ -804,7 +1232,7 @@
   function renderRooms() {
     const grid = $("room-grid");
     grid.innerHTML = "";
-    $("room-count").textContent = state.rooms.length + " open";
+    $("room-count").textContent = state.rooms.length === 1 ? "1 game" : state.rooms.length + " games";
     $("rooms-empty").classList.toggle("hidden", state.rooms.length > 0);
     for (const room of state.rooms) {
       const el = document.createElement("article");
@@ -813,13 +1241,15 @@
       el.innerHTML =
         "<div><h3>" +
         escapeHtml(room.map) +
-        '</h3><p class="meta">skill ' +
-        escapeHtml(room.skill) +
+        '</h3><p class="meta">' +
+        escapeHtml(modeLabel(room)) +
+        " · " +
+        escapeHtml(skillLabel(room.game, room.skill)) +
         " · " +
         room.occupied +
         "/" +
         room.max_players +
-        " seats" +
+        " players" +
         (room.time_limit ? " · " + escapeHtml(room.time_limit) + " min" : "") +
         '</p><p class="id" title="' +
         escapeHtml(room.id) +
@@ -827,8 +1257,8 @@
         escapeHtml(shortId(room.id)) +
         '</p><div class="badges">' +
         (room.started
-          ? '<span class="badge live">in game</span>'
-          : '<span class="badge open">lobby</span>') +
+          ? '<span class="badge live">in progress</span>'
+          : '<span class="badge open">waiting</span>') +
         (full ? '<span class="badge">full</span>' : "") +
         (room.game === "duke3d" ? '<span class="badge mod">' + escapeHtml(gameLabel(room)) + "</span>" : "") +
         (room.mod ? '<span class="badge mod">' + escapeHtml(modLabel(room)) + "</span>" : "") +
@@ -845,7 +1275,7 @@
       const play = document.createElement("button");
       play.type = "button";
       play.className = "btn primary small";
-      play.textContent = "Enter";
+      play.textContent = "Join";
       play.title = "Join in this tab";
       play.disabled = full;
       play.addEventListener("click", () => playRoom(room, { newTab: false }));
@@ -1033,4 +1463,50 @@
     .then(() => consumeJoinQuery())
     .catch(() => {});
   setInterval(refresh, 4000);
+})();
+
+
+// Background "Doom fire" strip (160×64 palette automaton, scaled up).
+(() => {
+  const canvas = document.getElementById("bg-fire");
+  if (!canvas) return;
+  const g = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  const PAL = [[7,7,7],[31,7,7],[47,15,7],[71,15,7],[87,23,7],[103,31,7],[119,31,7],[143,39,7],[159,47,7],[175,63,7],
+    [191,71,7],[199,71,7],[223,79,7],[223,87,7],[223,87,7],[215,95,7],[215,95,7],[215,103,15],[207,111,15],[207,119,15],
+    [207,127,15],[207,135,23],[199,135,23],[199,143,23],[199,151,31],[191,159,31],[191,159,31],[191,167,39],[191,167,39],
+    [191,175,47],[183,175,47],[183,183,47],[183,183,55],[207,207,111],[223,223,159],[239,239,199],[255,255,255]];
+  const fire = new Uint8Array(W * H);
+  for (let x = 0; x < W; x++) fire[(H - 1) * W + x] = PAL.length - 1;
+  const img = g.createImageData(W, H);
+  const step = () => {
+    for (let x = 0; x < W; x++) {
+      for (let y = 1; y < H; y++) {
+        const src = y * W + x;
+        const heat = fire[src];
+        if (!heat) { fire[src - W] = 0; continue; }
+        const r = (Math.random() * 3.6) | 0;
+        fire[Math.max(0, Math.min(W * H - 1, src - W - (r - 1)))] = heat - (r & 1);
+      }
+    }
+  };
+  const paint = () => {
+    const d = img.data;
+    for (let i = 0; i < fire.length; i++) {
+      const c = PAL[fire[i]], o = i * 4;
+      d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = fire[i] ? 255 : 0;
+    }
+    g.putImageData(img, 0, 0);
+  };
+  if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    for (let i = 0; i < H * 2; i++) step();
+    paint();
+    return;
+  }
+  let last = 0;
+  const frame = (t) => {
+    if (!document.hidden && t - last > 33) { last = t; step(); paint(); }
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
 })();

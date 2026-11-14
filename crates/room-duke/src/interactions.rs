@@ -426,24 +426,42 @@ pub(crate) fn init_bridge_effectors(world: &BuildWorld, temps: &mut Vec<ActorCon
         if temps.len() <= index {
             temps.resize_with(index + 1, ActorConTemps::default);
         }
-        let mut nearest = [(i32::MAX, -1_i32); 2];
-        let live_walls = world
-            .walls
-            .get(..world.numwalls as usize)
-            .unwrap_or_default();
-        for (wall_index, wall) in live_walls.iter().enumerate() {
-            let dx = wall.x.wrapping_sub(world.sprites[index].x);
-            let dy = wall.y.wrapping_sub(world.sprites[index].y);
-            let distance = length2d(dx, dy);
-            if distance < nearest[0].0 {
-                nearest[1] = nearest[0];
-                nearest[0] = (distance, wall_index as i32);
-            } else if distance < nearest[1].0 && wall_index as i32 != nearest[0].1 {
-                nearest[1] = (distance, wall_index as i32);
+        // Chocolate spawn case 20: two passes over the SE's *own sector*
+        // walls, picking the closest vertex and then the closest other one.
+        let Some(sector) = usize::try_from(world.sprites[index].sectnum)
+            .ok()
+            .and_then(|sector| world.sectors.get(sector))
+        else {
+            continue;
+        };
+        let start = sector.wallptr.max(0) as usize;
+        let end = start
+            .saturating_add(sector.wallnum.max(0) as usize)
+            .min(world.walls.len());
+        let (sx, sy) = (world.sprites[index].x, world.sprites[index].y);
+        let distance_to = |wall: &room_build_engine::types::WallT| {
+            crate::actors::find_distance_2d(sx.wrapping_sub(wall.x), sy.wrapping_sub(wall.y))
+        };
+        let mut first = -1_i32;
+        let mut best = i32::MAX;
+        for wall_index in start..end {
+            let distance = distance_to(&world.walls[wall_index]);
+            if distance < best {
+                best = distance;
+                first = wall_index as i32;
             }
         }
-        temps[index].g_t[1] = nearest[0].1;
-        temps[index].g_t[2] = nearest[1].1;
+        let mut second = first;
+        best = i32::MAX;
+        for wall_index in start..end {
+            let distance = distance_to(&world.walls[wall_index]);
+            if distance < best && wall_index as i32 != first {
+                best = distance;
+                second = wall_index as i32;
+            }
+        }
+        temps[index].g_t[1] = first;
+        temps[index].g_t[2] = second;
         temps[index].g_t[3] = 0;
     }
 }
@@ -467,14 +485,18 @@ pub(crate) fn tick_bridge_effectors(
         let (sin, cos) = room_build_engine::helpers::sincos_q14(angle);
         let dx = (distance * cos) >> 14;
         let dy = (distance * sin) >> 14;
-        let progress = temps[index].g_t[3].saturating_add(distance);
-        let limit = i32::from(world.sprites[index].xvel);
+        // Chocolate: `s->xvel = ±8; t[3] += xvel;` and the travel limit is
+        // `SP` (sprite yvel = the sector's GPSPEED), not xvel. T4 keeps the
+        // overshoot on the stopping tic so open/close travel stays symmetric.
+        world.sprites[index].xvel = distance as i16;
+        let progress = temps[index].g_t[3].wrapping_add(distance);
+        temps[index].g_t[3] = progress;
+        let limit = i32::from(world.sprites[index].yvel);
         if progress <= 0 || (progress >> 6) >= (limit >> 6) {
             temps[index].g_t[0] = 0;
             call_sector_sound(world, world.sprites[index].sectnum, temps);
             continue;
         }
-        temps[index].g_t[3] = progress;
         world.sprites[index].x = world.sprites[index].x.wrapping_add(dx);
         world.sprites[index].y = world.sprites[index].y.wrapping_add(dy);
         for endpoint in [temps[index].g_t[1], temps[index].g_t[2]] {
@@ -2454,7 +2476,8 @@ pub(crate) fn use_wall_switch(
             x, y, probe_z, sector, angle, USE_RANGE, &sectors, &walls, &tags,
         );
         sprite_target = nearest_tagged_sprite_switch(
-            world, x, y, probe_z, sector, angle, USE_RANGE, tile_meta, &sector_z, &walls, false,
+            world, x, y, probe_z, sector, angle, USE_RANGE, tile_meta, &sector_z, &walls,
+            NearSpriteFilter::Switch,
         );
         if wall_target.is_some() || sprite_target.is_some() {
             break;
@@ -2752,11 +2775,16 @@ fn activate_switch(
 
 /// Chocolate `checkhitswitch` transition for tagged sector-light SE 12s.
 fn toggle_tagged_se12(world: &mut BuildWorld, temps: &mut Vec<ActorConTemps>, hitag: i16) {
-    for (index, marker) in world.sprites.iter().enumerate() {
-        if marker.statnum != crate::stat::STAT_EFFECTOR
-            || marker.lotag != 12
-            || marker.hitag != hitag
-        {
+    // Walk the live STAT_EFFECTOR list: `SpriteT::statnum` keeps the map-file
+    // value (0 for every effector) and is never updated by `SpriteLists`.
+    let mut next = world.lists.headspritestat[crate::stat::STAT_EFFECTOR as usize];
+    while next >= 0 {
+        let index = next as usize;
+        next = world.lists.nextspritestat[index];
+        let Some(marker) = world.sprites.get(index).copied() else {
+            continue;
+        };
+        if marker.lotag != 12 || marker.hitag != hitag {
             continue;
         }
         if let Ok(sector_index) = usize::try_from(marker.sectnum)
@@ -2818,7 +2846,7 @@ fn nearest_tagged_sprite_switch(
     tile_meta: &[crate::player::TileZMeta],
     sectors: &[SectorZ],
     walls: &[WallXY],
-    include_nuke_button: bool,
+    filter: NearSpriteFilter,
 ) -> Option<(i16, i32)> {
     let (sin, cos) = approx_sincos_q14(i32::from(angle));
     let vx = i64::from(cos) * i64::from(range) >> 14;
@@ -2834,10 +2862,20 @@ fn nearest_tagged_sprite_switch(
             .sprite_stat
             .get(index)
             .is_none_or(|stat| *stat == room_build_engine::world::MAXSTATUS as i16)
-            || if include_nuke_button {
-                sprite.picnum != crate::spawn::NUKEBUTTON
-            } else {
-                sprite.lotag <= 0 || !is_switch(sprite.picnum)
+            || match filter {
+                NearSpriteFilter::NukeButton => sprite.picnum != crate::spawn::NUKEBUTTON,
+                NearSpriteFilter::Switch => sprite.lotag <= 0 || !is_switch(sprite.picnum),
+                // `neartag(…, 1)`: any lotag-tagged utility prop.
+                NearSpriteFilter::Utility => {
+                    sprite.lotag == 0
+                        || !matches!(
+                            sprite.picnum,
+                            crate::spawn::TOILET
+                                | crate::spawn::STALL
+                                | crate::spawn::WATERFOUNTAIN..=566
+                                | crate::spawn::PLUG
+                        )
+                }
             }
         {
             continue;
@@ -2895,6 +2933,138 @@ fn nearest_tagged_sprite_switch(
     best
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NearSpriteFilter {
+    Switch,
+    NukeButton,
+    Utility,
+}
+
+/// What a `use` on a toilet, urinal stall, water fountain or wall plug did,
+/// so the session can queue the matching Chocolate sounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UtilityUse {
+    /// `DUKE_URINATE`: holster, +10% health, start `last_pissed_time`.
+    Urinate,
+    /// Used again during the cooldown: `FLUSH_TOILET`.
+    Flush,
+    /// One health point per press below max: `DUKE_DRINKING`.
+    Drink,
+    /// Drinking at full health: nothing audible, but the use is consumed.
+    FountainFull,
+    /// `SHORT_CIRCUIT` shock: 2..5 damage and a blue flash.
+    Shock,
+}
+
+/// Chocolate `checksectors` sprite cases TOILET/STALL, WATERFOUNTAIN, PLUG.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn use_utility_sprite(
+    world: &mut BuildWorld,
+    x: i32,
+    y: i32,
+    z: i32,
+    angle: i16,
+    sector: i16,
+    player: &mut Player,
+    tile_meta: &[crate::player::TileZMeta],
+    actor_temps: &mut Vec<ActorConTemps>,
+    max_player_health: i16,
+    randomseed: &mut i32,
+) -> Option<UtilityUse> {
+    let sectors: Vec<_> = world
+        .sectors
+        .iter()
+        .map(|s| SectorZ {
+            wallptr: s.wallptr,
+            wallnum: s.wallnum,
+            ceilingz: s.ceilingz,
+            floorz: s.floorz,
+            ceilingstat: s.ceilingstat,
+            floorstat: s.floorstat,
+            ceilingheinum: s.ceilingheinum,
+            floorheinum: s.floorheinum,
+        })
+        .collect();
+    let walls: Vec<_> = world
+        .walls
+        .iter()
+        .map(|w| WallXY {
+            x: w.x,
+            y: w.y,
+            point2: w.point2,
+            nextsector: w.nextsector,
+            cstat: w.cstat,
+        })
+        .collect();
+    // Chocolate probes at the eye, +8 and +16 units (`z` is eye + 16).
+    let target = [-(16 << 8), -(8 << 8), 0].into_iter().find_map(|dz| {
+        nearest_tagged_sprite_switch(
+            world,
+            x,
+            y,
+            z + dz,
+            sector,
+            angle,
+            USE_RANGE,
+            tile_meta,
+            &sectors,
+            &walls,
+            NearSpriteFilter::Utility,
+        )
+    });
+    let index = usize::try_from(target?.0).ok()?;
+    let picnum = world.sprites.get(index)?.picnum;
+    let body = usize::try_from(player.sprite_i).ok()?;
+    match picnum {
+        crate::spawn::TOILET | crate::spawn::STALL => {
+            if player.last_pissed_time != 0 {
+                return Some(UtilityUse::Flush);
+            }
+            player.last_pissed_time = 26 * 220;
+            player.transporter_hold = 29 * 2;
+            if player.holster_weapon == 0 {
+                player.holster_weapon = 1;
+                player.weapon_pos = -1;
+            }
+            // `Player::extra` mirrors `sprite[p->i].extra` (synced each tic).
+            if player.extra <= max_player_health - max_player_health / 10 {
+                player.extra += max_player_health / 10;
+                player.last_extra = player.extra;
+            } else if player.extra < max_player_health {
+                player.extra = max_player_health;
+            }
+            world.sprites[body].extra = player.extra;
+            Some(UtilityUse::Urinate)
+        }
+        crate::spawn::WATERFOUNTAIN..=566 => {
+            if actor_temps.len() <= index {
+                actor_temps.resize_with(index + 1, ActorConTemps::default);
+            }
+            if actor_temps[index].g_t[0] == 1 {
+                return Some(UtilityUse::FountainFull);
+            }
+            actor_temps[index].g_t[0] = 1;
+            world.sprites[index].owner = player.sprite_i;
+            if player.extra < max_player_health {
+                player.extra += 1;
+                world.sprites[body].extra = player.extra;
+                Some(UtilityUse::Drink)
+            } else {
+                Some(UtilityUse::FountainFull)
+            }
+        }
+        crate::spawn::PLUG => {
+            let damage = 2 + (room_build_engine::numeric::krand_step(randomseed) & 3) as i16;
+            player.extra -= damage;
+            world.sprites[body].extra = player.extra;
+            player.palette_flash = [48, 48, 64];
+            player.palette_flash_tics = 32;
+            Some(UtilityUse::Shock)
+        }
+        _ => None,
+    }
+}
+
 /// Activate an Atomic nuke button with the `gamefunc_Open` ray, as
 /// `sector.c::checksectors` does. Returns true only on first activation.
 pub(crate) fn use_nuke_button(
@@ -2934,7 +3104,8 @@ pub(crate) fn use_nuke_button(
         })
         .collect();
     let Some((index, _)) = nearest_tagged_sprite_switch(
-        world, x, y, z, sector, angle, USE_RANGE, tile_meta, &sectors, &walls, true,
+        world, x, y, z, sector, angle, USE_RANGE, tile_meta, &sectors, &walls,
+        NearSpriteFilter::NukeButton,
     ) else {
         return false;
     };

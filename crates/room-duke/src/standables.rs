@@ -95,16 +95,18 @@ fn spawn_random_scraps(
     count: usize,
 ) {
     for _ in 0..count {
-        let x = source.x.wrapping_add((krand_step(randomseed) & 255) - 128);
-        let y = source.y.wrapping_add((krand_step(randomseed) & 255) - 128);
+        // Chocolate `RANDOMSCRAP`: 32-bit gcc evaluates the EGS arguments right
+        // to left, so zvel draws first and x last.
+        let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+        let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
+        let angle = (krand_step(randomseed) & 2047) as i16;
+        let tile = actor_tile(script, "SCRAP6", SCRAP6) + (krand_step(randomseed) & 15) as i16;
         let z = source
             .z
             .wrapping_sub(8 << 8)
             .wrapping_sub(krand_step(randomseed) & 8191);
-        let tile = actor_tile(script, "SCRAP6", SCRAP6) + (krand_step(randomseed) & 15) as i16;
-        let angle = (krand_step(randomseed) & 2047) as i16;
-        let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
-        let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+        let y = source.y.wrapping_add((krand_step(randomseed) & 255) - 128);
+        let x = source.x.wrapping_add((krand_step(randomseed) & 255) - 128);
         let _ = crate::shoot::egs(
             &mut world.lists,
             &mut world.sprites[..],
@@ -187,11 +189,13 @@ fn tick_breakable_standable(
     let glass_sound = i16::try_from(GLASS_HEAVYBREAK).unwrap_or_default();
     if is_fire_ext {
         for _ in 0..16 {
-            let z = thing.z.wrapping_sub(krand_step(randomseed) % (48 << 8));
-            let tile = SCRAP3 + (krand_step(randomseed) & 3) as i16;
-            let angle = (krand_step(randomseed) & 2047) as i16;
-            let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
+            // Chocolate `EGS(…, SCRAPn+(TRAND&…), -8, …, TRAND&2047, (TRAND&…)+64, -(TRAND&…)…)`:
+            // 32-bit gcc evaluates the arguments right to left, so zvel draws first.
             let zvel = (-(krand_step(randomseed) & 4095) - (i32::from(thing.zvel) >> 2)) as i16;
+            let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
+            let angle = (krand_step(randomseed) & 2047) as i16;
+            let tile = SCRAP3 + (krand_step(randomseed) & 3) as i16;
+            let z = thing.z.wrapping_sub(krand_step(randomseed) % (48 << 8));
             let scrap = crate::shoot::egs(
                 &mut world.lists,
                 &mut world.sprites[..],
@@ -463,6 +467,31 @@ pub fn movestandables(
                 let _ = spawn_maker_bubble(lists, sprites, picnum, actor_temps, i, script);
             }
             actor_temps[iu].g_t[0] += 1;
+            i = next;
+            continue;
+        }
+        if (crate::spawn::WATERFOUNTAIN..=crate::spawn::WATERFOUNTAIN + 3).contains(&pic) {
+            // Chocolate: a used fountain sprays (frames +1/+2) for 20 tics,
+            // then resets once the player is farther than 512.
+            if actor_temps.len() <= iu {
+                actor_temps.resize_with(iu + 1, ActorConTemps::default);
+            }
+            let t0 = actor_temps[iu].g_t[0];
+            if t0 > 0 {
+                if t0 < 20 {
+                    actor_temps[iu].g_t[0] = t0 + 1;
+                    let s = &mut sprites[iu];
+                    s.picnum += 1;
+                    if s.picnum == crate::spawn::WATERFOUNTAIN + 3 {
+                        s.picnum = crate::spawn::WATERFOUNTAIN + 1;
+                    }
+                } else if bolt_player_dist(&sprites[iu], p) > 512 {
+                    actor_temps[iu].g_t[0] = 0;
+                    sprites[iu].picnum = crate::spawn::WATERFOUNTAIN;
+                } else {
+                    actor_temps[iu].g_t[0] = 1;
+                }
+            }
             i = next;
             continue;
         }
@@ -768,16 +797,18 @@ pub(crate) fn tick_detonables(
             }
             if thing.xrepeat != 0 {
                 for _ in 0..8 {
-                    let x = thing.x.wrapping_add((krand_step(randomseed) & 255) - 128);
-                    let y = thing.y.wrapping_add((krand_step(randomseed) & 255) - 128);
+                    // Chocolate `RANDOMSCRAP`: 32-bit gcc evaluates the EGS arguments right
+                    // to left, so zvel draws first and x last.
+                    let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+                    let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
+                    let angle = (krand_step(randomseed) & 2047) as i16;
+                    let tile = 2390 + (krand_step(randomseed) & 15) as i16;
                     let z = thing
                         .z
                         .wrapping_sub(8 << 8)
                         .wrapping_sub(krand_step(randomseed) & 8191);
-                    let tile = 2390 + (krand_step(randomseed) & 15) as i16;
-                    let angle = (krand_step(randomseed) & 2047) as i16;
-                    let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
-                    let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+                    let y = thing.y.wrapping_add((krand_step(randomseed) & 255) - 128);
+                    let x = thing.x.wrapping_add((krand_step(randomseed) & 255) - 128);
                     let _ = crate::shoot::egs(
                         &mut world.lists,
                         &mut world.sprites[..],
@@ -1316,20 +1347,22 @@ fn spawn_tripbomb_scrap(
     bomb_index: i16,
 ) {
     let rand = |seed: &mut i32| krand_step(seed);
-    let x = bomb.x.wrapping_add((rand(randomseed) & 255) - 128);
-    let y = bomb.y.wrapping_add((rand(randomseed) & 255) - 128);
-    let z = bomb
-        .z
-        .wrapping_sub(8 << 8)
-        .wrapping_sub(rand(randomseed) & 8191);
+    // Chocolate `RANDOMSCRAP`: 32-bit gcc evaluates the EGS arguments right
+    // to left, so zvel draws first and x last.
+    let zvel = (-512 - (rand(randomseed) & 2047)) as i16;
+    let xvel = (64 + (rand(randomseed) & 63)) as i16;
+    let angle = (rand(randomseed) & 2047) as i16;
     let tile = script
         .and_then(|script| script.labels.get("SCRAP6"))
         .filter(|label| !label.is_ptr)
         .map_or(2390, |label| label.value as i16)
         .wrapping_add((rand(randomseed) & 15) as i16);
-    let angle = (rand(randomseed) & 2047) as i16;
-    let xvel = (64 + (rand(randomseed) & 63)) as i16;
-    let zvel = (-512 - (rand(randomseed) & 2047)) as i16;
+    let z = bomb
+        .z
+        .wrapping_sub(8 << 8)
+        .wrapping_sub(rand(randomseed) & 8191);
+    let y = bomb.y.wrapping_add((rand(randomseed) & 255) - 128);
+    let x = bomb.x.wrapping_add((rand(randomseed) & 255) - 128);
     let _ = crate::shoot::egs(
         &mut world.lists,
         &mut world.sprites[..],

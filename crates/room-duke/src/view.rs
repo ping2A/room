@@ -715,6 +715,47 @@ impl DukeSoftRenderer {
         rgba
     }
 
+    /// ART tile size, `(0, 0)` when the tile is absent (editor picking).
+    #[must_use]
+    pub fn tile_dimensions(&self, picnum: i16) -> (u16, u16) {
+        self.tiles.borrow().dimensions(picnum).unwrap_or_default()
+    }
+
+    /// Editor preview: draw `world` from a free camera with no weapon, HUD or
+    /// player effects. Sprites are drawn as stored in the map (markers such as
+    /// SE/ACTIVATOR are left visible so they can be selected).
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_editor_view(
+        &self,
+        world: &BuildWorld,
+        x: i32,
+        y: i32,
+        z: i32,
+        ang: i16,
+        horiz: i16,
+        sector: i16,
+        width: u32,
+        height: u32,
+        tic: u32,
+    ) -> Vec<u8> {
+        let mut frame = SoftFrame::new(width, height);
+        let view: BuildView = world.build_view(x, y, z, ang, horiz, sector);
+        render_fp_textured_at(world, &view, &mut frame, &self.tiles.borrow(), tic.wrapping_mul(4));
+        let mut rgba = Vec::with_capacity(frame.pixels.len() * 4);
+        for index in frame.pixels {
+            let i = usize::from(index) * 3;
+            let rgb = &self.palette.rgb;
+            rgba.extend_from_slice(&[
+                self.brighten_channel(rgb[i]),
+                self.brighten_channel(rgb[i + 1]),
+                self.brighten_channel(rgb[i + 2]),
+                255,
+            ]);
+        }
+        rgba
+    }
+
     /// Render with a local shoulder-camera override without changing the
     /// deterministic player/session state. Used by shells whose camera
     /// controls are presentation-local (notably browser lockstep clients).

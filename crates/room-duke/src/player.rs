@@ -431,6 +431,12 @@ pub struct Player {
     pub on_warping_sector: i16,
     /// Chocolate `transporter_hold`.
     pub transporter_hold: i16,
+    /// Chocolate `somethingonplayer`: the green slime clinging to the face.
+    #[serde(default)]
+    pub something_on_player: Option<i16>,
+    /// Chocolate `last_pissed_time`: toilet/urinal use cooldown (26*220).
+    #[serde(default)]
+    pub last_pissed_time: i16,
     /// Chocolate `jumping_counter` (0 = not jumping).
     pub jumping_counter: i16,
     /// Chocolate `jumping_toggle`.
@@ -598,6 +604,8 @@ impl Default for Player {
             actorsqu: -1,
             pending_knee_target: None,
             holster_weapon: 0,
+            last_pissed_time: 0,
+            something_on_player: None,
             fist_incs: 0,
             button_palette: 0,
             secret_level: 0,
@@ -881,7 +889,15 @@ pub fn processinput_move_with_lists_clipping(
     }
 
     // Chocolate: getzrange + fall/ceiling clamp happen *before* XY clipmove.
-    apply_player_fall_z(p, sync, sectors, walls, sprites, tile_meta);
+    apply_player_fall_z(
+        p,
+        sync,
+        sectors,
+        walls,
+        sprites,
+        tile_meta,
+        sprite_lists.map(|lists| &lists.sprite_stat[..]),
+    );
 
     if p.posxv != 0 || p.posyv != 0 || sync.fvel != 0 || sync.svel != 0 {
         p.posxv += (i32::from(sync.fvel) * doubvel) << 6;
@@ -1070,6 +1086,7 @@ pub fn apply_player_fall_z(
     walls: &[WallT],
     sprites: &[SpriteT],
     tile_meta: &[TileZMeta],
+    sprite_stat: Option<&[i16]>,
 ) {
     if p.cursectnum < 0 || p.cursectnum as usize >= sectors.len() {
         return;
@@ -1121,7 +1138,12 @@ pub fn apply_player_fall_z(
     if zr.ceilhit >= 0 && (zr.ceilhit & 49152) == 49152 {
         let si = (zr.ceilhit & (room_build_engine::world::MAXSPRITES as i32 - 1)) as usize;
         if let Some(s) = sprites.get(si) {
-            if s.statnum == 1 && s.extra >= 0 {
+            // `SpriteT::statnum` is the map-file value; the live stat is in
+            // the sprite lists when the caller has them.
+            let stat = sprite_stat
+                .and_then(|stats| stats.get(si).copied())
+                .unwrap_or(s.statnum);
+            if stat == crate::stat::STAT_ACTOR && s.extra >= 0 {
                 cz = sectors[p.cursectnum as usize].ceilingz;
             }
         }
@@ -1216,8 +1238,27 @@ pub fn apply_player_fall_z(
         return;
     }
 
-    // Non-jetpack path; `i` = 40 dry / 34 surface water.
-    let i = if psectlotag == 1 { 34 } else { 40 };
+    // Non-jetpack path. Chocolate `processinput`: `i = 40`, and in shallow
+    // water (`psectlotag == 1 && spritebridge == 0`) the view bobs —
+    // `pycount += 32; pyoff = sintable[pycount]>>6` with `i = 34` — or, when
+    // shrunk, sits at `i = 12` without bobbing. Room does not track
+    // `spritebridge` yet, so standing on a sprite bridge over water still bobs.
+    let shrunk = usize::try_from(p.sprite_i)
+        .ok()
+        .and_then(|index| sprites.get(index))
+        .is_some_and(|sprite| sprite.yrepeat < 32);
+    let i = if psectlotag == 1 {
+        if shrunk {
+            12
+        } else {
+            p.pycount = ((i32::from(p.pycount) + 32) & 2047) as i16;
+            let (sin, _) = sincos_q14(i32::from(p.pycount));
+            p.pyoff = sin >> 6;
+            34
+        }
+    } else {
+        40
+    };
     let contact = fz - (i << 8);
 
     if p.posz < contact {
@@ -1438,6 +1479,7 @@ mod tests {
             &walls,
             &sprites,
             &meta,
+            None,
         );
         assert_eq!(p.posz, -24016);
         assert_eq!(p.poszv, 128);

@@ -614,10 +614,12 @@ fn apply_player_weapon_hits(
                 .unwrap_or(19);
             for shard_index in (0..=16).rev() {
                 let shard_tile = glass_pieces + (shard_index % 3);
-                let angle = (room_build_engine::numeric::krand_step(randomseed) & 2047) as i16;
-                let xvel = (32 + (room_build_engine::numeric::krand_step(randomseed) & 63)) as i16;
+                // Chocolate `EGS(…, TRAND&2047, 32+(TRAND&63), 1024-(TRAND&1023), …)`:
+                // right-to-left arguments, zvel draws first.
                 let zvel =
                     (1024 - (room_build_engine::numeric::krand_step(randomseed) & 1023)) as i16;
+                let xvel = (32 + (room_build_engine::numeric::krand_step(randomseed) & 63)) as i16;
+                let angle = (room_build_engine::numeric::krand_step(randomseed) & 2047) as i16;
                 let shard = crate::shoot::egs(
                     lists,
                     sprites,

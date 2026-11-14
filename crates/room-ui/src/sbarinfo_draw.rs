@@ -585,12 +585,13 @@ impl Ctx<'_, '_> {
         alpha: f32,
         clip: Option<Rect>,
     ) {
-        let d = self.dims(lump).unwrap_or(PatchDims {
-            w: 16.0,
-            h: 16.0,
-            left: 0.0,
-            top: 0.0,
-        });
+        // A graphic the game data doesn't have draws nothing (GZDoom
+        // `DrawGraphic` with an invalid texture). Brutal Doom names
+        // `STGNU2x` images it never ships; they showed as grey boxes beside
+        // the face.
+        let Some(d) = self.dims(lump) else {
+            return;
+        };
         // `DI_DRAWINBOX`: shrink to fit the box, keeping the aspect.
         let (w, h) = match boxsize {
             #[allow(clippy::cast_precision_loss)]

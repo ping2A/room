@@ -105,6 +105,7 @@ const S = {
   dukeMapBytes: null,
   dukeMapFile: null,
   dukeSelection: null,
+  dukeClipboard: null,
   dukeUndo: [],
   dukeRedo: [],
   dukePersistBefore: null,
@@ -261,9 +262,9 @@ function setSummary(json) {
   modeBadge.textContent = S.summary.duke ? "DUKE BUILD MAPS" : "DOOM MAPS";
   const gameTab = $("#browser-tabs [data-tab=\"iwad\"]");
   gameTab.textContent = S.summary.duke ? "GRP" : "Game";
-  if (S.summary.duke && !["iwad", "maps", "textures"].includes(S.tab)) S.tab = "maps";
+  if (S.summary.duke && !["iwad", "maps", "things", "textures"].includes(S.tab)) S.tab = "maps";
   for (const tab of document.querySelectorAll("#browser-tabs [data-tab]")) {
-    tab.hidden = !!S.summary.duke && !["iwad", "maps", "textures"].includes(tab.dataset.tab);
+    tab.hidden = !!S.summary.duke && !["iwad", "maps", "things", "textures"].includes(tab.dataset.tab);
   }
   if (S.summary.duke) {
     applyLayout("split");
@@ -276,15 +277,17 @@ function setSummary(json) {
     $("#btn-new-map").textContent = "New Build map";
     $("#btn-new-map").title = "Create an editable native Build .MAP in the working Duke GRP";
     $("#btn-visual").hidden = true;
-    $("#btn-check").hidden = true;
+    $("#btn-check").hidden = false;
+    $("#btn-check").textContent = "✔ Check";
+    $("#btn-check").title = "Check Build map structure (F8)";
     $("#btn-composer").hidden = true;
     $("#btn-export-pk3").hidden = true;
     $("#btn-open-pk3").hidden = true;
     document.querySelector(".packs").hidden = true;
-    document.querySelector(".layout").hidden = true;
+    document.querySelector(".layout").hidden = false;
     $("#textured").parentElement.hidden = true;
     $("#duke-floor-toggle").hidden = false;
-    ["#btn-copy", "#btn-paste", "#btn-rotate", "#btn-mirror"].forEach((id) => { $(id).hidden = true; });
+    ["#btn-copy", "#btn-paste", "#btn-rotate", "#btn-mirror"].forEach((id) => { $(id).hidden = false; $(id).disabled = false; });
     const labels = { vertices: "Vertices", lines: "Walls", sectors: "Sectors", things: "Sprites", draw: "Draw" };
     document.querySelectorAll("#modes .btn").forEach((b) => {
       b.textContent = labels[b.dataset.mode] || b.textContent;
@@ -301,6 +304,7 @@ function setSummary(json) {
     $("#btn-new-map").title = "New map";
     $("#btn-visual").hidden = false;
     $("#btn-check").hidden = false;
+    $("#btn-check").textContent = "✔ Check";
     $("#btn-composer").hidden = false;
     $("#btn-export-pk3").hidden = false;
     $("#btn-open-pk3").hidden = false;
@@ -822,7 +826,7 @@ function loadMap(name) {
     S.version++;
     $("#map-select").value = name;
     setPlaying(false);
-    if (S.dukeMap) fitDukeView(); else fitView();
+    if (S.dukeMap) { fitDukeView(); dukePreviewMapLoaded(); } else fitView();
     renderInspector();
     render2d();
     status(`${displayMapName(name)} loaded`);
@@ -1348,12 +1352,205 @@ function dukeSectorLoops(sector) {
   return loops;
 }
 
+
+// Wall / vertex / sprite "kind" colours for the Build 2D view (legend in the corner).
+const DUKE_WALL_KINDS = {
+  solid: { label: "One-sided wall", color: "#d6d9de", width: 1.35 },
+  portal: { label: "Two-sided (portal) wall", color: "#6f8db8", width: 1.2 },
+  blocking: { label: "Blocking portal (cstat 1)", color: "#e0904a", width: 1.8 },
+  masked: { label: "Masked / see-through (cstat 16/32)", color: "#57c7d4", width: 1.8 },
+  mirror: { label: "Mirror (MIRROR tile, one-way)", color: "#d77bff", width: 2.4 },
+  tagged: { label: "Tagged wall (lotag/hitag)", color: "#ffd75e", width: 2 },
+  door: { label: "Door / switch tile", color: "#ff6b6b", width: 2.2 },
+};
+const dukeIsDoorTile = (n) => n >= 0 && /SWITCH|DOOR|SLOT|HANDPRINT|ACCESS/.test(dukeTileName(n) || "");
+function dukeWallKind(m, i) {
+  const w = m.walls[i];
+  const K = DUKE_WALL_KINDS;
+  if (!w) return K.solid;
+  if (w.picnum === 560 || w.overpicnum === 560) return K.mirror;
+  if (w.lotag || w.hitag) return K.tagged;
+  if (dukeIsDoorTile(w.picnum) || dukeIsDoorTile(w.overpicnum)) return K.door;
+  if (w.nextwall >= 0) {
+    if (w.cstat & (16 | 32)) return K.masked;
+    if (w.cstat & 1) return K.blocking;
+    return K.portal;
+  }
+  return K.solid;
+}
+const DUKE_VERTEX_KINDS = {
+  shared: { label: "Shared vertex (joins sectors)", color: "#7fd3ff", shape: "square" },
+  single: { label: "Single-sector vertex", color: "#9fb4ff", shape: "square" },
+  tagged: { label: "Vertex on a tagged / special wall", color: "#ffd75e", shape: "diamond" },
+  loop: { label: "Vertex of an inner loop (pillar/hole)", color: "#ff9fd0", shape: "circle" },
+  problem: { label: "Overlap: >2 walls start here in one sector", color: "#ff5050", shape: "diamond" },
+};
+function dukeVertexIndex(m) {
+  if (m._vertexIndex && m._vertexIndex.walls === m.walls && m._vertexIndex.n === m.walls.length && m._vertexIndex.gen === S.dukeGen) return m._vertexIndex.map;
+  const map = new Map();
+  const wallSector = new Int32Array(m.walls.length).fill(-1);
+  const innerLoop = new Uint8Array(m.walls.length);
+  m.sectors.forEach((sec, si) => {
+    let first = true;
+    let loopStart = sec.wallptr;
+    for (let w = sec.wallptr; w < sec.wallptr + sec.wallnum && w < m.walls.length; w++) {
+      wallSector[w] = si;
+      if (!first) innerLoop[w] = 1;
+      if (m.walls[w].point2 <= w && m.walls[w].point2 >= loopStart) { first = false; loopStart = w + 1; }
+    }
+  });
+  m.walls.forEach((w, i) => {
+    const key = `${w.x},${w.y}`;
+    let e = map.get(key);
+    if (!e) { e = { walls: [], sectors: new Set(), tagged: false, inner: false, perSector: new Map() }; map.set(key, e); }
+    e.walls.push(i);
+    const si = wallSector[i];
+    if (si >= 0) { e.sectors.add(si); e.perSector.set(si, (e.perSector.get(si) || 0) + 1); }
+    if (innerLoop[i]) e.inner = true;
+    const k = dukeWallKind(m, i);
+    if (k === DUKE_WALL_KINDS.tagged || k === DUKE_WALL_KINDS.door || k === DUKE_WALL_KINDS.mirror) e.tagged = true;
+  });
+  m._vertexIndex = { walls: m.walls, n: m.walls.length, gen: S.dukeGen, map };
+  return map;
+}
+function dukeVertexKind(m, x, y) {
+  const e = dukeVertexIndex(m).get(`${x},${y}`);
+  const K = DUKE_VERTEX_KINDS;
+  if (!e) return K.single;
+  for (const n of e.perSector.values()) if (n > 1) return { ...K.problem, label: `${K.problem.label}` };
+  if (e.tagged) return K.tagged;
+  if (e.inner) return K.loop;
+  return e.sectors.size > 1 ? { ...K.shared, label: `Shared vertex · ${e.sectors.size} sectors` } : K.single;
+}
+function dukeSpriteKind(sprite) {
+  const name = dukeTileName(sprite.picnum) || "";
+  if (sprite.picnum === 1) return { label: "Sector effector (SE)", color: "#c07bff" };
+  if (sprite.picnum >= 2 && sprite.picnum <= 10) return { label: "Activator / locator / touchplate", color: "#ff9fd0" };
+  if (sprite.picnum === 1405) return { label: "Player start", color: "#59aaff" };
+  if (sprite.statnum === 1 || /TROOP|PIGCOP|LIZ|BOSS|OCTA|COMMANDER|DRONE|RECON|SHARK|ROTATEGUN|EGG|NEWBEAST|GREENSLIME|TURRET|TANK/.test(name)) return { label: "Enemy", color: "#ff5a5a" };
+  if (/AMMO|WEAPON|GUN|SHOTGUN|CHAINGUN|RPG|DEVISTATOR|FREEZE|SHRINK|TRIPBOMB|HEAVYHB|BATTERY|SIXPAK|ATOMIC|COLA|MEDKIT|STEROIDS|SHIELD|AIRTANK|JETPACK|HOLODUKE|BOOTS|ACCESSCARD|HEATSENSOR|FIRSTAID/.test(name)) return { label: "Item / pickup", color: "#ffd75e" };
+  if (sprite.cstat & (16 | 32)) return { label: "Wall/floor-aligned decoration", color: "#57c7d4" };
+  return { label: "Decoration", color: "#4cc38a" };
+}
+function dukeDrawLegend(W, H) {
+  if (S.dukeLegend === false) return;
+  const rows = [];
+  if (S.mode === "vertices") rows.push(...Object.values(DUKE_VERTEX_KINDS).map((k) => [k.color, k.label, k.shape]));
+  else if (S.mode === "things") rows.push(["#ff5a5a", "Enemy"], ["#ffd75e", "Item / pickup"], ["#c07bff", "Sector effector (SE)"], ["#ff9fd0", "Activator / locator"], ["#57c7d4", "Aligned decoration"], ["#4cc38a", "Decoration"]);
+  else rows.push(...Object.values(DUKE_WALL_KINDS).map((k) => [k.color, k.label, "line"]));
+  ctx.font = "11px ui-monospace, monospace";
+  const w = Math.max(...rows.map((r) => ctx.measureText(r[1]).width)) + 34;
+  const h = rows.length * 16 + 10;
+  const x0 = W - w - 10, y0 = H - h - 34;
+  ctx.fillStyle = "rgba(8,10,13,.86)"; ctx.fillRect(x0, y0, w, h);
+  ctx.strokeStyle = "rgba(190,205,220,.3)"; ctx.lineWidth = 1; ctx.strokeRect(x0 + .5, y0 + .5, w - 1, h - 1);
+  ctx.textBaseline = "middle";
+  rows.forEach(([color, label, shape], i) => {
+    const cy = y0 + 13 + i * 16, cx = x0 + 12;
+    ctx.fillStyle = color; ctx.strokeStyle = color;
+    if (shape === "line") { ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(cx - 6, cy); ctx.lineTo(cx + 8, cy); ctx.stroke(); }
+    else if (shape === "diamond") { ctx.beginPath(); ctx.moveTo(cx, cy - 5); ctx.lineTo(cx + 5, cy); ctx.lineTo(cx, cy + 5); ctx.lineTo(cx - 5, cy); ctx.closePath(); ctx.fill(); }
+    else if (shape === "square") ctx.fillRect(cx - 4, cy - 4, 8, 8);
+    else { ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill(); }
+    ctx.fillStyle = "#dfe6ee"; ctx.fillText(label, x0 + 26, cy);
+  });
+  ctx.textBaseline = "alphabetic";
+}
+
+// Animation viewer: CON actions (rotations × frames) and the ART picanm cycle.
+function dukeAnimations(picnum) {
+  if (!S.mod?.roomEditorDukeAnimations || picnum == null || picnum < 0) { status("Animation data is not available for this tile"); return; }
+  let data;
+  try { data = JSON.parse(S.mod.roomEditorDukeAnimations(Number(picnum))); } catch (e) { status(`Animations: ${e}`); return; }
+  document.querySelector("dialog.duke-anim")?.remove();
+  const dlg = el("dialog", { class: "duke-anim" });
+  const bt = (n) => `BT${String(n).padStart(4, "0")}`;
+  const name = dukeTileName(picnum);
+  const stage = el("canvas", { class: "duke-anim-stage", width: 192, height: 192 });
+  const info = el("div", { class: "muted" });
+  const grid = el("div", { class: "duke-anim-grid" });
+  const list = el("div", { class: "duke-anim-list" });
+  let current = null, timer = 0, playing = true, tic = 0, rot = 0;
+  const frameTile = (a, frame, view) => picnum + a.start + view + a.views * frame * a.inc;
+  const clips = [];
+  if (data.picanm.length > 1) clips.push({ name: "ART cycle (picanm)", art: data.picanm });
+  for (const a of data.actions) clips.push(a);
+  if (!clips.length) clips.push({ name: "Static tile", art: [[picnum, 1]] });
+  const views = (a) => (a.art ? 1 : Math.max(1, [0, 1, 2, 4, 4, 5, 0, 7, 8][a.views] ?? 1));
+  function select(clip, btn) {
+    current = clip; tic = 0;
+    list.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === btn));
+    grid.replaceChildren();
+    if (clip.art) {
+      info.textContent = `${clip.art.length} frames · ART speed from picanm · click a frame to paint`;
+      const row = el("div", { class: "duke-anim-row" }, el("span", {}, "—"));
+      clip.art.forEach(([t]) => row.append(frameCell(t)));
+      grid.append(row);
+    } else {
+      info.textContent = `start ${clip.start} · ${clip.frames} frame(s) · views ${clip.views} · inc ${clip.inc} · delay ${clip.delay}${clip.default ? " · default action" : ""}`;
+      for (let v = 0; v < views(clip); v++) {
+        const row = el("div", { class: "duke-anim-row" }, el("span", {}, `rot ${v}`));
+        for (let f = 0; f < Math.max(1, Math.abs(clip.frames)); f++) row.append(frameCell(frameTile(clip, f, v), () => { rot = v; }));
+        grid.append(row);
+      }
+    }
+  }
+  function frameCell(tile, extra) {
+    const c = el("canvas", { width: 56, height: 56 });
+    drawThumb(c, bt(tile), 56);
+    return el("div", { class: "thumb", title: `${bt(tile)}${dukeTileName(tile) ? ` · ${dukeTileName(tile)}` : ""} — click to paint`, onclick: () => { extra?.(); dlg.close(); paint.open("textures", bt(tile)); } }, c, el("div", {}, String(tile)));
+  }
+  function step() {
+    if (!current || !dlg.open) return;
+    let tile;
+    if (current.art) {
+      const total = current.art.reduce((s, [, d]) => s + Math.max(1, d), 0);
+      let t = tic % Math.max(1, total);
+      tile = current.art[0][0];
+      for (const [n, d] of current.art) { if (t < Math.max(1, d)) { tile = n; break; } t -= Math.max(1, d); }
+    } else {
+      const period = Math.floor(current.delay / 4) + 1;
+      const frames = Math.max(1, Math.abs(current.frames));
+      const f = Math.floor(tic / period) % frames;
+      tile = frameTile(current, f, Math.min(rot, views(current) - 1));
+    }
+    drawThumb(stage, bt(tile), 192);
+    stage.title = bt(tile);
+    if (playing) tic++;
+    grid.querySelectorAll(".thumb").forEach((t) => t.classList.toggle("active", t.title.startsWith(bt(tile))));
+  }
+  clips.forEach((clip, i) => {
+    const b = el("button", { class: "btn small" }, `${clip.name}${clip.default ? " ★" : ""}`);
+    b.addEventListener("click", () => select(clip, b));
+    list.append(b);
+    if (i === 0 || clip.default) queueMicrotask(() => { if (!current || clip.default) select(clip, b); });
+  });
+  const play = el("button", { class: "btn small" }, "Pause");
+  play.addEventListener("click", () => { playing = !playing; play.textContent = playing ? "Pause" : "Play"; });
+  const prevRot = el("button", { class: "btn small", title: "Previous rotation" }, "⟲");
+  const nextRot = el("button", { class: "btn small", title: "Next rotation" }, "⟳");
+  prevRot.addEventListener("click", () => { if (current && !current.art) rot = (rot + views(current) - 1) % views(current); });
+  nextRot.addEventListener("click", () => { if (current && !current.art) rot = (rot + 1) % views(current); });
+  const close = el("button", { class: "btn small", onclick: () => dlg.close() }, "Close");
+  dlg.append(
+    el("h3", {}, `Animations · ${bt(picnum)}${name ? ` · ${name}` : ""}`),
+    el("div", { class: "duke-anim-body" },
+      el("div", { class: "duke-anim-side" }, stage, el("div", { class: "actions" }, play, prevRot, nextRot), info),
+      el("div", { class: "duke-anim-main" }, list, grid)),
+    el("div", { class: "actions" }, close));
+  document.body.append(dlg);
+  dlg.addEventListener("close", () => { clearInterval(timer); dlg.remove(); });
+  dlg.showModal();
+  timer = setInterval(step, 1000 / 30);
+}
+
 function drawDuke2d(W, H, dpr) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#0b0c0e";
   ctx.fillRect(0, 0, W, H);
   const m = S.dukeMap;
   if (!m) return;
+  S.dukeGen = (S.dukeGen || 0) + 1;
   let grid = S.grid;
   while (grid * S.view.scale < 8) grid *= 2;
   const [wx0, wy0] = dukeToWorld(0, 0), [wx1, wy1] = dukeToWorld(W, H);
@@ -1390,15 +1587,34 @@ function drawDuke2d(W, H, dpr) {
     const [ax, ay] = dukeToScreen(wall.x, wall.y), [bx, by] = dukeToScreen(end.x, end.y);
     const selected = S.dukeSelection?.kind === "wall" && S.dukeSelection.index === i;
     ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
-    ctx.strokeStyle = selected ? "#ffcc33" : wall.nextwall >= 0 ? "#7d8792" : "#d6d9de";
-    ctx.lineWidth = selected ? 2.5 : 1.35;
+    const kind = dukeWallKind(m, i);
+    ctx.strokeStyle = selected ? "#ffcc33" : kind.color;
+    ctx.lineWidth = selected ? 2.5 : kind.width;
     ctx.stroke();
-    if (S.mode === "vertices") {
-      const vertexSelected = S.dukeSelection?.kind === "vertex" && S.dukeSelection.x === wall.x && S.dukeSelection.y === wall.y;
-      const r = vertexSelected ? 3.5 : (S.view.scale > 0.12 ? 2.25 : 0);
-      if (r) { ctx.fillStyle = vertexSelected ? "#ffcc33" : "#9fb4ff"; ctx.fillRect(ax - r, ay - r, r * 2, r * 2); }
-    }
   });
+  if (S.mode === "vertices" || S.mode === "lines") {
+    const seen = new Set();
+    m.walls.forEach((wall) => {
+      const key = `${wall.x},${wall.y}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const [ax, ay] = dukeToScreen(wall.x, wall.y);
+      if (ax < -8 || ay < -8 || ax > W + 8 || ay > H + 8) return;
+      const vertexSelected = S.dukeSelection?.kind === "vertex" && S.dukeSelection.x === wall.x && S.dukeSelection.y === wall.y;
+      const r = vertexSelected ? 4 : (S.view.scale > 0.12 ? 2.6 : S.view.scale > 0.05 ? 1.6 : 0);
+      if (!r) return;
+      const kind = dukeVertexKind(m, wall.x, wall.y);
+      ctx.fillStyle = vertexSelected ? "#ffcc33" : kind.color;
+      if (kind.shape === "diamond") {
+        ctx.beginPath(); ctx.moveTo(ax, ay - r - 1); ctx.lineTo(ax + r + 1, ay); ctx.lineTo(ax, ay + r + 1); ctx.lineTo(ax - r - 1, ay); ctx.closePath(); ctx.fill();
+      } else if (kind.shape === "circle") {
+        ctx.beginPath(); ctx.arc(ax, ay, r, 0, Math.PI * 2); ctx.fill();
+      } else {
+        ctx.fillRect(ax - r, ay - r, r * 2, r * 2);
+      }
+    });
+  }
+  dukeDrawLegend(W, H);
   if (S.dukeFloors && (S.view.scale >= 0.18 || S.dukeSelection?.kind === "sector")) {
     m.sectors.forEach((sector, si) => {
       const loops = dukeSectorLoops(sector);
@@ -1472,7 +1688,7 @@ function drawDuke2d(W, H, dpr) {
     const [x, y] = dukeToScreen(sprite.x, sprite.y);
     const selected = S.dukeSelection?.kind === "sprite" && S.dukeSelection.index === i;
     const r = selected ? 6 : 4;
-    ctx.fillStyle = selected ? "#ffcc33" : "#4cc38a";
+    ctx.fillStyle = selected ? "#ffcc33" : dukeSpriteKind(sprite).color;
     ctx.strokeStyle = "#111";
     ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     const a = sprite.ang * Math.PI / 1024;
@@ -1481,8 +1697,10 @@ function drawDuke2d(W, H, dpr) {
   const [sx, sy] = dukeToScreen(m.start[0], m.start[1]);
   ctx.strokeStyle = "#59aaff"; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(sx - 6, sy); ctx.lineTo(sx + 6, sy); ctx.moveTo(sx, sy - 6); ctx.lineTo(sx, sy + 6); ctx.stroke();
+  dukeDrawPreviewCamera(ctx);
   const mode = { vertices: "vertices", lines: "walls", sectors: "sectors", things: "sprites" }[S.mode] || S.mode;
-  $("#hint2d").textContent = `Build ${mode} · click to select · drag vertices / sprites · wheel zoom · right-drag pan · F5 native test`;
+  const extra = { lines: " · double-click: split wall", things: " · double-click/Insert: add sprite" }[S.mode] || "";
+  $("#hint2d").textContent = `Build ${mode} · click to select · drag to move${extra} · Alt+double-click: put 3D camera · wheel zoom · right-drag pan · F5 native test`;
 }
 
 let renderQueued = false;
@@ -1875,6 +2093,19 @@ function dukeMouseDown(e) {
     S.dukeDragging = { kind: "sprite", index: hit.index, x: s.x, y: s.y, originX: wx, originY: wy };
   } else if (hit?.kind === "vertex") {
     S.dukeDragging = { kind: "vertex", x: hit.x, y: hit.y, originX: wx, originY: wy };
+  } else if (hit?.kind === "wall" || hit?.kind === "sector") {
+    // Move the wall's two vertices, or every vertex (and sprite) of the sector.
+    const m = S.dukeMap;
+    const points = new Map();
+    const add = (w) => { if (w) points.set(`${w.x},${w.y}`, [w.x, w.y]); };
+    let sprites = [];
+    if (hit.kind === "wall") { add(m.walls[hit.index]); add(m.walls[m.walls[hit.index]?.point2]); }
+    else {
+      const sec = m.sectors[hit.index];
+      for (let i = sec.wallptr; i < sec.wallptr + sec.wallnum; i++) add(m.walls[i]);
+      sprites = m.sprites.map((sp, i) => (sp.sectnum === hit.index ? [i, sp.x, sp.y] : null)).filter(Boolean);
+    }
+    S.dukeDragging = { kind: "group", points: [...points.values()], sprites, originX: wx, originY: wy, dx: 0, dy: 0 };
   } else S.dukeDragging = null;
   renderInspector(); render2d();
 }
@@ -1898,7 +2129,24 @@ function dukeMouseMove(e) {
   if (!mouse.moved || !S.dukeDragging) return;
   const d = S.dukeDragging;
   if (!d.undo) { dukeSnapshot(); d.undo = true; }
-  const x = Math.round(d.x + wx - d.originX), y = Math.round(d.y + wy - d.originY);
+  if (d.kind === "group") {
+    // Snap the delta, then move from the previous delta to the new one.
+    const ndx = snap(wx - d.originX), ndy = snap(wy - d.originY);
+    if (ndx === d.dx && ndy === d.dy) return;
+    const moves = new Map(d.points.map(([px, py]) => [`${px + d.dx},${py + d.dy}`, [px + ndx, py + ndy]]));
+    for (const w of S.dukeMap.walls) {
+      const to = moves.get(`${w.x},${w.y}`);
+      if (to) [w.x, w.y] = to;
+    }
+    for (const [i, sx0, sy0] of d.sprites) {
+      const sp = S.dukeMap.sprites[i];
+      if (sp) { sp.x = sx0 + ndx; sp.y = sy0 + ndy; }
+    }
+    d.dx = ndx; d.dy = ndy;
+    render2d();
+    return;
+  }
+  const x = snap(d.x + wx - d.originX), y = snap(d.y + wy - d.originY);
   if (d.kind === "sprite") {
     const s = S.dukeMap.sprites[d.index];
     if (s) {
@@ -2047,7 +2295,12 @@ cv.addEventListener("dblclick", (e) => {
   if (S.dukeMap) {
     const r = cv.getBoundingClientRect();
     const [wx, wy] = dukeToWorld(e.clientX - r.left, e.clientY - r.top);
+    if (e.altKey || (S.mode !== "things" && S.mode !== "lines" && S.mode !== "draw")) { dukePlaceCamera(wx, wy); return; }
     if (S.mode === "things") addDukeSprite(snap(wx), snap(wy));
+    else if (S.mode === "lines") {
+      const hit = dukeHit(wx, wy);
+      if (hit?.kind === "wall") dukeSplitWall(hit.index, snap(wx), snap(wy));
+    }
     return;
   }
   if (!S.doc) return;
@@ -2273,6 +2526,7 @@ function setPlaying(on, mode) {
     S.playing = false;
     S.dukeTesting = false;
     document.body.classList.remove("duke-testing");
+    if (S.dukeMap) dukePreviewInvalidate();
     if (document.pointerLockElement === room) document.exitPointerLock();
   }
   syncPlayUi();
@@ -2287,7 +2541,9 @@ function syncPlayUi() {
     ? S.dukeTesting
       ? "Native Duke test — WASD move · mouse look · Ctrl/LMB fire · Space jump · F7 returns to Build editing"
       : "Playing — WASD move · mouse look · wheel weapon · Ctrl/LMB fire · E/Space use · edits apply live"
-    : S.visual
+    : S.dukeMap
+      ? "Native Build preview — Click: select · Right-drag: look · WASD move · Q/Z up/down · arrows turn · Shift fast · Home: player start · Alt+double-click in 2D: move camera"
+      : S.visual
       ? "Visual mode (M exits) — Click: select · Double-click / P: edit pixels · Right-drag: look · WASD/Q/Z: fly · PgUp/PgDn height · T paint · +/- light"
       : "Click: select · Double-click / P: edit pixels · Right-drag: look · WASD/Q/Z: fly · Shift: fast · PgUp/PgDn height · T paint · +/- light · M visual";
 }
@@ -2304,6 +2560,7 @@ function applyLayout(layout) {
   });
   mv.className = { "2d": "only2d", split: "split", "3d": "only3d" }[layout] || "split";
   render2d();
+  if (S.dukeMap) dukePreviewInvalidate();
 }
 
 /** Doom Builder–style visual mode: full-bleed 3D edit (toggle with M). */
@@ -2481,6 +2738,7 @@ function dukePersist() {
   S.dukePersistBefore = null;
   try {
     S.dukeMapBytes = S.mod.roomEditorDukeMapPut(S.doc.name, JSON.stringify(S.dukeMap));
+    dukePreviewInvalidate();
     syncPill("live", "Build map saved in editor");
     status(`${S.dukeMapFile} · native Build map · ${S.dukeMap.walls.length} walls · ${S.dukeMap.sprites.length} sprites`);
     render2d();
@@ -2506,6 +2764,31 @@ function dukeUndoAction(redo = false) {
   dukePersist();
   renderInspector();
   return true;
+}
+
+function dukeCheckMap() {
+  const m = S.dukeMap;
+  if (!m) return;
+  const errors = [];
+  if (!m.sectors.length) errors.push("map has no sectors");
+  m.sectors.forEach((sector, index) => {
+    const start = sector.wallptr, end = start + sector.wallnum;
+    if (start < 0 || sector.wallnum < 3 || end > m.walls.length) errors.push(`sector ${index}: invalid wall range`);
+    else for (let i = start; i < end; i++) {
+      const next = m.walls[i]?.point2;
+      if (!Number.isInteger(next) || next < start || next >= end) { errors.push(`sector ${index}: wall ${i} points outside its sector`); break; }
+    }
+  });
+  m.walls.forEach((wall, index) => {
+    if (!Number.isInteger(wall.point2) || wall.point2 < 0 || wall.point2 >= m.walls.length) errors.push(`wall ${index}: invalid point2`);
+    if (wall.nextwall >= 0 && (wall.nextwall >= m.walls.length || m.walls[wall.nextwall]?.nextwall !== index)) errors.push(`wall ${index}: invalid nextwall link`);
+  });
+  m.sprites.forEach((sprite, index) => {
+    if (!m.sectors[sprite.sectnum]) errors.push(`sprite ${index}: invalid sector ${sprite.sectnum}`);
+  });
+  if (!m.sectors[m.start_sector]) errors.push(`player start: invalid sector ${m.start_sector}`);
+  if (errors.length) toast(`Build check found ${errors.length} issue(s): ${errors.slice(0, 3).join("; ")}`, true);
+  else toast(`Build map looks valid · ${m.sectors.length} sectors · ${m.walls.length} walls · ${m.sprites.length} sprites`);
 }
 
 function dukeEditField(obj, key, value, selection = S.dukeSelection) {
@@ -2539,7 +2822,8 @@ function dukeField(label, obj, key, selection, bounds = {}) {
 function dukeTileField(label, obj, key, selection) {
   const value = obj[key];
   const name = value >= 0 ? `BT${String(value).padStart(4, "0")}` : "-";
-  const thumbCanvas = el("canvas", { width: 40, height: 40, title: value >= 0 ? `Pick ART tile ${value}` : "No tile" });
+  const tileName = dukeTileName(value);
+  const thumbCanvas = el("canvas", { width: 40, height: 40, title: value >= 0 ? `Pick ART tile ${value}${tileName ? ` (${tileName})` : ""}` : "No tile" });
   drawThumb(thumbCanvas, name, 40);
   thumbCanvas.addEventListener("click", () => openPicker("textures", (tile) => {
     const match = /^BT(\d{1,5})$/.exec(tile);
@@ -2553,7 +2837,9 @@ function dukeTileField(label, obj, key, selection) {
     class: "btn small icon", title: value >= 0 ? `Edit ART tile ${value}` : "Choose a tile first",
     disabled: value < 0, onclick: () => paint.open("textures", name),
   }, "✎");
-  return rowEl(label, el("div", { class: "tex-field" }, thumbCanvas, numeric, editButton));
+  const field = el("div", { class: "tex-field" }, thumbCanvas, numeric, editButton);
+  if (tileName) field.append(el("span", { class: "duke-tile-name" }, tileName));
+  return rowEl(label, field);
 }
 
 function renderDukeInspector(body, title) {
@@ -2565,7 +2851,13 @@ function renderDukeInspector(body, title) {
       if (!(key in obj)) continue;
       if (["picnum", "overpicnum", "floorpicnum", "ceilingpicnum"].includes(key)) {
         fs.append(dukeTileField(key, obj, key, selection));
-      } else fs.append(dukeField(key, obj, key, selection));
+      } else if (DUKE_FLAGS[`${selection?.kind}.${key}`]) {
+        fs.append(dukeField(key, obj, key, selection), dukeFlagsField(DUKE_FLAGS[`${selection.kind}.${key}`], obj, key, selection));
+      } else {
+        fs.append(dukeField(key, obj, key, selection));
+        const hint = dukeTagHint(selection, obj, key);
+        if (hint) fs.append(rowEl("", el("span", { class: "muted duke-hint" }, hint)));
+      }
     }
     return fs;
   };
@@ -2637,7 +2929,7 @@ function renderDukeInspector(body, title) {
     keys = ["wallptr", "wallnum", "ceilingz", "floorz", "ceilingstat", "floorstat", "ceilingpicnum", "ceilingheinum", "ceilingshade", "ceilingpal", "ceilingxpanning", "ceilingypanning", "floorpicnum", "floorheinum", "floorshade", "floorpal", "floorxpanning", "floorypanning", "visibility", "lotag", "hitag", "extra"];
   } else {
     obj = m.sprites[sel.index];
-    title.textContent = `Build sprite ${sel.index}`;
+    title.textContent = `Build sprite ${sel.index}${dukeTileName(m.sprites[sel.index]?.picnum) ? ` · ${dukeTileName(m.sprites[sel.index].picnum)}` : ""}`;
     keys = ["x", "y", "z", "cstat", "picnum", "shade", "pal", "clipdist", "xrepeat", "yrepeat", "xoffset", "yoffset", "sectnum", "statnum", "ang", "owner", "xvel", "yvel", "zvel", "lotag", "hitag", "extra"];
   }
   if (!obj) { S.dukeSelection = null; renderDukeInspector(body, title); return; }
@@ -2646,17 +2938,39 @@ function renderDukeInspector(body, title) {
     fs.append(el("button", { class: "btn small danger", onclick: () => deleteDukeSector(sel.index) }, "Delete sector"));
   }
   if (sel.kind === "sprite") {
-    fs.append(el("button", { class: "btn small danger", onclick: () => deleteDukeSprite(sel.index) }, "Delete sprite"));
+    fs.append(el("div", { class: "actions" },
+      el("button", { class: "btn small", onclick: () => dukeLookAt(obj.x, obj.y, obj.z) }, "View in 3D"),
+      el("button", { class: "btn small", title: "Play this actor's CON actions and ART cycle; click a frame to paint it", onclick: () => dukeAnimations(obj.picnum) }, "Animations…"),
+      el("button", { class: "btn small danger", onclick: () => deleteDukeSprite(sel.index) }, "Delete sprite")));
+  }
+  if (sel.kind === "wall") {
+    const end = m.walls[obj.point2];
+    fs.append(el("div", { class: "actions" },
+      el("button", { class: "btn small", onclick: () => end && dukeSplitWall(sel.index, Math.round((obj.x + end.x) / 2), Math.round((obj.y + end.y) / 2)) }, "Split wall"),
+      el("button", { class: "btn small", onclick: () => end && dukeLookAt((obj.x + end.x) / 2, (obj.y + end.y) / 2) }, "View in 3D"),
+      el("button", { class: "btn small", onclick: () => dukeAnimations(obj.picnum) }, "Animations…")));
+    const kind = dukeWallKind(m, sel.index);
+    fs.prepend(el("p", { class: "duke-kind" }, el("span", { class: "swatch", style: `background:${kind.color}` }), kind.label));
+  }
+  if (sel.kind === "vertex") {
+    const kind = dukeVertexKind(m, sel.x, sel.y);
+    fs.prepend(el("p", { class: "duke-kind" }, el("span", { class: "swatch", style: `background:${kind.color}` }), kind.label));
+  }
+  if (sel.kind === "sector") {
+    fs.append(el("div", { class: "actions" },
+      el("button", { class: "btn small", onclick: () => dukeAnimations(obj.floorpicnum) }, "Floor animation…"),
+      el("button", { class: "btn small", onclick: () => dukeAnimations(obj.ceilingpicnum) }, "Ceiling animation…")));
   }
   body.append(fs);
 }
 
 function addDukeSprite(x = S.dukeMap.start[0], y = S.dukeMap.start[1]) {
+  if (!S.dukeMap) return;
   dukeSnapshot();
   const sector = dukeSectorAt(x, y);
   const sectnum = sector >= 0 ? sector : S.dukeMap.start_sector;
   const z = S.dukeMap.sectors[sectnum]?.floorz ?? S.dukeMap.start[2];
-  const sprite = { x: Math.round(x), y: Math.round(y), z, cstat: 0, picnum: 1405,
+  const sprite = { x: snap(x), y: snap(y), z, cstat: 0, picnum: 1405,
     shade: 0, pal: 0, clipdist: 32, xrepeat: 32, yrepeat: 32, xoffset: 0, yoffset: 0,
     sectnum, statnum: 0, ang: 0, owner: -1, xvel: 0, yvel: 0, zvel: 0, lotag: 0, hitag: 0, extra: -1 };
   S.dukeMap.sprites.push(sprite);
@@ -2673,11 +2987,91 @@ function deleteDukeSprite(index) {
   renderInspector();
 }
 
+function dukeCopySelection() {
+  const selection = S.dukeSelection;
+  if (selection?.kind !== "sprite") return false;
+  const sprite = S.dukeMap?.sprites[selection.index];
+  if (!sprite) return false;
+  S.dukeClipboard = structuredClone(sprite);
+  status("Copied Build sprite");
+  return true;
+}
+
+function dukePasteSprite(atMouse = true) {
+  if (!S.dukeMap || !S.dukeClipboard) return false;
+  const old = S.dukeClipboard;
+  const x = snap(atMouse && mouse.world ? mouse.world[0] : old.x + S.grid);
+  const y = snap(atMouse && mouse.world ? mouse.world[1] : old.y + S.grid);
+  dukeSnapshot();
+  const sprite = structuredClone(old);
+  sprite.x = x; sprite.y = y;
+  const sector = dukeSectorAt(x, y);
+  if (sector >= 0) { sprite.sectnum = sector; sprite.z = S.dukeMap.sectors[sector]?.floorz ?? sprite.z; }
+  S.dukeMap.sprites.push(sprite);
+  S.dukeSelection = { kind: "sprite", index: S.dukeMap.sprites.length - 1 };
+  dukePersist(); renderInspector();
+  return true;
+}
+
+function dukeTransformSelection(operation) {
+  const selection = S.dukeSelection;
+  if (!S.dukeMap || !selection) return false;
+  if (selection.kind === "sprite") {
+    const sprite = S.dukeMap.sprites[selection.index];
+    if (!sprite) return false;
+    dukeSnapshot();
+    if (operation === "rotate-cw") sprite.ang = (sprite.ang + 512) & 2047;
+    else if (operation === "rotate-ccw") sprite.ang = (sprite.ang + 1536) & 2047;
+    else if (operation === "mirror-x") sprite.cstat ^= 4;
+    else if (operation === "mirror-y") sprite.cstat ^= 8;
+  } else if (selection.kind === "sector" && (operation === "rotate-cw" || operation === "rotate-ccw")) {
+    const sector = S.dukeMap.sectors[selection.index];
+    if (!sector) return false;
+    const points = new Map();
+    for (let i = sector.wallptr; i < sector.wallptr + sector.wallnum; i++) {
+      const wall = S.dukeMap.walls[i];
+      if (wall) points.set(`${wall.x},${wall.y}`, [wall.x, wall.y]);
+    }
+    if (!points.size) return false;
+    const values = [...points.values()];
+    const cx = values.reduce((sum, p) => sum + p[0], 0) / values.length;
+    const cy = values.reduce((sum, p) => sum + p[1], 0) / values.length;
+    const transformed = new Map();
+    for (const [key, [x, y]] of points) {
+      const dx = x - cx, dy = y - cy;
+      transformed.set(key, operation === "rotate-cw" ? [Math.round(cx + dy), Math.round(cy - dx)] : [Math.round(cx - dy), Math.round(cy + dx)]);
+    }
+    dukeSnapshot();
+    for (const wall of S.dukeMap.walls) {
+      const point = transformed.get(`${wall.x},${wall.y}`);
+      if (point) [wall.x, wall.y] = point;
+    }
+    for (const sprite of S.dukeMap.sprites) if (sprite.sectnum === selection.index) {
+      const dx = sprite.x - cx, dy = sprite.y - cy;
+      if (operation === "rotate-cw") { sprite.x = Math.round(cx + dy); sprite.y = Math.round(cy - dx); sprite.ang = (sprite.ang + 512) & 2047; }
+      else { sprite.x = Math.round(cx - dy); sprite.y = Math.round(cy + dx); sprite.ang = (sprite.ang + 1536) & 2047; }
+    }
+  } else {
+    return false;
+  }
+  dukePersist(); renderInspector();
+  return true;
+}
+
+function syncDukeToolButtons() {
+  if (!S.dukeMap) return;
+  const kind = S.dukeSelection?.kind;
+  $("#btn-copy").disabled = kind !== "sprite";
+  $("#btn-paste").disabled = !S.dukeClipboard;
+  $("#btn-rotate").disabled = kind !== "sprite" && kind !== "sector";
+  $("#btn-mirror").disabled = kind !== "sprite";
+}
+
 function renderInspector() {
   const body = $("#inspector-body");
   const title = $("#inspector-title");
   body.replaceChildren();
-  if (S.dukeMap) { renderDukeInspector(body, title); return; }
+  if (S.dukeMap) { renderDukeInspector(body, title); syncDukeToolButtons(); return; }
   if (S.actorSel) { renderActorInspector(body, title); return; }
   const d = S.doc;
   if (!d) { title.textContent = "Inspector"; return; }
@@ -2941,6 +3335,31 @@ function renderBrowser() {
         el("span", { class: "meta" }, sm.duke ? "Build .MAP" : src)));
     }
   } else if (S.tab === "things") {
+    if (sm.duke) {
+      const sprites = S.dukeMap?.sprites || [];
+      body.append(
+        el("p", { class: "muted", style: "padding:6px 10px;margin:0" },
+          "Build sprites in this map. Select one to edit its position, ART tile, angle, tags, and flags; Insert adds one at the cursor."),
+        el("div", { class: "actions", style: "padding:6px 10px" },
+          el("button", { class: "btn small primary", onclick: () => addDukeSprite(mouse.world?.[0] ?? S.dukeMap?.start[0], mouse.world?.[1] ?? S.dukeMap?.start[1]) }, "+ Sprite")),
+      );
+      sprites.forEach((sprite, index) => {
+        const tile = `BT${String(sprite.picnum).padStart(4, "0")}`;
+        const text = `SPRITE ${String(index).padStart(3, "0")} · ${tile} · LOTAG ${sprite.lotag} · HITAG ${sprite.hitag}`;
+        if (q && !text.includes(q) && !String(sprite.sectnum).includes(q)) return;
+        body.append(el("div", {
+          class: `list-item${S.dukeSelection?.kind === "sprite" && S.dukeSelection.index === index ? " active" : ""}`,
+          onclick: () => {
+            S.mode = "things";
+            S.dukeSelection = { kind: "sprite", index };
+            syncModeButtons(); renderInspector(); render2d();
+          },
+        }, el("span", { class: "name" }, `#${index} ${tile}`),
+        el("span", { class: "meta" }, `sector ${sprite.sectnum}`)));
+      });
+      if (!sprites.length) body.append(el("p", { class: "muted", style: "padding:6px 10px" }, "No sprites in this map yet."));
+      return;
+    }
     body.append(el("p", { class: "muted", style: "padding:6px 10px;margin:0" },
       "Click: pick type · Double-click / right-click / icon: edit sprite + sounds"));
     for (const cat of CAT_ORDER) {
@@ -3798,6 +4217,7 @@ function setMode(m) {
   if (S.mode === "draw" && S.drawPts.length) S.drawPts = [];
   S.mode = m;
   S.sel.clear();
+  if (S.dukeMap) S.dukeSelection = null;
   S.pick3d = null;
   S.actorSel = null;
   syncModeButtons();
@@ -3921,6 +4341,13 @@ window.addEventListener("keydown", (e) => {
   }
   if (!S.doc) return;
   if (S.dukeMap) {
+    if (dukePreviewKey(e)) return;
+    if (mod && e.code === "KeyC") { e.preventDefault(); dukeCopySelection(); return; }
+    if (mod && e.code === "KeyV") { e.preventDefault(); dukePasteSprite(); return; }
+    if (mod && e.code === "KeyD") { e.preventDefault(); if (dukeCopySelection()) dukePasteSprite(false); return; }
+    if (!mod && e.code === "KeyR") { e.preventDefault(); dukeTransformSelection(e.shiftKey ? "rotate-ccw" : "rotate-cw"); return; }
+    if (!mod && e.code === "KeyH") { e.preventDefault(); dukeTransformSelection(e.shiftKey ? "mirror-y" : "mirror-x"); return; }
+    if (!mod && e.code === "F8") { e.preventDefault(); dukeCheckMap(); return; }
     if (!mod && (e.code === "Enter" || e.code === "NumpadEnter") && S.mode === "draw") {
       e.preventDefault(); finishDukeDraw(); return;
     }
@@ -4015,12 +4442,18 @@ const scripts = installScripts({
 });
 // Console scripting hook: edit `roomEditor.state.doc`, then `roomEditor.commit()`.
 window.roomEditor = { state: S, tools, paint, scripts, snapshot, commit, undo, redo, loadMap };
-$("#btn-check").addEventListener("click", () => tools.toggleChecker());
+$("#btn-check").addEventListener("click", () => S.dukeMap ? dukeCheckMap() : tools.toggleChecker());
 $("#btn-composer").addEventListener("click", () => tools.openComposer());
-$("#btn-rotate").addEventListener("click", (e) => tools.transform(e.shiftKey ? "ccw" : "cw"));
-$("#btn-mirror").addEventListener("click", (e) => tools.transform(e.shiftKey ? "mirrorY" : "mirrorX"));
-$("#btn-copy").addEventListener("click", () => tools.copy() && status(`Copied ${S.sel.size} ${S.mode}`));
-$("#btn-paste").addEventListener("click", () => tools.paste());
+$("#btn-rotate").addEventListener("click", (e) => S.dukeMap
+  ? dukeTransformSelection(e.shiftKey ? "rotate-ccw" : "rotate-cw")
+  : tools.transform(e.shiftKey ? "ccw" : "cw"));
+$("#btn-mirror").addEventListener("click", (e) => S.dukeMap
+  ? dukeTransformSelection(e.shiftKey ? "mirror-y" : "mirror-x")
+  : tools.transform(e.shiftKey ? "mirrorY" : "mirrorX"));
+$("#btn-copy").addEventListener("click", () => S.dukeMap
+  ? dukeCopySelection()
+  : tools.copy() && status(`Copied ${S.sel.size} ${S.mode}`));
+$("#btn-paste").addEventListener("click", () => S.dukeMap ? dukePasteSprite() : tools.paste());
 
 setHint();
 setPlaying(false);
@@ -4028,3 +4461,366 @@ renderDocTabs();
 renderInspector();
 boot().catch((e) => { status(`Engine failed: ${errText(e)}`); console.error(e); });
 pollCamera();
+
+// ------------------------------------------------ native Build helpers
+
+/** Bit labels for Build `cstat` / plane stat fields. */
+const DUKE_FLAGS = {
+  "wall.cstat": [[1, "Blocking"], [2, "Swap bottoms"], [4, "Align bottom"], [8, "X-flip"], [16, "Masked"], [32, "One-way"],
+    [64, "Hitscan"], [128, "Translucent"], [256, "Y-flip"], [512, "Reverse transl."]],
+  "sprite.cstat": [[1, "Blocking"], [2, "Translucent"], [4, "X-flip"], [8, "Y-flip"], [16, "Wall-aligned"], [32, "Floor-aligned"],
+    [64, "One-sided"], [128, "Centered"], [256, "Hitscan"], [512, "Reverse transl."], [32768, "Invisible"]],
+  "sector.ceilingstat": [[1, "Parallax sky"], [2, "Sloped"], [4, "Swap XY"], [8, "Double smoosh"], [16, "X-flip"], [32, "Y-flip"],
+    [64, "Align to wall"], [128, "Masked"], [256, "Translucent"]],
+  "sector.floorstat": [[1, "Parallax sky"], [2, "Sloped"], [4, "Swap XY"], [8, "Double smoosh"], [16, "X-flip"], [32, "Y-flip"],
+    [64, "Align to wall"], [128, "Masked"], [256, "Translucent"]],
+};
+
+/** Atomic sector-effector (SE) lotags. */
+const DUKE_SE_TYPES = {
+  0: "Rotating sector", 1: "Rotation pivot", 2: "Earthquake", 3: "Lights on after shot out", 4: "Random flashing lights",
+  6: "Subway engine", 7: "Teleporter", 8: "Door lights (up-open)", 9: "Door lights (down-open)", 10: "Door auto-close timer",
+  11: "Swinging door", 12: "Light switch", 13: "C-9 explosive", 14: "Subway car", 15: "Sliding door (ST 25)",
+  16: "Reactor", 17: "Transport elevator", 18: "Incremental rise/fall", 19: "Shields (explosion lowers ceiling)",
+  20: "Stretch / bridge (ST 27)", 21: "Drop floor (ST 28)", 22: "Teeth door prong (ST 29)", 24: "Conveyor belt",
+  25: "Piston", 26: "Escalator", 27: "Demo camera", 28: "Lightning", 29: "Wave floor", 30: "Two-way train (ST 31)",
+  31: "True-drop floor", 32: "True-drop ceiling", 33: "Earthquake debris", 34: "Wall/floor scroller", 35: "Ceiling crusher",
+  36: "Shooter", 128: "Glass breakage", 130: "Explosion", 131: "Big explosion",
+};
+
+/** Atomic sector lotags (low byte). */
+const DUKE_SECTOR_TYPES = {
+  1: "Above water (dive down)", 2: "Underwater", 9: "Star Trek sliding door", 15: "Elevator transport",
+  16: "Platform down", 17: "Platform up", 18: "Elevator down", 19: "Elevator up", 20: "Ceiling door", 21: "Floor door",
+  22: "Splitting door", 23: "Swinging door", 25: "Sliding door", 26: "Splitting Star Trek door", 27: "Stretch / bridge",
+  28: "Drop floor", 29: "Teeth door", 30: "Rotate-rise bridge", 31: "Two-way train", 32767: "Secret place", 65535: "End of level",
+};
+
+function dukeTileName(picnum) {
+  if (!(picnum >= 0) || !S.dukeTileNames) return "";
+  return S.dukeTileNames[picnum] || "";
+}
+
+function dukeFlagsField(bits, obj, key, selection) {
+  const value = obj[key] | 0;
+  const box = el("div", { class: "duke-flags" });
+  for (const [bit, label] of bits) {
+    const input = el("input", { type: "checkbox" });
+    input.checked = (value & bit) !== 0;
+    input.addEventListener("change", () => {
+      const next = input.checked ? ((obj[key] | 0) | bit) : ((obj[key] | 0) & ~bit);
+      dukeEditField(obj, key, next, selection);
+    });
+    box.append(el("label", { title: `${key} & ${bit}` }, input, label));
+  }
+  return rowEl("", box);
+}
+
+function dukeTagHint(selection, obj, key) {
+  if (!selection) return "";
+  if (selection.kind === "sprite") {
+    if (obj.picnum === 1 && key === "lotag") return DUKE_SE_TYPES[obj.lotag] ? `SE ${obj.lotag}: ${DUKE_SE_TYPES[obj.lotag]}` : "";
+    if (obj.picnum === 1 && key === "hitag") return "SE channel (links effectors, switches and activators)";
+    if (key === "lotag" && [2, 4].includes(obj.picnum)) return "Activator channel (matches switch/SE lotag)";
+    if (key === "lotag" && obj.picnum === 5) return "MUSICANDSFX: sound number";
+    if (key === "picnum") return dukeTileName(obj.picnum);
+    return "";
+  }
+  if (selection.kind === "sector" && key === "lotag") {
+    const low = obj.lotag & 0xffff;
+    return DUKE_SECTOR_TYPES[low] || DUKE_SECTOR_TYPES[low & 0xff] || "";
+  }
+  if (selection.kind === "wall" && key === "lotag" && obj.lotag) return "Switch / door channel";
+  return "";
+}
+
+/** Insert a copy of wall `after` at `after + 1`, starting at (x, y). */
+function dukeInsertWall(m, after, x, y) {
+  const at = after + 1;
+  for (const w of m.walls) {
+    if (w.point2 >= at) w.point2++;
+    if (w.nextwall >= at) w.nextwall++;
+  }
+  for (const sec of m.sectors) {
+    if (sec.wallptr >= at) sec.wallptr++;
+    else if (sec.wallptr <= after && after < sec.wallptr + sec.wallnum) sec.wallnum++;
+  }
+  const src = m.walls[after];
+  const added = { ...src, x, y, point2: src.point2 };
+  src.point2 = at;
+  m.walls.splice(at, 0, added);
+  return at;
+}
+
+/** Split wall `index` at the point nearest (x, y); both sides of a portal split together. */
+function dukeSplitWall(index, x, y) {
+  const m = S.dukeMap;
+  const w = m?.walls[index];
+  const end = m?.walls[w?.point2];
+  if (!w || !end) return;
+  const dx = end.x - w.x, dy = end.y - w.y;
+  const len2 = dx * dx + dy * dy;
+  if (!len2) return;
+  const t = Math.max(0, Math.min(1, ((x - w.x) * dx + (y - w.y) * dy) / len2));
+  const px = Math.round(w.x + dx * t), py = Math.round(w.y + dy * t);
+  if ((px === w.x && py === w.y) || (px === end.x && py === end.y)) { toast("Pick a point inside the wall to split it"); return; }
+  dukeSnapshot();
+  let first = index;
+  let firstNew = dukeInsertWall(m, first, px, py);
+  const other = m.walls[first].nextwall;
+  if (other >= 0) {
+    const otherNew = dukeInsertWall(m, other, px, py);
+    if (first >= otherNew) first++;
+    if (firstNew >= otherNew) firstNew++;
+    // A→P pairs with P→A, P→B pairs with B→P.
+    m.walls[first].nextwall = otherNew; m.walls[otherNew].nextwall = first;
+    m.walls[firstNew].nextwall = other; m.walls[other].nextwall = firstNew;
+  }
+  S.mode !== "vertices" && setMode("vertices");
+  S.dukeSelection = { kind: "vertex", index: firstNew, x: px, y: py };
+  dukePersist();
+  renderInspector();
+  status(`Split wall ${index} at (${px}, ${py})`);
+}
+
+// ------------------------------------------------ native Duke 3D preview
+
+const dukePreview = $("#duke-preview");
+const dukePv = { cam: null, dirty: true, raf: 0, look: false, keys: new Set(), lastT: 0, broken: false };
+
+function dukePreviewActive() {
+  return !!(S.dukeMap && S.mod?.roomEditorDukePreview && !S.dukeTesting && !$("#map-view")?.classList.contains("only2d"));
+}
+
+function dukeCamFloor(x, y, fallback) {
+  const sector = dukeSectorAt(x, y);
+  const sec = S.dukeMap?.sectors[sector];
+  return sec ? sec.floorz - (40 << 8) : fallback;
+}
+
+function dukePreviewMapLoaded() {
+  if (!S.dukeTileNames && S.mod?.roomEditorDukeTileNames) {
+    try { S.dukeTileNames = JSON.parse(S.mod.roomEditorDukeTileNames()); } catch { S.dukeTileNames = {}; }
+  }
+  const m = S.dukeMap;
+  dukePv.cam = { x: m.start[0], y: m.start[1], z: dukeCamFloor(m.start[0], m.start[1], m.start[2]), ang: m.start_ang & 2047, horiz: 100 };
+  dukePv.broken = false;
+  dukePreviewInvalidate();
+}
+
+function dukePreviewInvalidate() {
+  dukePv.dirty = true;
+  dukePreviewKick();
+}
+
+function dukePreviewKick() {
+  if (!dukePv.raf) dukePv.raf = requestAnimationFrame(dukePreviewFrame);
+}
+
+function dukePreviewFrame(t) {
+  dukePv.raf = 0;
+  if (!dukePreviewActive() || dukePv.broken) return;
+  if (!dukePv.cam) dukePreviewMapLoaded();
+  const dt = dukePv.lastT ? Math.min(0.1, (t - dukePv.lastT) / 1000) : 0;
+  dukePv.lastT = t;
+  const moved = dukePreviewMove(dt);
+  if (moved || dukePv.dirty) {
+    dukePv.dirty = false;
+    dukePreviewDraw();
+    if (moved) render2d();
+  }
+  if (dukePv.keys.size || dukePv.look) dukePreviewKick();
+  else dukePv.lastT = 0;
+}
+
+function dukePreviewMove(dt) {
+  if (!dt || !dukePv.keys.size || document.activeElement !== dukePreview) return false;
+  const c = dukePv.cam, k = dukePv.keys;
+  const fast = k.has("ShiftLeft") || k.has("ShiftRight") ? 3 : 1;
+  const a = c.ang * Math.PI / 1024, cos = Math.cos(a), sin = Math.sin(a);
+  const step = 1400 * fast * dt;
+  let fx = 0, sx = 0;
+  if (k.has("KeyW") || k.has("ArrowUp")) fx += 1;
+  if (k.has("KeyS") || k.has("ArrowDown")) fx -= 1;
+  if (k.has("KeyD")) sx += 1;
+  if (k.has("KeyA")) sx -= 1;
+  c.x += (cos * fx - sin * sx) * step;
+  c.y += (sin * fx + cos * sx) * step;
+  if (k.has("KeyQ") || k.has("PageUp")) c.z -= 14000 * fast * dt;
+  if (k.has("KeyZ") || k.has("PageDown")) c.z += 14000 * fast * dt;
+  if (k.has("ArrowLeft")) c.ang = (c.ang - Math.round(900 * dt) + 2048) & 2047;
+  if (k.has("ArrowRight")) c.ang = (c.ang + Math.round(900 * dt)) & 2047;
+  return true;
+}
+
+function dukePreviewSize() {
+  const wrap = $("#view3d-wrap");
+  const W = Math.max(16, wrap.clientWidth), H = Math.max(16, wrap.clientHeight);
+  // The software renderer runs on the CPU: cap the internal resolution.
+  const scale = Math.min(1, 720 / W, 480 / H);
+  return [Math.max(16, Math.round(W * scale)), Math.max(16, Math.round(H * scale))];
+}
+
+function dukePreviewDraw() {
+  const [w, h] = dukePreviewSize();
+  if (dukePreview.width !== w || dukePreview.height !== h) { dukePreview.width = w; dukePreview.height = h; }
+  const c = dukePv.cam;
+  const tic = Math.floor(performance.now() / (1000 / 30));
+  let rgba;
+  try {
+    rgba = S.mod.roomEditorDukePreview(S.doc.name, Math.round(c.x), Math.round(c.y), Math.round(c.z), c.ang, Math.round(c.horiz), w, h, tic);
+  } catch (e) {
+    dukePv.broken = true;
+    status(`3D preview: ${errText(e)}`);
+    return;
+  }
+  if (rgba.length !== w * h * 4) return;
+  const g = dukePreview.getContext("2d");
+  g.putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.length), w, h), 0, 0);
+  // Center cross for aiming picks.
+  g.strokeStyle = "rgba(255,204,51,.7)"; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(w / 2 - 4, h / 2); g.lineTo(w / 2 + 4, h / 2); g.moveTo(w / 2, h / 2 - 4); g.lineTo(w / 2, h / 2 + 4); g.stroke();
+}
+
+function dukeDrawPreviewCamera(g) {
+  const c = dukePv.cam;
+  if (!c || !dukePreviewActive()) return;
+  const [x, y] = dukeToScreen(c.x, c.y);
+  const a = c.ang * Math.PI / 1024;
+  const fov = Math.PI / 4;
+  g.fillStyle = "rgba(89,214,255,.18)"; g.strokeStyle = "#59d6ff"; g.lineWidth = 1.5;
+  g.beginPath(); g.moveTo(x, y);
+  g.lineTo(x + Math.cos(a - fov) * 34, y + Math.sin(a - fov) * 34);
+  g.lineTo(x + Math.cos(a + fov) * 34, y + Math.sin(a + fov) * 34);
+  g.closePath(); g.fill(); g.stroke();
+  g.beginPath(); g.arc(x, y, 4, 0, Math.PI * 2); g.fillStyle = "#59d6ff"; g.fill();
+}
+
+function dukePlaceCamera(wx, wy) {
+  if (!dukePv.cam) return;
+  if (dukeSectorAt(wx, wy) < 0) { toast("Put the 3D camera inside a sector"); return; }
+  dukePv.cam.x = wx; dukePv.cam.y = wy;
+  dukePv.cam.z = dukeCamFloor(wx, wy, dukePv.cam.z);
+  dukePreviewInvalidate(); render2d();
+}
+
+/** Aim the 3D camera at a point from a nearby spot inside the map. */
+function dukeLookAt(tx, ty, tz) {
+  const c = dukePv.cam;
+  if (!c) return;
+  if ($("#map-view").classList.contains("only2d")) applyLayout("split");
+  for (const turn of [0, 512, 1024, 1536, 256, 768, 1280, 1792]) {
+    const ang = (c.ang + turn) & 2047;
+    const a = ang * Math.PI / 1024;
+    for (const dist of [900, 600, 320]) {
+      const x = tx - Math.cos(a) * dist, y = ty - Math.sin(a) * dist;
+      if (dukeSectorAt(x, y) < 0) continue;
+      c.x = x; c.y = y; c.ang = ang; c.horiz = 100;
+      c.z = Number.isFinite(tz) ? tz - (24 << 8) : dukeCamFloor(x, y, c.z);
+      dukePreviewInvalidate(); render2d();
+      return;
+    }
+  }
+  dukePlaceCamera(tx, ty);
+}
+
+function dukePreviewPick(e) {
+  const r = dukePreview.getBoundingClientRect();
+  const nx = ((e.clientX - r.left) / r.width) * 2 - 1;
+  const ny = 1 - ((e.clientY - r.top) / r.height) * 2;
+  const c = dukePv.cam;
+  let hit;
+  try {
+    const raw = S.mod.roomEditorDukePick(S.doc.name, Math.round(c.x), Math.round(c.y), Math.round(c.z), c.ang, Math.round(c.horiz), nx, ny);
+    hit = raw ? JSON.parse(raw) : null;
+  } catch (err) { toast(errText(err), true); return; }
+  if (!hit) { S.dukeSelection = null; renderInspector(); render2d(); return; }
+  const mode = { wall: "lines", sector: "sectors", sprite: "things" }[hit.kind];
+  if (mode && S.mode !== mode) setMode(mode);
+  S.dukeSelection = { kind: hit.kind, index: hit.index };
+  // Keep the picked object visible in the 2D view.
+  const [sx, sy] = dukeToScreen(hit.x, hit.y);
+  if (sx < 0 || sy < 0 || sx > cv.clientWidth || sy > cv.clientHeight) { S.view.x = hit.x; S.view.y = hit.y; }
+  renderInspector(); render2d();
+  status(`Picked ${hit.kind} ${hit.index}${hit.kind === "sprite" && dukeTileName(S.dukeMap.sprites[hit.index]?.picnum) ? ` (${dukeTileName(S.dukeMap.sprites[hit.index].picnum)})` : ""}`);
+}
+
+dukePreview.addEventListener("contextmenu", (e) => e.preventDefault());
+dukePreview.addEventListener("mousedown", (e) => {
+  dukePreview.focus();
+  if (e.button === 2) {
+    dukePv.look = true;
+    dukePreview.requestPointerLock?.();
+  } else if (e.button === 0) dukePreviewPick(e);
+});
+window.addEventListener("mouseup", (e) => {
+  if (e.button === 2 && dukePv.look) {
+    dukePv.look = false;
+    if (document.pointerLockElement === dukePreview) document.exitPointerLock();
+  }
+});
+window.addEventListener("mousemove", (e) => {
+  if (!dukePv.look || !dukePv.cam) return;
+  dukePv.cam.ang = (dukePv.cam.ang + Math.round(e.movementX * 2) + 2048) & 2047;
+  dukePv.cam.horiz = Math.max(-99, Math.min(299, dukePv.cam.horiz - e.movementY * 0.6));
+  dukePreviewInvalidate();
+  render2d();
+});
+dukePreview.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  if (!dukePv.cam) return;
+  const a = dukePv.cam.ang * Math.PI / 1024, d = -Math.sign(e.deltaY) * 256;
+  dukePv.cam.x += Math.cos(a) * d; dukePv.cam.y += Math.sin(a) * d;
+  dukePreviewInvalidate(); render2d();
+}, { passive: false });
+// Touch: one finger looks around, two fingers move forward/back.
+{
+  let touch = null;
+  dukePreview.addEventListener("touchstart", (e) => {
+    const t = e.touches;
+    touch = { x: t[0].clientX, y: t[0].clientY, n: t.length, moved: false, d: t.length > 1 ? Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY) : 0 };
+  }, { passive: true });
+  dukePreview.addEventListener("touchmove", (e) => {
+    if (!touch || !dukePv.cam) return;
+    e.preventDefault();
+    const t = e.touches;
+    if (t.length > 1) {
+      const d = Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+      const a = dukePv.cam.ang * Math.PI / 1024, step = (d - touch.d) * 6;
+      dukePv.cam.x += Math.cos(a) * step; dukePv.cam.y += Math.sin(a) * step;
+      touch.d = d;
+    } else {
+      dukePv.cam.ang = (dukePv.cam.ang + Math.round((t[0].clientX - touch.x) * 3) + 2048) & 2047;
+      dukePv.cam.horiz = Math.max(-99, Math.min(299, dukePv.cam.horiz - (t[0].clientY - touch.y)));
+      touch.x = t[0].clientX; touch.y = t[0].clientY;
+    }
+    touch.moved = true;
+    dukePreviewInvalidate(); render2d();
+  }, { passive: false });
+  dukePreview.addEventListener("touchend", (e) => {
+    if (touch && !touch.moved && touch.n === 1 && e.changedTouches[0]) dukePreviewPick(e.changedTouches[0]);
+    touch = null;
+  });
+}
+window.addEventListener("keyup", (e) => { dukePv.keys.delete(e.code); });
+window.addEventListener("blur", () => dukePv.keys.clear());
+
+/** Keys while the native preview has focus; returns true when consumed. */
+function dukePreviewKey(e) {
+  if (document.activeElement !== dukePreview || !S.dukeMap) return false;
+  const moveKeys = ["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyZ", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "ShiftLeft", "ShiftRight"];
+  if (moveKeys.includes(e.code) && !e.ctrlKey && !e.metaKey) {
+    dukePv.keys.add(e.code);
+    dukePreviewKick();
+    e.preventDefault();
+    return true;
+  }
+  if (e.code === "Home") { dukePreviewMapLoaded(); e.preventDefault(); return true; }
+  return false;
+}
+
+new ResizeObserver(() => { if (dukePreviewActive()) dukePreviewInvalidate(); }).observe($("#view3d-wrap"));
+// Animated ART tiles (screens, water, lights) keep moving while idle.
+setInterval(() => {
+  if (dukePreviewActive() && !document.hidden && !dukePv.keys.size && !dukePv.look) dukePreviewInvalidate();
+}, 125);

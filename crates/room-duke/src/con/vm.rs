@@ -1246,23 +1246,27 @@ impl<'a> ConVm<'a> {
                     } else {
                         (krand_step(&mut self.randomseed) % 3) as i16
                     };
-                    let x = env
-                        .actor_x
-                        .wrapping_add(krand_step(&mut self.randomseed) & 255)
-                        .wrapping_sub(128);
-                    let y = env
-                        .actor_y
-                        .wrapping_add(krand_step(&mut self.randomseed) & 255)
-                        .wrapping_sub(128);
+                    // Chocolate `EGS(…, x+(TRAND&255)-128, y+…, z-(8<<8)-(TRAND&8191),
+                    // dnum+s, shade, 32+(TRAND&15), 32+(TRAND&15), TRAND&2047,
+                    // (TRAND&127)+32, -(TRAND&2047), …)`: 32-bit gcc evaluates
+                    // call arguments right to left, so zvel draws first.
+                    let zvel = (-(krand_step(&mut self.randomseed) & 2047)) as i16;
+                    let xvel = ((krand_step(&mut self.randomseed) & 127) + 32) as i16;
+                    let angle = (krand_step(&mut self.randomseed) & 2047) as i16;
+                    let yrepeat = 32 + (krand_step(&mut self.randomseed) & 15) as u8;
+                    let xrepeat = 32 + (krand_step(&mut self.randomseed) & 15) as u8;
                     let z = env
                         .sprite_z
                         .wrapping_sub(8 << 8)
                         .wrapping_sub(krand_step(&mut self.randomseed) & 8191);
-                    let xrepeat = 32 + (krand_step(&mut self.randomseed) & 15) as u8;
-                    let yrepeat = 32 + (krand_step(&mut self.randomseed) & 15) as u8;
-                    let angle = (krand_step(&mut self.randomseed) & 2047) as i16;
-                    let xvel = ((krand_step(&mut self.randomseed) & 127) + 32) as i16;
-                    let zvel = (-(krand_step(&mut self.randomseed) & 2047)) as i16;
+                    let y = env
+                        .actor_y
+                        .wrapping_add(krand_step(&mut self.randomseed) & 255)
+                        .wrapping_sub(128);
+                    let x = env
+                        .actor_x
+                        .wrapping_add(krand_step(&mut self.randomseed) & 255)
+                        .wrapping_sub(128);
                     self.temps.pending_debris.push(PendingDebris {
                         sector: env.actor_sect,
                         position: [x, y, z],
@@ -2209,18 +2213,22 @@ impl<'a> ConVm<'a> {
                     0
                 };
                 for _ in 0..count.max(0) {
+                    // Chocolate `guts`: `a = TRAND&2047;` then `EGS(…,
+                    // x+(TRAND&255)-128, y+…, gutz-(TRAND&8191), …, a,
+                    // 48+(TRAND&31), -512-(TRAND&2047), …)` with the call's
+                    // arguments evaluated right to left (32-bit gcc).
                     let angle = (krand_step(&mut self.randomseed) & 2047) as i16;
-                    let x = env
-                        .actor_x
-                        .wrapping_add(krand_step(&mut self.randomseed) & 255)
-                        .wrapping_sub(128);
+                    let zvel = (-512 - (krand_step(&mut self.randomseed) & 2047)) as i16;
+                    let xvel = (48 + (krand_step(&mut self.randomseed) & 31)) as i16;
+                    let z = guts_z.wrapping_sub(krand_step(&mut self.randomseed) & 8191);
                     let y = env
                         .actor_y
                         .wrapping_add(krand_step(&mut self.randomseed) & 255)
                         .wrapping_sub(128);
-                    let z = guts_z.wrapping_sub(krand_step(&mut self.randomseed) & 8191);
-                    let xvel = (48 + (krand_step(&mut self.randomseed) & 31)) as i16;
-                    let zvel = (-512 - (krand_step(&mut self.randomseed) & 2047)) as i16;
+                    let x = env
+                        .actor_x
+                        .wrapping_add(krand_step(&mut self.randomseed) & 255)
+                        .wrapping_sub(128);
                     let repeats = if tile == JIBS2 {
                         [size >> 2; 2]
                     } else {

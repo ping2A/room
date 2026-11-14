@@ -1644,18 +1644,20 @@ fn train_quickkill_effects(
         guts_z = floor_z.saturating_sub(8 << 8);
     }
     for _ in 0..8 {
+        // Chocolate `guts`: `a = TRAND&2047;` first, then the EGS arguments
+        // right to left (32-bit gcc): zvel, xvel, z, y, x.
         let angle = (krand_step(randomseed) & 2047) as i16;
-        let x = body
-            .x
-            .wrapping_add(krand_step(randomseed) & 255)
-            .wrapping_sub(128);
+        let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+        let xvel = (48 + (krand_step(randomseed) & 31)) as i16;
+        let z = guts_z.wrapping_sub(krand_step(randomseed) & 8191);
         let y = body
             .y
             .wrapping_add(krand_step(randomseed) & 255)
             .wrapping_sub(128);
-        let z = guts_z.wrapping_sub(krand_step(randomseed) & 8191);
-        let xvel = (48 + (krand_step(randomseed) & 31)) as i16;
-        let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+        let x = body
+            .x
+            .wrapping_add(krand_step(randomseed) & 255)
+            .wrapping_sub(128);
         let _ = egs(
             &mut world.lists,
             world.sprites.as_mut(),
@@ -2090,9 +2092,11 @@ pub(crate) fn move_nonrotating_subways(
                     guts_z = guts_z.saturating_sub(24 << 8);
                 }
                 for _ in 0..24 {
+                    // Chocolate `gutsdir`: `a = TRAND&2047;` then EGS arguments right to left
+                    // (32-bit gcc): zvel before xvel.
                     let angle = (krand_step(randomseed) & 2047) as i16;
-                    let xvel = (256 + (krand_step(randomseed) & 127)) as i16;
                     let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+                    let xvel = (256 + (krand_step(randomseed) & 127)) as i16;
                     let _ = egs(
                         &mut world.lists,
                         world.sprites.as_mut(),
@@ -2539,9 +2543,11 @@ pub(crate) fn move_train_effectors(
                     guts_z = guts_z.saturating_sub(24 << 8);
                 }
                 for _ in 0..gib_count {
+                    // Chocolate `gutsdir`: `a = TRAND&2047;` then EGS arguments right to left
+                    // (32-bit gcc): zvel before xvel.
                     let angle = (krand_step(randomseed) & 2047) as i16;
-                    let xvel = (256 + (krand_step(randomseed) & 127)) as i16;
                     let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+                    let xvel = (256 + (krand_step(randomseed) & 127)) as i16;
                     let _ = egs(
                         &mut world.lists,
                         world.sprites.as_mut(),
@@ -3287,6 +3293,10 @@ pub(crate) fn init_true_drop_planes(
 }
 
 /// Advance Chocolate SE31/SE32 true-drop moving planes and floor riders.
+///
+/// Mirrors `moveeffectors` cases 31/32: the step is `SP` (sprite `yvel`, the
+/// sector GPSPEED), only the retract leg snaps to its goal, and only the floor
+/// variant waits `hitag` tics (T4) between legs.
 pub(crate) fn move_true_drop_planes(
     world: &mut room_build_engine::world::BuildWorld,
     players: &mut [crate::player::Player],
@@ -3310,57 +3320,85 @@ pub(crate) fn move_true_drop_planes(
         let Some(sector) = world.sectors.get(sector_index).copied() else {
             continue;
         };
+        let sp = i32::from(sprite.yvel);
+        let ang_1536 = sprite.ang & 2047 == 1536;
+        let hitag = i32::from(sprite.hitag);
+        let t1 = temps[index].g_t[1];
+        let retract = temps[index].g_t[2] == 1;
+
+        if sprite.lotag == 32 {
+            let cz = sector.ceilingz;
+            let near = |goal: i32| cz.wrapping_sub(goal).unsigned_abs() < (sp << 1) as u32;
+            if retract {
+                let goal = if ang_1536 { t1 } else { sprite.z };
+                if near(goal) {
+                    world.sectors[sector_index].ceilingz = goal;
+                    crate::interactions::call_sector_sound(world, sprite.sectnum, temps);
+                    temps[index].g_t[2] = 0;
+                    temps[index].g_t[0] = 0;
+                } else {
+                    world.sectors[sector_index].ceilingz =
+                        cz.wrapping_add(goal.wrapping_sub(cz).signum().wrapping_mul(sp));
+                }
+            } else if ang_1536 {
+                if near(sprite.z) {
+                    temps[index].g_t[0] = 0;
+                    temps[index].g_t[2] = i32::from(temps[index].g_t[2] == 0);
+                    crate::interactions::call_sector_sound(world, sprite.sectnum, temps);
+                    world.sectors[sector_index].ceilingz = sprite.z;
+                } else {
+                    world.sectors[sector_index].ceilingz =
+                        cz.wrapping_add(sprite.z.wrapping_sub(cz).signum().wrapping_mul(sp));
+                }
+            } else if near(t1) {
+                temps[index].g_t[0] = 0;
+                temps[index].g_t[2] = i32::from(temps[index].g_t[2] == 0);
+                crate::interactions::call_sector_sound(world, sprite.sectnum, temps);
+            } else {
+                world.sectors[sector_index].ceilingz =
+                    cz.wrapping_sub(sprite.z.wrapping_sub(t1).signum().wrapping_mul(sp));
+            }
+            continue;
+        }
+
+        // SE31 true drop floor.
         if temps[index].g_t[3] > 0 {
             temps[index].g_t[3] -= 1;
             continue;
         }
-        let speed = i32::from(sprite.xvel).abs();
-        if speed == 0 {
-            continue;
-        }
-        let is_ceiling = sprite.lotag == 32;
-        let current = if is_ceiling {
-            sector.ceilingz
-        } else {
-            sector.floorz
-        };
-        let restore = temps[index].g_t[2] == 1;
-        let target = if restore {
-            if sprite.ang & 2047 == 1536 {
-                temps[index].g_t[1]
-            } else {
-                sprite.z
+        let fz = sector.floorz;
+        let near = |goal: i32| fz.wrapping_sub(goal).unsigned_abs() < sp as u32;
+        let step = if retract {
+            let goal = if ang_1536 { t1 } else { sprite.z };
+            if near(goal) {
+                world.sectors[sector_index].floorz = goal;
+                temps[index].g_t[2] = 0;
+                temps[index].g_t[0] = 0;
+                temps[index].g_t[3] = hitag;
+                crate::interactions::call_sector_sound(world, sprite.sectnum, temps);
+                continue;
             }
-        } else if sprite.ang & 2047 == 1536 {
-            sprite.z
+            goal.wrapping_sub(fz).signum().wrapping_mul(sp)
         } else {
-            temps[index].g_t[1]
-        };
-        let delta = target.saturating_sub(current);
-        let step = delta.signum().saturating_mul(speed);
-        let arrival_threshold = if is_ceiling {
-            speed.saturating_mul(2)
-        } else {
-            speed
-        };
-        if delta.unsigned_abs() < arrival_threshold as u32 {
-            if is_ceiling {
-                world.sectors[sector_index].ceilingz = target;
-                temps[index].g_t[2] = if restore { 0 } else { 1 - temps[index].g_t[2] };
+            let (arrived, step) = if ang_1536 {
+                (
+                    sprite.z.wrapping_sub(fz).unsigned_abs() < sp as u32,
+                    sprite.z.wrapping_sub(fz).signum().wrapping_mul(sp),
+                )
             } else {
-                world.sectors[sector_index].floorz = target;
-                temps[index].g_t[2] = if restore { 0 } else { 1 };
-                temps[index].g_t[3] = i32::from(sprite.hitag);
+                (near(t1), -sprite.z.wrapping_sub(t1).signum().wrapping_mul(sp))
+            };
+            if arrived {
+                crate::interactions::call_sector_sound(world, sprite.sectnum, temps);
+                temps[index].g_t[0] = 0;
+                temps[index].g_t[2] = 1;
+                temps[index].g_t[3] = hitag;
+                continue;
             }
-            temps[index].g_t[0] = 0;
-            crate::interactions::call_sector_sound(world, sprite.sectnum, temps);
-            continue;
-        }
-        if is_ceiling {
-            world.sectors[sector_index].ceilingz = current.wrapping_add(step);
-            continue;
-        }
-        world.sectors[sector_index].floorz = current.wrapping_add(step);
+            step
+        };
+        world.sectors[sector_index].floorz = fz.wrapping_add(step);
+        let new_floor = world.sectors[sector_index].floorz;
         let mut occupant = world.lists.headspritesect[sector_index];
         while occupant >= 0 {
             let actor_index = occupant as usize;
@@ -3373,16 +3411,16 @@ pub(crate) fn move_true_drop_planes(
                     }
                 }
             }
-            if world.lists.sprite_stat[actor_index] != STAT_EFFECTOR
+            if actor.zvel == 0
+                && world.lists.sprite_stat[actor_index] != STAT_EFFECTOR
                 && world.lists.sprite_stat[actor_index] != crate::stat::STAT_PROJECTILE
-                && actor.zvel == 0
             {
                 actor.z = actor.z.wrapping_add(step);
                 if temps.len() <= actor_index {
                     temps.resize_with(actor_index + 1, ActorConTemps::default);
                 }
                 temps[actor_index].bposz = actor.z;
-                temps[actor_index].hit_floorz = world.sectors[sector_index].floorz;
+                temps[actor_index].hit_floorz = new_floor;
             }
         }
     }
@@ -3756,6 +3794,63 @@ pub(crate) fn move_reactor_effectors(
     }
 }
 
+/// Chocolate `moveeffectors` case 33: while an earthquake runs, each SE33
+/// marker has a 1-in-8 chance per tic to throw one `RANDOMSCRAP` shard.
+pub(crate) fn move_quake_debris_effectors(
+    world: &mut BuildWorld,
+    temps: &mut Vec<ActorConTemps>,
+    picnum: &mut Vec<i16>,
+    script: Option<&crate::con::ScriptImage>,
+    randomseed: &mut i32,
+    earthquake_time: i32,
+) {
+    if earthquake_time <= 0 {
+        return;
+    }
+    let mut current = world.lists.headspritestat[STAT_EFFECTOR as usize];
+    while current >= 0 {
+        let index = current as usize;
+        current = world.lists.nextspritestat[index];
+        let Some(marker) = world.sprites.get(index).copied() else {
+            continue;
+        };
+        if marker.lotag != 33 || krand_step(randomseed) & 7 != 0 {
+            continue;
+        }
+        // 32-bit gcc evaluates the EGS arguments right to left.
+        let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+        let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
+        let angle = (krand_step(randomseed) & 2047) as i16;
+        let tile = SCRAP6 + (krand_step(randomseed) & 15) as i16;
+        let z = marker
+            .z
+            .wrapping_sub(8 << 8)
+            .wrapping_sub(krand_step(randomseed) & 8191);
+        let y = marker.y.wrapping_add((krand_step(randomseed) & 255) - 128);
+        let x = marker.x.wrapping_add((krand_step(randomseed) & 255) - 128);
+        let _ = crate::shoot::egs(
+            &mut world.lists,
+            &mut world.sprites[..],
+            picnum,
+            temps,
+            script,
+            marker.sectnum,
+            x,
+            y,
+            z,
+            tile,
+            -8,
+            48,
+            48,
+            angle,
+            xvel,
+            zvel,
+            index as i16,
+            crate::stat::STAT_MISC,
+        );
+    }
+}
+
 /// Advance Chocolate's SE13 explosive-sector recovery (`moveeffectors`).
 /// SEENINE detonation arms T3; the effector restores its original planes over
 /// 256 tics, changes the sector shade once, and then removes the marker.
@@ -3843,16 +3938,18 @@ pub(crate) fn move_explosive_sector_effectors(
         }
         if debris {
             for _ in 0..7 {
-                let x = marker.x.wrapping_add((krand_step(randomseed) & 255) - 128);
-                let y = marker.y.wrapping_add((krand_step(randomseed) & 255) - 128);
+                // Chocolate `RANDOMSCRAP`: 32-bit gcc evaluates the EGS arguments right
+                // to left, so zvel draws first and x last.
+                let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+                let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
+                let angle = (krand_step(randomseed) & 2047) as i16;
+                let tile = SCRAP6 + (krand_step(randomseed) & 15) as i16;
                 let z = marker
                     .z
                     .wrapping_sub(8 << 8)
                     .wrapping_sub(krand_step(randomseed) & 8191);
-                let tile = SCRAP6 + (krand_step(randomseed) & 15) as i16;
-                let angle = (krand_step(randomseed) & 2047) as i16;
-                let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
-                let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
+                let y = marker.y.wrapping_add((krand_step(randomseed) & 255) - 128);
+                let x = marker.x.wrapping_add((krand_step(randomseed) & 255) - 128);
                 let _ = crate::shoot::egs(
                     &mut world.lists,
                     &mut world.sprites[..],
@@ -4093,22 +4190,24 @@ pub(crate) fn move_quake_effectors(
         };
         if effect.lotag == 33 {
             if *quake_time > 0 && (room_build_engine::numeric::krand_step(randomseed) & 7) == 0 {
-                let x = effect
-                    .x
-                    .wrapping_add((room_build_engine::numeric::krand_step(randomseed) & 255) - 128);
-                let y = effect
-                    .y
-                    .wrapping_add((room_build_engine::numeric::krand_step(randomseed) & 255) - 128);
+                // Chocolate `RANDOMSCRAP`: 32-bit gcc evaluates the EGS arguments right
+                // to left, so zvel draws first and x last.
+                let zvel =
+                    (-512 - (room_build_engine::numeric::krand_step(randomseed) & 2047)) as i16;
+                let xvel = (64 + (room_build_engine::numeric::krand_step(randomseed) & 63)) as i16;
+                let angle = (room_build_engine::numeric::krand_step(randomseed) & 2047) as i16;
+                let scrap =
+                    SCRAP6 + (room_build_engine::numeric::krand_step(randomseed) & 15) as i16;
                 let z = effect
                     .z
                     .wrapping_sub(8 << 8)
                     .wrapping_sub(room_build_engine::numeric::krand_step(randomseed) & 8191);
-                let scrap =
-                    SCRAP6 + (room_build_engine::numeric::krand_step(randomseed) & 15) as i16;
-                let angle = (room_build_engine::numeric::krand_step(randomseed) & 2047) as i16;
-                let xvel = (64 + (room_build_engine::numeric::krand_step(randomseed) & 63)) as i16;
-                let zvel =
-                    (-512 - (room_build_engine::numeric::krand_step(randomseed) & 2047)) as i16;
+                let y = effect
+                    .y
+                    .wrapping_add((room_build_engine::numeric::krand_step(randomseed) & 255) - 128);
+                let x = effect
+                    .x
+                    .wrapping_add((room_build_engine::numeric::krand_step(randomseed) & 255) - 128);
                 let _ = crate::shoot::egs(
                     lists,
                     sprites,

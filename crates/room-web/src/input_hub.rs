@@ -31,6 +31,11 @@ thread_local! {
     static WHEEL_FRAC: Cell<f64> = const { Cell::new(0.0) };
     static VIEW_GRID: Cell<bool> = const { Cell::new(false) };
     static MOUSE_YAW: Cell<i32> = const { Cell::new(0) };
+    /// Native Duke key-turn hold time in 120 Hz ticks (Chocolate `turnheldtime`).
+    static DUKE_TURN_HELD: Cell<i16> = const { Cell::new(0) };
+    /// Native Duke mouse yaw / pitch left over after the per-tic `i8` rounding.
+    static DUKE_TURN_RESIDUAL: Cell<f64> = const { Cell::new(0.0) };
+    static DUKE_HORIZ_RESIDUAL: Cell<f64> = const { Cell::new(0.0) };
     static MOUSE_PITCH: Cell<i32> = const { Cell::new(0) };
     /// Extra scale on pointer-lock look (1.0 = default).
     static MOUSE_SENS: Cell<f64> = const { Cell::new(1.0) };
@@ -293,21 +298,37 @@ pub fn duke_shoulder_view() -> bool {
     DUKE_SHOULDER_VIEW.get()
 }
 
-/// Consume browser input as one native Duke command.
+/// Desktop `m_pitch` default: vertical mouse look scale for native Duke.
+const DUKE_PITCH_SCALE: f64 = 1.25;
+
+/// Consume browser input as one native Duke command (one 30 Hz Duke tic).
 /// `ang` is the local player's heading: Duke sync momentum is world-space.
+///
+/// Mirrors the desktop native-Duke input (`room-app`), so the web build turns,
+/// aims and crouches the same way: Chocolate's key-turn ramp, mouse yaw and
+/// pitch converted from mouse counts with the sub-unit remainder carried.
 pub fn take_duke_input(ang: i16) -> room_duke::DukeInput {
     let held = HELD.with(|h| h.borrow().clone());
+    let run = held.contains("shift");
     let mut bits = 0_u32;
     // Chocolate's default auto-aim mode is full (2).
     bits |= room_duke::INPUT_AUTO_AIM;
     if JUMP.get() {
         bits |= 1;
     }
+    // Crouch (desktop C; the web binds C and Z to "down").
+    if held.contains("down") {
+        bits |= 2;
+    }
     if ATTACK.get() {
         bits |= 1 << 2;
     }
     if held.contains("use") {
         bits |= room_duke::INPUT_OPEN;
+    }
+    // Chocolate SK_QUICK_KICK (`/` on desktop, KICK on touch).
+    if held.contains("kick") {
+        bits |= 1 << 22;
     }
     if held.contains("invuse") {
         bits |= room_duke::INPUT_INVENTORY_USE;
@@ -318,18 +339,51 @@ pub fn take_duke_input(ang: i16) -> room_duke::DukeInput {
     if held.contains("invright") {
         bits |= room_duke::INPUT_INVENTORY_RIGHT;
     }
-    if held.contains("shift") {
+    if run {
         bits |= 1 << 5;
     }
-    let turn = (i16::from(held.contains("right")) - i16::from(held.contains("left"))) * 4;
-    let turn = turn.saturating_add((MOUSE_YAW.replace(0) / 8) as i16);
-    let horiz = (MOUSE_PITCH.replace(0) / 4).clamp(-127, 127) as i8;
+    // Chocolate `getinput`: PREAMBLETURN (5) for the first TURBOTURNTIME
+    // (15 of 120 Hz) ticks, then NORMALTURN (15), doubled when running.
+    let turn_dir = i16::from(held.contains("right")) - i16::from(held.contains("left"));
+    let turn_held = if turn_dir == 0 {
+        0
+    } else {
+        DUKE_TURN_HELD.get().saturating_add(4)
+    };
+    DUKE_TURN_HELD.set(turn_held);
+    let turn_amount = if turn_held >= 15 {
+        if run { 30 } else { 15 }
+    } else {
+        5
+    };
+    let key_turn = turn_dir * turn_amount;
+    // Mouse counts use the Doom sign (positive = left); Build angles grow
+    // clockwise, hence the negation. `processinput` applies `avel << 1`.
+    let mouse_yaw = f64::from(MOUSE_YAW.replace(0));
+    let yaw_units = -mouse_yaw * room_input::MOUSE_DEG_PER_COUNT * 2048.0 / 360.0
+        + DUKE_TURN_RESIDUAL.get();
+    #[allow(clippy::cast_possible_truncation)]
+    let turn = (f64::from(key_turn) + (yaw_units / 2.0).trunc()).clamp(-127.0, 127.0) as i16;
+    DUKE_TURN_RESIDUAL
+        .set((yaw_units - f64::from(turn - key_turn) * 2.0).clamp(-2048.0, 2048.0));
+    // Chocolate mouse aiming adds `horz >> 1` to `horiz`; one horiz unit is
+    // ~1/160 rad at the 320x200 reference projection.
+    let pitch_deg =
+        f64::from(MOUSE_PITCH.replace(0)) * room_input::MOUSE_DEG_PER_COUNT * DUKE_PITCH_SCALE;
+    let horiz_units =
+        pitch_deg * 160.0 * std::f64::consts::PI / 180.0 + DUKE_HORIZ_RESIDUAL.get();
+    // Even values so both directions move by the same amount.
+    let half = horiz_units.trunc().clamp(-63.0, 63.0);
+    DUKE_HORIZ_RESIDUAL.set((horiz_units - half).clamp(-200.0, 200.0));
+    #[allow(clippy::cast_possible_truncation)]
+    let horiz = (half as i8) * 2;
     // Chocolate `getinput`: NORMALKEYMOVE (40), doubled when running;
     // strafe positive = left; rotated into world space by the heading.
-    let keymove = if held.contains("shift") { 80 } else { 40 };
+    let keymove = if run { 80 } else { 40 };
     let vel = (i32::from(held.contains("w")) - i32::from(held.contains("s"))) * keymove;
     let svel = (i32::from(held.contains("a")) - i32::from(held.contains("d"))) * keymove;
-    room_duke::DukeInput::from_local(vel, svel, ang, turn.clamp(-127, 127) as i8, horiz, bits)
+    #[allow(clippy::cast_possible_truncation)]
+    room_duke::DukeInput::from_local(vel, svel, ang, turn as i8, horiz, bits)
 }
 
 /// Consume one native Duke command with weapon hotkey / wheel requests packed
@@ -347,6 +401,12 @@ pub fn take_duke_network_input(ang: i16) -> room_duke::DukeInput {
     };
     input.bits |= u32::from(choice) << room_duke::weapons::INPUT_WEAPON_SHIFT;
     input
+}
+
+/// Whether a native Duke session currently owns the input.
+#[must_use]
+pub fn duke_mode() -> bool {
+    DUKE_MODE.get()
 }
 
 /// Enable the Duke digit-key interpretation while a native Duke session runs.
@@ -444,6 +504,9 @@ pub fn reset() {
     VIEW_GRID.set(false);
     MOUSE_YAW.set(0);
     MOUSE_PITCH.set(0);
+    DUKE_TURN_HELD.set(0);
+    DUKE_TURN_RESIDUAL.set(0.0);
+    DUKE_HORIZ_RESIDUAL.set(0.0);
 }
 
 /// Comma-separated held tokens for debug.
@@ -457,4 +520,84 @@ pub fn debug_held() -> String {
             v.join(",")
         }
     })
+}
+
+#[cfg(test)]
+mod duke_input_tests {
+    use super::*;
+
+    fn duke_session() {
+        reset();
+        set_duke_mode(true);
+    }
+
+    #[test]
+    fn key_turn_ramps_like_desktop() {
+        duke_session();
+        set_key("ArrowRight", true);
+        // Preamble turn (5) until 15 of 120 Hz ticks, then normal turn (15).
+        let first: Vec<i8> = (0..5).map(|_| take_duke_input(0).avel).collect();
+        assert_eq!(first, vec![5, 5, 5, 15, 15]);
+        set_key("ShiftLeft", true);
+        assert_eq!(take_duke_input(0).avel, 30);
+        set_key("ArrowRight", false);
+        assert_eq!(take_duke_input(0).avel, 0);
+        set_key("ShiftLeft", false);
+        set_key("ArrowLeft", true);
+        assert_eq!(take_duke_input(0).avel, -5);
+        reset();
+    }
+
+    #[test]
+    fn mouse_left_turns_left_like_the_left_key() {
+        duke_session();
+        // Pointer moves left (dx < 0).
+        add_mouse_delta(-200.0, 0.0);
+        let mouse = take_duke_input(0).avel;
+        set_key("ArrowLeft", true);
+        let key = take_duke_input(0).avel;
+        assert!(mouse < 0, "mouse left gave avel {mouse}");
+        assert!(key < 0);
+        reset();
+    }
+
+    #[test]
+    fn slow_mouse_motion_is_not_lost() {
+        duke_session();
+        // Many tiny moves must add up instead of rounding to zero each tic.
+        let mut total = 0_i32;
+        for _ in 0..60 {
+            add_mouse_delta(-1.0, 0.0);
+            total += i32::from(take_duke_input(0).avel);
+        }
+        let mut once = 0_i32;
+        reset();
+        set_duke_mode(true);
+        add_mouse_delta(-60.0, 0.0);
+        for _ in 0..4 {
+            once += i32::from(take_duke_input(0).avel);
+        }
+        assert!(total < 0);
+        assert!((total - once).abs() <= 1, "slow {total} vs fast {once}");
+        reset();
+    }
+
+    #[test]
+    fn mouse_pitch_sends_even_horizon_steps() {
+        duke_session();
+        add_mouse_delta(0.0, -50.0);
+        let up = take_duke_input(0).horz;
+        assert!(up > 0 && up % 2 == 0, "horz {up}");
+        reset();
+    }
+
+    #[test]
+    fn crouch_key_sets_crouch_bit() {
+        duke_session();
+        set_key("KeyC", true);
+        assert_ne!(take_duke_input(0).bits & 2, 0);
+        set_key("KeyC", false);
+        assert_eq!(take_duke_input(0).bits & 2, 0);
+        reset();
+    }
 }

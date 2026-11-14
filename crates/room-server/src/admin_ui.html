@@ -211,7 +211,7 @@
             <h2>Room creation policy</h2>
             <span class="muted">Controls whether players may create a custom room</span>
           </div>
-          <label class="inline-check"><input type="checkbox" id="preset-require"/> Require players to choose a preset when creating a Doom room</label>
+          <label class="inline-check"><input type="checkbox" id="preset-require"/> Require players to choose a preset when creating a room</label>
           <p class="muted">When enabled, room creation must use one of the presets above. Otherwise players may also enter a custom map.</p>
         </div>
         <div class="panel preset-library-note">
@@ -321,11 +321,11 @@
         <div class="panel">
           <div class="panel-head">
             <h2>Content library</h2>
-            <span class="muted">PK3 / WAD files (mods like Brutal Doom, map packs, IWADs) players download for preset rooms</span>
+            <span class="muted">WAD / PK3 files for Doom and GRP files for Duke Nukem 3D</span>
           </div>
           <div class="row">
-            <label class="btn primary" for="content-file">Upload PK3 / WAD…</label>
-            <input type="file" id="content-file" accept=".pk3,.pk7,.zip,.wad,.ipk3,.ipk7" multiple hidden/>
+            <label class="btn primary" for="content-file">Upload game file…</label>
+            <input type="file" id="content-file" accept=".pk3,.pk7,.zip,.wad,.grp,.ipk3,.ipk7" multiple hidden/>
             <button type="button" id="content-rescan" class="btn">Rescan folder</button>
             <p class="muted" id="content-status">—</p>
           </div>

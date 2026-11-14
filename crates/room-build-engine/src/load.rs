@@ -68,6 +68,7 @@ impl BuildWorld {
             start,
             start_ang,
             start_sector,
+            mirror_viewer: None,
         })
     }
 

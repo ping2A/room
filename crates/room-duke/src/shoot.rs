@@ -625,7 +625,9 @@ pub(crate) fn shoot_coolexplosion_enemy(
         ang: sa,
         sectnum: sect,
         picnum: COOLEXPLOSION1,
-        shade: -127,
+        // `EGS(…,-127,…)` then `if(atwith == COOLEXPLOSION1) sprite[j].shade = 0;`
+        // — the blast fades out (`shade++`, deleted at 40) from shade 0.
+        shade: 0,
         xrepeat: 18,
         yrepeat: 18,
         xvel: vel as i16,
@@ -900,9 +902,12 @@ fn tracers(
         }
         let lotag = sectors.get(sect as usize).map(|s| s.lotag).unwrap_or(0);
         if lotag == 2 {
-            let xr = (4 + (krand_step(randomseed) & 3)) as u8;
-            let yr = (4 + (krand_step(randomseed) & 3)) as u8;
+            // `EGS(sect,x1,y1,z1,WATERBUBBLE,-32,4+(TRAND&3),4+(TRAND&3),TRAND&2047,…)`:
+            // 32-bit gcc evaluates the arguments right to left, so the
+            // angle draws first, then yrepeat, then xrepeat.
             let ang = (krand_step(randomseed) & 2047) as i16;
+            let yr = (4 + (krand_step(randomseed) & 3)) as u8;
+            let xr = (4 + (krand_step(randomseed) & 3)) as u8;
             let _ = egs(
                 lists,
                 sprites,
@@ -1014,7 +1019,10 @@ fn spawn_bullethole(
             sprite = lists.nextspritesect.get(index).copied().unwrap_or(-1);
             if sprites
                 .get(index)
-                .is_some_and(|marker| marker.statnum == STAT_EFFECTOR && marker.lotag == 13)
+                .is_some_and(|marker| {
+                    lists.sprite_stat.get(index).copied() == Some(STAT_EFFECTOR)
+                        && marker.lotag == 13
+                })
             {
                 return;
             }
@@ -1649,7 +1657,7 @@ pub(crate) fn check_hit_ceiling(
             let li = local as usize;
             local = lists.nextspritesect[li];
             if let Some(marker) = sprites.get(li)
-                && marker.statnum == STAT_EFFECTOR
+                && lists.sprite_stat[li] == STAT_EFFECTOR
                 && marker.lotag == 12
             {
                 tagged_hit = Some(marker.hitag);
@@ -1694,8 +1702,14 @@ pub(crate) fn check_hit_ceiling(
 fn tick_weapon_pos(p: &mut Player) {
     if p.weapon_pos != 0 {
         if p.weapon_pos == -9 {
-            p.weapon_pos = 10;
-            p.last_weapon = -1;
+            // Chocolate: a holstered weapon (toilet use, holster key) stays
+            // down until `holster_weapon` clears; a pending switch raises.
+            if p.last_weapon >= 0 {
+                p.weapon_pos = 10;
+                p.last_weapon = -1;
+            } else if p.holster_weapon == 0 {
+                p.weapon_pos = 10;
+            }
         } else {
             p.weapon_pos -= 1;
         }
