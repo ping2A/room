@@ -11,7 +11,6 @@ use crate::combat::CombatHud;
 use crate::death::DeathExperience;
 use crate::host::Host;
 use crate::tables::{MAX_PLAYERS, TICRATE, ZONE_ROWS};
-use crate::teams::Squads;
 use crate::text::Msg;
 
 const VICTORY_SECS: i32 = 6;
@@ -254,7 +253,6 @@ pub fn build_standings<H: Host>(
     contender: &[bool; MAX_PLAYERS],
     death: &DeathExperience,
     combat: &CombatHud,
-    squads: &Squads,
     deploy_tic: i32,
     t: i32,
     winner: Option<usize>,
@@ -285,7 +283,7 @@ pub fn build_standings<H: Host>(
             kills: host.player_stat(s as i32, player_prop::FRAGS),
             assists: combat.assists(s),
             damage: host.player_stat(s as i32, player_prop::DAMAGE_DEALT),
-            revives: squads.revives(s),
+            revives: 0,
             survival_tics,
         };
         n += 1;

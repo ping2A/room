@@ -185,41 +185,25 @@
       </section>
 
       <section id="view-presets" class="view hidden">
-        <div class="panel preset-manager">
-          <div class="panel-head">
-            <div>
-              <h2>Room presets</h2>
-              <p class="muted">Choose the game, files, allowed maps, and defaults players can use when they create a room.</p>
+        <div class="presets-layout">
+          <aside class="panel preset-list-panel" aria-label="Saved presets">
+            <div class="panel-head">
+              <div>
+                <h2>Presets</h2>
+                <p id="presets-status" class="muted" role="status">Loading presets…</p>
+              </div>
+              <button type="button" id="preset-add" class="btn primary small">New preset</button>
             </div>
-            <button type="button" id="preset-add" class="btn primary">New preset</button>
-          </div>
-          <div class="preset-manager-controls">
-            <label class="field">
-              <span>Select a preset</span>
-              <select id="preset-select" aria-describedby="presets-status"></select>
-            </label>
-            <div class="preset-actions">
-              <button type="button" id="preset-edit" class="btn">Edit preset</button>
-              <button type="button" id="preset-delete" class="btn danger">Delete preset</button>
+            <ul id="preset-list" class="preset-list" role="listbox" aria-label="Presets"></ul>
+            <div class="preset-policy">
+              <label class="inline-check"><input type="checkbox" id="preset-require"/> Players must pick a preset</label>
+              <p class="muted">Off: players may also host a custom game by typing a map.</p>
             </div>
+            <p class="muted preset-library-note">Game files come from <button type="button" class="text-button" data-go-settings="content">Settings → Content library</button>.</p>
+          </aside>
+          <div class="panel preset-detail">
+            <div id="preset-preview" class="preset-preview" aria-live="polite"></div>
           </div>
-          <p id="presets-status" class="muted" role="status">Loading presets…</p>
-          <div id="preset-preview" class="preset-preview" aria-live="polite"></div>
-        </div>
-        <div class="panel preset-policy">
-          <div class="panel-head">
-            <h2>Room creation policy</h2>
-            <span class="muted">Controls whether players may create a custom room</span>
-          </div>
-          <label class="inline-check"><input type="checkbox" id="preset-require"/> Require players to choose a preset when creating a room</label>
-          <p class="muted">When enabled, room creation must use one of the presets above. Otherwise players may also enter a custom map.</p>
-        </div>
-        <div class="panel preset-library-note">
-          <div class="panel-head">
-            <h2>Need another game file?</h2>
-            <span class="muted">Add it to the library before editing a preset</span>
-          </div>
-          <p class="muted">Upload or rescan WAD / PK3 files in <button type="button" class="text-button" data-go-settings="content">Settings → Content library</button>. The preset editor will then offer the game files and detected maps.</p>
         </div>
       </section>
 

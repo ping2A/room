@@ -10,6 +10,9 @@ pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Netplay clock (input horizon + playout buffer); pure, tested natively.
+pub mod net_clock;
+
 #[cfg(feature = "browser")]
 mod demo_map;
 
@@ -1267,8 +1270,10 @@ mod browser {
                     pwads,
                     time_limit_secs: lobby.time_limit(),
                     session_names: lobby.session_names(),
-                    fill_bots: lobby.fill_bots(),
-                    bot_first_seat: lobby.bot_first_seat(),
+                    // Bot seats are only known at the server's Start: prepare
+                    // with none (set_bot_seats applies them before tic 0).
+                    fill_bots: false,
+                    bot_first_seat: 0,
                     deathmatch: lobby.doom_deathmatch(),
                     ..PlayStartOpts::default()
                 },
@@ -1795,7 +1800,9 @@ mod browser {
             };
             (iwad.clone(), prepared.take())
         };
-        let mut play = if let Some(p) = prepared {
+        let mut play = if let Some(mut p) = prepared {
+            // Prepared before Start: now the server said which seats are bots.
+            p.game.set_bot_seats(fill_bots, bot_first_seat);
             *p
         } else {
             match PlaySession::start_with(
@@ -1867,12 +1874,33 @@ mod browser {
         } else {
             format!("Playing as <strong>{}</strong>", html_escape(&p.local_name))
         };
+        // Timed start (bot-fill games): a live countdown; otherwise the
+        // game waits for every slot.
+        let countdown = match p.starts_in_secs {
+            Some(secs) if !p.started && !p.connecting => format!(
+                "<p class=\"countdown\" aria-live=\"polite\"><span>Game starts in</span> \
+                 <strong>{}:{:02}</strong></p>",
+                secs / 60,
+                secs % 60
+            ),
+            _ => String::new(),
+        };
+        let hint = if p.starts_in_secs.is_some() {
+            if p.fill_bots {
+                "When the timer runs out, bots take the empty slots."
+            } else {
+                "The game starts when the timer runs out."
+            }
+        } else {
+            "Starts when every slot is filled and every player has loaded the map."
+        };
         let html = format!(
             "<h2>{phase}</h2>\
-             <p class=\"meta\"><span>{map}</span> · skill {skill} · {present}/{max} in lobby</p>\
+             {countdown}\
+             <p class=\"meta\"><span>{map}</span> · skill {skill} · {present}/{max} players</p>\
              <p class=\"muted\">{role}</p>\
              <ul class=\"seats\">{seats}</ul>\
-             <p class=\"hint\">Starts when the room is full and every seat has loaded the map.</p>",
+             <p class=\"hint\">{hint}</p>",
             map = html_escape(&p.map),
             skill = p.skill,
             present = p.present,

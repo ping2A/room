@@ -110,6 +110,13 @@ impl CoopSocket {
         matches!(self, Self::V2(_))
     }
 
+    fn starts_in_secs(&self) -> Option<u32> {
+        match self {
+            Self::V2(t) => t.starts_in_secs(),
+            Self::Legacy(_) => None,
+        }
+    }
+
     pub fn send_duke_input(&mut self, tic: u32, input: room_duke::DukeInput) {
         if let Self::V2(t) = self {
             t.send_duke_tic_cmd(
@@ -141,7 +148,9 @@ impl CoopSocket {
 /// Server tic period in milliseconds.
 const TIC_MS: f64 = 1000.0 / 35.0;
 /// Cap on input tics sent per call (catch-up after a hitch).
-const MAX_SENDS_PER_CALL: u32 = 4;
+const MAX_SENDS_PER_CALL: u32 = 8;
+/// Never stream input more than this many tics past the newest frame.
+const MAX_LEAD_TICS: u32 = 16;
 const PING_INTERVAL_MS: f64 = 500.0;
 
 /// Tics of input lead so cmds reach the server before their slot is released.
@@ -552,6 +561,8 @@ impl NetLobby {
             invite_url,
             room_id,
             spectator: self.cfg.spectate,
+            starts_in_secs: self.transport.as_ref().and_then(CoopSocket::starts_in_secs),
+            fill_bots: self.cfg.fill_bots,
         }
     }
 
@@ -986,6 +997,10 @@ pub struct LobbyPanel {
     pub room_id: Option<String>,
     /// Watching without a seat.
     pub spectator: bool,
+    /// Seconds until the server starts the match on its timer.
+    pub starts_in_secs: Option<u32>,
+    /// Empty slots become bots at the start.
+    pub fill_bots: bool,
 }
 
 /// Extract `room_id` from a v2 WebSocket URL (`…/v2/rooms/{id}/ws`).
@@ -1083,6 +1098,8 @@ pub struct NetPlay {
     spectator: bool,
     /// Join / leave lines for the HUD event feed.
     feed: Vec<String>,
+    /// v2: server-clock estimate, input horizon and playout buffer.
+    clock: crate::net_clock::NetClock,
 }
 
 impl NetPlay {
@@ -1117,6 +1134,7 @@ impl NetPlay {
             sent_cmds: std::collections::VecDeque::new(),
             spectator: r.spectator,
             feed: Vec::new(),
+            clock: crate::net_clock::NetClock::new(),
         }
     }
 
@@ -1347,10 +1365,8 @@ impl NetPlay {
         None
     }
 
-    /// v2 pipeline: the server clocks tics at 35 Hz, so stream input `lead`
-    /// tics ahead of the newest frame and simulate frames as they arrive.
-    /// Never blocks on a single outstanding cmd; the server repeat-fills late
-    /// seats, so there is no client-side stall fill or rebroadcast.
+    /// v2 pipeline (fallback / spectators): send input, then simulate the next
+    /// frame if it is here.
     fn advance_v2(
         &mut self,
         held: &BTreeSet<&'static str>,
@@ -1360,22 +1376,70 @@ impl NetPlay {
         mouse_yaw: &mut i32,
         mouse_pitch: &mut i32,
     ) -> Option<Vec<TicCmd>> {
-        let CoopSocket::V2(t) = &mut self.transport else {
+        if !self.pump_v2(now_ms(), held, attack, weapon, weapon_cycle, mouse_yaw, mouse_pitch) {
             return None;
+        }
+        let cmds = self.take_v2_frame();
+        if cmds.is_none() {
+            self.frames_waiting = self.frames_waiting.saturating_add(1);
+        }
+        cmds
+    }
+
+    /// v2: network housekeeping + stream local input up to the input horizon.
+    ///
+    /// With the clock running (`net_clock`), commands go out one per tic of
+    /// local time, `rtt + margin` ahead of the server's clock, whatever the
+    /// frame arrival pattern; before the first frame, `lead` tics ahead of the
+    /// newest frame as before. Never blocks.
+    #[allow(clippy::too_many_arguments)]
+    pub fn pump_v2(
+        &mut self,
+        now: f64,
+        held: &BTreeSet<&'static str>,
+        attack: bool,
+        weapon: &mut u8,
+        weapon_cycle: &mut i32,
+        mouse_yaw: &mut i32,
+        mouse_pitch: &mut i32,
+    ) -> bool {
+        pump_rtc(&mut self.transport);
+        self.drain_presence();
+        if self.socket_dead || self.transport.is_closed() {
+            if !self.socket_dead {
+                self.socket_dead = true;
+                web_sys::console::error_1(
+                    &"room-web: lockstep aborted — local WebSocket closed".into(),
+                );
+            }
+            return false;
+        }
+        let CoopSocket::V2(t) = &mut self.transport else {
+            return false;
         };
-        let now = now_ms();
         if now - self.last_ping_ms >= PING_INTERVAL_MS {
             t.send_ping();
             self.last_ping_ms = now;
         }
-        let lead = lead_tics(t.rtt_ms().unwrap_or(100.0));
+        for (tic, at) in t.take_frame_times() {
+            self.clock.on_frame(tic, at);
+        }
+        if let Some(rtt) = t.rtt_ms() {
+            self.clock.set_rtt(rtt);
+        }
+        self.clock.decay(now);
         let first_unreceived = t.last_frame_tic().map_or(0, |x| x.saturating_add(1));
         self.next_send_tic = self.next_send_tic.max(first_unreceived);
         let target = if self.spectator {
             self.next_send_tic
+        } else if let Some(h) = self.clock.input_horizon(now) {
+            // Never fall behind what the server already released.
+            (h.floor() as u32).saturating_add(1).max(first_unreceived)
         } else {
-            first_unreceived.saturating_add(lead)
+            first_unreceived.saturating_add(lead_tics(t.rtt_ms().unwrap_or(100.0)))
         };
+        // Cap a burst (tab was hidden, clock jump): the rest goes next frame.
+        let target = target.min(first_unreceived.saturating_add(MAX_LEAD_TICS));
         let mut sent = 0;
         while self.next_send_tic < target && sent < MAX_SENDS_PER_CALL {
             let sample = sample_input(
@@ -1417,23 +1481,81 @@ impl NetPlay {
             self.next_send_tic = self.next_send_tic.saturating_add(1);
             sent += 1;
         }
+        true
+    }
 
+    /// v2: the next frame's commands if it has arrived. Detects our own
+    /// commands that reached the server too late (it relayed a stand-in) and
+    /// widens the input margin.
+    pub fn take_v2_frame(&mut self) -> Option<Vec<TicCmd>> {
         self.poll_inbox();
-        if let Some(frame) = self.session.try_advance() {
-            let tic = self.session.next_tic().saturating_sub(1);
-            self.frames_waiting = 0;
-            let next = self.session.next_tic();
-            while self.sent_look.front().is_some_and(|(t, _, _)| *t < next) {
-                self.sent_look.pop_front();
+        let tic = self.session.next_tic();
+        let frame = self.session.try_advance()?;
+        self.frames_waiting = 0;
+        if !self.spectator {
+            let local = self.session.local();
+            let sent = self
+                .sent_cmds
+                .iter()
+                .find(|(t, _)| *t == tic)
+                .map(|(_, c)| *c);
+            if let (Some(sent), Some(relayed)) = (sent, frame.get(&local)) {
+                if sent != *relayed {
+                    self.clock.on_late_input(now_ms());
+                }
             }
-            while self.sent_cmds.front().is_some_and(|(t, _)| *t < next) {
-                self.sent_cmds.pop_front();
-            }
-            self.log_advance(tic, &frame);
-            return Some(frame_to_cmds(frame, self.peer_count));
         }
-        self.frames_waiting = self.frames_waiting.saturating_add(1);
-        None
+        let next = self.session.next_tic();
+        while self.sent_look.front().is_some_and(|(t, _, _)| *t < next) {
+            self.sent_look.pop_front();
+        }
+        while self.sent_cmds.front().is_some_and(|(t, _)| *t < next) {
+            self.sent_cmds.pop_front();
+        }
+        self.log_advance(tic, &frame);
+        Some(frame_to_cmds(frame, self.peer_count))
+    }
+
+    /// v2: fractional tic to display now (playout clock), once the clock has
+    /// seen a frame. `None` → pace by arrival (old behaviour).
+    #[must_use]
+    pub fn playout_pos(&self, now: f64) -> Option<f64> {
+        if !self.transport.is_v2() {
+            return None;
+        }
+        self.clock.playout_pos(now)
+    }
+
+    /// v2: fraction of the current input tic elapsed (`0..1`), used to glide
+    /// the predicted view between commands. `1.0` without a clock.
+    #[must_use]
+    pub fn input_frac(&self, now: f64) -> f64 {
+        self.clock
+            .input_horizon(now)
+            .map_or(1.0, |h| h - h.floor())
+    }
+
+    /// The playout wanted a frame that has not arrived.
+    pub fn on_stall(&mut self, now: f64) {
+        self.clock.on_stall(now);
+    }
+
+    /// Next tic the sim will run.
+    #[must_use]
+    pub fn next_tic(&self) -> u32 {
+        self.session.next_tic()
+    }
+
+    /// `(input margin ms, playout buffer ms, late inputs, stalls)` for the
+    /// debug overlay.
+    #[must_use]
+    pub fn clock_stats(&self) -> (f64, f64, u32, u32) {
+        (
+            self.clock.input_margin_ms(),
+            self.clock.buffer_ms(),
+            self.clock.late_inputs,
+            self.clock.stalls,
+        )
     }
 
     /// v2: frames received but not yet simulated.
@@ -1478,6 +1600,15 @@ impl NetPlay {
             CoopSocket::Legacy(_) => self.session.pending_local(),
         };
         raw.into_iter().map(net_cmd_to_tic).collect()
+    }
+
+    /// Ping (ms) of `seat` as the server last shared it (v2 rooms).
+    #[must_use]
+    pub fn seat_ping(&self, seat: u8) -> Option<u16> {
+        match &self.transport {
+            CoopSocket::V2(t) => t.seat_ping(seat),
+            CoopSocket::Legacy(_) => None,
+        }
     }
 
     /// Smoothed RTT in ms (v2 only).

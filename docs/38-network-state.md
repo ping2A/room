@@ -6,7 +6,7 @@ The design is in `17-netplay-demos-saves.md` (lockstep model, demos, saves) and
 sheet: when a network change lands, update the matching section here and add a
 line to §11 in the same change.
 
-Last updated: 2026-11-09 (UZ12 + web prediction).
+Last updated: 2026-11-14 (web netplay clock: steady input, playout buffer).
 
 ## 1. At a glance
 
@@ -17,7 +17,7 @@ Last updated: 2026-11-09 (UZ12 + web prediction).
 | Native TCP relay | `room-net::{TcpRelayServer, TcpRelayClient}` | host relays (packet server) | 2–64 | same | same | same | none for Doom |
 | Native Duke | `room-app` + `room-duke` | any of the above | 2–8 | 1 | same | no | yes (`CS` extension, every peer) |
 | Web, legacy `FTRL` | `room-web`, `room-ws` | WebSocket relay | 2–8 | 0 | rebroadcast every 2 frames; fill after ~30 s, or 45 frames once a peer has left | on (`?predict=0` off) | none |
-| Web, protocol v2/v3 | `room-web`, `room-server`, `room-proto` | server-authoritative 35 Hz clock | 2–64 (Doom), 2–8 (Duke) | streamed `ceil((RTT+15 ms)/tic)` ahead, 1–10 tics | server repeats a late seat's command 3 tics, then neutral | on (`?predict=0` off) | server-side only when the verifier runs; clients send no CHECKSUM (§8) |
+| Web, protocol v2/v3 | `room-web`, `room-server`, `room-proto` | server-authoritative 35 Hz clock | 2–64 (Doom), 2–8 (Duke) | one command per tic of local time, `RTT + adaptive margin` ahead of the estimated server clock | adaptive playout buffer; server repeats a late seat's command 3 tics, then neutral; bots and seats that left are never waited for | on (`?predict=0` off) | server-side only when the verifier runs; clients send no CHECKSUM (§8) |
 | Spectators (v2) | `room-server::room::spectate` | server streams the frame log | ≤16 per room | — | catch-up fast-forward when >35 tics behind | — | — |
 
 Optional encryption: native `--noise` (Noise_XX, all native transports).
@@ -70,10 +70,34 @@ to v2/v3.
   `local_tic + delay`, rebroadcasts every 50 ms, and blocks until the full frame
   for the next tic arrives (error "lockstep stall" after 3 s).
 - **Web v2:** the server releases tic N no earlier than `start + N/35 s` and as soon
-  as every seat has sent it; a seat late by more than 30 ms gets its last command
-  repeated (weapon change cleared) for 3 tics, then a neutral one. The client
-  pings every 500 ms and streams input `ceil((RTT + 15 ms)/28.6 ms)` tics ahead of
-  the newest frame (1–10), at most 4 commands per frame.
+  as every *human* seat has sent it; a seat late by more than 30 ms gets its last
+  command repeated (weapon change cleared) for 3 tics, then a neutral one. Bot
+  seats (`fill_bots`) and seats whose player left mid-match are never waited for
+  (they are relayed as neutral commands).
+- **Web v2 client clock (`room-web/src/net_clock.rs`):** every frame's arrival
+  gives `arrival − tic × 28.6 ms`; the minimum (slowly rising) is the server's
+  tic 0 plus the fastest one-way trip on the local clock.
+  - *Input:* commands go out one per tic of local time for every tic below
+    `(now − origin + RTT + margin) / tic`, so input is steady instead of
+    clumping when frames arrive. `margin` = 8 ms + ¼ of the recent frame jitter
+    + a bump of 12 ms each time the server relayed a stand-in for one of our
+    commands (detected by comparing our command with the frame); bumps decay
+    3 ms/s. At most 16 tics past the newest frame, 8 commands per frame.
+  - *Playout:* the sim plays every tic up to `(now − origin − buffer) / tic` and
+    interpolates by the fraction; `buffer` = 4 ms + the recent peak frame
+    lateness + 10 ms per playout stall (decaying 3 ms/s), max 160 ms. The sim
+    runs at an even 35 Hz instead of stalling on a late frame and then running
+    two tics in one frame. At most 12 tics per frame (a tab back from the
+    background catches up over a few frames).
+  - Before the first frame, and for spectators, the old arrival pacing is used.
+  - `roomNetStats()` shows `inputMarginMs`, `playoutBufferMs`, `lateInputs`,
+    `playoutStalls`.
+  - `net_clock` tests simulate a 120 s match on 15±3, 40±12 and 70±25 ms links
+    (60 Hz rendering with frame-time noise, 1 % lag spikes) against the old
+    pacing: 3–14× fewer late commands, 3–39× fewer playout stalls, 2.5–8×
+    less jerk in the shown time and 8–14× steadier input. The price is 15–50 ms
+    more input lead on jittery links, hidden for the local player by
+    prediction.
 - **Web legacy:** delay 0, one outstanding command, rebroadcast every 2 frames.
 
 ## 5. Client prediction
@@ -93,8 +117,11 @@ confirmed pawn, so a wrong guess is corrected by the next confirmed tic.
 | Web v2 | commands sent but not yet in a frame (`NetPlay::unapplied_cmds`) | on | URL `?predict=0` |
 | Web legacy | the one outstanding command (`pending_local`) | on | URL `?predict=0` |
 
-On the web the predicted offset is applied on top of the interpolated confirmed
-eye, plus mouse movement not yet sent. With prediction off, the web client still
+On the web the predicted offset is applied on top of the **newest** confirmed
+eye (adding it to the interpolated eye made the view saw back and forth by a
+tic whenever a frame confirmed a pending command), glides between the last two
+pending commands by the input clock's fraction, and adds mouse movement not yet
+sent. With prediction off, the web client still
 previews unsent look (yaw / pitch), as before.
 
 Not predicted (the confirmed view is drawn instead): dead or spectating players,
@@ -156,6 +183,11 @@ speed changes.
 
 ## 11. Change log
 
+- 2026-11-14 — Web netplay clock (`net_clock`): input paced by local time with an
+  adaptive margin, adaptive playout buffer, late-command detection, prediction on
+  the newest confirmed eye with a glide; server stops waiting for bot seats and
+  seats that left; bot slots start past the highest occupied seat; late joins
+  refused in started bot games; `pings` control message (scoreboard PING column).
 - 2026-11-09 — Web client prediction (v2 and legacy, on by default); lobby and admin
   "Max players" fields accept 64.
 - 2026-11-09 — UZ12: 64 seats, protocol v3 wide frames, native client prediction

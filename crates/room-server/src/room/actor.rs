@@ -463,6 +463,8 @@ struct SeatSlot {
     pose: Option<PoseInspect>,
     /// Built-in TURN username issued for this seat (revoked on leave).
     turn_username: Option<String>,
+    /// Round trip the client last reported in its PING (ms).
+    rtt_ms: Option<u16>,
 }
 
 struct PendingV2 {
@@ -526,6 +528,8 @@ struct RoomState {
     quick_play_deadline: Option<Instant>,
     /// Human seat count at start (bots from this index).
     start_bot_first_seat: u8,
+    /// Last `pings` broadcast.
+    last_pings_at: Option<Instant>,
 }
 
 /// One seat's view of the match end (all honest seats send the same).
@@ -602,6 +606,7 @@ pub fn spawn_room(
             closed: false,
             quick_play_deadline: None,
             start_bot_first_seat: 0,
+            last_pings_at: None,
         };
         room_loop(&mut state, rx).await;
         state.registry.clear_quick_play_br(&id);
@@ -697,6 +702,7 @@ fn on_legacy_join(state: &mut RoomState, conn: ConnId, tx: PlayerTx, remote: Soc
             iwad_fingerprint: String::new(),
             pose: None,
             turn_username: None,
+            rtt_ms: None,
         },
     );
     state.conn_seat.insert(conn, seat);
@@ -983,6 +989,12 @@ fn v2_hello(state: &mut RoomState, conn: ConnId, h: HelloMsg) {
         send_reject_tx(&tx, "lobby_full", "lobby full");
         return;
     }
+    // Bot-filled games: every free slot became a bot at the start, so a late
+    // player would be steered by the bot brain. Watch instead.
+    if state.started && state.settings.fill_bots {
+        send_reject_tx(&tx, "in_progress", "match in progress with bots — spectate it or host another game");
+        return;
+    }
     let Some(seat) = free_seat(state) else {
         send_reject_tx(&tx, "lobby_full", "no free seat");
         return;
@@ -1043,9 +1055,11 @@ fn v2_hello(state: &mut RoomState, conn: ConnId, h: HelloMsg) {
             iwad_fingerprint: h.iwad_fingerprint.clone(),
             pose: None,
             turn_username: None,
+            rtt_ms: None,
         },
     );
     state.conn_seat.insert(conn, seat);
+    state.v2.set_seat_absent(seat, false);
     if state.settings.quick_play && state.quick_play_deadline.is_none() {
         state.quick_play_deadline =
             Some(Instant::now() + Duration::from_secs(state.cfg.quick_play_timeout_secs));
@@ -1568,7 +1582,7 @@ fn maybe_v2_start(state: &mut RoomState) {
                 slot.state = SeatState::Ready;
             }
         }
-        state.start_bot_first_seat = humans as u8;
+        state.start_bot_first_seat = first_bot_seat(state);
         do_v2_start(state);
         return;
     }
@@ -1585,7 +1599,7 @@ fn maybe_v2_start(state: &mut RoomState) {
         return;
     }
     if state.settings.fill_bots {
-        state.start_bot_first_seat = humans as u8;
+        state.start_bot_first_seat = first_bot_seat(state);
     }
     do_v2_start(state);
 }
@@ -1604,6 +1618,11 @@ fn do_v2_start(state: &mut RoomState) {
         .v2
         .set_grace(Duration::from_millis(state.cfg.stall_fill_ms));
     state.v2.reset_for_start();
+    if state.settings.fill_bots && state.settings.game != "duke3d" {
+        // Bot seats send nothing; without this every tic waited the stall
+        // grace for them (+30 ms input lag in bot-filled royale games).
+        state.v2.set_bot_seats(state.start_bot_first_seat);
+    }
     state.duke_v2.set_active_seats(state.settings.max_players);
     state
         .duke_v2
@@ -1796,8 +1815,13 @@ fn on_v2_binary(state: &mut RoomState, conn: ConnId, msg: BinaryMsg) {
         }
         BinaryMsg::Ping {
             nonce,
-            server_time_us: _,
+            server_time_us,
         } => {
+            if server_time_us > 0 {
+                if let Some(slot) = state.seats.get_mut(&seat) {
+                    slot.rtt_ms = Some(u16::try_from(server_time_us / 1000).unwrap_or(u16::MAX));
+                }
+            }
             if let Some(slot) = state.seats.get(&seat) {
                 if let Some(tx) = &slot.tx {
                     let _ = tx.try_send(pong_bytes(nonce));
@@ -1875,6 +1899,8 @@ fn on_leave(state: &mut RoomState, conn: ConnId, reason: LeaveReason) {
         return;
     }
     state.seats.remove(&seat);
+    // Nobody will send this seat's commands any more: stop waiting for them.
+    state.v2.set_seat_absent(seat, true);
     #[cfg(feature = "builtin-turn")]
     if let (Some(auth), Some(user)) = (&state.cfg.turn_auth, turn_user) {
         revoke_turn_user(&auth.registry, &user);
@@ -1885,8 +1911,34 @@ fn on_leave(state: &mut RoomState, conn: ConnId, reason: LeaveReason) {
     push_roster(state);
 }
 
+/// Broadcast every seat's reported ping (scoreboard), every 2 s in game.
+fn push_pings(state: &mut RoomState) {
+    let now = Instant::now();
+    if state.last_pings_at.is_some_and(|t| now.duration_since(t) < Duration::from_secs(2)) {
+        return;
+    }
+    state.last_pings_at = Some(now);
+    let seats: Vec<room_proto::SeatPing> = state
+        .seats
+        .iter()
+        .filter(|(_, s)| s.away_since.is_none())
+        .filter_map(|(&seat, s)| s.rtt_ms.map(|ms| room_proto::SeatPing { seat, ms }))
+        .collect();
+    if seats.is_empty() {
+        return;
+    }
+    if let Ok(s) = encode_control(&ControlMsg::Pings { seats }) {
+        let packet = Bytes::from(s.into_bytes());
+        broadcast_all(state, packet.clone());
+        broadcast_spectators(state, &packet);
+    }
+}
+
 fn on_tick(state: &mut RoomState) {
     expire_reserved(state);
+    if state.started {
+        push_pings(state);
+    }
     drain_verifier(state);
     if !state.started && state.settings.quick_play {
         maybe_v2_start(state);
@@ -2116,6 +2168,17 @@ fn free_seat(state: &RoomState) -> Option<u8> {
     (0..state.settings.max_players).find(|s| !state.seats.contains_key(s))
 }
 
+/// First seat the sims fill with bots: one past the highest seat a player
+/// holds (connected or reserved for resume). Counting players instead put a
+/// player in seat 1 under bot control whenever seat 0 sat empty or reserved.
+fn first_bot_seat(state: &RoomState) -> u8 {
+    state
+        .seats
+        .keys()
+        .max()
+        .map_or(0, |&s| s.saturating_add(1))
+}
+
 fn live_seat_count(state: &RoomState) -> usize {
     state
         .seats
@@ -2154,8 +2217,16 @@ fn expire_reserved(state: &mut RoomState) {
 }
 
 fn push_roster(state: &RoomState) {
+    let starts_in_ms = if state.started {
+        None
+    } else {
+        state.quick_play_deadline.map(|d| {
+            u32::try_from(d.saturating_duration_since(Instant::now()).as_millis()).unwrap_or(u32::MAX)
+        })
+    };
     let msg = ControlMsg::Roster {
         seats: roster_vec(state),
+        starts_in_ms,
     };
     if let Ok(s) = encode_control(&msg) {
         let packet = Bytes::from(s.into_bytes());

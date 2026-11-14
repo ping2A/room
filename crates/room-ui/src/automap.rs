@@ -279,7 +279,7 @@ pub fn draw_player_arrow(view: &AutomapView, list: &mut UiDrawList) {
 }
 
 /// `ML_DONTDRAW`, or every sector touching the line is UDMF `hidden`.
-fn line_hidden(map: &MapGeometry, line: &room_map::Line) -> bool {
+pub(crate) fn line_hidden(map: &MapGeometry, line: &room_map::Line) -> bool {
     if (line.flags & ML_DONTDRAW) != 0 {
         return true;
     }

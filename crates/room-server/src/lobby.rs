@@ -115,6 +115,9 @@ struct LobbyConfig {
     draining: bool,
     /// Default match length for new rooms (minutes).
     room_time_limit_mins: u16,
+    /// Seconds after the first player joins before a bot-fill room starts
+    /// with bots in the empty slots (Battle Royale, quick play).
+    bot_fill_secs: u64,
 }
 
 async fn lobby_config(State(state): State<AppState>) -> Json<LobbyConfig> {
@@ -124,6 +127,7 @@ async fn lobby_config(State(state): State<AppState>) -> Json<LobbyConfig> {
         node_id: cfg.node_id.clone(),
         draining: state.registry.is_draining(),
         room_time_limit_mins: cfg.room_time_limit_mins,
+        bot_fill_secs: cfg.quick_play_timeout_secs,
     })
 }
 

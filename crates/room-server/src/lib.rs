@@ -10,6 +10,7 @@ mod content;
 mod http;
 mod leaderboard;
 mod limits;
+mod load_plan;
 mod lobby;
 mod mods;
 mod names;

@@ -73,7 +73,7 @@ async fn late_spectator_gets_every_frame_from_tic0() {
     let mut names = Vec::new();
     loop {
         match next_control(&mut a).await {
-            ControlMsg::Roster { seats } if seats.len() == 2 => {
+            ControlMsg::Roster { seats, .. } if seats.len() == 2 => {
                 names = seats.into_iter().map(|s| s.name).collect();
             }
             ControlMsg::Start { .. } => break,

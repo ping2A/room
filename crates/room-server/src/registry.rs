@@ -411,6 +411,11 @@ impl RoomRegistry {
             "private" => "private".into(),
             _ => "public".into(),
         };
+        // A preset may fix the Doom mode; otherwise the request picks it.
+        let doom_deathmatch = match preset.as_ref().and_then(|p| p.doom_mode.as_deref()) {
+            Some(mode) => mode == "deathmatch",
+            None => req.doom_deathmatch,
+        };
         let (map, preset_title, content, iwad, preset_skill, duke_game_mode, duke_friendly_fire) =
             match preset {
                 Some(p) => (
@@ -445,7 +450,7 @@ impl RoomRegistry {
             max_players,
             duke_game_mode,
             duke_friendly_fire,
-            doom_deathmatch: req.doom_deathmatch && game == "doom",
+            doom_deathmatch: doom_deathmatch && game == "doom",
             visibility,
             enable_verifier: want_verifier,
             game_mod,

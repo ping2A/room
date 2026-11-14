@@ -653,11 +653,21 @@
           game.value = p?.game || game.value || "doom";
           game.dispatchEvent(new Event("change"));
         }
-        if (modeSel && p && p.game === "duke3d") {
-          modeSel.value = DUKE_MODE_VALUES[p.duke_game_mode ?? 1] || "coop";
+        // The preset may fix the game mode (Duke presets always do); then
+        // the mode list shows it and cannot be changed.
+        const fixedMode = !p ? null : p.game === "duke3d" ? DUKE_MODE_VALUES[p.duke_game_mode ?? 1] || "coop" : p.doom_mode || null;
+        if (modeSel) {
+          if (fixedMode) modeSel.value = fixedMode;
+          modeSel.disabled = !!fixedMode;
+          modeSel.title = fixedMode ? "Set by the preset" : "";
           modeSel.dispatchEvent(new Event("change"));
         }
-        if (friendlyFire && p) friendlyFire.checked = !!p.duke_friendly_fire;
+        if (friendlyFire && p) {
+          friendlyFire.checked = !!p.duke_friendly_fire;
+          friendlyFire.disabled = p.game === "duke3d";
+        } else if (friendlyFire) {
+          friendlyFire.disabled = false;
+        }
         const free = body.querySelector('input[name="map"]');
         if (free) free.required = !p;
         if (!p) {
@@ -717,7 +727,11 @@
         escapeHtml(state.config.room_time_limit_mins || 20) +
         '"/></label>' +
         '<label class="field"><span>Listing</span><select name="visibility"><option value="public">Public — shown on this page</option><option value="private">Private — join by game ID only</option></select></label>' +
-        '<div data-custom>' + picker.html + "</div>",
+        '<div data-custom>' + picker.html + "</div>" +
+        '<label class="field check" data-bots hidden><span><input type="checkbox" name="fill_bots" checked/> Fill empty slots with bots</span>' +
+        '<span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0.02em">The match starts ' +
+        escapeHtml(state.config.bot_fill_secs || 60) +
+        " s after the first player joins; bots take the slots nobody filled.</span></label>",
       onReady: (body) => {
         const game = body.querySelector('select[name="game"]');
         const mode = body.querySelector('select[name="mode"]');
@@ -753,6 +767,22 @@
         updateGame();
         picker.wire(body);
         presetPicker.wire(body);
+        // Battle Royale: offer bot fill (the deterministic room-sim bot brain).
+        const modSel = body.querySelector('select[name="mod"]');
+        const botsRow = body.querySelector("[data-bots]");
+        const presetSel = body.querySelector('select[name="preset"]');
+        const updateBots = () => {
+          const preset = presetSel ? pp.presets.find((x) => x.id === presetSel.value) : null;
+          const modName = preset ? preset.mod || "" : modSel ? modSel.value : "";
+          const g = preset ? preset.game : game ? game.value : "doom";
+          // Sim bots play Battle Royale and Doom deathmatch (they hunt players).
+          show(botsRow, g !== "duke3d" && (modName === "royale" || mode.value === "deathmatch"));
+        };
+        if (modSel) modSel.addEventListener("change", updateBots);
+        mode.addEventListener("change", updateBots);
+        if (game) game.addEventListener("change", updateBots);
+        if (presetSel) presetSel.addEventListener("change", updateBots);
+        updateBots();
       },
     });
     if (!data) return;
@@ -761,6 +791,16 @@
       const selectedPreset = pp.presets.find((p) => p.id === preset);
       const game = selectedPreset?.game || data.game || "doom";
       const doom = game !== "duke3d";
+      if (selectedPreset) {
+        // A mode fixed by the preset (disabled select) is not in the form data.
+        const fixed = selectedPreset.game === "duke3d"
+          ? DUKE_MODE_VALUES[selectedPreset.duke_game_mode ?? 1]
+          : selectedPreset.doom_mode;
+        if (fixed) data.mode = fixed;
+        if (selectedPreset.game === "duke3d") data.duke_friendly_fire = !!selectedPreset.duke_friendly_fire;
+      }
+      const royale = doom && (selectedPreset ? selectedPreset.mod === "royale" : data.mod === "royale");
+      const botGame = royale || (doom && data.mode === "deathmatch");
       const created = await api("/api/rooms", {
         method: "POST",
         body: JSON.stringify({
@@ -774,6 +814,9 @@
           duke_game_mode: Math.max(0, DUKE_MODE_VALUES.indexOf(data.mode || "coop")),
           duke_friendly_fire: data.mode === "coop" && !!data.duke_friendly_fire,
           doom_deathmatch: doom && data.mode === "deathmatch",
+          // Royale bot fill: start on a timer after the first join, bots in empty slots.
+          fill_bots: botGame && data.fill_bots === true,
+          quick_play: botGame && data.fill_bots === true,
           mod: doom && !preset ? data.mod || undefined : undefined,
           packs: doom && !preset && data.voxel ? ["voxel"] : [],
         }),

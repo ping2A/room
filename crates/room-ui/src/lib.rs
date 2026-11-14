@@ -19,6 +19,7 @@ mod menu;
 mod menudef_runtime;
 mod messages;
 mod mod_hud;
+mod mod_map;
 mod mod_zones;
 mod patches;
 mod sbarinfo_draw;

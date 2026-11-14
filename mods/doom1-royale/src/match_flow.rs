@@ -4,19 +4,15 @@ use room_script_sdk::game::{self, actor_f64, player_prop, rule, Actor, Event, Ro
 use room_script_sdk::ClassRef;
 
 use crate::combat::CombatHud;
-use crate::death::{drop_death_loot, DeathExperience};
+use crate::death::DeathExperience;
 use crate::drop_select::{self, DropSelect};
-use crate::extras::LootExtras;
-use crate::loot::LootCtx;
 use crate::host::{Host, SdkHost};
-use crate::rarity::{Rarity, RarityTable};
 use crate::tables::{
-    DEPLOY_SECS, DROP_SELECT_SECS, END_SECS, FRAG_HEAL, GRACE_SECS, ITEM_CLASSES, MAX_PLAYERS,
-    MAX_SPOTS, PREGAME_COUNTDOWN_SECS, TICRATE,
+    Item, DEPLOY_SECS, DROP_SELECT_SECS, END_SECS, FRAG_HEAL, GRACE_SECS, ITEM_CLASSES,
+    MAX_LOOT, MAX_PLAYERS, MAX_SPOTS, PREGAME_COUNTDOWN_SECS, TICRATE,
 };
 use crate::tell;
 use crate::moments::{self, Moments};
-use crate::teams::Squads;
 use crate::zone::{
     clear_render_zone, compass, dist2, publish_render_zone, zone_damage, ZoneRuntime,
 };
@@ -40,16 +36,21 @@ pub struct Royale {
     pub(crate) dm_taken: [bool; 32],
     /// Spot taken by a placed player.
     pub(crate) taken: [bool; MAX_SPOTS],
+    /// Where the map's own pickups were (removed on load).
+    pub(crate) item_spots: [[f64; 3]; MAX_SPOTS],
+    pub(crate) nitem_spots: usize,
+    /// Loot plan: what goes where (spawned at deploy).
+    pub(crate) loot: [(Item, [f64; 3]); MAX_LOOT],
+    pub(crate) nloot: usize,
+    /// Guns the mod spawned (anything else is an engine death drop).
+    pub(crate) loot_guns: [Actor; MAX_LOOT],
+    pub(crate) nloot_guns: usize,
     pub(crate) items: [ClassRef; ITEM_CLASSES.len()],
     pub(crate) pistol: ClassRef,
     pub(crate) clip: ClassRef,
     pub(crate) fog: ClassRef,
-    pub(crate) supply_crate: ClassRef,
-    pub(crate) rarity: RarityTable,
-    pub(crate) extras: LootExtras,
     pub(crate) placed: [[f64; 2]; MAX_PLAYERS],
     pub(crate) nplaced: usize,
-    looted: bool,
     /// Player was in the map when the round started.
     pub(crate) contender: [bool; MAX_PLAYERS],
     drop: DropSelect,
@@ -76,7 +77,6 @@ pub struct Royale {
     ended: bool,
     pub(crate) combat: CombatHud,
     death: DeathExperience,
-    squads: Squads,
     moments: Moments,
     deploy_tic: i32,
 }
@@ -90,16 +90,18 @@ impl Default for Royale {
             ndm: 0,
             dm_taken: [false; 32],
             taken: [false; MAX_SPOTS],
+            item_spots: [[0.0; 3]; MAX_SPOTS],
+            nitem_spots: 0,
+            loot: [(Item::Shell, [0.0; 3]); MAX_LOOT],
+            nloot: 0,
+            loot_guns: [Actor::NULL; MAX_LOOT],
+            nloot_guns: 0,
             items: [ClassRef::NULL; ITEM_CLASSES.len()],
             pistol: ClassRef::NULL,
             clip: ClassRef::NULL,
             fog: ClassRef::NULL,
-            supply_crate: ClassRef::NULL,
-            rarity: RarityTable::default(),
-            extras: LootExtras::default(),
             placed: [[0.0; 2]; MAX_PLAYERS],
             nplaced: 0,
-            looted: false,
             contender: [false; MAX_PLAYERS],
             out: [false; MAX_PLAYERS],
             zone_hit: [i32::MIN / 2; MAX_PLAYERS],
@@ -123,7 +125,6 @@ impl Default for Royale {
             combat: CombatHud::default(),
             death: DeathExperience::default(),
             drop: DropSelect::default(),
-            squads: Squads::default(),
             moments: Moments::default(),
             deploy_tic: 0,
         }
@@ -173,6 +174,10 @@ impl Royale {
         self.nplaced = 0;
         self.dm_taken = [false; 32];
         self.taken = [false; MAX_SPOTS];
+        let mut loot_spot = [false; MAX_SPOTS];
+        for i in 0..self.nspots {
+            loot_spot[i] = self.is_loot_spot(crate::zone::xy(self.spots[i]));
+        }
         let picks = self.drop.pick;
         let contender = self.contender;
         for s in 0..MAX_PLAYERS {
@@ -191,13 +196,27 @@ impl Royale {
                 others[n] = picks[j];
                 n += 1;
             }
-            let spot = drop_select::resolve_drop(
-                picks[s],
-                &self.spots,
-                self.nspots,
-                &others[..n],
-                &self.taken,
-            );
+            // Land next to loot when there is a free spot near the pick;
+            // else on the loot itself (a hot drop).
+            let mut blocked = self.taken;
+            for i in 0..self.nspots {
+                blocked[i] |= loot_spot[i];
+            }
+            let near = |spot: [f64; 3]| {
+                crate::zone::dist2(crate::zone::xy(spot), picks[s])
+                    <= crate::tables::DROP_RESOLVE_RADIUS * crate::tables::DROP_RESOLVE_RADIUS
+            };
+            let mut spot =
+                drop_select::resolve_drop(picks[s], &self.spots, self.nspots, &others[..n], &blocked);
+            if !near(spot) {
+                spot = drop_select::resolve_drop(
+                    picks[s],
+                    &self.spots,
+                    self.nspots,
+                    &others[..n],
+                    &self.taken,
+                );
+            }
             drop_select::mark_spot_taken(&self.spots, self.nspots, &mut self.taken, spot);
             self.teleport_player(host, body, spot, self.center);
             if self.nplaced < MAX_PLAYERS {
@@ -209,6 +228,7 @@ impl Royale {
 
     fn begin_deploy<H: Host>(&mut self, host: &mut H, t: i32) {
         self.deploy_from_drops(host);
+        self.spawn_loot(host);
         self.phase = MatchPhase::Deploy;
         self.phase_until = t + DEPLOY_SECS * TICRATE;
         self.apply_landing_shield(host, self.phase_until);
@@ -225,10 +245,6 @@ impl Royale {
         // Loot guns must despawn after pickup (docs/30 N6).
         host.set_rule(rule::WEAPON_STAY, 0);
         self.clear_landing_shields(host);
-        if !self.looted {
-            self.looted = true;
-            self.drop_loot(host);
-        }
         tell!(host, None, "The zone closes in {}s", GRACE_SECS);
     }
 
@@ -252,6 +268,8 @@ impl Royale {
                 if t >= self.countdown_end {
                     self.phase = MatchPhase::DropSelect;
                     self.phase_until = t + DROP_SELECT_SECS * TICRATE;
+                    self.plan_loot(host);
+                    crate::ui::clear_all();
                     self.drop.begin(
                         host,
                         &self.contender,
@@ -308,29 +326,27 @@ impl Royale {
         self.pistol = host.class_find("Pistol");
         self.clip = host.class_find("Clip");
         self.fog = host.class_find("TeleportFog");
-        self.supply_crate = host.class_find("SupplyCrate");
-        self.rarity.resolve(host);
         self.clear_monsters(host);
+        self.clear_map_pickups(host);
+        for i in 0..self.nitem_spots {
+            let s = self.item_spots[i];
+            self.push_spot(host, s[0], s[1]);
+        }
         self.read_starts(host);
         self.pick_zone(host);
         self.zone_rt = ZoneRuntime::new(self.center, self.r0);
-        self.extras.reset();
-        self.extras
-            .place_vault(host, self.center, &self.spots, self.nspots);
-        self.extras.on_loaded_markers();
         self.death.reset();
         self.moments.reset();
         self.deploy_tic = 0;
         for s in 0..MAX_PLAYERS {
             self.contender[s] = host.player(s as i32).is_some();
         }
-        self.squads.on_loaded(host, &self.contender);
         let n = self.contenders();
         if n >= 2 {
             tell!(
                 host,
                 None,
-                "BATTLE ROYALE - {} players. No guns: loot the map!",
+                "BATTLE ROYALE - {} players. Weapons are scattered across the map!",
                 n
             );
             tell!(host, None, "Last one standing wins.");
@@ -398,7 +414,6 @@ impl Royale {
             &self.contender,
             &self.death,
             &self.combat,
-            &self.squads,
             self.deploy_tic,
             t,
             winner,
@@ -470,11 +485,15 @@ impl Royale {
             &self.combat,
             t,
         );
-        self.squads
-            .tick(host, &self.contender, &self.out, t);
         if self.phase == MatchPhase::DropSelect {
+            let mut guns = [(Item::Shotgun, [0.0; 3]); MAX_LOOT];
+            let mut ng = 0usize;
+            for g in self.planned_guns() {
+                guns[ng] = g;
+                ng += 1;
+            }
             self.drop
-                .draw(host, &self.contender, t, self.phase_until);
+                .draw(host, &self.contender, t, self.phase_until, &guns[..ng]);
         }
         if t % 5 == 0 {
             self.draw_hud(host, t);
@@ -491,23 +510,10 @@ impl Royale {
                         t_rel,
                     );
                 }
-                let ctx = LootCtx::from_royale(self);
-                self.extras.tick(
-                    host,
-                    &ctx,
-                    t,
-                    t_rel,
-                    &self.contender,
-                    &self.zone_rt,
-                    &self.spots,
-                    self.nspots,
-                    self.supply_crate,
-                );
             }
         }
         self.moments.tick_announcer(host, t);
         if self.over {
-            self.extras.on_match_over();
             clear_render_zone(host);
             if !self.ended {
                 self.moments.tick_resolution(self.winner, t);
@@ -610,21 +616,7 @@ impl Royale {
             .player(victim as i32)
             .map(|b| host.actor_pos(b))
             .unwrap_or([0.0; 3]);
-        if let Some(body) = host.player(victim as i32) {
-            let pos = host.actor_pos(body);
-            drop_death_loot(host, self, body, self.pistol, self.clip);
-            if let Some(k) = source
-                .and_then(|s| host.actor_player(s))
-                .map(|k| k as usize)
-                && k != victim
-            {
-                self.extras.mark_death_loot(
-                    k,
-                    pos,
-                    t + crate::extras::DEATH_MARKER_SECS * TICRATE,
-                );
-            }
-        }
+        self.remove_dropped_weapons(host);
         self.out[victim] = true;
         let left = self.alive();
         let killer_seat = source.and_then(|s| host.actor_player(s).map(|k| k as usize));
@@ -710,6 +702,23 @@ impl Royale {
         }
     }
 
+    /// The engine drops a dead player's weapon where they died (vanilla
+    /// `P_DropWeapon`); this mode drops nothing, so every weapon the mod did
+    /// not place goes.
+    fn remove_dropped_weapons<H: Host>(&self, host: &mut H) {
+        let weapon = host.class_find("Weapon");
+        if weapon.is_null() {
+            return;
+        }
+        let mut found = [Actor::NULL; 256];
+        let n = host.actors_of_class(weapon, true, &mut found).min(found.len());
+        for &a in &found[..n] {
+            if !self.loot_guns[..self.nloot_guns].contains(&a) {
+                host.actor_destroy(a);
+            }
+        }
+    }
+
     fn draw_hud<H: Host>(&mut self, host: &mut H, t: i32) {
         if self.over {
             self.combat.clear_widgets();
@@ -736,36 +745,6 @@ impl Royale {
         frame.draw(host);
     }
 
-    pub(crate) fn on_item_pickup<H: Host>(&mut self, host: &mut H, toucher: Actor, item: ClassRef) {
-        let Some(seat) = host.actor_player(toucher) else {
-            return;
-        };
-        let label = self.rarity_label(item);
-        if !label.is_empty() {
-            tell!(host, Some(seat), "{label} pickup");
-        }
-    }
-
-    fn rarity_label(&self, item: ClassRef) -> &'static str {
-        for (base_i, tiers) in self.rarity.classes.iter().enumerate() {
-            for (r_i, &cls) in tiers.iter().enumerate() {
-                if cls == item && r_i > 0 {
-                    return Rarity::LABELS[r_i];
-                }
-            }
-            let _ = base_i;
-        }
-        if self
-            .rarity
-            .classes
-            .iter()
-            .any(|tiers| tiers[0] == item)
-        {
-            return Rarity::Common.label();
-        }
-        ""
-    }
-
     pub(crate) fn on_thing_damaged<H: Host>(
         &mut self,
         host: &mut H,
@@ -780,7 +759,6 @@ impl Royale {
         }
         self.combat
             .on_thing_damaged(host, thing, source, damage, health, t);
-        self.squads.on_damaged(host, thing, source, health, t);
     }
 }
 
@@ -790,12 +768,7 @@ impl RoomMod for Royale {
         | event_mask::WORLD_TICK
         | event_mask::WORLD_THING_DIED
         | event_mask::WORLD_THING_DAMAGED
-        | event_mask::WORLD_ITEM_PICKUP
         | event_mask::PLAYER_ENTERED;
-
-    fn register(&mut self) {
-        crate::register::register_loot_classes();
-    }
 
     fn on_event(&mut self, event: Event) {
         let mut host = SdkHost;
@@ -821,9 +794,6 @@ impl RoomMod for Royale {
             } => {
                 let t = host.maptime();
                 self.on_thing_damaged(&mut host, thing, source, damage, health, t);
-            }
-            Event::ItemPickup { toucher, item } => {
-                self.on_item_pickup(&mut host, toucher, item);
             }
             _ => {}
         }

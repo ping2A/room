@@ -102,6 +102,10 @@ pub struct Preset {
     /// Atomic Duke `ud.ffire`.
     #[serde(default)]
     pub duke_friendly_fire: bool,
+    /// Doom netgame mode fixed by the preset: `coop` or `deathmatch`.
+    /// `None`: the player picks it in *Host game*.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doom_mode: Option<String>,
 }
 
 fn default_preset_game() -> String {
@@ -151,6 +155,9 @@ pub struct PublicPreset {
     pub duke_game_mode: u8,
     /// Atomic Duke friendly-fire setting.
     pub duke_friendly_fire: bool,
+    /// Doom mode fixed by the preset (`coop` / `deathmatch`); absent = player's choice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doom_mode: Option<String>,
     /// Total download size (bytes).
     pub download_bytes: u64,
 }
@@ -185,6 +192,8 @@ pub struct ResolvedPreset {
     pub duke_game_mode: u8,
     /// Atomic Duke friendly-fire setting.
     pub duke_friendly_fire: bool,
+    /// Doom mode fixed by the preset; `None` = the request's choice.
+    pub doom_mode: Option<String>,
 }
 
 /// The library and presets of this node.
@@ -195,6 +204,9 @@ pub struct ContentStore {
     max_bytes: u64,
     entries: RwLock<BTreeMap<String, ContentEntry>>,
     presets: RwLock<PresetConfig>,
+    /// File → (fingerprint, contents) for load plans.
+    profiles:
+        std::sync::Mutex<BTreeMap<String, (String, std::sync::Arc<crate::load_plan::Profile>)>>,
 }
 
 impl ContentStore {
@@ -355,6 +367,23 @@ impl ContentStore {
         Ok(())
     }
 
+    /// What a library file contains (cached per fingerprint; reads the file
+    /// the first time, so call it off the async runtime).
+    #[must_use]
+    pub fn profile(&self, file: &str) -> Option<std::sync::Arc<crate::load_plan::Profile>> {
+        let entry = self.get(file)?;
+        let lock = || self.profiles.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((fp, p)) = lock().get(file)
+            && *fp == entry.fingerprint
+        {
+            return Some(p.clone());
+        }
+        let path = self.path_of(file)?;
+        let p = std::sync::Arc::new(crate::load_plan::profile_path(&path));
+        lock().insert(file.to_owned(), (entry.fingerprint, p.clone()));
+        Some(p)
+    }
+
     /// Current presets.
     #[must_use]
     pub fn presets(&self) -> PresetConfig {
@@ -386,6 +415,16 @@ impl ContentStore {
                         "{}: Duke multiplayer mode must be 0, 1, or 2",
                         p.title
                     ));
+                }
+                p.doom_mode = p
+                    .doom_mode
+                    .take()
+                    .map(|m| m.trim().to_ascii_lowercase())
+                    .filter(|m| !m.is_empty());
+                if let Some(m) = &p.doom_mode {
+                    if !matches!(m.as_str(), "coop" | "deathmatch") {
+                        return Err(format!("{}: Doom mode must be coop or deathmatch", p.title));
+                    }
                 }
                 if !room_proto::is_valid_mod_name(&p.id) {
                     return Err(format!("preset id {:?}: use a-z 0-9 _ - (1–32)", p.id));
@@ -503,6 +542,7 @@ impl ContentStore {
                     skill: p.skill,
                     duke_game_mode: p.duke_game_mode,
                     duke_friendly_fire: p.duke_friendly_fire,
+                    doom_mode: p.doom_mode.clone(),
                     download_bytes,
                 })
             })
@@ -553,6 +593,7 @@ impl ContentStore {
             skill: p.skill,
             duke_game_mode: p.duke_game_mode,
             duke_friendly_fire: p.duke_friendly_fire,
+            doom_mode: p.doom_mode,
         })
     }
 
@@ -851,6 +892,7 @@ mod tests {
                 skill: 4,
                 duke_game_mode: 1,
                 duke_friendly_fire: false,
+                doom_mode: None,
             }],
         };
         store.set_presets(cfg, &|_| false).unwrap();

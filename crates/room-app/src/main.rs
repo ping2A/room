@@ -5344,6 +5344,7 @@ impl ViewerApp {
                             y: f64::from(self.camera.eye.y),
                             yaw_deg: f64::from(self.yaw.to_degrees()),
                             scale: 1024.0,
+                            z: f64::from(self.camera.eye.z),
                         });
                         draw_mod_hud_layer(
                             &world.mod_hud,

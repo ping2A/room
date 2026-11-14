@@ -1,4 +1,4 @@
-//! Loot tables, timings, and weighted picks.
+//! Loot counts and timings.
 //!
 //! Balance (`docs/28` §6.2–6.3): loot grace matches the §5 loot phase; zone rows
 //! follow the published hold/shrink/damage table; gun spacing and caps scale for
@@ -21,18 +21,38 @@ pub const DROP_PICK_SEP: f64 = 256.0;
 pub const DEPLOY_SECS: i32 = 3;
 /// Legacy delay before shells; resolution uses victory + standings MODALs (BR7).
 pub const END_SECS: i32 = 7;
-/// Loot never drops this close to where a player was placed.
-pub const LOOT_CLEARANCE: f64 = 96.0;
-/// Two guns never drop closer than this; the later one becomes its ammo.
+/// Guns are placed at least this far apart when the map has room.
 pub const GUN_SPACING: f64 = 448.0;
-/// Rocket launchers on the map (centre forced drop counts toward this).
-pub fn rocket_cap(players: usize) -> usize {
-    players.div_ceil(2)
+/// Weapons placed once per match (scaled to the number of contenders, at
+/// least 2). Nothing is dropped or added afterwards.
+pub fn gun_counts(players: usize) -> [(Item, usize); 4] {
+    let p = players.max(2);
+    [
+        (Item::RocketLauncher, p.div_ceil(4)),
+        (Item::Chaingun, p.div_ceil(2)),
+        (Item::Shotgun, p),
+        (Item::Chainsaw, 1),
+    ]
 }
-/// Chainguns from weighted loot (shotguns-per-player are forced separately).
-pub fn chaingun_cap(players: usize) -> usize {
-    players.saturating_sub(1).max(2)
+
+/// Ammo, health and armour placed alongside the guns.
+pub fn supply_counts(players: usize) -> [(Item, usize); 8] {
+    let p = players.max(2);
+    [
+        (Item::Shell, p),
+        (Item::Stimpack, p),
+        (Item::Clip, p),
+        (Item::ArmorBonus, p),
+        (Item::Medikit, p.div_ceil(2)),
+        (Item::GreenArmor, p.div_ceil(2)),
+        (Item::RocketAmmo, p.div_ceil(4)),
+        (Item::Berserk, 1),
+    ]
 }
+
+/// Most loot pieces a match places.
+pub const MAX_LOOT: usize = 96;
+
 /// Health for a frag.
 pub const FRAG_HEAL: i32 = 25;
 
@@ -100,7 +120,7 @@ pub fn secs_until_first_shrink() -> i32 {
     GRACE_SECS + ZONE_ROWS[0].hold_secs
 }
 
-/// Every item the mod drops (all present in shareware Doom).
+/// Every item the mod places (all present in shareware Doom).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Item {
@@ -109,34 +129,39 @@ pub enum Item {
     RocketLauncher,
     Chainsaw,
     Shell,
-    ShellBox,
     Clip,
-    ClipBox,
     RocketAmmo,
     Stimpack,
     Medikit,
     GreenArmor,
     ArmorBonus,
-    HealthBonus,
     Berserk,
 }
 
-pub const ITEM_CLASSES: [&str; 15] = [
+pub const ITEM_CLASSES: [&str; 12] = [
     "Shotgun",
     "Chaingun",
     "RocketLauncher",
     "Chainsaw",
     "Shell",
-    "ShellBox",
     "Clip",
-    "ClipBox",
     "RocketAmmo",
     "Stimpack",
     "Medikit",
     "GreenArmor",
     "ArmorBonus",
-    "HealthBonus",
     "Berserk",
+];
+
+/// Doom editor numbers of every pickup a map can hold (weapons, ammo,
+/// health, armour, powerups; keys excluded). Their spots are where the
+/// mapper put items, so players can reach them.
+pub const PICKUP_EDNUMS: [i32; 30] = [
+    2001, 82, 2002, 2003, 2004, 2005, 2006, // weapons
+    2007, 2048, 2008, 2049, 2010, 2046, 2047, 17, 8, // ammo, backpack
+    2011, 2012, 2014, 2013, 83, // health
+    2015, 2018, 2019, // armour
+    2022, 2023, 2024, 2025, 2026, 2045, // powerups
 ];
 
 impl Item {
@@ -159,84 +184,17 @@ impl Item {
     }
 }
 
-/// Loot tables by distance to the zone centre: (item, weight).
-pub static INNER: [(Item, i32); 9] = [
-    (Item::RocketLauncher, 2),
-    (Item::Chaingun, 5),
-    (Item::Shotgun, 4),
-    (Item::ShellBox, 5),
-    (Item::ClipBox, 4),
-    (Item::RocketAmmo, 4),
-    (Item::Medikit, 6),
-    (Item::GreenArmor, 5),
-    (Item::Berserk, 2),
-];
-pub static MIDDLE: [(Item, i32); 10] = [
-    (Item::Shotgun, 8),
-    (Item::Chaingun, 5),
-    (Item::Shell, 8),
-    (Item::Clip, 7),
-    (Item::ClipBox, 4),
-    (Item::RocketAmmo, 2),
-    (Item::Stimpack, 7),
-    (Item::Medikit, 4),
-    (Item::ArmorBonus, 5),
-    (Item::GreenArmor, 2),
-];
-pub static OUTER: [(Item, i32); 7] = [
-    (Item::Shotgun, 7),
-    (Item::Chainsaw, 3),
-    (Item::Shell, 10),
-    (Item::Clip, 10),
-    (Item::Stimpack, 9),
-    (Item::ArmorBonus, 7),
-    (Item::HealthBonus, 7),
-];
-
-/// Weighted pick from `table` with `roll` in `0..sum(weights)`.
-pub fn pick(table: &[(Item, i32)], mut roll: i32) -> Item {
-    for &(item, w) in table {
-        if roll < w {
-            return item;
-        }
-        roll -= w;
-    }
-    table[0].0
-}
-
-pub fn total(table: &[(Item, i32)]) -> i32 {
-    table.iter().map(|&(_, w)| w).sum()
-}
-
-/// Loot table for the spot ranked `rank` of `n` by distance to the centre.
-pub fn tier(rank: usize, n: usize) -> &'static [(Item, i32)] {
-    if rank * 4 < n {
-        &INNER
-    } else if rank * 3 < n * 2 {
-        &MIDDLE
-    } else {
-        &OUTER
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn strong_guns_live_in_the_inner_ring() {
-        let has = |t: &[(Item, i32)], i: Item| t.iter().any(|&(x, _)| x == i);
-        assert!(core::ptr::eq(tier(0, 100), INNER.as_slice()));
-        assert!(core::ptr::eq(tier(50, 100), MIDDLE.as_slice()));
-        assert!(core::ptr::eq(tier(99, 100), OUTER.as_slice()));
-        assert!(has(&INNER, Item::RocketLauncher));
-        assert!(!has(&MIDDLE, Item::RocketLauncher) && !has(&OUTER, Item::RocketLauncher));
-        assert!(!has(&OUTER, Item::Chaingun));
-        for t in [&INNER[..], &MIDDLE[..], &OUTER[..]] {
-            let sum = total(t);
-            assert_eq!(pick(t, 0), t[0].0);
-            assert_eq!(pick(t, sum - 1), t[t.len() - 1].0);
-        }
+    fn loot_scales_with_players() {
+        let guns = |p| gun_counts(p).iter().map(|&(_, n)| n).sum::<usize>();
+        assert_eq!(guns(2), 1 + 1 + 2 + 1);
+        assert_eq!(guns(8), 2 + 4 + 8 + 1);
+        let total = |p| guns(p) * 2 + supply_counts(p).iter().map(|&(_, n)| n).sum::<usize>();
+        assert!(total(8) <= MAX_LOOT, "{}", total(8));
     }
 
     #[test]
@@ -245,7 +203,7 @@ mod tests {
         assert!(Item::RocketLauncher.ammo() == Some(Item::RocketAmmo));
         assert!(Item::Chainsaw.ammo().is_none() && Item::Chainsaw.is_gun());
         assert_eq!(ITEM_CLASSES[Item::Berserk as usize], "Berserk");
-        assert_eq!(ITEM_CLASSES[Item::HealthBonus as usize], "HealthBonus");
+        assert_eq!(ITEM_CLASSES[Item::Medikit as usize], "Medikit");
     }
 
     #[test]

@@ -13,7 +13,7 @@ use room_nodebuild::ensure_nodes;
 use room_sim::mod_hud::{WidgetKey, kind, layer};
 use room_sim::script_mods::ModSource;
 use room_sim::{
-    ActorId, Buttons, MatchOver, MessageTo, PlayerState, TicCmd, World, count_inventory,
+    ActorId, Buttons, MatchOver, MessageTo, PlayerState, TicCmd, World,
     give_inventory,
 };
 use room_testkit::{MapBuilder, rect};
@@ -272,9 +272,9 @@ fn mod_hud_shows_alive_and_zone_after_pregame() {
         royale_widget(w, 0, 1).map(|x| &x.text)
     );
     assert!(
-        hud_text_has(w, 0, 1, "KILLS"),
+        hud_text_has(w, 0, 4, "KILLS"),
         "seat0 kills: {:?}",
-        royale_widget(w, 0, 1).map(|x| &x.text)
+        royale_widget(w, 0, 4).map(|x| &x.text)
     );
     assert!(
         hud_text_has(w, 0, 2, "ZONE IN"),
@@ -320,10 +320,6 @@ fn royale_clears_monsters_strips_guns_and_scatters_players() {
     assert_eq!(alive_monsters(w), 0, "no enemies");
     assert!(!w.deathmatch, "pregame: no PvP yet");
     assert!(w.no_player_respawn);
-    past_pregame(&mut game, &cmds, &mut msgs);
-    let w = game.world().unwrap();
-    assert!(w.deathmatch);
-    assert!(loot_count(w) > before, "loot dropped on monster spots");
     let fist = w.classes.find_name("Fist");
     for slot in 0..2 {
         assert!(!owns(w, slot, "Pistol"), "seat {slot} has no pistol");
@@ -331,6 +327,11 @@ fn royale_clears_monsters_strips_guns_and_scatters_players() {
         assert!(owns(w, slot, "Fist"));
         assert_eq!(w.players[slot].as_ref().unwrap().ready_weapon, fist);
     }
+    assert_eq!(loot_count(w), 0, "no loot before the drop");
+    past_pregame(&mut game, &cmds, &mut msgs);
+    let w = game.world().unwrap();
+    assert!(w.deathmatch);
+    assert!(loot_count(w) > before, "loot placed on monster spots");
     let (a, b) = (
         w.actors.get(body(w, 0)).unwrap().pos,
         w.actors.get(body(w, 1)).unwrap().pos,
@@ -426,7 +427,7 @@ fn players_hurt_each_other_and_the_last_one_standing_wins() {
 }
 
 #[test]
-fn players_spawn_on_deathmatch_starts_and_every_gun_has_ammo() {
+fn loot_is_limited_and_every_gun_has_ammo() {
     let mut game = start(arena_with(true), 2, true);
     let mut msgs = Vec::new();
     past_pregame(&mut game, &[TicCmd::default(); 2], &mut msgs);
@@ -440,16 +441,15 @@ fn players_spawn_on_deathmatch_starts_and_every_gun_has_ammo() {
         flat(spawns[0], spawns[1]) > 200.0,
         "players apart after drop deploy"
     );
-    // Two players: one rocket launcher, at the drop nearest the zone centre.
-    assert_eq!(items_of(w, "RocketLauncher").len(), 1);
-    // Everyone has a shotgun close to their start.
-    let shotguns = items_of(w, "Shotgun");
-    for (slot, &p) in spawns.iter().enumerate() {
-        let near = shotguns
-            .iter()
-            .map(|&g| flat(g, p))
-            .fold(f64::MAX, f64::min);
-        assert!(near < 1100.0, "seat {slot}: nearest shotgun {near}");
+    // Two players: a fixed, limited set of guns (picked up or on the map).
+    for (gun, want) in [
+        ("RocketLauncher", 1),
+        ("Chaingun", 1),
+        ("Shotgun", 2),
+        ("Chainsaw", 1),
+    ] {
+        let owned = (0..2).filter(|&s| owns(w, s, gun)).count();
+        assert_eq!(items_of(w, gun).len() + owned, want, "{gun}");
     }
     for (gun, ammo) in [
         ("Shotgun", "Shell"),
@@ -558,53 +558,33 @@ fn the_zone_closes_and_hurts_players_outside() {
 }
 
 #[test]
-fn supply_drop_announces_lands_and_opens_with_use() {
+fn no_supply_drops_or_new_loot_during_the_match() {
     let mut game = start(arena(), 2, true);
     let mut msgs = Vec::new();
     let idle = [TicCmd::default(); 2];
     past_pregame(&mut game, &idle, &mut msgs);
-    run(&mut game, 45 * 35 + 5, &idle, &mut msgs);
-    assert!(msgs.iter().any(|m| m == "SUPPLY DROP INBOUND"), "{msgs:?}");
-    assert!(msgs.iter().any(|m| m == "Supply crate landed"), "{msgs:?}");
-    let crates = items_of(game.world().unwrap(), "SupplyCrate");
-    assert_eq!(crates.len(), 1, "one supply crate");
-    let c = crates[0];
-    {
-        let w = game.world_mut().unwrap();
-        tele_flat(w, 0, c.x(), c.y());
-    }
-    let mut cmds = [TicCmd::default(); 2];
-    cmds[0].buttons = Buttons(Buttons::USE);
-    for _ in 0..80 {
-        game.tick(&cmds);
-        if let Some(w) = game.world_mut() {
-            msgs.extend(w.drain_messages());
-        }
-    }
-    assert!(msgs.iter().any(|m| m == "SUPPLY OPENED"), "{msgs:?}");
+    let placed = loot_count(game.world().unwrap());
+    run(&mut game, 90 * 35, &idle, &mut msgs);
     let w = game.world().unwrap();
-    let mo = body(w, 0);
-    let legendary = w.classes.find_name("LegendaryChaingun");
-    let picked_legendary = legendary.is_some_and(|c| count_inventory(w, mo, c) > 0);
     assert!(
-        picked_legendary
-            || !items_of(w, "LegendaryChaingun").is_empty()
-            || !items_of(w, "LegendaryGreenArmor").is_empty(),
-        "legendary loot from supply (picked={picked_legendary})"
+        !msgs.iter().any(|m| m.to_ascii_lowercase().contains("supply")),
+        "{msgs:?}"
     );
+    assert!(w.classes.find_name("SupplyCrate").is_none());
+    assert!(loot_count(w) <= placed, "nothing added after the start");
 }
 
 #[test]
-fn death_drops_victim_weapons_as_loot() {
+fn a_dead_player_drops_nothing() {
     let mut game = start(arena(), 2, true);
     let mut msgs = Vec::new();
     let idle = [TicCmd::default(); 2];
     past_pregame(&mut game, &idle, &mut msgs);
-    let death_pos = {
+    let before = {
         let w = game.world_mut().unwrap();
         let shotgun = w.classes.find_name("Shotgun").unwrap();
         give_inventory(w, body(w, 0), shotgun, 1);
-        w.actors.get(body(w, 0)).unwrap().pos
+        loot_count(w)
     };
     {
         let w = game.world_mut().unwrap();
@@ -612,12 +592,7 @@ fn death_drops_victim_weapons_as_loot() {
         assert!(room_sim::damage_mobj(w, p0, Some(p1), Some(p1), 500) > 0);
     }
     run(&mut game, 5, &idle, &mut msgs);
-    let w = game.world().unwrap();
-    let drops = items_of(w, "Shotgun");
-    assert!(
-        drops.iter().any(|&p| flat(p, death_pos) < 128.0),
-        "shotgun dropped near death site: {drops:?} vs {death_pos:?}"
-    );
+    assert_eq!(loot_count(game.world().unwrap()), before, "no death drop");
 }
 
 #[test]
@@ -780,7 +755,7 @@ fn death_recap_and_spectate_cycle_three_seats() {
 }
 
 #[test]
-fn squads_duos_teammate_no_damage_downed_revive_and_ping() {
+fn four_players_are_free_for_all() {
     let mut map = MapBuilder::new()
         .room("a", rect(0.0, 0.0, 2048.0, 2048.0), 0.0, 256.0)
         .player_start(128.0, 128.0, 0)
@@ -796,71 +771,27 @@ fn squads_duos_teammate_no_damage_downed_revive_and_ping() {
     let mut msgs = Vec::new();
     let idle = [TicCmd::default(); 4];
     past_pregame(&mut game, &idle, &mut msgs);
-    {
-        let w = game.world().unwrap();
-        assert!(!w.team_damage, "duos disables friendly fire");
-        assert_eq!(w.players[0].as_ref().unwrap().team, 0);
-        assert_eq!(w.players[1].as_ref().unwrap().team, 0);
-        assert_eq!(w.players[2].as_ref().unwrap().team, 1);
-    }
-    let (p0, p1) = {
-        let w = game.world().unwrap();
-        (body(w, 0), body(w, 1))
-    };
-    {
-        let w = game.world_mut().unwrap();
-        assert_eq!(room_sim::damage_mobj(w, p1, Some(p0), Some(p0), 50), 0);
-    }
-
-    {
-        let w = game.world_mut().unwrap();
-        w.team_damage = true;
-        w.players[1].as_mut().unwrap().team = 1;
-        let _ = room_sim::damage_mobj(w, p1, Some(p0), Some(p0), 500);
-        w.players[1].as_mut().unwrap().team = 0;
-        assert_eq!(w.actors.get(p1).unwrap().health, 1, "DBNO at 1 HP");
-        let pos0 = w.actors.get(p0).unwrap().pos;
-        if let Some(a) = w.actors.get_mut(p1) {
-            a.pos = pos0;
-        }
-    }
-    run(&mut game, 5, &idle, &mut msgs);
-
-    let mut revive = idle;
-    revive[0].buttons = Buttons(Buttons::USE);
-    run(&mut game, 4 * 35 + 10, &revive, &mut msgs);
+    let w = game.world_mut().unwrap();
+    let (p0, p1) = (body(w, 0), body(w, 1));
     assert!(
-        game.world().unwrap().actors.get(p1).unwrap().health >= 30,
-        "revive after 4s USE"
+        room_sim::damage_mobj(w, p1, Some(p0), Some(p0), 50) > 0,
+        "no squads: seats 0 and 1 hurt each other"
     );
 }
 
 #[test]
-fn royale_wad_packs_track_b_lumps_and_decorate_class() {
-    use room_decorate::parse_decorate;
-    use room_sim::{ClassRegistry, StateTable};
-    use std::sync::Arc;
-
+fn royale_wad_packs_track_b_lumps() {
     let vfs = VfsBuilder::new()
         .mount_memory("royale.wad", Bytes::from_static(ROYALE_WAD))
         .unwrap()
         .build()
         .unwrap();
-    for lump in ["DECORATE", "GLDEFS", "SNDINFO"] {
+    for lump in ["SNDINFO"] {
         assert!(
             vfs.find_any_ns(lump).is_some(),
             "missing Track B lump {lump}"
         );
     }
-    let dec = vfs.read(vfs.find_any_ns("DECORATE").unwrap()).unwrap();
-    let text = std::str::from_utf8(&dec).unwrap();
-    let ir = parse_decorate(text).expect("DECORATE parse");
-    let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
-    let _states = Arc::new(StateTable::from_decorate(&ir, &classes));
-    assert!(
-        classes.find_name("RoyaleSupplyBeacon").is_some(),
-        "RoyaleSupplyBeacon from Track B DECORATE"
-    );
     assert_eq!(
         Headless::new(GameOptions::default())
             .set_script_mods(royale_mods())
@@ -909,4 +840,91 @@ fn eight_seat_all_bots_finish_match_deterministically() {
         "match should end (elimination or time limit)"
     );
     assert_eq!(wa.checksum(), wb.checksum());
+}
+
+/// Render the drop map and the in-game minimap to PNGs (manual check).
+/// `ROYALE_PREVIEW_IWAD=/path/doom2.wad ROYALE_PREVIEW_MAP=MAP01`.
+#[test]
+#[ignore = "manual preview; needs ROYALE_PREVIEW_IWAD"]
+fn render_overlay_preview() {
+    use room_ui::{
+        CanvasSink, DrawCmd, ModHudMapCtx, PatchCache, Rect, Rgba, UiDrawList, blit_draw_list_full,
+        draw_mod_hud, player_map_poses,
+    };
+    struct Img {
+        w: usize,
+        h: usize,
+        px: Vec<[f32; 3]>,
+    }
+    impl CanvasSink for Img {
+        fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: [f32; 4]) {
+            let (x0, y0) = (x.max(0.0) as usize, y.max(0.0) as usize);
+            let x1 = ((x + w).ceil().max(0.0) as usize).min(self.w);
+            let y1 = ((y + h).ceil().max(0.0) as usize).min(self.h);
+            for yy in y0..y1 {
+                for xx in x0..x1 {
+                    let p = &mut self.px[yy * self.w + xx];
+                    for k in 0..3 {
+                        p[k] = p[k] * (1.0 - c[3]) + c[k] * c[3];
+                    }
+                }
+            }
+        }
+        fn text(&mut self, _: f32, _: f32, _: &str, _: [f32; 4]) {}
+    }
+    let iwad = std::env::var("ROYALE_PREVIEW_IWAD").expect("ROYALE_PREVIEW_IWAD");
+    let map_name = std::env::var("ROYALE_PREVIEW_MAP").unwrap_or_else(|_| "MAP01".into());
+    let vfs = VfsBuilder::new()
+        .mount_path(&iwad)
+        .unwrap()
+        .mount_memory("royale.wad", Bytes::from_static(ROYALE_WAD))
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut map = load_map(&vfs, &map_name).unwrap();
+    ensure_nodes(&mut map);
+    let mut game = start(map, 4, true);
+    let mut patches = PatchCache::from_vfs(&vfs);
+    let mut msgs = Vec::new();
+    let idle = [TicCmd::default(); 4];
+    let shot = |game: &Headless, name: &str, patches: &mut PatchCache| {
+        let w = game.world().unwrap();
+        let mut list = UiDrawList::new();
+        list.fill(Rect::new(0.0, 0.0, 320.0, 200.0), Rgba::new(0.22, 0.2, 0.18, 1.0));
+        let poses = player_map_poses(w);
+        let ctx = ModHudMapCtx {
+            map: Some(&w.map),
+            zones: &w.mod_zones,
+            player_pose: &poses,
+            hud: &w.mod_hud,
+            allmap: false,
+            ticfrac_milli: 1000,
+        };
+        draw_mod_hud(&w.mod_hud, 0, w.level.time as u32, 0.0, &mut list, Some(&ctx));
+        for c in &list.cmds {
+            if let DrawCmd::Patch { name, .. } = c {
+                let _ = patches.ensure(&vfs, name);
+            }
+        }
+        let (iw, ih) = (1280usize, 800usize);
+        let mut img = Img { w: iw, h: ih, px: vec![[0.0; 3]; iw * ih] };
+        blit_draw_list_full(&list, iw as f32, ih as f32, None, Some(patches), &mut img);
+        let mut bytes = Vec::with_capacity(iw * ih * 3);
+        for p in &img.px {
+            for k in 0..3 {
+                bytes.push((p[k].clamp(0.0, 1.0) * 255.0) as u8);
+            }
+        }
+        let path = format!("/tmp/royale-{name}.ppm");
+        let mut out = format!("P6 {iw} {ih} 255\n").into_bytes();
+        out.extend_from_slice(&bytes);
+        std::fs::write(&path, out).unwrap();
+        eprintln!("wrote {path}");
+    };
+    run(&mut game, 10 * 35 + 40, &idle, &mut msgs);
+    shot(&game, "drop", &mut patches);
+    run(&mut game, 15 * 35 + 3 * 35 + 70, &idle, &mut msgs);
+    shot(&game, "minimap", &mut patches);
+    run(&mut game, 150 * 35, &idle, &mut msgs);
+    shot(&game, "minimap-late", &mut patches);
 }

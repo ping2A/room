@@ -6,7 +6,7 @@ max_players = 8
 abi = 1
 # Multiplayer / room-server only — omitted from lobby "Play solo".
 solo = false
-description = "Last player standing: no monsters, fists only, loot drops, closing zone, one life. Up to 8 players (multiplayer rooms only)."
+description = "Last player standing: no monsters, fists only, weapons scattered on the map, closing zone, one life. Up to 8 players (multiplayer rooms only)."
 
 [[module]]
 file = "ROYALE"

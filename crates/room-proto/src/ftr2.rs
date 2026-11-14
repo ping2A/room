@@ -67,7 +67,9 @@ pub enum BinaryMsg {
     Ping {
         /// Client or server nonce.
         nonce: u64,
-        /// Server time microseconds (0 on client ping).
+        /// Server time microseconds. On a client PING: the client's smoothed
+        /// round-trip time in microseconds (0 = not measured yet), shown to
+        /// every player on the scoreboard.
         server_time_us: u64,
     },
     /// PONG.

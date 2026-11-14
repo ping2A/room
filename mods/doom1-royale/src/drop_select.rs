@@ -5,10 +5,10 @@
 use core::fmt::Write;
 
 use room_script_sdk::game;
-use room_script_sdk::hud::{Hud, anchor, font, layer, map_layers};
+use room_script_sdk::hud::{Hud, anchor, flags, font, layer, map_layers};
 
 use crate::host::Host;
-use crate::tables::{DROP_PICK_SEP, DROP_RESOLVE_RADIUS, MAX_PLAYERS, TICRATE};
+use crate::tables::{Item, DROP_PICK_SEP, DROP_RESOLVE_RADIUS, MAX_PLAYERS, TICRATE};
 use crate::text::Msg;
 use crate::ui::drop_id;
 use crate::zone::{dist2, publish_render_zone, xy, ZoneGeom, ZoneRuntime};
@@ -182,26 +182,53 @@ impl DropSelect {
         contender: &[bool; MAX_PLAYERS],
         t: i32,
         ends: i32,
+        guns: &[(Item, [f64; 3])],
     ) {
         if !self.active {
             return;
         }
         let map_w = 300_i16;
-        let map_h = 168_i16;
+        let map_h = 150_i16;
         let scale = map_scale_value(self.bounds, f64::from(map_w), f64::from(map_h));
-        let layers = map_layers::GEOMETRY | map_layers::ZONES | map_layers::MARKERS;
+        let mid = [
+            ((self.bounds[0] + self.bounds[2]) * 0.5) as i32,
+            ((self.bounds[1] + self.bounds[3]) * 0.5) as i32,
+        ];
+        let layers = map_layers::GEOMETRY
+            | map_layers::ZONES
+            | map_layers::MARKERS
+            | map_layers::REVEAL
+            | map_layers::HIDE_PLAYER
+            | map_layers::FIXED_CENTER;
+        let left = ((ends - t) + TICRATE - 1) / TICRATE;
+        let ready = (0..MAX_PLAYERS)
+            .filter(|&s| contender[s] && self.confirmed[s])
+            .count();
+        let total = contender.iter().filter(|&&c| c).count();
+        // Gun markers: the same for every seat.
+        if t % 5 == 0 {
+            for (k, (item, at)) in guns.iter().enumerate().take(GUN_MARKERS) {
+                let _ = Hud::marker(drop_id::GUN0 + k as u16)
+                    .seat(-1)
+                    .layer(layer::MODAL)
+                    .flags(flags::MAP_ONLY)
+                    .world_at(at[0] as i32, at[1] as i32, at[2] as i32)
+                    .rgba(gun_color(*item))
+                    .size(5, 5)
+                    .show();
+            }
+        }
         for s in 0..MAX_PLAYERS {
             if !contender[s] {
                 continue;
             }
             let seat = s as i32;
-            let left = ((ends - t) + TICRATE - 1) / TICRATE;
             let mut title = Msg::new();
-            let _ = write!(title, "CHOOSE DROP  {}s", left.max(0));
+            let _ = write!(title, "CHOOSE DROP {}", left.max(0));
             let _ = Hud::text(drop_id::TITLE)
                 .seat(seat)
                 .anchor(anchor::TOP_CENTER)
-                .at(0, 8)
+                .at(0, 4)
                 .font(font::BIG)
                 .layer(layer::MODAL)
                 .color("Gold")
@@ -210,49 +237,93 @@ impl DropSelect {
             let _ = Hud::map(drop_id::MAP)
                 .seat(seat)
                 .anchor(anchor::CENTER)
-                .at(0, 8)
+                .at(0, 2)
                 .size(map_w, map_h)
                 .layer(layer::MODAL)
                 .value(scale)
                 .max(layers)
-                .rgba2(0x1010_18ff)
+                .world_at(mid[0], mid[1], 0)
+                .rgba2(0x0b10_17f0)
                 .show();
             let cx = self.cursor[s][0] as i32;
             let cy = self.cursor[s][1] as i32;
             let cz = host.floor_z(self.cursor[s][0], self.cursor[s][1]) as i32;
             let _ = Hud::marker(drop_id::CURSOR)
                 .seat(seat)
-                .anchor(anchor::CENTER)
                 .layer(layer::MODAL)
+                .flags(flags::MAP_ONLY)
                 .world_at(cx, cy, cz)
-                .rgba(0xffff_40ff)
-                .size(8, 8)
+                .rgba(if self.confirmed[s] { 0x60ff_80ff } else { 0xffff_ffff })
+                .size(9, 9)
+                .text(if self.confirmed[s] { "LANDING" } else { "YOU" })
                 .show();
             for j in 0..MAX_PLAYERS {
                 if j == s || !contender[j] || !self.confirmed[j] {
+                    let _ = Hud::remove(seat, drop_id::TEAM0 + j as u16);
                     continue;
                 }
+                let mut name = Msg::new();
+                crate::text::write_player_name(&mut name, j);
                 let px = self.pick[j][0] as i32;
                 let py = self.pick[j][1] as i32;
                 let pz = host.floor_z(self.pick[j][0], self.pick[j][1]) as i32;
                 let _ = Hud::marker(drop_id::TEAM0 + j as u16)
                     .seat(seat)
-                    .anchor(anchor::CENTER)
                     .layer(layer::MODAL)
+                    .flags(flags::MAP_ONLY)
                     .world_at(px, py, pz)
-                    .rgba(0x40ff_40ff)
+                    .rgba(0x9aa6_b8ff)
                     .size(6, 6)
+                    .text(name.as_str())
                     .show();
+            }
+            for (k, (label, color, x)) in LEGEND.iter().enumerate() {
+                let _ = Hud::text(drop_id::LEGEND0 + k as u16)
+                    .seat(seat)
+                    .anchor(anchor::BOTTOM_CENTER)
+                    .at(*x, -21)
+                    .font(font::SMALL)
+                    .layer(layer::MODAL)
+                    .color(color)
+                    .text(label)
+                    .show();
+            }
+            let mut footer = Msg::new();
+            if self.confirmed[s] {
+                let _ = write!(footer, "LOCKED IN - {ready} OF {total} READY");
+            } else {
+                let _ = write!(footer, "MOVE TO AIM - USE OR FIRE TO LAND");
             }
             let _ = Hud::text(drop_id::FOOTER)
                 .seat(seat)
                 .anchor(anchor::BOTTOM_CENTER)
-                .at(0, -12)
+                .at(0, -10)
                 .font(font::SMALL)
                 .layer(layer::MODAL)
-                .text("MOVE CURSOR   USE OR FIRE TO CONFIRM")
+                .color(if self.confirmed[s] { "Green" } else { "White" })
+                .text(footer.as_str())
                 .show();
         }
+    }
+}
+
+/// Most gun markers on the drop map.
+const GUN_MARKERS: usize = 24;
+
+/// Legend under the drop map: label, text colour, x offset.
+const LEGEND: [(&str, &str, i16); 4] = [
+    ("SHOTGUN", "Orange", -114),
+    ("CHAINGUN", "Light Blue", -38),
+    ("ROCKETS", "Red", 38),
+    ("CHAINSAW", "Purple", 114),
+];
+
+fn gun_color(item: Item) -> u32 {
+    match item {
+        Item::Shotgun => 0xffa0_40ff,
+        Item::Chaingun => 0x70c0_ffff,
+        Item::RocketLauncher => 0xff50_50ff,
+        _ => 0xd080_ffff,
     }
 }
 
@@ -262,9 +333,15 @@ pub fn clear_drop_widgets() {
         for id in [drop_id::TITLE, drop_id::MAP, drop_id::CURSOR, drop_id::FOOTER] {
             let _ = Hud::remove(seat, id);
         }
+        for k in 0..LEGEND.len() {
+            let _ = Hud::remove(seat, drop_id::LEGEND0 + k as u16);
+        }
         for j in 0..MAX_PLAYERS {
             let _ = Hud::remove(seat, drop_id::TEAM0 + j as u16);
         }
+    }
+    for k in 0..GUN_MARKERS {
+        let _ = Hud::remove(-1, drop_id::GUN0 + k as u16);
     }
 }
 
@@ -306,7 +383,7 @@ pub fn mark_spot_taken(spots: &[[f64; 3]], nspots: usize, taken: &mut [bool], sp
 fn map_scale_value(bounds: [f64; 4], widget_w: f64, widget_h: f64) -> i32 {
     let map_w = (bounds[2] - bounds[0]).max(64.0);
     let map_h = (bounds[3] - bounds[1]).max(64.0);
-    let scale = (widget_w / map_w).min(widget_h / map_h) * 0.88;
+    let scale = (widget_w / map_w).min(widget_h / map_h) * 0.94;
     (scale.clamp(0.01, 4.0) * 10_000.0) as i32
 }
 

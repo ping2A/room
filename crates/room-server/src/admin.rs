@@ -68,6 +68,7 @@ pub fn admin_routes() -> Router<AppState> {
                 .layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .route("/admin/api/v1/presets", get(get_presets).put(put_presets))
+        .route("/admin/api/v1/presets/plan", post(preset_plan))
         .route("/admin/api/v1/maintenance", post(maintenance))
         .route("/admin/api/v1/locations", get(list_locations))
 }
@@ -319,6 +320,78 @@ async fn put_presets(
         .admin
         .audit(&actor.actor, "set_presets", "", &format!("{n} preset(s)"));
     Ok(Json(c.content.presets()))
+}
+
+#[derive(Deserialize)]
+struct PlanBody {
+    #[serde(default)]
+    iwad: Option<String>,
+    #[serde(default)]
+    content: Vec<String>,
+    #[serde(default, rename = "mod")]
+    game_mod: Option<String>,
+}
+
+/// `POST /admin/api/v1/presets/plan` — what each file of a (draft) preset
+/// brings and how its load order combines them (`load_plan`).
+async fn preset_plan(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<PlanBody>,
+) -> Result<Json<crate::load_plan::LoadPlan>, StatusCode> {
+    let _actor = authorize(&state, &headers)?;
+    let cfg = state.registry.config();
+    let (content, mods) = (cfg.content.clone(), cfg.mods.clone());
+    let plan = tokio::task::spawn_blocking(move || {
+        use crate::load_plan::PlanFile;
+        let lib = |file: &str, role: &'static str| {
+            let entry = content.get(file);
+            PlanFile {
+                file: file.to_owned(),
+                role,
+                kind: entry.as_ref().map_or_else(
+                    || "missing".to_owned(),
+                    |e| {
+                        serde_json::to_value(e.kind)
+                            .ok()
+                            .and_then(|v| v.as_str().map(str::to_owned))
+                            .unwrap_or_default()
+                    },
+                ),
+                size: entry.as_ref().map(|e| e.size),
+                profile: content.profile(file),
+            }
+        };
+        let mut files = Vec::new();
+        match body.iwad.as_deref().filter(|s| !s.is_empty()) {
+            Some(iwad) => files.push(lib(iwad, "base")),
+            None => files.push(PlanFile {
+                file: "Server default IWAD".into(),
+                role: "base",
+                kind: "iwad".into(),
+                size: None,
+                profile: None,
+            }),
+        }
+        for f in body.content.iter().take(64) {
+            files.push(lib(f, "addon"));
+        }
+        if let Some(name) = body.game_mod.as_deref().filter(|s| !s.is_empty()) {
+            let entry = mods.get(name);
+            files.push(PlanFile {
+                file: format!("{name} (gameplay mod)"),
+                role: "mod",
+                kind: "mod".into(),
+                size: entry.map(|e| e.bytes.len() as u64),
+                profile: entry
+                    .map(|e| std::sync::Arc::new(crate::load_plan::profile_bytes(&e.bytes))),
+            });
+        }
+        crate::load_plan::plan(&files)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(plan))
 }
 
 async fn list_locations(

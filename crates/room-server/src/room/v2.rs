@@ -43,6 +43,11 @@ pub struct V2State {
     /// When the first cmd for `tic % RING` arrived (relay latency start).
     first_cmd_at: [Option<Instant>; RING],
     active_mask: u64,
+    /// Bot seats (`fill_bots`): never waited for, relayed as neutral cmds.
+    bot_mask: u64,
+    /// Seats whose player left mid-match: not waited for either (each tic
+    /// used to wait the full grace for them, adding lag for everyone).
+    absent_mask: u64,
     max_players: u8,
     /// Clock origin for tic 0.
     start_at: Instant,
@@ -66,6 +71,8 @@ impl V2State {
             seats: BASE_SEATS,
             first_cmd_at: [None; RING],
             active_mask: 0,
+            bot_mask: 0,
+            absent_mask: 0,
             max_players: 2,
             start_at: Instant::now(),
             grace: Duration::from_millis(30),
@@ -97,6 +104,7 @@ impl V2State {
         self.last_cmd = vec![NetTicCmd::default(); self.seats];
         self.miss_streak = vec![0; self.seats];
         self.last_relay_us = None;
+        self.absent_mask = 0;
     }
 
     /// Late-seat tolerance (`--stall-fill-ms`).
@@ -140,8 +148,34 @@ impl V2State {
     fn all_present(&self, tic: u32) -> bool {
         let slot = (tic as usize) % RING;
         (0..self.max_players)
-            .filter(|&s| self.seat_active(s))
+            .filter(|&s| self.seat_active(s) && !self.seat_bot(s))
             .all(|s| self.cell_ref(slot, usize::from(s)).is_some())
+    }
+
+    fn seat_bot(&self, s: u8) -> bool {
+        u32::from(s) < 64 && ((self.bot_mask | self.absent_mask) & (1u64 << s)) != 0
+    }
+
+    /// A seat's player left (`true`) or a player took the seat again.
+    pub fn set_seat_absent(&mut self, seat: u8, absent: bool) {
+        if u32::from(seat) >= 64 {
+            return;
+        }
+        if absent {
+            self.absent_mask |= 1u64 << seat;
+        } else {
+            self.absent_mask &= !(1u64 << seat);
+        }
+    }
+
+    /// Seats `first..max_players` are sim bots (`fill_bots`): nobody sends
+    /// their commands, so a tic must not wait the stall grace for them. They
+    /// relay as neutral commands; every client's sim drives them.
+    pub fn set_bot_seats(&mut self, first: u8) {
+        self.bot_mask = 0;
+        for s in first..self.max_players.min(64) {
+            self.bot_mask |= 1u64 << s;
+        }
     }
 
     /// Push a command; returns a frame when `next_tic` is complete and due.
@@ -216,7 +250,9 @@ impl V2State {
                 continue;
             }
             let i = usize::from(s);
-            let cmd = if let Some(c) = self.cell(slot, i).take() {
+            let cmd = if self.seat_bot(s) {
+                NetTicCmd::default()
+            } else if let Some(c) = self.cell(slot, i).take() {
                 self.miss_streak[i] = 0;
                 c
             } else {
@@ -352,6 +388,39 @@ mod tests {
         assert_eq!(frame.cmds[0].forward_move, 1);
         assert_eq!(s.next_tic(), 1);
         assert!(s.last_relay_us.is_some());
+    }
+
+    #[test]
+    fn bot_seats_do_not_hold_the_tic() {
+        let t0 = Instant::now();
+        let mut s = V2State::new();
+        s.set_active_seats(8);
+        s.set_grace(Duration::from_millis(30));
+        s.reset_for_start_at(t0);
+        s.set_bot_seats(1);
+        // Only the human seat 0 sends: the tic releases at once, not after the grace.
+        let frame = s.push_cmd_at(0, cmd(0, 5), t0).unwrap().unwrap();
+        assert_eq!(frame.cmds.len(), 8);
+        assert_eq!(frame.cmds[0].forward_move, 5);
+        assert!(frame.cmds[1..].iter().all(|c| c.forward_move == 0));
+    }
+
+    #[test]
+    fn a_seat_that_left_is_not_waited_for() {
+        let t0 = Instant::now();
+        let mut s = V2State::new();
+        s.set_active_seats(3);
+        s.set_grace(Duration::from_millis(30));
+        s.reset_for_start_at(t0);
+        s.set_seat_absent(2, true);
+        let _ = s.push_cmd_at(0, cmd(0, 1), t0).unwrap();
+        let frame = s.push_cmd_at(1, cmd(0, 2), t0).unwrap().unwrap();
+        assert_eq!(frame.cmds.len(), 3);
+        assert_eq!(frame.cmds[2].forward_move, 0);
+        // Back in the seat: waited for again.
+        s.set_seat_absent(2, false);
+        let _ = s.push_cmd_at(0, cmd(1, 1), t0 + TIC).unwrap();
+        assert!(s.push_cmd_at(1, cmd(1, 2), t0 + TIC).unwrap().is_none());
     }
 
     #[test]

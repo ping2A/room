@@ -48,6 +48,12 @@ struct Shared {
     watching: Option<(WelcomeRoom, Vec<RosterSeat>)>,
     /// Seats in the last roster (diffed to synthesize leaves).
     roster: std::collections::BTreeSet<u8>,
+    /// Timed start (bot-fill rooms): `performance.now()` ms when it fires.
+    start_at_ms: Option<f64>,
+    /// `(tic, performance.now())` of frames received, for the netplay clock.
+    frame_times: VecDeque<(u32, f64)>,
+    /// Every seat's ping (ms) from the server's `pings` push.
+    seat_pings: std::collections::BTreeMap<u8, u16>,
     /// Server / admin `notice` lines not yet shown.
     notices: VecDeque<String>,
     /// `(code, reason)` of the server's `bye` (room closed).
@@ -101,6 +107,9 @@ impl WsV2Transport {
             rtt_ms: None,
             watching: None,
             roster: std::collections::BTreeSet::new(),
+            start_at_ms: None,
+            frame_times: VecDeque::new(),
+            seat_pings: std::collections::BTreeMap::new(),
             notices: VecDeque::new(),
             bye: None,
         }));
@@ -250,9 +259,11 @@ impl WsV2Transport {
     pub fn send_ping(&mut self) {
         self.last_ping_ms = now_ms();
         let nonce = (self.last_ping_ms * 1000.0) as u64;
+        // Report our smoothed RTT so the server can share it on the scoreboard.
+        let rtt_us = self.shared.borrow().rtt_ms.map_or(0, |ms| (ms.max(0.0) * 1000.0) as u64);
         self.send_bin(encode_binary(&BinaryMsg::Ping {
             nonce,
-            server_time_us: 0,
+            server_time_us: rtt_us,
         }));
     }
 
@@ -287,6 +298,24 @@ impl WsV2Transport {
     }
 
     /// Fatal reject reason.
+    /// Arrival times of frames since the last call (`(tic, ms)`).
+    pub fn take_frame_times(&mut self) -> Vec<(u32, f64)> {
+        self.shared.borrow_mut().frame_times.drain(..).collect()
+    }
+
+    /// Ping (ms) the server last reported for `seat`.
+    #[must_use]
+    pub fn seat_ping(&self, seat: u8) -> Option<u16> {
+        self.shared.borrow().seat_pings.get(&seat).copied()
+    }
+
+    /// Seconds until the server's timed start, when the room has one.
+    #[must_use]
+    pub fn starts_in_secs(&self) -> Option<u32> {
+        let at = self.shared.borrow().start_at_ms?;
+        Some(((at - now_ms()).max(0.0) / 1000.0).ceil() as u32)
+    }
+
     pub fn take_reject(&mut self) -> Option<String> {
         self.shared.borrow_mut().reject.take()
     }
@@ -478,8 +507,9 @@ fn on_text(shared: &Rc<RefCell<Shared>>, text: &str) {
         ControlMsg::Reject(r) => {
             shared.borrow_mut().reject = Some(format!("{}: {}", r.code, r.reason));
         }
-        ControlMsg::Roster { seats } => {
+        ControlMsg::Roster { seats, starts_in_ms } => {
             let mut s = shared.borrow_mut();
+            s.start_at_ms = starts_in_ms.map(|ms| now_ms() + f64::from(ms));
             let now: std::collections::BTreeSet<u8> = seats.iter().map(|r| r.seat).collect();
             let gone: Vec<u8> = s.roster.difference(&now).copied().collect();
             for seat in gone {
@@ -498,6 +528,10 @@ fn on_text(shared: &Rc<RefCell<Shared>>, text: &str) {
                     },
                 );
             }
+        }
+        ControlMsg::Pings { seats } => {
+            let mut s = shared.borrow_mut();
+            s.seat_pings = seats.iter().map(|p| (p.seat, p.ms)).collect();
         }
         ControlMsg::Bye { code, reason } => {
             let mut s = shared.borrow_mut();
@@ -563,6 +597,10 @@ fn ingest_frame(shared: &Rc<RefCell<Shared>>, frame: TicFrameMsg) {
     let mut s = shared.borrow_mut();
     s.frames_rx = s.frames_rx.saturating_add(1);
     s.last_frame_tic = Some(s.last_frame_tic.map_or(frame.tic, |t| t.max(frame.tic)));
+    if s.frame_times.len() >= 512 {
+        s.frame_times.pop_front();
+    }
+    s.frame_times.push_back((frame.tic, now_ms()));
     let mut idx = 0usize;
     for seat in 0..8u8 {
         if (frame.seat_mask & (1 << seat)) == 0 {

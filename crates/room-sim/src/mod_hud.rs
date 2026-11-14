@@ -45,6 +45,12 @@ pub mod map {
     pub const TEAMMATES: i32 = 1 << 3;
     /// Layer: items-of-interest markers.
     pub const ITEMS: i32 = 1 << 4;
+    /// Show the whole level, not only the lines the player has seen.
+    pub const REVEAL: i32 = 1 << 5;
+    /// Do not draw the viewer's arrow (pick screens).
+    pub const HIDE_PLAYER: i32 = 1 << 6;
+    /// Centre the map on the widget's `world_xyz` instead of the viewer.
+    pub const FIXED_CENTER: i32 = 1 << 7;
     /// Default layer set for a minimap.
     pub const DEFAULT_LAYERS: i32 = GEOMETRY | ZONES | MARKERS;
 
@@ -97,6 +103,8 @@ pub mod flags {
     pub const KEEP_ASPECT: u8 = 1 << 5;
     /// MAP widget rotates with viewer yaw (`docs/28` BE2).
     pub const MAP_ROTATE: u8 = 1 << 6;
+    /// MARKER shown only on MAP widgets, not over the 3D view.
+    pub const MAP_ONLY: u8 = 1 << 7;
 }
 
 /// Error codes returned to guests (`0` = ok).

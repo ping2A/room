@@ -783,6 +783,12 @@ pub mod hud {
         pub const TEAMMATES: i32 = 1 << 3;
         /// Items of interest.
         pub const ITEMS: i32 = 1 << 4;
+        /// Whole level, not only the lines the player has seen.
+        pub const REVEAL: i32 = 1 << 5;
+        /// No viewer arrow (pick screens).
+        pub const HIDE_PLAYER: i32 = 1 << 6;
+        /// Centre on the widget's world position instead of the viewer.
+        pub const FIXED_CENTER: i32 = 1 << 7;
     }
 
     /// Draw layer.
@@ -857,6 +863,8 @@ pub mod hud {
         pub const KEEP_ASPECT: u8 = 1 << 5;
         /// MAP widget rotates with viewer yaw.
         pub const MAP_ROTATE: u8 = 1 << 6;
+        /// MARKER shown only on MAP widgets, not over the 3D view.
+        pub const MAP_ONLY: u8 = 1 << 7;
     }
 
     /// `hud_widget_patch` field ids (same values as `room_sim::mod_hud::patch_field`).

@@ -191,6 +191,9 @@ const EYE_SEATS: usize = room_sim::MAX_PLAYERS;
 
 /// Spectators fast-forward while this many frames are queued.
 const CATCHUP_BACKLOG: u32 = 35;
+/// Cap on tics simulated in one frame by the clocked netplay (a hidden tab
+/// coming back catches up over a few frames instead of freezing one).
+const MAX_CLOCKED_TICS_PER_FRAME: u32 = 12;
 
 /// Wall-clock budget per frame for spectator fast-forward.
 const CATCHUP_BUDGET_MS: f64 = 10.0;
@@ -914,6 +917,11 @@ impl PlaySession {
             "backlog",
             wasm_bindgen::JsValue::from(f64::from(net.backlog())),
         );
+        let (margin, buffer, late, stalls) = net.clock_stats();
+        set("inputMarginMs", wasm_bindgen::JsValue::from(margin));
+        set("playoutBufferMs", wasm_bindgen::JsValue::from(buffer));
+        set("lateInputs", wasm_bindgen::JsValue::from(f64::from(late)));
+        set("playoutStalls", wasm_bindgen::JsValue::from(f64::from(stalls)));
         set("rx", wasm_bindgen::JsValue::from(f64::from(rx)));
         set("tx", wasm_bindgen::JsValue::from(f64::from(tx)));
         set(
@@ -979,6 +987,11 @@ impl PlaySession {
             return self.fast_forward(now);
         }
         self.catching_up = false;
+        if !spectator && matches!(self.game.state, GameState::Level) {
+            if let Some(stepped) = self.tick_net_clocked(now, tic) {
+                return stepped;
+            }
+        }
         self.tic_accum = (self.tic_accum + dt).min(tic * 3.0);
         // Drain a jitter backlog gradually instead of staying behind forever.
         if backlog > 2 {
@@ -1016,19 +1029,7 @@ impl PlaySession {
                     };
                     self.tic_accum -= tic;
                     stepped = true;
-                    self.game.tick(&cmds);
-                    self.level_tics = self.level_tics.wrapping_add(1);
-                    self.process_tic_events(false);
-                    self.pump_audio();
-                    if matches!(self.game.state, GameState::Intermission) {
-                        self.start_intermission_music();
-                    }
-                    self.sync_map_from_world();
-                    self.sync_camera_from_player();
-                    let pose = self.local_pose_i16().filter(|_| !spectator);
-                    if let (Some(net), Some((x, y, angle))) = (self.net.as_mut(), pose) {
-                        net.maybe_send_pose(x, y, angle);
-                    }
+                    self.step_level(&cmds, spectator);
                 }
                 GameState::Intermission => {
                     self.tic_accum -= tic;
@@ -1051,6 +1052,73 @@ impl PlaySession {
             }
         }
         stepped
+    }
+
+    /// One level tic with `cmds`, plus everything that follows a tic.
+    fn step_level(&mut self, cmds: &[TicCmd], spectator: bool) {
+        self.game.tick(cmds);
+        self.level_tics = self.level_tics.wrapping_add(1);
+        self.process_tic_events(false);
+        self.pump_audio();
+        if matches!(self.game.state, GameState::Intermission) {
+            self.start_intermission_music();
+        }
+        self.sync_map_from_world();
+        self.sync_camera_from_player();
+        let pose = self.local_pose_i16().filter(|_| !spectator);
+        if let (Some(net), Some((x, y, angle))) = (self.net.as_mut(), pose) {
+            net.maybe_send_pose(x, y, angle);
+        }
+    }
+
+    /// Netplay (v2) paced by the server-clock estimate (`net_clock`): input
+    /// streams one command per tic of local time, and the sim plays every tic
+    /// up to the playout position, a small adaptive jitter buffer behind the
+    /// server. `tic_accum` then holds the interpolation fraction. `None` until
+    /// the clock has seen a frame (the caller falls back to arrival pacing).
+    fn tick_net_clocked(&mut self, now: f64, tic: f32) -> Option<bool> {
+        let net = self.net.as_mut()?;
+        if !net.is_v2() {
+            return None;
+        }
+        if !net.pump_v2(
+            now,
+            &self.held,
+            self.attack,
+            &mut self.weapon,
+            &mut self.weapon_cycle,
+            &mut self.mouse_yaw,
+            &mut self.mouse_pitch,
+        ) {
+            return Some(false);
+        }
+        let pos = net.playout_pos(now)?;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let want = pos.floor() as u32;
+        let mut ran = 0_u32;
+        while matches!(self.game.state, GameState::Level) {
+            let Some(net) = self.net.as_mut() else { break };
+            if net.next_tic() > want || ran >= MAX_CLOCKED_TICS_PER_FRAME {
+                break;
+            }
+            let Some(cmds) = net.take_v2_frame() else {
+                net.on_stall(now);
+                break;
+            };
+            self.step_level(&cmds, false);
+            ran += 1;
+        }
+        let next = self.net.as_ref().map_or(0, NetPlay::next_tic);
+        // Interpolate inside the tic the playout is in; hold the newest state
+        // when the playout ran ahead of the frames.
+        #[allow(clippy::cast_possible_truncation)]
+        let frac = if next == want.saturating_add(1) {
+            (pos - pos.floor()) as f32
+        } else {
+            1.0
+        };
+        self.tic_accum = frac * tic;
+        Some(ran > 0)
     }
 
     /// Spectator replay of buffered history: many tics per frame, no audio.
@@ -1862,16 +1930,17 @@ impl PlaySession {
     }
 
     fn draw_scoreboard(&self, ov: &mut UiDrawList, line_h: f32) {
-        const COLS: [(&str, f32); 7] = [
+        const COLS: [(&str, f32); 8] = [
             ("PLAYER", 0.0),
-            ("HEALTH", 92.0),
-            ("ARMOR", 128.0),
-            ("KILLS", 160.0),
-            ("DEATHS", 190.0),
-            ("FRAGS", 226.0),
-            ("STATUS", 256.0),
+            ("HEALTH", 84.0),
+            ("ARMOR", 118.0),
+            ("KILLS", 148.0),
+            ("DEATHS", 175.0),
+            ("FRAGS", 209.0),
+            ("PING", 237.0),
+            ("STATUS", 266.0),
         ];
-        let width = 300.0;
+        let width = 312.0;
         let seats: Vec<u8> = match self.game.world() {
             Some(w) => w
                 .players
@@ -1941,6 +2010,19 @@ impl PlaySession {
                 "ALIVE"
             };
             let sc = self.scores.seats[usize::from(seat).min(self.scores.seats.len() - 1)];
+            let is_bot = self
+                .game
+                .world()
+                .and_then(|w| w.players.get(usize::from(seat))?.as_ref().map(|p| p.is_bot))
+                .unwrap_or(false);
+            let ping = if is_bot {
+                "BOT".to_owned()
+            } else {
+                self.net
+                    .as_ref()
+                    .and_then(|n| n.seat_ping(seat))
+                    .map_or_else(|| "-".to_owned(), |ms| ms.to_string())
+            };
             let mut name = stcfn_safe(&self.seat_name(seat));
             name.truncate(15);
             let cells = [
@@ -1950,6 +2032,7 @@ impl PlaySession {
                 sc.kills.to_string(),
                 sc.deaths.to_string(),
                 sc.frags.to_string(),
+                ping,
                 status.to_owned(),
             ];
             for ((_, cx), text) in COLS.iter().zip(cells.iter()) {
@@ -2175,6 +2258,7 @@ impl PlaySession {
                     y: f64::from(eye.y),
                     yaw_deg: self.yaw.to_degrees(),
                     scale: 1024.0,
+                    z: f64::from(eye.z),
                 });
             }
             draw_mod_hud_layer(
@@ -2388,8 +2472,13 @@ impl PlaySession {
             // still in flight will do, plus mouse not yet sent.
             let yaw = yaw + f64::from(self.mouse_yaw) * mouse * scale;
             let pitch = (pitch + f64::from(self.mouse_pitch) * mouse * scale).clamp(-1.4, 1.4);
-            let eye = self.interp_eye(self.local_seat)? + offset;
-            return Some((eye, look_dir(yaw, pitch)));
+            // The offset is from the newest confirmed tic, so add it to that
+            // eye (not the interpolated one): when a frame confirms a pending
+            // command, the confirmed eye moves forward exactly as the offset
+            // shrinks, and the view does not saw back and forth.
+            let base = self.cur_eyes[usize::from(self.local_seat).min(EYE_SEATS - 1)]
+                .or_else(|| self.interp_eye(self.local_seat))?;
+            return Some((base + offset, look_dir(yaw, pitch)));
         }
         let (sent_yaw, sent_pitch) = self.net.as_ref().map_or((0, 0), NetPlay::unapplied_look);
         let yaw = self.yaw + (f64::from(self.mouse_yaw) * mouse + f64::from(sent_yaw)) * scale;
@@ -2427,17 +2516,37 @@ impl PlaySession {
         }
         let net = self.net.as_ref()?;
         let pending = net.unapplied_cmds();
+        // Glide between the last two commands sent, by how far the input clock
+        // is into the current tic, so the predicted view moves continuously
+        // instead of a whole tic each time a command goes out.
+        let glide = net.input_frac(now_ms());
         let world = self.game.world()?;
         let seat = usize::from(self.local_seat);
         let pv = world.predict_player_view(seat, &pending)?;
         let p = world.players.get(seat)?.as_ref()?;
         let a = world.actors.get(p.mo?)?;
         let (cx, cy, cz) = a.camera_eye(p.view_z);
+        let eye_of = |pv: &room_sim::PredictedView| {
+            let mut moved = a.clone();
+            moved.pos = pv.pos;
+            moved.angle = pv.angle;
+            moved.pitch = pv.pitch;
+            moved.camera_eye(pv.view_z)
+        };
+        let (mut px, mut py, mut pz) = eye_of(&pv);
+        if glide < 1.0 && !pending.is_empty() {
+            let before = world
+                .predict_player_view(seat, &pending[..pending.len() - 1])
+                .map_or((cx, cy, cz), |b| eye_of(&b));
+            let t = glide.clamp(0.0, 1.0);
+            px = before.0 + (px - before.0) * t;
+            py = before.1 + (py - before.1) * t;
+            pz = before.2 + (pz - before.2) * t;
+        }
         let mut moved = a.clone();
         moved.pos = pv.pos;
         moved.angle = pv.angle;
         moved.pitch = pv.pitch;
-        let (px, py, pz) = moved.camera_eye(pv.view_z);
         #[allow(clippy::cast_possible_truncation)]
         let offset = Vec3::new((px - cx) as f32, (py - cy) as f32, (pz - cz) as f32);
         Some((

@@ -1,9 +1,7 @@
 //! Retained Mod HUD drawing (`docs/27` §9 / MH1).
 
-use crate::automap::{AutomapView, draw_automap_ex2, draw_player_arrow};
 use crate::doom_text::{draw_stcfn_string, measure_stcfn_string};
 use crate::draw::{Rect, Rgba, UiDrawList, Vec2};
-use crate::mod_zones::draw_mod_zones_automap;
 use room_map::MapGeometry;
 use room_sim::mod_hud::{HudWidget, ModHud, WidgetKey, flags, kind, layer, map as map_layers};
 use room_sim::mod_zones::ModZones;
@@ -167,6 +165,36 @@ fn widget_rect(w: &HudWidget, vw: f32, vh: f32) -> Rect {
     Rect::new(x, y, ww, hh)
 }
 
+/// TEXTCOLO index (SDK `text_color_index` order) → dark/bright font ramp.
+fn text_ramp(index: u8) -> Option<[[f32; 3]; 2]> {
+    let rgb = |c: u32| {
+        [
+            ((c >> 16) & 0xff) as f32 / 255.0,
+            ((c >> 8) & 0xff) as f32 / 255.0,
+            (c & 0xff) as f32 / 255.0,
+        ]
+    };
+    let (dark, bright) = match index {
+        0 => (0x3c_1010, 0xff_b8b8), // brick
+        1 => (0x4a_3a20, 0xff_e6b0), // tan
+        2 | 20 => (0x2a_2a2a, 0xd8_d8d8), // gray, dark gray
+        3 | 16 => (0x0c_3a0c, 0x9c_ff9c), // green
+        4 | 18 => (0x3a_2410, 0xd8_a060), // brown
+        5 => (0x4a_2c00, 0xff_e050),  // gold
+        6 | 17 => (0x3c_0000, 0xff_5050), // red
+        7 | 24 => (0x00_0c4a, 0x80_a0ff), // blue
+        8 | 23 => (0x4a_1c00, 0xff_a040), // orange
+        9 => (0x60_6060, 0xff_ffff),  // white
+        10 => (0x4a_4000, 0xff_ff60), // yellow
+        13 | 22 => (0x10_3050, 0xb0_e0ff), // light blue, ice
+        14 => (0x50_4430, 0xff_f4dc), // cream
+        19 => (0x2c_0c3c, 0xd8_90ff), // purple
+        21 | 25 => (0x00_3a3a, 0x70_ffff), // cyan, teal
+        _ => return None,
+    };
+    Some([rgb(dark), rgb(bright)])
+}
+
 fn rgba_u32(c: u32, alpha: f32) -> Rgba {
     let a = ((c & 0xff) as f32 / 255.0) * alpha;
     Rgba::new(
@@ -233,13 +261,18 @@ fn draw_one(
             let (ax, ay) = anchor_origin(w.anchor, vw, vh);
             let mut x = ax + f32::from(w.x);
             let y = ay + f32::from(w.y);
-            // Horizontally centre when the widget uses a centre column anchor.
-            if matches!(w.anchor, 1 | 4 | 7) {
-                x -= measure_stcfn_string(&text, scale) * 0.5;
+            // `align`: 1 = centre, 2 = right; otherwise follow the anchor column
+            // (centre anchors centre the text).
+            let width = measure_stcfn_string(&text, scale);
+            match w.align & 3 {
+                1 => x -= width * 0.5,
+                2 => x -= width,
+                _ if matches!(w.anchor, 1 | 4 | 7) => x -= width * 0.5,
+                _ => {}
             }
-            // Alpha/tint reserved until STCFN patches support color multiply.
-            let _ = (alpha, w.color, w.font);
+            let start = list.cmds.len();
             draw_stcfn_string(list, x, y, &text, scale);
+            list.style_since(start, alpha, text_ramp(w.text_color));
         }
         kind::FILL => {
             list.fill(rect, rgba_u32(w.color, alpha));
@@ -280,6 +313,7 @@ fn draw_one(
                 );
             }
         }
+        kind::MARKER if w.flags & flags::MAP_ONLY != 0 => {}
         kind::MARKER => {
             let (sx, sy, off) = project_marker(w, vw, vh);
             let col = rgba_u32(w.color, alpha);
@@ -289,7 +323,9 @@ fn draw_one(
                 // Edge chevron: small diamond pointing inward.
                 list.fill(Rect::new(sx - 2.0, sy - 6.0, 4.0, 4.0), col);
             }
-            if !w.text.is_empty() {
+            // Off screen the marker is only an edge pip; the label shows once
+            // the spot is in view (a pinned "VAULT" read like a message).
+            if !off && !w.text.is_empty() {
                 let label = expand_key_tokens(&w.text, |tok| tok.to_ascii_uppercase());
                 draw_stcfn_string(list, sx + 4.0, sy - 8.0, &label, 1.0);
             }
@@ -311,6 +347,7 @@ fn draw_map_widget(
     maptime: u32,
     ctx: &ModHudMapCtx<'_>,
 ) {
+    use crate::mod_map::{MapProj, draw_arrow, draw_frame, draw_geometry, draw_marker, draw_zones};
     let vw = list.virtual_w.max(VW);
     let vh = list.virtual_h.max(VH);
     let rect = widget_rect(w, vw, vh);
@@ -323,39 +360,64 @@ fn draw_map_widget(
         map_layers::DEFAULT_LAYERS
     };
     let follow = map_layers::follow_seat(w.font, seat);
-    let (center_x, center_y, player_angle) = player_map_pose(ctx.player_pose, follow);
-    let scale = map_layers::scale_from_value(w.value);
-    let rotate = (w.flags & flags::MAP_ROTATE) != 0;
-    let bg = rgba_u32(if w.color2 != 0 { w.color2 } else { 0xff000000 }, alpha);
-    list.fill(rect, bg);
-    let view = AutomapView {
+    let (px, py, player_angle) = player_map_pose(ctx.player_pose, follow);
+    let fixed = (layers & map_layers::FIXED_CENTER) != 0;
+    let (center_x, center_y) = if fixed {
+        (f64::from(w.world_xyz[0]), f64::from(w.world_xyz[1]))
+    } else {
+        (px, py)
+    };
+    let rotate = !fixed && (w.flags & flags::MAP_ROTATE) != 0;
+    let mut bg = rgba_u32(if w.color2 != 0 { w.color2 } else { 0x0b10_17ff }, 1.0);
+    bg.a = (bg.a * alpha).max(0.0);
+    draw_frame(list, rect, bg, alpha);
+    let proj = MapProj {
         center_x,
         center_y,
-        scale,
-        screen_x: rect.x,
-        screen_y: rect.y,
-        width: rect.w,
-        height: rect.h,
-        angle_deg: if rotate { player_angle } else { 0.0 },
-        allmap: ctx.allmap,
-        fog: true,
+        scale: map_layers::scale_from_value(w.value),
+        rect,
+        angle_deg: player_angle,
+        rotate,
     };
-    if (layers & map_layers::GEOMETRY) != 0 {
-        if let Some(map) = ctx.map {
-            draw_automap_ex2(map, &view, list, false, false);
-        }
+    let reveal = ctx.allmap || (layers & map_layers::REVEAL) != 0;
+    if (layers & map_layers::GEOMETRY) != 0
+        && let Some(map) = ctx.map
+    {
+        draw_geometry(map, &proj, list, bg, alpha, reveal);
     }
     if (layers & map_layers::ZONES) != 0 {
-        draw_mod_zones_automap(ctx.zones, maptime, ctx.ticfrac_milli, &view, list);
+        draw_zones(ctx.zones, maptime, ctx.ticfrac_milli, &proj, list, bg, alpha);
     }
     if (layers & map_layers::MARKERS) != 0 || (layers & map_layers::ITEMS) != 0 {
-        draw_map_markers(list, ctx, seat, &view, rotate, layers, alpha);
+        for (_, mw) in ctx
+            .hud
+            .for_seat(seat)
+            .filter(|(_, mw)| mw.kind == kind::MARKER && mw.flags & flags::HIDDEN == 0)
+        {
+            if (layers & map_layers::ITEMS) != 0 && mw.name.is_empty() {
+                continue;
+            }
+            let p = proj.project(f64::from(mw.world_xyz[0]), f64::from(mw.world_xyz[1]));
+            let size = if mw.w > 0 { f32::from(mw.w) * 0.5 } else { 2.0 };
+            let col = rgba_u32(mw.color, alpha);
+            if draw_marker(list, rect, p, size, col) && !mw.text.is_empty() {
+                let label = expand_key_tokens(&mw.text, |tok| tok.to_ascii_uppercase());
+                let lw = measure_stcfn_string(&label, 0.5);
+                let lx = (p.x + size).min(rect.x + rect.w - lw - 1.0);
+                let start = list.cmds.len();
+                draw_stcfn_string(list, lx, p.y - 2.0, &label, 0.5);
+                list.style_since(start, alpha, text_ramp(if mw.text_color == 255 { 9 } else { mw.text_color }));
+            }
+        }
     }
-    let arrow_view = AutomapView {
-        angle_deg: player_angle,
-        ..view
-    };
-    draw_player_arrow(&arrow_view, list);
+    if (layers & map_layers::HIDE_PLAYER) == 0 {
+        let p = proj.project(px, py);
+        let screen_angle = if rotate { 90.0 } else { player_angle };
+        let size = (rect.w.min(rect.h) / 14.0).clamp(2.5, 6.0);
+        if p.x >= rect.x && p.y >= rect.y && p.x <= rect.x + rect.w && p.y <= rect.y + rect.h {
+            draw_arrow(list, rect, p, screen_angle, size);
+        }
+    }
 }
 
 fn player_map_pose(poses: &[(f64, f64, f32)], seat: u8) -> (f64, f64, f32) {
@@ -363,57 +425,6 @@ fn player_map_pose(poses: &[(f64, f64, f32)], seat: u8) -> (f64, f64, f32) {
         .get(usize::from(seat))
         .copied()
         .unwrap_or((0.0, 0.0, 0.0))
-}
-
-fn draw_map_markers(
-    list: &mut UiDrawList,
-    ctx: &ModHudMapCtx<'_>,
-    seat: u8,
-    view: &AutomapView,
-    rotate: bool,
-    layers: i32,
-    alpha: f32,
-) {
-    for (_, mw) in ctx
-        .hud
-        .for_seat(seat)
-        .filter(|(_, mw)| mw.kind == kind::MARKER)
-    {
-        if (layers & map_layers::ITEMS) != 0 && mw.name.is_empty() {
-            continue;
-        }
-        if mw.flags & flags::HIDDEN != 0 {
-            continue;
-        }
-        let wx = f64::from(mw.world_xyz[0]);
-        let wy = f64::from(mw.world_xyz[1]);
-        let p = project_map(view, wx, wy, rotate);
-        let col = rgba_u32(mw.color, alpha);
-        let size = if mw.w > 0 { f32::from(mw.w) } else { 4.0 };
-        list.fill(
-            Rect::new(p.x - size * 0.5, p.y - size * 0.5, size, size),
-            col,
-        );
-    }
-}
-
-fn project_map(view: &AutomapView, x: f64, y: f64, rotate: bool) -> Vec2 {
-    let mut dx = x - view.center_x;
-    let mut dy = y - view.center_y;
-    if rotate && view.angle_deg.abs() > 0.01 {
-        let rad = f64::from(view.angle_deg).to_radians();
-        let (s, c) = (rad.sin(), rad.cos());
-        let rx = dx * c + dy * s;
-        let ry = -dx * s + dy * c;
-        dx = rx;
-        dy = ry;
-    }
-    let sx = (dx as f32) * view.scale;
-    let sy = -(dy as f32) * view.scale;
-    Vec2::new(
-        view.screen_x + view.width * 0.5 + sx,
-        view.screen_y + view.height * 0.5 + sy,
-    )
 }
 
 /// Camera for MARKER projection (map XY → virtual HUD).
@@ -425,8 +436,10 @@ pub struct MarkerCam {
     pub y: f64,
     /// Facing degrees.
     pub yaw_deg: f64,
-    /// Map units that span half the virtual width at centre.
+    /// Legacy radar scale (unused since markers project in perspective).
     pub scale: f64,
+    /// Eye height (map units) for perspective markers.
+    pub z: f64,
 }
 
 impl Default for MarkerCam {
@@ -436,6 +449,7 @@ impl Default for MarkerCam {
             y: 0.0,
             yaw_deg: 0.0,
             scale: 1024.0,
+            z: 0.0,
         }
     }
 }
@@ -446,6 +460,7 @@ thread_local! {
         y: 0.0,
         yaw_deg: 0.0,
         scale: 1024.0,
+        z: 0.0,
     }) };
 }
 
@@ -473,22 +488,32 @@ pub fn set_marker_cam(cam: MarkerCam) {
     MARKER_CAM.with(|c| c.set(cam));
 }
 
+/// Project a MARKER's world point into the HUD like the 3D view does (Doom
+/// angles: 0 = east, counter-clockwise; focal length 160 per 200 virtual
+/// rows). Points behind the camera or off screen pin to the screen edge.
 fn project_marker(w: &HudWidget, vw: f32, vh: f32) -> (f32, f32, bool) {
     let cam = MARKER_CAM.with(|c| c.get());
-    let wx = f64::from(w.world_xyz[0]);
-    let wy = f64::from(w.world_xyz[1]);
-    let dx = wx - cam.x;
-    let dy = wy - cam.y;
+    let dx = f64::from(w.world_xyz[0]) - cam.x;
+    let dy = f64::from(w.world_xyz[1]) - cam.y;
+    let dz = f64::from(w.world_xyz[2]) + 16.0 - cam.z;
     let rad = cam.yaw_deg.to_radians();
     let (s, c) = (rad.sin(), rad.cos());
-    // Forward = +Y in Doom; rotate into view space (right, forward).
-    let right = dx * c + dy * s;
-    let forward = -dx * s + dy * c;
-    let scale = cam.scale.max(1.0);
-    let mut sx = (vw * 0.5) + (right / scale) as f32 * (vw * 0.5);
-    let mut sy = (vh * 0.5) - (forward / scale) as f32 * (vh * 0.5);
-    let margin = 8.0;
-    let mut off = false;
+    let forward = dx * c + dy * s;
+    let right = dx * s - dy * c;
+    let focal = 160.0 * f64::from(vh) / 200.0;
+    let (cx, cy) = (f64::from(vw) * 0.5, f64::from(vh) * 0.5);
+    let margin = 8.0f32;
+    let (mut sx, mut sy, mut off) = if forward > 16.0 {
+        (
+            (cx + right * focal / forward) as f32,
+            (cy - dz * focal / forward) as f32,
+            false,
+        )
+    } else {
+        // Behind: pin to the bottom edge on the side it lies.
+        let side = if right >= 0.0 { vw - margin } else { margin };
+        (side, vh - margin, true)
+    };
     if sx < margin || sx > vw - margin || sy < margin || sy > vh - margin {
         off = true;
         sx = sx.clamp(margin, vw - margin);
@@ -577,6 +602,7 @@ mod tests {
             y: 0.0,
             yaw_deg: 0.0,
             scale: 256.0,
+            z: 0.0,
         });
         let mut hud = ModHud::new();
         let mut m = HudWidget::default();

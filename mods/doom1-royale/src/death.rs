@@ -1,4 +1,4 @@
-//! Death loot (`§6.2`) and elimination / spectate flow (`§6.6` / BR5).
+//! Elimination / spectate flow (`§6.6` / BR5).
 
 use core::fmt::Write;
 
@@ -7,15 +7,7 @@ use room_script_sdk::hud::{Hud, anchor, font, layer};
 
 use crate::combat::CombatHud;
 use crate::host::Host;
-use crate::loot::LootSpawner;
-use crate::tables::{Item, MAX_PLAYERS, TICRATE};
-
-const WEAPON_ITEMS: [(Item, Item); 4] = [
-    (Item::Shotgun, Item::Shell),
-    (Item::Chaingun, Item::Clip),
-    (Item::RocketLauncher, Item::RocketAmmo),
-    (Item::Chainsaw, Item::Shell),
-];
+use crate::tables::{MAX_PLAYERS, TICRATE};
 
 const PANEL_SECS: i32 = 4;
 const PANEL_TICS: i32 = PANEL_SECS * TICRATE;
@@ -258,50 +250,4 @@ impl DeathExperience {
             .text(title.as_str())
             .show();
     }
-}
-
-/// Spawn weapons the victim carried (plus one ammo pack each) in a tight cluster.
-pub fn drop_death_loot<H: Host, S: LootSpawner>(
-    host: &mut H,
-    spawner: &S,
-    body: Actor,
-    pistol: room_script_sdk::ClassRef,
-    clip: room_script_sdk::ClassRef,
-) {
-    let pos = host.actor_pos(body);
-    let mut dropped = 0usize;
-    for (gun, ammo) in WEAPON_ITEMS {
-        let gun_cls = spawner.item_class(gun);
-        if host.actor_count_inv(body, gun_cls) > 0 {
-            let off = [
-                pos[0] + (dropped as f64) * 20.0,
-                pos[1] + f64::from((dropped % 2) as u32) * 16.0,
-                pos[2],
-            ];
-            spawner.spawn_gun(host, gun, off);
-            dropped += 1;
-            let _ = ammo;
-        }
-    }
-    if host.actor_count_inv(body, pistol) > 0 && dropped == 0 {
-        spawner.spawn_item(
-            host,
-            Item::Shotgun,
-            crate::rarity::Rarity::Common,
-            [pos[0], pos[1], pos[2]],
-        );
-        spawner.spawn_item(host, Item::Shell, crate::rarity::Rarity::Common, [
-            pos[0] + 16.0,
-            pos[1],
-            pos[2],
-        ]);
-    } else if dropped == 0 {
-        spawner.spawn_gun(host, Item::Shotgun, pos);
-        spawner.spawn_item(host, Item::Shell, crate::rarity::Rarity::Common, [
-            pos[0] + 20.0,
-            pos[1],
-            pos[2],
-        ]);
-    }
-    let _ = clip;
 }

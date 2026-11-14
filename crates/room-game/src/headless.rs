@@ -1750,6 +1750,23 @@ impl Headless {
         self.world.as_ref()
     }
 
+    /// Set which seats are bots once the server's `start` says so: seats
+    /// `first..coop_players` when `fill_bots`, none otherwise. A netplay map
+    /// is prepared before `start` (bot seats unknown then), so the client calls
+    /// this before the first tic; also used for later maps via `options`.
+    pub fn set_bot_seats(&mut self, fill_bots: bool, first: u8) {
+        self.options.fill_bots = fill_bots;
+        self.options.bot_first_seat = first;
+        let coop = self.options.coop_players;
+        if let Some(world) = self.world.as_mut() {
+            for seat in 0..coop.min(room_sim::MAX_PLAYERS as u8) {
+                if world.players[usize::from(seat)].is_some() {
+                    world.set_seat_bot(seat, fill_bots && seat >= first);
+                }
+            }
+        }
+    }
+
     /// Mutable world.
     pub fn world_mut(&mut self) -> Option<&mut World> {
         self.world.as_mut()

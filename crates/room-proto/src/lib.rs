@@ -12,7 +12,7 @@ mod tic;
 
 pub use control::{
     ControlMsg, HelloMsg, IceServerEntry, KNOWN_PACKS, MediaInfo, RejectMsg, ResultRow,
-    RoomContentRef, RoomModRef, RosterSeat, SeatState, WelcomeMsg, WelcomeRoom,
+    RoomContentRef, RoomModRef, RosterSeat, SeatPing, SeatState, WelcomeMsg, WelcomeRoom,
     content_fingerprint, encode_control, is_known_pack, is_valid_content_file, is_valid_mod_name,
     parse_control, parse_control_bytes,
 };

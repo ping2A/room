@@ -16,6 +16,7 @@ pub mod id {
     pub const ALIVE: u16 = 1;
     pub const ZONE_TEXT: u16 = 2;
     pub const ZONE_BAR: u16 = 3;
+    pub const KILLS: u16 = 4;
     pub const FEED0: u16 = 10;
     pub const ELIM: u16 = 20;
     pub const HIT: u16 = 21;
@@ -30,7 +31,11 @@ pub mod drop_id {
     pub const MAP: u16 = 41;
     pub const CURSOR: u16 = 42;
     pub const FOOTER: u16 = 43;
+    /// Legend entries (one per gun type).
+    pub const LEGEND0: u16 = 44;
     pub const TEAM0: u16 = 50;
+    /// Planned gun markers on the drop map (shared by every seat).
+    pub const GUN0: u16 = 200;
 }
 
 const FEED_LINES: usize = 5;
@@ -77,6 +82,7 @@ pub fn clear_all() {
         let seat = s as i32;
         for id in [
             id::ALIVE,
+            id::KILLS,
             id::ZONE_TEXT,
             id::ZONE_BAR,
             id::ELIM,
@@ -134,32 +140,49 @@ impl HudFrame<'_> {
                 continue;
             }
             let seat_i = seat as i32;
-            let mut stats = Msg::new();
+            // Under the minimap: players left, then your kills.
+            let stats_y: i16 = if self.show_zone { 78 } else { 8 };
             let kills = host.player_stat(seat_i, room_script_sdk::game::player_prop::FRAGS);
-            let _ = write!(stats, "ALIVE {}  KILLS {}", self.alive_n, kills);
-            let _ = Hud::text(id::ALIVE)
-                .seat(seat_i)
-                .anchor(anchor::TOP_RIGHT)
-                .at(-8, 8)
-                .font(font::SMALL)
-                .layer(layer::OVER_HUD)
-                .align(room_script_sdk::hud::align::RIGHT)
-                .text(stats.as_str())
-                .show();
+            for (wid, dy, label, color) in [
+                (id::ALIVE, 0, self.alive_n as i32, "White"),
+                (id::KILLS, 10, kills, "Gold"),
+            ] {
+                let mut line = Msg::new();
+                let name = if wid == id::ALIVE { "ALIVE" } else { "KILLS" };
+                let _ = write!(line, "{name} {label}");
+                let _ = Hud::text(wid)
+                    .seat(seat_i)
+                    .anchor(anchor::TOP_RIGHT)
+                    .at(-6, stats_y + dy)
+                    .font(font::SMALL)
+                    .layer(layer::OVER_HUD)
+                    .align(room_script_sdk::hud::align::RIGHT)
+                    .color(color)
+                    .text(line.as_str())
+                    .show();
+            }
 
             if self.show_zone {
+                // Square minimap under the ALIVE line: the whole level
+                // around you (about 1,700 units across), zone tinted.
                 let _ = Hud::map(id::MINIMAP)
                     .seat(seat_i)
                     .anchor(anchor::TOP_RIGHT)
-                    .at(-72, 22)
-                    .size(64, 48)
+                    .at(-74, 6)
+                    .size(68, 68)
                     .layer(layer::OVER_HUD)
-                    .value(1200)
-                    .max(map_layers::GEOMETRY | map_layers::ZONES | map_layers::MARKERS)
-                    .rgba2(0x1010_18ff)
+                    .value(400)
+                    .max(
+                        map_layers::GEOMETRY
+                            | map_layers::ZONES
+                            | map_layers::MARKERS
+                            | map_layers::REVEAL,
+                    )
+                    .rgba2(0x0b10_17d8)
                     .show();
                 if let Some(t_rel) = self.t_rel {
                     let (label, bar) = zone_label(t_rel);
+                    let closing = label.as_str().starts_with("ZONE CLOSING");
                     if !label.as_str().is_empty() {
                         let _ = Hud::text(id::ZONE_TEXT)
                             .seat(seat_i)
@@ -167,6 +190,7 @@ impl HudFrame<'_> {
                             .at(0, 6)
                             .font(font::SMALL)
                             .layer(layer::OVER_HUD)
+                            .color(if closing { "Red" } else { "White" })
                             .text(label.as_str())
                             .show();
                     }
@@ -174,12 +198,12 @@ impl HudFrame<'_> {
                         let _ = Hud::bar(id::ZONE_BAR)
                             .seat(seat_i)
                             .anchor(anchor::TOP_CENTER)
-                            .at(-40, 18)
-                            .size(80, 4)
+                            .at(0, 16)
+                            .size(80, 3)
                             .layer(layer::OVER_HUD)
                             .value(val)
                             .max(max)
-                            .rgba(0x40ff_40ff)
+                            .rgba(if closing { 0xe040_40ff } else { 0xf0f0_f0ff })
                             .rgba2(0x2020_20ff)
                             .show();
                     }
@@ -200,6 +224,7 @@ impl HudFrame<'_> {
                         .font(font::SMALL)
                         .layer(layer::OVER_HUD)
                         .align(room_script_sdk::hud::align::RIGHT)
+                        .color("Gray")
                         .text(text)
                         .show();
                 } else {

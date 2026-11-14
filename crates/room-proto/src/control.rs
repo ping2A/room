@@ -37,6 +37,16 @@ pub struct RosterSeat {
     pub muted: bool,
 }
 
+/// One seat's round-trip time in a `pings` push.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeatPing {
+    /// Seat index.
+    pub seat: u8,
+    /// Smoothed round trip to the server (ms), as the client measured it.
+    pub ms: u16,
+}
+
 /// Room settings inside `welcome`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -291,6 +301,17 @@ pub enum ControlMsg {
     Roster {
         /// Seats.
         seats: Vec<RosterSeat>,
+        /// Milliseconds until a timed start (bot-fill / quick-play rooms),
+        /// measured when the server sent this message. `None`: the game
+        /// starts when every slot is filled and ready.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        starts_in_ms: Option<u32>,
+    },
+    /// Server → clients, every few seconds in game: each seat's ping for the
+    /// scoreboard.
+    Pings {
+        /// Seats that reported a round-trip time.
+        seats: Vec<SeatPing>,
     },
     /// Client ready after map load.
     Ready {},

@@ -29,7 +29,6 @@ pub trait Host {
     fn actor_destroy(&mut self, a: Actor);
     fn actor_is_monster(&self, a: Actor) -> bool;
     fn actor_take(&mut self, a: Actor, item: ClassRef, amount: i32) -> i32;
-    fn actor_count_inv(&self, a: Actor, item: ClassRef) -> i32;
     #[allow(dead_code)]
     fn class_is(&self, class: ClassRef, parent: ClassRef) -> bool;
     fn actor_set_pos(&mut self, a: Actor, pos: [f64; 3]) -> bool;
@@ -51,9 +50,6 @@ pub trait Host {
     fn actor_player(&self, a: Actor) -> Option<i32>;
     fn player_set_camera(&mut self, slot: i32, target: Option<Actor>);
     fn player_capture_input(&mut self, slot: i32, mask: u32);
-    fn player_set_team(&mut self, slot: i32, team: i32);
-    fn player_team(&self, slot: i32) -> i32;
-    fn actor_set_flag(&mut self, a: Actor, flag: i32, on: bool);
 }
 
 /// Position-check spawn flag (loot side ammo).
@@ -121,9 +117,6 @@ impl Host for SdkHost {
     fn actor_take(&mut self, a: Actor, item: ClassRef, amount: i32) -> i32 {
         a.take(item, amount)
     }
-    fn actor_count_inv(&self, a: Actor, item: ClassRef) -> i32 {
-        a.count_inv(item)
-    }
     fn class_is(&self, class: ClassRef, parent: ClassRef) -> bool {
         game::class_is(class, parent)
     }
@@ -172,15 +165,6 @@ impl Host for SdkHost {
     fn player_capture_input(&mut self, slot: i32, mask: u32) {
         game::player_capture_input(slot, mask);
     }
-    fn player_set_team(&mut self, slot: i32, team: i32) {
-        game::player_set_team(slot, team);
-    }
-    fn player_team(&self, slot: i32) -> i32 {
-        game::player_team(slot)
-    }
-    fn actor_set_flag(&mut self, a: Actor, flag: i32, on: bool) {
-        game::actor_set_flag(a, flag, on);
-    }
 }
 
 #[cfg(test)]
@@ -195,7 +179,6 @@ mod fake {
         health: i32,
         class: ClassRef,
         player: Option<i32>,
-        team: i32,
         is_monster: bool,
         alive: bool,
         damage_factor: f64,
@@ -214,7 +197,6 @@ mod fake {
         classes: Vec<(String, ClassRef)>,
         things: Vec<(i32, [f64; 3])>,
         rules: [(i32, i32); 8],
-        teams: [(i32, i32); 8],
         #[allow(dead_code)]
         next_class: u32,
         pub cameras: Vec<(i32, Option<u64>)>,
@@ -232,7 +214,6 @@ mod fake {
                 classes: Vec::new(),
                 things: Vec::new(),
                 rules: [(0, 0); 8],
-                teams: [(0, 255); 8],
                 next_class: 1,
                 cameras: Vec::new(),
             }
@@ -325,7 +306,6 @@ mod fake {
                 health: 20,
                 class,
                 player: None,
-                team: 255,
                 is_monster: true,
                 alive: true,
                 damage_factor: 1.0,
@@ -389,18 +369,6 @@ mod fake {
                 }
             }
             amount
-        }
-        fn actor_count_inv(&self, a: Actor, item: ClassRef) -> i32 {
-            self.actors
-                .get((a.0.0 as usize).saturating_sub(1))
-                .map(|f| {
-                    f.inv[..usize::from(f.inv_n)]
-                        .iter()
-                        .find(|&&(c, _)| c == item)
-                        .map(|&(_, n)| n)
-                        .unwrap_or(0)
-                })
-                .unwrap_or(0)
         }
         fn class_is(&self, class: ClassRef, parent: ClassRef) -> bool {
             class == parent
@@ -480,25 +448,6 @@ mod fake {
                 .push((slot, target.map(|a| a.0.0)));
         }
         fn player_capture_input(&mut self, _slot: i32, _mask: u32) {}
-        fn player_set_team(&mut self, slot: i32, team: i32) {
-            if slot >= 0 && (slot as usize) < self.teams.len() {
-                self.teams[slot as usize] = (slot, team);
-            }
-        }
-        fn player_team(&self, slot: i32) -> i32 {
-            if slot >= 0 && (slot as usize) < self.teams.len() {
-                self.teams[slot as usize].1
-            } else {
-                255
-            }
-        }
-        fn actor_set_flag(&mut self, a: Actor, flag: i32, on: bool) {
-            if flag == room_script_abi::class_flag::BUDDHA as i32 {
-                if let Some(f) = self.actors.get_mut((a.0.0 as usize).saturating_sub(1)) {
-                    f.buddha = on;
-                }
-            }
-        }
     }
 }
 
