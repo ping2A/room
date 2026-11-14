@@ -47,6 +47,7 @@ mod polyobj;
 pub mod powerups;
 #[cfg(test)]
 mod props_tests;
+pub mod reach;
 mod script_host;
 pub mod script_mods;
 mod sector_specials;

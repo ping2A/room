@@ -15,6 +15,7 @@ pub trait Host {
     fn atan2(&self, y: f64, x: f64) -> f64;
     fn floor_z(&self, x: f64, y: f64) -> f64;
     fn ceiling_z(&self, x: f64, y: f64) -> f64;
+    fn point_reachable(&self, x: f64, y: f64) -> bool;
     fn actor_can_see(&self, a: Actor, b: Actor) -> bool;
     fn class_find(&self, name: &str) -> ClassRef;
     fn player(&self, slot: i32) -> Option<Actor>;
@@ -78,6 +79,9 @@ impl Host for SdkHost {
     }
     fn ceiling_z(&self, x: f64, y: f64) -> f64 {
         game::ceiling_z(x, y)
+    }
+    fn point_reachable(&self, x: f64, y: f64) -> bool {
+        game::point_reachable(x, y)
     }
     fn actor_can_see(&self, a: Actor, b: Actor) -> bool {
         a.can_see(b)
@@ -256,6 +260,9 @@ mod fake {
         }
         fn ceiling_z(&self, _x: f64, _y: f64) -> f64 {
             128.0
+        }
+        fn point_reachable(&self, _x: f64, _y: f64) -> bool {
+            true
         }
         fn actor_can_see(&self, _a: Actor, _b: Actor) -> bool {
             true

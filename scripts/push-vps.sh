@@ -95,8 +95,8 @@ excludes=(
 echo "==> rsync $OUT/ → $target"
 echo "    (keeping remote data/, logs/, .env, run/)"
 if [[ $# -gt 0 ]]; then
-  rsync -avz --delete "${excludes[@]}" "$OUT/" "$target" "$@"
+  rsync -avzH --delete "${excludes[@]}" "$OUT/" "$target" "$@"
 else
-  rsync -avz --delete "${excludes[@]}" "$OUT/" "$target"
+  rsync -avzH --delete "${excludes[@]}" "$OUT/" "$target"
 fi
 echo "==> done. On the VPS: cd to the tree and run ./room restart"

@@ -113,6 +113,11 @@ struct Args {
     /// `<data-dir>/content` when a data dir is set, else disabled.
     #[arg(long, env = "ROOM_CONTENT_DIR", default_value = "")]
     content_dir: String,
+    /// Files a deployment ships: `<dir>/content/*` is added to the content
+    /// library and `<dir>/presets.json` to the presets (only what is missing;
+    /// admin changes are kept). `./room` on a VPS passes `seed`.
+    #[arg(long, env = "ROOM_SEED_DIR", default_value = "")]
+    seed_dir: String,
     /// Largest content upload, in MiB.
     #[arg(long, env = "ROOM_CONTENT_MAX_MB", default_value_t = room_server::content_default_max_mb())]
     content_max_mb: u64,
@@ -213,7 +218,16 @@ async fn main() {
     } else {
         None
     };
+    let seed_dir = (!args.seed_dir.is_empty()).then(|| std::path::PathBuf::from(&args.seed_dir));
+    if let (Some(seed), Some(dir)) = (&seed_dir, &content_dir) {
+        room_server::seed_content(seed, dir);
+    }
     let content = room_server::ContentStore::open(content_dir, &args.data_dir, args.content_max_mb);
+    if let Some(seed) = &seed_dir {
+        content.seed_presets(&seed.join("presets.json"), &|m| {
+            mods.get(m).is_some() && mods.is_allowed(m)
+        });
+    }
     let cfg = ServerConfig {
         bind: args.bind,
         admin_bind: args.admin_bind,

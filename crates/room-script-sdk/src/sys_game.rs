@@ -53,6 +53,7 @@ game_imports! {
     fn actor_count_inv(actor: i64, class: i32) -> i32;
     fn point_floor_z(x: f64, y: f64) -> f64;
     fn point_ceiling_z(x: f64, y: f64) -> f64;
+    fn point_reachable(x: f64, y: f64) -> i32;
     fn actor_spawn(class: i32, x: f64, y: f64, z: f64, angle: f64, flags: i32) -> i64;
     fn actor_destroy(actor: i64);
     fn actor_set_i32(actor: i64, prop: i32, v: i32);

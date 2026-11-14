@@ -19,6 +19,38 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use tracing::{info, warn};
 
+/// Copy the game files a deployment ships (`<seed>/content/*`) into the
+/// content library when the library does not have them yet (hard link when
+/// possible). Files already there are never replaced: an admin may have
+/// uploaded a different version under the same name.
+pub fn seed_content(seed: &Path, content_dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(seed.join("content")) else {
+        return;
+    };
+    if let Err(e) = std::fs::create_dir_all(content_dir) {
+        warn!(dir = %content_dir.display(), %e, "content dir unusable; seed skipped");
+        return;
+    }
+    for e in rd.flatten() {
+        let src = e.path();
+        let Some(name) = src.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
+            continue;
+        };
+        if !is_valid_content_file(&name) || !src.is_file() {
+            continue;
+        }
+        let dst = content_dir.join(&name);
+        if dst.exists() {
+            continue;
+        }
+        let done = std::fs::hard_link(&src, &dst).or_else(|_| std::fs::copy(&src, &dst).map(|_| ()));
+        match done {
+            Ok(()) => info!(file = %name, "shipped content added"),
+            Err(e) => warn!(file = %name, %e, "shipped content not copied"),
+        }
+    }
+}
+
 /// Default upload cap (MiB) when `--content-max-mb` is not set.
 pub const DEFAULT_MAX_CONTENT_MB: u64 = 2048;
 
@@ -382,6 +414,63 @@ impl ContentStore {
         let p = std::sync::Arc::new(crate::load_plan::profile_path(&path));
         lock().insert(file.to_owned(), (entry.fingerprint, p.clone()));
         Some(p)
+    }
+
+    /// Add the presets a deployment ships (`<seed>/presets.json`) that this
+    /// server does not have yet. Each shipped id is offered once: the ids
+    /// already offered are kept in `<data-dir>/presets_seeded.json`, so a
+    /// preset an admin deleted or renamed is not brought back, and admin
+    /// edits are never overwritten. A shipped preset whose files or mod are
+    /// missing is skipped (and offered again on a later start).
+    pub fn seed_presets(&self, seed: &Path, known_mod: &dyn Fn(&str) -> bool) {
+        let Ok(bytes) = std::fs::read(seed) else {
+            return;
+        };
+        let shipped = match serde_json::from_slice::<PresetConfig>(&bytes) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(path = %seed.display(), %e, "seed presets unreadable");
+                return;
+            }
+        };
+        let seeded_path = self
+            .presets_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|d| d.join("presets_seeded.json"));
+        let mut offered: Vec<String> = seeded_path
+            .as_ref()
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let mut added = Vec::new();
+        for preset in shipped.presets {
+            if offered.contains(&preset.id) {
+                continue;
+            }
+            let mut cfg = self.presets();
+            if cfg.presets.iter().any(|p| p.id == preset.id) {
+                offered.push(preset.id.clone());
+                continue;
+            }
+            let id = preset.id.clone();
+            cfg.presets.push(preset);
+            match self.set_presets(cfg, known_mod) {
+                Ok(()) => {
+                    offered.push(id.clone());
+                    added.push(id);
+                }
+                Err(e) => warn!(preset = %id, %e, "shipped preset skipped"),
+            }
+        }
+        if let Some(p) = &seeded_path
+            && let Ok(body) = serde_json::to_vec_pretty(&offered)
+        {
+            let _ = std::fs::write(p, body);
+        }
+        if !added.is_empty() {
+            info!(presets = ?added, "shipped presets added");
+        }
     }
 
     /// Current presets.
@@ -916,6 +1005,46 @@ mod tests {
             }],
         };
         assert!(store.set_presets(bad, &|_| false).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn shipped_content_and_presets_are_seeded_once() {
+        let root = std::env::temp_dir().join(format!("room-seed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let seed = root.join("seed");
+        std::fs::create_dir_all(seed.join("content")).unwrap();
+        std::fs::write(seed.join("content/free.wad"), wad(b"IWAD", &["MAP01", "THINGS"])).unwrap();
+        std::fs::write(seed.join("content/addon.wad"), wad(b"PWAD", &["MAP02", "THINGS"])).unwrap();
+        std::fs::write(seed.join("content/bad name.wad"), b"x").unwrap();
+        let shipped = r#"{"presets":[
+            {"id":"free","title":"Free","iwad":"free.wad"},
+            {"id":"free-addon","title":"Free + addon","iwad":"free.wad","content":["addon.wad"]},
+            {"id":"modded","title":"Needs a mod","iwad":"free.wad","mod":"royale"},
+            {"id":"missing","title":"Missing file","iwad":"nope.wad"}
+        ]}"#;
+        std::fs::write(seed.join("presets.json"), shipped).unwrap();
+        let lib = root.join("data/content");
+        // An admin-uploaded file with a shipped name is kept.
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("addon.wad"), wad(b"PWAD", &["MAP03", "THINGS"])).unwrap();
+        seed_content(&seed, &lib);
+        assert!(lib.join("free.wad").is_file());
+        assert!(!lib.join("bad name.wad").exists());
+        assert_eq!(wad_maps(&std::fs::read(lib.join("addon.wad")).unwrap()), ["MAP03"]);
+        let data = root.join("data");
+        let store = ContentStore::open(Some(lib.clone()), data.to_str().unwrap(), 64);
+        store.seed_presets(&seed.join("presets.json"), &|_| false);
+        let ids: Vec<_> = store.presets().presets.into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["free", "free-addon"]);
+        // The admin deletes one; a restart does not bring it back, but a
+        // preset that was skipped (its mod is now allowed) is added.
+        let mut cfg = store.presets();
+        cfg.presets.retain(|p| p.id != "free");
+        store.set_presets(cfg, &|_| false).unwrap();
+        let again = ContentStore::open(Some(lib.clone()), data.to_str().unwrap(), 64);
+        again.seed_presets(&seed.join("presets.json"), &|m| m == "royale");
+        let ids: Vec<_> = again.presets().presets.into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["free-addon", "modded"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

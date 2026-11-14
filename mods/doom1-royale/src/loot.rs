@@ -34,11 +34,19 @@ const SAME_SPOT: f64 = 32.0;
 impl Royale {
     /// Remember where the map's pickups were, then remove them (keys stay).
     pub(crate) fn clear_map_pickups<H: Host>(&mut self, host: &mut H) {
+        // Every pickup goes; only reachable spots are kept for loot (items
+        // in secret closets or behind locked doors are removed too).
+        let mut gone = [[0.0; 2]; 512];
+        let mut ngone = 0usize;
         let mut buf = [[0.0; 3]; 64];
         for ednum in PICKUP_EDNUMS {
             let n = host.level_things(ednum, &mut buf).min(buf.len());
             for p in &buf[..n] {
-                if self.nitem_spots < MAX_SPOTS {
+                if ngone < gone.len() {
+                    gone[ngone] = [p[0], p[1]];
+                    ngone += 1;
+                }
+                if self.nitem_spots < MAX_SPOTS && self.reachable(host, p[0], p[1]) {
                     self.item_spots[self.nitem_spots] = [p[0], p[1], host.floor_z(p[0], p[1])];
                     self.nitem_spots += 1;
                 }
@@ -55,10 +63,7 @@ impl Royale {
                 continue;
             }
             let p = xy(host.actor_pos(a));
-            if self.item_spots[..self.nitem_spots]
-                .iter()
-                .any(|s| dist2(xy(*s), p) < 1.0)
-            {
+            if gone[..ngone].iter().any(|s| dist2(*s, p) < 1.0) {
                 host.actor_destroy(a);
             }
         }
@@ -111,7 +116,10 @@ impl Royale {
                 for (dx, dy) in dirs {
                     let (x, y) = (a[0] + dx * d, a[1] + dy * d);
                     let z = host.floor_z(x, y);
-                    if (z - az).abs() > PROBE_STEP || host.ceiling_z(x, y) - z < PROBE_HEADROOM {
+                    if (z - az).abs() > PROBE_STEP
+                        || host.ceiling_z(x, y) - z < PROBE_HEADROOM
+                        || !self.reachable(host, x, y)
+                    {
                         continue;
                     }
                     let p = [x, y];

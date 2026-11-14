@@ -148,6 +148,14 @@ load_env_vps() {
   [[ "$ROOM_DATA_DIR" = /* ]] || ROOM_DATA_DIR="$ROOT/$ROOM_DATA_DIR"
   [[ "$ROOM_MODS_DIR" = /* ]] || ROOM_MODS_DIR="$ROOT/$ROOM_MODS_DIR"
   export ROOM_WEB_ROOT ROOM_DATA_DIR ROOM_MODS_DIR
+  # Shipped game files + presets (seed/): added to data/ on start when missing.
+  if [[ -z "${ROOM_SEED_DIR:-}" && -d "$ROOT/seed" ]]; then
+    ROOM_SEED_DIR="$ROOT/seed"
+  fi
+  [[ -z "${ROOM_SEED_DIR:-}" || "$ROOM_SEED_DIR" = /* ]] || ROOM_SEED_DIR="$ROOT/$ROOM_SEED_DIR"
+  export ROOM_SEED_DIR="${ROOM_SEED_DIR:-}"
+  # First start: allow every shipped mod (later the admin page's mods.json decides).
+  export ROOM_ALLOW_MODS="${ROOM_ALLOW_MODS:-*}"
   export ROOM_BIND="${ROOM_BIND:-0.0.0.0:8765}"
   export ROOM_ADMIN_BIND="${ROOM_ADMIN_BIND:-0.0.0.0:8766}"
 }
@@ -280,6 +288,7 @@ cmd_vps_start() {
   info "bind ${ROOM_BIND}  admin ${ROOM_ADMIN_BIND}"
   info "web  $ROOM_WEB_ROOT"
   info "data $ROOM_DATA_DIR"
+  [[ -n "$ROOM_SEED_DIR" ]] && info "seed $ROOM_SEED_DIR"
   info "log  $LOG_FILE"
 
   nohup "$BIN" \
@@ -376,6 +385,8 @@ cmd_vps_env_check() {
   echo "ROOM_WEB_ROOT=$ROOM_WEB_ROOT"
   echo "ROOM_DATA_DIR=$ROOM_DATA_DIR"
   echo "ROOM_MODS_DIR=$ROOM_MODS_DIR"
+  echo "ROOM_SEED_DIR=${ROOM_SEED_DIR:-}"
+  echo "ROOM_ALLOW_MODS=${ROOM_ALLOW_MODS:-}"
   echo "ticket_secret_set=$([[ -n ${ROOM_TICKET_SECRET:-} ]] && echo yes || echo no)"
   echo "bootstrap_set=$([[ -n ${ROOM_ADMIN_BOOTSTRAP:-} ]] && echo yes || echo no)"
 }

@@ -5,7 +5,18 @@ Layout
 ------
   bin/room-server   release binary
   web/              static client (wasm + HTML + doom1/doom2/Freedoom when packaged)
-  mods/             gameplay PK3s + voxel.pk3 (royale, bounty, …)
+  mods/             gameplay mods + voxel.pk3 (royale, bounty, survival, brutal-zscript, …)
+  seed/             shipped server library + presets, added to data/ on start:
+                      seed/content/   Freedoom 1/2, FreeDM, Brutal Doom pk3 +
+                                      brutal-zscript.wad, doom1/doom2 and
+                                      duke3d.grp when packaged
+                      seed/presets.json  lobby presets (Freedoom, + Brutal,
+                                      FreeDM, Battle Royale, Survival, Bounty,
+                                      Doom II, Duke co-op / DukeMatch)
+                    Only missing files/presets are added: admin uploads,
+                    edits and deleted presets are kept (data/presets_seeded.json).
+                    web/bundled/ holds the same Freedoom + Brutal files for
+                    "Play solo".
   data/             persistent (created on start; not overwritten by push)
   logs/             service logs
   run/              pid files

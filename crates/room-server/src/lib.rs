@@ -41,6 +41,7 @@ pub const fn content_default_max_mb() -> u64 {
 }
 pub use content::{
     ContentEntry, ContentKind, ContentStore, Preset, PresetConfig, PublicPreset, PublicPresets,
+    seed_content,
 };
 pub use http::{
     JoinRoomRequest, JoinRoomResponse, admin_router, bind_ephemeral, public_router, router, serve,

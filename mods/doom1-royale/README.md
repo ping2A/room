@@ -17,15 +17,19 @@ and no interaction between players beyond shooting each other.
 | **Solo practice** | One human in the room — dying ends the match (not in lobby *Play solo*; `room.toml` `solo = false`). |
 | **Free-for-all** | 2–8 players; every seat for themselves. |
 
-Bots (`fill_bots` / empty seats) use the same sim brain as humans so rooms
-feel full; 6 bots + 2 humans is a typical test.
+Bots (`fill_bots` / empty seats) run in the sim, so every client agrees.
+They stay inside the zone, go for the nearest gun while they only have
+fists, chase players they see, steer around walls and take a detour when
+blocked (no running on the spot), and only punch at melee range.
 
 ## Match flow (short)
 
-1. **Pregame** (10 s) — fists only, no damage.
+1. **Pregame** (10 s) — fists only; nobody can be hurt (every player is
+   shielded until the match starts).
 2. **Deploy** (3 s) — the weapons spawn, then every player is placed
    automatically, as far as possible from the others, on a free spot (never
-   on a gun); brief landing shield. There is no landing choice.
+   on a gun), at full health; brief landing shield. There is no landing
+   choice.
 3. **Loot** (60 s grace) — pick up what is on the map; the zone is visible.
 4. **Zone phases** — hold → shrink (centre moves); damage outside; final circle ~60 s to zero.
 5. **Victory** — winner, your place and the full standings (kills, damage)
@@ -52,6 +56,11 @@ link** in the game's panel gives a link to send to anyone.
 
 Placed once, at deploy; nothing is added later.
 
+- **Reachable only:** the engine works out the level's main area — the
+  largest set of sectors players can walk between both ways (doors without
+  keys, lifts, lowering walls and teleporters count; closets, cages, pits and
+  locked areas do not). Loot, player spots and the zone only use that area,
+  so nobody starts somewhere they cannot leave or others cannot reach.
 - **Where:** the spots of the map's own pickups (weapons, ammo, health,
   armour, powerups — keys stay), which the mod removes on load. Mappers put
   items where players can walk, so these spots are reachable. Monster spots

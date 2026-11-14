@@ -456,6 +456,16 @@ pub struct Player {
     pub quick_kick_down: bool,
     /// Sim-driven bot: [`crate::bot::run_bot_brains`] overwrites [`Self::cmd`] each tic.
     pub is_bot: bool,
+    /// Bot: position last tic (stuck detection).
+    pub bot_last_xy: (f64, f64),
+    /// Bot: walked last tic.
+    pub bot_walking: bool,
+    /// Bot: consecutive blocked tics.
+    pub bot_stuck: u16,
+    /// Bot: detour tics left.
+    pub bot_detour: u16,
+    /// Bot: detour heading (degrees).
+    pub bot_detour_dir: f64,
     /// Weapon to restore after a quick kick (`None` = not kicking).
     pub quick_kick_restore: Option<ClassId>,
     /// Consecutive idle tics (no move / fire / use / turn). Resets on input.

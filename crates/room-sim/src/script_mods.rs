@@ -444,6 +444,11 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
         GameFn::PointCeilingZ => {
             ret_f64(crate::physics::ceiling_at_xy(world, af(a, 0), af(a, 1)).unwrap_or(0.0))
         }
+        GameFn::PointReachable => bool_v(crate::reach::point_in_main_area(
+            world,
+            af(a, 0),
+            af(a, 1),
+        )),
         GameFn::ActorSpawn => {
             let cls = class_of(world, ai(a, 0))?;
             let pos = DVec3::new(af(a, 1), af(a, 2), af(a, 3));

@@ -424,6 +424,13 @@ pub fn ceiling_z(x: f64, y: f64) -> f64 {
     unsafe { sys::point_ceiling_z(x, y) }
 }
 
+/// The point is in the level's main area: players can walk there from the
+/// start and back (no closets, cages, pits or locked secrets).
+pub fn point_reachable(x: f64, y: f64) -> bool {
+    // SAFETY: scalar import.
+    unsafe { sys::point_reachable(x, y) != 0 }
+}
+
 /// End the level (normal or secret exit).
 pub fn exit_level(secret: bool) {
     // SAFETY: scalar import.

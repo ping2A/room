@@ -20,6 +20,8 @@ MAKE_ZIP=0
 # Default: ship doom1/doom2 + Freedoom + Cheello voxels when present under testdata/.
 IWAD_ARG=(--iwad all)
 NO_ASC=0
+BUILD_MODS=1
+SEED=1
 # Empty = auto (native on Linux, x86_64-unknown-linux-gnu elsewhere).
 TARGET="${ROOM_VPS_TARGET:-}"
 
@@ -41,6 +43,8 @@ Options:
   --target TRIPLE        Linux rustc target (default: native on Linux,
                               else x86_64-unknown-linux-gnu)
   --no-asc               skip AssemblyScript vendor in the web client
+  --no-mods-build        reuse the mods/*/*.wad already built
+  --no-seed              ship no game library / presets (seed/)
   -h, --help             this help
 
 Push to a VPS with: ./room push user@host:~/room/
@@ -63,6 +67,8 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --no-asc) NO_ASC=1; shift ;;
+    --no-mods-build) BUILD_MODS=0; shift ;;
+    --no-seed) SEED=0; shift ;;
     *) echo "unknown option: $1" >&2; usage 1 ;;
   esac
 done
@@ -161,14 +167,25 @@ if command -v file >/dev/null 2>&1; then
   fi
 fi
 
+if [[ "$BUILD_MODS" -eq 1 ]]; then
+  echo "==> mods (rebuild every mods/<dir>)"
+  if ! ./scripts/room-server.sh mods; then
+    echo "package-vps: mod build failed — shipping the mods/*/*.wad already built" >&2
+  fi
+fi
+
 echo "==> web client + mods"
 WEB_FLAGS=(--out "$OUT/web" "${IWAD_ARG[@]}")
 [[ "$NO_ASC" -eq 1 ]] && WEB_FLAGS+=(--no-asc)
 ./scripts/package-web.sh "${WEB_FLAGS[@]}"
 
+# "Play solo" content (Freedoom + Brutal Doom) under web/bundled/.
+echo "==> solo content (web/bundled)"
+./scripts/bundle-solo-content.sh "$OUT/web"
+
 echo "==> assemble $OUT"
 # Keep an existing .env (secrets); refresh everything else we own.
-rm -rf "$OUT/bin" "$OUT/mods" "$OUT/data" "$OUT/logs" "$OUT/run"
+rm -rf "$OUT/bin" "$OUT/mods" "$OUT/data" "$OUT/logs" "$OUT/run" "$OUT/seed"
 mkdir -p "$OUT/bin" "$OUT/mods" "$OUT/data" "$OUT/logs" "$OUT/run/pids"
 
 cp "$SERVER_BIN" "$OUT/bin/room-server"
@@ -181,6 +198,45 @@ fi
 # Mods next to the binary (same layout as Docker / ROOM_MODS_DIR).
 if [[ -d "$OUT/web/mods" ]]; then
   cp -R "$OUT/web/mods/." "$OUT/mods/"
+fi
+
+# Shipped server library + presets. ./room start passes seed/ to the server,
+# which adds missing files to data/content/ and missing presets to
+# data/presets.json (admin edits and deletions are kept).
+if [[ "$SEED" -eq 1 ]]; then
+  echo "==> server library + presets (seed/)"
+  mkdir -p "$OUT/seed/content"
+  # Hard links keep the tree small (rsync -H keeps them on the VPS).
+  seed_file() {
+    local src="$1" name="$2"
+    [[ -f "$src" ]] || return 1
+    ln "$src" "$OUT/seed/content/$name" 2>/dev/null || cp "$src" "$OUT/seed/content/$name"
+    echo "room: seed $name ($(du -h "$src" | awk '{print $1}'))"
+  }
+  # IWADs the web build shipped (follows --iwad).
+  for wad in doom1.wad doom2.wad freedoom1.wad freedoom2.wad; do
+    seed_file "$OUT/web/$wad" "$wad" || true
+  done
+  if [[ -f "$OUT/seed/content/freedoom2.wad" ]]; then
+    seed_file "$ROOT/testdata/freedoom/freedm.wad" freedm.wad || true
+  fi
+  # Brutal Doom + Room's Rust ZScript port (same files as web/bundled).
+  BRUTAL_NAME=""
+  if [[ -f "$OUT/web/bundled/brutal.pk3" ]]; then
+    BRUTAL_NAME="$(basename "${ROOM_BRUTALDOOM_PK3:-brutal.pk3}")"
+    for c in "$ROOT"/testdata/brutal*.pk3 "$ROOT"/testdata/*/brutal*.pk3; do
+      [[ -z "${ROOM_BRUTALDOOM_PK3:-}" && -f "$c" ]] && { BRUTAL_NAME="$(basename "$c")"; break; }
+    done
+    seed_file "$OUT/web/bundled/brutal.pk3" "$BRUTAL_NAME" || BRUTAL_NAME=""
+    seed_file "$OUT/web/bundled/brutal-zscript.wad" brutal-zscript.wad || true
+  fi
+  # Duke Nukem 3D (commercial: only with --iwad all|doom, from testdata/duke).
+  if [[ "${IWAD_ARG[1]}" == all || "${IWAD_ARG[1]}" == doom ]]; then
+    for g in "${ROOM_DUKE_GRP:-}" "$ROOT/testdata/duke/duke3d.grp" "$ROOT/testdata/duke/DUKE3D.GRP"; do
+      [[ -n "$g" ]] && seed_file "$g" duke3d.grp && break
+    done
+  fi
+  python3 "$ROOT/scripts/vps/seed-presets.py" "$OUT/seed" "$OUT/mods" "$BRUTAL_NAME"
 fi
 
 cp "$ROOT/scripts/vps/room" "$OUT/room"

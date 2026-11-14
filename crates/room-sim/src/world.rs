@@ -568,6 +568,8 @@ pub struct World {
     pub mod_hud: crate::mod_hud::ModHud,
     /// Battle royale zone rings (`docs/28` §9 BE1). Render-only; not in checksum.
     pub mod_zones: crate::mod_zones::ModZones,
+    /// Sectors in the level's main area ([`crate::reach`]), built on first use.
+    pub reach_area: std::sync::OnceLock<Vec<bool>>,
     /// Lobby / session display names per seat (`docs/28` §9 BE3).
     pub player_names: crate::player_names::PlayerNames,
     /// Diagnostic lines for the drop-down console (drained by the shell).
@@ -1884,6 +1886,7 @@ impl World {
             messages: Vec::new(),
             mod_hud: crate::mod_hud::ModHud::new(),
             mod_zones: crate::mod_zones::ModZones::new(),
+            reach_area: std::sync::OnceLock::new(),
             player_names: crate::player_names::PlayerNames::default(),
             debug_log: Vec::new(),
             kill_events: Vec::new(),
@@ -7079,18 +7082,7 @@ impl World {
             crate::physics::xy_movement(self, id);
             crate::physics::z_movement(self, id);
             // Doom touches specials inside `P_TryMove`; approximate post-move.
-            if let Some(pi) = self
-                .players
-                .iter()
-                .enumerate()
-                .find_map(|(i, p)| p.as_ref().and_then(|pl| (pl.mo == Some(id)).then_some(i)))
-            {
-                let mut p = self.players[pi].take().unwrap_or_default();
-                self.taken_player = Some((pi, id));
-                crate::pickup::touch_specials(self, &mut p, id);
-                self.taken_player = None;
-                self.players[pi] = Some(p);
-            }
+            self.touch_specials_for_pawn(id);
             self.advance_actor_state(id);
             self.tick_zscript_actor(id);
         }
@@ -7117,6 +7109,9 @@ impl World {
             }
             crate::physics::xy_movement(self, id);
             crate::physics::z_movement(self, id);
+            // Player pawns spawned after the map's things (bots, late
+            // joiners) pick up items like the others.
+            self.touch_specials_for_pawn(id);
             self.advance_actor_state(id);
             self.tick_zscript_actor(id);
         }
@@ -7160,6 +7155,23 @@ impl World {
         crate::mugshot::tick_players(self);
         self.level.tick();
         // gc_destroyed_actors — later
+    }
+
+    /// If `id` is a player's pawn, touch the pickups it overlaps.
+    fn touch_specials_for_pawn(&mut self, id: ActorId) {
+        let Some(pi) = self
+            .players
+            .iter()
+            .enumerate()
+            .find_map(|(i, p)| p.as_ref().and_then(|pl| (pl.mo == Some(id)).then_some(i)))
+        else {
+            return;
+        };
+        let mut p = self.players[pi].take().unwrap_or_default();
+        self.taken_player = Some((pi, id));
+        crate::pickup::touch_specials(self, &mut p, id);
+        self.taken_player = None;
+        self.players[pi] = Some(p);
     }
 
     /// Enter a state, optionally running its action (`AActor::SetState`).

@@ -34,6 +34,8 @@ pub struct Royale {
     pub(crate) dm_taken: [bool; 32],
     /// Spot taken by a placed player.
     pub(crate) taken: [bool; MAX_SPOTS],
+    /// The engine's main-area check works on this level ([`Self::reachable`]).
+    pub(crate) reach_ok: bool,
     /// Where the map's own pickups were (removed on load).
     pub(crate) item_spots: [[f64; 3]; MAX_SPOTS],
     pub(crate) nitem_spots: usize,
@@ -87,6 +89,7 @@ impl Default for Royale {
             ndm: 0,
             dm_taken: [false; 32],
             taken: [false; MAX_SPOTS],
+            reach_ok: false,
             item_spots: [[0.0; 3]; MAX_SPOTS],
             nitem_spots: 0,
             loot: [(Item::Shell, [0.0; 3]); MAX_LOOT],
@@ -215,6 +218,14 @@ impl Royale {
         self.plan_loot(host);
         self.spawn_loot(host);
         self.place_players(host);
+        // Everyone starts the match at full health.
+        for s in 0..MAX_PLAYERS {
+            if self.contender[s]
+                && let Some(body) = host.player(s as i32)
+            {
+                host.actor_set_health(body, 100);
+            }
+        }
         self.phase = MatchPhase::Deploy;
         self.phase_until = t + DEPLOY_SECS * TICRATE;
         self.apply_landing_shield(host, self.phase_until);
@@ -240,6 +251,8 @@ impl Royale {
                 if !self.pregame_ready {
                     self.pregame_ready = true;
                     self.countdown_end = t + PREGAME_COUNTDOWN_SECS * TICRATE;
+                    // Nobody can hurt anybody before the match starts.
+                    self.apply_landing_shield(host, i32::MAX);
                     tell!(host, None, "PREGAME");
                 }
                 if t % TICRATE == 0 {
@@ -285,6 +298,7 @@ impl Royale {
         self.pistol = host.class_find("Pistol");
         self.clip = host.class_find("Clip");
         self.fog = host.class_find("TeleportFog");
+        self.check_reach(host);
         self.clear_monsters(host);
         self.clear_map_pickups(host);
         for i in 0..self.nitem_spots {

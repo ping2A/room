@@ -223,6 +223,9 @@ game_fns! {
     PlayerCvarI32 = "player_cvar_i32"(I32, I32, I32) -> I32;
     /// `actor_set_sound_class(ActorRef, name ptr, len)` (play; `SoundClass`).
     ActorSetSoundClass = "actor_set_sound_class"(I64, I32, I32);
+    /// `point_reachable(x, y) -> 0/1`: the point is in the level's main
+    /// area (players can walk there from the start and back; `reach`).
+    PointReachable = "point_reachable"(F64, F64) -> I32;
 }
 
 pub use room_script_abi::game::{

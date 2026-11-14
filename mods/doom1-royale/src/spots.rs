@@ -9,7 +9,33 @@ use crate::tables::MAX_SPOTS;
 use crate::zone::{dist2, xy};
 
 impl Royale {
+    /// `(x, y)` is in the level's main area (when the engine could tell):
+    /// players can walk there from everywhere else and back.
+    pub(crate) fn reachable<H: Host>(&self, host: &H, x: f64, y: f64) -> bool {
+        !self.reach_ok || host.point_reachable(x, y)
+    }
+
+    /// Does the main-area check work on this level? (Some reachable start.)
+    pub(crate) fn check_reach<H: Host>(&mut self, host: &H) {
+        let mut buf = [[0.0; 3]; 32];
+        let mut ok = false;
+        for ednum in [
+            thing_type::DEATHMATCH_START,
+            thing_type::PLAYER1_START,
+            thing_type::PLAYER1_START + 1,
+            thing_type::PLAYER1_START + 2,
+            thing_type::PLAYER1_START + 3,
+        ] {
+            let n = host.level_things(ednum, &mut buf).min(buf.len());
+            ok |= buf[..n].iter().any(|p| host.point_reachable(p[0], p[1]));
+        }
+        self.reach_ok = ok;
+    }
+
     pub(crate) fn push_spot<H: Host>(&mut self, host: &H, x: f64, y: f64) {
+        if !self.reachable(host, x, y) {
+            return;
+        }
         if self.nspots < MAX_SPOTS {
             self.spots[self.nspots] = [x, y, host.floor_z(x, y)];
             self.nspots += 1;
@@ -34,10 +60,20 @@ impl Royale {
 
     /// Deathmatch starts for spawning; co-op starts become loot spots.
     pub(crate) fn read_starts<H: Host>(&mut self, host: &H) {
-        let n = host.level_things(thing_type::DEATHMATCH_START, &mut self.dm);
-        self.ndm = n.min(self.dm.len());
-        for s in &mut self.dm[..self.ndm] {
-            s[2] = host.floor_z(s[0], s[1]);
+        let mut all = [[0.0; 3]; 32];
+        let n = host
+            .level_things(thing_type::DEATHMATCH_START, &mut all)
+            .min(all.len());
+        // Starts in closets or cut-off areas are left out (all kept if none
+        // is in the main area).
+        let ok = all[..n].iter().filter(|s| self.reachable(host, s[0], s[1])).count();
+        self.ndm = 0;
+        for s in &all[..n] {
+            if ok > 0 && !self.reachable(host, s[0], s[1]) {
+                continue;
+            }
+            self.dm[self.ndm] = [s[0], s[1], host.floor_z(s[0], s[1])];
+            self.ndm += 1;
         }
         for k in 0..4 {
             let mut one = [[0.0; 3]; 1];

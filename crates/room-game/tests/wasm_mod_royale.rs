@@ -1004,3 +1004,126 @@ fn render_overlay_preview() {
     run(&mut game, 40, &idle, &mut msgs);
     shot(&game, "victory", &mut patches);
 }
+
+
+/// Share of bot tics spent in the run animation while barely moving
+/// (running on the spot), over 30 s of an 8-bot match.
+fn running_in_place_share(map: MapGeometry) -> f64 {
+    let mut game = start_timed(map, 8, true, 0, true, 0);
+    let idle = [TicCmd::default(); 8];
+    let mut msgs = Vec::new();
+    run(&mut game, 14 * 35, &idle, &mut msgs);
+    let mut last: Vec<Option<DVec3>> = vec![None; 8];
+    let (mut bad, mut total) = (0usize, 0usize);
+    for _ in 0..30 * 35 {
+        run(&mut game, 1, &idle, &mut msgs);
+        let w = game.world().unwrap();
+        for s in 0..8 {
+            let Some(mo) = w.players[s].as_ref().and_then(|p| p.mo) else { continue };
+            let Some(a) = w.actors.get(mo) else { continue };
+            if a.health <= 0 {
+                last[s] = None;
+                continue;
+            }
+            if let Some(prev) = last[s] {
+                total += 1;
+                let running = a.sprite == "PLAY" && (1..=3).contains(&a.frame);
+                if running && flat(prev, a.pos) < 0.5 {
+                    bad += 1;
+                }
+            }
+            last[s] = Some(a.pos);
+        }
+    }
+    bad as f64 / total.max(1) as f64
+}
+
+#[test]
+fn bots_pick_up_guns_and_do_not_run_on_the_spot() {
+    let mut game = start_timed(arena_with(true), 8, true, 0, true, 0);
+    let idle = [TicCmd::default(); 8];
+    let mut msgs = Vec::new();
+    run(&mut game, 30 * 35, &idle, &mut msgs);
+    let w = game.world().unwrap();
+    let armed = (0..8)
+        .filter(|&s| {
+            ["Shotgun", "Chaingun", "RocketLauncher", "Chainsaw"]
+                .iter()
+                .any(|g| w.players[s].as_ref().and_then(|p| p.mo).is_some_and(|mo| {
+                    w.classes.find_name(g).is_some_and(|c| w.inventory.count(mo, c) > 0)
+                }))
+        })
+        .count();
+    assert!(armed >= 2, "bots fetch guns ({armed} armed)");
+    let share = running_in_place_share(arena_with(true));
+    assert!(share < 0.10, "running on the spot {:.0}% of the time", share * 100.0);
+}
+
+#[test]
+fn nobody_is_hurt_before_the_match_starts() {
+    let mut game = start_timed(arena_with(true), 8, true, 0, true, 0);
+    let idle = [TicCmd::default(); 8];
+    let mut msgs = Vec::new();
+    // Pregame (10 s) + deploy (3 s): everyone stays at full health.
+    for _ in 0..13 * 35 - 2 {
+        run(&mut game, 1, &idle, &mut msgs);
+        let w = game.world().unwrap();
+        for s in 0..8 {
+            let hp = w.actors.get(body(w, s)).unwrap().health;
+            assert_eq!(hp, 100, "seat {s} hurt at tic {}", w.level.time);
+        }
+    }
+}
+
+#[test]
+fn nothing_spawns_in_a_closed_off_room() {
+    // A big room, and a closet with no way in (monsters stand in it).
+    let mut b = MapBuilder::new()
+        .room("a", rect(0.0, 0.0, 2048.0, 2048.0), 0.0, 256.0)
+        .room("closet", rect(2304.0, 0.0, 2560.0, 256.0), 0.0, 128.0)
+        .player_start(128.0, 128.0, 0)
+        .thing(2, 192.0, 128.0, 0);
+    for (x, y) in DM_STARTS {
+        b = b.thing(11, x, y, 0);
+    }
+    for (x, y) in [(1000.0, 1000.0), (300.0, 1700.0), (1700.0, 300.0)] {
+        b = b.thing(3004, x, y, 0);
+    }
+    for (x, y) in [(2368.0, 64.0), (2432.0, 128.0), (2496.0, 192.0), (2368.0, 192.0)] {
+        b = b.thing(3004, x, y, 0).thing(2001, x + 16.0, y, 0);
+    }
+    let mut map = b.build_udmf("MAP01").unwrap();
+    room_nodebuild::apply_nodes(&mut map);
+    let mut game = start(map, 2, true);
+    let idle = [TicCmd::default(); 2];
+    let mut msgs = Vec::new();
+    run(&mut game, 10 * 35 + 2, &idle, &mut msgs);
+    let w = game.world().unwrap();
+    assert!(!room_sim::reach::point_in_main_area(w, 2432.0, 128.0), "closet is cut off");
+    assert!(room_sim::reach::point_in_main_area(w, 1000.0, 1000.0));
+    let in_closet = |p: DVec3| p.x() > 2200.0;
+    for g in LOOT {
+        for p in items_of(w, g) {
+            assert!(!in_closet(p), "{g} placed in the closet at {p:?}");
+        }
+    }
+    for s in 0..2 {
+        let p = w.actors.get(body(w, s)).unwrap().pos;
+        assert!(!in_closet(p), "seat {s} placed in the closet");
+    }
+    assert!(loot_count(w) > 0, "loot still placed in the main room");
+}
+
+/// Running-on-the-spot share on a real map: `ROYALE_PREVIEW_IWAD`.
+#[test]
+#[ignore = "needs ROYALE_PREVIEW_IWAD"]
+fn bots_move_well_on_an_iwad_map() {
+    let iwad = std::env::var("ROYALE_PREVIEW_IWAD").expect("ROYALE_PREVIEW_IWAD");
+    let name = std::env::var("ROYALE_PREVIEW_MAP").unwrap_or_else(|_| "MAP01".into());
+    let vfs = VfsBuilder::new().mount_path(&iwad).unwrap().build().unwrap();
+    let mut map = load_map(&vfs, &name).unwrap();
+    ensure_nodes(&mut map);
+    let share = running_in_place_share(map);
+    eprintln!("{name}: running on the spot {:.1}% of bot tics", share * 100.0);
+    assert!(share < 0.15);
+}
