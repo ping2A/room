@@ -13,7 +13,6 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 
 mod combat;
 mod death;
-mod drop_select;
 mod fixed;
 mod host;
 mod loot;

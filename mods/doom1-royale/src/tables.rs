@@ -11,12 +11,6 @@ pub const MAX_SPOTS: usize = 256;
 pub const GRACE_SECS: i32 = 60;
 /// Pre-game countdown once all contenders are ready.
 pub const PREGAME_COUNTDOWN_SECS: i32 = 10;
-/// Drop selection on the modal map (`docs/28` §5).
-pub const DROP_SELECT_SECS: i32 = 15;
-/// Max distance from the map pick to the resolved spawn spot.
-pub const DROP_RESOLVE_RADIUS: f64 = 512.0;
-/// Min distance between two players' resolved picks.
-pub const DROP_PICK_SEP: f64 = 256.0;
 /// Deploy / landing window.
 pub const DEPLOY_SECS: i32 = 3;
 /// Legacy delay before shells; resolution uses victory + standings MODALs (BR7).

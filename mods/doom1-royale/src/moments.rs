@@ -22,7 +22,7 @@ const ANN_DUEL: u8 = 8;
 mod wid {
     pub const VICTORY_TITLE: u16 = 80;
     pub const VICTORY_BODY: u16 = 81;
-    pub const STANDINGS: u16 = 82;
+    pub const STANDINGS: u16 = 83;
 }
 
 /// Banners, music, victory MODAL, standings build (BR7).
@@ -33,6 +33,9 @@ pub struct Moments {
     music_band: i8,
     victory_until: i32,
     standings_sent: bool,
+    /// Final standings shown on the victory screen.
+    rows: [MatchStandingV1; MAX_PLAYERS],
+    nrows: usize,
 }
 
 impl Moments {
@@ -126,9 +129,18 @@ impl Moments {
         game::set_music(track);
     }
 
-    pub fn begin_resolution<H: Host>(&mut self, host: &mut H, winner: Option<usize>, t: i32) {
+    pub fn begin_resolution<H: Host>(
+        &mut self,
+        host: &mut H,
+        winner: Option<usize>,
+        rows: &[MatchStandingV1],
+        t: i32,
+    ) {
         self.victory_until = t + VICTORY_SECS * TICRATE;
         self.standings_sent = false;
+        self.nrows = rows.len().min(MAX_PLAYERS);
+        self.rows[..self.nrows].copy_from_slice(&rows[..self.nrows]);
+        self.rows[..self.nrows].sort_unstable_by_key(|r| (r.place, r.seat));
         self.draw_victory(winner);
         if winner.is_some() {
             self.announcer.team(host, "LAST ONE STANDING", t);
@@ -140,8 +152,8 @@ impl Moments {
             return;
         }
         if t >= self.victory_until {
+            // The screen stays up until the room closes.
             self.victory_until = 0;
-            self.clear_resolution_hud();
             return;
         }
         self.draw_victory(winner);
@@ -174,75 +186,60 @@ impl Moments {
                 let _ = write!(title, "MATCH OVER");
             }
         }
-        let mut body = Msg::new();
-        if let Some(w) = winner {
-            let kills = game::player_stat(w as i32, player_prop::FRAGS);
-            let dmg = game::player_stat(w as i32, player_prop::DAMAGE_DEALT);
-            let _ = write!(body, "KILLS {kills}  DAMAGE {dmg}");
+        // Standings: place, name, kills, damage (best first).
+        let mut table = Msg::new();
+        for row in &self.rows[..self.nrows] {
+            let _ = write!(table, "#{} ", row.place);
+            let mut name = Msg::new();
+            crate::text::write_player_name(&mut name, usize::from(row.seat));
+            let short: &str = name.as_str().get(..14).unwrap_or(name.as_str());
+            let _ = write!(table, "{short}  K {}  D {}\n", row.kills, row.damage);
         }
+        let rows_h = (self.nrows as i16) * 10;
+        let panel_h = 56 + rows_h;
         for seat in 0..MAX_PLAYERS {
             let s = seat as i32;
             let _ = Hud::panel(wid::VICTORY_TITLE)
                 .seat(s)
                 .anchor(anchor::CENTER)
-                .size(320, 80)
+                .at(0, 0)
+                .size(280, panel_h)
                 .layer(layer::MODAL)
-                .color("Black")
+                .rgba(0x0b10_17ee)
+                .rgba2(0x5a64_74ff)
                 .show();
+            let top = -panel_h / 2;
             let _ = Hud::text(wid::VICTORY_BODY)
                 .seat(s)
                 .anchor(anchor::CENTER)
-                .at(0, -20)
+                .at(0, top + 8)
                 .font(font::BIG)
                 .layer(layer::MODAL)
                 .color("Gold")
                 .text(title.as_str())
                 .show();
-            if winner.is_some() {
-                let _ = Hud::text(wid::VICTORY_BODY + 1)
-                    .seat(s)
-                    .anchor(anchor::CENTER)
-                    .at(0, 24)
-                    .font(font::SMALL)
-                    .layer(layer::MODAL)
-                    .text(body.as_str())
-                    .show();
+            let mut you = Msg::new();
+            if let Some(r) = self.rows[..self.nrows].iter().find(|r| usize::from(r.seat) == seat) {
+                let _ = write!(you, "YOU PLACED #{}", r.place);
             }
-        }
-    }
-
-    fn draw_standings(&self, rows: &[MatchStandingV1], n: usize) {
-        let mut block = Msg::new();
-        let _ = write!(block, "STANDINGS\n");
-        for row in rows.iter().take(n) {
-            let _ = write!(
-                block,
-                "#{} P{} K{} D{}\n",
-                row.place,
-                row.seat + 1,
-                row.kills,
-                row.damage
-            );
-        }
-        for seat in 0..MAX_PLAYERS {
-            let s = seat as i32;
+            let _ = Hud::text(wid::VICTORY_BODY + 1)
+                .seat(s)
+                .anchor(anchor::CENTER)
+                .at(0, top + 30)
+                .font(font::SMALL)
+                .layer(layer::MODAL)
+                .color(if Some(seat) == winner { "Gold" } else { "White" })
+                .text(you.as_str())
+                .show();
             let _ = Hud::text(wid::STANDINGS)
                 .seat(s)
                 .anchor(anchor::CENTER)
-                .layer(layer::MODAL)
+                .at(0, top + 46)
                 .font(font::SMALL)
-                .text(block.as_str())
+                .layer(layer::MODAL)
+                .color("Gray")
+                .text(table.as_str())
                 .show();
-        }
-    }
-
-    fn clear_resolution_hud(&self) {
-        for seat in 0..MAX_PLAYERS {
-            let s = seat as i32;
-            let _ = Hud::remove(s, wid::VICTORY_TITLE);
-            let _ = Hud::remove(s, wid::VICTORY_BODY);
-            let _ = Hud::remove(s, wid::VICTORY_BODY + 1);
-            let _ = Hud::remove(s, wid::STANDINGS);
         }
     }
 }

@@ -688,6 +688,12 @@ impl NetLobby {
                     self.cfg.map = room.map;
                     self.cfg.skill = room.skill;
                     self.cfg.players = room.max_players;
+                    // Same game rules as the players, or the replay drifts
+                    // (bots, deathmatch scoring, Duke modes).
+                    self.cfg.duke_game_mode = room.duke_game_mode;
+                    self.cfg.duke_friendly_fire = room.duke_friendly_fire;
+                    self.cfg.doom_deathmatch = room.doom_deathmatch;
+                    self.cfg.fill_bots = room.fill_bots;
                     self.cfg.game_mod = room.game_mod.clone();
                     self.cfg.packs = room.packs.clone();
                     self.cfg.content = room.content.clone();

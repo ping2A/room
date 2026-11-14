@@ -41,7 +41,7 @@ async fn admin_summary_and_close_audited() {
         "{spa}"
     );
     let css = http_get(addr, "/admin/assets/app.css").await;
-    assert!(css.contains("--accent"), "{css}");
+    assert!(css.contains("--red"), "{css}");
     let js = http_get(addr, "/admin/assets/app.js").await;
     assert!(js.contains("/admin/api/v1/summary"), "{js}");
 

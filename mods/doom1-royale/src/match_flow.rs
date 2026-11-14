@@ -5,10 +5,9 @@ use room_script_sdk::ClassRef;
 
 use crate::combat::CombatHud;
 use crate::death::DeathExperience;
-use crate::drop_select::{self, DropSelect};
 use crate::host::{Host, SdkHost};
 use crate::tables::{
-    Item, DEPLOY_SECS, DROP_SELECT_SECS, END_SECS, FRAG_HEAL, GRACE_SECS, ITEM_CLASSES,
+    Item, DEPLOY_SECS, END_SECS, FRAG_HEAL, GRACE_SECS, ITEM_CLASSES,
     MAX_LOOT, MAX_PLAYERS, MAX_SPOTS, PREGAME_COUNTDOWN_SECS, TICRATE,
 };
 use crate::tell;
@@ -20,7 +19,6 @@ use crate::zone::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MatchPhase {
     Pregame,
-    DropSelect,
     Deploy,
     Loot,
     Zone,
@@ -43,7 +41,7 @@ pub struct Royale {
     pub(crate) loot: [(Item, [f64; 3]); MAX_LOOT],
     pub(crate) nloot: usize,
     /// Guns the mod spawned (anything else is an engine death drop).
-    pub(crate) loot_guns: [Actor; MAX_LOOT],
+    pub(crate) loot_guns: [(Actor, Item); MAX_LOOT],
     pub(crate) nloot_guns: usize,
     pub(crate) items: [ClassRef; ITEM_CLASSES.len()],
     pub(crate) pistol: ClassRef,
@@ -53,7 +51,6 @@ pub struct Royale {
     pub(crate) nplaced: usize,
     /// Player was in the map when the round started.
     pub(crate) contender: [bool; MAX_PLAYERS],
-    drop: DropSelect,
     out: [bool; MAX_PLAYERS],
     zone_hit: [i32; MAX_PLAYERS],
     hinted: [i32; MAX_PLAYERS],
@@ -94,7 +91,7 @@ impl Default for Royale {
             nitem_spots: 0,
             loot: [(Item::Shell, [0.0; 3]); MAX_LOOT],
             nloot: 0,
-            loot_guns: [Actor::NULL; MAX_LOOT],
+            loot_guns: [(Actor::NULL, Item::Shotgun); MAX_LOOT],
             nloot_guns: 0,
             items: [ClassRef::NULL; ITEM_CLASSES.len()],
             pistol: ClassRef::NULL,
@@ -124,7 +121,6 @@ impl Default for Royale {
             ended: false,
             combat: CombatHud::default(),
             death: DeathExperience::default(),
-            drop: DropSelect::default(),
             moments: Moments::default(),
             deploy_tic: 0,
         }
@@ -169,16 +165,31 @@ impl Royale {
         }
     }
 
-    fn deploy_from_drops<H: Host>(&mut self, host: &mut H) {
-        self.drop.end_capture();
+    /// Spread the players over the map: each one on the free spot farthest
+    /// from the players already placed (first one random). Deathmatch
+    /// starts and other spots qualify; loot spots only when nothing else
+    /// is left, so nobody starts on a gun.
+    fn place_players<H: Host>(&mut self, host: &mut H) {
         self.nplaced = 0;
-        self.dm_taken = [false; 32];
-        self.taken = [false; MAX_SPOTS];
-        let mut loot_spot = [false; MAX_SPOTS];
-        for i in 0..self.nspots {
-            loot_spot[i] = self.is_loot_spot(crate::zone::xy(self.spots[i]));
+        let mut pool = [[0.0; 3]; MAX_SPOTS + 32];
+        let mut n = 0usize;
+        for s in self.dm[..self.ndm].iter().chain(&self.spots[..self.nspots]) {
+            let p = crate::zone::xy(*s);
+            let dup = pool[..n].iter().any(|o| crate::zone::dist2(crate::zone::xy(*o), p) < 32.0 * 32.0);
+            if !dup && !self.is_loot_spot(p) && n < pool.len() {
+                pool[n] = *s;
+                n += 1;
+            }
         }
-        let picks = self.drop.pick;
+        if n == 0 {
+            for s in &self.spots[..self.nspots] {
+                if n < pool.len() {
+                    pool[n] = *s;
+                    n += 1;
+                }
+            }
+        }
+        let mut taken = [false; MAX_SPOTS + 32];
         let contender = self.contender;
         for s in 0..MAX_PLAYERS {
             if !contender[s] {
@@ -187,37 +198,11 @@ impl Royale {
             let Some(body) = host.player(s as i32) else {
                 continue;
             };
-            let mut others = [[0.0; 2]; MAX_PLAYERS];
-            let mut n = 0usize;
-            for j in 0..MAX_PLAYERS {
-                if j == s || !contender[j] {
-                    continue;
-                }
-                others[n] = picks[j];
-                n += 1;
-            }
-            // Land next to loot when there is a free spot near the pick;
-            // else on the loot itself (a hot drop).
-            let mut blocked = self.taken;
-            for i in 0..self.nspots {
-                blocked[i] |= loot_spot[i];
-            }
-            let near = |spot: [f64; 3]| {
-                crate::zone::dist2(crate::zone::xy(spot), picks[s])
-                    <= crate::tables::DROP_RESOLVE_RADIUS * crate::tables::DROP_RESOLVE_RADIUS
+            let Some(i) = self.farthest(host, &pool[..n], &taken[..n]) else {
+                continue;
             };
-            let mut spot =
-                drop_select::resolve_drop(picks[s], &self.spots, self.nspots, &others[..n], &blocked);
-            if !near(spot) {
-                spot = drop_select::resolve_drop(
-                    picks[s],
-                    &self.spots,
-                    self.nspots,
-                    &others[..n],
-                    &self.taken,
-                );
-            }
-            drop_select::mark_spot_taken(&self.spots, self.nspots, &mut self.taken, spot);
+            taken[i] = true;
+            let spot = pool[i];
             self.teleport_player(host, body, spot, self.center);
             if self.nplaced < MAX_PLAYERS {
                 self.placed[self.nplaced] = crate::zone::xy(spot);
@@ -227,8 +212,9 @@ impl Royale {
     }
 
     fn begin_deploy<H: Host>(&mut self, host: &mut H, t: i32) {
-        self.deploy_from_drops(host);
+        self.plan_loot(host);
         self.spawn_loot(host);
+        self.place_players(host);
         self.phase = MatchPhase::Deploy;
         self.phase_until = t + DEPLOY_SECS * TICRATE;
         self.apply_landing_shield(host, self.phase_until);
@@ -266,33 +252,6 @@ impl Royale {
                     }
                 }
                 if t >= self.countdown_end {
-                    self.phase = MatchPhase::DropSelect;
-                    self.phase_until = t + DROP_SELECT_SECS * TICRATE;
-                    self.plan_loot(host);
-                    crate::ui::clear_all();
-                    self.drop.begin(
-                        host,
-                        &self.contender,
-                        self.center,
-                        self.r0,
-                        &self.spots,
-                        self.nspots,
-                    );
-                    tell!(host, None, "DROP SELECT");
-                }
-            }
-            MatchPhase::DropSelect => {
-                let ends = self.phase_until;
-                if self.drop.tick(
-                    host,
-                    &self.contender,
-                    self.center,
-                    self.r0,
-                    &self.spots,
-                    self.nspots,
-                    t,
-                    ends,
-                ) {
                     self.begin_deploy(host, t);
                 }
             }
@@ -333,6 +292,7 @@ impl Royale {
             self.push_spot(host, s[0], s[1]);
         }
         self.read_starts(host);
+        self.probe_extra_spots(host);
         self.pick_zone(host);
         self.zone_rt = ZoneRuntime::new(self.center, self.r0);
         self.death.reset();
@@ -420,7 +380,7 @@ impl Royale {
         );
         Moments::finish_match_ex(winner, &rows[..n]);
         self.moments.mark_standings_sent();
-        self.moments.begin_resolution(host, winner, t);
+        self.moments.begin_resolution(host, winner, &rows[..n], t);
         match winner {
             Some(w) => {
                 let mut m = crate::text::Msg::new();
@@ -478,25 +438,13 @@ impl Royale {
         if !self.over {
             self.tick_match_phases(host, t);
         }
-        self.death.tick(
-            host,
-            &self.out,
-            &self.contender,
-            &self.combat,
-            t,
-        );
-        if self.phase == MatchPhase::DropSelect {
-            let mut guns = [(Item::Shotgun, [0.0; 3]); MAX_LOOT];
-            let mut ng = 0usize;
-            for g in self.planned_guns() {
-                guns[ng] = g;
-                ng += 1;
-            }
-            self.drop
-                .draw(host, &self.contender, t, self.phase_until, &guns[..ng]);
-        }
+        self.death
+            .tick(host, &self.out, &self.contender, self.over, t);
         if t % 5 == 0 {
             self.draw_hud(host, t);
+        }
+        if self.zone_active() && !self.over && t % 17 == 0 {
+            self.update_gun_markers(host);
         }
         if self.zone_active() {
             if let Some(t_rel) = self.zone_t_rel(t) {
@@ -612,10 +560,6 @@ impl Royale {
         if victim >= MAX_PLAYERS || !self.contender[victim] || self.out[victim] {
             return;
         }
-        let victim_pos = host
-            .player(victim as i32)
-            .map(|b| host.actor_pos(b))
-            .unwrap_or([0.0; 3]);
         self.remove_dropped_weapons(host);
         self.out[victim] = true;
         let left = self.alive();
@@ -624,14 +568,8 @@ impl Royale {
             .on_victim_died(victim, killer_seat, t);
         let killer = source.and_then(|s| host.actor_player(s).map(|k| (s, k as usize)));
         let place = left + 1;
-        self.death.on_eliminated(
-            host,
-            victim,
-            place,
-            killer.map(|(b, k)| (b, k)),
-            victim_pos,
-            t,
-        );
+        let of = self.contenders();
+        self.death.on_eliminated(host, victim, place, of, killer, t - self.deploy_tic, t);
         match killer {
             Some((body, k)) if k != victim => {
                 self.combat.on_player_frag(k, victim, t);
@@ -713,7 +651,7 @@ impl Royale {
         let mut found = [Actor::NULL; 256];
         let n = host.actors_of_class(weapon, true, &mut found).min(found.len());
         for &a in &found[..n] {
-            if !self.loot_guns[..self.nloot_guns].contains(&a) {
+            if !self.loot_guns[..self.nloot_guns].iter().any(|g| g.0 == a) {
                 host.actor_destroy(a);
             }
         }
@@ -722,13 +660,14 @@ impl Royale {
     fn draw_hud<H: Host>(&mut self, host: &mut H, t: i32) {
         if self.over {
             self.combat.clear_widgets();
-            crate::drop_select::clear_drop_widgets();
             return;
         }
-        if self.phase == MatchPhase::DropSelect {
-            return;
+        let mut follow = [None; MAX_PLAYERS];
+        for (s, f) in follow.iter_mut().enumerate() {
+            *f = self.death.followed(s);
         }
         let mut frame = crate::ui::HudFrame {
+            follow,
             t,
             match_over: false,
             show_zone: self.loot_start_tic > 0,

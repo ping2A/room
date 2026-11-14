@@ -479,24 +479,23 @@
     }
   }
 
+  /** Anyone can watch: no seat, no ticket, no name prompt. */
+  function watchUrl(room, name) {
+    return playUrl(room, null, { name: name || "Spectator", spectate: true });
+  }
+
   /** Live multi-view spectator client (no seat, no ticket). */
   async function spectateRoom(room) {
-    const name = await confirmCallsign({
-      title: "Spectate as…",
-      confirmLabel: "Watch live",
-      prefill: playerName(),
-      remember: true,
-    });
-    if (!name) return;
+    const name = playerName() || "Spectator";
     const pending = openPendingTab();
     if (!(await ensurePlayBase())) {
       if (pending) pending.close();
       return;
     }
-    const url = playUrl(room, null, { name, spectate: true });
+    const url = watchUrl(room, name);
     if (pending) {
       pending.location.href = url;
-      flash("Spectator view opened in a new tab");
+      flash("Watching in a new tab");
     } else {
       goPlay(url, { newTab: false });
     }
@@ -554,7 +553,7 @@
       '<div class="row"><span class="k">Game ID</span><span class="id">' +
       escapeHtml(room.id) +
       "</span></div>" +
-      '<p class="muted">Watch live opens a spectator client: the whole match is replayed from tic 0, then every player is shown side by side (G toggles grid / follow, 1-4 or click picks a player, Tab shows scores). Join &amp; play takes a free player slot.</p>';
+      '<p class="muted">Watch opens the game in a new tab without taking a slot: it catches up from the start, then shows every player side by side. G switches between the grid and one player, 1-4 or a click picks a player, Tab shows the scores. Copy watch link to send the live game to anyone.</p>';
     $("watch-play").disabled = openSeats === 0;
   }
 
@@ -1329,11 +1328,13 @@
       playTab.title = "Join in a new tab";
       playTab.disabled = full;
       playTab.addEventListener("click", () => playRoom(room, { newTab: true }));
+      // A game in progress: watching is the main action.
+      if (room.started) play.className = "btn small";
       const watch = document.createElement("button");
       watch.type = "button";
-      watch.className = "btn small";
-      watch.textContent = "Spectate";
-      watch.title = "Watch every player live (multi-view)";
+      watch.className = room.started ? "btn primary small" : "btn small";
+      watch.textContent = "Watch";
+      watch.title = "Watch the game live (no account, no seat)";
       watch.addEventListener("click", () => {
         watchRoom(room);
         void spectateRoom(room);
@@ -1473,6 +1474,19 @@
     $("watch-live").addEventListener("click", () => {
       const room = state.rooms.find((r) => r.id === state.watching);
       if (room) void spectateRoom(room);
+    });
+  }
+  if ($("watch-link")) {
+    $("watch-link").addEventListener("click", async () => {
+      const room = state.rooms.find((r) => r.id === state.watching);
+      if (!room) return;
+      const url = watchUrl(room, "Spectator");
+      try {
+        await navigator.clipboard.writeText(url);
+        flash("Watch link copied");
+      } catch (_) {
+        window.prompt("Watch link", url);
+      }
     });
   }
 

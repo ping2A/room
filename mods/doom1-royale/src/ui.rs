@@ -25,18 +25,10 @@ pub mod id {
     pub const MINIMAP: u16 = 30;
 }
 
-/// Drop-select modal widgets (`docs/28` §5 / BR3).
-pub mod drop_id {
-    pub const TITLE: u16 = 40;
-    pub const MAP: u16 = 41;
-    pub const CURSOR: u16 = 42;
-    pub const FOOTER: u16 = 43;
-    /// Legend entries (one per gun type).
-    pub const LEGEND0: u16 = 44;
-    pub const TEAM0: u16 = 50;
-    /// Planned gun markers on the drop map (shared by every seat).
-    pub const GUN0: u16 = 200;
-}
+/// Shared minimap markers for guns still on the ground (every seat).
+pub const GUN_MARKER0: u16 = 200;
+/// Most gun markers.
+pub const GUN_MARKERS: usize = 24;
 
 const FEED_LINES: usize = 5;
 
@@ -78,6 +70,9 @@ fn zone_label(t_rel: i32) -> (Msg, Option<(i32, i32)>) {
 
 /// Remove all royale HUD widgets for every seat.
 pub fn clear_all() {
+    for k in 0..GUN_MARKERS {
+        let _ = Hud::remove(-1, GUN_MARKER0 + k as u16);
+    }
     for s in 0..MAX_PLAYERS {
         let seat = s as i32;
         for id in [
@@ -101,6 +96,8 @@ pub fn clear_all() {
 
 /// Inputs for one HUD patch (from match state).
 pub struct HudFrame<'a> {
+    /// Seat each (dead) player is watching: their minimap follows it.
+    pub follow: [Option<usize>; MAX_PLAYERS],
     pub t: i32,
     pub match_over: bool,
     pub show_zone: bool,
@@ -165,8 +162,11 @@ impl HudFrame<'_> {
             if self.show_zone {
                 // Square minimap under the ALIVE line: the whole level
                 // around you (about 1,700 units across), zone tinted.
+                // Font = followed slot + 1 (0 = the viewer).
+                let follow_font = self.follow[seat].map_or(0, |f| f as u8 + 1);
                 let _ = Hud::map(id::MINIMAP)
                     .seat(seat_i)
+                    .font(follow_font)
                     .anchor(anchor::TOP_RIGHT)
                     .at(-74, 6)
                     .size(68, 68)

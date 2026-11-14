@@ -23,25 +23,42 @@ feel full; 6 bots + 2 humans is a typical test.
 ## Match flow (short)
 
 1. **Pregame** (10 s) — fists only, no damage.
-2. **Drop select** (15 s) — full-screen map of the whole level: walls, the
-   safe zone (red outside it) and every gun placed for the match, colour
-   coded. Move the cursor with movement / turn; **USE** or **ATTACK** locks
-   your landing. Other players' landings show with their names.
-3. **Deploy** (3 s) — the weapons spawn, then everyone lands near their pick
-   (next to loot rather than on it when there is room); brief landing shield.
-4. **Loot** (60 s grace) — pick up what is on the map; the zone is visible.
-5. **Zone phases** — hold → shrink (centre moves); damage outside; final circle ~60 s to zero.
-6. **Victory** — MODAL + standings → `game::end_match_ex`.
+2. **Deploy** (3 s) — the weapons spawn, then every player is placed
+   automatically, as far as possible from the others, on a free spot (never
+   on a gun); brief landing shield. There is no landing choice.
+3. **Loot** (60 s grace) — pick up what is on the map; the zone is visible.
+4. **Zone phases** — hold → shrink (centre moves); damage outside; final circle ~60 s to zero.
+5. **Victory** — winner, your place and the full standings (kills, damage)
+   stay on screen; `game::end_match_ex`.
+
+## Death and spectating
+
+When you are eliminated a stats screen shows your place (#3 of 8), who
+killed you and how much health they had left (or that the zone got you), and
+your kills, damage and survival time. After 5 s — or on FIRE, after the
+first second — you spectate: the camera follows your killer, a banner shows
+who you watch, your minimap follows them, and FIRE moves to the next player
+alive. When the player you watch dies, the camera moves on by itself.
+
+## Watching a game
+
+Anyone can watch a game from the lobby, without a seat: **Watch** on the
+game's row (the main button once the game is in progress) opens it in a new
+tab; it catches up from the start, then shows every player side by side (G:
+grid or one player, 1-4 or click: pick a player, Tab: scores). **Copy watch
+link** in the game's panel gives a link to send to anyone.
 
 ## Loot
 
-Placed once, when drop select starts; nothing is added later.
+Placed once, at deploy; nothing is added later.
 
 - **Where:** the spots of the map's own pickups (weapons, ammo, health,
   armour, powerups — keys stay), which the mod removes on load. Mappers put
   items where players can walk, so these spots are reachable. Monster spots
-  and player starts are the fallback; deathmatch starts and some other
-  spots stay free for landings.
+  and player starts come next; on maps with few things (deathmatch arenas)
+  the mod adds points around those spots — where an item fits, the floor is
+  within a step, a player fits under the ceiling and nothing blocks the
+  view. Deathmatch starts and some other spots stay free for the players.
 - **What** (P = players, at least 2): P shotguns, P/2 chainguns, P/4 rocket
   launchers (near the zone centre), 1 chainsaw — each with its ammo beside
   it, at least 448 units apart when the map has room — plus P shells, clips,
@@ -53,17 +70,17 @@ Placed once, when drop select starts; nothing is added later.
 
 | Input | Role in this mod |
 |-------|------------------|
-| Drop select | Move + **USE** or **ATTACK** to lock your landing. |
-| After death | **ATTACK** / **+mod1** cycles spectate targets (killer first). |
+| After death | **ATTACK** / **+mod1** skips the stats screen, then moves to the next player alive. |
 
 ## HUD (Mod HUD)
 
 - Top right: square minimap of the level around you (north up, whole level
-  shown, red outside the zone, next zone dashed), with **ALIVE** and
-  **KILLS** under it.
+  shown, red outside the zone, next zone dashed). Guns still on the ground
+  are coloured squares: orange shotgun, blue chaingun, red rocket launcher,
+  purple chainsaw. **ALIVE** and **KILLS** sit under it.
 - Top centre: zone timer + bar (red while the zone closes).
 - Kill feed, elimination toast, hit marker, damage direction.
-- Death: elimination MODAL (~4 s recap), then spectate (BE9 camera).
+- Death: stats screen, then spectating (see above).
 
 In-game kill feed / HUD use session **player names** (BE3); fallback **Player N** when unset.
 
@@ -97,7 +114,7 @@ ticked (the default). Bots use the deterministic `room-sim` bot brain, the same 
 src/
   lib.rs          export_mod! + event routing
   host.rs         Host / SdkHost / FakeHost
-  match_flow.rs   Phase machine (pregame → resolution)
+  match_flow.rs   Phase machine (pregame → deploy → zone → resolution)
   zone.rs         Moving circles + damage
   loot.rs         Map loot: spots, plan, spawn
   death.rs        Recap + spectate

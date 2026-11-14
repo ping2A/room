@@ -27,15 +27,6 @@ pub(crate) struct RecapLine {
     total: i32,
 }
 
-impl RecapLine {
-    pub(crate) fn as_str(&self) -> Option<&str> {
-        if self.len == 0 {
-            return None;
-        }
-        core::str::from_utf8(&self.buf[..usize::from(self.len)]).ok()
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 struct FeedLine {
     buf: [u8; 72],
@@ -211,6 +202,7 @@ impl CombatHud {
     }
 
     /// Top damage sources in the last 15 s for the death recap panel.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn death_recap_lines(&self, victim: usize, t: i32) -> [RecapLine; 3] {
         let mut out = [RecapLine::default(); 3];
         if victim >= MAX_PLAYERS {
@@ -332,7 +324,8 @@ mod tests {
         hud.push_recap(0, 1, 20, 110);
         hud.push_recap(0, 0, 5, 120);
         let lines = hud.death_recap_lines(0, 130);
-        assert!(lines[0].as_str().is_some_and(|s| s.contains("Player 1")));
-        assert!(lines[0].as_str().is_some_and(|s| s.contains("35")));
+        // Names come from the engine (empty in native tests): check totals.
+        assert_eq!(lines[0].total, 35, "seat 0 dealt the most");
+        assert_eq!(lines[1].total, 20);
     }
 }

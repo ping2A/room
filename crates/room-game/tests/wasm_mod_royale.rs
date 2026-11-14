@@ -27,9 +27,9 @@ const DM_STARTS: [(f64, f64); 4] = [
     (200.0, 1850.0),
     (1850.0, 200.0),
 ];
-/// Pre-game countdown + drop select + deploy before loot / PvP (`BR1` / `BR3`).
+/// Pre-game countdown + deploy before loot / PvP (`BR1`).
 fn past_pregame_tics() -> u32 {
-    (10 + 15 + 3) * 35
+    (10 + 3) * 35
 }
 
 fn past_pregame(game: &mut Headless, cmds: &[TicCmd], msgs: &mut Vec<String>) {
@@ -215,48 +215,35 @@ fn hud_text_has(w: &World, seat: u8, id: u16, needle: &str) -> bool {
 }
 
 #[test]
-fn drop_select_modal_map_and_confirm_lands_near_pick() {
+fn players_are_placed_apart_with_no_drop_choice() {
     let mut game = start(arena_with(true), 2, true);
     let mut msgs = Vec::new();
     let idle = [TicCmd::default(); 2];
     run(&mut game, 10 * 35 + 5, &idle, &mut msgs);
-    assert!(msgs.iter().any(|m| m == "DROP SELECT"), "{msgs:?}");
+    assert!(msgs.iter().any(|m| m == "DEPLOY"), "deploy right after pregame: {msgs:?}");
+    assert!(!msgs.iter().any(|m| m.contains("DROP")), "{msgs:?}");
     let w = game.world().unwrap();
     assert!(
-        royale_widget(w, 0, 41)
-            .is_some_and(|wid| { wid.kind == kind::MAP && wid.layer == layer::MODAL }),
-        "seat0 modal map: {:?}",
-        royale_widget(w, 0, 41)
+        !w.mod_hud.iter().any(|(_, wid)| wid.layer == layer::MODAL),
+        "no pick screen"
     );
-    let mut cmds = [TicCmd::default(); 2];
-    cmds[0].forward_move = 127;
-    cmds[1].forward_move = 64;
-    for _ in 0..40 {
-        game.tick(&cmds);
-    }
-    cmds[0].buttons = Buttons(Buttons::ATTACK);
-    cmds[1].buttons = Buttons(Buttons::ATTACK);
-    for _ in 0..8 {
-        game.tick(&cmds);
-        if let Some(w) = game.world_mut() {
-            msgs.extend(w.drain_messages());
-        }
-    }
-    assert!(msgs.iter().any(|m| m == "DEPLOY"), "{msgs:?}");
-    run(&mut game, 3 * 35, &idle, &mut msgs);
+    let (a, b) = (
+        w.actors.get(body(w, 0)).unwrap().pos,
+        w.actors.get(body(w, 1)).unwrap().pos,
+    );
+    assert!(flat(a, b) > 1000.0, "spread out: {a:?} {b:?}");
+    run(&mut game, 3 * 35 + 10, &idle, &mut msgs);
     let w = game.world().unwrap();
-    let pos = w.actors.get(body(w, 0)).unwrap().pos;
-    let center = w.mod_zones.get(0).map(|z| (z.cx as f64, z.cy as f64));
-    if let Some((cx, cy)) = center {
-        let pick_y = cy + 127.0 / 127.0 * 10.0 * 40.0;
-        let dx = pos.x() - cx;
-        let dy = pos.y() - pick_y;
-        let d = (dx * dx + dy * dy).sqrt();
-        assert!(
-            d <= 512.0,
-            "seat0 should land within 512 of pick (d={d}, pos={pos:?}, pick≈({cx},{pick_y}))"
-        );
-    }
+    let markers = w
+        .mod_hud
+        .iter()
+        .filter(|(k, wid)| k.seat1 == 0 && wid.kind == kind::MARKER)
+        .count();
+    let guns: usize = ["Shotgun", "Chaingun", "RocketLauncher", "Chainsaw"]
+        .iter()
+        .map(|g| items_of(w, g).len())
+        .sum();
+    assert_eq!(markers, guns, "one minimap marker per gun on the ground");
 }
 
 #[test]
@@ -672,31 +659,7 @@ fn royale_on_doom1_e1m1() {
     );
 }
 
-#[test]
-fn death_spectate_camera_follows_killer() {
-    let mut game = start(arena_with(true), 2, true);
-    let mut msgs = Vec::new();
-    let idle = [TicCmd::default(); 2];
-    past_pregame(&mut game, &idle, &mut msgs);
-    let (p0, p1) = {
-        let w = game.world().unwrap();
-        (body(w, 0), body(w, 1))
-    };
-    {
-        let w = game.world_mut().unwrap();
-        assert!(room_sim::damage_mobj(w, p1, Some(p0), Some(p0), 500) > 0);
-    }
-    run(&mut game, 4 * 35 + 15, &idle, &mut msgs);
-    let w = game.world().unwrap();
-    assert_eq!(
-        w.players[1].as_ref().unwrap().camera,
-        Some(p0),
-        "dead seat spectates killer"
-    );
-}
-
-#[test]
-fn death_recap_and_spectate_cycle_three_seats() {
+fn three_seat_game() -> Headless {
     let mut map = MapBuilder::new()
         .room("a", rect(0.0, 0.0, 2048.0, 2048.0), 0.0, 256.0)
         .player_start(128.0, 128.0, 0)
@@ -707,51 +670,70 @@ fn death_recap_and_spectate_cycle_three_seats() {
     }
     let mut map = map.build_udmf("MAP01").unwrap();
     room_nodebuild::apply_nodes(&mut map);
-    let mut game = start(map, 3, true);
+    start(map, 3, true)
+}
+
+/// Seat 0 kills seat 2 (after some damage from seat 1).
+fn kill_seat_two(game: &mut Headless) {
+    let idle = [TicCmd::default(); 3];
+    game.tick(&idle);
+    let w = game.world_mut().unwrap();
+    let (p0, p1, p2) = (body(w, 0), body(w, 1), body(w, 2));
+    let _ = room_sim::damage_mobj(w, p2, Some(p1), Some(p1), 30);
+    let _ = room_sim::damage_mobj(w, p2, Some(p0), Some(p0), 500);
+}
+
+#[test]
+fn death_shows_stats_then_spectates_the_killer() {
+    let mut game = three_seat_game();
     let mut msgs = Vec::new();
     let idle = [TicCmd::default(); 3];
     past_pregame(&mut game, &idle, &mut msgs);
-    for _ in 0..3 {
-        game.tick(&idle);
-        let w = game.world_mut().unwrap();
-        let (p0, p1, p2) = (body(w, 0), body(w, 1), body(w, 2));
-        let _ = room_sim::damage_mobj(w, p2, Some(p0), Some(p0), 20);
-        let _ = room_sim::damage_mobj(w, p2, Some(p1), Some(p1), 35);
-    }
-    {
-        game.tick(&idle);
-        let w = game.world_mut().unwrap();
-        let (p0, p2) = (body(w, 0), body(w, 2));
-        let _ = room_sim::damage_mobj(w, p2, Some(p0), Some(p0), 500);
-    }
-    run(&mut game, 35, &idle, &mut msgs);
+    kill_seat_two(&mut game);
+    run(&mut game, 10, &idle, &mut msgs);
     let w = game.world().unwrap();
-    assert!(
-        hud_text_has(w, 2, 61, "Player 1") && hud_text_has(w, 2, 61, "Player 2"),
-        "recap lists top damage sources"
-    );
-    run(&mut game, 3 * 35 + 5, &idle, &mut msgs);
+    assert!(hud_text_has(w, 2, 64, "ELIMINATED"), "stats title");
+    assert!(hud_text_has(w, 2, 61, "#3 OF 3"), "place");
+    assert!(hud_text_has(w, 2, 61, "KILLED BY Player 1"), "killer");
+    assert!(hud_text_has(w, 2, 61, "KILLS 0"), "own stats");
+    assert!(hud_text_has(w, 2, 65, "FIRE TO SKIP"));
+    assert_eq!(spectate_seat(w, 2), None, "stats first, no spectating yet");
+    run(&mut game, 5 * 35, &idle, &mut msgs);
     let w = game.world().unwrap();
-    let first = spectate_seat(w, 2);
-    assert!(
-        first.is_some_and(|s| s != 2),
-        "dead seat spectates an alive player"
+    assert_eq!(spectate_seat(w, 2), Some(0), "then the killer is watched");
+    assert!(royale_widget(w, 2, 64).is_none(), "stats screen gone");
+    assert!(hud_text_has(w, 2, 62, "SPECTATING Player 1"), "banner");
+    assert!(hud_text_has(w, 2, 63, "FIRE: NEXT PLAYER"));
+    assert_eq!(
+        royale_widget(w, 2, 30).map(|m| m.font),
+        Some(1),
+        "minimap follows the watched player"
     );
-    let alive = (0..3)
-        .filter(|&s| {
-            w.players[s]
-                .as_ref()
-                .is_some_and(|p| p.player_state == PlayerState::Live)
-        })
-        .count();
-    if alive >= 2 {
-        let mut cycle = idle;
-        cycle[2].buttons = Buttons(Buttons::ATTACK);
-        run(&mut game, 2, &cycle, &mut msgs);
-        let w = game.world().unwrap();
-        let second = spectate_seat(w, 2);
-        assert_ne!(second, first, "ATTACK cycles spectate target");
-    }
+    let mut fire = idle;
+    fire[2].buttons = Buttons(Buttons::ATTACK);
+    run(&mut game, 2, &fire, &mut msgs);
+    let w = game.world().unwrap();
+    assert_eq!(spectate_seat(w, 2), Some(1), "FIRE: next player");
+    assert!(hud_text_has(w, 2, 62, "SPECTATING Player 2"));
+}
+
+#[test]
+fn fire_skips_the_stats_screen() {
+    let mut game = three_seat_game();
+    let mut msgs = Vec::new();
+    let idle = [TicCmd::default(); 3];
+    past_pregame(&mut game, &idle, &mut msgs);
+    kill_seat_two(&mut game);
+    let mut fire = idle;
+    fire[2].buttons = Buttons(Buttons::ATTACK);
+    // Held from the moment of death: ignored until released.
+    run(&mut game, 50, &fire, &mut msgs);
+    assert_eq!(spectate_seat(game.world().unwrap(), 2), None);
+    run(&mut game, 2, &idle, &mut msgs);
+    run(&mut game, 2, &fire, &mut msgs);
+    let w = game.world().unwrap();
+    assert_eq!(spectate_seat(w, 2), Some(0), "skipped straight to spectating");
+    assert!(royale_widget(w, 2, 64).is_none());
 }
 
 #[test]
@@ -842,7 +824,88 @@ fn eight_seat_all_bots_finish_match_deterministically() {
     assert_eq!(wa.checksum(), wb.checksum());
 }
 
-/// Render the drop map and the in-game minimap to PNGs (manual check).
+/// Play a whole 8-bot match on `map` (no time limit: the zone ends it) and
+/// check every stage. Returns the final checksum.
+fn full_bot_match(map: MapGeometry) -> u64 {
+    let mut game = start_timed(map, 8, true, 0, true, 0);
+    let idle = [TicCmd::default(); 8];
+    let mut msgs = Vec::new();
+    // Right after placement (bots start walking at once).
+    run(&mut game, 10 * 35 + 2, &idle, &mut msgs);
+    {
+        let w = game.world().unwrap();
+        assert!(loot_count(w) >= 15, "loot on the map: {}", loot_count(w));
+        let guns: usize = ["Shotgun", "Chaingun", "RocketLauncher", "Chainsaw"]
+            .iter()
+            .map(|g| items_of(w, g).len())
+            .sum();
+        assert!(guns >= 8, "guns placed: {guns}");
+        let pos: Vec<DVec3> = (0..8).map(|s| w.actors.get(body(w, s)).unwrap().pos).collect();
+        let mut closest = f64::MAX;
+        for a in 0..8 {
+            for b in a + 1..8 {
+                closest = closest.min(flat(pos[a], pos[b]));
+            }
+        }
+        assert!(closest > 128.0, "players spread out (closest pair {closest})");
+    }
+    // Grace + every zone phase is under 8 minutes; give it 10.
+    let mut tics = 0;
+    while game.world().unwrap().match_over.is_none() && tics < 10 * 60 * 35 {
+        run(&mut game, 35, &idle, &mut msgs);
+        tics += 35;
+    }
+    let w = game.world().unwrap();
+    assert!(w.match_over.is_some(), "match ended within 10 minutes");
+    let outs = msgs
+        .iter()
+        .filter(|m| m.contains(" left") && (m.contains("fragged") || m.contains("zone") || m.contains("is out")))
+        .count();
+    assert!(outs >= 6, "eliminations announced: {outs}");
+    assert_eq!(w.match_standings.len(), 8, "standings for every seat");
+    assert!(
+        msgs.iter().any(|m| m.contains("WINS THE BATTLE ROYALE") || m.contains("draw")),
+        "result announced"
+    );
+    let errors: Vec<&String> = msgs
+        .iter()
+        .filter(|m| {
+            let l = m.to_ascii_lowercase();
+            l.contains("trap") || l.contains("panic") || l.contains("error")
+        })
+        .collect();
+    assert!(errors.is_empty(), "script errors: {errors:?}");
+    w.checksum()
+}
+
+#[test]
+fn eight_bots_play_a_whole_match_on_royale01() {
+    let vfs = VfsBuilder::new()
+        .mount_memory("royale.wad", Bytes::from_static(ROYALE_WAD))
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut map = load_map(&vfs, "ROYALE01").unwrap();
+    ensure_nodes(&mut map);
+    let a = full_bot_match(map.clone());
+    let b = full_bot_match(map);
+    assert_eq!(a, b, "deterministic");
+}
+
+/// Same on a real IWAD map: `ROYALE_PREVIEW_IWAD=/path/doom2.wad`
+/// (`ROYALE_PREVIEW_MAP`, default MAP01).
+#[test]
+#[ignore = "needs ROYALE_PREVIEW_IWAD"]
+fn eight_bots_play_a_whole_match_on_an_iwad_map() {
+    let iwad = std::env::var("ROYALE_PREVIEW_IWAD").expect("ROYALE_PREVIEW_IWAD");
+    let name = std::env::var("ROYALE_PREVIEW_MAP").unwrap_or_else(|_| "MAP01".into());
+    let vfs = VfsBuilder::new().mount_path(&iwad).unwrap().build().unwrap();
+    let mut map = load_map(&vfs, &name).unwrap();
+    ensure_nodes(&mut map);
+    let _ = full_bot_match(map);
+}
+
+/// Render the in-game minimap to images (manual check).
 /// `ROYALE_PREVIEW_IWAD=/path/doom2.wad ROYALE_PREVIEW_MAP=MAP01`.
 #[test]
 #[ignore = "manual preview; needs ROYALE_PREVIEW_IWAD"]
@@ -921,10 +984,23 @@ fn render_overlay_preview() {
         std::fs::write(&path, out).unwrap();
         eprintln!("wrote {path}");
     };
-    run(&mut game, 10 * 35 + 40, &idle, &mut msgs);
-    shot(&game, "drop", &mut patches);
-    run(&mut game, 15 * 35 + 3 * 35 + 70, &idle, &mut msgs);
+    run(&mut game, 10 * 35 + 3 * 35 + 70, &idle, &mut msgs);
     shot(&game, "minimap", &mut patches);
-    run(&mut game, 150 * 35, &idle, &mut msgs);
-    shot(&game, "minimap-late", &mut patches);
+    {
+        let w = game.world_mut().unwrap();
+        let (p0, p1) = (body(w, 0), body(w, 1));
+        let _ = room_sim::damage_mobj(w, p0, Some(p1), Some(p1), 500);
+    }
+    run(&mut game, 20, &idle, &mut msgs);
+    shot(&game, "dead", &mut patches);
+    run(&mut game, 6 * 35, &idle, &mut msgs);
+    shot(&game, "spectating", &mut patches);
+    for victim in [1, 2] {
+        let w = game.world_mut().unwrap();
+        let (k, v) = (body(w, 3), body(w, victim));
+        let _ = room_sim::damage_mobj(w, v, Some(k), Some(k), 500);
+        run(&mut game, 5, &idle, &mut msgs);
+    }
+    run(&mut game, 40, &idle, &mut msgs);
+    shot(&game, "victory", &mut patches);
 }

@@ -259,19 +259,24 @@ fn draw_one(
                 _ => 1.0,
             };
             let (ax, ay) = anchor_origin(w.anchor, vw, vh);
-            let mut x = ax + f32::from(w.x);
-            let y = ay + f32::from(w.y);
-            // `align`: 1 = centre, 2 = right; otherwise follow the anchor column
-            // (centre anchors centre the text).
-            let width = measure_stcfn_string(&text, scale);
-            match w.align & 3 {
-                1 => x -= width * 0.5,
-                2 => x -= width,
-                _ if matches!(w.anchor, 1 | 4 | 7) => x -= width * 0.5,
-                _ => {}
-            }
+            let x0 = ax + f32::from(w.x);
+            let mut y = ay + f32::from(w.y);
+            // One row per `\n`; each row is aligned on its own.
+            // `align`: 1 = centre, 2 = right; otherwise follow the anchor
+            // column (centre anchors centre the text).
+            let line_h = 10.0 * scale;
             let start = list.cmds.len();
-            draw_stcfn_string(list, x, y, &text, scale);
+            for line in text.split('\n') {
+                let width = measure_stcfn_string(line, scale);
+                let x = match w.align & 3 {
+                    1 => x0 - width * 0.5,
+                    2 => x0 - width,
+                    _ if matches!(w.anchor, 1 | 4 | 7) => x0 - width * 0.5,
+                    _ => x0,
+                };
+                draw_stcfn_string(list, x, y, line, scale);
+                y += line_h;
+            }
             list.style_since(start, alpha, text_ramp(w.text_color));
         }
         kind::FILL => {

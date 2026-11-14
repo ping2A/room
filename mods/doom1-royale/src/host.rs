@@ -14,13 +14,14 @@ pub trait Host {
     fn sqrt(&self, x: f64) -> f64;
     fn atan2(&self, y: f64, x: f64) -> f64;
     fn floor_z(&self, x: f64, y: f64) -> f64;
+    fn ceiling_z(&self, x: f64, y: f64) -> f64;
+    fn actor_can_see(&self, a: Actor, b: Actor) -> bool;
     fn class_find(&self, name: &str) -> ClassRef;
     fn player(&self, slot: i32) -> Option<Actor>;
     fn player_stat(&self, slot: i32, prop: i32) -> i32;
     fn maptime(&self) -> i32;
     fn set_rule(&mut self, rule: i32, value: i32);
     fn get_rule(&self, rule: i32) -> i32;
-    fn end_match(&mut self, winner: Option<i32>);
     fn spawn(&mut self, class: ClassRef, pos: [f64; 3], angle: f64, flags: i32) -> Option<Actor>;
     fn actors_of_class(&self, class: ClassRef, subclasses: bool, out: &mut [Actor]) -> usize;
     fn level_things(&self, ednum: i32, out: &mut [[f64; 3]]) -> usize;
@@ -75,6 +76,12 @@ impl Host for SdkHost {
     fn floor_z(&self, x: f64, y: f64) -> f64 {
         game::floor_z(x, y)
     }
+    fn ceiling_z(&self, x: f64, y: f64) -> f64 {
+        game::ceiling_z(x, y)
+    }
+    fn actor_can_see(&self, a: Actor, b: Actor) -> bool {
+        a.can_see(b)
+    }
     fn class_find(&self, name: &str) -> ClassRef {
         class_find(name)
     }
@@ -92,9 +99,6 @@ impl Host for SdkHost {
     }
     fn get_rule(&self, rule: i32) -> i32 {
         game::get_rule(rule)
-    }
-    fn end_match(&mut self, winner: Option<i32>) {
-        game::end_match(winner);
     }
     fn spawn(&mut self, class: ClassRef, pos: [f64; 3], angle: f64, flags: i32) -> Option<Actor> {
         game::spawn(class, pos, angle, flags)
@@ -191,7 +195,6 @@ mod fake {
     /// Scripted host for native unit tests.
     pub struct FakeHost {
         pub prints: Vec<(Option<i32>, String)>,
-        pub end_match_winner: Option<Option<i32>>,
         rng: u32,
         actors: Vec<FakeActor>,
         classes: Vec<(String, ClassRef)>,
@@ -208,7 +211,6 @@ mod fake {
         pub fn new(seed: u32) -> Self {
             Self {
                 prints: Vec::new(),
-                end_match_winner: None,
                 rng: seed | 1,
                 actors: Vec::new(),
                 classes: Vec::new(),
@@ -252,6 +254,12 @@ mod fake {
         fn floor_z(&self, _x: f64, _y: f64) -> f64 {
             0.0
         }
+        fn ceiling_z(&self, _x: f64, _y: f64) -> f64 {
+            128.0
+        }
+        fn actor_can_see(&self, _a: Actor, _b: Actor) -> bool {
+            true
+        }
         fn class_find(&self, name: &str) -> ClassRef {
             self.classes
                 .iter()
@@ -286,9 +294,6 @@ mod fake {
                 .find(|&&(r, _)| r == rule)
                 .map(|&(_, v)| v)
                 .unwrap_or(0)
-        }
-        fn end_match(&mut self, winner: Option<i32>) {
-            self.end_match_winner = Some(winner);
         }
         fn spawn(
             &mut self,
@@ -394,7 +399,7 @@ mod fake {
             let Some(f) = self.actors.get_mut((target.0.0 as usize).saturating_sub(1)) else {
                 return 0;
             };
-            let mut dealt = amount.min(f.health.max(0));
+            let dealt = amount.min(f.health.max(0));
             f.health -= dealt;
             if f.health <= 0 && f.buddha {
                 f.health = 1;

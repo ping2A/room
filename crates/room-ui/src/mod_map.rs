@@ -284,10 +284,10 @@ pub(crate) fn draw_zones(
 
 /// Framed square marker; `false` when outside the widget.
 pub(crate) fn draw_marker(list: &mut UiDrawList, r: Rect, p: Vec2, size: f32, color: Rgba) -> bool {
-    if p.x < r.x || p.y < r.y || p.x > r.x + r.w || p.y > r.y + r.h {
+    let o = size * 0.5 + 0.5;
+    if p.x - o < r.x || p.y - o < r.y || p.x + o > r.x + r.w || p.y + o > r.y + r.h {
         return false;
     }
-    let o = size * 0.5 + 0.5;
     list.fill(
         Rect::new(p.x - o, p.y - o, o * 2.0, o * 2.0),
         Rgba::new(SHADOW.r, SHADOW.g, SHADOW.b, color.a),

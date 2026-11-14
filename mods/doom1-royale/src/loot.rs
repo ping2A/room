@@ -4,9 +4,10 @@
 //! 1. On load, every pickup the map had is removed (keys stay) and its spot
 //!    is kept: mappers put items where players can walk, so those spots are
 //!    reachable. Monster spots and player starts are the fallback.
-//! 2. When drop selection starts, [`Royale::plan_loot`] picks the spots
-//!    (random, deterministic) so the drop map can show the guns.
-//! 3. At deploy, [`Royale::spawn_loot`] spawns the plan.
+//! 2. At deploy, [`Royale::plan_loot`] picks the spots (random,
+//!    deterministic) and [`Royale::spawn_loot`] spawns them; then the
+//!    players are placed on free spots.
+//! 3. Guns still on the ground show on every minimap.
 
 use room_script_sdk::game::Actor;
 use room_script_sdk::ClassRef;
@@ -17,6 +18,15 @@ use crate::tables::{
     gun_counts, supply_counts, Item, GUN_SPACING, MAX_LOOT, MAX_SPOTS, PICKUP_EDNUMS,
 };
 use crate::zone::{dist2, xy};
+
+/// Probe rings around each reachable anchor: distances (map units).
+const PROBE_DIST: [f64; 2] = [192.0, 384.0];
+/// Highest floor step between an anchor and a probe (Doom max step).
+const PROBE_STEP: f64 = 24.0;
+/// Room a player needs above the floor.
+const PROBE_HEADROOM: f64 = 56.0;
+/// Below this many item spots, probes add more.
+const WANT_SPOTS: usize = 48;
 
 /// Two spots closer than this count as the same spot.
 const SAME_SPOT: f64 = 32.0;
@@ -51,6 +61,80 @@ impl Royale {
             {
                 host.actor_destroy(a);
             }
+        }
+    }
+
+    /// Maps with few things (deathmatch arenas) give too few loot spots:
+    /// add points around reachable anchors (player starts, item and monster
+    /// spots). A point counts when an item fits there, its floor is within a
+    /// step of the anchor's, a player fits under its ceiling, and the anchor
+    /// can see it (no wall in between). Deterministic: fixed order, no RNG.
+    pub(crate) fn probe_extra_spots<H: Host>(&mut self, host: &mut H) {
+        if self.nitem_spots >= WANT_SPOTS {
+            return;
+        }
+        let probe = self.items[Item::Clip as usize];
+        if probe.is_null() {
+            return;
+        }
+        let mut anchors = [[0.0; 3]; MAX_SPOTS];
+        let mut na = 0usize;
+        for s in self.dm[..self.ndm]
+            .iter()
+            .chain(&self.spots[..self.nspots])
+            .chain(&self.item_spots[..self.nitem_spots])
+        {
+            if na < anchors.len() {
+                anchors[na] = *s;
+                na += 1;
+            }
+        }
+        let dirs: [(f64, f64); 8] = [
+            (1.0, 0.0),
+            (0.7071, 0.7071),
+            (0.0, 1.0),
+            (-0.7071, 0.7071),
+            (-1.0, 0.0),
+            (-0.7071, -0.7071),
+            (0.0, -1.0),
+            (0.7071, -0.7071),
+        ];
+        for a in &anchors[..na] {
+            if self.nitem_spots >= MAX_SPOTS {
+                break;
+            }
+            let az = host.floor_z(a[0], a[1]);
+            let Some(origin) = host.spawn(probe, [a[0], a[1], az], 0.0, 0) else {
+                continue;
+            };
+            for d in PROBE_DIST {
+                for (dx, dy) in dirs {
+                    let (x, y) = (a[0] + dx * d, a[1] + dy * d);
+                    let z = host.floor_z(x, y);
+                    if (z - az).abs() > PROBE_STEP || host.ceiling_z(x, y) - z < PROBE_HEADROOM {
+                        continue;
+                    }
+                    let p = [x, y];
+                    let taken = self.item_spots[..self.nitem_spots]
+                        .iter()
+                        .chain(&self.spots[..self.nspots])
+                        .chain(&self.dm[..self.ndm])
+                        .any(|s| dist2(xy(*s), p) < 96.0 * 96.0);
+                    if taken {
+                        continue;
+                    }
+                    let Some(test) = host.spawn(probe, [x, y, z], 0.0, CHECK_POSITION) else {
+                        continue;
+                    };
+                    let seen = host.actor_can_see(origin, test);
+                    host.actor_destroy(test);
+                    if seen && self.nitem_spots < MAX_SPOTS {
+                        self.item_spots[self.nitem_spots] = [x, y, z];
+                        self.nitem_spots += 1;
+                    }
+                }
+            }
+            host.actor_destroy(origin);
         }
     }
 
@@ -146,14 +230,6 @@ impl Royale {
         }
     }
 
-    /// Guns in the plan (for the drop map).
-    pub(crate) fn planned_guns(&self) -> impl Iterator<Item = (Item, [f64; 3])> + '_ {
-        self.loot[..self.nloot]
-            .iter()
-            .copied()
-            .filter(|(item, _)| item.is_gun())
-    }
-
     /// True when `at` holds a planned piece of loot.
     pub(crate) fn is_loot_spot(&self, at: [f64; 2]) -> bool {
         self.loot[..self.nloot]
@@ -174,7 +250,7 @@ impl Royale {
                 && let Some(gun) = spawned
                 && self.nloot_guns < self.loot_guns.len()
             {
-                self.loot_guns[self.nloot_guns] = gun;
+                self.loot_guns[self.nloot_guns] = (gun, item);
                 self.nloot_guns += 1;
             }
             if let Some(ammo) = item.ammo() {
@@ -187,6 +263,52 @@ impl Royale {
                 }
             }
         }
+    }
+}
+
+impl Royale {
+    /// Minimap markers for the guns still lying on the map (shared by
+    /// every seat; picked-up guns lose theirs).
+    pub(crate) fn update_gun_markers<H: Host>(&self, host: &H) {
+        use crate::ui::{GUN_MARKER0, GUN_MARKERS};
+        use room_script_sdk::hud::{flags, layer, Hud};
+        let weapon = host.class_find("Weapon");
+        let mut lying = [Actor::NULL; 256];
+        let n = if weapon.is_null() {
+            0
+        } else {
+            host.actors_of_class(weapon, true, &mut lying).min(lying.len())
+        };
+        for k in 0..GUN_MARKERS {
+            let id = GUN_MARKER0 + k as u16;
+            let gun = (k < self.nloot_guns).then(|| self.loot_guns[k]);
+            match gun {
+                Some((a, item)) if lying[..n].contains(&a) => {
+                    let p = host.actor_pos(a);
+                    let _ = Hud::marker(id)
+                        .seat(-1)
+                        .layer(layer::OVER_HUD)
+                        .flags(flags::MAP_ONLY)
+                        .world_at(p[0] as i32, p[1] as i32, p[2] as i32)
+                        .rgba(gun_color(item))
+                        .size(5, 5)
+                        .show();
+                }
+                _ => {
+                    let _ = Hud::remove(-1, id);
+                }
+            }
+        }
+    }
+}
+
+/// Minimap colour per gun.
+pub(crate) fn gun_color(item: Item) -> u32 {
+    match item {
+        Item::Shotgun => 0xffa0_40ff,
+        Item::Chaingun => 0x70c0_ffff,
+        Item::RocketLauncher => 0xff50_50ff,
+        _ => 0xd080_ffff,
     }
 }
 
@@ -222,7 +344,7 @@ mod tests {
         let mut host = FakeHost::new(3);
         let mut r = royale_with_spots(100, 4);
         r.plan_loot(&mut host);
-        let guns: Vec<_> = r.planned_guns().collect();
+        let guns: Vec<_> = r.loot[..r.nloot].iter().filter(|l| l.0.is_gun()).collect();
         assert_eq!(guns.len(), 1 + 2 + 4 + 1, "rl + chaingun + shotgun + chainsaw");
         for (i, a) in guns.iter().enumerate() {
             for b in &guns[i + 1..] {
@@ -242,6 +364,6 @@ mod tests {
         r.plan_loot(&mut host);
         // 6 spots, 8 players: half the spots stay free for landings.
         assert_eq!(r.nloot, 3);
-        assert_eq!(r.planned_guns().count(), r.nloot, "guns come first");
+        assert!(r.loot[..r.nloot].iter().all(|l| l.0.is_gun()), "guns come first");
     }
 }
