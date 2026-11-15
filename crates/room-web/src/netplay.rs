@@ -304,6 +304,16 @@ impl DukeNetPlay {
         }
     }
 
+    /// Seat this client sees and hears: its own, or seat 0 for a spectator.
+    #[must_use]
+    pub fn view_seat(&self) -> usize {
+        if self.spectator || self.local_seat >= usize::from(self.peer_count) {
+            0
+        } else {
+            self.local_seat
+        }
+    }
+
     pub fn submit(&mut self, input: room_duke::DukeInput) {
         if !self.spectator {
             self.transport.send_duke_input(self.next_send_tic, input);
@@ -315,7 +325,28 @@ impl DukeNetPlay {
         self.transport.keepalive_v2();
     }
 
+    /// Watching (no seat, nothing to send).
+    #[must_use]
+    pub fn is_spectator(&self) -> bool {
+        self.spectator
+    }
+
+    /// Frames received and ready to run from `tic` on, without a gap.
+    pub fn backlog(&mut self, tic: u32) -> usize {
+        self.poll();
+        let mut n = 0usize;
+        while self.frames.contains_key(&tic.wrapping_add(n as u32)) {
+            n += 1;
+        }
+        n
+    }
+
     pub fn take_frame(&mut self, tic: u32) -> Option<Vec<room_duke::DukeInput>> {
+        self.poll();
+        self.frames.remove(&tic)
+    }
+
+    fn poll(&mut self) {
         let mut incoming = Vec::new();
         self.transport.poll_duke_frames(&mut incoming);
         for frame in incoming {
@@ -341,7 +372,6 @@ impl DukeNetPlay {
             }
             self.frames.insert(frame.tic, cmds);
         }
-        self.frames.remove(&tic)
     }
 }
 

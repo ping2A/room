@@ -1127,3 +1127,34 @@ fn bots_move_well_on_an_iwad_map() {
     eprintln!("{name}: running on the spot {:.1}% of bot tics", share * 100.0);
     assert!(share < 0.15);
 }
+
+/// Where players land on every map of an IWAD: always in the main area
+/// (never behind a wall that lowers only when a switch is pressed).
+/// `ROYALE_PREVIEW_IWAD=/path/doom2.wad`.
+#[test]
+#[ignore = "needs ROYALE_PREVIEW_IWAD"]
+fn spawn_report_on_every_map() {
+    let iwad = std::env::var("ROYALE_PREVIEW_IWAD").expect("ROYALE_PREVIEW_IWAD");
+    let vfs = VfsBuilder::new().mount_path(&iwad).unwrap().build().unwrap();
+    for i in 1..=32 {
+        let name = format!("MAP{i:02}");
+        let Ok(mut map) = load_map(&vfs, &name) else { continue };
+        ensure_nodes(&mut map);
+        let mut game = start_timed(map, 8, true, 0, true, 0);
+        let idle = [TicCmd::default(); 8];
+        let mut msgs = Vec::new();
+        run(&mut game, 10 * 35 + 2, &idle, &mut msgs);
+        let w = game.world().unwrap();
+        let mut line = format!("{name}:");
+        for s in 0..8 {
+            let p = w.actors.get(body(w, s)).unwrap().pos;
+            let sec = room_sim::sector_at_xy(w, p.x(), p.y()).unwrap_or(usize::MAX);
+            let sky = w.map.sectors.get(sec).is_some_and(|x| x.ceiling_pic.eq_ignore_ascii_case("F_SKY1"));
+            let main = room_sim::reach::point_in_main_area(w, p.x(), p.y());
+            line += &format!(" [{:.0},{:.0} s{sec}{}{}]", p.x(), p.y(), if sky { " SKY" } else { "" }, if main { "" } else { " OUT" });
+        }
+        assert!(!line.contains(" OUT"), "{line}");
+        let area = room_sim::reach::main_area(w).iter().filter(|b| **b).count();
+        eprintln!("{line}  area {area}/{}", w.map.sectors.len());
+    }
+}

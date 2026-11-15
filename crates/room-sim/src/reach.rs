@@ -6,17 +6,20 @@
 //!   when the step up is at most 24 and the opening fits a player (56).
 //!   Dropping down is always allowed.
 //! - **Doors** (unlocked `Door_*` specials, by tag or the line's back
-//!   sector) count as open: their ceiling rises.
-//! - **Lifts** (`Plat_*` / `Generic_Lift`) and sectors moved by floor,
-//!   stairs or ceiling specials (walls that lower, bridges that rise)
-//!   connect both ways with every neighbour.
+//!   sector) count as open: their ceiling rises. A door opened from
+//!   elsewhere (switch, walk-over line) counts only when that line repeats.
+//! - **Lifts** (`Plat_*` / `Generic_Lift`) on a repeatable line connect
+//!   both ways with every neighbour.
+//! - Walls that lower, bridges that rise and stairs that build once a
+//!   switch is pressed do **not** count: in a match nobody may press it,
+//!   and the area behind stays cut off.
 //! - **Teleporters** (`Teleport`, `Teleport_NoFog`) lead from the line's
 //!   sector to the sector of the destination.
 //!
-//! The main area is the largest group of sectors that all reach each other,
-//! among those reachable from player 1's start (the start may be a ledge you
-//! only drop from): a spot there is never a closet, a cage, a pit or a
-//! secret behind a locked door, and every spot reaches every other.
+//! The main area is the largest group of sectors that all reach each other
+//! and hold a player start (deathmatch or co-op): a spot there is never a
+//! closet, a cage, a pit, a secret behind a locked door or an outdoor area
+//! behind a switch, and every spot reaches every other from the first tic.
 
 use crate::world::World;
 
@@ -36,14 +39,7 @@ const TELEPORT: i16 = 70;
 const TELEPORT_NO_FOG: i16 = 71;
 const GENERIC_LIFT: i16 = 203;
 /// `Plat_*` specials (perpetual, down/up wait, by value, …).
-const PLATS: [i16; 12] = [60, 62, 63, 64, 65, 66, 67, 68, 172, 206, 207, 228];
-/// Floor / stairs / ceiling movers that open the way when triggered (walls
-/// that lower, bridges that rise, stairs that build): `Floor_Lower*`,
-/// `Floor_Raise*`, `Floor_MoveTo*`, `Stairs_*`, `Ceiling_Raise*`, generic
-/// floor and ceiling, Doom stairs, raise-by-texture, lower-to-highest.
-const MOVERS: [i16; 21] = [
-    20, 21, 22, 23, 24, 25, 26, 27, 28, 36, 37, 41, 66, 67, 68, 200, 201, 217, 238, 240, 242,
-];
+const PLATS: [i16; 9] = [60, 62, 63, 64, 65, 172, 206, 207, 228];
 
 /// `true` per sector in the main area (computed once per level).
 #[must_use]
@@ -81,9 +77,14 @@ fn compute(world: &World) -> Vec<bool> {
     let mut lift = vec![false; n];
     for l in &map.lines {
         let back = l.back_sector.map(|s| s.raw() as usize);
+        let repeat = (l.flags & crate::world::ML_REPEAT_SPECIAL as i16) != 0;
+        // A door opened from elsewhere only once (a switch or a walk-over
+        // line) may never open in a match: only doors you push, or that
+        // reopen, count.
+        let door_ok = |tag: i32| tag == 0 || repeat;
         match l.special {
             DOOR_CLOSE | DOOR_OPEN | DOOR_RAISE | DOOR_ANIMATED | DOOR_CLOSE_WAIT_OPEN => {
-                if l.lock_number != 0 {
+                if l.lock_number != 0 || !door_ok(l.args[0]) {
                     continue;
                 }
                 if l.args[0] == 0 {
@@ -96,7 +97,7 @@ fn compute(world: &World) -> Vec<bool> {
             }
             DOOR_LOCKED_RAISE | GENERIC_DOOR => {
                 let lock = if l.special == GENERIC_DOOR { l.args[4] } else { l.args[3] };
-                if lock != 0 || l.lock_number != 0 {
+                if lock != 0 || l.lock_number != 0 || !door_ok(l.args[0]) {
                     continue;
                 }
                 if l.args[0] == 0 {
@@ -107,7 +108,10 @@ fn compute(world: &World) -> Vec<bool> {
                     tagged(l.args[0], &mut door);
                 }
             }
-            s if s == GENERIC_LIFT || PLATS.contains(&s) || MOVERS.contains(&s) => {
+            s if s == GENERIC_LIFT || PLATS.contains(&s) => {
+                if !repeat {
+                    continue;
+                }
                 if l.args[0] == 0 {
                     if let Some(b) = back {
                         lift[b] = true;
@@ -181,26 +185,27 @@ fn compute(world: &World) -> Vec<bool> {
             }
         }
     }
-    // Anchor: player 1's start (else any start, else sector 0).
-    let anchor = map
-        .things
-        .iter()
-        .find(|t| t.type_id == 1)
-        .or_else(|| map.things.iter().find(|t| matches!(t.type_id, 2..=4 | 11)))
-        .and_then(|t| crate::physics::sector_at_xy(world, f64::from(t.x), f64::from(t.y)))
-        .unwrap_or(0);
-    // Largest group of sectors that all reach each other, among those
-    // reachable from the start (the start itself may be a one-way ledge).
-    let forward = flood(&edges, anchor);
+    // The main area: the largest group of sectors that all reach each other
+    // and hold a player start (deathmatch or co-op), else the largest group.
     let comp = strongly_connected(&edges);
     let mut size = vec![0usize; n];
     for s in 0..n {
-        if forward[s] {
-            size[comp[s]] += 1;
+        size[comp[s]] += 1;
+    }
+    let mut has_start = vec![false; n];
+    for t in &map.things {
+        if matches!(t.type_id, 1..=4 | 11)
+            && let Some(s) = crate::physics::sector_at_xy(world, f64::from(t.x), f64::from(t.y))
+        {
+            has_start[comp[s]] = true;
         }
     }
-    let best = (0..n).max_by_key(|&c| (size[c], usize::MAX - c)).unwrap_or(0);
-    (0..n).map(|s| forward[s] && comp[s] == best).collect()
+    let any_start = has_start.iter().any(|b| *b);
+    let best = (0..n)
+        .filter(|&c| !any_start || has_start[c])
+        .max_by_key(|&c| (size[c], usize::MAX - c))
+        .unwrap_or(0);
+    (0..n).map(|s| comp[s] == best).collect()
 }
 
 /// Kosaraju: component id per node (iterative, O(V + E)).
@@ -249,19 +254,4 @@ fn strongly_connected(edges: &[Vec<usize>]) -> Vec<usize> {
         }
     }
     comp
-}
-
-fn flood(edges: &[Vec<usize>], start: usize) -> Vec<bool> {
-    let mut seen = vec![false; edges.len()];
-    let mut stack = vec![start];
-    seen[start] = true;
-    while let Some(s) = stack.pop() {
-        for &t in &edges[s] {
-            if !seen[t] {
-                seen[t] = true;
-                stack.push(t);
-            }
-        }
-    }
-    seen
 }

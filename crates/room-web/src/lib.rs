@@ -218,6 +218,12 @@ mod browser {
         )
     }
 
+    /// Seat whose player this client sees and hears in native Duke (its own;
+    /// seat 0 when solo or watching).
+    fn duke_view_seat(network: Option<&crate::netplay::DukeNetPlay>) -> usize {
+        network.map_or(0, crate::netplay::DukeNetPlay::view_seat)
+    }
+
     fn duke_grp_layers(base: &[u8]) -> Vec<Vec<u8>> {
         let mut layers = vec![base.to_vec()];
         DUKE_ADDON_GRPS.with(|addons| layers.extend(addons.borrow().iter().cloned()));
@@ -2568,7 +2574,12 @@ mod browser {
                 // The web build always looks with the mouse (pointer lock):
                 // Chocolate's mouse-aiming mode, without the snap-to-centre
                 // dead zone around horiz 100, as on the desktop.
-                session.player.aim_mode = 1;
+                // Every client sets it for every seat (lockstep stays identical).
+                for seat in 0..session.player_count() {
+                    if let Some(p) = session.player_for_seat_mut(seat) {
+                        p.aim_mode = 1;
+                    }
+                }
                 while *tic_accum >= 1.0 / 30.0 {
                     *tic_accum -= 1.0 / 30.0;
                     if let Some(net) = network.as_mut() {
@@ -2602,6 +2613,34 @@ mod browser {
                     }
                     if campaign_transition.is_some() {
                         break;
+                    }
+                }
+                // Catch up: after a network hiccup the server's frames pile
+                // up, and running one per 30 Hz step would keep this client
+                // behind (input lag) for the rest of the match. A watcher who
+                // joined mid-game replays the match from tic 0 the same way.
+                if campaign_transition.is_none()
+                    && let Some(net) = network.as_mut()
+                {
+                    let (cushion, budget) = if net.is_spectator() { (1, 300) } else { (2, 8) };
+                    let mut ran = 0;
+                    while ran < budget && net.backlog(*network_tic) > cushion {
+                        let Some(inputs) = net.take_frame(*network_tic) else {
+                            break;
+                        };
+                        let replaying = net.backlog(*network_tic) > 30;
+                        session.tick_inputs(&inputs);
+                        *network_tic = network_tic.wrapping_add(1);
+                        let events = session.drain_sound_events();
+                        // Fast replay: skip the sounds of tics nobody sees.
+                        if !replaying {
+                            sound_events.extend(events);
+                        }
+                        campaign_transition = session.take_campaign_exit_request();
+                        ran += 1;
+                        if campaign_transition.is_some() {
+                            break;
+                        }
                     }
                 }
                 if let Some(transition) = campaign_transition {
@@ -2688,10 +2727,17 @@ mod browser {
                         } else {
                             let _ = input_hub::take_duke_rts_requests();
                         }
+                        // Hear the world from this client's own player.
+                        let (view_posx, view_posy, view_posz, view_ang, view_time_before_exit, view_cursectnum) = {
+                            let p = session
+                                .player_for_seat(duke_view_seat(network.as_ref()))
+                                .unwrap_or(&session.player);
+                            (p.posx, p.posy, p.posz, p.ang, p.time_before_exit, p.cursectnum)
+                        };
                         let listener = [
-                            session.player.posx,
-                            session.player.posy,
-                            session.player.posz,
+                            view_posx,
+                            view_posy,
+                            view_posz,
                         ];
                         let to_audio_point = |position: [i32; 3]| {
                             room_core::DVec3::new(
@@ -2700,7 +2746,7 @@ mod browser {
                                 f64::from(position[2]) / 256.0,
                             )
                         };
-                        let listener_angle = f64::from(session.player.ang.rem_euclid(2048))
+                        let listener_angle = f64::from(view_ang.rem_euclid(2048))
                             * (std::f64::consts::TAU / 2048.0);
                         mixer.set_listener(to_audio_point(listener), listener_angle);
                         mixer.set_reverb_level(i32::from(session.duke_reverb_level));
@@ -2750,8 +2796,8 @@ mod browser {
                                 }]);
                                 continue;
                             }
-                            if session.player.time_before_exit > 0
-                                && session.player.time_before_exit <= 26 * 3
+                            if view_time_before_exit > 0
+                                && view_time_before_exit <= 26 * 3
                             {
                                 // Chocolate rejects new `xyzsound` starts during
                                 // the final three seconds of a timed exit.
@@ -2780,7 +2826,7 @@ mod browser {
                                 .world
                                 .as_ref()
                                 .and_then(|world| {
-                                    world.sectors.get(session.player.cursectnum.max(0) as usize)
+                                    world.sectors.get(view_cursectnum.max(0) as usize)
                                 })
                                 .is_some_and(|sector| sector.lotag == 2);
                             let pitch = room_duke::audio::pitch_scale(
@@ -2795,7 +2841,7 @@ mod browser {
                                 .source_id
                                 .and_then(|source| usize::try_from(source).ok())
                                 .and_then(|source| session.world.as_ref()?.sprites.get(source))
-                                .map_or(session.player.cursectnum, |sprite| sprite.sectnum);
+                                .map_or(view_cursectnum, |sprite| sprite.sectnum);
                             let line_of_sight = event.global
                                 || event.ambience
                                 || visibility_geometry.as_ref().is_none_or(|(sectors, walls)| {
@@ -2803,7 +2849,7 @@ mod browser {
                                         listener[0],
                                         listener[1],
                                         listener[2].wrapping_sub(24 << 8),
-                                        session.player.cursectnum,
+                                        view_cursectnum,
                                         event.position[0],
                                         event.position[1],
                                         event.position[2].wrapping_sub(24 << 8),
@@ -3009,11 +3055,19 @@ mod browser {
             let hud_canvas = match &mut s.mode {
                 Mode::Play(play) => Some(play.build_hud_canvas(hud_fw, hud_fh)),
                 Mode::NativeDuke {
-                    session, renderer, ..
+                    session,
+                    renderer,
+                    network,
+                    ..
                 } => session.render_world().map(|world| {
+                    // Each client looks through its own player (seat 0 is
+                    // only the host's view).
+                    let view = session
+                        .player_for_seat(duke_view_seat(network.as_ref()))
+                        .unwrap_or(&session.player);
                     let pixels = renderer.render_rgba_at_with_quake_view(
                         &world,
-                        &session.player,
+                        view,
                         native_fb_width,
                         native_fb_height,
                         session.tic,

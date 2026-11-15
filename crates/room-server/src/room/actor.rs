@@ -478,7 +478,7 @@ struct Spectator {
     name: String,
     remote_ip: String,
     iwad_fingerprint: String,
-    /// Next [`FrameLog`] index to send.
+    /// Next [`FrameLog`] index to send (Duke: next `duke_log` frame).
     sent: usize,
 }
 
@@ -505,6 +505,11 @@ struct RoomState {
     started: bool,
     spectators: BTreeMap<ConnId, Spectator>,
     frame_log: FrameLog,
+    /// Every released Duke frame, encoded, so a watcher joining mid-game can
+    /// replay the match from tic 0 (Duke frames have their own layout).
+    duke_log: Vec<Bytes>,
+    duke_log_bytes: usize,
+    duke_log_full: bool,
     media: MediaSession,
     /// Client checksums by tic → seat (cleared after compare).
     checksums: BTreeMap<u32, BTreeMap<u8, u64>>,
@@ -592,6 +597,9 @@ pub fn spawn_room(
             started: false,
             spectators: BTreeMap::new(),
             frame_log: FrameLog::new(),
+            duke_log: Vec::new(),
+            duke_log_bytes: 0,
+            duke_log_full: false,
             media: MediaSession::new(id.clone()),
             checksums: BTreeMap::new(),
             server_checksums: BTreeMap::new(),
@@ -992,7 +1000,11 @@ fn v2_hello(state: &mut RoomState, conn: ConnId, h: HelloMsg) {
     // Bot-filled games: every free slot became a bot at the start, so a late
     // player would be steered by the bot brain. Watch instead.
     if state.started && state.settings.fill_bots {
-        send_reject_tx(&tx, "in_progress", "match in progress with bots — spectate it or host another game");
+        send_reject_tx(
+            &tx,
+            "in_progress",
+            "match in progress with bots — spectate it or host another game",
+        );
         return;
     }
     let Some(seat) = free_seat(state) else {
@@ -1117,12 +1129,8 @@ fn v2_watch(state: &mut RoomState, conn: ConnId, fingerprint: &str, name: Option
         send_reject_tx(&tx, "spectate_unavailable", "match too long to replay");
         return;
     }
-    if state.started && state.settings.game == "duke3d" {
-        send_reject_tx(
-            &tx,
-            "spectate_unavailable",
-            "late-join Duke spectator replay is not available",
-        );
+    if state.started && state.settings.game == "duke3d" && state.duke_log_full {
+        send_reject_tx(&tx, "spectate_unavailable", "match too long to replay");
         return;
     }
     let watching = ControlMsg::Watching {
@@ -1153,6 +1161,21 @@ fn v2_watch(state: &mut RoomState, conn: ConnId, fingerprint: &str, name: Option
 
 /// Stream logged frames to every spectator as fast as their queue allows.
 fn pump_spectators(state: &mut RoomState) {
+    if state.settings.game == "duke3d" {
+        let log = &state.duke_log;
+        for sp in state.spectators.values_mut() {
+            while sp.tx.capacity() > SPECTATOR_RESERVED_SLOTS {
+                let Some(pkt) = log.get(sp.sent) else {
+                    break;
+                };
+                if sp.tx.try_send(pkt.clone()).is_err() {
+                    break;
+                }
+                sp.sent += 1;
+            }
+        }
+        return;
+    }
     let log = &state.frame_log;
     for sp in state.spectators.values_mut() {
         while sp.tx.capacity() > SPECTATOR_RESERVED_SLOTS {
@@ -1914,7 +1937,10 @@ fn on_leave(state: &mut RoomState, conn: ConnId, reason: LeaveReason) {
 /// Broadcast every seat's reported ping (scoreboard), every 2 s in game.
 fn push_pings(state: &mut RoomState) {
     let now = Instant::now();
-    if state.last_pings_at.is_some_and(|t| now.duration_since(t) < Duration::from_secs(2)) {
+    if state
+        .last_pings_at
+        .is_some_and(|t| now.duration_since(t) < Duration::from_secs(2))
+    {
         return;
     }
     state.last_pings_at = Some(now);
@@ -1976,8 +2002,30 @@ fn on_clock(state: &mut RoomState) {
 fn broadcast_duke_tic_frame(state: &mut RoomState, frame: room_proto::DukeSyncFrameMsg) {
     let bin = Bytes::from(encode_binary(&BinaryMsg::DukeTicFrame(frame)));
     broadcast_all(state, bin.clone());
-    // Duke frames use their own sync-input format; the Doom TIC_BATCH replay
-    // log cannot encode them. Live Duke spectators receive the stream directly.
+    // Duke frames have their own layout: keep them in `duke_log` (the Doom
+    // TIC_BATCH log cannot encode them) and stream them to watchers, who
+    // replay from tic 0.
+    if !state.duke_log_full
+        && state.duke_log_bytes + bin.len() <= crate::room::spectate::MAX_FRAME_LOG_BYTES
+    {
+        state.duke_log_bytes += bin.len();
+        state.duke_log.push(bin);
+        pump_spectators(state);
+        return;
+    }
+    state.duke_log_full = true;
+    let end = state.duke_log.len();
+    let behind: Vec<ConnId> = state
+        .spectators
+        .iter()
+        .filter(|(_, sp)| sp.sent < end)
+        .map(|(c, _)| *c)
+        .collect();
+    for conn in behind {
+        if let Some(sp) = state.spectators.remove(&conn) {
+            send_bye_tx(&sp.tx, "spectate_unavailable", "match too long to replay");
+        }
+    }
     broadcast_spectators(state, &bin);
 }
 
@@ -2172,11 +2220,7 @@ fn free_seat(state: &RoomState) -> Option<u8> {
 /// holds (connected or reserved for resume). Counting players instead put a
 /// player in seat 1 under bot control whenever seat 0 sat empty or reserved.
 fn first_bot_seat(state: &RoomState) -> u8 {
-    state
-        .seats
-        .keys()
-        .max()
-        .map_or(0, |&s| s.saturating_add(1))
+    state.seats.keys().max().map_or(0, |&s| s.saturating_add(1))
 }
 
 fn live_seat_count(state: &RoomState) -> usize {
@@ -2221,7 +2265,8 @@ fn push_roster(state: &RoomState) {
         None
     } else {
         state.quick_play_deadline.map(|d| {
-            u32::try_from(d.saturating_duration_since(Instant::now()).as_millis()).unwrap_or(u32::MAX)
+            u32::try_from(d.saturating_duration_since(Instant::now()).as_millis())
+                .unwrap_or(u32::MAX)
         })
     };
     let msg = ControlMsg::Roster {
