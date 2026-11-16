@@ -68,6 +68,8 @@ pub struct UnlitPass {
     opaque_sprite_pipeline: wgpu::RenderPipeline,
     /// Sprite ranges flagged [`MaterialRange::SUBTRACT`] (no depth write).
     subtract_sprite_pipeline: wgpu::RenderPipeline,
+    /// Sprite ranges flagged [`MaterialRange::NO_DEPTH_WRITE`] (additive).
+    blend_sprite_pipeline: wgpu::RenderPipeline,
     /// Write stencil = ref (Always/Replace); no color or depth writes — portal/mirror mask.
     stencil_mask_pipeline: wgpu::RenderPipeline,
     /// Draw only where stencil == ref (Equal/keep) — portal/mirror sub-scene.
@@ -411,6 +413,25 @@ impl UnlitPass {
             "opaque-sprite-pipe",
             SPRITE_BLEND,
             true,
+            None,
+            wgpu::ColorWrites::ALL,
+            wgpu::StencilState::default(),
+            wgpu::CompareFunction::LessEqual,
+            crate::DEPTH_STENCIL_FORMAT,
+            wgpu::DepthBiasState {
+                constant: -48,
+                slope_scale: -8.0,
+                clamp: 0.0,
+            },
+        );
+        let blend_sprite_pipeline = make_unlit_pipeline_bias(
+            device,
+            &shader,
+            &layout,
+            target_format,
+            "blend-sprite-pipe",
+            SPRITE_BLEND,
+            false,
             None,
             wgpu::ColorWrites::ALL,
             wgpu::StencilState::default(),
@@ -781,6 +802,7 @@ impl UnlitPass {
             sprite_pipeline,
             opaque_sprite_pipeline,
             subtract_sprite_pipeline,
+            blend_sprite_pipeline,
             stencil_mask_pipeline,
             stencil_equal_pipeline,
             view_buf,
@@ -1343,19 +1365,28 @@ impl UnlitPass {
                 pass.draw(0..n, 0..1);
             } else {
                 // Back-to-front order is kept: switch pipeline only where a
-                // run of subtractive ranges starts or ends.
+                // run of subtractive / additive ranges starts or ends.
+                let kind = |r: &MaterialRange| {
+                    if r.flags & MaterialRange::SUBTRACT != 0 {
+                        1u8
+                    } else if r.flags & MaterialRange::NO_DEPTH_WRITE != 0 {
+                        2
+                    } else {
+                        0
+                    }
+                };
                 let ranges = std::mem::take(&mut self.sprite_ranges);
                 let mut i = 0;
                 while i < ranges.len() {
-                    let sub = ranges[i].flags & MaterialRange::SUBTRACT != 0;
+                    let k0 = kind(&ranges[i]);
                     let j = ranges[i..]
                         .iter()
-                        .position(|r| (r.flags & MaterialRange::SUBTRACT != 0) != sub)
+                        .position(|r| kind(r) != k0)
                         .map_or(ranges.len(), |k| i + k);
-                    pass.set_pipeline(if sub {
-                        &self.subtract_sprite_pipeline
-                    } else {
-                        &self.opaque_sprite_pipeline
+                    pass.set_pipeline(match k0 {
+                        1 => &self.subtract_sprite_pipeline,
+                        2 => &self.blend_sprite_pipeline,
+                        _ => &self.opaque_sprite_pipeline,
                     });
                     self.draw_ranges(gpu, pass, &ranges[i..j], catalog, vfs);
                     i = j;

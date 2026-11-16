@@ -20,6 +20,7 @@ pub mod loadacs;
 pub mod lockdefs;
 pub mod mapinfo;
 pub mod menudef;
+pub mod mod_options;
 pub mod modeldef;
 pub mod sbarinfo;
 pub mod sndinfo;

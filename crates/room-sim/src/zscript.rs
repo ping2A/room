@@ -571,6 +571,21 @@ impl ZscriptRuntime {
         }
     }
 
+    /// Set one mod CVar from its text value (CVARINFO / Settings): integers
+    /// and bools as ints, decimals as floats, anything else as a string.
+    pub fn set_cvar_text(&mut self, name: &str, value: &str) {
+        if let Some(play) = self.play_mut() {
+            let v = value.trim();
+            if let Ok(i) = v.parse::<i32>() {
+                play.set_cvar_int(name, i);
+            } else if let Ok(f) = v.parse::<f64>() {
+                play.set_cvar_float(name, f);
+            } else {
+                play.set_cvar_string(name, v);
+            }
+        }
+    }
+
     /// Install string defaults for ZScript CVar handles.
     pub fn set_cvar_string_defaults(&mut self, cvars: BTreeMap<String, String>) {
         if let Some(play) = self.play_mut() {

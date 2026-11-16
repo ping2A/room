@@ -353,10 +353,19 @@ struct Cx<'a> {
     brace_depth: i32,
     /// Pending `else` slots after `if*` (Chocolate `checking_ifelse`).
     checking_ifelse: i32,
+    /// EDuke32 conditions whose following branch may be spelled after a
+    /// closing brace, paired in source order like Chocolate's `checking_ifelse`.
+    eduke_pending_ifelse: Vec<EdPendingIfElse>,
     /// Break jumps awaiting the end of the innermost EDuke32 loop or switch.
     eduke_break_stack: Vec<Vec<usize>>,
     eduke_switch_depth: usize,
     eduke_nested_endswitch_seen: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EdPendingIfElse {
+    condition_instruction: usize,
+    skip_jump: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -498,6 +507,7 @@ pub fn compile_with_options(
             parsing_actor: None,
             brace_depth: 0,
             checking_ifelse: 0,
+            eduke_pending_ifelse: Vec::new(),
             eduke_break_stack: Vec::new(),
             eduke_switch_depth: 0,
             eduke_nested_endswitch_seen: false,
@@ -1126,71 +1136,7 @@ fn parse_eduke_vm_command(
 
     if command == "ifrnd" {
         let fields = eduke_line_fields(lx);
-        let Some(threshold) = fields.first() else {
-            cx.record_error();
-            cx.emit_eduke_noop();
-            return true;
-        };
-        let instruction_index = cx.img.eduke_program.instructions.len();
-        cx.img
-            .eduke_program
-            .instructions
-            .push(EdInstruction::IfRandom {
-                threshold: eduke_operand(cx.img, threshold),
-                target: instruction_index + 1,
-            });
-        if let Some(else_index) = fields
-            .iter()
-            .enumerate()
-            .skip(1)
-            .find_map(|(index, field)| field.eq_ignore_ascii_case("else").then_some(index))
-        {
-            compile_eduke_field_sequence(cx, &fields[1..else_index]);
-            let skip_else_index = cx.img.eduke_program.instructions.len();
-            cx.img
-                .eduke_program
-                .instructions
-                .push(EdInstruction::Jump { target: 0 });
-            let else_start = cx.img.eduke_program.instructions.len();
-            if let Some(EdInstruction::IfRandom { target, .. }) =
-                cx.img.eduke_program.instructions.get_mut(instruction_index)
-            {
-                *target = else_start;
-            }
-            if else_index + 1 < fields.len() {
-                compile_eduke_field_sequence(cx, &fields[else_index + 1..]);
-            } else {
-                compile_eduke_body(cx, lx, includes, &[]);
-            }
-            let after_else = cx.img.eduke_program.instructions.len();
-            patch_eduke_jump(cx, skip_else_index, after_else);
-        } else {
-            compile_eduke_body(cx, lx, includes, fields.get(1..).unwrap_or_default());
-            let after_true = cx.img.eduke_program.instructions.len();
-            skip_eduke_comments(cx, lx, includes);
-            if peek_eduke_token(lx).is_some_and(|token| token.eq_ignore_ascii_case("else")) {
-                let _ = lx.next_token();
-                let skip_else_index = cx.img.eduke_program.instructions.len();
-                cx.img
-                    .eduke_program
-                    .instructions
-                    .push(EdInstruction::Jump { target: 0 });
-                let else_start = cx.img.eduke_program.instructions.len();
-                if let Some(EdInstruction::IfRandom { target, .. }) =
-                    cx.img.eduke_program.instructions.get_mut(instruction_index)
-                {
-                    *target = else_start;
-                }
-                let else_fields = eduke_line_fields(lx);
-                compile_eduke_body(cx, lx, includes, &else_fields);
-                let after_else = cx.img.eduke_program.instructions.len();
-                patch_eduke_jump(cx, skip_else_index, after_else);
-            } else if let Some(EdInstruction::IfRandom { target, .. }) =
-                cx.img.eduke_program.instructions.get_mut(instruction_index)
-            {
-                *target = after_true;
-            }
-        }
+        compile_eduke_ifrnd_line(cx, lx, includes, &fields);
         return true;
     }
 
@@ -1427,6 +1373,7 @@ fn parse_eduke_vm_command(
             | "endofgame"
             | "actorsound"
             | "stopactorsound"
+            | "findnearactor3d"
             | "globalsoundvar"
             | "guniqhudid"
             | "debris"
@@ -1437,6 +1384,8 @@ fn parse_eduke_vm_command(
             | "mail"
             | "paper"
             | "operate"
+            | "respawnhitag"
+            | "resetplayer"
             | "lineintersect"
             | "resizearray"
             | "setactorsoundpitch"
@@ -1448,11 +1397,11 @@ fn parse_eduke_vm_command(
             | "echo"
             | "definegamefuncname"
             | "exit"
-            | "findnearactor3d"
             | "ifactorsound"
             | "operatemasterswitches"
             | "prependstate"
             | "sqrt"
+            | "mikesnd"
             | "soundvar"
             | "ifrnd"
             | "killit"
@@ -1469,6 +1418,8 @@ fn parse_eduke_vm_command(
             | "stopsound"
             | "globalsound"
             | "pkick"
+            | "tossweapon"
+            | "tip"
     ) {
         return false;
     }
@@ -1524,6 +1475,12 @@ fn compile_eduke_if_line(
         patch_eduke_jump(cx, skip_else_index, after_else);
         return;
     }
+    let pending_base = cx.eduke_pending_ifelse.len();
+    let pending_index = cx.eduke_pending_ifelse.len();
+    cx.eduke_pending_ifelse.push(EdPendingIfElse {
+        condition_instruction: instruction_index,
+        skip_jump: usize::MAX,
+    });
     let mut inline_body = fields.get(body_start..).unwrap_or_default().to_vec();
     let mut nested_condition_compiled = false;
     if inline_body.len() == 1
@@ -1561,23 +1518,57 @@ fn compile_eduke_if_line(
     }
     let after_true = cx.img.eduke_program.instructions.len();
     skip_eduke_comments(cx, lx, includes);
-    if peek_eduke_token(lx).is_some_and(|token| token.eq_ignore_ascii_case("else")) {
-        let _ = lx.next_token();
+    let next_token = peek_eduke_token(lx);
+    if next_token
+        .as_deref()
+        .is_some_and(|token| token.eq_ignore_ascii_case("else") || token == "}")
+    {
         let skip_else_index = cx.img.eduke_program.instructions.len();
-        cx.img
-            .eduke_program
-            .instructions
-            .push(EdInstruction::Jump { target: 0 });
+        cx.img.eduke_program.instructions.push(EdInstruction::Jump {
+            target: skip_else_index + 1,
+        });
+        cx.eduke_pending_ifelse[pending_index].skip_jump = skip_else_index;
+        patch_eduke_conditional(cx, instruction_index, skip_else_index + 1);
+        if next_token.is_some_and(|token| token.eq_ignore_ascii_case("else")) {
+            compile_eduke_pending_else_chain(cx, lx, includes, pending_base);
+        }
+    } else {
+        cx.eduke_pending_ifelse.truncate(pending_base);
+        patch_eduke_conditional(cx, instruction_index, after_true);
+    }
+}
+
+/// Pair source-level `else` tokens with the most recently opened EDuke32
+/// condition, even when a brace closes between the condition body and `else`.
+fn compile_eduke_pending_else_chain(
+    cx: &mut Cx<'_>,
+    lx: &mut Lexer<'_>,
+    includes: &mut dyn IncludeResolver,
+    pending_base: usize,
+) {
+    let mut skip_jumps = Vec::new();
+    loop {
+        skip_eduke_comments(cx, lx, includes);
+        if cx.eduke_pending_ifelse.len() <= pending_base
+            || !peek_eduke_token(lx).is_some_and(|token| token.eq_ignore_ascii_case("else"))
+        {
+            break;
+        }
+        let _ = lx.next_token();
+        let Some(pending) = cx.eduke_pending_ifelse.pop() else {
+            break;
+        };
+        skip_jumps.push(pending.skip_jump);
         let else_start = cx.img.eduke_program.instructions.len();
-        patch_eduke_conditional(cx, instruction_index, else_start);
+        patch_eduke_conditional(cx, pending.condition_instruction, else_start);
         let else_fields = eduke_line_fields(lx);
         if !compile_eduke_nested_condition(cx, lx, includes, &else_fields) {
             compile_eduke_body(cx, lx, includes, &else_fields);
         }
-        let after_else = cx.img.eduke_program.instructions.len();
-        patch_eduke_jump(cx, skip_else_index, after_else);
-    } else {
-        patch_eduke_conditional(cx, instruction_index, after_true);
+    }
+    let after_else_chain = cx.img.eduke_program.instructions.len();
+    for skip_jump in skip_jumps {
+        patch_eduke_jump(cx, skip_jump, after_else_chain);
     }
 }
 
@@ -1634,6 +1625,11 @@ fn eduke_builtin_if_command(command: &str) -> bool {
             | "ifmultiplayer"
             | "ifpdistl"
             | "ifpdistg"
+            | "ifangdiffl"
+            | "ifawayfromwall"
+            | "ifactorsound"
+            | "ifonwater"
+            | "ifinouterspace"
             | "ifinwater"
             | "ifoutside"
             | "ifphealthl"
@@ -1762,6 +1758,44 @@ fn eduke_builtin_condition(
             EdOperand::PlayerDistance,
             EdComparison::Greater,
             argument,
+        ),
+        "ifangdiffl" => (
+            1,
+            EdOperand::ActorPlayerAngleDifference,
+            EdComparison::LessEqual,
+            argument,
+        ),
+        "ifawayfromwall" => (
+            0,
+            EdOperand::ActorAwayFromWall,
+            EdComparison::Equal,
+            EdOperand::Immediate(1),
+        ),
+        "ifactorsound" => {
+            if fields.len() < 2 {
+                return None;
+            }
+            (
+                2,
+                EdOperand::ActorHasSound {
+                    actor: Box::new(eduke_operand(img, &fields[0])),
+                    sound: Box::new(eduke_operand(img, &fields[1])),
+                },
+                EdComparison::Equal,
+                EdOperand::Immediate(1),
+            )
+        }
+        "ifonwater" => (
+            0,
+            EdOperand::ActorOnWater,
+            EdComparison::Equal,
+            EdOperand::Immediate(1),
+        ),
+        "ifinouterspace" => (
+            0,
+            EdOperand::ActorInOuterSpace,
+            EdComparison::Equal,
+            EdOperand::Immediate(1),
         ),
         "ifinwater" => (
             0,
@@ -1970,7 +2004,12 @@ fn compile_eduke_body(
     includes: &mut dyn IncludeResolver,
     inline_body: &[String],
 ) {
-    if inline_body.first().is_some_and(|field| field == "{") {
+    if inline_body
+        .first()
+        .is_some_and(|field| field.eq_ignore_ascii_case("ifrnd"))
+    {
+        compile_eduke_ifrnd_line(cx, lx, includes, &inline_body[1..]);
+    } else if inline_body.first().is_some_and(|field| field == "{") {
         if inline_body.len() == 1 {
             compile_eduke_block(cx, lx, includes);
         } else {
@@ -1989,6 +2028,84 @@ fn compile_eduke_body(
                 .is_some_and(|token| token == "}")
         {
             let _ = parse_command(cx, lx, includes);
+        }
+    }
+}
+
+/// Compile a line-oriented `ifrnd`, including an `else ifrnd` body supplied
+/// from the following source line. That case needs the lexer so it can consume
+/// the nested branch's brace block instead of leaving the block behind.
+fn compile_eduke_ifrnd_line(
+    cx: &mut Cx<'_>,
+    lx: &mut Lexer<'_>,
+    includes: &mut dyn IncludeResolver,
+    fields: &[String],
+) {
+    let Some(threshold) = fields.first() else {
+        cx.record_error();
+        cx.emit_eduke_noop();
+        return;
+    };
+    let instruction_index = cx.img.eduke_program.instructions.len();
+    cx.img
+        .eduke_program
+        .instructions
+        .push(EdInstruction::IfRandom {
+            threshold: eduke_operand(cx.img, threshold),
+            target: instruction_index + 1,
+        });
+    if let Some(else_index) = fields
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find_map(|(index, field)| field.eq_ignore_ascii_case("else").then_some(index))
+    {
+        compile_eduke_field_sequence(cx, &fields[1..else_index]);
+        let skip_else_index = cx.img.eduke_program.instructions.len();
+        cx.img
+            .eduke_program
+            .instructions
+            .push(EdInstruction::Jump { target: 0 });
+        let else_start = cx.img.eduke_program.instructions.len();
+        if let Some(EdInstruction::IfRandom { target, .. }) =
+            cx.img.eduke_program.instructions.get_mut(instruction_index)
+        {
+            *target = else_start;
+        }
+        if else_index + 1 < fields.len() {
+            compile_eduke_field_sequence(cx, &fields[else_index + 1..]);
+        } else {
+            compile_eduke_body(cx, lx, includes, &[]);
+        }
+        let after_else = cx.img.eduke_program.instructions.len();
+        patch_eduke_jump(cx, skip_else_index, after_else);
+    } else {
+        let pending_base = cx.eduke_pending_ifelse.len();
+        let pending_index = cx.eduke_pending_ifelse.len();
+        cx.eduke_pending_ifelse.push(EdPendingIfElse {
+            condition_instruction: instruction_index,
+            skip_jump: usize::MAX,
+        });
+        compile_eduke_body(cx, lx, includes, fields.get(1..).unwrap_or_default());
+        let after_true = cx.img.eduke_program.instructions.len();
+        skip_eduke_comments(cx, lx, includes);
+        let next_token = peek_eduke_token(lx);
+        if next_token
+            .as_deref()
+            .is_some_and(|token| token.eq_ignore_ascii_case("else") || token == "}")
+        {
+            let skip_else_index = cx.img.eduke_program.instructions.len();
+            cx.img.eduke_program.instructions.push(EdInstruction::Jump {
+                target: skip_else_index + 1,
+            });
+            cx.eduke_pending_ifelse[pending_index].skip_jump = skip_else_index;
+            patch_eduke_conditional(cx, instruction_index, skip_else_index + 1);
+            if next_token.is_some_and(|token| token.eq_ignore_ascii_case("else")) {
+                compile_eduke_pending_else_chain(cx, lx, includes, pending_base);
+            }
+        } else {
+            cx.eduke_pending_ifelse.truncate(pending_base);
+            patch_eduke_conditional(cx, instruction_index, after_true);
         }
     }
 }
@@ -2122,17 +2239,21 @@ fn inline_command_end(img: &ScriptImage, fields: &[String], start: usize) -> usi
             "strength" | "addkills" | "addstrength" | "cstat" | "cstator" | "cactor"
             | "spritepal" | "clipdist" | "count" | "sleeptime" => 1,
             "sizeto" | "sizeat" => 2,
-            "fall" | "resetactioncount" | "resetcount" | "getlastpal" | "pkick" | "break" => 0,
+            "fall" | "resetactioncount" | "resetcount" | "getlastpal" | "pkick" | "tossweapon"
+            | "break" => 0,
+            "actorsound" | "stopactorsound" => 2,
+            "ifactorsound" => 2,
+            "findnearactor3d" => 3,
             "set" | "add" | "sub" | "mul" | "div" | "mod" | "and" | "or" | "xor" | "shiftl"
             | "shiftr" | "rand" | "randvar" | "randvarvar" | "mulscale" | "divscale"
             | "scalevar" | "ldist" | "dist" | "changespritestat" | "changespritesect"
             | "headspritestat" | "nextspritestat" | "headspritesect" | "nextspritesect"
             | "setactorvar" | "getactorvar" | "setplayervar" | "getplayervar" | "addweapon"
             | "addweaponvar" | "addammo" | "addammovar" | "addinventory" | "addinventoryvar"
-            | "soundvar" | "sectorofwall" | "debris" | "guts" => 2,
-            "sound" | "soundonce" | "stopsound" | "globalsound" | "quote" | "playsound"
-            | "money" | "mail" | "paper" | "lotsofglass" | "getticks" | "setgamepalette"
-            | "inittimer" => 1,
+            | "sectorofwall" | "debris" | "guts" => 2,
+            "sound" | "soundvar" | "soundonce" | "stopsound" | "globalsound" | "globalsoundvar"
+            | "quote" | "playsound" | "money" | "mail" | "paper" | "lotsofglass" | "getticks"
+            | "setgamepalette" | "inittimer" => 1,
             "palfrom" => 4,
             "getarray" => 3,
             "getangle" => 3,
@@ -2364,10 +2485,17 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
             .eduke_program
             .instructions
             .push(EdInstruction::KillIt),
-        "sound" | "soundonce" | "globalsound" if operands.len() == 1 => {
+        "tip" if operands.is_empty() => cx
+            .img
+            .eduke_program
+            .instructions
+            .push(EdInstruction::PlayerTip),
+        "sound" | "soundvar" | "soundonce" | "globalsound" | "globalsoundvar"
+            if operands.len() == 1 =>
+        {
             let mode = match command.as_str() {
                 "soundonce" => EdSoundMode::ActorOnce,
-                "globalsound" => EdSoundMode::Global,
+                "globalsound" | "globalsoundvar" => EdSoundMode::Global,
                 _ => EdSoundMode::Actor,
             };
             cx.img
@@ -2376,6 +2504,27 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
                 .push(EdInstruction::PlaySound {
                     sound: eduke_operand(cx.img, &operands[0]),
                     mode,
+                    actor: None,
+                });
+        }
+        "actorsound" if operands.len() == 2 => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::PlaySound {
+                    sound: eduke_operand(cx.img, &operands[1]),
+                    mode: EdSoundMode::Actor,
+                    actor: Some(eduke_operand(cx.img, &operands[0])),
+                });
+        }
+        "mikesnd" if operands.is_empty() => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::PlaySound {
+                    sound: eduke_actor_member("yvel", None),
+                    mode: EdSoundMode::Actor,
+                    actor: None,
                 });
         }
         "stopsound" if operands.len() == 1 => {
@@ -2384,9 +2533,20 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
                 .instructions
                 .push(EdInstruction::StopSound {
                     sound: eduke_operand(cx.img, &operands[0]),
+                    actor: None,
                 })
         }
-        "sound" | "soundonce" | "globalsound" | "stopsound" => eduke_bad_arity(cx),
+        "stopactorsound" if operands.len() == 2 => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::StopSound {
+                    actor: Some(eduke_operand(cx.img, &operands[0])),
+                    sound: eduke_operand(cx.img, &operands[1]),
+                })
+        }
+        "sound" | "soundvar" | "soundonce" | "globalsound" | "globalsoundvar" | "stopsound"
+        | "actorsound" | "stopactorsound" => eduke_bad_arity(cx),
         "rand" | "randvar" | "randvarvar" | "displayrand" | "displayrandvar"
         | "displayrandvarvar"
             if !operands.is_empty() =>
@@ -2503,6 +2663,11 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
             .eduke_program
             .instructions
             .push(EdInstruction::PlayerQuickKick),
+        "tossweapon" if operands.is_empty() => cx
+            .img
+            .eduke_program
+            .instructions
+            .push(EdInstruction::TossWeapon),
         "abs" if !operands.is_empty() => {
             cx.img.eduke_program.instructions.push(EdInstruction::Abs {
                 target: eduke_lvalue(cx.img, &operands[0]),
@@ -2592,6 +2757,29 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
                     count: eduke_operand(cx.img, &operands[0]),
                 });
         }
+        "spawnceilingglass" if operands.len() == 2 || operands.len() == 3 => {
+            let (sprite, sector, count) = if operands.len() == 3 {
+                (
+                    eduke_operand(cx.img, &operands[0]),
+                    eduke_operand(cx.img, &operands[1]),
+                    eduke_operand(cx.img, &operands[2]),
+                )
+            } else {
+                (
+                    EdOperand::CurrentActor,
+                    eduke_operand(cx.img, &operands[0]),
+                    eduke_operand(cx.img, &operands[1]),
+                )
+            };
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::SpawnCeilingGlass {
+                    sprite,
+                    sector,
+                    count,
+                });
+        }
         "money" | "mail" | "paper" if operands.len() == 1 => {
             let kind = match command.as_str() {
                 "money" => EdItemSprayKind::Money,
@@ -2611,6 +2799,16 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
             .eduke_program
             .instructions
             .push(EdInstruction::Operate),
+        "respawnhitag" if operands.is_empty() => cx
+            .img
+            .eduke_program
+            .instructions
+            .push(EdInstruction::RespawnHitag),
+        "resetplayer" if operands.is_empty() => cx
+            .img
+            .eduke_program
+            .instructions
+            .push(EdInstruction::ResetPlayer),
         "cansee" if operands.len() >= 9 => {
             let target = eduke_lvalue(cx.img, &operands[8]);
             let start = std::array::from_fn(|index| eduke_operand(cx.img, &operands[index]));
@@ -2682,6 +2880,16 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
                     first: eduke_operand(cx.img, &operands[1]),
                     second: eduke_operand(cx.img, &operands[2]),
                     three_dimensional: command == "dist",
+                });
+        }
+        "findnearactor3d" if operands.len() >= 3 => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::FindNearActor3D {
+                    tile: eduke_operand(cx.img, &operands[0]),
+                    distance: eduke_operand(cx.img, &operands[1]),
+                    target: eduke_lvalue(cx.img, &operands[2]),
                 });
         }
         "headspritestat" | "nextspritestat" | "headspritesect" | "nextspritesect"
@@ -2984,24 +3192,18 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
             || matches!(
                 command.as_str(),
                 "sectorofwall"
-                    | "actorsound"
-                    | "stopactorsound"
-                    | "globalsoundvar"
                     | "guniqhudid"
                     | "lineintersect"
                     | "setactorsoundpitch"
-                    | "spawnceilingglass"
                     | "getzrange"
                     | "rotatesprite"
                     | "minitext"
                     | "freezerhurtowner"
                     | "definegamefuncname"
                     | "exit"
-                    | "findnearactor3d"
                     | "ifactorsound"
                     | "operatemasterswitches"
                     | "prependstate"
-                    | "soundvar"
             ) =>
         {
             cx.emit_eduke_noop()
@@ -3573,6 +3775,7 @@ fn eduke_inline_command_token(token: &str) -> bool {
                 | "soundonce"
                 | "stopsound"
                 | "globalsound"
+                | "globalsoundvar"
                 | "return"
                 | "exit"
                 | "nullop"
@@ -3699,24 +3902,22 @@ fn eduke_statement_head(token: &str) -> bool {
                 | "displayrandvar"
                 | "randvarvar"
                 | "displayrandvarvar"
+                | "findnearactor3d"
                 | "sectorofwall"
                 | "inittimer"
                 | "getticks"
                 | "setgamepalette"
                 | "actorsound"
                 | "stopactorsound"
-                | "globalsoundvar"
                 | "guniqhudid"
                 | "lineintersect"
                 | "resizearray"
                 | "setactorsoundpitch"
-                | "spawnceilingglass"
                 | "rotatesprite"
                 | "minitext"
                 | "freezerhurtowner"
                 | "echo"
                 | "exit"
-                | "findnearactor3d"
                 | "ifactorsound"
                 | "operatemasterswitches"
                 | "soundvar"
@@ -3843,12 +4044,16 @@ fn invert_comparison(comparison: EdComparison) -> EdComparison {
 }
 
 fn patch_eduke_conditional(cx: &mut Cx<'_>, instruction: usize, target: usize) {
-    if let Some(EdInstruction::JumpIf {
-        target: jump_target,
-        ..
-    }) = cx.img.eduke_program.instructions.get_mut(instruction)
-    {
-        *jump_target = target;
+    match cx.img.eduke_program.instructions.get_mut(instruction) {
+        Some(EdInstruction::JumpIf {
+            target: jump_target,
+            ..
+        })
+        | Some(EdInstruction::IfRandom {
+            target: jump_target,
+            ..
+        }) => *jump_target = target,
+        _ => {}
     }
 }
 

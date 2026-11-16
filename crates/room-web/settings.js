@@ -227,6 +227,22 @@ export function initSettings(mod, opts = {}) {
           <button type="button" id="settings-fs" class="settings-btn">Toggle fullscreen</button>
         </section>
         <section>
+          <h3>Minimap</h3>
+          <label class="settings-check"><input id="settings-mm-show" type="checkbox" /> Show minimap</label>
+          <label class="settings-row">Size
+            <select id="settings-mm-size">
+              <option value="s">Small</option>
+              <option value="m">Medium</option>
+              <option value="l">Large</option>
+            </select>
+          </label>
+          <label class="settings-row">Zoom
+            <input id="settings-mm-zoom" type="range" min="0" max="5" step="1" />
+          </label>
+          <label class="settings-check"><input id="settings-mm-rotate" type="checkbox" /> Turn with the view</label>
+          <p class="settings-hint">Top right, explored areas only (a computer map shows the rest). Alt+M shows or hides it, Alt+= and Alt+- zoom.</p>
+        </section>
+        <section>
           <h3>Graphics</h3>
           <p class="settings-hint">All effects default off (faithful look). Quality preset fills the toggles below.</p>
           <label class="settings-row">Quality
@@ -241,6 +257,24 @@ export function initSettings(mod, opts = {}) {
           <div id="settings-shaders" class="settings-shaders"></div>
           <button type="button" id="settings-reset-shaders" class="settings-btn ghost">Reset shaders to defaults</button>
           <p class="settings-hint">Turns off bloom, blood FX, muzzle, CRT, etc. (faithful look). Does not change mouse/keys.</p>
+        </section>
+        <section>
+          <h3>Messages</h3>
+          <label class="settings-row">Style
+            <select id="settings-msg-style">
+              <option value="toast">Cards (fade out on their own)</option>
+              <option value="classic">Classic (in-game text)</option>
+            </select>
+          </label>
+          <div id="settings-msg-kinds" class="settings-shaders"></div>
+          <p class="settings-hint">Choose what the game tells you about. Tab shows the level stats.</p>
+        </section>
+        <section id="settings-modopts">
+          <h3>Mod options</h3>
+          <p class="settings-hint" id="modopt-note"></p>
+          <input id="modopt-search" class="modopt-search" type="search" placeholder="Find a setting" aria-label="Find a mod setting" />
+          <div id="modopt-groups" class="modopt-groups"></div>
+          <button type="button" id="modopt-reset" class="settings-btn ghost">Reset mod options</button>
         </section>
         <section>
           <h3>Mouse</h3>
@@ -408,9 +442,272 @@ export function initSettings(mod, opts = {}) {
     qualitySel.value = String(Number(state.shaders.r_quality || 0));
     tonemapSel.value = String(Number(state.shaders.gl_tonemap || 0));
     goreSel.value = String(Number(state.shaders.r_gore || 1));
+    syncMinimap();
+    syncMessages();
+    renderModOptions();
     renderShaderToggles();
     renderBinds();
   }
+
+  // ---- Messages: which kinds of in-game messages show, and how.
+  const MSG_LABELS = {
+    kill: "Monster kills",
+    frag: "Frags (players and bots)",
+    death: "Deaths",
+    pickup: "Pickups",
+    power: "Power-ups (berserk and others)",
+    secret: "Secrets found",
+    lock: "Locked doors and keys",
+    script: "Map and mod messages",
+    system: "Game and connection notices",
+  };
+  const messages = () => window.roomMessages;
+  function syncMessages() {
+    const api = messages();
+    const box = root.querySelector("#settings-msg-kinds");
+    const style = root.querySelector("#settings-msg-style");
+    style.disabled = !api;
+    box.innerHTML = "";
+    if (!api) return;
+    const c = api.get();
+    style.value = c.style || "toast";
+    const hidden = new Set(c.hidden || []);
+    for (const kind of api.kinds) {
+      const row = document.createElement("label");
+      row.className = "settings-check";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !hidden.has(kind);
+      cb.addEventListener("change", () => {
+        const h = new Set(api.get().hidden || []);
+        if (cb.checked) h.delete(kind);
+        else h.add(kind);
+        api.configure({ hidden: [...h] });
+      });
+      row.append(cb, document.createTextNode(" " + (MSG_LABELS[kind] || kind)));
+      box.appendChild(row);
+    }
+  }
+  root.querySelector("#settings-msg-style").addEventListener("change", (ev) => {
+    messages()?.configure({ style: ev.target.value });
+  });
+
+  // ---- Mod options: the loaded mods' CVARINFO, as their own menus label it.
+  const MOD_KEY = "room/mod-cvars";
+  const loadModCvars = () => {
+    try {
+      return JSON.parse(localStorage.getItem(MOD_KEY) || "{}") || {};
+    } catch (_) {
+      return {};
+    }
+  };
+  const saveModCvars = (o) => {
+    try {
+      localStorage.setItem(MOD_KEY, JSON.stringify(o));
+    } catch (_) {
+      /* private mode */
+    }
+  };
+  let modGroups = [];
+  const openGroups = new Set();
+
+  function colorToHex(v) {
+    const t = String(v || "").trim();
+    if (/^#[0-9a-f]{6}$/i.test(t)) return t;
+    const m = t.match(/^([0-9a-f]{1,2})\s+([0-9a-f]{1,2})\s+([0-9a-f]{1,2})$/i);
+    if (m) return "#" + m.slice(1).map((x) => x.padStart(2, "0")).join("");
+    return "#000000";
+  }
+  const hexToColor = (h) => h.replace("#", "").match(/../g).join(" ");
+
+  function setModCvar(item, value) {
+    const store = loadModCvars();
+    const key = item.cvar.toLowerCase();
+    if (value === item.default) delete store[key];
+    else store[key] = value;
+    saveModCvars(store);
+    item.value = value;
+    try {
+      mod.roomSetModCvar(item.cvar, value);
+    } catch (e) {
+      console.warn("room-web: mod cvar failed", e);
+    }
+  }
+
+  function modControl(item, onChange) {
+    if (item.kind === "choice") {
+      const sel = document.createElement("select");
+      let found = false;
+      for (const [v, label] of item.values) {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = label;
+        if (Number(v) === Number(item.value) || v === item.value) {
+          o.selected = true;
+          found = true;
+        }
+        sel.appendChild(o);
+      }
+      if (!found) {
+        const o = document.createElement("option");
+        o.value = item.value;
+        o.textContent = item.value;
+        o.selected = true;
+        sel.appendChild(o);
+      }
+      sel.addEventListener("change", () => onChange(sel.value));
+      return sel;
+    }
+    if (item.kind === "range") {
+      const wrap = document.createElement("span");
+      wrap.className = "modopt-range";
+      const r = document.createElement("input");
+      r.type = "range";
+      r.min = String(Math.min(item.min, item.max));
+      r.max = String(Math.max(item.min, item.max));
+      r.step = String(item.step || 1);
+      r.value = String(item.value);
+      const out = document.createElement("output");
+      out.textContent = String(item.value);
+      r.addEventListener("input", () => (out.textContent = r.value));
+      r.addEventListener("change", () => onChange(r.value));
+      wrap.append(r, out);
+      return wrap;
+    }
+    if (item.kind === "color") {
+      const c = document.createElement("input");
+      c.type = "color";
+      c.value = colorToHex(item.value);
+      c.addEventListener("change", () => onChange(hexToColor(c.value)));
+      return c;
+    }
+    const f = document.createElement("input");
+    f.type = item.type === "int" || item.type === "float" ? "number" : "text";
+    if (item.type === "float") f.step = "any";
+    f.value = String(item.value);
+    f.addEventListener("change", () => onChange(f.value.trim()));
+    return f;
+  }
+
+  function renderModOptions() {
+    const box = root.querySelector("#modopt-groups");
+    const note = root.querySelector("#modopt-note");
+    const query = root.querySelector("#modopt-search").value.trim().toLowerCase();
+    try {
+      modGroups = typeof mod.roomModOptions === "function" ? JSON.parse(mod.roomModOptions()) : [];
+    } catch (_) {
+      modGroups = [];
+    }
+    box.innerHTML = "";
+    const any = modGroups.length > 0;
+    root.querySelector("#modopt-search").hidden = !any;
+    root.querySelector("#modopt-reset").hidden = !any;
+    if (!any) {
+      note.textContent = "Start a game with a mod that has settings (a PK3 with CVARINFO) and its options appear here.";
+      return;
+    }
+    const count = modGroups.reduce((n, g) => n + g.items.length, 0);
+    note.textContent = `${count} settings from the loaded mods, grouped as their own menus show them. Changes apply now; some only show on things spawned afterwards or on the next map.`;
+    for (const g of modGroups) {
+      const items = g.items.filter(
+        (it) =>
+          !query ||
+          it.label.toLowerCase().includes(query) ||
+          it.cvar.toLowerCase().includes(query) ||
+          (it.hint || "").toLowerCase().includes(query)
+      );
+      if (!items.length) continue;
+      const det = document.createElement("details");
+      det.className = "modopt-group";
+      det.open = !!query || openGroups.has(g.title);
+      det.addEventListener("toggle", () => {
+        if (query) return;
+        if (det.open) openGroups.add(g.title);
+        else openGroups.delete(g.title);
+      });
+      const sum = document.createElement("summary");
+      const changed = items.filter((it) => String(it.value) !== String(it.default)).length;
+      sum.innerHTML = `<span class="modopt-title"></span><span class="modopt-count"></span>`;
+      sum.querySelector(".modopt-title").textContent = g.title;
+      sum.querySelector(".modopt-count").textContent = changed ? `${changed} changed · ${items.length}` : String(items.length);
+      det.appendChild(sum);
+      for (const it of items) {
+        const row = document.createElement("div");
+        row.className = "modopt-row";
+        const isChanged = String(it.value) !== String(it.default);
+        row.classList.toggle("changed", isChanged);
+        const label = document.createElement("label");
+        label.className = "modopt-label";
+        label.textContent = it.label;
+        label.title = it.cvar;
+        const ctl = modControl(it, (v) => {
+          setModCvar(it, v);
+          renderModOptions();
+        });
+        const reset = document.createElement("button");
+        reset.type = "button";
+        reset.className = "modopt-undo";
+        reset.textContent = "↺";
+        reset.title = "Back to the mod default";
+        reset.setAttribute("aria-label", `Reset ${it.label}`);
+        reset.hidden = !isChanged;
+        reset.addEventListener("click", () => {
+          setModCvar(it, it.default);
+          renderModOptions();
+        });
+        row.append(label, ctl, reset);
+        if (it.hint) {
+          const h = document.createElement("p");
+          h.className = "modopt-hint";
+          h.textContent = it.hint;
+          row.appendChild(h);
+        }
+        det.appendChild(row);
+      }
+      box.appendChild(det);
+    }
+    if (!box.children.length) {
+      note.textContent = `No setting matches "${query}".`;
+    }
+  }
+  root.querySelector("#modopt-search").addEventListener("input", renderModOptions);
+  root.querySelector("#modopt-reset").addEventListener("click", () => {
+    for (const g of modGroups) {
+      for (const it of g.items) {
+        if (String(it.value) !== String(it.default)) setModCvar(it, it.default);
+      }
+    }
+    saveModCvars({});
+    renderModOptions();
+  });
+
+  const minimap = () => window.roomMinimap;
+  function syncMinimap() {
+    const mm = minimap();
+    const on = !!mm;
+    for (const id of ["#settings-mm-show", "#settings-mm-size", "#settings-mm-zoom", "#settings-mm-rotate"]) {
+      root.querySelector(id).disabled = !on;
+    }
+    if (!on) return;
+    const c = mm.get();
+    root.querySelector("#settings-mm-show").checked = !!c.show;
+    root.querySelector("#settings-mm-size").value = c.size || "m";
+    root.querySelector("#settings-mm-zoom").max = String((mm.zoomLevels || 6) - 1);
+    root.querySelector("#settings-mm-zoom").value = String(c.zoom);
+    root.querySelector("#settings-mm-rotate").checked = c.rotate !== false;
+  }
+  root.querySelector("#settings-mm-show").addEventListener("change", (ev) => {
+    minimap()?.configure({ show: ev.target.checked });
+  });
+  root.querySelector("#settings-mm-size").addEventListener("change", (ev) => {
+    minimap()?.configure({ size: ev.target.value });
+  });
+  root.querySelector("#settings-mm-zoom").addEventListener("input", (ev) => {
+    minimap()?.configure({ zoom: Number(ev.target.value) });
+  });
+  root.querySelector("#settings-mm-rotate").addEventListener("change", (ev) => {
+    minimap()?.configure({ rotate: ev.target.checked });
+  });
 
   function renderBinds() {
     const box = root.querySelector("#settings-binds");

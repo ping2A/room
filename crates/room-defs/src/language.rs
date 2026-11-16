@@ -12,6 +12,29 @@ pub struct Language {
 }
 
 impl Language {
+    /// Text for a message that may be a LANGUAGE reference: `$KEY`, or a
+    /// bare `KEY` the tables define (pickup messages arrive both ways).
+    /// Keys no loaded LANGUAGE defines fall back to Doom's standard English
+    /// strings ([`engine_string`]). Anything else comes back unchanged.
+    #[must_use]
+    pub fn resolve<'a>(&'a self, locale: &str, text: &'a str) -> &'a str {
+        let t = text.trim();
+        if let Some(key) = t.strip_prefix('$') {
+            return self
+                .get(locale, key)
+                .or_else(|| engine_string(key))
+                .unwrap_or(key);
+        }
+        let bare = !t.is_empty()
+            && t.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+        if bare {
+            if let Some(v) = self.get(locale, t).or_else(|| engine_string(t)) {
+                return v;
+            }
+        }
+        text
+    }
+
     /// Lookup with fallback: requested → `enu` → `default`.
     #[must_use]
     pub fn get(&self, locale: &str, key: &str) -> Option<&str> {
@@ -23,6 +46,70 @@ impl Language {
         }
         None
     }
+}
+
+/// Doom's standard English message strings (pickups, keys, locked doors)
+/// that GZDoom's own LANGUAGE provides and mods refer to by key
+/// (`Inventory.PickupMessage "$GOTSHOTGUN2"`).
+#[must_use]
+pub fn engine_string(key: &str) -> Option<&'static str> {
+    Some(match key.to_ascii_uppercase().as_str() {
+        "GOTARMOR" => "Picked up the armor.",
+        "GOTMEGA" => "Picked up the MegaArmor!",
+        "GOTHTHBONUS" => "Picked up a health bonus.",
+        "GOTARMBONUS" => "Picked up an armor bonus.",
+        "GOTSTIM" => "Picked up a stimpack.",
+        "GOTMEDINEED" => "Picked up a medikit that you REALLY need!",
+        "GOTMEDIKIT" => "Picked up a medikit.",
+        "GOTSUPER" => "Supercharge!",
+        "GOTBLUECARD" => "Picked up a blue keycard.",
+        "GOTYELWCARD" => "Picked up a yellow keycard.",
+        "GOTREDCARD" => "Picked up a red keycard.",
+        "GOTBLUESKUL" => "Picked up a blue skull key.",
+        "GOTYELWSKUL" => "Picked up a yellow skull key.",
+        "GOTREDSKUL" => "Picked up a red skull key.",
+        "GOTINVUL" => "Invulnerability!",
+        "GOTBERSERK" => "Berserk!",
+        "GOTINVIS" => "Partial Invisibility",
+        "GOTSUIT" => "Radiation Shielding Suit",
+        "GOTMAP" => "Computer Area Map",
+        "GOTVISOR" => "Light Amplification Visor",
+        "GOTMSPHERE" => "MegaSphere!",
+        "GOTCLIP" => "Picked up a clip.",
+        "GOTCLIPBOX" => "Picked up a box of bullets.",
+        "GOTROCKET" => "Picked up a rocket.",
+        "GOTROCKBOX" => "Picked up a box of rockets.",
+        "GOTCELL" => "Picked up an energy cell.",
+        "GOTCELLBOX" => "Picked up an energy cell pack.",
+        "GOTSHELLS" => "Picked up 4 shotgun shells.",
+        "GOTSHELLBOX" => "Picked up a box of shotgun shells.",
+        "GOTBACKPACK" => "Picked up a backpack full of ammo!",
+        "GOTBFG9000" => "You got the BFG9000! Oh, yes.",
+        "GOTCHAINGUN" => "You got the chaingun!",
+        "GOTCHAINSAW" => "A chainsaw! Find some meat!",
+        "GOTLAUNCHER" => "You got the rocket launcher!",
+        "GOTPLASMA" => "You got the plasma gun!",
+        "GOTSHOTGUN" => "You got the shotgun!",
+        "GOTSHOTGUN2" => "You got the super shotgun!",
+        "PD_BLUEO" => "You need a blue key to activate this object",
+        "PD_REDO" => "You need a red key to activate this object",
+        "PD_YELLOWO" => "You need a yellow key to activate this object",
+        "PD_BLUEK" => "You need a blue key to open this door",
+        "PD_REDK" => "You need a red key to open this door",
+        "PD_YELLOWK" => "You need a yellow key to open this door",
+        "PD_BLUEC" => "You need a blue card to open this door",
+        "PD_REDC" => "You need a red card to open this door",
+        "PD_YELLOWC" => "You need a yellow card to open this door",
+        "PD_BLUES" => "You need a blue skull to open this door",
+        "PD_REDS" => "You need a red skull to open this door",
+        "PD_YELLOWS" => "You need a yellow skull to open this door",
+        "PD_ANY" => "Any key will open this door",
+        "PD_ANYOBJ" => "Any key will activate this object",
+        "PD_ALL3" => "You need all three keys to open this door",
+        "PD_ALL6" => "You need all six keys to open this door",
+        "SECRETMESSAGE" => "A secret is revealed!",
+        _ => return None,
+    })
 }
 
 /// Parse a LANGUAGE text lump.
@@ -261,6 +348,17 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn resolves_dollar_bare_and_engine_keys() {
+        let l = parse_language("[enu default]\nGOTRIFLE = \"You got the Assault Rifle!\";\n").unwrap();
+        assert_eq!(l.resolve("enu", "$GOTRIFLE"), "You got the Assault Rifle!");
+        assert_eq!(l.resolve("enu", "GOTRIFLE"), "You got the Assault Rifle!");
+        assert_eq!(l.resolve("enu", "Picked up a clip."), "Picked up a clip.");
+        assert_eq!(l.resolve("enu", "$NOPE"), "NOPE");
+        assert_eq!(l.resolve("enu", "$GOTSHOTGUN2"), "You got the super shotgun!");
+        assert_eq!(l.resolve("enu", "PD_BLUEK"), "You need a blue key to open this door");
+    }
 
     #[test]
     fn language_lookup_fallback() {

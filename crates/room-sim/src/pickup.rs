@@ -155,7 +155,7 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
                 switch_player_weapon(world, toucher, fist);
             }
         }
-        world.push_message("Berserk!");
+        world.push_message_kind(crate::world::MessageKind::Power, "Berserk!");
     } else if is_invuln {
         let mut applied = false;
         for p in world.players.iter_mut().flatten() {
@@ -258,7 +258,7 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
             return false;
         }
         backpack_fill(world, toucher);
-        world.push_message("Picked up a backpack full of ammo!");
+        world.push_message_kind(crate::world::MessageKind::Pickup, "Picked up a backpack full of ammo!");
     } else if world.classes.get(class).is_some_and(|c| c.is_weapon) {
         // docs/30 W17: weapon stay — each player may take a map weapon once;
         // the actor stays for others. Dropped weapons always vanish.
@@ -339,7 +339,7 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
                 .map(|c| (c.pickup_message.clone(), c.pickup_sound.clone()))
                 .unwrap_or_default();
             if !pickup_msg.is_empty() {
-                world.push_message(pickup_msg);
+                world.push_message_kind(crate::world::MessageKind::Pickup, pickup_msg);
             }
             if !pickup_snd.is_empty() {
                 if let Some(a) = world.actors.get(toucher) {
@@ -445,18 +445,18 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
         .map(|c| (c.pickup_message.clone(), c.pickup_sound.clone()))
         .unwrap_or_default();
     if let Some(msg) = low_message {
-        world.push_message(msg);
+        world.push_message_kind(crate::world::MessageKind::Pickup, msg);
     } else if !pickup_msg.is_empty() {
-        world.push_message(pickup_msg);
+        world.push_message_kind(crate::world::MessageKind::Pickup, pickup_msg);
     } else if class_name == "medikit" {
         // Vanilla: `GOTMEDINEED` when health was below 25 before the heal.
-        world.push_message(if medikit_needed {
+        world.push_message_kind(crate::world::MessageKind::Pickup, if medikit_needed {
             "Picked up a medikit that you REALLY need!"
         } else {
             "Picked up a medikit."
         });
     } else if let Some(msg) = default_pickup_message(&class_name) {
-        world.push_message(msg);
+        world.push_message_kind(crate::world::MessageKind::Pickup, msg);
     }
     if !pickup_snd.is_empty() {
         world.play_sound(&pickup_snd, it.pos.x(), it.pos.y(), it.pos.z(), 1.0);
@@ -1089,7 +1089,7 @@ fn pickup_weapon_piece(world: &mut World, toucher: ActorId, item: ActorId, class
                 p.pending_weapon = Some(wcid);
             }
             if !wdef.pickup_message.is_empty() {
-                world.push_message(wdef.pickup_message.clone());
+                world.push_message_kind(crate::world::MessageKind::Pickup, wdef.pickup_message.clone());
             }
         }
     }
@@ -1105,7 +1105,7 @@ fn pickup_weapon_piece(world: &mut World, toucher: ActorId, item: ActorId, class
         })
         .unwrap_or_default();
     if !msg.is_empty() {
-        world.push_message(msg);
+        world.push_message_kind(crate::world::MessageKind::Pickup, msg);
     }
     if let (false, Some(p)) = (snd.is_empty(), pos) {
         world.play_sound(&snd, p.x(), p.y(), p.z(), 1.0);
@@ -1240,7 +1240,7 @@ fn use_puzzle_item(world: &mut World, owner: ActorId, class: ClassId) -> bool {
         world.play_sound(&fail_sound, a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
     }
     if world.players.iter().flatten().any(|p| p.mo == Some(owner)) {
-        world.push_message(fail_msg);
+        world.push_message_kind(crate::world::MessageKind::Lock, fail_msg);
     }
     false
 }

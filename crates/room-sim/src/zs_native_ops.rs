@@ -210,6 +210,7 @@ impl World {
                     self.messages.push(HudMessage {
                         to: MessageTo::Unscoped,
                         text: tag,
+                        kind: crate::world::MessageKind::Pickup,
                     });
                 }
             }

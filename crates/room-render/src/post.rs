@@ -322,6 +322,12 @@ pub struct PostPass {
     target_format: wgpu::TextureFormat,
     /// Active settings (uploaded each [`Self::apply`]).
     pub uniforms: PostUniforms,
+    /// `src` already holds sRGB-encoded (display) values, so no
+    /// `linear_to_srgb` on the way out even to a non-sRGB target. The web
+    /// canvas with no post effects renders that way; encoding again there
+    /// washed the whole picture out and turned faint additive glows (Brutal
+    /// Doom's health-bonus flares) into bright blobs.
+    pub scene_encoded: bool,
 }
 
 impl PostPass {
@@ -582,6 +588,7 @@ impl PostPass {
             black_view,
             target_format,
             uniforms,
+            scene_encoded: false,
         }
     }
 
@@ -652,7 +659,7 @@ impl PostPass {
         dst_view: &wgpu::TextureView,
     ) {
         let mut u = self.uniforms;
-        u.set_encode_srgb(!format_is_srgb(self.target_format));
+        u.set_encode_srgb(!format_is_srgb(self.target_format) && !self.scene_encoded);
         gpu.queue.write_buffer(&self.ubo, 0, bytes_of(&u));
         let bloom_view = bloom.unwrap_or(&self.black_view);
         let bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {

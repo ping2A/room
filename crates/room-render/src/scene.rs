@@ -82,6 +82,11 @@ impl MaterialRange {
     pub const NO_BRIGHTMAP: u8 = 2;
     /// `+NODYNAMICLIGHTING` actor: dynamic lights skip this range.
     pub const NO_DYNLIGHT: u8 = 4;
+    /// `RenderStyle Add` sprite: blended without writing depth, so it never
+    /// hides what sits behind it (GZDoom draws translucent sprites that way).
+    /// A Brutal Doom health bonus spawns its additive flare at the bottle;
+    /// with depth writes the flare punched the bottle out of the picture.
+    pub const NO_DEPTH_WRITE: u8 = 8;
 }
 
 /// Draw lists for one frame (CPU side).
@@ -586,6 +591,9 @@ pub fn append_sprites_in_map(
         }
         if inst.fx.no_dynlight {
             flags |= MaterialRange::NO_DYNLIGHT;
+        }
+        if inst.additive {
+            flags |= MaterialRange::NO_DEPTH_WRITE;
         }
         lists.sprite_ranges.push(MaterialRange {
             name: inst.texture.clone(),
@@ -4169,6 +4177,38 @@ mod tests {
             max_x < 101.0,
             "wall sprite pulled toward the eye, max_x={max_x}"
         );
+    }
+
+    #[test]
+    fn additive_sprites_do_not_write_depth() {
+        // Brutal Doom's health bonus flare sits on the bottle; with depth
+        // writes it hid the bottle behind a blue blob.
+        let mk = |additive| SpriteInstance {
+            pos: Vec3::new(100.0, 0.0, 0.0),
+            width: 46.0,
+            height: 17.0,
+            light: 1.0,
+            alpha: 0.5,
+            fuzz: false,
+            texture: "LENBA0".into(),
+            flip_u: false,
+            anchor_u: 0.5,
+            orient: crate::sprites::SpriteOrient::Billboard,
+            additive,
+            roll: 0.0,
+            fx: Default::default(),
+        };
+        let cam = Camera {
+            eye: Vec3::new(0.0, 0.0, 16.0),
+            forward: Vec3::new(1.0, 0.0, 0.0),
+            ..Camera::default()
+        };
+        let mut lists = SceneLists::default();
+        append_sprites(&mut lists, &[mk(true), mk(false)], &cam);
+        let flags: Vec<u8> = lists.sprite_ranges.iter().map(|r| r.flags).collect();
+        assert_eq!(flags.len(), 2);
+        assert_ne!(flags[0] & MaterialRange::NO_DEPTH_WRITE, 0);
+        assert_eq!(flags[1] & MaterialRange::NO_DEPTH_WRITE, 0);
     }
 
     #[test]

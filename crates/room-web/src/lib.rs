@@ -3029,6 +3029,8 @@ mod browser {
         {
             let settings = s.render_settings.clone();
             let time = s.pass.time;
+            // No post FX: the unlit pass already wrote sRGB (`encode_srgb`).
+            let scene_encoded = s.pass.encode_srgb;
             let w = s.config.width;
             let h = s.config.height;
             let mut encoder =
@@ -3054,6 +3056,7 @@ mod browser {
                         width: w,
                         height: h,
                         time,
+                        scene_encoded,
                     },
                 );
             }
@@ -3924,6 +3927,144 @@ mod browser {
             match &s.mode {
                 Mode::Play(play) => play.match_state_json(),
                 _ => "null".into(),
+            }
+        })
+    }
+
+    /// The page draws in-game messages (as toasts) and the Tab stats
+    /// itself; the canvas versions stop. Off = canvas again.
+    #[wasm_bindgen(js_name = roomSetHtmlOverlays)]
+    pub fn room_set_html_overlays(on: bool) {
+        crate::play::HTML_OVERLAYS.with(|f| f.set(on));
+    }
+
+    /// Message kinds to hide, as a JSON array (`["pickup", "frag"]`).
+    #[wasm_bindgen(js_name = roomSetHiddenMessages)]
+    pub fn room_set_hidden_messages(kinds_json: &str) {
+        let kinds: Vec<String> = serde_json::from_str(kinds_json).unwrap_or_default();
+        crate::play::MSG_HIDDEN.with(|h| *h.borrow_mut() = kinds.into_iter().collect());
+    }
+
+    /// Messages since the last call (`[[kind, text], …]` JSON).
+    #[wasm_bindgen(js_name = roomTakeMessages)]
+    #[must_use]
+    pub fn room_take_messages() -> String {
+        APP.with(|a| {
+            let Some(app) = a.borrow().as_ref().cloned() else {
+                return "[]".into();
+            };
+            let Ok(mut s) = app.try_borrow_mut() else {
+                return "[]".into();
+            };
+            match &mut s.mode {
+                Mode::Play(play) => play.take_toasts_json(),
+                _ => "[]".into(),
+            }
+        })
+    }
+
+    /// Level / player stats for the Tab screen (JSON, `null` outside a level).
+    #[wasm_bindgen(js_name = roomStats)]
+    #[must_use]
+    pub fn room_stats() -> String {
+        APP.with(|a| {
+            let Some(app) = a.borrow().as_ref().cloned() else {
+                return "null".into();
+            };
+            let Ok(s) = app.try_borrow() else {
+                return "null".into();
+            };
+            match &s.mode {
+                Mode::Play(play) => play.stats_json(),
+                _ => "null".into(),
+            }
+        })
+    }
+
+    /// The loaded mods' settings (CVARINFO, labelled by their MENUDEF) as
+    /// JSON with current values; `[]` when no game or no mod CVars.
+    #[wasm_bindgen(js_name = roomModOptions)]
+    #[must_use]
+    pub fn room_mod_options() -> String {
+        APP.with(|a| {
+            let Some(app) = a.borrow().as_ref().cloned() else {
+                return "[]".into();
+            };
+            let Ok(s) = app.try_borrow() else {
+                return "[]".into();
+            };
+            match &s.mode {
+                Mode::Play(play) => play.mod_options_json(),
+                _ => "[]".into(),
+            }
+        })
+    }
+
+    /// Choose a mod CVar value: kept for later games and applied to the
+    /// running one at once. `value` empty = back to the mod default.
+    #[wasm_bindgen(js_name = roomSetModCvar)]
+    pub fn room_set_mod_cvar(name: &str, value: &str) {
+        let key = name.trim().to_ascii_lowercase();
+        if key.is_empty() {
+            return;
+        }
+        crate::play::MOD_CVAR_OVERRIDES.with(|o| {
+            let mut o = o.borrow_mut();
+            if value.is_empty() {
+                o.remove(&key);
+            } else {
+                o.insert(key.clone(), value.to_owned());
+            }
+        });
+        if value.is_empty() {
+            return;
+        }
+        APP.with(|a| {
+            let Some(app) = a.borrow().as_ref().cloned() else {
+                return;
+            };
+            let Ok(mut s) = app.try_borrow_mut() else {
+                return;
+            };
+            if let Mode::Play(play) = &mut s.mode {
+                play.set_mod_cvar(name, value);
+            }
+        });
+    }
+
+    /// Minimap linedefs (6 floats each: `x1, y1, x2, y2, kind, flags`), empty
+    /// outside a Doom-engine level. See `Play::minimap_lines`.
+    #[wasm_bindgen(js_name = roomMinimapLines)]
+    #[must_use]
+    pub fn room_minimap_lines() -> Vec<f32> {
+        APP.with(|a| {
+            let Some(app) = a.borrow().as_ref().cloned() else {
+                return Vec::new();
+            };
+            let Ok(s) = app.try_borrow() else {
+                return Vec::new();
+            };
+            match &s.mode {
+                Mode::Play(play) => play.minimap_lines(),
+                _ => Vec::new(),
+            }
+        })
+    }
+
+    /// Minimap pose (`x, y, yaw_deg, allmap, n`, then `n` × `x, y, yaw, seat`).
+    #[wasm_bindgen(js_name = roomMinimapState)]
+    #[must_use]
+    pub fn room_minimap_state() -> Vec<f32> {
+        APP.with(|a| {
+            let Some(app) = a.borrow().as_ref().cloned() else {
+                return Vec::new();
+            };
+            let Ok(s) = app.try_borrow() else {
+                return Vec::new();
+            };
+            match &s.mode {
+                Mode::Play(play) => play.minimap_state(),
+                _ => Vec::new(),
             }
         })
     }

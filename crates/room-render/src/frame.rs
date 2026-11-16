@@ -173,6 +173,10 @@ pub struct PostChainInputs<'a> {
     pub height: u32,
     /// Elapsed seconds (grain / CRT animation).
     pub time: f32,
+    /// The scene already holds display (sRGB-encoded) values: the unlit pass
+    /// encoded in-shader (`UnlitPass::encode_srgb`, the web canvas with no
+    /// post effects). The post pass must not encode again.
+    pub scene_encoded: bool,
 }
 
 /// Owns bloom / SSAO / tonemap passes and runs them in order.
@@ -319,6 +323,7 @@ impl PostChain {
             damage_pulse,
             inputs.time,
         );
+        self.post.scene_encoded = inputs.scene_encoded && !s.linear_scene();
         self.post.apply(gpu, encoder, src_view, bloom_view, ldr);
     }
 }

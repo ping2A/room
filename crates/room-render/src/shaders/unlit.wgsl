@@ -382,7 +382,15 @@ fn shade(v: VsOut) -> vec4<f32> {
         color = mix(color, vec3<f32>(0.05, 0.05, 0.08), clamp(view.fog_params.z, 0.0, 1.0));
     }
     // `lightmap_params.y` = output gain (1.0 = identity; web shell may lift).
-    color = color * max(view.lightmap_params.y, 0.01);
+    // Additive glows keep their texture brightness (GZDoom adds `texel *
+    // alpha`): the web lift (1.85x + toe below) is there to open up dark
+    // sector lighting, and on a flare it turned Brutal Doom's faint
+    // health-bonus glow into a bright opaque-looking blob.
+    if (additive) {
+        color = color * min(view.lightmap_params.y, 1.0);
+    } else {
+        color = color * max(view.lightmap_params.y, 0.01);
+    }
     // `lightmap_params.z` = 1 → present on a non-sRGB WebGPU canvas.
     // Textures are sampled linear (sRGB uploads) while Doom lighting is a
     // gamma-space multiply — convert lighting result to display-referred bytes
@@ -393,7 +401,9 @@ fn shade(v: VsOut) -> vec4<f32> {
         let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
         color = select(lo, hi, c > vec3<f32>(0.0031308));
         // Soft toe: keep FLOOR4_8 / dark sectors readable on laptop panels.
-        color = color * (0.65 + 0.35 / (color + vec3<f32>(0.35)));
+        if (!additive) {
+            color = color * (0.65 + 0.35 / (color + vec3<f32>(0.35)));
+        }
     }
     // Straight alpha; additive is flagged by a negative alpha for the
     // premultiplied entry point (`fs_main_mrt_pm`).

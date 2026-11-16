@@ -20,6 +20,8 @@ pub const DUKE_GC: i32 = 176;
 
 /// Chocolate `sync[].bits` position for `gamefunc_Open` (`player.c`).
 pub const INPUT_OPEN: u32 = 1 << 29;
+/// Chocolate `sync[].bits` primary fire button.
+pub const INPUT_FIRE: u32 = 1 << 2;
 /// Chocolate `sync.bits` full-autoaim mode bit (bit 6).
 pub const INPUT_AUTO_AIM: u32 = 1 << 6;
 /// Chocolate inventory controls packed in `sync.bits`.
@@ -143,7 +145,16 @@ pub struct Player {
     pub oposx: i32,
     pub oposy: i32,
     pub oposz: i32,
+    /// Previous-tic player angle (`oang`).
+    #[serde(default)]
+    pub previous_ang: i16,
     pub ang: i16,
+    /// EDuke32 high-precision Build angle (16.16 fixed point).
+    #[serde(default)]
+    pub q16_ang: i32,
+    /// Previous EDuke32 high-precision Build angle.
+    #[serde(default)]
+    pub previous_q16_ang: i32,
     /// Last sampled `sync[].avel`, used by Chocolate's view weapon sway.
     #[serde(default)]
     pub last_avel: i8,
@@ -153,6 +164,9 @@ pub struct Player {
     /// Chocolate `player_struct::rotscrnang`; visual screen roll in Build angle units.
     #[serde(default)]
     pub rotscrnang: i16,
+    /// EDuke32 `orotscrnang`, the previous screen-roll value.
+    #[serde(default)]
+    pub previous_rotscrnang: i16,
     /// Chocolate `player_struct::auto_aim` (2=full, 1=bullet-only).
     #[serde(default = "default_auto_aim")]
     pub auto_aim: i16,
@@ -174,16 +188,31 @@ pub struct Player {
     #[serde(default)]
     pub remote_camera: Option<(i32, i32, i32, i16, i16)>,
     pub horiz: i16,
+    /// EDuke32 high-precision view horizon (16.16 fixed point).
+    #[serde(default = "default_q16_horiz")]
+    pub q16_horiz: i32,
+    /// Previous EDuke32 high-precision view horizon.
+    #[serde(default = "default_q16_horiz")]
+    pub previous_q16_horiz: i32,
     /// Chocolate `ohoriz`, previous sampled horizon for player-view smoothing.
     #[serde(default = "default_horiz")]
     pub previous_horiz: i16,
     /// Chocolate `horizoff` (slope look).
     pub horizoff: i16,
+    /// EDuke32 high-precision horizon offset (16.16 fixed point).
+    #[serde(default)]
+    pub q16_horizoff: i32,
+    /// Previous EDuke32 high-precision horizon offset.
+    #[serde(default)]
+    pub previous_q16_horizoff: i32,
     /// Chocolate `ohorizoff`, previous sampled slope-look offset.
     #[serde(default)]
     pub previous_horizoff: i16,
     /// Chocolate `pyoff` (view Z bob).
     pub pyoff: i32,
+    /// EDuke32 `opyoff`, the previous view-Z bob value.
+    #[serde(default)]
+    pub previous_pyoff: i32,
     /// Chocolate `pycount` (bob phase, Build angle units).
     pub pycount: i16,
     /// Chocolate `bobpos*` — previous-tic pre-clip pose for walk `xvel`.
@@ -293,6 +322,12 @@ pub struct Player {
     /// EDuke32 `player.palette` full-screen palette/lookup identifier.
     #[serde(default)]
     pub game_palette: i32,
+    /// EDuke32 `hudpal`, palette used for first-person HUD sprites.
+    #[serde(default)]
+    pub hud_palette: u8,
+    /// EDuke32 `palookup`, current player palette lookup.
+    #[serde(default)]
+    pub palette_lookup: u8,
     /// Chocolate `pals[0..3]` palette flash tint (RGB, 0..=64).
     #[serde(default)]
     pub palette_flash: [u8; 3],
@@ -392,6 +427,18 @@ pub struct Player {
     pub max_ammo_amount: [i16; 12],
     /// Chocolate `kickback_pic` (weapon anim / fire phase).
     pub kickback_pic: i16,
+    /// EDuke32 `last_quick_kick` weapon-animation latch.
+    #[serde(default)]
+    pub last_quick_kick: i16,
+    /// EDuke32 `random_club_frame` animation value.
+    #[serde(default)]
+    pub random_club_frame: i16,
+    /// EDuke32 weapon reload animation state.
+    #[serde(default)]
+    pub reloading: i16,
+    /// EDuke32 per-player sound pitch adjustment.
+    #[serde(default)]
+    pub sound_pitch: i16,
     /// Chocolate's last usable weapon before an empty-gun switch.
     #[serde(default)]
     pub last_full_weapon: i16,
@@ -511,6 +558,10 @@ fn default_weapon_choices() -> [u8; 10] {
     [3, 4, 5, 7, 8, 6, 0, 2, 9, 1]
 }
 
+fn default_q16_horiz() -> i32 {
+    100 << 16
+}
+
 fn default_shield_amount() -> i16 {
     100
 }
@@ -528,10 +579,14 @@ impl Default for Player {
             oposx: 0,
             oposy: 0,
             oposz: 0,
+            previous_ang: 0,
             ang: 0,
+            q16_ang: 0,
+            previous_q16_ang: 0,
             last_avel: 0,
             look_ang: 0,
             rotscrnang: 0,
+            previous_rotscrnang: 0,
             auto_aim: 2,
             aim_mode: 0,
             weapon_choices: default_weapon_choices(),
@@ -539,10 +594,15 @@ impl Default for Player {
             shoulder_camera_distance: 0,
             remote_camera: None,
             horiz: 100,
+            q16_horiz: default_q16_horiz(),
+            previous_q16_horiz: default_q16_horiz(),
             previous_horiz: 100,
             horizoff: 0,
+            q16_horizoff: 0,
+            previous_q16_horizoff: 0,
             previous_horizoff: 0,
             pyoff: 0,
+            previous_pyoff: 0,
             pycount: 0,
             bobposx: 0,
             hit_floorz: 0,
@@ -587,6 +647,8 @@ impl Default for Player {
             holoduke_on: -1,
             heat_on: false,
             game_palette: 0,
+            hud_palette: 0,
+            palette_lookup: 0,
             palette_flash: [0; 3],
             palette_flash_tics: 0,
             num_loogies: 0,
@@ -632,6 +694,10 @@ impl Default for Player {
             ],
             max_ammo_amount: default_max_ammo_amounts(),
             kickback_pic: 0,
+            last_quick_kick: 0,
+            random_club_frame: 0,
+            reloading: 0,
+            sound_pitch: 0,
             last_full_weapon: -1,
             show_empty_weapon: false,
             hard_landing: 0,
@@ -673,6 +739,66 @@ impl Default for Player {
 }
 
 impl Player {
+    /// Return a fixed-point view value, repairing stale serialized or native
+    /// integer state while preserving fractional precision when its integer
+    /// part still matches.
+    fn q16_or_integer(q16: i32, integer: i16) -> i32 {
+        if q16 >> 16 == i32::from(integer) {
+            q16
+        } else {
+            i32::from(integer).wrapping_shl(16)
+        }
+    }
+
+    /// Keep Q16 view fields compatible with native paths that still update
+    /// their legacy integer counterparts directly.
+    pub fn synchronize_q16_view(&mut self) {
+        self.q16_ang = Self::q16_or_integer(self.q16_ang, self.ang);
+        self.q16_horiz = Self::q16_or_integer(self.q16_horiz, self.horiz);
+        self.q16_horizoff = Self::q16_or_integer(self.q16_horizoff, self.horizoff);
+        self.previous_q16_ang = Self::q16_or_integer(self.previous_q16_ang, self.previous_ang);
+        self.previous_q16_horiz =
+            Self::q16_or_integer(self.previous_q16_horiz, self.previous_horiz);
+        self.previous_q16_horizoff =
+            Self::q16_or_integer(self.previous_q16_horizoff, self.previous_horizoff);
+    }
+
+    #[must_use]
+    pub fn q16_angle(&self) -> i32 {
+        Self::q16_or_integer(self.q16_ang, self.ang)
+    }
+
+    #[must_use]
+    pub fn q16_previous_angle(&self) -> i32 {
+        Self::q16_or_integer(self.previous_q16_ang, self.previous_ang)
+    }
+
+    #[must_use]
+    pub fn q16_horizon(&self) -> i32 {
+        Self::q16_or_integer(self.q16_horiz, self.horiz)
+    }
+
+    #[must_use]
+    pub fn q16_previous_horizon(&self) -> i32 {
+        Self::q16_or_integer(self.previous_q16_horiz, self.previous_horiz)
+    }
+
+    #[must_use]
+    pub fn q16_horizon_offset(&self) -> i32 {
+        Self::q16_or_integer(self.q16_horizoff, self.horizoff)
+    }
+
+    #[must_use]
+    pub fn q16_previous_horizon_offset(&self) -> i32 {
+        Self::q16_or_integer(self.previous_q16_horizoff, self.previous_horizoff)
+    }
+
+    /// EDuke32 high-precision view horizon plus offset.
+    #[must_use]
+    pub fn view_horizon_q16(&self) -> i32 {
+        self.q16_horizon().wrapping_add(self.q16_horizon_offset())
+    }
+
     /// Atomic camera yaw (`ang + look_ang`) in Build angle units.
     #[must_use]
     pub fn view_ang(&self) -> i16 {
@@ -834,6 +960,13 @@ pub(crate) fn processinput_move_with_lists_clipping_eduke(
 ) -> i32 {
     let mut movement_hit = 0;
     // Chocolate `processinput` runs once per 30 Hz game frame.
+    p.synchronize_q16_view();
+    p.previous_ang = p.ang;
+    p.previous_q16_ang = p.q16_ang;
+    p.previous_horiz = p.horiz;
+    p.previous_q16_horiz = p.q16_horiz;
+    p.previous_horizoff = p.horizoff;
+    p.previous_q16_horizoff = p.q16_horizoff;
     p.last_avel = sync.avel;
     p.auto_aim = if sync.bits & INPUT_AUTO_AIM != 0 {
         2

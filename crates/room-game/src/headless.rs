@@ -214,6 +214,9 @@ pub struct Headless {
     sndseq: room_sim::SndSeqTable,
     /// Optional LOCKDEFS table for locked doors.
     locks: room_sim::LockTable,
+    /// Mod CVars (CVARINFO defaults + player settings), installed into every
+    /// new world before its scripts run.
+    mod_cvars: std::collections::BTreeMap<String, String>,
     /// DECALDEF generator class → decal name.
     decal_generators: BTreeMap<String, String>,
     /// KEYCONF weapon slots / player classes.
@@ -574,6 +577,7 @@ impl Headless {
             terrain: room_sim::TerrainTable::default(),
             sndseq: room_sim::SndSeqTable::default(),
             locks: room_sim::LockTable::default(),
+            mod_cvars: std::collections::BTreeMap::new(),
             decal_generators: BTreeMap::new(),
             weapon_slots: room_sim::WeaponSlots::with_doom_defaults(),
             keyconf: None,
@@ -896,6 +900,24 @@ impl Headless {
     /// Install LOCKDEFS (from compiled [`room_defs::LockDefs`]).
     pub fn set_lockdefs(&mut self, info: &room_defs::LockDefs, game: Option<&str>) {
         self.locks = locks_from_defs(info, game);
+    }
+
+    /// Set a mod CVar (CVARINFO name → value text) for this and later maps.
+    /// The running level sees it at once (ACS `GetCVar`, ZScript `CVar`).
+    pub fn set_mod_cvar(&mut self, name: &str, value: &str) {
+        self.mod_cvars
+            .insert(name.to_ascii_lowercase(), value.trim().to_owned());
+        if let Some(world) = self.world_mut() {
+            world.set_mod_cvar(name, value);
+        }
+    }
+
+    /// Current value of a mod CVar, if set.
+    #[must_use]
+    pub fn mod_cvar(&self, name: &str) -> Option<&str> {
+        self.mod_cvars
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
     }
 
     /// Install DECALDEF generators (class → decal name).
@@ -1291,6 +1313,7 @@ impl Headless {
             self.weapon_slots.clone(),
         )?;
         apply_complevel_to_world(&mut world, self.options.complevel);
+        world.mod_cvars = self.mod_cvars.clone();
         world.terrain = self.terrain.clone();
         world.sndseq = self.sndseq.clone();
         world.locks = self.locks.clone();
@@ -1469,6 +1492,7 @@ impl Headless {
         if let Some(prog) = self.zscript_program.clone() {
             let handlers = self.zscript_event_handlers.clone();
             world.load_zscript_program(prog);
+            world.sync_mod_cvars_to_zscript();
             world.zscript.set_event_handlers(handlers.iter().cloned());
             if world.zscript.event_handlers.is_empty() && !handlers.is_empty() {
                 eprintln!(

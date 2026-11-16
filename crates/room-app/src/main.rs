@@ -6723,6 +6723,7 @@ impl ViewerApp {
                         width: cap_w,
                         height: cap_h,
                         time: pass.time,
+                        scene_encoded: false,
                     },
                 );
                 &post_ldr
@@ -8736,13 +8737,11 @@ impl ViewerApp {
             let Some(class) = world.classes.get(a.class) else {
                 continue;
             };
-            let frame_ch = char::from(b'A' + a.frame.min(25));
-            let frame_s = frame_ch.to_string();
             for assoc in &self.gldefs.object_lights {
                 if !assoc.class.eq_ignore_ascii_case(&class.name) {
                     continue;
                 }
-                if !assoc.frame.is_empty() && !assoc.frame.eq_ignore_ascii_case(&frame_s) {
+                if !assoc.matches(&a.sprite, a.frame) {
                     continue;
                 }
                 let Some(def) = self.gldefs.lights.get(&assoc.light.to_ascii_lowercase()) else {

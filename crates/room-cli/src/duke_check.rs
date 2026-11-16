@@ -885,7 +885,7 @@ mod tests {
             "EDuke32 metadata parsed: 1696 vars / 22 arrays / 703 states / 125 event hooks / 273 projectile properties / 68 damage-event tiles"
         ));
         assert!(report.contains(
-            "EDuke32 executable-core instructions: 24799 (185 explicit no-op instructions"
+            "EDuke32 executable-core instructions: 25648 (176 explicit no-op instructions"
         ));
         assert!(report.contains("- `resetplayer`: 4"));
         assert!(

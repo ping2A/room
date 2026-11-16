@@ -291,6 +291,30 @@ pub struct HudMessage {
     pub to: MessageTo,
     /// Text.
     pub text: String,
+    /// What kind of message it is (shells let players hide some kinds).
+    pub kind: MessageKind,
+}
+
+/// Kind of a [`HudMessage`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MessageKind {
+    /// Not classified.
+    #[default]
+    Other,
+    /// Item / weapon / ammo pickup.
+    Pickup,
+    /// Power-up taking effect (berserk, invulnerability, …).
+    Power,
+    /// Secret found.
+    Secret,
+    /// Locked door / switch / puzzle item refused.
+    Lock,
+    /// Death message (obituary).
+    Obituary,
+    /// Printed by a map or mod script (ACS `Print`, `A_Print`, WASM mods).
+    Script,
+    /// Engine / cheat feedback (god mode, automap, load errors).
+    System,
 }
 
 /// One death for shell kill feeds / scoreboards (never read by the sim).
@@ -513,6 +537,10 @@ pub struct World {
     pub hud_wrap_width: i32,
     /// ACS `SetCVarString` string store (name → value).
     pub acs_cvar_strings: std::collections::BTreeMap<String, String>,
+    /// Mod CVars (CVARINFO defaults, overridden from Settings): lower-case
+    /// name → value text (`1` / `0` for bools). ACS `GetCVar` / `SetCVar`
+    /// and ZScript `CVar` handles read these (see [`World::set_mod_cvar`]).
+    pub mod_cvars: std::collections::BTreeMap<String, String>,
     /// ACS `SetUserCVar` integer store (`player:name` → value).
     pub acs_user_cvars: std::collections::BTreeMap<String, i32>,
     /// ACS `SetUserCVarString` store (`player:name` → value).
@@ -579,6 +607,8 @@ pub struct World {
     /// (`player_t.killcount` / `itemcount` / `secretcount`). Not in the
     /// checksum.
     pub player_stats: [[u32; 3]; MAX_PLAYERS],
+    /// Per player this level: times hit (damage landed) and damage taken.
+    pub player_hits: [[u32; 2]; MAX_PLAYERS],
     /// The seat whose player is out of [`Self::players`] while it thinks or
     /// touches items, with its pawn.
     pub(crate) taken_player: Option<(usize, ActorId)>,
@@ -702,6 +732,14 @@ pub struct World {
     pub corpse_queue: std::collections::VecDeque<ActorId>,
     /// Max retained monster corpses (`0` disables enqueue).
     pub corpse_queue_size: usize,
+    /// Actors whose Spawn state lasts 0 tics. GZDoom leaves that state for its
+    /// first `Tick` to walk (`--tics <= 0` → `SetState(next)`), and that walk
+    /// uses up the tic: the state it lands on keeps its full duration. Room
+    /// walks the chain at spawn instead, so the first state-timer decrement is
+    /// skipped for these. Without this, Brutal Doom's 2-tic health-bonus flare
+    /// (`LENB A 0 … LENB A 2 bright; stop`, respawned every 2 tics) lived one
+    /// tic and blinked on/off instead of glowing steadily.
+    pub(crate) zero_tic_spawned: std::collections::HashSet<ActorId>,
     /// Player body FIFO (vanilla `bodyque`, size 32).
     pub body_queue: std::collections::VecDeque<ActorId>,
     /// Max retained player corpses.
@@ -1858,6 +1896,7 @@ impl World {
             hud_clip: HudClipRect::default(),
             hud_wrap_width: 0,
             acs_cvar_strings: std::collections::BTreeMap::new(),
+            mod_cvars: std::collections::BTreeMap::new(),
             acs_user_cvars: std::collections::BTreeMap::new(),
             acs_user_cvar_strings: std::collections::BTreeMap::new(),
             slideshow_request: None,
@@ -1890,6 +1929,7 @@ impl World {
             debug_log: Vec::new(),
             kill_events: Vec::new(),
             player_stats: [[0; 3]; MAX_PLAYERS],
+            player_hits: [[0; 2]; MAX_PLAYERS],
             taken_player: None,
             paused: false,
             deathmatch: false,
@@ -1948,6 +1988,7 @@ impl World {
             script_events: Vec::new(),
             corpse_queue: std::collections::VecDeque::new(),
             corpse_queue_size: DEFAULT_CORPSE_QUEUE_SIZE,
+            zero_tic_spawned: std::collections::HashSet::new(),
             body_queue: std::collections::VecDeque::new(),
             body_queue_size: DEFAULT_BODY_QUEUE_SIZE,
             compat: CompatFlags::default(),
@@ -3524,7 +3565,16 @@ impl World {
         self.live_ids.push(id);
         if let Some(sid) = spawn_state {
             // GZDoom `P_SpawnMobj` → `SetState(Spawn)` so 0-tic / anon Spawn actions run.
+            let zero_tic = self.states.get(sid).is_some_and(|st| st.tics == 0);
             self.set_state(id, Some(sid), true);
+            if zero_tic
+                && self
+                    .actors
+                    .get(id)
+                    .is_some_and(|a| !a.destroyed && a.tics > 0)
+            {
+                self.zero_tic_spawned.insert(id);
+            }
         }
         if (def.flags & crate::class::FLAG_COUNTKILL) != 0 {
             self.level.total_kills = self.level.total_kills.saturating_add(1);
@@ -4817,7 +4867,7 @@ impl World {
         }
         if was == 0 && tics > 0 {
             if let Some(name) = duke_inven_name(icon) {
-                self.push_message(name);
+                self.push_message_kind(MessageKind::Pickup, name);
             }
         }
     }
@@ -5967,9 +6017,20 @@ impl World {
 
     /// Queue a HUD message for everyone or one seat.
     pub fn push_message_to(&mut self, to: MessageTo, text: impl Into<String>) {
+        self.push_message_to_kind(to, MessageKind::Other, text);
+    }
+
+    /// Queue a classified HUD message (unscoped).
+    pub fn push_message_kind(&mut self, kind: MessageKind, text: impl Into<String>) {
+        self.push_message_to_kind(MessageTo::Unscoped, kind, text);
+    }
+
+    /// Queue a classified HUD message for everyone or one seat.
+    pub fn push_message_to_kind(&mut self, to: MessageTo, kind: MessageKind, text: impl Into<String>) {
         self.messages.push(HudMessage {
             to,
             text: text.into(),
+            kind,
         });
     }
 
@@ -6004,6 +6065,17 @@ impl World {
         });
         if let Some(cell) = seat
             .and_then(|s| self.player_stats.get_mut(s))
+            .and_then(|r| r.get_mut(stat))
+        {
+            *cell = cell.saturating_add(1);
+        }
+    }
+
+    /// Count a kill (0), item (1) or secret (2) for player `seat`.
+    pub(crate) fn credit_seat_stat(&mut self, seat: u8, stat: usize) {
+        if let Some(cell) = self
+            .player_stats
+            .get_mut(usize::from(seat))
             .and_then(|r| r.get_mut(stat))
         {
             *cell = cell.saturating_add(1);
@@ -6649,7 +6721,7 @@ impl World {
                 }
             }
         }
-        self.push_message(if on {
+        self.push_message_kind(MessageKind::System, if on {
             "Degreelessness Mode On"
         } else {
             "Degreelessness Mode Off"
@@ -6664,7 +6736,7 @@ impl World {
         };
         player.noclip = !player.noclip;
         let on = player.noclip;
-        self.push_message(if on {
+        self.push_message_kind(MessageKind::System, if on {
             "No clipping mode ON"
         } else {
             "No clipping mode OFF"
@@ -6676,7 +6748,7 @@ impl World {
     pub fn toggle_freeze(&mut self) -> bool {
         self.level.frozen = !self.level.frozen;
         let on = self.level.frozen;
-        self.push_message(if on {
+        self.push_message_kind(MessageKind::System, if on {
             "Freeze mode ON"
         } else {
             "Freeze mode OFF"
@@ -6718,6 +6790,40 @@ impl World {
         }
     }
 
+    /// Set a mod CVar (CVARINFO name) for ACS and ZScript alike.
+    pub fn set_mod_cvar(&mut self, name: &str, value: &str) {
+        self.mod_cvars
+            .insert(name.to_ascii_lowercase(), value.trim().to_owned());
+        self.zscript.set_cvar_text(name, value);
+    }
+
+    /// Hand every mod CVar to the ZScript VM (after a program is loaded).
+    pub fn sync_mod_cvars_to_zscript(&mut self) {
+        let all: Vec<(String, String)> = self
+            .mod_cvars
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        for (name, value) in all {
+            self.zscript.set_cvar_text(&name, &value);
+        }
+    }
+
+    /// Integer value of a mod CVar (`GetCVar` rules: bools 0/1, floats truncated).
+    #[must_use]
+    pub fn mod_cvar_int(&self, name: &str) -> Option<i32> {
+        let v = self.mod_cvars.get(&name.to_ascii_lowercase())?;
+        let t = v.trim();
+        if let Ok(i) = t.parse::<i32>() {
+            return Some(i);
+        }
+        if let Ok(f) = t.parse::<f64>() {
+            #[allow(clippy::cast_possible_truncation)]
+            return Some(f as i32);
+        }
+        Some(i32::from(t.eq_ignore_ascii_case("true")))
+    }
+
     /// Toggle Computer Area Map (`iddt` bootstrap — full automap reveal).
     pub fn toggle_iddt(&mut self, p: usize) -> bool {
         let Some(player) = self.players.get_mut(p).and_then(|s| s.as_mut()) else {
@@ -6736,7 +6842,7 @@ impl World {
             "Computer Area Map OFF"
         };
         let on = player.allmap;
-        self.push_message(msg);
+        self.push_message_kind(MessageKind::System, msg);
         on
     }
 
@@ -6759,7 +6865,7 @@ impl World {
             a.pos.x(),
             a.pos.y()
         );
-        self.push_message(msg);
+        self.push_message_kind(MessageKind::System, msg);
         true
     }
 
@@ -7140,6 +7246,11 @@ impl World {
             self.advance_actor_state(id);
             self.tick_zscript_actor(id);
         }
+        if !self.zero_tic_spawned.is_empty() {
+            let actors = &self.actors;
+            self.zero_tic_spawned
+                .retain(|&id| actors.get(id).is_some_and(|a| !a.destroyed));
+        }
         tick_spectator_cameras(self);
         tick_stealth(self);
         crate::damage::tick_poison(self);
@@ -7449,6 +7560,10 @@ impl World {
         // Final death frame (`tics == -1`): nightmare / `-respawn` revive.
         if tics < 0 {
             try_nightmare_respawn(self, id);
+            return;
+        }
+        if !self.zero_tic_spawned.is_empty() && self.zero_tic_spawned.remove(&id) {
+            // The spawn chain already used this tic (see `zero_tic_spawned`).
             return;
         }
         let Some(actor) = self.actors.get_mut(id) else {
@@ -9335,7 +9450,6 @@ actor Clip : Actor 2007 { Inventory.Amount 10 Inventory.MaxAmount 200 States { S
             )
             .unwrap();
         let _ = crate::damage::damage_mobj(&mut w, z, Some(mo), Some(mo), 1000);
-        // A kill from a monster's own hand counts for nobody.
         let z2 = w
             .spawn_at(
                 zombie,
@@ -9344,7 +9458,9 @@ actor Clip : Actor 2007 { Inventory.Amount 10 Inventory.MaxAmount 200 States { S
             )
             .unwrap();
         let _ = crate::damage::damage_mobj(&mut w, z2, None, None, 1000);
-        assert_eq!(w.player_stats[0][0], 1);
+        // Doom `P_KillMobj`: in a one-player game every monster death counts
+        // for that player, even with no killer.
+        assert_eq!(w.player_stats[0][0], 2);
         // Also while the player is out of the list (thinking).
         w.taken_player = Some((0, mo));
         let p = w.players[0].take();
@@ -9354,7 +9470,7 @@ actor Clip : Actor 2007 { Inventory.Amount 10 Inventory.MaxAmount 200 States { S
         assert_eq!(w.player_stats[0][2], 1);
         let rows = w.scoreboard();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].kills, 1);
+        assert_eq!(rows[0].kills, 2);
         assert_eq!(rows[0].secrets, 1);
         assert_eq!(rows[0].name, "Player 1");
     }

@@ -107,6 +107,7 @@ fn with_article(noun: &str) -> String {
 }
 
 /// One feed line for `ev`, or `None` for noise (monster infighting).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn kill_line(ev: &KillEvent, name_of: impl Fn(u8) -> String) -> Option<String> {
     match (ev.victim_player, ev.killer_player) {
         (Some(v), Some(k)) if v == k => Some(format!("{} suicided", name_of(v))),
@@ -126,7 +127,51 @@ pub fn kill_line(ev: &KillEvent, name_of: impl Fn(u8) -> String) -> Option<Strin
     }
 }
 
-/// Timed lines for the bottom-left feed (newest last).
+/// Category + wording for `ev` from `local`'s point of view ("You killed an
+/// imp", "Bot 2 fragged you"), or `None` for monster infighting.
+/// Categories: `kill` (monsters), `frag` (player vs player, bots included),
+/// `death` (a player killed by the world or a monster).
+pub fn kill_message(
+    ev: &KillEvent,
+    local: u8,
+    name_of: impl Fn(u8) -> String,
+) -> Option<(&'static str, String)> {
+    let who = |s: u8, cap: bool| {
+        if s == local {
+            if cap { "You".to_owned() } else { "you".to_owned() }
+        } else {
+            name_of(s)
+        }
+    };
+    Some(match (ev.victim_player, ev.killer_player) {
+        (Some(v), Some(k)) if v == k => (
+            "frag",
+            if v == local {
+                "You killed yourself".to_owned()
+            } else {
+                format!("{} killed themself", name_of(v))
+            },
+        ),
+        (Some(v), Some(k)) => ("frag", format!("{} fragged {}", who(k, true), who(v, false))),
+        (Some(v), None) if !ev.killer_class.is_empty() => (
+            "death",
+            format!(
+                "{} {} killed by {}",
+                who(v, true),
+                if v == local { "were" } else { "was" },
+                with_article(&monster_name(&ev.killer_class))
+            ),
+        ),
+        (Some(v), None) => ("death", format!("{} died", who(v, true))),
+        (None, Some(k)) => (
+            "kill",
+            format!("{} killed {}", who(k, true), with_article(&monster_name(&ev.victim_class))),
+        ),
+        (None, None) => return None,
+    })
+}
+
+/// Timed lines for the bottom-left feed (newest last)./// Timed lines for the bottom-left feed (newest last).
 #[derive(Clone, Debug, Default)]
 pub struct EventFeed {
     lines: VecDeque<(String, f64)>,
@@ -222,6 +267,20 @@ mod tests {
         );
         assert_eq!(kill_line(&ev(None, None, "DoomImp", "Demon"), name), None);
         assert_eq!(monster_name("MyCoolBeast"), "my cool beast");
+    }
+
+    #[test]
+    fn kill_messages_speak_to_the_player() {
+        let k = |e: KillEvent| kill_message(&e, 0, name);
+        assert_eq!(k(ev(None, Some(0), "DoomImp", "")), Some(("kill", "You killed an imp".into())));
+        assert_eq!(k(ev(None, Some(1), "Demon", "")), Some(("kill", "bob killed a demon".into())));
+        assert_eq!(
+            k(ev(Some(0), None, "DoomPlayer", "Cacodemon")),
+            Some(("death", "You were killed by a cacodemon".into()))
+        );
+        assert_eq!(k(ev(Some(1), Some(0), "DoomPlayer", "")), Some(("frag", "You fragged bob".into())));
+        assert_eq!(k(ev(Some(0), Some(1), "DoomPlayer", "")), Some(("frag", "bob fragged you".into())));
+        assert_eq!(k(ev(None, None, "DoomImp", "Demon")), None);
     }
 
     #[test]

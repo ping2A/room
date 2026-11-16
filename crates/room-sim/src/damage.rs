@@ -788,6 +788,10 @@ pub(crate) fn damage_mobj_with_flags(
                 .get(id)
                 .is_some_and(|s| s.extra_flags.get_name("FOILBUDDHA"))
         });
+    let health_lost = world
+        .actors
+        .get(target)
+        .map_or(0, |a| health_damage.min(a.health.max(0)));
     let health = {
         let Some(actor) = world.actors.get_mut(target) else {
             return 0;
@@ -883,6 +887,14 @@ pub(crate) fn damage_mobj_with_flags(
         }
     }
     if is_player_pawn && health_damage > 0 {
+        if let Some(cell) = world
+            .player_seat_of(target)
+            .and_then(|s| world.player_hits.get_mut(usize::from(s)))
+        {
+            cell[0] = cell[0].saturating_add(1);
+            // Health actually lost, not the overkill.
+            cell[1] = cell[1].saturating_add(u32::try_from(health_lost).unwrap_or(0));
+        }
         world.last_damage = Some(crate::world::LastDamageInfo {
             tic: world.level.time,
             dealt: health_damage,
@@ -968,6 +980,71 @@ pub(crate) fn damage_mobj_with_flags(
     health_damage
 }
 
+/// Who a monster death counts for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KillCredit {
+    /// A player, directly or through something they own.
+    Player(u8),
+    /// Another monster (infighting).
+    Monster,
+    /// Nothing identifiable (world, scripts, helpers with no owner).
+    Unknown,
+}
+
+fn seat_of(world: &World, id: ActorId) -> Option<u8> {
+    world.player_seat_of(id).or_else(|| {
+        world
+            .taken_player
+            .filter(|(_, mo)| *mo == id)
+            .and_then(|(s, _)| u8::try_from(s).ok())
+    })
+}
+
+/// Follow what `source` belongs to — a projectile's shooter (`target`), a
+/// helper actor's `master` — so kills made through spawned actors (Brutal
+/// Doom's bullets, gib and headshot helpers, `A_DamageMaster`) still find
+/// the player behind them.
+pub(crate) fn kill_credit(world: &World, target: ActorId, source: Option<ActorId>) -> KillCredit {
+    let mut cur = source;
+    for _ in 0..6 {
+        let Some(id) = cur else {
+            break;
+        };
+        if let Some(seat) = seat_of(world, id) {
+            return KillCredit::Player(seat);
+        }
+        let Some(a) = world.actors.get(id) else {
+            break;
+        };
+        let flags = a.flags | world.classes.get(a.class).map_or(0, |c| c.flags);
+        let monster = flags & (crate::class::FLAG_COUNTKILL | crate::class::FLAG_ISMONSTER) != 0;
+        if monster && id != target {
+            return KillCredit::Monster;
+        }
+        let next = if flags & crate::class::FLAG_MISSILE != 0 {
+            a.target
+        } else {
+            a.master.filter(|&m| m != target).or(a.target)
+        };
+        cur = next.filter(|&n| n != id);
+    }
+    KillCredit::Unknown
+}
+
+/// The only player in a one-player game (bots count as players).
+fn lone_player(world: &World) -> Option<u8> {
+    let mut seats = world
+        .players
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.is_some())
+        .map(|(i, _)| i);
+    match (seats.next(), seats.next()) {
+        (Some(seat), None) => u8::try_from(seat).ok(),
+        _ => None,
+    }
+}
+
 fn record_kill_event(
     world: &mut World,
     target: ActorId,
@@ -983,7 +1060,21 @@ fn record_kill_event(
         w.classes.get(c).map(|d| d.name.clone()).unwrap_or_default()
     };
     let victim_class = class_name(world, class);
-    let killer_player = source.and_then(|s| world.player_seat_of(s));
+    // A player's own death keeps the direct killer (frags / obituaries);
+    // monster deaths follow the ownership chain to the player.
+    let killer_player = if victim_player.is_some() {
+        source.and_then(|s| world.player_seat_of(s))
+    } else {
+        match kill_credit(world, target, source) {
+            KillCredit::Player(seat) => Some(seat),
+            KillCredit::Monster => None,
+            // Alone in the game, a monster killed through something with no
+            // owner (a mod's helper actor) is yours; a world death (crusher,
+            // no source at all) gets no "you killed" line.
+            KillCredit::Unknown if source.is_some() => lone_player(world),
+            KillCredit::Unknown => None,
+        }
+    };
     let killer_class = source
         .and_then(|s| world.actors.get(s).map(|a| a.class))
         .map(|c| class_name(world, c))
@@ -1036,7 +1127,15 @@ pub(crate) fn die(
         .unwrap_or((false, 0));
     if countkill {
         world.level.found_kills = world.level.found_kills.saturating_add(1);
-        world.credit_player_stat(source, 0);
+        // Doom (`P_KillMobj`): in a one-player game every monster death
+        // counts, infighting included.
+        let seat = match kill_credit(world, target, source) {
+            KillCredit::Player(seat) => Some(seat),
+            _ => lone_player(world),
+        };
+        if let Some(seat) = seat {
+            world.credit_seat_stat(seat, 0);
+        }
     }
     record_kill_event(world, target, class, countkill, source);
     if countkill {
@@ -1109,7 +1208,7 @@ pub(crate) fn die(
                     })
                     .unwrap_or_default();
                 if !msg.is_empty() {
-                    world.push_message(msg);
+                    world.push_message_kind(crate::world::MessageKind::Obituary, msg);
                 }
             }
         }
@@ -2204,6 +2303,77 @@ actor PlayerPawn : Actor 0
     }
 
     #[test]
+    fn kills_through_owned_actors_count_for_the_player() {
+        // Brutal Doom kills through projectiles and helper actors; Doom
+        // credits every monster death to the lone player.
+        let ir = parse_decorate(
+            r#"
+actor PlayerPawn : Actor 0
+{
+  Health 100
+  +SHOOTABLE
+  States { Spawn: PLAY A -1 Stop }
+}
+actor Grunt : Actor 9941
+{
+  Health 20
+  +SHOOTABLE
+  +COUNTKILL
+  States { Spawn: POSS A -1 Stop }
+}
+actor Slug : Actor 9942
+{
+  +MISSILE
+  States { Spawn: BAL1 A -1 Stop }
+}
+actor GibHelper : Actor 9943
+{
+  States { Spawn: TNT1 A -1 Stop }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let mo = w.players[0].as_ref().and_then(|p| p.mo).unwrap();
+        let grunt = classes.find_name("Grunt").unwrap();
+        let spawn = |w: &mut World, name: &str, x: f64| {
+            let c = classes.find_name(name).unwrap();
+            w.spawn_at(c, DVec3::new(x, 128.0, 0.0), Default::default()).unwrap()
+        };
+        // Projectile fired by the player.
+        let a = spawn(&mut w, "Grunt", 200.0);
+        let slug = spawn(&mut w, "Slug", 190.0);
+        w.actors.get_mut(slug).unwrap().target = Some(mo);
+        let _ = damage_mobj(&mut w, a, Some(slug), Some(slug), 999);
+        // Helper whose master is the projectile's victim, no owner: Doom's
+        // one-player rule.
+        let b = spawn(&mut w, "Grunt", 300.0);
+        let gib = spawn(&mut w, "GibHelper", 300.0);
+        w.actors.get_mut(gib).unwrap().master = Some(b);
+        let _ = damage_mobj(&mut w, b, Some(gib), Some(gib), 999);
+        // Infighting: no message, but Doom still counts the kill.
+        let c = spawn(&mut w, "Grunt", 400.0);
+        let d = spawn(&mut w, "Grunt", 420.0);
+        let _ = damage_mobj(&mut w, c, Some(d), Some(d), 999);
+        let ev = w.drain_kill_events();
+        assert_eq!(ev.len(), 3, "{ev:?}");
+        assert_eq!(ev[0].killer_player, Some(0));
+        assert_eq!(ev[1].killer_player, Some(0));
+        assert_eq!(ev[2].killer_player, None);
+        assert_eq!(w.player_stats[0][0], 3);
+        assert!(ev.iter().all(|e| e.victim_class == "Grunt"));
+        let _ = grunt;
+    }
+
+    #[test]
     fn player_death_pushes_killer_obituary() {
         let ir = parse_decorate(
             r#"
@@ -2247,6 +2417,8 @@ actor MeanImp : Actor 9940
                 .iter()
                 .any(|m| m == "%o was burned by an imp.")
         );
+        // Hits taken: one hit, all of the player's health.
+        assert_eq!(w.player_hits[0], [1, 100]);
         let events = w.drain_kill_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].victim_player, Some(0));

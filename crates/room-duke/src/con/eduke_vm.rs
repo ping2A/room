@@ -18,6 +18,8 @@ const NO_EVENT_CONTEXT: usize = usize::MAX;
 const EDUKE_MAX_QUOTE_BYTES: usize = 4096;
 /// EDuke32's initial shared CON game-random seed.
 const EDUKE_INITIAL_GAME_RANDOM_SEED: i32 = 1996;
+/// Bound recursive `EVENT_EGS` / `EVENT_SPAWN` dispatch from runtime spawns.
+const EDUKE_SPAWN_EVENT_DEPTH_LIMIT: usize = 32;
 
 /// Upper bound for total script-owned values allocated from an untrusted CON image.
 const MAX_EDUKE_VALUE_CELLS: usize = 16 * 1024 * 1024;
@@ -195,6 +197,8 @@ pub enum EdOperand {
     CurrentPlayer,
     /// Nearest player distance for the active actor (`g_x` in EDuke32).
     PlayerDistance,
+    /// Absolute Build-angle difference between the active player and actor.
+    ActorPlayerAngleDifference,
     /// Floor-to-ceiling gap at the active actor, in Build vertical units.
     ActorSectorGap,
     /// Active actor center-to-floor distance in Build units.
@@ -255,8 +259,21 @@ pub enum EdOperand {
         /// Nonzero registers this actor's tile before testing its owner.
         register: Box<EdOperand>,
     },
+    /// Whether the current actor is in an above-water sector near its floor.
+    ActorOnWater,
+    /// Whether the actor has at least 108 Build units of room in four diagonals.
+    ActorAwayFromWall,
+    /// Whether the actor's sector uses the Atomic outer-space floor.
+    ActorInOuterSpace,
     /// Whether this actor owns a currently active sound voice.
     ActorHasActiveSound,
+    /// Whether a selected actor currently owns a selected sound voice.
+    ActorHasSound {
+        /// Sprite whose sound ownership is checked.
+        actor: Box<EdOperand>,
+        /// Sound id to inspect.
+        sound: Box<EdOperand>,
+    },
 }
 
 /// A writable EDuke32 VM destination.
@@ -302,6 +319,15 @@ pub enum EdInstruction {
         /// Number of fragments.
         count: EdOperand,
     },
+    /// Spawn randomized glass fragments along a sector's ceiling perimeter.
+    SpawnCeilingGlass {
+        /// Sprite used as the fragment owner.
+        sprite: EdOperand,
+        /// Sector whose ceiling perimeter emits fragments.
+        sector: EdOperand,
+        /// Requested count per wall (EDuke32 emits count plus one).
+        count: EdOperand,
+    },
     /// Spawn the requested number of money/mail/paper sprites.
     ItemSpray {
         /// Item kind and its Atomic default tile.
@@ -311,6 +337,10 @@ pub enum EdInstruction {
     },
     /// Queue the current actor's nearby-sector operation for the session phase.
     Operate,
+    /// Activate matching Build respawn markers for the current actor's tag.
+    RespawnHitag,
+    /// Request a single-player map restart and stop this event chain.
+    ResetPlayer,
     /// Apply a four-band CON blast to actors, players and nearby walls.
     HitRadius {
         /// Blast radius in Build distance units.
@@ -320,17 +350,23 @@ pub enum EdInstruction {
     },
     /// Request the current actor's nearest player to perform a quick kick.
     PlayerQuickKick,
+    /// Drop the nearest player's current weapon using the shared Build RNG.
+    TossWeapon,
     /// Queue an actor or global sound through the live session audio bridge.
     PlaySound {
         /// Sound definition ID.
         sound: EdOperand,
         /// Actor or global playback policy.
         mode: EdSoundMode,
+        /// Explicit source sprite for EDuke32 `actorsound`; otherwise `THISACTOR`.
+        actor: Option<EdOperand>,
     },
     /// Stop every active voice for a sound ID.
     StopSound {
         /// Sound definition ID.
         sound: EdOperand,
+        /// Explicit source sprite for EDuke32 `stopactorsound`; otherwise `THISACTOR`.
+        actor: Option<EdOperand>,
     },
     /// Add health to the current/nearest player while respecting health caps.
     AddPlayerHealth {
@@ -692,6 +728,15 @@ pub enum EdInstruction {
         /// Include vertical distance when true.
         three_dimensional: bool,
     },
+    /// Find an active actor of a tile within a strict three-dimensional radius.
+    FindNearActor3D {
+        /// Search tile number.
+        tile: EdOperand,
+        /// Maximum distance; candidates at this exact distance are excluded.
+        distance: EdOperand,
+        /// Destination gamevar or array element receiving the sprite id.
+        target: EdLValue,
+    },
     /// Read a sprite-list head or next link into a gamevar/array element.
     SpriteListRead {
         /// Destination gamevar/array element.
@@ -806,6 +851,8 @@ pub enum EdInstruction {
         /// Countdown duration in EDuke32 time units; defaults to 52.
         delay: EdOperand,
     },
+    /// Start the active player's 26-tic TIP HUD animation.
+    PlayerTip,
 }
 
 /// Compiled EDuke32 VM instruction stream and state entry points.
@@ -828,6 +875,8 @@ pub struct EdExecution {
     pub killed_actor: bool,
     /// Actor ID requested by `killit`, when this execution had an actor context.
     pub kill_actor_id: Option<i32>,
+    /// True when CON `resetplayer` requested the host's single-player restart.
+    pub restart_player: bool,
 }
 
 /// Host bridge for native structure fields used by EDuke32 CON scripts.
@@ -869,6 +918,12 @@ pub trait EdukeStructAccess {
     /// Stop all active voices for a sound ID.
     fn stop_sound(&mut self, _actor: i32, _sound: i32) -> Result<(), EdukeVmError> {
         Ok(())
+    }
+
+    /// Stop a sound owned by one actor, without stopping voices from other
+    /// actors that use the same sound ID.
+    fn stop_actor_sound(&mut self, actor: i32, sound: i32) -> Result<(), EdukeVmError> {
+        self.stop_sound(actor, sound)
     }
 
     /// Set an actor's active action pointer and reset action counters.
@@ -942,6 +997,20 @@ pub trait EdukeStructAccess {
         None
     }
 
+    /// Temporarily set the live actor context while dispatching a nested event.
+    fn set_current_actor(&mut self, _actor: i32) {}
+
+    /// Return the player seat nearest to an actor for spawn callbacks.
+    fn closest_player_for_actor(&mut self, _actor: i32, fallback: usize) -> usize {
+        fallback
+    }
+
+    /// Drain sprites spawned by the last host instruction so nested events can
+    /// run at the exact CON instruction that created them.
+    fn take_spawned_actor_ids(&mut self) -> Vec<i32> {
+        Vec::new()
+    }
+
     /// Read an EDuke32 predefined value whose backing storage belongs to the
     /// live engine rather than the script VM.
     fn predefined_variable(&mut self, _name: &str) -> Option<i32> {
@@ -1004,6 +1073,11 @@ pub trait EdukeStructAccess {
         Err(EdukeVmError::StructAccessUnavailable)
     }
 
+    /// Drop the selected player's current weapon from the live player sprite.
+    fn toss_player_weapon(&mut self, _player: usize, _actor: i32) -> Result<(), EdukeVmError> {
+        Err(EdukeVmError::StructAccessUnavailable)
+    }
+
     /// Spawn an EDuke32 `debris` burst from the selected actor.
     fn spawn_debris(&mut self, _actor: i32, _tile: i32, _count: i32) -> Result<(), EdukeVmError> {
         Err(EdukeVmError::StructAccessUnavailable)
@@ -1025,6 +1099,16 @@ pub trait EdukeStructAccess {
         Err(EdukeVmError::StructAccessUnavailable)
     }
 
+    /// Spawn EDuke32 `spawnceilingglass` fragments around a sector ceiling.
+    fn spawn_ceiling_glass(
+        &mut self,
+        _sprite: i32,
+        _sector: i32,
+        _count: i32,
+    ) -> Result<(), EdukeVmError> {
+        Err(EdukeVmError::StructAccessUnavailable)
+    }
+
     /// Spawn an EDuke32 CON item spray from the current actor.
     fn spawn_item_spray(
         &mut self,
@@ -1040,6 +1124,16 @@ pub trait EdukeStructAccess {
         Err(EdukeVmError::StructAccessUnavailable)
     }
 
+    /// Run EDuke32 `respawnhitag` for the selected actor.
+    fn respawn_hitag(&mut self, _actor: i32) -> Result<(), EdukeVmError> {
+        Err(EdukeVmError::StructAccessUnavailable)
+    }
+
+    /// Queue the single-player map restart requested by CON `resetplayer`.
+    fn request_player_restart(&mut self, _player: usize) -> Result<bool, EdukeVmError> {
+        Err(EdukeVmError::StructAccessUnavailable)
+    }
+
     /// Select the EDuke32 full-screen game palette for the selected view.
     fn set_game_palette(&mut self, _player: usize, _palette: i32) -> Result<(), EdukeVmError> {
         Err(EdukeVmError::StructAccessUnavailable)
@@ -1052,6 +1146,11 @@ pub trait EdukeStructAccess {
 
     /// Start the end-of-episode countdown for a player context.
     fn begin_end_of_game(&mut self, _player: usize, _delay: i32) -> Result<(), EdukeVmError> {
+        Err(EdukeVmError::StructAccessUnavailable)
+    }
+
+    /// Start the TIP HUD animation for a player seat.
+    fn show_tip(&mut self, _player: usize) -> Result<(), EdukeVmError> {
         Err(EdukeVmError::StructAccessUnavailable)
     }
 
@@ -1130,13 +1229,23 @@ pub trait EdukeStructAccess {
         Err(EdukeVmError::StructAccessUnavailable)
     }
 
+    /// Evaluate `ifactornotstayput` from the active actor's temp state.
+    fn actor_not_stayput(&mut self, _actor: usize) -> Result<bool, EdukeVmError> {
+        Err(EdukeVmError::StructAccessUnavailable)
+    }
+
+    /// Test EDuke32 `ifawayfromwall` against all four diagonal points.
+    fn actor_away_from_wall(&mut self, _actor: usize) -> Result<bool, EdukeVmError> {
+        Err(EdukeVmError::StructAccessUnavailable)
+    }
+
     /// Query whether this actor owns a currently active Atomic sound voice.
     fn actor_has_active_sound(&mut self, _actor: usize) -> Result<bool, EdukeVmError> {
         Err(EdukeVmError::StructAccessUnavailable)
     }
 
-    /// Evaluate `ifactornotstayput` from the active actor's temp state.
-    fn actor_not_stayput(&mut self, _actor: usize) -> Result<bool, EdukeVmError> {
+    /// Query whether one actor currently owns a specific sound ID.
+    fn actor_has_sound(&mut self, _actor: i32, _sound: i32) -> Result<bool, EdukeVmError> {
         Err(EdukeVmError::StructAccessUnavailable)
     }
 
@@ -1182,6 +1291,16 @@ pub trait EdukeStructAccess {
         _first: i32,
         _second: i32,
         _three_dimensional: bool,
+    ) -> Result<i32, EdukeVmError> {
+        Err(EdukeVmError::StructAccessUnavailable)
+    }
+
+    /// Find a matching active actor within the strict `findnearactor3d` range.
+    fn find_near_actor_3d(
+        &mut self,
+        _source_actor: i32,
+        _tile: i32,
+        _distance: i32,
     ) -> Result<i32, EdukeVmError> {
         Err(EdukeVmError::StructAccessUnavailable)
     }
@@ -1886,6 +2005,9 @@ impl EdukeVmState {
             instruction_budget,
             state_depth_limit,
             None,
+            false,
+            0,
+            None,
         )
     }
 
@@ -1908,6 +2030,9 @@ impl EdukeVmState {
             instruction_budget,
             state_depth_limit,
             None,
+            false,
+            0,
+            None,
         )
     }
 
@@ -1929,6 +2054,35 @@ impl EdukeVmState {
             actor,
             instruction_budget,
             state_depth_limit,
+            None,
+            false,
+            0,
+            Some(access),
+        )
+    }
+
+    /// Execute an entry point with live host access and registered-event
+    /// metadata, enabling nested `EVENT_SOUND`, `EVENT_EGS`, and `EVENT_SPAWN`.
+    pub fn execute_at_with_access_and_events(
+        &mut self,
+        image: &ScriptImage,
+        entry: usize,
+        player: usize,
+        actor: usize,
+        instruction_budget: usize,
+        state_depth_limit: usize,
+        access: &mut dyn EdukeStructAccess,
+    ) -> Result<EdExecution, EdukeVmError> {
+        self.execute_from(
+            &image.eduke_program,
+            entry,
+            player,
+            actor,
+            instruction_budget,
+            state_depth_limit,
+            Some(image),
+            false,
+            0,
             Some(access),
         )
     }
@@ -1955,6 +2109,8 @@ impl EdukeVmState {
             actor,
             instruction_budget,
             state_depth_limit,
+            false,
+            0,
             None,
         )
     }
@@ -1978,6 +2134,8 @@ impl EdukeVmState {
             actor,
             instruction_budget,
             state_depth_limit,
+            false,
+            0,
             Some(access),
         )
     }
@@ -1990,6 +2148,8 @@ impl EdukeVmState {
         mut actor: usize,
         instruction_budget: usize,
         state_depth_limit: usize,
+        sound_event_active: bool,
+        spawn_event_depth: usize,
         mut access: Option<&mut dyn EdukeStructAccess>,
     ) -> Result<Vec<EdExecution>, EdukeVmError> {
         if image.dialect != ConDialect::EDuke32 {
@@ -2011,6 +2171,9 @@ impl EdukeVmState {
                     actor,
                     remaining,
                     state_depth_limit,
+                    Some(image),
+                    sound_event_active || event_key == "EVENT_SOUND",
+                    spawn_event_depth,
                     Some(&mut **host),
                 )?,
                 None => self.execute_from(
@@ -2020,6 +2183,9 @@ impl EdukeVmState {
                     actor,
                     remaining,
                     state_depth_limit,
+                    Some(image),
+                    sound_event_active || event_key == "EVENT_SOUND",
+                    spawn_event_depth,
                     None,
                 )?,
             };
@@ -2064,6 +2230,9 @@ impl EdukeVmState {
             actor,
             instruction_budget,
             state_depth_limit,
+            None,
+            false,
+            0,
             None,
         )
     }
@@ -2293,6 +2462,9 @@ impl EdukeVmState {
         mut actor: usize,
         instruction_budget: usize,
         state_depth_limit: usize,
+        image: Option<&ScriptImage>,
+        sound_event_active: bool,
+        spawn_event_depth: usize,
         mut access: Option<&mut dyn EdukeStructAccess>,
     ) -> Result<EdExecution, EdukeVmError> {
         if start > program.instructions.len() {
@@ -2316,6 +2488,7 @@ impl EdukeVmState {
             }
             let instruction = &program.instructions[pc];
             steps += 1;
+            let mut pending_spawn_return = None;
             match instruction {
                 EdInstruction::NoOp => pc += 1,
                 EdInstruction::KillIt => {
@@ -2336,21 +2509,84 @@ impl EdukeVmState {
                         returned: false,
                         killed_actor: true,
                         kill_actor_id,
+                        restart_player: false,
                     });
                 }
-                EdInstruction::PlaySound { sound, mode } => {
-                    let sound = self.read_operand(sound, player, actor, &mut access)?;
-                    let actor_id = event_context_value("actor", "THISACTOR", actor, MAXSPRITES)?;
-                    if let Some(host) = access.as_deref_mut() {
+                EdInstruction::PlaySound {
+                    sound,
+                    mode,
+                    actor: source_actor,
+                } => {
+                    let mut sound = self.read_operand(sound, player, actor, &mut access)?;
+                    let mut actor_id = if let Some(source_actor) = source_actor {
+                        self.read_operand(source_actor, player, actor, &mut access)?
+                    } else {
+                        event_context_value("actor", "THISACTOR", actor, MAXSPRITES)?
+                    };
+                    if let Some(image) = image.filter(|image| {
+                        image.dialect == ConDialect::EDuke32
+                            && !sound_event_active
+                            && image
+                                .eduke_event_entries
+                                .iter()
+                                .any(|(name, _, _)| name.eq_ignore_ascii_case("EVENT_SOUND"))
+                    }) && let Some(host) = access.as_deref_mut()
+                    {
+                        // The room currently presents seat zero, matching
+                        // EDuke32's screenpeek player context for this hook.
+                        let sound_player = 0;
+                        if *mode == EdSoundMode::Global {
+                            actor_id = host.get_member(EdStructKind::Player, 0, "i", None)?;
+                        }
+                        let sound_actor = usize::try_from(actor_id).map_err(|_| {
+                            EdukeVmError::IndexOutOfBounds {
+                                kind: "actor",
+                                name: "EVENT_SOUND THISACTOR".to_owned(),
+                                index: usize::MAX,
+                                extent: MAXSPRITES,
+                            }
+                        })?;
+                        self.set_variable("RETURN", sound_player, sound_actor, sound)?;
+                        let hook_executions = self.execute_registered_event_hooks_inner(
+                            image,
+                            "EVENT_SOUND",
+                            sound_player,
+                            sound_actor,
+                            instruction_budget.saturating_sub(steps),
+                            state_depth_limit,
+                            true,
+                            spawn_event_depth,
+                            Some(host),
+                        )?;
+                        for hook_execution in hook_executions {
+                            steps = steps.saturating_add(hook_execution.steps);
+                        }
+                        sound = self.get_variable("RETURN", sound_player, sound_actor)?;
+                    }
+                    if sound != -1
+                        && let Some(host) = access.as_deref_mut()
+                    {
                         host.play_sound(actor_id, sound, *mode)?;
                     }
                     pc += 1;
                 }
-                EdInstruction::StopSound { sound } => {
+                EdInstruction::StopSound {
+                    sound,
+                    actor: source_actor,
+                } => {
                     let sound = self.read_operand(sound, player, actor, &mut access)?;
-                    let actor_id = event_context_value("actor", "THISACTOR", actor, MAXSPRITES)?;
+                    let actor_specific = source_actor.is_some();
+                    let actor_id = if let Some(source_actor) = source_actor {
+                        self.read_operand(source_actor, player, actor, &mut access)?
+                    } else {
+                        event_context_value("actor", "THISACTOR", actor, MAXSPRITES)?
+                    };
                     if let Some(host) = access.as_deref_mut() {
-                        host.stop_sound(actor_id, sound)?;
+                        if actor_specific {
+                            host.stop_actor_sound(actor_id, sound)?;
+                        } else {
+                            host.stop_sound(actor_id, sound)?;
+                        }
                     }
                     pc += 1;
                 }
@@ -2377,6 +2613,7 @@ impl EdukeVmState {
                             returned: true,
                             killed_actor: false,
                             kill_actor_id: None,
+                            restart_player: false,
                         });
                     }
                     pc += 1;
@@ -2425,6 +2662,22 @@ impl EdukeVmState {
                     }
                     pc += 1;
                 }
+                EdInstruction::SpawnCeilingGlass {
+                    sprite,
+                    sector,
+                    count,
+                } => {
+                    let sprite = self.read_operand(sprite, player, actor, &mut access)?;
+                    let sector = self.read_operand(sector, player, actor, &mut access)?;
+                    let count = self.read_operand(count, player, actor, &mut access)?;
+                    if let Some(host) = access.as_deref_mut() {
+                        host.spawn_ceiling_glass(sprite, sector, count)?;
+                        if let Some(seed) = host.game_random_seed() {
+                            self.game_random_seed = seed;
+                        }
+                    }
+                    pc += 1;
+                }
                 EdInstruction::ItemSpray { kind, count } => {
                     let count = self.read_operand(count, player, actor, &mut access)?;
                     let actor_id = event_context_value("actor", "THISACTOR", actor, MAXSPRITES)?;
@@ -2440,6 +2693,30 @@ impl EdukeVmState {
                     let actor_id = event_context_value("actor", "THISACTOR", actor, MAXSPRITES)?;
                     if let Some(host) = access.as_deref_mut() {
                         host.request_actor_operate(actor_id)?;
+                    }
+                    pc += 1;
+                }
+                EdInstruction::RespawnHitag => {
+                    let actor_id = event_context_value("actor", "THISACTOR", actor, MAXSPRITES)?;
+                    if let Some(host) = access.as_deref_mut() {
+                        host.respawn_hitag(actor_id)?;
+                    }
+                    pc += 1;
+                }
+                EdInstruction::ResetPlayer => {
+                    let restart = if let Some(host) = access.as_deref_mut() {
+                        host.request_player_restart(player)?
+                    } else {
+                        false
+                    };
+                    if restart {
+                        return Ok(EdExecution {
+                            steps,
+                            returned: true,
+                            killed_actor: false,
+                            kill_actor_id: None,
+                            restart_player: true,
+                        });
                     }
                     pc += 1;
                 }
@@ -2478,6 +2755,13 @@ impl EdukeVmState {
                         .begin_end_of_game(player, delay)?;
                     pc += 1;
                 }
+                EdInstruction::PlayerTip => {
+                    access
+                        .as_deref_mut()
+                        .ok_or(EdukeVmError::StructAccessUnavailable)?
+                        .show_tip(player)?;
+                    pc += 1;
+                }
                 EdInstruction::HitRadius { radius, damage } => {
                     let radius = self.read_operand(radius, player, actor, &mut access)?;
                     let mut damage_values = [0; 4];
@@ -2501,6 +2785,17 @@ impl EdukeVmState {
                         .as_deref_mut()
                         .ok_or(EdukeVmError::StructAccessUnavailable)?;
                     host.request_player_quick_kick(actor_id)?;
+                    pc += 1;
+                }
+                EdInstruction::TossWeapon => {
+                    let actor_id = event_context_value("actor", "THISACTOR", actor, MAXSPRITES)?;
+                    let host = access
+                        .as_deref_mut()
+                        .ok_or(EdukeVmError::StructAccessUnavailable)?;
+                    host.toss_player_weapon(player, actor_id)?;
+                    if let Some(seed) = host.game_random_seed() {
+                        self.game_random_seed = seed;
+                    }
                     pc += 1;
                 }
                 EdInstruction::SetActorAction { action } => {
@@ -2664,6 +2959,7 @@ impl EdukeVmState {
                             returned: true,
                             killed_actor: false,
                             kill_actor_id: None,
+                            restart_player: false,
                         });
                     }
                 },
@@ -2673,6 +2969,7 @@ impl EdukeVmState {
                         returned: false,
                         killed_actor: false,
                         kill_actor_id: None,
+                        restart_player: false,
                     });
                 }
                 EdInstruction::SetQuote { quote, text } => {
@@ -3040,6 +3337,27 @@ impl EdukeVmState {
                     self.write_lvalue(target, player, actor, distance, &mut access)?;
                     pc += 1;
                 }
+                EdInstruction::FindNearActor3D {
+                    tile,
+                    distance,
+                    target,
+                } => {
+                    let tile = self.read_operand(tile, player, actor, &mut access)?;
+                    let distance = self.read_operand(distance, player, actor, &mut access)?;
+                    let source_actor =
+                        i32::try_from(actor).map_err(|_| EdukeVmError::IndexOutOfBounds {
+                            kind: "actor",
+                            name: "THISACTOR".to_owned(),
+                            index: actor,
+                            extent: MAXSPRITES,
+                        })?;
+                    let found = access
+                        .as_deref_mut()
+                        .ok_or(EdukeVmError::StructAccessUnavailable)?
+                        .find_near_actor_3d(source_actor, tile, distance)?;
+                    self.write_lvalue(target, player, actor, found, &mut access)?;
+                    pc += 1;
+                }
                 EdInstruction::SpriteListRead {
                     target,
                     kind,
@@ -3089,13 +3407,7 @@ impl EdukeVmState {
                         .ok_or(EdukeVmError::StructAccessUnavailable)?;
                     let sprite = host.spawn_actor(parent, tile)?;
                     if *return_sprite {
-                        self.write_lvalue(
-                            &EdLValue::Variable("RETURN".to_owned()),
-                            player,
-                            actor,
-                            sprite,
-                            &mut access,
-                        )?;
+                        pending_spawn_return = Some(sprite);
                     }
                     pc += 1;
                 }
@@ -3116,13 +3428,7 @@ impl EdukeVmState {
                         .ok_or(EdukeVmError::StructAccessUnavailable)?;
                     let sprite = host.shoot_actor(parent, tile, vertical_velocity)?;
                     if *return_sprite {
-                        self.write_lvalue(
-                            &EdLValue::Variable("RETURN".to_owned()),
-                            player,
-                            actor,
-                            sprite,
-                            &mut access,
-                        )?;
+                        pending_spawn_return = Some(sprite);
                     }
                     pc += 1;
                 }
@@ -3199,6 +3505,89 @@ impl EdukeVmState {
                     pc += 1;
                 }
             }
+            if image.is_some_and(|image| image.dialect == ConDialect::EDuke32)
+                && let Some(host) = access.as_deref_mut()
+            {
+                let spawned = host.take_spawned_actor_ids();
+                if !spawned.is_empty() {
+                    let mut nested_budget = instruction_budget.saturating_sub(steps);
+                    for spawned_id in spawned {
+                        let has_spawn_hooks = image.is_some_and(|image| {
+                            image.eduke_event_entries.iter().any(|(name, _, _)| {
+                                name.eq_ignore_ascii_case("EVENT_EGS")
+                                    || name.eq_ignore_ascii_case("EVENT_SPAWN")
+                            })
+                        });
+                        if !has_spawn_hooks {
+                            continue;
+                        }
+                        if spawn_event_depth >= EDUKE_SPAWN_EVENT_DEPTH_LIMIT {
+                            return Err(EdukeVmError::SpawnEventDepthExceeded {
+                                limit: EDUKE_SPAWN_EVENT_DEPTH_LIMIT,
+                            });
+                        }
+                        let spawned_actor = usize::try_from(spawned_id).map_err(|_| {
+                            EdukeVmError::IndexOutOfBounds {
+                                kind: "actor",
+                                name: "spawn event THISACTOR".to_owned(),
+                                index: usize::MAX,
+                                extent: MAXSPRITES,
+                            }
+                        })?;
+                        let spawn_player = host.closest_player_for_actor(spawned_id, player);
+                        let previous_actor = host.current_actor();
+                        let dispatch_result = (|| {
+                            for event in ["EVENT_EGS", "EVENT_SPAWN"] {
+                                let Some(image) = image.filter(|image| {
+                                    image
+                                        .eduke_event_entries
+                                        .iter()
+                                        .any(|(name, _, _)| name.eq_ignore_ascii_case(event))
+                                }) else {
+                                    continue;
+                                };
+                                if nested_budget == 0 {
+                                    return Err(EdukeVmError::InstructionBudgetExceeded {
+                                        budget: instruction_budget,
+                                    });
+                                }
+                                host.set_current_actor(spawned_id);
+                                self.set_variable("RETURN", spawn_player, spawned_actor, 0)?;
+                                let executions = self.execute_registered_event_hooks_inner(
+                                    image,
+                                    event,
+                                    spawn_player,
+                                    spawned_actor,
+                                    nested_budget,
+                                    state_depth_limit,
+                                    sound_event_active,
+                                    spawn_event_depth + 1,
+                                    Some(&mut *host),
+                                )?;
+                                let used = executions.iter().fold(0_usize, |total, execution| {
+                                    total.saturating_add(execution.steps)
+                                });
+                                steps = steps.saturating_add(used);
+                                nested_budget = nested_budget.saturating_sub(used);
+                            }
+                            Ok(())
+                        })();
+                        if let Some(previous_actor) = previous_actor {
+                            host.set_current_actor(previous_actor);
+                        }
+                        dispatch_result?;
+                    }
+                }
+            }
+            if let Some(sprite) = pending_spawn_return {
+                self.write_lvalue(
+                    &EdLValue::Variable("RETURN".to_owned()),
+                    player,
+                    actor,
+                    sprite,
+                    &mut access,
+                )?;
+            }
             if pc > program.instructions.len() {
                 return Err(EdukeVmError::InvalidProgramCounter {
                     address: pc,
@@ -3211,6 +3600,7 @@ impl EdukeVmState {
             returned: false,
             killed_actor: false,
             kill_actor_id: None,
+            restart_player: false,
         })
     }
 
@@ -3238,6 +3628,29 @@ impl EdukeVmState {
                     .as_deref_mut()
                     .ok_or(EdukeVmError::StructAccessUnavailable)?
                     .player_distance(actor)
+            }
+            EdOperand::ActorPlayerAngleDifference => {
+                let access = access
+                    .as_deref_mut()
+                    .ok_or(EdukeVmError::StructAccessUnavailable)?;
+                let actor_id =
+                    i32::try_from(actor).map_err(|_| EdukeVmError::IndexOutOfBounds {
+                        kind: "actor",
+                        name: "THISACTOR".to_owned(),
+                        index: actor,
+                        extent: MAXSPRITES,
+                    })?;
+                let player_id =
+                    i32::try_from(player).map_err(|_| EdukeVmError::IndexOutOfBounds {
+                        kind: "player",
+                        name: "THISPLAYER".to_owned(),
+                        index: player,
+                        extent: EDUKE_MAXPLAYERS,
+                    })?;
+                let player_angle =
+                    access.get_member(EdStructKind::Player, player_id, "ang", None)?;
+                let actor_angle = access.get_member(EdStructKind::Actor, actor_id, "ang", None)?;
+                Ok(i32::from(eduke_getincangle(player_angle as i16, actor_angle as i16)).abs())
             }
             EdOperand::ActorSectorGap => {
                 let actor_id =
@@ -3452,16 +3865,74 @@ impl EdukeVmState {
                 .ok_or(EdukeVmError::StructAccessUnavailable)?
                 .actor_respawn_enabled(actor)
                 .map(i32::from),
-            EdOperand::ActorHasActiveSound => access
-                .as_deref_mut()
-                .ok_or(EdukeVmError::StructAccessUnavailable)?
-                .actor_has_active_sound(actor)
-                .map(i32::from),
             EdOperand::ActorNotStayPut => access
                 .as_deref_mut()
                 .ok_or(EdukeVmError::StructAccessUnavailable)?
                 .actor_not_stayput(actor)
                 .map(i32::from),
+            EdOperand::ActorOnWater => {
+                let actor_id =
+                    i32::try_from(actor).map_err(|_| EdukeVmError::IndexOutOfBounds {
+                        kind: "actor",
+                        name: "THISACTOR".to_owned(),
+                        index: actor,
+                        extent: MAXSPRITES,
+                    })?;
+                let access = access
+                    .as_deref_mut()
+                    .ok_or(EdukeVmError::StructAccessUnavailable)?;
+                let sector = access.get_member(EdStructKind::Actor, actor_id, "sectnum", None)?;
+                if access.get_member(EdStructKind::Sector, sector, "lotag", None)? != 1 {
+                    return Ok(0);
+                }
+                let actor_z = access.get_member(EdStructKind::Actor, actor_id, "z", None)?;
+                let floor_z = access.get_member(EdStructKind::Sector, sector, "floorz", None)?;
+                Ok(i32::from(actor_z.abs_diff(floor_z) < (32 << 8) as u32))
+            }
+            EdOperand::ActorAwayFromWall => access
+                .as_deref_mut()
+                .ok_or(EdukeVmError::StructAccessUnavailable)?
+                .actor_away_from_wall(actor)
+                .map(i32::from),
+            EdOperand::ActorInOuterSpace => {
+                let actor_id =
+                    i32::try_from(actor).map_err(|_| EdukeVmError::IndexOutOfBounds {
+                        kind: "actor",
+                        name: "THISACTOR".to_owned(),
+                        index: actor,
+                        extent: MAXSPRITES,
+                    })?;
+                let access = access
+                    .as_deref_mut()
+                    .ok_or(EdukeVmError::StructAccessUnavailable)?;
+                let sector = access.get_member(EdStructKind::Actor, actor_id, "sectnum", None)?;
+                let floor_stat =
+                    access.get_member(EdStructKind::Sector, sector, "floorstat", None)?;
+                let ceiling_pal =
+                    access.get_member(EdStructKind::Sector, sector, "ceilingpal", None)?;
+                let floor_pic =
+                    access.get_member(EdStructKind::Sector, sector, "floorpicnum", None)?;
+                Ok(i32::from(
+                    floor_stat & 1 != 0 && ceiling_pal == 0 && matches!(floor_pic, 80 | 84),
+                ))
+            }
+            EdOperand::ActorHasActiveSound => access
+                .as_deref_mut()
+                .ok_or(EdukeVmError::StructAccessUnavailable)?
+                .actor_has_active_sound(actor)
+                .map(i32::from),
+            EdOperand::ActorHasSound {
+                actor: source_actor,
+                sound,
+            } => {
+                let source_actor = self.read_operand(source_actor, player, actor, access)?;
+                let sound = self.read_operand(sound, player, actor, access)?;
+                access
+                    .as_deref_mut()
+                    .ok_or(EdukeVmError::StructAccessUnavailable)?
+                    .actor_has_sound(source_actor, sound)
+                    .map(i32::from)
+            }
             EdOperand::ActorWeaponReservation { register } => {
                 let register = self.read_operand(register, player, actor, access)? != 0;
                 access
@@ -3946,6 +4417,25 @@ fn actor_vertical_distance(
     }
 }
 
+/// Build's signed shortest difference between two 0–2047 angles.
+fn eduke_getincangle(a: i16, na: i16) -> i16 {
+    let mut a = a & 2047;
+    let mut na = na & 2047;
+    if (i32::from(a) - i32::from(na)).abs() < 1024 {
+        na.wrapping_sub(a)
+    } else {
+        if na > 1024 {
+            na = na.wrapping_sub(2048);
+        }
+        if a > 1024 {
+            a = a.wrapping_sub(2048);
+        }
+        na = na.wrapping_sub(2048);
+        a = a.wrapping_sub(2048);
+        na.wrapping_sub(a)
+    }
+}
+
 /// Probe the actor origin and a deterministic grid over the Build tile extent.
 /// `actor_geometry` is `[cstat, ang, xrepeat, yrepeat, xoffset, yoffset]` and
 /// `tile_geometry` is `[xsize, ysize, tile_xoffset, tile_yoffset]`.
@@ -4227,6 +4717,9 @@ mod tests {
         actor_position: [i32; 3],
         actor_cstat: i32,
         actor_angle: i32,
+        player_angle: i32,
+        actor_hitag: i32,
+        actor_yvel: i32,
         actor_repeats: [i32; 2],
         actor_offsets: [i32; 2],
         actor_temp_data: [i32; 6],
@@ -4237,6 +4730,9 @@ mod tests {
         actor_hit_picnum: i32,
         actor_sectnum: i32,
         sector_lotag: i32,
+        sector_floorstat: i32,
+        sector_floorpicnum: i32,
+        sector_ceilingpal: i32,
         sector_ceilingstat: i32,
         sector_floorz: i32,
         sector_ceilingz: i32,
@@ -4254,14 +4750,19 @@ mod tests {
         player_weapon_ops: Vec<(usize, i32, bool, i32, i32)>,
         player_weapon_result: bool,
         player_inventory_ops: Vec<(usize, i32, i32, i32)>,
+        weapon_toss_calls: Vec<(usize, i32)>,
         debris_calls: Vec<(i32, i32, i32)>,
         guts_calls: Vec<(usize, i32, i32, i32)>,
         glass_calls: Vec<(i32, i32)>,
+        ceiling_glass_calls: Vec<(i32, i32, i32)>,
         item_spray_calls: Vec<(i32, EdItemSprayKind, i32)>,
         operate_calls: Vec<i32>,
+        respawn_hitag_calls: Vec<i32>,
+        player_restart_requests: Vec<usize>,
         game_palette_calls: Vec<(usize, i32)>,
         timer_rate_calls: Vec<i32>,
         end_of_game_calls: Vec<(usize, i32)>,
+        tip_calls: Vec<usize>,
         hitradius_calls: Vec<(i32, i32, [i32; 4])>,
         quick_kick_calls: Vec<i32>,
         quote_calls: Vec<(usize, usize)>,
@@ -4285,6 +4786,7 @@ mod tests {
         weapon_reservation_query: Option<(usize, usize, bool)>,
         played_sounds: Vec<(i32, i32, EdSoundMode)>,
         stopped_sounds: Vec<(i32, i32)>,
+        stopped_actor_sounds: Vec<(i32, i32)>,
         actor_script_ops: Vec<(String, i32, i32, i32)>,
         player_inventory_condition_result: bool,
         last_player_inventory_query: Option<(i32, i32, usize, usize)>,
@@ -4292,6 +4794,11 @@ mod tests {
         game_random_seed: Option<i32>,
         respawn_enabled: bool,
         actor_not_stayput_result: bool,
+        actor_away_from_wall_result: bool,
+        actor_sound_query: Option<(i32, i32)>,
+        actor_sound_result: bool,
+        near_actor_query: Option<(i32, i32, i32)>,
+        near_actor_result: i32,
         predefined_values: BTreeMap<String, i32>,
     }
 
@@ -4309,6 +4816,8 @@ mod tests {
                 (EdStructKind::Actor, "z") if id == 7 => Ok(self.actor_position[2]),
                 (EdStructKind::Actor, "cstat") if id == 7 => Ok(self.actor_cstat),
                 (EdStructKind::Actor, "ang") if id == 7 => Ok(self.actor_angle),
+                (EdStructKind::Actor, "hitag") if id == 7 => Ok(self.actor_hitag),
+                (EdStructKind::Actor, "yvel") if id == 7 => Ok(self.actor_yvel),
                 (EdStructKind::Actor, "xrepeat") if id == 7 => Ok(self.actor_repeats[0]),
                 (EdStructKind::Actor, "yrepeat") if id == 7 => Ok(self.actor_repeats[1]),
                 (EdStructKind::Actor, "xoffset") if id == 7 => Ok(self.actor_offsets[0]),
@@ -4329,10 +4838,24 @@ mod tests {
                 (EdStructKind::Sector, "lotag") if id == self.actor_sectnum => {
                     Ok(self.sector_lotag)
                 }
+                (EdStructKind::Sector, "floorz") if id == self.actor_sectnum => {
+                    Ok(self.sector_floorz)
+                }
+                (EdStructKind::Sector, "floorstat") if id == self.actor_sectnum => {
+                    Ok(self.sector_floorstat)
+                }
+                (EdStructKind::Sector, "floorpicnum") if id == self.actor_sectnum => {
+                    Ok(self.sector_floorpicnum)
+                }
+                (EdStructKind::Sector, "ceilingpal") if id == self.actor_sectnum => {
+                    Ok(self.sector_ceilingpal)
+                }
                 (EdStructKind::Sector, "ceilingstat") if id == self.actor_sectnum => {
                     Ok(self.sector_ceilingstat)
                 }
                 (EdStructKind::Player, "extra") if id == 0 => Ok(self.player_extra),
+                (EdStructKind::Player, "ang") if id == 0 => Ok(self.player_angle),
+                (EdStructKind::Player, "i") if id == 0 => Ok(19),
                 (EdStructKind::Player, "posx") if id == 0 => Ok(self.player_position[0]),
                 (EdStructKind::Player, "posy") if id == 0 => Ok(self.player_position[1]),
                 (EdStructKind::Player, "posz") if id == 0 => Ok(self.player_position[2]),
@@ -4403,6 +4926,16 @@ mod tests {
 
         fn stop_sound(&mut self, actor: i32, sound: i32) -> Result<(), EdukeVmError> {
             self.stopped_sounds.push((actor, sound));
+            Ok(())
+        }
+
+        fn stop_actor_sound(&mut self, actor: i32, sound: i32) -> Result<(), EdukeVmError> {
+            self.stopped_actor_sounds.push((actor, sound));
+            Ok(())
+        }
+
+        fn toss_player_weapon(&mut self, player: usize, actor: i32) -> Result<(), EdukeVmError> {
+            self.weapon_toss_calls.push((player, actor));
             Ok(())
         }
 
@@ -4629,6 +5162,16 @@ mod tests {
             Ok(())
         }
 
+        fn spawn_ceiling_glass(
+            &mut self,
+            sprite: i32,
+            sector: i32,
+            count: i32,
+        ) -> Result<(), EdukeVmError> {
+            self.ceiling_glass_calls.push((sprite, sector, count));
+            Ok(())
+        }
+
         fn spawn_item_spray(
             &mut self,
             actor: i32,
@@ -4644,6 +5187,16 @@ mod tests {
             Ok(())
         }
 
+        fn respawn_hitag(&mut self, actor: i32) -> Result<(), EdukeVmError> {
+            self.respawn_hitag_calls.push(actor);
+            Ok(())
+        }
+
+        fn request_player_restart(&mut self, player: usize) -> Result<bool, EdukeVmError> {
+            self.player_restart_requests.push(player);
+            Ok(true)
+        }
+
         fn set_game_palette(&mut self, player: usize, palette: i32) -> Result<(), EdukeVmError> {
             self.game_palette_calls.push((player, palette));
             Ok(())
@@ -4656,6 +5209,11 @@ mod tests {
 
         fn begin_end_of_game(&mut self, player: usize, delay: i32) -> Result<(), EdukeVmError> {
             self.end_of_game_calls.push((player, delay));
+            Ok(())
+        }
+
+        fn show_tip(&mut self, player: usize) -> Result<(), EdukeVmError> {
+            self.tip_calls.push(player);
             Ok(())
         }
 
@@ -4693,6 +5251,22 @@ mod tests {
             }
         }
 
+        fn actor_not_stayput(&mut self, actor: usize) -> Result<bool, EdukeVmError> {
+            if actor == 7 {
+                Ok(self.actor_not_stayput_result)
+            } else {
+                Err(EdukeVmError::StructAccessUnavailable)
+            }
+        }
+
+        fn actor_away_from_wall(&mut self, actor: usize) -> Result<bool, EdukeVmError> {
+            if actor == 7 {
+                Ok(self.actor_away_from_wall_result)
+            } else {
+                Err(EdukeVmError::StructAccessUnavailable)
+            }
+        }
+
         fn actor_has_active_sound(&mut self, actor: usize) -> Result<bool, EdukeVmError> {
             if actor == 7 {
                 Ok(self.actor_has_active_sound)
@@ -4701,12 +5275,19 @@ mod tests {
             }
         }
 
-        fn actor_not_stayput(&mut self, actor: usize) -> Result<bool, EdukeVmError> {
-            if actor == 7 {
-                Ok(self.actor_not_stayput_result)
-            } else {
-                Err(EdukeVmError::StructAccessUnavailable)
-            }
+        fn actor_has_sound(&mut self, actor: i32, sound: i32) -> Result<bool, EdukeVmError> {
+            self.actor_sound_query = Some((actor, sound));
+            Ok(self.actor_sound_result)
+        }
+
+        fn find_near_actor_3d(
+            &mut self,
+            source_actor: i32,
+            tile: i32,
+            distance: i32,
+        ) -> Result<i32, EdukeVmError> {
+            self.near_actor_query = Some((source_actor, tile, distance));
+            Ok(self.near_actor_result)
         }
 
         fn predefined_variable(&mut self, name: &str) -> Option<i32> {
@@ -5330,6 +5911,24 @@ mod tests {
     }
 
     #[test]
+    fn ifrnd_else_ifrnd_consumes_nested_brace_bodies() {
+        let image = compile_with_options(
+            b"var selected 0\ndefstate random_chain\nifrnd -1\n{\nadd selected 1\n}\nelse ifrnd -1\n{\nadd selected 2\n}\nelse\n{\nadd selected 4\n}\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_samples);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        state
+            .execute_state(&image.eduke_program, "random_chain", 0, 0, 64, 8)
+            .expect("nested else-if random branches terminate");
+        assert_eq!(state.get_variable("selected", 0, 0), Ok(4));
+    }
+
+    #[test]
     fn ifrnd_threshold_is_inclusive_at_the_random_byte_boundary() {
         let image = compile_with_options(
             b"var threshold 0 0\nvar matched 0 0\ndefstate boundary\nifrnd threshold add matched 1\nends\n",
@@ -5488,6 +6087,308 @@ mod tests {
 
         assert_eq!(state.get_variable("matched", 0, 7), Ok(262_143));
         assert_eq!(state.get_variable("misses", 0, 7), Ok(0));
+    }
+
+    #[test]
+    fn ifangdiffl_uses_shortest_wrapped_player_actor_angle() {
+        let image = compile_with_options(
+            b"var inclusive 0\nvar too_narrow 0\ndefstate check_angle\nifangdiffl 16 add inclusive 1 else add too_narrow 1\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("ifangdiffl"), None);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["check_angle"];
+        let mut host = TestStructAccess {
+            player_angle: 2040,
+            actor_angle: 8,
+            ..Default::default()
+        };
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 16, 4, &mut host)
+            .expect("wrapped angle condition executes");
+        assert_eq!(state.get_variable("inclusive", 0, 7), Ok(1));
+        assert_eq!(state.get_variable("too_narrow", 0, 7), Ok(0));
+
+        state
+            .set_variable("inclusive", 0, 7, 0)
+            .expect("reset result");
+        state
+            .set_variable("too_narrow", 0, 7, 0)
+            .expect("reset result");
+        host.actor_angle = 9;
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 16, 4, &mut host)
+            .expect("angle just outside the limit executes");
+        assert_eq!(state.get_variable("inclusive", 0, 7), Ok(0));
+        assert_eq!(state.get_variable("too_narrow", 0, 7), Ok(1));
+    }
+
+    #[test]
+    fn ifawayfromwall_uses_live_actor_geometry() {
+        let image = compile_with_options(
+            b"var away 0\nvar close 0\ndefstate check_wall_clearance\nifawayfromwall add away 1 else add close 1\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("ifawayfromwall"), None);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["check_wall_clearance"];
+        let mut host = TestStructAccess {
+            actor_away_from_wall_result: true,
+            ..Default::default()
+        };
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 16, 4, &mut host)
+            .expect("clearance condition executes");
+        assert_eq!(state.get_variable("away", 0, 7), Ok(1));
+        assert_eq!(state.get_variable("close", 0, 7), Ok(0));
+
+        state.set_variable("away", 0, 7, 0).expect("reset result");
+        state.set_variable("close", 0, 7, 0).expect("reset result");
+        host.actor_away_from_wall_result = false;
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 16, 4, &mut host)
+            .expect("wall proximity condition executes");
+        assert_eq!(state.get_variable("away", 0, 7), Ok(0));
+        assert_eq!(state.get_variable("close", 0, 7), Ok(1));
+    }
+
+    #[test]
+    fn ifactorsound_queries_the_selected_sprite_and_sound() {
+        let image = compile_with_options(
+            b"var audible 0\nvar silent 0\ndefstate check_sound\nifactorsound 17 42 add audible 1 else add silent 1\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("ifactorsound"), None);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["check_sound"];
+        let mut host = TestStructAccess {
+            actor_sound_result: true,
+            ..Default::default()
+        };
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 16, 4, &mut host)
+            .expect("sound condition executes");
+        assert_eq!(host.actor_sound_query, Some((17, 42)));
+        assert_eq!(state.get_variable("audible", 0, 7), Ok(1));
+        assert_eq!(state.get_variable("silent", 0, 7), Ok(0));
+
+        state
+            .set_variable("audible", 0, 7, 0)
+            .expect("reset result");
+        state.set_variable("silent", 0, 7, 0).expect("reset result");
+        host.actor_sound_result = false;
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 16, 4, &mut host)
+            .expect("silent condition executes");
+        assert_eq!(state.get_variable("audible", 0, 7), Ok(0));
+        assert_eq!(state.get_variable("silent", 0, 7), Ok(1));
+    }
+
+    #[test]
+    fn mikesnd_plays_the_actor_yvel_sound() {
+        let image = compile_with_options(
+            b"defstate play_microphone_sound\nmikesnd\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("mikesnd"), None);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["play_microphone_sound"];
+        let mut host = TestStructAccess {
+            actor_hitag: 73,
+            actor_yvel: 74,
+            ..Default::default()
+        };
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 8, 4, &mut host)
+            .expect("mikesnd executes against the current actor");
+
+        assert_eq!(host.played_sounds, vec![(7, 74, EdSoundMode::Actor)]);
+    }
+
+    #[test]
+    fn findnearactor3d_writes_the_host_search_result() {
+        let image = compile_with_options(
+            b"var found -2\ndefstate search_actor\nfindnearactor3d 9001 200 found\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("findnearactor3d"), None);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["search_actor"];
+        let mut host = TestStructAccess {
+            near_actor_result: 23,
+            ..Default::default()
+        };
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 16, 4, &mut host)
+            .expect("near-actor lookup executes");
+
+        assert_eq!(host.near_actor_query, Some((7, 9001, 200)));
+        assert_eq!(state.get_variable("found", 0, 7), Ok(23));
+    }
+
+    #[test]
+    fn ifonwater_checks_sector_lotag_and_floor_distance() {
+        let image = compile_with_options(
+            b"var matched 0\ndefstate check_onwater\nifonwater add matched 1\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("ifonwater"), None);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["check_onwater"];
+        let mut host = TestStructAccess {
+            actor_sectnum: 5,
+            sector_lotag: 1,
+            sector_floorz: 10 << 8,
+            actor_position: [0, 0, (10 << 8) + (32 << 8) - 1],
+            ..Default::default()
+        };
+
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 32, 8, &mut host)
+            .expect("near-water actor condition executes");
+        assert_eq!(state.get_variable("matched", 0, 7), Ok(1));
+
+        state
+            .set_variable("matched", 0, 7, 0)
+            .expect("reset matched result");
+        host.actor_position[2] = (10 << 8) + (32 << 8);
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 32, 8, &mut host)
+            .expect("water-distance boundary executes");
+        assert_eq!(state.get_variable("matched", 0, 7), Ok(0));
+
+        host.sector_lotag = 2;
+        host.actor_position[2] = 10 << 8;
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 32, 8, &mut host)
+            .expect("underwater actor condition executes");
+        assert_eq!(state.get_variable("matched", 0, 7), Ok(0));
+    }
+
+    #[test]
+    fn ifinouterspace_requires_parallax_space_floor_without_ceiling_tint() {
+        let image = compile_with_options(
+            b"var matched 0\ndefstate check_space\nifinouterspace add matched 1\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("ifinouterspace"), None);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["check_space"];
+        let mut host = TestStructAccess {
+            actor_sectnum: 5,
+            sector_floorstat: 1,
+            sector_floorpicnum: 80,
+            ..Default::default()
+        };
+
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 32, 8, &mut host)
+            .expect("outer-space floor condition executes");
+        assert_eq!(state.get_variable("matched", 0, 7), Ok(1));
+
+        state
+            .set_variable("matched", 0, 7, 0)
+            .expect("reset matched result");
+        host.sector_ceilingpal = 1;
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 32, 8, &mut host)
+            .expect("tinted ceiling is not outer space");
+        assert_eq!(state.get_variable("matched", 0, 7), Ok(0));
+
+        host.sector_ceilingpal = 0;
+        host.sector_floorpicnum = 81;
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 32, 8, &mut host)
+            .expect("non-space floor is not outer space");
+        assert_eq!(state.get_variable("matched", 0, 7), Ok(0));
+    }
+
+    #[test]
+    fn ifnosounds_checks_the_active_actor_voice_owner() {
+        let image = compile_with_options(
+            b"var matched 0\nvar sounds_active 0\ndefstate check_sounds\nifnosounds add matched 1 else add sounds_active 1\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("ifnosounds"), None);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["check_sounds"];
+        let mut host = TestStructAccess {
+            actor_has_active_sound: true,
+            ..Default::default()
+        };
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 32, 8, &mut host)
+            .expect("active voice condition executes");
+        assert_eq!(state.get_variable("matched", 0, 7), Ok(0));
+        assert_eq!(state.get_variable("sounds_active", 0, 7), Ok(1));
+
+        host.actor_has_active_sound = false;
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 32, 8, &mut host)
+            .expect("quiet actor condition executes");
+        assert_eq!(state.get_variable("matched", 0, 7), Ok(1));
+        assert_eq!(state.get_variable("sounds_active", 0, 7), Ok(1));
+    }
+
+    #[test]
+    fn tip_command_dispatches_to_the_active_player() {
+        let image = compile_with_options(
+            b"defstate show_tip\ntip\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("tip"), None);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["show_tip"];
+        let mut host = TestStructAccess::default();
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 1, 7, 32, 8, &mut host)
+            .expect("TIP command dispatches");
+        assert_eq!(host.tip_calls, [1]);
     }
 
     #[test]
@@ -5822,6 +6723,27 @@ mod tests {
     }
 
     #[test]
+    fn spawnceilingglass_compiles_and_dispatches_sprite_sector_and_count() {
+        let image = compile_with_options(
+            b"defstate ceiling_glass\nspawnceilingglass 12 3 4\nspawnceilingglass 5 6\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("spawnceilingglass"), None);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["ceiling_glass"];
+        let mut host = TestStructAccess::default();
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 16, 4, &mut host)
+            .expect("ceiling glass command executes");
+        assert_eq!(host.ceiling_glass_calls, vec![(12, 3, 4), (7, 5, 6)]);
+    }
+
+    #[test]
     fn item_spray_commands_compile_and_dispatch_their_count() {
         let image = compile_with_options(
             b"defstate item_sprays\nmoney 5\nmail 2\npaper 3\nends\n",
@@ -5937,34 +6859,6 @@ mod tests {
     }
 
     #[test]
-    fn ifnosounds_checks_the_active_actor_voice_owner() {
-        let image = compile_with_options(
-            b"gamevar result 0 0\ndefstate check_actor_sound\nifnosounds set result 1\nends\n",
-            &mut NullIncludes,
-            ConCompileOptions {
-                dialect: ConDialect::EDuke32,
-            },
-        );
-        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
-        assert_eq!(image.eduke_noop_heads.get("ifnosounds"), None);
-
-        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
-        let entry = image.eduke_program.states["check_actor_sound"];
-        let mut host = TestStructAccess::default();
-        state
-            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 8, 2, &mut host)
-            .expect("no active sound takes the branch");
-        assert_eq!(state.get_variable("result", 0, 7), Ok(1));
-
-        state.set_variable("result", 0, 7, 0).unwrap();
-        host.actor_has_active_sound = true;
-        state
-            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 8, 2, &mut host)
-            .expect("actor voice skips the branch");
-        assert_eq!(state.get_variable("result", 0, 7), Ok(0));
-    }
-
-    #[test]
     fn operate_dispatches_to_the_session_interaction_queue() {
         let image = compile_with_options(
             b"defstate use_nearby_sector\noperate\nends\n",
@@ -5983,6 +6877,59 @@ mod tests {
             .execute_at_with_access(&image.eduke_program, entry, 0, 7, 16, 4, &mut host)
             .expect("operate command executes");
         assert_eq!(host.operate_calls, [7]);
+    }
+
+    #[test]
+    fn respawnhitag_dispatches_the_current_actor_to_the_session() {
+        let image = compile_with_options(
+            b"defstate activate_respawns\nrespawnhitag\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("respawnhitag"), None);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["activate_respawns"];
+        let mut host = TestStructAccess::default();
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 13, 16, 4, &mut host)
+            .expect("respawnhitag executes");
+        assert_eq!(host.respawn_hitag_calls, [13]);
+    }
+
+    #[test]
+    fn resetplayer_requests_a_restart_and_stops_the_event_chain() {
+        let image = compile_with_options(
+            b"var after_reset 0\nappendevent EVENT_GAME\nresetplayer\nset after_reset 1\nendevent\nappendevent EVENT_GAME\nset after_reset 2\nendevent\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("resetplayer"), None);
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let mut host = TestStructAccess::default();
+        let executions = state
+            .execute_registered_event_hooks_with_access(
+                &image,
+                "EVENT_GAME",
+                2,
+                7,
+                16,
+                4,
+                &mut host,
+            )
+            .expect("resetplayer requests the host restart");
+
+        assert_eq!(host.player_restart_requests, [2]);
+        assert_eq!(executions.len(), 1);
+        assert!(executions[0].returned);
+        assert!(executions[0].restart_player);
+        assert_eq!(state.get_variable("after_reset", 0, 0), Ok(0));
     }
 
     #[test]
@@ -6541,7 +7488,7 @@ mod tests {
     #[test]
     fn source_compiler_dispatches_actor_and_global_sound_commands() {
         let image = compile_with_options(
-            b"appendevent EVENT_GAME\nsound 10\nsoundonce 11\nglobalsound 12\nstopsound 13\nendevent\n",
+            b"var actor_sound_id 16\nvar global_sound_id 17\nappendevent EVENT_GAME\nsound 10\nsoundonce 11\nglobalsound 12\nstopsound 13\nactorsound 23 14\nstopactorsound 24 15\nsoundvar actor_sound_id\nglobalsoundvar global_sound_id\ntossweapon\nendevent\n",
             &mut NullIncludes,
             ConCompileOptions {
                 dialect: ConDialect::EDuke32,
@@ -6569,9 +7516,97 @@ mod tests {
                 (7, 10, EdSoundMode::Actor),
                 (7, 11, EdSoundMode::ActorOnce),
                 (7, 12, EdSoundMode::Global),
+                (23, 14, EdSoundMode::Actor),
+                (7, 16, EdSoundMode::Actor),
+                (7, 17, EdSoundMode::Global),
             ]
         );
         assert_eq!(host.stopped_sounds, [(7, 13)]);
+        assert_eq!(host.stopped_actor_sounds, [(24, 15)]);
+        assert_eq!(host.weapon_toss_calls, [(0, 7)]);
+    }
+
+    #[test]
+    fn event_sound_can_remap_sound_and_does_not_recurse() {
+        let image = compile_with_options(
+            b"var sound_source 0 0\nappendevent EVENT_SOUND\nset sound_source THISACTOR\nsound 11\nset RETURN 20\nendevent\nappendevent EVENT_GAME\nsound 10\nendevent\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let entry = image
+            .eduke_event_entries
+            .iter()
+            .find(|(name, _, _)| name == "EVENT_GAME")
+            .map(|(_, entry, _)| *entry)
+            .expect("game event entry");
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let mut host = TestStructAccess::default();
+
+        state
+            .execute_at_with_access_and_events(&image, entry, 0, 7, 32, 4, &mut host)
+            .expect("sound event should remap the sound and return");
+
+        assert_eq!(
+            host.played_sounds,
+            [(7, 11, EdSoundMode::Actor), (7, 20, EdSoundMode::Actor)]
+        );
+        assert_eq!(state.get_variable("sound_source", 0, 7), Ok(7));
+    }
+
+    #[test]
+    fn event_sound_global_uses_the_screenpeek_player_sprite() {
+        let image = compile_with_options(
+            b"var sound_source 0 0\nappendevent EVENT_SOUND\nset sound_source THISACTOR\nset RETURN 20\nendevent\nappendevent EVENT_GAME\nglobalsound 10\nendevent\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let entry = image
+            .eduke_event_entries
+            .iter()
+            .find(|(name, _, _)| name == "EVENT_GAME")
+            .map(|(_, entry, _)| *entry)
+            .expect("game event entry");
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let mut host = TestStructAccess::default();
+
+        state
+            .execute_at_with_access_and_events(&image, entry, 0, 7, 32, 4, &mut host)
+            .expect("global sound event should use local player context");
+
+        assert_eq!(host.played_sounds, [(19, 20, EdSoundMode::Global)]);
+        assert_eq!(state.get_variable("sound_source", 0, 19), Ok(19));
+    }
+
+    #[test]
+    fn event_sound_return_minus_one_cancels_playback() {
+        let image = compile_with_options(
+            b"appendevent EVENT_SOUND\nset RETURN -1\nendevent\nappendevent EVENT_GAME\nsound 10\nendevent\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let entry = image
+            .eduke_event_entries
+            .iter()
+            .find(|(name, _, _)| name == "EVENT_GAME")
+            .map(|(_, entry, _)| *entry)
+            .expect("game event entry");
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let mut host = TestStructAccess::default();
+
+        state
+            .execute_at_with_access_and_events(&image, entry, 0, 7, 32, 4, &mut host)
+            .expect("sound event should cancel playback");
+
+        assert!(host.played_sounds.is_empty());
     }
 
     #[test]

@@ -1695,7 +1695,10 @@ impl DukeSoftRenderer {
                     - (i32::from(player.look_ang) >> 1)
                     + (card_y >> 2);
                 let center_y = looking_arc + 266
-                    - ((i32::from(player.horiz) - i32::from(player.horizoff)) >> 4);
+                    - (player
+                        .q16_horizon()
+                        .wrapping_sub(player.q16_horizon_offset())
+                        >> 20);
                 let scale_x = f64::from(frame.width) / 320.0;
                 // Chocolate places the psprite in the 320×240 Build view;
                 // the renderer crops that view to its 320×200 play window.

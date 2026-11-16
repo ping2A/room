@@ -92,6 +92,29 @@ pub struct ObjectLightAssoc {
     pub light: String,
 }
 
+impl ObjectLightAssoc {
+    /// Whether this `frame` key applies to an actor showing `sprite` frame
+    /// `frame` (0 = `A`). GZDoom keys are a sprite name (`BON1`: every frame)
+    /// or a sprite plus frame letters (`TROOE`); a bare letter (`F`) or an
+    /// empty key is Room's shorthand for "this frame of any sprite" / "all".
+    #[must_use]
+    pub fn matches(&self, sprite: &str, frame: u8) -> bool {
+        let key = self.frame.trim();
+        let letter = char::from(b'A' + frame.min(25));
+        match key.len() {
+            0 => true,
+            1 => key.eq_ignore_ascii_case(&letter.to_string()),
+            n if n < 4 || !key.is_char_boundary(4) => false,
+            _ => {
+                let (spr, letters) = key.split_at(4);
+                spr.eq_ignore_ascii_case(sprite)
+                    && (letters.is_empty()
+                        || letters.chars().any(|c| c.eq_ignore_ascii_case(&letter)))
+            }
+        }
+    }
+}
+
 /// Target kind for `brightmap` / `material` (flat / sprite / texture / any).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GlTexKind {
@@ -1091,6 +1114,22 @@ object DoomImp
         assert_eq!(info.object_lights[0].frame, "F");
         assert_eq!(info.object_lights[0].light, "ZombieShot");
         assert_eq!(info.object_lights[1].frame, "TROOE");
+    }
+
+    #[test]
+    fn object_frame_keys_match_like_gzdoom() {
+        let a = |frame: &str| ObjectLightAssoc {
+            class: "HealthPlus".into(),
+            frame: frame.into(),
+            light: "BLUEITEM".into(),
+        };
+        assert!(a("BON1").matches("BON1", 0));
+        assert!(a("BON1").matches("bon1", 3));
+        assert!(!a("BON1").matches("BON2", 0));
+        assert!(a("TROOE").matches("TROO", 4));
+        assert!(!a("TROOE").matches("TROO", 3));
+        assert!(a("F").matches("POSS", 5));
+        assert!(a("").matches("POSS", 1));
     }
 
     #[test]

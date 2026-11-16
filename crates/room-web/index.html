@@ -664,6 +664,169 @@
       #boot-fire { height: 30vh; opacity: 0.5; }
     }
     @media (prefers-reduced-motion: reduce) { #boot-fire { opacity: 0.55; } }
+
+
+    /* Minimap: a status-bar slab, top right under the fps counter. The map
+       sits in a recessed black well like the automap, with phosphor glow. */
+    #minimap {
+      --mm-size: 220px;
+      position: fixed; z-index: 6; pointer-events: none; user-select: none;
+      top: calc(max(8px, env(safe-area-inset-top)) + 40px); right: max(8px, env(safe-area-inset-right));
+      padding: 5px; background: var(--r-grain); border: var(--r-raised); border-color: var(--r-raised-c);
+      box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.75);
+    }
+    #minimap[hidden] { display: none; }
+    #minimap.size-s { --mm-size: 160px; }
+    #minimap.size-l { --mm-size: 300px; }
+    body.touch #minimap { right: calc(156px + env(safe-area-inset-right)); }
+    #minimap .mm-well {
+      position: relative; width: var(--mm-size); height: var(--mm-size);
+      border: 2px solid; border-color: var(--r-sunk-c); background: #000; overflow: hidden;
+    }
+    #minimap canvas { display: block; width: 100%; height: 100%; }
+    /* CRT scanlines over the well. */
+    #minimap .mm-well::after {
+      content: ""; position: absolute; inset: 0; pointer-events: none;
+      background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 3px);
+      mix-blend-mode: multiply;
+    }
+    #minimap .mm-bar {
+      display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+      margin-top: 4px; padding: 0 2px;
+    }
+    #minimap .mm-name { font: 400 15px/1 var(--r-display); color: var(--r-red-hi); letter-spacing: 0.06em; text-shadow: 1px 1px 0 #000; }
+    #minimap .mm-zoom { font: 700 10px/1 var(--r-ui); color: var(--r-amber); font-variant-numeric: tabular-nums; }
+    body.minimap-on #capture-badge { top: calc(max(8px, env(safe-area-inset-top)) + 40px + var(--mm-outer, 252px) + 10px); }
+
+
+    /* Settings › Mod options */
+    .modopt-search {
+      box-sizing: border-box; width: 100%; margin: 0.35rem 0 0.55rem; padding: 0.4rem 0.55rem;
+      border-radius: 0; border: 2px solid; border-color: var(--r-sunk-c); background: var(--r-well);
+      color: var(--r-amber); font: 700 0.85rem var(--r-ui);
+    }
+    .modopt-search[hidden], #modopt-reset[hidden] { display: none; }
+    .modopt-groups { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.6rem; }
+    details.modopt-group { border: 2px solid; border-color: var(--r-sunk-c); background: rgba(0, 0, 0, 0.28); }
+    details.modopt-group > summary {
+      display: flex; justify-content: space-between; align-items: baseline; gap: 0.6rem;
+      padding: 0.45rem 0.6rem; cursor: pointer; list-style: none; user-select: none;
+    }
+    details.modopt-group > summary::-webkit-details-marker { display: none; }
+    details.modopt-group > summary::before {
+      content: "\25B8"; color: var(--r-red-hi); margin-right: 0.45rem; display: inline-block; transition: transform 120ms;
+    }
+    details.modopt-group[open] > summary::before { transform: rotate(90deg); }
+    .modopt-title { flex: 1; font: 400 1rem/1.1 var(--r-display); letter-spacing: 0.04em; color: var(--r-bone); text-shadow: 1px 1px 0 #000; }
+    .modopt-count { font: 700 0.7rem var(--r-ui); color: var(--r-dim); font-variant-numeric: tabular-nums; }
+    .modopt-row {
+      display: grid; grid-template-columns: minmax(0, 1fr) minmax(7rem, 11rem) 1.6rem; gap: 0.25rem 0.5rem;
+      align-items: center; padding: 0.4rem 0.6rem; border-top: 1px solid rgba(0, 0, 0, 0.45);
+      box-shadow: inset 0 1px 0 rgba(140, 140, 140, 0.12);
+    }
+    .modopt-label { font-size: 0.82rem; color: var(--r-bone); overflow-wrap: anywhere; }
+    .modopt-row.changed .modopt-label { color: var(--r-amber); }
+    .modopt-row.changed .modopt-label::before { content: "\25CF  "; color: var(--r-amber); font-size: 0.7em; }
+    .modopt-row select, .modopt-row input[type="text"], .modopt-row input[type="number"] {
+      width: 100%; box-sizing: border-box; padding: 0.25rem 0.35rem; border-radius: 0;
+      border: 2px solid; border-color: var(--r-sunk-c); background: var(--r-well); color: var(--r-amber);
+      font: 700 0.78rem var(--r-ui);
+    }
+    .modopt-row input[type="color"] { width: 100%; height: 1.7rem; padding: 0; border: 2px solid; border-color: var(--r-sunk-c); background: var(--r-well); }
+    .modopt-range { display: flex; align-items: center; gap: 0.4rem; }
+    .modopt-range input { flex: 1; min-width: 0; }
+    .modopt-range output { min-width: 2.2rem; text-align: right; font: 700 0.75rem var(--r-ui); color: var(--r-amber); font-variant-numeric: tabular-nums; }
+    .modopt-undo {
+      width: 1.6rem; height: 1.6rem; padding: 0; cursor: pointer; border-radius: 0;
+      border: 2px solid; border-color: var(--r-raised-c); background: var(--r-face); color: var(--r-bone); font: 700 0.85rem/1 var(--r-ui);
+    }
+    .modopt-undo[hidden] { visibility: hidden; display: block; }
+    .modopt-hint { grid-column: 1 / -1; margin: 0; font-size: 0.72rem; line-height: 1.4; color: var(--r-dim); }
+
+
+    /* In-game messages as toasts (Settings › Messages) */
+    #toasts {
+      position: fixed; z-index: 7; pointer-events: none;
+      top: calc(max(8px, env(safe-area-inset-top)) + 56px); left: max(12px, env(safe-area-inset-left));
+      display: flex; flex-direction: column; align-items: flex-start; gap: 6px; max-width: min(28rem, 60vw);
+    }
+    .toast {
+      --accent: var(--r-bone);
+      display: flex; align-items: baseline; gap: 0.5rem; padding: 0.34rem 0.7rem 0.36rem 0.6rem;
+      background: rgba(12, 10, 10, 0.84); border-left: 3px solid var(--accent);
+      box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.6); color: var(--r-bone);
+      font: 700 13px/1.3 var(--r-ui); text-shadow: 1px 1px 0 #000;
+      transition: opacity 380ms ease, transform 380ms ease;
+    }
+    .toast .n { font: 700 11px var(--r-ui); color: var(--accent); font-variant-numeric: tabular-nums; }
+    .toast.k-kill { --accent: #e83a2c; }
+    .toast.k-frag { --accent: #ff8a2a; }
+    .toast.k-death { --accent: #9a2020; color: #f0b8b0; }
+    .toast.k-pickup { --accent: #8fb36b; font-weight: 400; }
+    .toast.k-power { --accent: #ff3a2a; color: #ffd6c8; font-size: 15px; }
+    .toast.k-secret { --accent: var(--r-amber); color: var(--r-amber); font-size: 14px; }
+    .toast.k-lock { --accent: #4a8cff; }
+    .toast.k-script { --accent: #c9a6ff; }
+    .toast.k-system { --accent: #6a7384; color: #b8c0cc; font-weight: 400; }
+    .toast.you { color: #fff; }
+    .toast.out { opacity: 0; transform: translateY(-4px); }
+    @media (prefers-reduced-motion: no-preference) {
+      .toast { animation: toast-in 170ms ease-out; }
+      @keyframes toast-in { from { opacity: 0; transform: translateX(-14px); } }
+    }
+
+    /* Tab stats */
+    #stats {
+      position: fixed; z-index: 8; inset: 0; display: flex; align-items: center; justify-content: center;
+      pointer-events: none;
+    }
+    #stats[hidden] { display: none; }
+    #stats .panel {
+      box-sizing: border-box; width: min(34rem, calc(100vw - 2rem)); max-height: calc(100dvh - 3rem); overflow: hidden;
+      padding: 1rem 1.2rem 1.1rem; background: var(--r-grain); border: var(--r-raised); border-color: var(--r-raised-c);
+      box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.8); color: var(--r-bone); font: 13px/1.35 var(--r-ui);
+    }
+    #stats .st-head { display: flex; align-items: baseline; gap: 0.7rem; flex-wrap: wrap; margin-bottom: 0.2rem; }
+    #stats .st-map { font: 400 2rem/1 var(--r-display); color: var(--r-red); text-shadow: 2px 2px 0 #000, 3px 3px 0 #3a0000; letter-spacing: 0.03em; }
+    #stats .st-title { font: 400 1.15rem/1.1 var(--r-display); color: var(--r-bone); text-shadow: 1px 1px 0 #000; letter-spacing: 0.03em; }
+    #stats .st-sub { display: flex; gap: 1.2rem; flex-wrap: wrap; margin: 0.35rem 0 0.9rem; color: var(--r-dim); font-size: 12px; }
+    #stats .st-sub b { color: var(--r-amber); font-variant-numeric: tabular-nums; }
+    #stats .st-sub .under { color: #8fdc6b; }
+    #stats .st-meters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.7rem; }
+    #stats .st-meter { background: var(--r-well); border: 2px solid; border-color: var(--r-sunk-c); padding: 0.5rem 0.6rem 0.55rem; }
+    #stats .st-meter .lbl { font: 700 11px var(--r-ui); color: var(--r-dim); }
+    #stats .st-meter .val { display: flex; align-items: baseline; justify-content: space-between; margin-top: 0.15rem; }
+    #stats .st-meter .pct { font: 400 1.9rem/1 var(--r-display); color: var(--r-red-hi); letter-spacing: 0.02em; text-shadow: 1px 1px 0 #000; }
+    #stats .st-meter.full .pct { color: var(--r-amber); }
+    #stats .st-meter .cnt { font: 700 12px var(--r-ui); color: var(--r-bone); font-variant-numeric: tabular-nums; }
+    #stats .st-meter .bar { height: 4px; margin-top: 0.45rem; background: #1c1c1c; }
+    #stats .st-meter .bar i { display: block; height: 100%; background: var(--r-red); }
+    #stats .st-meter.full .bar i { background: var(--r-amber); }
+    #stats .st-you { display: flex; gap: 1.3rem; flex-wrap: wrap; margin-top: 0.9rem; font-size: 12px; color: var(--r-dim); }
+    #stats .st-you b { color: var(--r-bone); font-size: 14px; font-variant-numeric: tabular-nums; }
+    #stats table { width: 100%; border-collapse: collapse; margin-top: 0.9rem; background: var(--r-well); border: 2px solid; border-color: var(--r-sunk-c); font-size: 12px; }
+    #stats th { font: 700 10px var(--r-ui); color: var(--r-amber); text-align: right; padding: 0.35rem 0.45rem; border-bottom: 1px solid #3a0000; }
+    #stats td { text-align: right; padding: 0.3rem 0.45rem; border-top: 1px solid #222; font-variant-numeric: tabular-nums; }
+    #stats th:first-child, #stats td:first-child { text-align: left; }
+    #stats tr.me td { background: rgba(196, 16, 16, 0.28); color: #fff; }
+    #stats td.dead { color: #c05050; }
+    #stats td.left { color: var(--r-dim); }
+    #stats .st-hint { margin-top: 0.7rem; font-size: 11px; color: var(--r-dim); }
+
+    /* Screenshot / GIF capture */
+    #gamebar button#capture-gif.recording { background: var(--r-red); color: #fff; border-color: var(--r-sunk-c); }
+    #capture-badge {
+      position: fixed; z-index: 7; top: calc(max(8px, env(safe-area-inset-top)) + 40px); right: max(8px, env(safe-area-inset-right));
+      padding: 4px 8px; background: var(--r-well); border: 2px solid; border-color: var(--r-sunk-c);
+      box-shadow: 0 0 0 2px var(--r-face); font: 700 12px/1.3 var(--r-ui); color: var(--r-bone);
+      pointer-events: none; user-select: none; font-variant-numeric: tabular-nums;
+    }
+    #capture-badge[hidden] { display: none; }
+    #capture-badge.rec::before { content: "\25CF "; color: var(--r-red-hi); }
+    @media (prefers-reduced-motion: no-preference) {
+      #capture-badge.rec::before { animation: capture-blink 1s steps(2) infinite; }
+    }
+    @keyframes capture-blink { 50% { opacity: 0; } }
   </style>
   <link rel="icon" href="data:," />
 </head>
@@ -674,6 +837,8 @@
   <button type="button" id="gamebar-toggle" title="Skill / mod / IWAD / Settings (Esc)" aria-label="Game options">☰</button>
   <div id="gamebar">
     <button type="button" id="open-settings" class="settings-open-btn" title="Graphics, shaders, mouse, keys">Settings</button>
+    <button type="button" id="capture-shot" class="settings-open-btn" title="Save a PNG of the game view (Alt+P)">Screenshot</button>
+    <button type="button" id="capture-gif" class="settings-open-btn" title="Record the game view as an animated GIF (Alt+G to start / stop)">Record GIF</button>
     <label>Skill
       <select id="game-skill">
         <option value="1">I'm too young to die</option>
@@ -707,6 +872,255 @@
     <span id="game-pwads" class="pwad-list" aria-live="polite"></span>
     <a href="editor.html" title="Map editor — Scripts tab for WASM mods">Editor ↗</a>
   </div>
+  <div id="minimap" hidden aria-hidden="true">
+    <div class="mm-well"><canvas width="220" height="220"></canvas></div>
+    <div class="mm-bar"><span class="mm-name"></span><span class="mm-zoom"></span></div>
+  </div>
+  <div id="toasts" aria-live="polite"></div>
+  <div id="stats" hidden aria-live="off"><div class="panel"></div></div>
+  <div id="capture-badge" hidden aria-live="polite"></div>
+  <script>
+  // Screenshot (PNG) and GIF recording of the game canvas.
+  //
+  // A WebGPU / WebGL canvas can only be read back in the same task that drew
+  // it, so every requestAnimationFrame callback is wrapped: the engine draws,
+  // then `afterFrame` grabs pixels before the browser presents the frame.
+  // Installed before the WASM module starts (modules run after this script).
+  (() => {
+    const GIF_WIDTH = 480;       // GIF edge (keeps files small)
+    const GIF_FPS = 15;
+    const GIF_MAX_SECONDS = 30;
+    const MAX_QUEUED = 24;       // frames waiting in the encoder before we skip
+
+    let wantShot = false;
+    let rec = null;              // { worker, last, start, frames, queued, w, h, ctx }
+    const rawRaf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (cb) => rawRaf((t) => {
+      cb(t);
+      if (wantShot || rec) {
+        try { afterFrame(t); } catch (e) { console.warn('room capture:', e); }
+      }
+    });
+
+    const canvas = () => document.getElementById('room');
+    const stamp = () => {
+      const d = new Date(), p = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    };
+    const download = (blob, name) => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    };
+    let badgeTimer = 0;
+    const badge = (text, recording = false, hold = 0) => {
+      const el = document.getElementById('capture-badge');
+      if (!el) return;
+      clearTimeout(badgeTimer);
+      el.textContent = text;
+      el.classList.toggle('rec', recording);
+      el.hidden = !text;
+      if (hold) badgeTimer = setTimeout(() => { el.hidden = true; }, hold);
+    };
+
+    // ---- Screenshot -------------------------------------------------------
+    function grabShot() {
+      const src = canvas();
+      if (!src || src.width < 2) { badge('Nothing to capture yet', false, 2000); return; }
+      const c = document.createElement('canvas');
+      c.width = src.width; c.height = src.height;
+      c.getContext('2d').drawImage(src, 0, 0);
+      c.toBlob((blob) => {
+        if (!blob) { badge('Screenshot failed', false, 2500); return; }
+        download(blob, `room-${stamp()}.png`);
+        badge(`Saved room-${stamp()}.png`, false, 2500);
+      }, 'image/png');
+    }
+    function screenshot() {
+      wantShot = true;
+      // Paused tab or no engine frames: take what the canvas shows.
+      setTimeout(() => { if (wantShot) { wantShot = false; grabShot(); } }, 400);
+    }
+
+    // ---- GIF encoder (runs in a worker) ------------------------------------
+    // Per frame: 15-bit colour histogram → 256 most used colours as a local
+    // palette, nearest-colour map per histogram bin, then LZW.
+    const workerSrc = `
+      const out = [];
+      let total = 0;
+      const push = (bytes) => { out.push(bytes); total += bytes.length; };
+      const u16 = (v) => [v & 255, (v >> 8) & 255];
+      function header(w, h) {
+        push(new Uint8Array([71,73,70,56,57,97, ...u16(w), ...u16(h), 0x70, 0, 0,
+          0x21,0xFF,0x0B, 78,69,84,83,67,65,80,69,50,46,48, 0x03,0x01,0,0,0]));
+      }
+      function frame(w, h, rgba, delayCs) {
+        const n = w * h;
+        const hist = new Uint32Array(32768);
+        const key = new Uint16Array(n);
+        for (let i = 0, p = 0; i < n; i++, p += 4) {
+          const k = ((rgba[p] >> 3) << 10) | ((rgba[p + 1] >> 3) << 5) | (rgba[p + 2] >> 3);
+          key[i] = k; hist[k]++;
+        }
+        const used = [];
+        for (let k = 0; k < 32768; k++) if (hist[k]) used.push(k);
+        used.sort((a, b) => hist[b] - hist[a]);
+        const pal = used.slice(0, 256);
+        const pr = new Int32Array(256), pg = new Int32Array(256), pb = new Int32Array(256);
+        const table = new Uint8Array(768);
+        for (let i = 0; i < pal.length; i++) {
+          const k = pal[i];
+          pr[i] = ((k >> 10) & 31) * 8 + 4; pg[i] = ((k >> 5) & 31) * 8 + 4; pb[i] = (k & 31) * 8 + 4;
+          table[i * 3] = pr[i]; table[i * 3 + 1] = pg[i]; table[i * 3 + 2] = pb[i];
+        }
+        const map = new Int16Array(32768).fill(-1);
+        for (let i = 0; i < pal.length; i++) map[pal[i]] = i;
+        const idx = new Uint8Array(n);
+        for (let i = 0; i < n; i++) {
+          const k = key[i];
+          let m = map[k];
+          if (m < 0) {
+            const r = ((k >> 10) & 31) * 8 + 4, g = ((k >> 5) & 31) * 8 + 4, b = (k & 31) * 8 + 4;
+            let best = 0, bd = 1e9;
+            for (let j = 0; j < pal.length; j++) {
+              const dr = r - pr[j], dg = g - pg[j], db = b - pb[j];
+              const d = 2 * dr * dr + 4 * dg * dg + 3 * db * db;
+              if (d < bd) { bd = d; best = j; }
+            }
+            m = map[k] = best;
+          }
+          idx[i] = m;
+        }
+        push(new Uint8Array([0x21,0xF9,0x04, 0x00, ...u16(delayCs), 0, 0,
+          0x2C, 0,0, 0,0, ...u16(w), ...u16(h), 0x87]));
+        push(table);
+        push(lzw(idx));
+      }
+      function lzw(idx) {
+        const bytes = [8];
+        const data = [];
+        let cur = 0, bits = 0, size = 9, next = 258;
+        const emit = (code) => {
+          cur |= code << bits; bits += size;
+          while (bits >= 8) { data.push(cur & 255); cur >>>= 8; bits -= 8; }
+        };
+        let dict = new Map();
+        emit(256);
+        let prefix = idx[0];
+        for (let i = 1; i < idx.length; i++) {
+          const k = idx[i];
+          const key = (prefix << 8) | k;
+          const hit = dict.get(key);
+          if (hit !== undefined) { prefix = hit; continue; }
+          emit(prefix);
+          if (next === 4096) {
+            emit(256); dict = new Map(); next = 258; size = 9;
+          } else {
+            if (next >= (1 << size)) size++;
+            dict.set(key, next++);
+          }
+          prefix = k;
+        }
+        emit(prefix);
+        emit(257);
+        if (bits > 0) data.push(cur & 255);
+        for (let i = 0; i < data.length; i += 255) {
+          const len = Math.min(255, data.length - i);
+          bytes.push(len);
+          for (let j = 0; j < len; j++) bytes.push(data[i + j]);
+        }
+        bytes.push(0);
+        return new Uint8Array(bytes);
+      }
+      onmessage = (e) => {
+        const m = e.data;
+        if (m.type === 'start') { out.length = 0; total = 0; header(m.w, m.h); }
+        else if (m.type === 'frame') { frame(m.w, m.h, new Uint8Array(m.rgba), m.delay); postMessage({ type: 'done-frame', bytes: total }); }
+        else if (m.type === 'finish') {
+          push(new Uint8Array([0x3B]));
+          postMessage({ type: 'gif', blob: new Blob(out, { type: 'image/gif' }) });
+        }
+      };
+    `;
+
+    function startGif() {
+      const src = canvas();
+      if (!src || src.width < 2) { badge('Nothing to record yet', false, 2000); return; }
+      const scale = Math.min(1, GIF_WIDTH / src.width);
+      const w = Math.max(2, Math.round(src.width * scale));
+      const h = Math.max(2, Math.round(src.height * scale));
+      const url = URL.createObjectURL(new Blob([workerSrc], { type: 'text/javascript' }));
+      const worker = new Worker(url);
+      URL.revokeObjectURL(url);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d', { willReadFrequently: true });
+      ctx.imageSmoothingEnabled = true;
+      rec = { worker, w, h, ctx, start: performance.now(), last: 0, frames: 0, queued: 0, bytes: 0, stopping: false };
+      worker.onmessage = (e) => {
+        const m = e.data;
+        if (m.type === 'done-frame' && rec && rec.worker === worker) { rec.queued--; rec.bytes = m.bytes; }
+        if (m.type === 'gif') {
+          download(m.blob, `room-${stamp()}.gif`);
+          badge(`Saved GIF (${(m.blob.size / 1048576).toFixed(1)} MB)`, false, 3000);
+          worker.terminate();
+        }
+      };
+      worker.postMessage({ type: 'start', w, h });
+      document.getElementById('capture-gif')?.classList.add('recording');
+      const btn = document.getElementById('capture-gif');
+      if (btn) btn.textContent = 'Stop GIF';
+      badge('REC 0s', true);
+    }
+    function stopGif() {
+      if (!rec) return;
+      const r = rec;
+      rec = null;
+      const btn = document.getElementById('capture-gif');
+      if (btn) { btn.classList.remove('recording'); btn.textContent = 'Record GIF'; }
+      if (!r.frames) { r.worker.terminate(); badge('No frames recorded', false, 2000); return; }
+      badge(`Encoding GIF (${r.frames} frames)…`);
+      r.worker.postMessage({ type: 'finish' });
+    }
+    const toggleGif = () => (rec ? stopGif() : startGif());
+
+    function afterFrame(t) {
+      if (wantShot) { wantShot = false; grabShot(); }
+      if (!rec) return;
+      const now = performance.now();
+      const elapsed = (now - rec.start) / 1000;
+      if (elapsed >= GIF_MAX_SECONDS) { stopGif(); return; }
+      if (rec.last && now - rec.last < 1000 / GIF_FPS - 4) return;
+      if (rec.queued >= MAX_QUEUED) return; // encoder behind: drop this frame
+      const delay = rec.last ? Math.max(2, Math.round((now - rec.last) / 10)) : Math.round(100 / GIF_FPS);
+      rec.last = now;
+      rec.ctx.drawImage(canvas(), 0, 0, rec.w, rec.h);
+      const img = rec.ctx.getImageData(0, 0, rec.w, rec.h);
+      rec.worker.postMessage({ type: 'frame', w: rec.w, h: rec.h, rgba: img.data.buffer, delay }, [img.data.buffer]);
+      rec.frames++; rec.queued++;
+      badge(`REC ${Math.floor(elapsed)}s · ${(rec.bytes / 1048576).toFixed(1)} MB`, true);
+    }
+
+    window.roomCapture = { screenshot, startGif, stopGif, toggleGif };
+    const wire = () => {
+      document.getElementById('capture-shot')?.addEventListener('click', (e) => { e.currentTarget.blur(); screenshot(); });
+      document.getElementById('capture-gif')?.addEventListener('click', (e) => { e.currentTarget.blur(); toggleGif(); });
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire); else wire();
+    // Alt+P screenshot, Alt+G start/stop GIF (capture phase, before the game).
+    window.addEventListener('keydown', (e) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.repeat) return;
+      const tag = (e.target && e.target.tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.code === 'KeyP') { e.preventDefault(); e.stopImmediatePropagation(); screenshot(); }
+      else if (e.code === 'KeyG') { e.preventDefault(); e.stopImmediatePropagation(); toggleGif(); }
+    }, true);
+  })();
+  </script>
   <div id="boot">
     <canvas id="boot-fire" width="160" height="64" aria-hidden="true"></canvas>
     <div class="panel">
@@ -750,6 +1164,352 @@
       <p class="hint">Packaged installs can also start Doom / Freedoom automatically. Mods can be added here, from the game bar, or by dropping files onto the page. Voxels are on by default (<code>?voxel=0</code> to turn them off). Click the game view to lock the mouse and play.</p>
     </div>
   </div>
+  <script>
+  // Minimap (Settings › Minimap, Alt+M): the automap in a corner. Explored
+  // lines only (Doom `ML_MAPPED`; the computer map shows the rest dimmed),
+  // Doom automap colours, keyed doors in their key colour, exits green,
+  // teleporters violet. Lines refresh a few times a second; the pose every
+  // frame, from the same interpolated view the renderer uses.
+  (() => {
+    const KEY = 'room/minimap';
+    const SIZES = { s: 160, m: 220, l: 300 };
+    const ZOOMS = [0.35, 0.5, 0.7, 1, 1.4, 2];          // pixels per 8 map units
+    const defaults = { show: false, size: 'm', rotate: true, zoom: 3, explored: true };
+    let cfg = { ...defaults };
+    try { cfg = { ...defaults, ...(JSON.parse(localStorage.getItem(KEY) || '{}') || {}) }; } catch (_) { /* private mode */ }
+    const save = () => { try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (_) { /* ignore */ } };
+
+    // kind → [stroke, glow width multiplier]; see Play::minimap_lines.
+    const STYLE = [
+      ['#e83a2c', 1.0],   // 0 solid wall
+      ['#b98446', 0.8],   // 1 floor step
+      ['#e9c25a', 0.8],   // 2 ceiling step
+      ['rgba(150,150,150,0.28)', 0], // 3 flat two-sided
+      ['#e9c25a', 1.0],   // 4 door
+      ['#ff3b30', 1.6],   // 5 red lock
+      ['#3f8cff', 1.6],   // 6 blue lock
+      ['#ffd43b', 1.6],   // 7 yellow lock
+      ['#c77dff', 1.6],   // 8 other lock
+      ['#3ddc84', 1.6],   // 9 exit
+      ['#9d7bff', 1.4],   // 10 teleporter
+    ];
+    const SEAT = ['#5bff7a', '#7aa8ff', '#ffb13b', '#ff6bd6', '#61f2ff', '#f5ff6b', '#ff7a7a', '#c9a6ff'];
+
+    let mod = null, lines = null, linesAt = 0, mapName = '', raf = 0, dpr = 1;
+    const box = () => document.getElementById('minimap');
+
+    function layout() {
+      const el = box();
+      if (!el) return;
+      el.classList.remove('size-s', 'size-m', 'size-l');
+      el.classList.add('size-' + (SIZES[cfg.size] ? cfg.size : 'm'));
+      const px = SIZES[cfg.size] || SIZES.m;
+      document.body.style.setProperty('--mm-outer', (px + 36) + 'px');
+      dpr = Math.min(2, window.devicePixelRatio || 1);
+      const c = el.querySelector('canvas');
+      c.width = Math.round(px * dpr); c.height = Math.round(px * dpr);
+      el.querySelector('.mm-zoom').textContent = '×' + ZOOMS[cfg.zoom].toFixed(ZOOMS[cfg.zoom] < 1 ? 2 : 1);
+    }
+
+    function arrow(ctx, x, y, ang, len, color, glow) {
+      // Doom's automap arrow: a shaft with a barbed head and a split tail.
+      ctx.save();
+      ctx.translate(x, y); ctx.rotate(ang);
+      ctx.beginPath();
+      ctx.moveTo(-len, 0); ctx.lineTo(len, 0);
+      ctx.moveTo(len, 0); ctx.lineTo(len * 0.45, -len * 0.45);
+      ctx.moveTo(len, 0); ctx.lineTo(len * 0.45, len * 0.45);
+      ctx.moveTo(-len, 0); ctx.lineTo(-len * 1.35, -len * 0.4);
+      ctx.moveTo(-len, 0); ctx.lineTo(-len * 1.35, len * 0.4);
+      ctx.moveTo(-len * 0.6, 0); ctx.lineTo(-len * 0.95, -len * 0.4);
+      ctx.moveTo(-len * 0.6, 0); ctx.lineTo(-len * 0.95, len * 0.4);
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = color; ctx.shadowColor = color; ctx.shadowBlur = glow;
+      ctx.lineWidth = Math.max(1.6 * dpr, len * 0.2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function draw() {
+      raf = 0;
+      const el = box();
+      if (!cfg.show || !mod || !el) { if (el) el.hidden = true; document.body.classList.remove('minimap-on'); return; }
+      raf = requestAnimationFrame(draw);
+      let st;
+      try { st = mod.roomMinimapState(); } catch (_) { st = null; }
+      const now = performance.now();
+      if (!st || st.length < 5) { el.hidden = true; document.body.classList.remove('minimap-on'); lines = null; return; }
+      if (!lines || now - linesAt > 350) {
+        try { lines = mod.roomMinimapLines(); } catch (_) { lines = null; }
+        linesAt = now;
+        try { mapName = (mod.roomCurrentMap && mod.roomCurrentMap()) || ''; } catch (_) { mapName = ''; }
+        el.querySelector('.mm-name').textContent = String(mapName).toUpperCase();
+      }
+      if (el.hidden) { el.hidden = false; layout(); }
+      document.body.classList.add('minimap-on');
+
+      const c = el.querySelector('canvas');
+      const ctx = c.getContext('2d');
+      const W = c.width, H = c.height, cx = W / 2, cy = H / 2;
+      const [px, py, yawDeg, allmap] = st;
+      const scale = (ZOOMS[cfg.zoom] / 8) * dpr;   // canvas px per map unit
+      const rot = cfg.rotate ? (yawDeg - 90) * Math.PI / 180 : 0;      // view forward → up
+
+      // Well: deep black with a faint warm centre.
+      const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, W * 0.75);
+      bg.addColorStop(0, '#120806'); bg.addColorStop(1, '#000');
+      ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(rot);
+      ctx.scale(scale, -scale);           // map y is up
+      ctx.translate(-px, -py);
+
+      // Automap grid (128 units, world aligned).
+      const reach = (Math.hypot(W, H) / 2) / scale;
+      const g0x = Math.floor((px - reach) / 128) * 128, g0y = Math.floor((py - reach) / 128) * 128;
+      ctx.beginPath();
+      for (let x = g0x; x <= px + reach; x += 128) { ctx.moveTo(x, py - reach); ctx.lineTo(x, py + reach); }
+      for (let y = g0y; y <= py + reach; y += 128) { ctx.moveTo(px - reach, y); ctx.lineTo(px + reach, y); }
+      ctx.strokeStyle = 'rgba(110, 70, 60, 0.16)'; ctx.lineWidth = 1 / scale; ctx.stroke();
+
+      if (lines && lines.length) {
+        // Bucket by style so each colour is one path: a soft wide glow pass,
+        // then a crisp core.
+        const paths = STYLE.map(() => new Path2D());
+        const dim = new Path2D();
+        const x0 = px - reach, x9 = px + reach, y0 = py - reach, y9 = py + reach;
+        for (let i = 0; i + 5 < lines.length; i += 6) {
+          const x1 = lines[i], y1 = lines[i + 1], x2 = lines[i + 2], y2 = lines[i + 3];
+          if ((x1 < x0 && x2 < x0) || (x1 > x9 && x2 > x9) || (y1 < y0 && y2 < y0) || (y1 > y9 && y2 > y9)) continue;
+          const kind = lines[i + 4] | 0, seen = lines[i + 5] > 0.5;
+          let path;
+          if (seen || !cfg.explored) path = paths[kind] || paths[0];
+          else if (allmap > 0.5) path = dim;
+          else continue;
+          path.moveTo(x1, y1); path.lineTo(x2, y2);
+        }
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = 'rgba(120,120,130,0.45)'; ctx.lineWidth = 1.1 * dpr / scale; ctx.stroke(dim);
+        STYLE.forEach(([color, glow], k) => {
+          if (!glow) return;
+          ctx.globalAlpha = 0.22; ctx.strokeStyle = color; ctx.lineWidth = (3.6 * glow) * dpr / scale;
+          ctx.stroke(paths[k]);
+        });
+        ctx.globalAlpha = 1;
+        STYLE.forEach(([color, glow], k) => {
+          ctx.strokeStyle = color; ctx.lineWidth = (glow ? 1.25 * Math.max(1, glow * 0.8) : 1) * dpr / scale;
+          ctx.stroke(paths[k]);
+        });
+        ctx.globalCompositeOperation = 'source-over';
+      }
+
+      // Team-mates (co-op).
+      const n = st[4] | 0;
+      for (let k = 0; k < n; k++) {
+        const o = 5 + k * 4;
+        const ox = st[o], oy = st[o + 1], oa = st[o + 2], seat = st[o + 3] | 0;
+        ctx.save();
+        ctx.translate(ox, oy); ctx.scale(1 / scale, -1 / scale);
+        ctx.rotate(-oa * Math.PI / 180);
+        arrow(ctx, 0, 0, 0, 7 * dpr, SEAT[seat % SEAT.length], 6 * dpr);
+        ctx.restore();
+      }
+      ctx.restore();
+
+      // You: centred, white, pointing up when the map turns with you, with
+      // a soft cone for the field of view.
+      const face = cfg.rotate ? -Math.PI / 2 : -yawDeg * Math.PI / 180;
+      const coneR = W * 0.42;
+      const cone = ctx.createRadialGradient(cx, cy, 0, cx, cy, coneR);
+      cone.addColorStop(0, 'rgba(255, 236, 200, 0.26)');
+      cone.addColorStop(1, 'rgba(255, 236, 200, 0)');
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, coneR, face - Math.PI / 4, face + Math.PI / 4);
+      ctx.closePath();
+      ctx.fillStyle = cone;
+      ctx.fill();
+      arrow(ctx, cx, cy, face, 10 * dpr, '#ffffff', 10 * dpr);
+
+      // Lens falloff toward the rim.
+      const v = ctx.createRadialGradient(cx, cy, W * 0.32, cx, cy, W * 0.74);
+      v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,0.85)');
+      ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+
+      // North marker riding the rim.
+      const na = -Math.PI / 2 + rot;
+      const nr = W / 2 - 11 * dpr;
+      const nx = cx + Math.cos(na) * nr, ny = cy + Math.sin(na) * nr;
+      ctx.font = `400 ${12 * dpr}px Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#000'; ctx.fillText('N', nx + dpr, ny + dpr);
+      ctx.fillStyle = '#e8b040'; ctx.fillText('N', nx, ny);
+    }
+
+    function start() {
+      layout();
+      if (!raf) raf = requestAnimationFrame(draw);
+    }
+    function configure(next) {
+      cfg = { ...cfg, ...(next || {}) };
+      if (!(cfg.zoom >= 0 && cfg.zoom < ZOOMS.length)) cfg.zoom = defaults.zoom;
+      save();
+      start();
+    }
+    window.roomMinimap = {
+      attach(m) { mod = m; start(); },
+      configure,
+      get: () => ({ ...cfg }),
+      zoomLevels: ZOOMS.length,
+      toggle() { configure({ show: !cfg.show }); return cfg.show; },
+    };
+    // Alt+M show / hide, Alt+= / Alt+- zoom (capture phase, before the game).
+    window.addEventListener('keydown', (e) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.repeat) return;
+      const tag = (e.target && e.target.tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.code === 'KeyM') { window.roomMinimap.toggle(); }
+      else if (e.code === 'Equal' || e.code === 'NumpadAdd') { configure({ show: true, zoom: Math.min(ZOOMS.length - 1, cfg.zoom + 1) }); }
+      else if (e.code === 'Minus' || e.code === 'NumpadSubtract') { configure({ zoom: Math.max(0, cfg.zoom - 1) }); }
+      else return;
+      e.preventDefault(); e.stopImmediatePropagation();
+    }, true);
+  })();
+  </script>
+  <script>
+  // Messages as toasts + the Tab stats screen. The engine hands over each
+  // message with its kind (kill, frag, death, pickup, power, secret, lock,
+  // script, system); Settings › Messages chooses which kinds show.
+  (() => {
+    const KEY = 'room/messages';
+    const KINDS = ['kill', 'frag', 'death', 'pickup', 'power', 'secret', 'lock', 'script', 'system'];
+    const LIFE = { kill: 3800, frag: 4500, death: 5000, pickup: 2600, power: 4000, secret: 5200, lock: 3200, script: 5200, system: 4000 };
+    const MAX = 5;
+    const defaults = { style: 'toast', hidden: [] };
+    let cfg = { ...defaults };
+    try { cfg = { ...defaults, ...(JSON.parse(localStorage.getItem(KEY) || '{}') || {}) }; } catch (_) { /* private mode */ }
+    let mod = null;
+
+    function push() {
+      if (!mod) return;
+      try {
+        mod.roomSetHtmlOverlays(cfg.style === 'toast');
+        mod.roomSetHiddenMessages(JSON.stringify(cfg.hidden || []));
+      } catch (e) { console.warn('room-web: messages', e); }
+    }
+    function configure(next) {
+      cfg = { ...cfg, ...(next || {}) };
+      try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (_) { /* ignore */ }
+      push();
+    }
+
+    // ---- Toasts ------------------------------------------------------------
+    const box = () => document.getElementById('toasts');
+    function remove(el) {
+      if (!el || el.classList.contains('out')) return;
+      el.classList.add('out');
+      setTimeout(() => el.remove(), 400);
+    }
+    function toast(kind, text) {
+      const host = box();
+      if (!host) return;
+      // Same message again while it is up: count it instead of stacking.
+      const last = host.lastElementChild;
+      if (last && !last.classList.contains('out') && last.dataset.text === text) {
+        const n = (Number(last.dataset.n) || 1) + 1;
+        last.dataset.n = String(n);
+        let badge = last.querySelector('.n');
+        if (!badge) { badge = document.createElement('span'); badge.className = 'n'; last.appendChild(badge); }
+        badge.textContent = '×' + n;
+        clearTimeout(Number(last.dataset.timer));
+        last.dataset.timer = String(setTimeout(() => remove(last), LIFE[kind] || 4000));
+        return;
+      }
+      const el = document.createElement('div');
+      el.className = 'toast k-' + (KINDS.includes(kind) ? kind : 'script');
+      if (/^you\b/i.test(text) || /\byou\b/i.test(text) && (kind === 'frag' || kind === 'death')) el.classList.add('you');
+      el.dataset.text = text;
+      const t = document.createElement('span');
+      t.textContent = text;
+      el.appendChild(t);
+      host.appendChild(el);
+      el.dataset.timer = String(setTimeout(() => remove(el), LIFE[kind] || 4000));
+      const live = [...host.children].filter((c) => !c.classList.contains('out'));
+      for (const old of live.slice(0, Math.max(0, live.length - MAX))) remove(old);
+    }
+
+    // ---- Tab stats ---------------------------------------------------------
+    const SKILLS = ['', "I'm too young to die", 'Hey, not too rough', 'Hurt me plenty', 'Ultra-Violence', 'Nightmare!'];
+    const clock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    function meter(label, [found, total]) {
+      const pct = total > 0 ? Math.round((found / total) * 100) : 100;
+      const full = total > 0 && found >= total;
+      return `<div class="st-meter${full ? ' full' : ''}"><div class="lbl">${label}</div>
+        <div class="val"><span class="pct">${total > 0 ? pct + '%' : '—'}</span><span class="cnt">${found} / ${total}</span></div>
+        <div class="bar"><i style="width:${Math.min(100, pct)}%"></i></div></div>`;
+    }
+    function renderStats(st) {
+      const el = document.getElementById('stats');
+      const me = st.players.find((p) => p.me) || st.players[0];
+      const others = st.players.length > 1;
+      const parTxt = st.par > 0
+        ? ` <span>Par <b class="${st.time <= st.par ? 'under' : ''}">${clock(st.par)}</b></span>` : '';
+      let html = `<div class="st-head"><span class="st-map">${esc(st.map)}</span>${st.title ? `<span class="st-title">${esc(st.title)}</span>` : ''}</div>
+        <div class="st-sub"><span>Time <b>${clock(st.time)}</b></span>${parTxt}<span>Skill <b>${esc(SKILLS[st.skill] || st.skill)}</b></span>
+        <span>Monsters left <b>${Math.max(0, st.kills[1] - st.kills[0])}</b></span></div>
+        <div class="st-meters">${meter('Kills', st.kills)}${meter('Items', st.items)}${meter('Secrets', st.secrets)}</div>`;
+      if (me && !others) {
+        html += `<div class="st-you"><span>Health <b>${me.health}%</b></span><span>Armor <b>${me.armor}%</b></span>
+          <span>Hits taken <b>${me.hits ?? 0}</b></span><span>Damage taken <b>${me.damage_taken ?? 0}</b></span>
+          <span>Deaths <b>${me.deaths}</b></span></div>`;
+      }
+      if (others) {
+        const frags = st.deathmatch || st.players.some((p) => p.frags !== 0);
+        html += `<table><thead><tr><th>Player</th><th>Health</th><th>Armor</th><th>Kills</th><th>Items</th><th>Secrets</th><th>Hits taken</th><th>Deaths</th>${frags ? '<th>Frags</th>' : ''}</tr></thead><tbody>`;
+        for (const p of st.players) {
+          const state = p.state === 'alive' ? `${p.health}%` : p.state === 'dead' ? 'Dead' : 'Left';
+          html += `<tr class="${p.me ? 'me' : ''}"><td>${esc(p.name)}${p.bot ? ' <span style="color:var(--r-dim)">(bot)</span>' : ''}</td>
+            <td class="${p.state !== 'alive' ? p.state : ''}">${state}</td><td>${p.armor}%</td><td>${p.kills}</td><td>${p.items}</td>
+            <td>${p.secrets}</td><td title="${p.damage_taken ?? 0} damage">${p.hits ?? 0}</td><td>${p.deaths}</td>${frags ? `<td>${p.frags}</td>` : ''}</tr>`;
+        }
+        html += '</tbody></table>';
+      }
+      el.querySelector('.panel').innerHTML = html;
+      el.hidden = false;
+    }
+
+    let lastStats = 0;
+    function frame(t) {
+      requestAnimationFrame(frame);
+      if (!mod) return;
+      if (cfg.style === 'toast') {
+        let list = [];
+        try { list = JSON.parse(mod.roomTakeMessages()); } catch (_) { list = []; }
+        for (const [kind, text] of list) toast(kind, text);
+      }
+      if (t - lastStats > 90) {
+        lastStats = t;
+        let st = null;
+        try { st = JSON.parse(mod.roomStats()); } catch (_) { st = null; }
+        const el = document.getElementById('stats');
+        if (cfg.style === 'toast' && st && st.showing) renderStats(st);
+        else if (el) el.hidden = true;
+      }
+    }
+
+    window.roomMessages = {
+      attach(m) { mod = m; push(); requestAnimationFrame(frame); },
+      configure,
+      get: () => ({ ...cfg, hidden: [...(cfg.hidden || [])] }),
+      kinds: KINDS,
+    };
+  })();
+  </script>
   <div id="lobby" aria-live="polite">
     <div class="panel">
       <div id="lobby-body">
@@ -984,6 +1744,16 @@
     try {
       const mod = await import("./room_web.js");
       await mod.default();
+      if (typeof mod.roomMinimapState === "function") window.roomMinimap?.attach(mod);
+      if (typeof mod.roomTakeMessages === "function") window.roomMessages?.attach(mod);
+      // Mod options chosen in Settings, before the first game reads its CVars.
+      if (typeof mod.roomSetModCvar === "function") {
+        try {
+          for (const [k, v] of Object.entries(JSON.parse(localStorage.getItem("room/mod-cvars") || "{}") || {})) {
+            mod.roomSetModCvar(k, String(v));
+          }
+        } catch (_) { /* private mode / bad JSON */ }
+      }
       // Debug helpers for coop (console / automation).
       window.roomDebugState = () => mod.roomDebugState();
       window.roomNetStats = () => mod.roomNetStats();

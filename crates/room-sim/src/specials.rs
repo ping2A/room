@@ -2744,7 +2744,7 @@ fn locked_door_denied(world: &mut World, mo: ActorId, lock: i32) {
     }
     let (msg, sound) = crate::locks::lock_deny_info(world, lock);
     world.play_sound(&sound, 0.0, 0.0, 0.0, 1.0);
-    world.push_message(msg);
+    world.push_message_kind(crate::world::MessageKind::Lock, msg);
 }
 
 fn door_locked_raise(

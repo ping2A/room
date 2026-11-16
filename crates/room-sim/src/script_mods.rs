@@ -284,7 +284,7 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
                 _ => None,
             };
             if let (Some(to), false) = (to, text.is_empty()) {
-                world.push_message_to(to, text);
+                world.push_message_to_kind(to, crate::world::MessageKind::Script, text);
             }
             None
         }
@@ -1326,7 +1326,7 @@ pub fn dispatch_state_action(
         None => {
             m.failed = true;
             let line = format!("[{}] disabled: state action trap", m.name);
-            world.push_message(line.clone());
+            world.push_message_kind(crate::world::MessageKind::Script, line.clone());
             lock(&rt.log).push(line);
             None
         }
@@ -1420,7 +1420,7 @@ pub fn dispatch_static_call(
         Err(e) => {
             m.failed = true;
             let line = format!("[{}] disabled: {class_name}.{func_name}: {e}", m.name);
-            world.push_message(line.clone());
+            world.push_message_kind(crate::world::MessageKind::Script, line.clone());
             lock(&rt.log).push(line);
             None
         }
@@ -1496,7 +1496,7 @@ pub fn dispatch_modify_damage(
         None => {
             m.failed = true;
             let line = format!("[{}] disabled: {class_name}.ModifyDamage trap", m.name);
-            world.push_message(line.clone());
+            world.push_message_kind(crate::world::MessageKind::Script, line.clone());
             lock(&rt.log).push(line);
             Some(damage)
         }
@@ -1590,7 +1590,7 @@ impl ModRuntime {
                 let line = format!("[{}] {msg}", lock(&current));
                 if level <= room_script_sdk_levels::WARN {
                     if let Some(w) = lock(&cell).as_mut() {
-                        w.push_message(line.clone());
+                        w.push_message_kind(crate::world::MessageKind::Script, line.clone());
                     }
                 }
                 let mut g = lock(&log);
@@ -1912,7 +1912,7 @@ impl ModRuntime {
                     w.mod_hud.clear_module(h.module_index as u16);
                     w.mod_zones.clear_module(h.module_index as u16);
                     w.clear_module_captures(h.module_index as u16);
-                    w.push_message(line.clone());
+                    w.push_message_kind(crate::world::MessageKind::Script, line.clone());
                 }
                 lock(&self.log).push(line);
             }

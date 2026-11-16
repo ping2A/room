@@ -3837,7 +3837,7 @@ fn a_print(world: &mut World, args: &[String]) -> ActionResult {
         .map(|s| s.trim_matches('"').to_owned())
         .filter(|s| !s.is_empty());
     if let Some(text) = text {
-        world.push_message(text);
+        world.push_message_kind(crate::world::MessageKind::Script, text);
     }
     ActionResult::Continue
 }
@@ -3848,7 +3848,7 @@ fn a_log_int(world: &mut World, args: &[String]) -> ActionResult {
         .first()
         .and_then(|s| s.trim_matches('"').parse::<i32>().ok())
     {
-        world.push_message(n.to_string());
+        world.push_message_kind(crate::world::MessageKind::Script, n.to_string());
     }
     ActionResult::Continue
 }
@@ -3859,7 +3859,7 @@ fn a_log_float(world: &mut World, args: &[String]) -> ActionResult {
         .first()
         .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
     {
-        world.push_message(format!("{x}"));
+        world.push_message_kind(crate::world::MessageKind::Script, format!("{x}"));
     }
     ActionResult::Continue
 }
@@ -10383,7 +10383,7 @@ pub(crate) fn a_boss_death(world: &mut World, self_id: ActorId) -> ActionResult 
             let special = ba.special.clamp(0, i32::from(u16::MAX)) as u16;
             let _ = crate::specials::execute_special(world, special, &args, None, None);
         }
-        world.push_message("Boss defeated!");
+        world.push_message_kind(crate::world::MessageKind::Script, "Boss defeated!");
         return ActionResult::Continue;
     }
     let map = world.map.name.to_ascii_uppercase();
@@ -10398,7 +10398,7 @@ pub(crate) fn a_boss_death(world: &mut World, self_id: ActorId) -> ActionResult 
                 None,
                 None,
             );
-            world.push_message("Boss defeated!");
+            world.push_message_kind(crate::world::MessageKind::Script, "Boss defeated!");
         }
         "arachnotron" if map == "MAP07" => {
             let args = [667, 8, 0, 0, 0];
@@ -10409,7 +10409,7 @@ pub(crate) fn a_boss_death(world: &mut World, self_id: ActorId) -> ActionResult 
                 None,
                 None,
             );
-            world.push_message("Boss defeated!");
+            world.push_message_kind(crate::world::MessageKind::Script, "Boss defeated!");
         }
         // Ultimate Doom episode bosses (vanilla A_BossDeath map checks).
         "baronofhell" if map == "E1M8" => {
@@ -10421,7 +10421,7 @@ pub(crate) fn a_boss_death(world: &mut World, self_id: ActorId) -> ActionResult 
                 None,
                 None,
             );
-            world.push_message("Boss defeated!");
+            world.push_message_kind(crate::world::MessageKind::Script, "Boss defeated!");
         }
         "cyberdemon" if map == "E4M6" => {
             let args = [666, 8, 0, 0, 0];
@@ -10432,7 +10432,7 @@ pub(crate) fn a_boss_death(world: &mut World, self_id: ActorId) -> ActionResult 
                 None,
                 None,
             );
-            world.push_message("Boss defeated!");
+            world.push_message_kind(crate::world::MessageKind::Script, "Boss defeated!");
         }
         "spidermastermind" if map == "E4M8" => {
             let args = [666, 8, 0, 0, 0];
@@ -10443,7 +10443,7 @@ pub(crate) fn a_boss_death(world: &mut World, self_id: ActorId) -> ActionResult 
                 None,
                 None,
             );
-            world.push_message("Boss defeated!");
+            world.push_message_kind(crate::world::MessageKind::Script, "Boss defeated!");
         }
         // Commander Keen: open all tagged-666 doors (does not exit the map).
         "commanderkeen" => {
@@ -10455,7 +10455,7 @@ pub(crate) fn a_boss_death(world: &mut World, self_id: ActorId) -> ActionResult 
                 None,
                 None,
             );
-            world.push_message("Boss defeated!");
+            world.push_message_kind(crate::world::MessageKind::Script, "Boss defeated!");
         }
         // E2M8 Cyberdemon / E3M8 Spider Mastermind: vanilla exits the level.
         "cyberdemon" if map == "E2M8" => {
@@ -10463,14 +10463,14 @@ pub(crate) fn a_boss_death(world: &mut World, self_id: ActorId) -> ActionResult 
             if !cfg!(test) {
                 eprintln!("room: level exit: A_BossDeath (tic {})", world.level.time);
             }
-            world.push_message("Boss defeated!");
+            world.push_message_kind(crate::world::MessageKind::Script, "Boss defeated!");
         }
         "spidermastermind" if map == "E3M8" => {
             world.level.exiting = true;
             if !cfg!(test) {
                 eprintln!("room: level exit: A_BossDeath (tic {})", world.level.time);
             }
-            world.push_message("Boss defeated!");
+            world.push_message_kind(crate::world::MessageKind::Script, "Boss defeated!");
         }
         // GZDoom `A_BossDeath` does nothing on a map without a boss special for
         // this class: mods (Brutal Doom) put it in ordinary death states.

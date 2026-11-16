@@ -223,6 +223,9 @@ pub struct ActorConTemps {
     /// CON `stopsound N` commands; stop every active voice for the sound ID.
     #[serde(default)]
     pub pending_sound_stops: Vec<i16>,
+    /// EDuke32 `stopactorsound` commands; stop only voices from this actor.
+    #[serde(default)]
+    pub pending_actor_sound_stops: Vec<i16>,
     /// Stop this actor's ambient sound at its source after leaving range.
     #[serde(default)]
     pub pending_stop_source_sound: bool,
@@ -421,6 +424,7 @@ impl Default for ActorConTemps {
             pending_actor_sounds_loop: Vec::new(),
             pending_actor_sounds_once: Vec::new(),
             pending_sound_stops: Vec::new(),
+            pending_actor_sound_stops: Vec::new(),
             pending_stop_source_sound: false,
             pending_global_sounds: Vec::new(),
             pending_item_sprays: Vec::new(),

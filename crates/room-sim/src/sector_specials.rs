@@ -293,7 +293,7 @@ pub fn player_in_special_sector(world: &mut World, mo: ActorId) {
             world.secret_found[sid] = true;
             world.level.found_secrets = world.level.found_secrets.saturating_add(1);
             world.credit_player_stat(Some(mo), 2);
-            world.push_message("A secret is revealed!");
+            world.push_message_kind(crate::world::MessageKind::Secret, "A secret is revealed!");
             world.push_view_debug("secret");
             if let Some(a) = world.actors.get(mo) {
                 world.play_sound("misc/secret", a.pos.x(), a.pos.y(), a.pos.z(), 1.0);

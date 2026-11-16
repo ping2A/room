@@ -1,6 +1,6 @@
 //! Browser Doom / Freedoom play session (Headless + materials).
 
-use crate::feed::{EventFeed, Scores, kill_line, stcfn_safe};
+use crate::feed::{EventFeed, Scores, kill_message, stcfn_safe};
 use crate::netplay::NetPlay;
 use crate::web_audio::WebAudio;
 use bytes::Bytes;
@@ -37,12 +37,32 @@ use room_vfs::{Namespace, Vfs, VfsBuilder};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+thread_local! {
+    /// The page draws messages and the Tab stats itself (`roomSetHtmlOverlays`).
+    pub(crate) static HTML_OVERLAYS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Message kinds turned off in Settings (`kill`, `frag`, `death`,
+    /// `pickup`, `power`, `secret`, `lock`, `script`, `system`).
+    pub(crate) static MSG_HIDDEN: std::cell::RefCell<BTreeSet<String>> =
+        std::cell::RefCell::new(BTreeSet::new());
+    /// Mod CVar values chosen in Settings (lower-case name → value text),
+    /// applied over each game's CVARINFO defaults (`roomSetModCvar`).
+    pub(crate) static MOD_CVAR_OVERRIDES: std::cell::RefCell<BTreeMap<String, String>> =
+        std::cell::RefCell::new(BTreeMap::new());
+}
+
+/// Doom `ML_MAPPED`: the automap has seen this line.
+const ML_MAPPED_FLAG: i32 = 0x0100;
+
 /// Running IWAD play session (sim + render map + input).
 pub struct PlaySession {
     /// Mounted engine + IWAD.
     pub vfs: Vfs,
     /// Playsim.
     pub game: Headless,
+    /// Settings for the loaded mods' CVars (CVARINFO + MENUDEF labels).
+    mod_options: Vec<room_defs::mod_options::ModOptionGroup>,
+    /// LANGUAGE tables, for messages given as `$KEY` (pickups, prints).
+    language: room_defs::language::Language,
     /// Geometry for the renderer (synced from the world each tic).
     pub map: MapGeometry,
     /// Baseline sidedefs / sectors (switch texture restore).
@@ -129,6 +149,8 @@ pub struct PlaySession {
     scores: Scores,
     /// Bottom-left event lines.
     feed: EventFeed,
+    /// Messages for the page (`kind`, text), taken by `roomTakeMessages`.
+    toasts: Vec<(String, String)>,
     /// One-shot "toggle spectator grid" (from [`crate::input_hub`]).
     pub(crate) view_grid_toggle: bool,
     /// Spectator: all players at once vs. following `local_seat`.
@@ -337,7 +359,23 @@ impl PlaySession {
         let mut camera_tex_sizes = BTreeMap::new();
         let mut mapinfo = Arc::new(room_defs::MapInfo::default());
         let mut zscript_handlers: Vec<String> = Vec::new();
+        let mut mod_options = Vec::new();
+        let mut language = room_defs::language::Language::default();
         if let Ok(defs) = DefinitionsBuilder::new(&vfs).build() {
+            language = defs.language.clone();
+            // Mod CVars before the first map: CVARINFO defaults, then the
+            // player's saved choices.
+            mod_options =
+                room_defs::mod_options::mod_options(&defs.cvars, &defs.menudef, &defs.language);
+            MOD_CVAR_OVERRIDES.with(|o| {
+                let o = o.borrow();
+                for item in mod_options.iter().flat_map(|g| &g.items) {
+                    let value = o
+                        .get(&item.cvar.to_ascii_lowercase())
+                        .map_or(item.default.as_str(), String::as_str);
+                    game.set_mod_cvar(&item.cvar, value);
+                }
+            });
             game.set_complevel(defs.complevel);
             zscript_handlers = defs.zscript_event_handlers();
             mapinfo = Arc::new(defs.mapinfo);
@@ -461,6 +499,8 @@ impl PlaySession {
         let mut session = Self {
             vfs,
             game,
+            mod_options,
+            language,
             map_base: map.clone(),
             map,
             materials,
@@ -504,6 +544,7 @@ impl PlaySession {
             water_reverb: true,
             scores: Scores::default(),
             feed: EventFeed::default(),
+            toasts: Vec::new(),
             view_grid_toggle: false,
             spectator_grid: true,
             prev_attack: false,
@@ -559,6 +600,179 @@ impl PlaySession {
             out.push(clamp_i16(v2.pos.x()));
             out.push(clamp_i16(v2.pos.y()));
         }
+        out
+    }
+
+    /// The loaded mods' settings as JSON for the Settings screen, with each
+    /// CVar's current value (`[{title, items: [{cvar, label, value, …}]}]`).
+    #[must_use]
+    pub fn mod_options_json(&self) -> String {
+        let mut json = room_defs::mod_options::mod_options_json(&self.mod_options);
+        if let Some(groups) = json.as_array_mut() {
+            for group in groups {
+                let Some(items) = group.get_mut("items").and_then(|i| i.as_array_mut()) else {
+                    continue;
+                };
+                for item in items {
+                    let cvar = item.get("cvar").and_then(|c| c.as_str()).unwrap_or_default().to_owned();
+                    let value = self.game.mod_cvar(&cvar).map(str::to_owned).unwrap_or_else(|| {
+                        item.get("default").and_then(|d| d.as_str()).unwrap_or_default().to_owned()
+                    });
+                    item["value"] = serde_json::Value::String(value);
+                }
+            }
+        }
+        json.to_string()
+    }
+
+    /// Set one mod CVar now (the running level sees it at once), then run
+    /// the scripts its mod menu uses to apply settings (Brutal Doom copies
+    /// CVars into ACS variables in `GetCVars`).
+    pub fn set_mod_cvar(&mut self, name: &str, value: &str) {
+        self.game.set_mod_cvar(name, value);
+        // Only the menu that shows this setting: another menu's command may
+        // do something else entirely (Brutal Doom's map menu sets the skill).
+        let scripts: Vec<(String, bool)> = self
+            .mod_options
+            .iter()
+            .filter(|g| g.items.iter().any(|i| i.cvar.eq_ignore_ascii_case(name)))
+            .flat_map(|g| g.apply_scripts.iter().cloned())
+            .collect();
+        if self.game.state != GameState::Level {
+            return;
+        }
+        if let Some(world) = self.game.world_mut() {
+            for (script, always) in scripts {
+                let _ = room_sim::puke_named(world, &script, [0, 0, 0], always);
+            }
+        }
+    }
+
+    /// Linedefs for the in-game minimap, 6 floats each:
+    /// `x1, y1, x2, y2, kind, flags`. `kind` follows the Doom automap
+    /// colours: 0 solid wall, 1 floor step, 2 ceiling step, 3 flat two-sided,
+    /// 4 door, 5 red lock, 6 blue lock, 7 yellow lock, 8 other lock, 9 exit,
+    /// 10 teleporter. `flags` bit 0 = explored (`ML_MAPPED`). Secret lines
+    /// draw as walls and `ML_DONTDRAW` lines are left out, as in Doom.
+    #[must_use]
+    pub fn minimap_lines(&self) -> Vec<f32> {
+        const ML_SECRET: i32 = 0x0020;
+        const ML_DONTDRAW: i32 = 0x0080;
+        let Some(world) = self.game.world() else {
+            return Vec::new();
+        };
+        if self.game.state != GameState::Level {
+            return Vec::new();
+        }
+        let map = &world.map;
+        let mut out = Vec::with_capacity(map.lines.len() * 6);
+        for line in &map.lines {
+            let flags = i32::from(line.flags);
+            if flags & ML_DONTDRAW != 0 {
+                continue;
+            }
+            let (Some(v1), Some(v2)) = (
+                map.vertices.get(line.v1.raw() as usize),
+                map.vertices.get(line.v2.raw() as usize),
+            ) else {
+                continue;
+            };
+            let sector = |id: Option<room_core::SectorId>| {
+                id.and_then(|s| world.map.sectors.get(s.raw() as usize))
+            };
+            let front = sector(line.front_sector);
+            let back = sector(line.back_sector);
+            let lock = |n: i32| match n {
+                1 | 4 | 129 => 5.0,
+                2 | 5 | 130 => 6.0,
+                3 | 6 | 131 => 7.0,
+                _ => 8.0,
+            };
+            // Hexen numbering: Doom / Boom specials are translated at load.
+            let kind: f32 = match line.special {
+                13 if line.args[3] != 0 => lock(line.args[3]),
+                202 if line.args[4] != 0 => lock(line.args[4]),
+                83 if line.args[4] != 0 => lock(line.args[4]),
+                10..=14 | 105 | 106 | 202 | 249 => 4.0,
+                74 | 75 | 243 | 244 => 9.0,
+                39 | 70 | 71 | 76 | 215 => 10.0,
+                _ => match (front, back) {
+                    (Some(f), Some(b)) if flags & ML_SECRET == 0 => {
+                        if (f.floor_height - b.floor_height).abs() > 0.5 {
+                            1.0
+                        } else if (f.ceiling_height - b.ceiling_height).abs() > 0.5 {
+                            2.0
+                        } else {
+                            3.0
+                        }
+                    }
+                    _ => 0.0,
+                },
+            };
+            let mapped = flags & ML_MAPPED_FLAG != 0;
+            #[allow(clippy::cast_possible_truncation)]
+            out.extend_from_slice(&[
+                v1.pos.x() as f32,
+                v1.pos.y() as f32,
+                v2.pos.x() as f32,
+                v2.pos.y() as f32,
+                kind,
+                if mapped { 1.0 } else { 0.0 },
+            ]);
+        }
+        out
+    }
+
+    /// Minimap pose: `x, y, yaw_deg, allmap, count` for the local view, then
+    /// `x, y, yaw_deg, seat` for each other living player (co-op only; a
+    /// deathmatch map does not give away opponents). Empty outside a level.
+    #[must_use]
+    pub fn minimap_state(&self) -> Vec<f32> {
+        if self.game.state != GameState::Level {
+            return Vec::new();
+        }
+        let Some(world) = self.game.world() else {
+            return Vec::new();
+        };
+        let Some((eye, fwd)) = self.view_pose() else {
+            return Vec::new();
+        };
+        let seat = usize::from(self.local_seat);
+        let allmap = world
+            .players
+            .get(seat)
+            .and_then(|p| p.as_ref())
+            .is_some_and(|p| p.allmap);
+        let mut others = Vec::new();
+        if !world.deathmatch {
+            for (i, p) in world.players.iter().enumerate() {
+                if i == seat {
+                    continue;
+                }
+                let Some(a) = p.as_ref().and_then(|p| p.mo).and_then(|id| world.actors.get(id)) else {
+                    continue;
+                };
+                if a.destroyed || a.health <= 0 {
+                    continue;
+                }
+                #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+                others.extend_from_slice(&[
+                    a.pos.x() as f32,
+                    a.pos.y() as f32,
+                    a.angle.degrees() as f32,
+                    i as f32,
+                ]);
+            }
+        }
+        let mut out = vec![
+            eye.x,
+            eye.y,
+            fwd.y.atan2(fwd.x).to_degrees(),
+            if allmap { 1.0 } else { 0.0 },
+            #[allow(clippy::cast_precision_loss)]
+            { (others.len() / 4) as f32 },
+        ];
+        out.extend(others);
         out
     }
 
@@ -662,13 +876,11 @@ impl PlaySession {
             let Some(class) = world.classes.get(a.class) else {
                 continue;
             };
-            let frame_ch = char::from(b'A' + a.frame.min(25));
-            let frame_s = frame_ch.to_string();
             for assoc in &self.gldefs.object_lights {
                 if !assoc.class.eq_ignore_ascii_case(&class.name) {
                     continue;
                 }
-                if !assoc.frame.is_empty() && !assoc.frame.eq_ignore_ascii_case(&frame_s) {
+                if !assoc.matches(&a.sprite, a.frame) {
                     continue;
                 }
                 let Some(def) = self.gldefs.lights.get(&assoc.light.to_ascii_lowercase()) else {
@@ -976,10 +1188,9 @@ impl PlaySession {
         }
         let now = now_ms();
         self.feed.prune(now);
-        if let Some(net) = self.net.as_mut() {
-            for line in net.take_feed() {
-                self.feed.push(line, now);
-            }
+        let net_lines = self.net.as_mut().map(NetPlay::take_feed).unwrap_or_default();
+        for line in net_lines {
+            self.announce("system", line, now);
         }
         let spectator = self.is_spectator();
         if spectator {
@@ -1247,10 +1458,12 @@ impl PlaySession {
             return;
         }
         let now = now_ms();
-        for ev in &kills {
-            if let Some(line) = kill_line(ev, |s| self.seat_name(s)) {
-                self.feed.push(line, now);
-            }
+        let lines: Vec<(&'static str, String)> = kills
+            .iter()
+            .filter_map(|ev| kill_message(ev, self.local_seat, |s| self.seat_name(s)))
+            .collect();
+        for (kind, line) in lines {
+            self.announce(kind, line, now);
         }
         // Pickup / ACS messages are not per-player in the sim; only solo shows them.
         let solo = self.net.is_none();
@@ -1261,9 +1474,114 @@ impl PlaySession {
                 room_sim::MessageTo::Seat(s) => solo || s == self.local_seat,
             };
             if mine {
-                self.feed.push(m.text, now);
+                let kind = match m.kind {
+                    room_sim::MessageKind::Pickup => "pickup",
+                    room_sim::MessageKind::Power => "power",
+                    room_sim::MessageKind::Secret => "secret",
+                    room_sim::MessageKind::Lock => "lock",
+                    room_sim::MessageKind::Obituary => "death",
+                    room_sim::MessageKind::Script | room_sim::MessageKind::Other => "script",
+                    room_sim::MessageKind::System => "system",
+                };
+                self.announce(kind, m.text, now);
             }
         }
+    }
+
+    /// One message for the player: dropped if its kind is turned off, else
+    /// to the page's toasts or the canvas feed.
+    fn announce(&mut self, kind: &str, text: String, now: f64) {
+        // `$GOTRIFLE` → "You got the Assault Rifle! (slot 4)", colour codes off.
+        let text = room_defs::mod_options::clean_text(self.language.resolve("enu", &text));
+        if text.is_empty() || MSG_HIDDEN.with(|h| h.borrow().contains(kind)) {
+            return;
+        }
+        if HTML_OVERLAYS.with(std::cell::Cell::get) {
+            if self.toasts.len() >= 64 {
+                self.toasts.remove(0);
+            }
+            self.toasts.push((kind.to_owned(), text));
+        } else {
+            self.feed.push(text, now);
+        }
+    }
+
+    /// Messages since the last call as JSON `[[kind, text], …]`.
+    pub fn take_toasts_json(&mut self) -> String {
+        if self.toasts.is_empty() {
+            return "[]".into();
+        }
+        let out = serde_json::Value::Array(
+            self.toasts
+                .drain(..)
+                .map(|(k, t)| serde_json::json!([k, t]))
+                .collect(),
+        );
+        out.to_string()
+    }
+
+    /// Level and player stats for the Tab screen; `null` outside a level.
+    /// `showing` = the scoreboard key is held.
+    #[must_use]
+    pub fn stats_json(&self) -> String {
+        let Some(world) = self.game.world() else {
+            return "null".into();
+        };
+        if self.game.state != GameState::Level {
+            return "null".into();
+        }
+        let map = self.game.map_name().to_owned();
+        let def = self.mapinfo.maps.get(&map.to_ascii_uppercase());
+        let title = def
+            .and_then(|d| d.title.clone())
+            .filter(|t| !t.starts_with('$'))
+            .unwrap_or_default();
+        let par = def.and_then(|d| d.par_seconds).unwrap_or(0);
+        let l = &world.level;
+        let mut players = Vec::new();
+        for (i, p) in world.players.iter().enumerate().take(VIEW_SEATS) {
+            let Some(p) = p.as_ref() else {
+                continue;
+            };
+            let seat = i as u8;
+            let hud = world.player_hud(i);
+            let (hp, ar) = hud.as_ref().map_or((0, 0), |h| (h.health, h.armor));
+            let sc = self.scores.seats[i.min(self.scores.seats.len() - 1)];
+            let [kills, items, secrets] = world.player_stats.get(i).copied().unwrap_or([0; 3]);
+            let [hits, damage_taken] = world.player_hits.get(i).copied().unwrap_or([0; 2]);
+            let gone = self.net.as_ref().is_some_and(|n| n.is_gone(seat));
+            players.push(serde_json::json!({
+                "seat": seat,
+                "name": self.seat_name(seat),
+                "me": seat == self.local_seat,
+                "bot": p.is_bot,
+                "health": hp,
+                "armor": ar,
+                "kills": kills,
+                "items": items,
+                "secrets": secrets,
+                "hits": hits,
+                "damage_taken": damage_taken,
+                "deaths": sc.deaths,
+                "frags": sc.frags,
+                "state": if gone { "left" } else if hp <= 0 { "dead" } else { "alive" },
+            }));
+        }
+        serde_json::json!({
+            "showing": self.held.contains("scores"),
+            "map": map,
+            "title": title,
+            "skill": world.skill,
+            "time": l.time / 35,
+            "par": par,
+            "kills": [l.found_kills, l.total_kills],
+            "items": [l.found_items, l.total_items],
+            "secrets": [l.found_secrets, l.total_secrets],
+            "deathmatch": world.deathmatch,
+            "net": self.net.is_some(),
+            "players": players,
+        })
+        .to_string()
     }
 
     /// Send the final standings to the server once the sim decides the match.
@@ -1907,6 +2225,9 @@ impl PlaySession {
             draw_stcfn_string(&mut ov, bx, by, &banner, SMALL_TEXT);
         }
 
+        if HTML_OVERLAYS.with(std::cell::Cell::get) {
+            return ov;
+        }
         // Bottom-left event feed, newest at the bottom.
         let now = now_ms();
         let lines: Vec<(String, f64)> = self
