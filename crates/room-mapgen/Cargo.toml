@@ -1,0 +1,19 @@
+[package]
+name = "room-mapgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Procedural multiplayer Doom map generator (rooms, corridors, stairs, arenas, teleporters, balanced items) producing editable RawMap documents."
+
+[lints]
+workspace = true
+
+[dependencies]
+room-map = { path = "../room-map" }
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+room-map = { path = "../room-map" }
+serde_json.workspace = true
+room-nodebuild = { path = "../room-nodebuild" }
